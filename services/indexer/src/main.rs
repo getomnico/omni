@@ -4,26 +4,66 @@ mod processor;
 
 use anyhow::Result;
 use axum::{
-    extract::State,
+    extract::{Path, State},
     response::Json,
-    routing::get,
+    routing::{delete, get, post, put},
     Router,
 };
 use error::Result as IndexerResult;
 use redis::Client as RedisClient;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use shared::db::pool::DatabasePool;
-use sqlx::PgPool;
+use shared::{db::pool::DatabasePool, models::Document};
+use sqlx::{types::time::OffsetDateTime, PgPool};
 use std::{env, net::SocketAddr};
 use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{info, error};
+use uuid::Uuid;
 
 
 #[derive(Clone)]
 pub struct AppState {
     pub db_pool: DatabasePool,
     pub redis_client: RedisClient,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateDocumentRequest {
+    pub source_id: String,
+    pub external_id: String,
+    pub title: String,
+    pub content: String,
+    pub metadata: Value,
+    pub permissions: Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateDocumentRequest {
+    pub title: Option<String>,
+    pub content: Option<String>,
+    pub metadata: Option<Value>,
+    pub permissions: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BulkDocumentOperation {
+    pub operation: String, // "create", "update", "delete"
+    pub document_id: Option<String>,
+    pub document: Option<CreateDocumentRequest>,
+    pub updates: Option<UpdateDocumentRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BulkDocumentRequest {
+    pub operations: Vec<BulkDocumentOperation>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BulkDocumentResponse {
+    pub success_count: usize,
+    pub error_count: usize,
+    pub errors: Vec<String>,
 }
 
 #[tokio::main]
@@ -94,6 +134,11 @@ async fn main() -> Result<()> {
 fn create_app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health_check))
+        .route("/documents", post(create_document))
+        .route("/documents/:id", get(get_document))
+        .route("/documents/:id", put(update_document))
+        .route("/documents/:id", delete(delete_document))
+        .route("/documents/bulk", post(bulk_documents))
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
@@ -113,11 +158,245 @@ async fn health_check(State(state): State<AppState>) -> IndexerResult<Json<Value
         "service": "indexer",
         "database": "connected",
         "redis": "connected",
-        "timestamp": chrono::Utc::now().to_rfc3339()
+        "timestamp": OffsetDateTime::now_utc().to_string()
     })))
 }
 
 async fn run_migrations(pool: &PgPool) -> Result<()> {
     sqlx::migrate!("./migrations").run(pool).await?;
+    Ok(())
+}
+
+async fn create_document(
+    State(state): State<AppState>,
+    Json(request): Json<CreateDocumentRequest>,
+) -> IndexerResult<Json<Document>> {
+    let document_id = Uuid::new_v4().to_string();
+    let now = OffsetDateTime::now_utc();
+    
+    let document = sqlx::query_as::<_, Document>(
+        r#"
+        INSERT INTO documents (id, source_id, external_id, title, content, metadata, permissions, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        RETURNING *
+        "#,
+    )
+    .bind(&document_id)
+    .bind(&request.source_id)
+    .bind(&request.external_id)
+    .bind(&request.title)
+    .bind(&request.content)
+    .bind(&request.metadata)
+    .bind(&request.permissions)
+    .bind(now)
+    .bind(now)
+    .fetch_one(state.db_pool.pool())
+    .await?;
+    
+    info!("Created document: {}", document_id);
+    Ok(Json(document))
+}
+
+async fn get_document(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> IndexerResult<Json<Document>> {
+    let document = sqlx::query_as::<_, Document>(
+        "SELECT * FROM documents WHERE id = $1"
+    )
+    .bind(&id)
+    .fetch_optional(state.db_pool.pool())
+    .await?;
+    
+    match document {
+        Some(doc) => Ok(Json(doc)),
+        None => Err(error::IndexerError::NotFound(format!("Document {} not found", id))),
+    }
+}
+
+async fn update_document(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<UpdateDocumentRequest>,
+) -> IndexerResult<Json<Document>> {
+    let existing_doc = sqlx::query_as::<_, Document>(
+        "SELECT * FROM documents WHERE id = $1"
+    )
+    .bind(&id)
+    .fetch_optional(state.db_pool.pool())
+    .await?;
+    
+    let _existing_doc = match existing_doc {
+        Some(doc) => doc,
+        None => return Err(error::IndexerError::NotFound(format!("Document {} not found", id))),
+    };
+    
+    let updated_doc = sqlx::query_as::<_, Document>(
+        r#"
+        UPDATE documents 
+        SET title = COALESCE($2, title),
+            content = COALESCE($3, content),
+            metadata = COALESCE($4, metadata),
+            permissions = COALESCE($5, permissions),
+            updated_at = $6
+        WHERE id = $1
+        RETURNING *
+        "#,
+    )
+    .bind(&id)
+    .bind(&request.title)
+    .bind(&request.content)
+    .bind(&request.metadata)
+    .bind(&request.permissions)
+    .bind(OffsetDateTime::now_utc())
+    .fetch_one(state.db_pool.pool())
+    .await?;
+    
+    info!("Updated document: {}", id);
+    Ok(Json(updated_doc))
+}
+
+async fn delete_document(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> IndexerResult<Json<Value>> {
+    let result = sqlx::query("DELETE FROM documents WHERE id = $1")
+        .bind(&id)
+        .execute(state.db_pool.pool())
+        .await?;
+    
+    if result.rows_affected() == 0 {
+        return Err(error::IndexerError::NotFound(format!("Document {} not found", id)));
+    }
+    
+    info!("Deleted document: {}", id);
+    Ok(Json(json!({
+        "message": "Document deleted successfully",
+        "id": id
+    })))
+}
+
+async fn bulk_documents(
+    State(state): State<AppState>,
+    Json(request): Json<BulkDocumentRequest>,
+) -> IndexerResult<Json<BulkDocumentResponse>> {
+    let mut success_count = 0;
+    let mut error_count = 0;
+    let mut errors = Vec::new();
+    
+    for operation in request.operations {
+        let result = match operation.operation.as_str() {
+            "create" => {
+                if let Some(document) = operation.document {
+                    process_create_operation(&state, document).await
+                } else {
+                    Err(anyhow::anyhow!("Create operation missing document data"))
+                }
+            },
+            "update" => {
+                if let (Some(doc_id), Some(updates)) = (operation.document_id, operation.updates) {
+                    process_update_operation(&state, doc_id, updates).await
+                } else {
+                    Err(anyhow::anyhow!("Update operation missing document_id or updates"))
+                }
+            },
+            "delete" => {
+                if let Some(doc_id) = operation.document_id {
+                    process_delete_operation(&state, doc_id).await
+                } else {
+                    Err(anyhow::anyhow!("Delete operation missing document_id"))
+                }
+            },
+            _ => Err(anyhow::anyhow!("Unknown operation: {}", operation.operation)),
+        };
+        
+        match result {
+            Ok(_) => success_count += 1,
+            Err(e) => {
+                error_count += 1;
+                errors.push(e.to_string());
+            }
+        }
+    }
+    
+    info!("Bulk operation completed: {} success, {} errors", success_count, error_count);
+    
+    Ok(Json(BulkDocumentResponse {
+        success_count,
+        error_count,
+        errors,
+    }))
+}
+
+async fn process_create_operation(
+    state: &AppState,
+    request: CreateDocumentRequest,
+) -> Result<()> {
+    let document_id = Uuid::new_v4().to_string();
+    let now = OffsetDateTime::now_utc();
+    
+    sqlx::query(
+        r#"
+        INSERT INTO documents (id, source_id, external_id, title, content, metadata, permissions, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        "#,
+    )
+    .bind(&document_id)
+    .bind(&request.source_id)
+    .bind(&request.external_id)
+    .bind(&request.title)
+    .bind(&request.content)
+    .bind(&request.metadata)
+    .bind(&request.permissions)
+    .bind(now)
+    .bind(now)
+    .execute(state.db_pool.pool())
+    .await?;
+    
+    Ok(())
+}
+
+async fn process_update_operation(
+    state: &AppState,
+    id: String,
+    request: UpdateDocumentRequest,
+) -> Result<()> {
+    let result = sqlx::query(
+        r#"
+        UPDATE documents 
+        SET title = COALESCE($2, title),
+            content = COALESCE($3, content),
+            metadata = COALESCE($4, metadata),
+            permissions = COALESCE($5, permissions),
+            updated_at = $6
+        WHERE id = $1
+        "#,
+    )
+    .bind(&id)
+    .bind(&request.title)
+    .bind(&request.content)
+    .bind(&request.metadata)
+    .bind(&request.permissions)
+    .bind(OffsetDateTime::now_utc())
+    .execute(state.db_pool.pool())
+    .await?;
+    
+    if result.rows_affected() == 0 {
+        return Err(anyhow::anyhow!("Document {} not found", id));
+    }
+    
+    Ok(())
+}
+
+async fn process_delete_operation(state: &AppState, id: String) -> Result<()> {
+    let result = sqlx::query("DELETE FROM documents WHERE id = $1")
+        .bind(&id)
+        .execute(state.db_pool.pool())
+        .await?;
+    
+    if result.rows_affected() == 0 {
+        return Err(anyhow::anyhow!("Document {} not found", id));
+    }
+    
     Ok(())
 }
