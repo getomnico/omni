@@ -11,13 +11,18 @@ path = "src/main.rs"
 
 [dependencies]
 tokio = { workspace = true }
-sqlx = { workspace = true }
+sqlx = { workspace = true, features = ["migrate"] }
 pgvector = { workspace = true }
-refinery = { version = "0.8", features = ["tokio-postgres"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 redis = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 dotenvy = { workspace = true }
+axum = { version = "0.7", features = ["tokio"] }
+tower = { version = "0.4" }
+tower-http = { version = "0.5", features = ["trace", "cors"] }
+hyper = { version = "1.0", features = ["full"] }
+chrono = { workspace = true }
 shared = { path = "../../shared" }
