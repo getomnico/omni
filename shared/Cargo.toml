@@ -1,0 +1,13 @@
+[package]
+name = "shared"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+sqlx = { workspace = true }
+pgvector = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }

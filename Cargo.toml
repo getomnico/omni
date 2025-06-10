@@ -1,0 +1,58 @@
+[workspace]
+members = [
+    "services/api-gateway",
+    "services/searcher",
+    "services/indexer",
+    "services/ai",
+    "connectors/google",
+    "connectors/slack",
+    "connectors/atlassian",
+    "shared",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Clio Contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourusername/clio"
+
+[workspace.dependencies]
+tokio = { version = "1.40", features = ["full"] }
+axum = { version = "0.7", features = ["ws", "multipart"] }
+axum-extra = { version = "0.9", features = ["typed-header"] }
+tower = { version = "0.5", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "compression"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "json", "time", "uuid"] }
+pgvector = { version = "0.4", features = ["sqlx"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+jsonwebtoken = "9.3"
+argon2 = "0.5"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+thiserror = "1.0"
+anyhow = "1.0"
+time = { version = "0.3", features = ["serde", "formatting"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.11", features = ["v4", "serde"] }
+dotenvy = "0.15"
+async-trait = "0.1"
+oauth2 = "4.4"
+governor = "0.6"
+validator = { version = "0.18", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 0
+
+[profile.dev.package."*"]
+opt-level = 3

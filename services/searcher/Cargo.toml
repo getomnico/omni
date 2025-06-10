@@ -1,0 +1,14 @@
+[package]
+name = "searcher"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "searcher"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+shared = { path = "../../shared" }

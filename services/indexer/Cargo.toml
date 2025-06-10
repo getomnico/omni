@@ -1,0 +1,23 @@
+[package]
+name = "indexer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "indexer"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+sqlx = { workspace = true }
+pgvector = { workspace = true }
+refinery = { version = "0.8", features = ["tokio-postgres"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+redis = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+dotenvy = { workspace = true }
+shared = { path = "../../shared" }

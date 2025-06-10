@@ -1,0 +1,14 @@
+[package]
+name = "slack-connector"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "slack-connector"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+shared = { path = "../../shared" }
