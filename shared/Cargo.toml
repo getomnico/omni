@@ -7,7 +7,12 @@ license.workspace = true
 
 [dependencies]
 serde = { workspace = true }
-sqlx = { workspace = true }
-pgvector = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json"] }
+pgvector = { workspace = true, features = ["serde"] }
 time = { workspace = true }
 uuid = { workspace = true }
+async-trait = "0.1"
+thiserror = "1.0"
+tokio = { workspace = true }
+tracing = { workspace = true }
