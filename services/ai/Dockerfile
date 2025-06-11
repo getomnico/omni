@@ -1,5 +1,5 @@
 # Multi-stage build for AI service
-FROM lukemathwalker/cargo-chef:latest-rust-1.75 AS chef
+FROM lukemathwalker/cargo-chef:latest AS chef
 WORKDIR /app
 
 FROM chef AS planner

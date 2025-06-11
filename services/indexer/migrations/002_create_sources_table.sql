@@ -14,10 +14,11 @@ CREATE TABLE IF NOT EXISTS sources (
     CONSTRAINT sources_sync_status_check CHECK (sync_status IN ('pending', 'syncing', 'completed', 'failed'))
 );
 
-CREATE INDEX idx_sources_source_type ON sources(source_type);
-CREATE INDEX idx_sources_is_active ON sources(is_active);
-CREATE INDEX idx_sources_sync_status ON sources(sync_status);
-CREATE INDEX idx_sources_created_by ON sources(created_by);
+CREATE INDEX IF NOT EXISTS idx_sources_source_type ON sources(source_type);
+CREATE INDEX IF NOT EXISTS idx_sources_is_active ON sources(is_active);
+CREATE INDEX IF NOT EXISTS idx_sources_sync_status ON sources(sync_status);
+CREATE INDEX IF NOT EXISTS idx_sources_created_by ON sources(created_by);
 
+DROP TRIGGER IF EXISTS update_sources_updated_at ON sources;
 CREATE TRIGGER update_sources_updated_at BEFORE UPDATE ON sources
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

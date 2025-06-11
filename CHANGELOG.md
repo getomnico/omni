@@ -31,3 +31,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - GET /documents/{id} endpoint for document retrieval with proper error handling
   - PUT /documents/{id} and DELETE /documents/{id} endpoints for document lifecycle management
   - POST /documents/bulk endpoint supporting batch operations (create/update/delete) for efficient processing
+

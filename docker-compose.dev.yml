@@ -30,6 +30,23 @@ services:
       - API_URL=http://localhost:3000
     command: npm run dev -- --host 0.0.0.0
 
+  # Update database URLs for all services in dev
+  api-gateway:
+    environment:
+      - DATABASE_URL=postgresql://clio_dev:dev_password@postgres:5432/clio_dev
+
+  searcher:
+    environment:
+      - DATABASE_URL=postgresql://clio_dev:dev_password@postgres:5432/clio_dev
+
+  indexer:
+    environment:
+      - DATABASE_URL=postgresql://clio_dev:dev_password@postgres:5432/clio_dev
+
+  ai:
+    environment:
+      - DATABASE_URL=postgresql://clio_dev:dev_password@postgres:5432/clio_dev
+
   # Remove production services for dev
   caddy:
     profiles:

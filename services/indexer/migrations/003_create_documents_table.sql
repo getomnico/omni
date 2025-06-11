@@ -21,12 +21,13 @@ CREATE TABLE IF NOT EXISTS documents (
     UNIQUE(source_id, external_id)
 );
 
-CREATE INDEX idx_documents_source_id ON documents(source_id);
-CREATE INDEX idx_documents_external_id ON documents(external_id);
-CREATE INDEX idx_documents_content_type ON documents(content_type);
-CREATE INDEX idx_documents_tsv_content ON documents USING GIN(tsv_content);
-CREATE INDEX idx_documents_created_at ON documents(created_at);
-CREATE INDEX idx_documents_updated_at ON documents(updated_at);
+CREATE INDEX IF NOT EXISTS idx_documents_source_id ON documents(source_id);
+CREATE INDEX IF NOT EXISTS idx_documents_external_id ON documents(external_id);
+CREATE INDEX IF NOT EXISTS idx_documents_content_type ON documents(content_type);
+CREATE INDEX IF NOT EXISTS idx_documents_tsv_content ON documents USING GIN(tsv_content);
+CREATE INDEX IF NOT EXISTS idx_documents_created_at ON documents(created_at);
+CREATE INDEX IF NOT EXISTS idx_documents_updated_at ON documents(updated_at);
 
+DROP TRIGGER IF EXISTS update_documents_updated_at ON documents;
 CREATE TRIGGER update_documents_updated_at BEFORE UPDATE ON documents
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

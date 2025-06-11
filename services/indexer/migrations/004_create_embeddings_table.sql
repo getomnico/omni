@@ -12,10 +12,10 @@ CREATE TABLE IF NOT EXISTS embeddings (
     UNIQUE(document_id, chunk_index, model_name)
 );
 
-CREATE INDEX idx_embeddings_document_id ON embeddings(document_id);
-CREATE INDEX idx_embeddings_model_name ON embeddings(model_name);
+CREATE INDEX IF NOT EXISTS idx_embeddings_document_id ON embeddings(document_id);
+CREATE INDEX IF NOT EXISTS idx_embeddings_model_name ON embeddings(model_name);
 
 -- Create HNSW index for fast similarity search
-CREATE INDEX idx_embeddings_vector ON embeddings 
+CREATE INDEX IF NOT EXISTS idx_embeddings_vector ON embeddings 
     USING hnsw (embedding vector_cosine_ops)
     WITH (m = 16, ef_construction = 64);

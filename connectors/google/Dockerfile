@@ -1,5 +1,5 @@
 # Multi-stage build for Google connector service
-FROM lukemathwalker/cargo-chef:latest-rust-1.75 AS chef
+FROM lukemathwalker/cargo-chef:latest AS chef
 WORKDIR /app
 
 FROM chef AS planner
@@ -11,7 +11,7 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY . .
-RUN cargo build --release --bin google
+RUN cargo build --release --bin google-connector
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y \
@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /app/target/release/google /usr/local/bin/google
+COPY --from=builder /app/target/release/google-connector /usr/local/bin/google-connector
 
 EXPOSE 4001
-CMD ["google"]
+CMD ["google-connector"]
