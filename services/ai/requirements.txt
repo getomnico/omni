@@ -7,3 +7,4 @@ sentence-transformers>=2.2.2
 redis>=5.0.0
 httpx>=0.25.0
 numpy>=1.24.0
+einops>=0.7.0
