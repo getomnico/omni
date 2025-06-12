@@ -1,7 +1,6 @@
+use anyhow::Result;
+
 #[tokio::main]
-async fn main() {
-    println!("Searcher service starting...");
-    loop {
-        // TODO
-    }
+async fn main() -> Result<()> {
+    searcher::run_server().await
 }

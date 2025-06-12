@@ -37,4 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Event processor tests validating Redis pub/sub document lifecycle handling
   - End-to-end flow tests combining event processing and REST API operations
   - Test utilities with automatic database setup, migration, and cleanup
+- Searcher service with PostgreSQL full-text search capabilities
+  - POST /search endpoint with query processing, source filtering, and pagination support
+  - GET /suggestions endpoint for autocomplete functionality based on document titles
+  - Integration with existing database schema using generated tsvector columns and GIN indexes for fast text search
 

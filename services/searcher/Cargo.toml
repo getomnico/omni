@@ -5,10 +5,33 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[lib]
+name = "searcher"
+path = "src/lib.rs"
+
 [[bin]]
 name = "searcher"
 path = "src/main.rs"
 
 [dependencies]
 tokio = { workspace = true }
+tokio-stream = "0.1"
+sqlx = { workspace = true, features = ["migrate"] }
+pgvector = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+redis = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+dotenvy = { workspace = true }
+axum = { version = "0.7", features = ["tokio"] }
+tower = { version = "0.4" }
+tower-http = { version = "0.5", features = ["trace", "cors"] }
+hyper = { version = "1.0", features = ["full"] }
+chrono = { workspace = true }
+uuid = { workspace = true }
+ulid = { workspace = true }
+bytes = "1.0"
 shared = { path = "../../shared" }

@@ -1710,8 +1710,27 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "searcher"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "chrono",
+ "dotenvy",
+ "hyper",
+ "pgvector",
+ "redis",
+ "serde",
+ "serde_json",
  "shared",
+ "sqlx",
+ "thiserror 1.0.69",
  "tokio",
+ "tokio-stream",
+ "tower 0.4.13",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "ulid",
+ "uuid",
 ]
 
 [[package]]
