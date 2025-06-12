@@ -5,7 +5,7 @@ pub mod traits;
 
 pub mod test_utils;
 
-pub use clients::ai::AiClient;
+pub use clients::ai::AIClient;
 pub use db::repositories::{
     DocumentRepository, EmbeddingRepository, SourceRepository, UserRepository,
 };

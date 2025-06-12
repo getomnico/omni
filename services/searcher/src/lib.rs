@@ -8,7 +8,7 @@ use axum::{
     Router,
 };
 use redis::Client as RedisClient;
-use shared::{AiClient, DatabasePool};
+use shared::{AIClient, DatabasePool};
 use std::{env, net::SocketAddr};
 use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
@@ -61,7 +61,7 @@ impl axum::response::IntoResponse for SearcherError {
 pub struct AppState {
     pub db_pool: DatabasePool,
     pub redis_client: RedisClient,
-    pub ai_client: AiClient,
+    pub ai_client: AIClient,
 }
 
 pub fn create_app(state: AppState) -> Router {
@@ -99,7 +99,7 @@ pub async fn run_server() -> AnyhowResult<()> {
     let redis_client = RedisClient::open(redis_url)?;
     info!("Redis client initialized");
 
-    let ai_client = AiClient::new(ai_service_url);
+    let ai_client = AIClient::new(ai_service_url);
     info!("AI client initialized");
 
     let app_state = AppState {

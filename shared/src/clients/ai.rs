@@ -18,12 +18,12 @@ pub struct EmbeddingResponse {
 }
 
 #[derive(Clone)]
-pub struct AiClient {
+pub struct AIClient {
     client: Client,
     base_url: String,
 }
 
-impl AiClient {
+impl AIClient {
     pub fn new(ai_service_url: String) -> Self {
         Self {
             client: Client::new(),

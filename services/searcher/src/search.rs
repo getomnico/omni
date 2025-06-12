@@ -2,18 +2,18 @@ use crate::models::{SearchMode, SearchRequest, SearchResponse, SearchResult, Sug
 use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::db::repositories::{DocumentRepository, EmbeddingRepository};
-use shared::{AiClient, DatabasePool};
+use shared::{AIClient, DatabasePool};
 use std::time::Instant;
 use tracing::info;
 
 pub struct SearchEngine {
     db_pool: DatabasePool,
     redis_client: RedisClient,
-    ai_client: AiClient,
+    ai_client: AIClient,
 }
 
 impl SearchEngine {
-    pub fn new(db_pool: DatabasePool, redis_client: RedisClient, ai_client: AiClient) -> Self {
+    pub fn new(db_pool: DatabasePool, redis_client: RedisClient, ai_client: AIClient) -> Self {
         Self { db_pool, redis_client, ai_client }
     }
 
