@@ -1,6 +1,6 @@
+use crate::db::error::DatabaseError;
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use std::time::Duration;
-use crate::db::error::DatabaseError;
 
 #[derive(Clone)]
 pub struct DatabasePool {
@@ -14,10 +14,10 @@ impl DatabasePool {
             .acquire_timeout(Duration::from_secs(3))
             .connect(database_url)
             .await?;
-        
+
         Ok(Self { pool })
     }
-    
+
     pub async fn new_with_options(
         database_url: &str,
         max_connections: u32,
@@ -28,14 +28,14 @@ impl DatabasePool {
             .acquire_timeout(Duration::from_secs(timeout_seconds))
             .connect(database_url)
             .await?;
-        
+
         Ok(Self { pool })
     }
-    
+
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }
-    
+
     pub async fn close(&self) {
         self.pool.close().await;
     }

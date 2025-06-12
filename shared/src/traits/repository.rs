@@ -1,5 +1,5 @@
-use async_trait::async_trait;
 use crate::db::error::DatabaseError;
+use async_trait::async_trait;
 
 #[async_trait]
 pub trait Repository<T, ID>

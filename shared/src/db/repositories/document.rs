@@ -1,8 +1,5 @@
+use crate::{db::error::DatabaseError, models::Document};
 use sqlx::PgPool;
-use crate::{
-    db::error::DatabaseError,
-    models::Document,
-};
 
 pub struct DocumentRepository {
     pool: PgPool,
@@ -10,11 +7,9 @@ pub struct DocumentRepository {
 
 impl DocumentRepository {
     pub fn new(pool: &PgPool) -> Self {
-        Self {
-            pool: pool.clone(),
-        }
+        Self { pool: pool.clone() }
     }
-    
+
     pub async fn find_by_id(&self, id: &str) -> Result<Option<Document>, DatabaseError> {
         let document = sqlx::query_as::<_, Document>(
             r#"
@@ -23,15 +18,15 @@ impl DocumentRepository {
                    metadata, permissions, created_at, updated_at, last_indexed_at
             FROM documents
             WHERE id = $1
-            "#
+            "#,
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        
+
         Ok(document)
     }
-    
+
     pub async fn find_all(&self, limit: i64, offset: i64) -> Result<Vec<Document>, DatabaseError> {
         let documents = sqlx::query_as::<_, Document>(
             r#"
@@ -41,16 +36,16 @@ impl DocumentRepository {
             FROM documents
             ORDER BY created_at DESC
             LIMIT $1 OFFSET $2
-            "#
+            "#,
         )
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
         .await?;
-        
+
         Ok(documents)
     }
-    
+
     pub async fn search(&self, query: &str, limit: i64) -> Result<Vec<Document>, DatabaseError> {
         let documents = sqlx::query_as::<_, Document>(
             r#"
@@ -61,16 +56,16 @@ impl DocumentRepository {
             WHERE tsv_content @@ plainto_tsquery('english', $1)
             ORDER BY ts_rank(tsv_content, plainto_tsquery('english', $1)) DESC
             LIMIT $2
-            "#
+            "#,
         )
         .bind(query)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
-        
+
         Ok(documents)
     }
-    
+
     pub async fn find_by_source(&self, source_id: &str) -> Result<Vec<Document>, DatabaseError> {
         let documents = sqlx::query_as::<_, Document>(
             r#"
@@ -80,16 +75,20 @@ impl DocumentRepository {
             FROM documents
             WHERE source_id = $1
             ORDER BY created_at DESC
-            "#
+            "#,
         )
         .bind(source_id)
         .fetch_all(&self.pool)
         .await?;
-        
+
         Ok(documents)
     }
-    
-    pub async fn find_by_external_id(&self, source_id: &str, external_id: &str) -> Result<Option<Document>, DatabaseError> {
+
+    pub async fn find_by_external_id(
+        &self,
+        source_id: &str,
+        external_id: &str,
+    ) -> Result<Option<Document>, DatabaseError> {
         let document = sqlx::query_as::<_, Document>(
             r#"
             SELECT id, source_id, external_id, title, content, content_type,
@@ -97,16 +96,16 @@ impl DocumentRepository {
                    metadata, permissions, created_at, updated_at, last_indexed_at
             FROM documents
             WHERE source_id = $1 AND external_id = $2
-            "#
+            "#,
         )
         .bind(source_id)
         .bind(external_id)
         .fetch_optional(&self.pool)
         .await?;
-        
+
         Ok(document)
     }
-    
+
     pub async fn create(&self, document: Document) -> Result<Document, DatabaseError> {
         let created_document = sqlx::query_as::<_, Document>(
             r#"
@@ -132,11 +131,15 @@ impl DocumentRepository {
             }
             _ => DatabaseError::from(e),
         })?;
-        
+
         Ok(created_document)
     }
-    
-    pub async fn update(&self, id: &str, document: Document) -> Result<Option<Document>, DatabaseError> {
+
+    pub async fn update(
+        &self,
+        id: &str,
+        document: Document,
+    ) -> Result<Option<Document>, DatabaseError> {
         let updated_document = sqlx::query_as::<_, Document>(
             r#"
             UPDATE documents
@@ -145,7 +148,7 @@ impl DocumentRepository {
             RETURNING id, source_id, external_id, title, content, content_type,
                       file_size, file_extension, url, parent_id,
                       metadata, permissions, created_at, updated_at, last_indexed_at
-            "#
+            "#,
         )
         .bind(id)
         .bind(&document.title)
@@ -154,31 +157,31 @@ impl DocumentRepository {
         .bind(&document.permissions)
         .fetch_optional(&self.pool)
         .await?;
-        
+
         Ok(updated_document)
     }
-    
+
     pub async fn delete(&self, id: &str) -> Result<bool, DatabaseError> {
         let result = sqlx::query("DELETE FROM documents WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
-        
+
         Ok(result.rows_affected() > 0)
     }
-    
+
     pub async fn update_search_vector(&self, _id: &str) -> Result<(), DatabaseError> {
         // The tsv_content column is automatically generated, so this method is now a no-op
         // We keep it for compatibility but it doesn't need to do anything
         Ok(())
     }
-    
+
     pub async fn mark_as_indexed(&self, id: &str) -> Result<(), DatabaseError> {
         sqlx::query("UPDATE documents SET last_indexed_at = CURRENT_TIMESTAMP WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
-        
+
         Ok(())
     }
 }

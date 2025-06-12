@@ -1,4 +1,4 @@
-use crate::models::{SearchRequest, SearchResponse, SearchResult, SuggestionsResponse, SearchMode};
+use crate::models::{SearchMode, SearchRequest, SearchResponse, SearchResult, SuggestionsResponse};
 use anyhow::Result;
 use shared::db::repositories::{DocumentRepository, EmbeddingRepository};
 use sqlx::PgPool;
@@ -16,13 +16,16 @@ impl SearchEngine {
 
     pub async fn search(&self, request: SearchRequest) -> Result<SearchResponse> {
         let start_time = Instant::now();
-        
-        info!("Searching for query: '{}', mode: {:?}", 
-              request.query, request.search_mode());
+
+        info!(
+            "Searching for query: '{}', mode: {:?}",
+            request.query,
+            request.search_mode()
+        );
 
         let repo = DocumentRepository::new(&self.db_pool);
         let limit = request.limit();
-        
+
         let results = if request.query.trim().is_empty() {
             let documents = repo.find_all(limit, request.offset()).await?;
             documents
@@ -45,8 +48,12 @@ impl SearchEngine {
         let total_count = results.len() as i64;
         let has_more = results.len() as i64 >= limit;
         let query_time = start_time.elapsed().as_millis() as u64;
-        
-        info!("Search completed in {}ms, found {} results", query_time, results.len());
+
+        info!(
+            "Search completed in {}ms, found {} results",
+            query_time,
+            results.len()
+        );
 
         Ok(SearchResponse {
             results,
@@ -105,9 +112,9 @@ impl SearchEngine {
 
     async fn semantic_search(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
         info!("Performing semantic search for query: '{}'", request.query);
-        
+
         let query_embedding = self.generate_query_embedding(&request.query).await?;
-        
+
         let embedding_repo = EmbeddingRepository::new(&self.db_pool);
         let documents_with_scores = embedding_repo
             .find_similar(query_embedding, request.limit())
@@ -133,7 +140,9 @@ impl SearchEngine {
         if let Some(content_types) = &request.content_types {
             if !content_types.is_empty() {
                 results.retain(|result| {
-                    result.document.content_type
+                    result
+                        .document
+                        .content_type
                         .as_ref()
                         .map(|ct| content_types.contains(ct))
                         .unwrap_or(false)
@@ -158,7 +167,7 @@ impl SearchEngine {
         // TODO: Implement actual embedding generation via AI service
         // For now, return a placeholder embedding
         warn!("Using placeholder embedding for query: '{}'", query);
-        
+
         // Return a 1024-dimensional zero vector as placeholder
         // This matches the intfloat/e5-large-v2 model dimensions mentioned in CLAUDE.md
         Ok(vec![0.0; 1024])
@@ -166,32 +175,35 @@ impl SearchEngine {
 
     async fn hybrid_search(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
         info!("Performing hybrid search for query: '{}'", request.query);
-        
+
         // Get results from both FTS and semantic search
         let repo = DocumentRepository::new(&self.db_pool);
         let fts_results = self.fulltext_search(&repo, request).await?;
         let semantic_results = self.semantic_search(request).await?;
-        
+
         // Combine and deduplicate results
         let mut combined_results = std::collections::HashMap::new();
-        
+
         // Add FTS results with normalized scores
         for result in fts_results {
             let doc_id = result.document.id.clone();
             let normalized_score = self.normalize_fts_score(result.score);
-            combined_results.insert(doc_id, SearchResult {
-                document: result.document,
-                score: normalized_score * 0.6, // Weight FTS at 60%
-                highlights: result.highlights,
-                match_type: "hybrid".to_string(),
-            });
+            combined_results.insert(
+                doc_id,
+                SearchResult {
+                    document: result.document,
+                    score: normalized_score * 0.6, // Weight FTS at 60%
+                    highlights: result.highlights,
+                    match_type: "hybrid".to_string(),
+                },
+            );
         }
-        
+
         // Add or update with semantic results
         for result in semantic_results {
             let doc_id = result.document.id.clone();
             let semantic_weight = 0.4; // Weight semantic at 40%
-            
+
             match combined_results.get_mut(&doc_id) {
                 Some(existing) => {
                     // Combine scores for documents found in both searches
@@ -199,28 +211,35 @@ impl SearchEngine {
                 }
                 None => {
                     // Add new semantic-only result
-                    combined_results.insert(doc_id, SearchResult {
-                        document: result.document,
-                        score: result.score * semantic_weight,
-                        highlights: result.highlights,
-                        match_type: "hybrid".to_string(),
-                    });
+                    combined_results.insert(
+                        doc_id,
+                        SearchResult {
+                            document: result.document,
+                            score: result.score * semantic_weight,
+                            highlights: result.highlights,
+                            match_type: "hybrid".to_string(),
+                        },
+                    );
                 }
             }
         }
-        
+
         // Convert to vector and sort by combined score
         let mut final_results: Vec<SearchResult> = combined_results.into_values().collect();
-        final_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-        
+        final_results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
         // Apply limit
         if final_results.len() > request.limit() as usize {
             final_results.truncate(request.limit() as usize);
         }
-        
+
         Ok(final_results)
     }
-    
+
     fn normalize_fts_score(&self, score: f32) -> f32 {
         // Simple normalization - in practice this would be more sophisticated
         // based on the actual FTS scoring algorithm

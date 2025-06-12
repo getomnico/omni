@@ -268,4 +268,3 @@ pub async fn wait_for_document_deleted(
         )),
     }
 }
-

@@ -1,10 +1,10 @@
-use async_trait::async_trait;
-use sqlx::PgPool;
 use crate::{
     db::error::DatabaseError,
     models::{User, UserRole},
     traits::Repository,
 };
+use async_trait::async_trait;
+use sqlx::PgPool;
 
 pub struct UserRepository {
     pool: PgPool,
@@ -12,11 +12,9 @@ pub struct UserRepository {
 
 impl UserRepository {
     pub fn new(pool: &PgPool) -> Self {
-        Self {
-            pool: pool.clone(),
-        }
+        Self { pool: pool.clone() }
     }
-    
+
     pub async fn find_by_email(&self, email: &str) -> Result<Option<User>, DatabaseError> {
         let user = sqlx::query_as::<_, User>(
             r#"
@@ -24,22 +22,22 @@ impl UserRepository {
                    role, is_active, created_at, updated_at, last_login_at
             FROM users
             WHERE email = $1
-            "#
+            "#,
         )
         .bind(email)
         .fetch_optional(&self.pool)
         .await?;
-        
+
         Ok(user)
     }
-    
+
     pub async fn find_by_role(&self, role: UserRole) -> Result<Vec<User>, DatabaseError> {
         let role_str = match role {
             UserRole::Admin => "admin",
             UserRole::User => "user",
             UserRole::Viewer => "viewer",
         };
-        
+
         let users = sqlx::query_as::<_, User>(
             r#"
             SELECT id, email, password_hash, full_name, avatar_url,
@@ -47,12 +45,12 @@ impl UserRepository {
             FROM users
             WHERE role = $1
             ORDER BY created_at DESC
-            "#
+            "#,
         )
         .bind(role_str)
         .fetch_all(&self.pool)
         .await?;
-        
+
         Ok(users)
     }
 }
@@ -66,15 +64,15 @@ impl Repository<User, String> for UserRepository {
                    role, is_active, created_at, updated_at, last_login_at
             FROM users
             WHERE id = $1
-            "#
+            "#,
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        
+
         Ok(user)
     }
-    
+
     async fn find_all(&self, limit: i64, offset: i64) -> Result<Vec<User>, DatabaseError> {
         let users = sqlx::query_as::<_, User>(
             r#"
@@ -83,30 +81,30 @@ impl Repository<User, String> for UserRepository {
             FROM users
             ORDER BY created_at DESC
             LIMIT $1 OFFSET $2
-            "#
+            "#,
         )
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
         .await?;
-        
+
         Ok(users)
     }
-    
+
     async fn create(&self, user: User) -> Result<User, DatabaseError> {
         let role_str = match user.role {
             UserRole::Admin => "admin",
             UserRole::User => "user",
             UserRole::Viewer => "viewer",
         };
-        
+
         let created_user = sqlx::query_as::<_, User>(
             r#"
             INSERT INTO users (id, email, password_hash, full_name, avatar_url, role, is_active)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
             RETURNING id, email, password_hash, full_name, avatar_url,
                       role, is_active, created_at, updated_at, last_login_at
-            "#
+            "#,
         )
         .bind(&user.id)
         .bind(&user.email)
@@ -123,17 +121,17 @@ impl Repository<User, String> for UserRepository {
             }
             _ => DatabaseError::from(e),
         })?;
-        
+
         Ok(created_user)
     }
-    
+
     async fn update(&self, id: String, user: User) -> Result<Option<User>, DatabaseError> {
         let role_str = match user.role {
             UserRole::Admin => "admin",
             UserRole::User => "user",
             UserRole::Viewer => "viewer",
         };
-        
+
         let updated_user = sqlx::query_as::<_, User>(
             r#"
             UPDATE users
@@ -152,16 +150,16 @@ impl Repository<User, String> for UserRepository {
         .bind(user.is_active)
         .fetch_optional(&self.pool)
         .await?;
-        
+
         Ok(updated_user)
     }
-    
+
     async fn delete(&self, id: String) -> Result<bool, DatabaseError> {
         let result = sqlx::query("DELETE FROM users WHERE id = $1")
             .bind(&id)
             .execute(&self.pool)
             .await?;
-        
+
         Ok(result.rows_affected() > 0)
     }
 }

@@ -1,15 +1,12 @@
-pub mod models;
 pub mod db;
+pub mod models;
 pub mod traits;
 
-pub use models::*;
-pub use db::{DatabasePool, DatabaseError};
 pub use db::repositories::{
-    UserRepository,
-    SourceRepository,
-    DocumentRepository,
-    EmbeddingRepository,
+    DocumentRepository, EmbeddingRepository, SourceRepository, UserRepository,
 };
+pub use db::{DatabaseError, DatabasePool};
+pub use models::*;
 pub use traits::Repository;
 
 pub fn init() {

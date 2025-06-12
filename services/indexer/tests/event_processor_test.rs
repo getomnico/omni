@@ -44,7 +44,8 @@ async fn test_event_processor_document_created() {
         },
     };
 
-    let mut redis_conn = fixture.state
+    let mut redis_conn = fixture
+        .state
         .redis_client
         .get_multiplexed_async_connection()
         .await
@@ -56,9 +57,10 @@ async fn test_event_processor_document_created() {
         .unwrap();
 
     let repo = DocumentRepository::new(fixture.state.db_pool.pool());
-    let document = common::wait_for_document_exists(&repo, source_id, doc_id, Duration::from_secs(5))
-        .await
-        .expect("Document should be created");
+    let document =
+        common::wait_for_document_exists(&repo, source_id, doc_id, Duration::from_secs(5))
+            .await
+            .expect("Document should be created");
 
     assert_eq!(document.title, "Event Document");
     assert_eq!(
@@ -113,7 +115,8 @@ async fn test_event_processor_document_updated() {
         },
     };
 
-    let mut redis_conn = fixture.state
+    let mut redis_conn = fixture
+        .state
         .redis_client
         .get_multiplexed_async_connection()
         .await
@@ -126,9 +129,10 @@ async fn test_event_processor_document_updated() {
 
     // Wait for document to be created before updating
     let repo = DocumentRepository::new(fixture.state.db_pool.pool());
-    let _initial_doc = common::wait_for_document_exists(&repo, source_id, doc_id, Duration::from_secs(5))
-        .await
-        .expect("Initial document should be created");
+    let _initial_doc =
+        common::wait_for_document_exists(&repo, source_id, doc_id, Duration::from_secs(5))
+            .await
+            .expect("Initial document should be created");
 
     let update_event = ConnectorEvent::DocumentUpdated {
         source_id: source_id.to_string(),
@@ -172,7 +176,9 @@ async fn test_event_processor_document_updated() {
             }
             sleep(Duration::from_millis(10)).await;
         }
-    }).await.expect("Document should be updated");
+    })
+    .await
+    .expect("Document should be updated");
 
     let document = updated_document;
 
@@ -230,7 +236,8 @@ async fn test_event_processor_document_deleted() {
         },
     };
 
-    let mut redis_conn = fixture.state
+    let mut redis_conn = fixture
+        .state
         .redis_client
         .get_multiplexed_async_connection()
         .await
@@ -242,9 +249,10 @@ async fn test_event_processor_document_deleted() {
         .unwrap();
 
     let repo = DocumentRepository::new(fixture.state.db_pool.pool());
-    let _document = common::wait_for_document_exists(&repo, source_id, doc_id, Duration::from_secs(5))
-        .await
-        .expect("Document should be created");
+    let _document =
+        common::wait_for_document_exists(&repo, source_id, doc_id, Duration::from_secs(5))
+            .await
+            .expect("Document should be created");
 
     let delete_event = ConnectorEvent::DocumentDeleted {
         source_id: source_id.to_string(),
@@ -274,7 +282,8 @@ async fn test_event_processor_multiple_events() {
 
     sleep(Duration::from_millis(200)).await;
 
-    let mut redis_conn = fixture.state
+    let mut redis_conn = fixture
+        .state
         .redis_client
         .get_multiplexed_async_connection()
         .await
@@ -316,9 +325,14 @@ async fn test_event_processor_multiple_events() {
 
     // Wait for all documents to be created
     for i in 0..5 {
-        let document = common::wait_for_document_exists(&repo, source_id, &format!("multi_doc_{}", i), Duration::from_secs(5))
-            .await
-            .expect(&format!("Document {} should exist", i));
+        let document = common::wait_for_document_exists(
+            &repo,
+            source_id,
+            &format!("multi_doc_{}", i),
+            Duration::from_secs(5),
+        )
+        .await
+        .expect(&format!("Document {} should exist", i));
 
         assert_eq!(document.title, format!("Document {}", i));
         assert_eq!(
@@ -343,7 +357,8 @@ async fn test_event_processor_invalid_event_handling() {
 
     sleep(Duration::from_millis(200)).await;
 
-    let mut redis_conn = fixture.state
+    let mut redis_conn = fixture
+        .state
         .redis_client
         .get_multiplexed_async_connection()
         .await
@@ -386,12 +401,12 @@ async fn test_event_processor_invalid_event_handling() {
         .unwrap();
 
     let repo = DocumentRepository::new(fixture.state.db_pool.pool());
-    let document = common::wait_for_document_exists(&repo, source_id, doc_id, Duration::from_secs(5))
-        .await
-        .expect("Valid document should be created despite previous error");
+    let document =
+        common::wait_for_document_exists(&repo, source_id, doc_id, Duration::from_secs(5))
+            .await
+            .expect("Valid document should be created despite previous error");
 
     assert_eq!(document.title, "Valid Document");
 
     processor_handle.abort();
 }
-

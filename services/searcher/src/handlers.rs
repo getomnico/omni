@@ -11,10 +11,15 @@ use tracing::info;
 
 pub async fn health_check(State(state): State<AppState>) -> SearcherResult<Json<Value>> {
     sqlx::query("SELECT 1").execute(&state.db_pool).await?;
-    
-    let mut redis_conn = state.redis_client.get_multiplexed_async_connection().await?;
-    redis::cmd("PING").query_async::<String>(&mut redis_conn).await?;
-    
+
+    let mut redis_conn = state
+        .redis_client
+        .get_multiplexed_async_connection()
+        .await?;
+    redis::cmd("PING")
+        .query_async::<String>(&mut redis_conn)
+        .await?;
+
     Ok(Json(json!({
         "status": "healthy",
         "service": "searcher",
@@ -29,10 +34,10 @@ pub async fn search(
     Json(request): Json<SearchRequest>,
 ) -> SearcherResult<Json<Value>> {
     info!("Received search request: {:?}", request);
-    
+
     let search_engine = SearchEngine::new(state.db_pool);
     let response = search_engine.search(request).await?;
-    
+
     Ok(Json(serde_json::to_value(response)?))
 }
 
@@ -41,9 +46,9 @@ pub async fn suggestions(
     Query(query): Query<SuggestionsQuery>,
 ) -> SearcherResult<Json<Value>> {
     info!("Received suggestions request: {:?}", query);
-    
+
     let search_engine = SearchEngine::new(state.db_pool);
     let response = search_engine.suggest(&query.q, query.limit()).await?;
-    
+
     Ok(Json(serde_json::to_value(response)?))
 }

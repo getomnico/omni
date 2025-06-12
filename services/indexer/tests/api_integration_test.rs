@@ -307,4 +307,3 @@ async fn test_concurrent_document_operations() {
         assert_eq!(doc.external_id, format!("ext_{}", i));
     }
 }
-

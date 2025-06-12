@@ -31,10 +31,21 @@ pub enum SearcherError {
 impl axum::response::IntoResponse for SearcherError {
     fn into_response(self) -> axum::response::Response {
         let (status, message) = match self {
-            SearcherError::Database(_) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Database error"),
-            SearcherError::Redis(_) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Cache error"),
-            SearcherError::Serialization(_) => (axum::http::StatusCode::BAD_REQUEST, "Invalid request format"),
-            SearcherError::Internal(_) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+            SearcherError::Database(_) => (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Database error",
+            ),
+            SearcherError::Redis(_) => {
+                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Cache error")
+            }
+            SearcherError::Serialization(_) => (
+                axum::http::StatusCode::BAD_REQUEST,
+                "Invalid request format",
+            ),
+            SearcherError::Internal(_) => (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal server error",
+            ),
         };
 
         let body = serde_json::json!({
