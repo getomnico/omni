@@ -1,12 +1,12 @@
 [package]
-name = "atlassian-connector"
+name = "clio-atlassian-connector"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "atlassian-connector"
+name = "clio-atlassian-connector"
 path = "src/main.rs"
 
 [dependencies]

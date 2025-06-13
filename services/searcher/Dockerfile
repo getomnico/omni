@@ -11,7 +11,7 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY . .
-RUN cargo build --release --bin searcher
+RUN cargo build --release --bin clio-searcher
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y \
@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /app/target/release/searcher /usr/local/bin/searcher
+COPY --from=builder /app/target/release/clio-searcher /usr/local/bin/clio-searcher
 
 EXPOSE 3001
-CMD ["searcher"]
+CMD ["clio-searcher"]

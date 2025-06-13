@@ -11,7 +11,7 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY . .
-RUN cargo build --release --bin google-connector
+RUN cargo build --release --bin clio-google-connector
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y \
@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /app/target/release/google-connector /usr/local/bin/google-connector
+COPY --from=builder /app/target/release/clio-google-connector /usr/local/bin/clio-google-connector
 
 EXPOSE 4001
-CMD ["google-connector"]
+CMD ["clio-google-connector"]

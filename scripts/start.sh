@@ -44,7 +44,7 @@ sleep 10
 
 # Check service health
 echo "🔍 Checking service health..."
-services=("postgres" "redis" "api-gateway" "searcher" "indexer" "ai")
+services=("postgres" "redis" "web" "searcher" "indexer" "ai")
 
 for service in "${services[@]}"; do
     if docker-compose ps | grep -q "$service.*Up"; then
@@ -63,7 +63,7 @@ echo "API Gateway:  http://localhost:3000"
 echo "Dashboard:    http://localhost (when ready)"
 echo ""
 echo "📊 Service Status:"
-echo "   API Gateway:         http://localhost:3000/health"
+echo "   Web Application:     http://localhost:3000"
 echo "   Search Service:      http://localhost:3001/health"
 echo "   Indexer Service:     http://localhost:3002/health" 
 echo "   AI Service:          http://localhost:3003/health"

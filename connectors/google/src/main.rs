@@ -1,5 +1,5 @@
 use anyhow::Result;
-use dotenv::dotenv;
+use dotenvy::dotenv;
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use tokio::time::{interval, Duration};

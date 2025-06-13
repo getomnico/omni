@@ -1,16 +1,16 @@
 [package]
-name = "indexer"
+name = "clio-indexer"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [lib]
-name = "indexer"
+name = "clio_indexer"
 path = "src/lib.rs"
 
 [[bin]]
-name = "indexer"
+name = "clio-indexer"
 path = "src/main.rs"
 
 [dependencies]

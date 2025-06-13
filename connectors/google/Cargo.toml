@@ -1,12 +1,12 @@
 [package]
-name = "google-connector"
+name = "clio-google-connector"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "google-connector"
+name = "clio-google-connector"
 path = "src/main.rs"
 
 [dependencies]
@@ -20,7 +20,7 @@ serde_json = { workspace = true }
 reqwest = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-dotenv = { workspace = true }
+dotenvy = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }

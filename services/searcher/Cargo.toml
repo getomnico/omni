@@ -1,16 +1,16 @@
 [package]
-name = "searcher"
+name = "clio-searcher"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [lib]
-name = "searcher"
+name = "clio_searcher"
 path = "src/lib.rs"
 
 [[bin]]
-name = "searcher"
+name = "clio-searcher"
 path = "src/main.rs"
 
 [dependencies]

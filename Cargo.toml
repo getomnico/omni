@@ -1,11 +1,11 @@
 [workspace]
 members = [
-    "services/clio-searcher",
-    "services/clio-indexer",
-    "connectors/clio-google-connector",
-    "connectors/clio-slack-connector",
-    "connectors/clio-atlassian-connector",
-    "clio-shared",
+    "services/searcher",
+    "services/indexer",
+    "connectors/google",
+    "connectors/slack",
+    "connectors/atlassian",
+    "shared",
 ]
 resolver = "2"
 
