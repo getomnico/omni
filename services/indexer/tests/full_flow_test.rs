@@ -1,8 +1,8 @@
 mod common;
 
 use chrono::Utc;
-use indexer::events::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
-use indexer::processor::EventProcessor;
+use clio_indexer::events::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
+use clio_indexer::processor::EventProcessor;
 use redis::AsyncCommands;
 use shared::db::repositories::DocumentRepository;
 use std::collections::HashMap;

@@ -3,7 +3,7 @@ mod common;
 use axum::http::StatusCode;
 use axum_test::TestServer;
 use common::fixtures::{create_document_request, update_document_request};
-use indexer::{BulkDocumentOperation, BulkDocumentRequest};
+use clio_indexer::{BulkDocumentOperation, BulkDocumentRequest};
 use serde_json::{json, Value};
 use shared::models::Document;
 use sqlx::Row;

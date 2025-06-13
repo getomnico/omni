@@ -1,5 +1,5 @@
 use anyhow::Result;
-use indexer::{create_app, AppState};
+use clio_indexer::{create_app, AppState};
 use redis::Client as RedisClient;
 use shared::db::pool::DatabasePool;
 use shared::db::repositories::DocumentRepository;
@@ -180,7 +180,7 @@ async fn cleanup_test_database_by_name(base_url: &str, db_name: &str) -> Result<
 }
 
 pub mod fixtures {
-    use indexer::{CreateDocumentRequest, UpdateDocumentRequest};
+    use clio_indexer::{CreateDocumentRequest, UpdateDocumentRequest};
     use serde_json::json;
 
     pub fn create_document_request() -> CreateDocumentRequest {
