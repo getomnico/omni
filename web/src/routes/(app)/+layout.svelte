@@ -21,10 +21,49 @@
                 <h1 class="text-foreground text-xl font-bold">Clio</h1>
                 <nav class="hidden space-x-4 md:flex">
                     <a href="/" class="text-muted-foreground hover:text-foreground">Search</a>
+                    <a
+                        href="/settings/integrations"
+                        class="text-muted-foreground hover:text-foreground">Settings</a
+                    >
                     {#if data.user.role === 'admin'}
-                        <a href="/admin/users" class="text-muted-foreground hover:text-foreground">
-                            Admin
-                        </a>
+                        <div class="group relative">
+                            <button
+                                class="text-muted-foreground hover:text-foreground flex items-center space-x-1"
+                            >
+                                <span>Admin</span>
+                                <svg
+                                    class="h-4 w-4"
+                                    fill="none"
+                                    stroke="currentColor"
+                                    viewBox="0 0 24 24"
+                                >
+                                    <path
+                                        stroke-linecap="round"
+                                        stroke-linejoin="round"
+                                        stroke-width="2"
+                                        d="M19 9l-7 7-7-7"
+                                    ></path>
+                                </svg>
+                            </button>
+                            <div
+                                class="bg-card border-border invisible absolute top-full left-0 z-50 mt-1 w-48 rounded-md border opacity-0 shadow-lg transition-all duration-200 group-hover:visible group-hover:opacity-100"
+                            >
+                                <div class="py-1">
+                                    <a
+                                        href="/admin/users"
+                                        class="text-foreground hover:bg-muted block px-4 py-2 text-sm"
+                                    >
+                                        User Management
+                                    </a>
+                                    <a
+                                        href="/admin/integrations"
+                                        class="text-foreground hover:bg-muted block px-4 py-2 text-sm"
+                                    >
+                                        Integrations
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
                     {/if}
                 </nav>
             </div>
@@ -34,7 +73,9 @@
                     {data.user.email}
                     <span class="text-muted-foreground/80 text-xs">({data.user.role})</span>
                 </span>
-                <Button variant="outline" size="sm" onclick={logout} class="cursor-pointer">Sign out</Button>
+                <Button variant="outline" size="sm" onclick={logout} class="cursor-pointer"
+                    >Sign out</Button
+                >
             </div>
         </div>
     </header>

@@ -15,7 +15,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     const errorParam = url.searchParams.get('error')
 
     if (errorParam) {
-        throw redirect(302, '/settings/integrations?error=oauth_denied')
+        throw redirect(302, '/admin/integrations?error=oauth_denied')
     }
 
     if (!code || !state) {
@@ -31,10 +31,15 @@ export const GET: RequestHandler = async ({ url, locals }) => {
         throw error(400, 'Invalid or expired state')
     }
 
-    const { userId } = JSON.parse(stateData)
+    const { userId, isAdmin } = JSON.parse(stateData)
 
     if (!locals.user || locals.user.id !== userId) {
         throw error(401, 'Unauthorized')
+    }
+
+    // Only admins can complete org-level OAuth flows
+    if (!isAdmin || locals.user.role !== 'admin') {
+        throw error(403, 'Admin access required')
     }
 
     try {
@@ -80,27 +85,34 @@ export const GET: RequestHandler = async ({ url, locals }) => {
             obtained_at: Date.now(),
         }
 
+        // Check for existing org-level Google connection
         const existingSource = await db.query.sources.findFirst({
-            where: eq(sources.createdBy, userId),
+            where: eq(sources.sourceType, 'google'),
         })
 
         if (existingSource) {
+            // Update existing org-level connection
             await db
                 .update(sources)
                 .set({
                     oauthCredentials: encryptedTokens,
+                    config: {
+                        email: userInfo.email,
+                        name: userInfo.name,
+                    },
                     syncStatus: 'completed',
                     isActive: true,
                     updatedAt: new Date(),
                 })
                 .where(eq(sources.id, existingSource.id))
         } else {
+            // Create new org-level Google connection
             const sourceId = crypto.randomBytes(13).toString('hex')
             await db.insert(sources).values({
                 id: sourceId,
                 createdBy: userId,
-                name: `Google Drive - ${userInfo.email}`,
-                sourceType: 'google_drive',
+                name: `Google Workspace`,
+                sourceType: 'google',
                 config: {
                     email: userInfo.email,
                     name: userInfo.name,
@@ -111,7 +123,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
             })
         }
 
-        throw redirect(302, '/settings/integrations?success=google_connected')
+        throw redirect(302, '/admin/integrations?success=google_connected')
     } catch (err) {
         console.error('OAuth callback error:', err)
         if (err instanceof Response) throw err

@@ -16,6 +16,11 @@ export const GET: RequestHandler = async ({ url, locals }) => {
         throw error(401, 'Unauthorized')
     }
 
+    // Only admins can initiate org-level OAuth connections
+    if (locals.user.role !== 'admin') {
+        throw error(403, 'Admin access required')
+    }
+
     const state = crypto.randomBytes(32).toString('hex')
 
     const redis = await getRedisClient()
@@ -24,6 +29,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
         300,
         JSON.stringify({
             userId: locals.user.id,
+            isAdmin: true,
             timestamp: Date.now(),
         }),
     )

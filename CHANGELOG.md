@@ -74,4 +74,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - vLLM integration for local LLM inference
   - Added vLLM container with GPU support using official vllm/vllm-openai image
   - Configured with Microsoft Phi-3-mini-4k-instruct as default model with customizable options
+- Organization-level admin OAuth flow for Google Workspace
+  - Admin integrations management page at /admin/integrations with organization-wide data source control
+  - Modified OAuth flow to support org-level connections instead of per-user, with admin-only access controls
+  - User settings page at /settings/integrations for read-only view of connected data sources
 
