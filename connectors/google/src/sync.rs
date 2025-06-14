@@ -192,11 +192,16 @@ impl SyncManager {
         .fetch_one(&self.pool)
         .await?;
 
+        let expires_at: chrono::DateTime<chrono::Utc> = row.get("expires_at");
+        let now = chrono::Utc::now();
+        let expires_in = (expires_at - now).num_seconds().max(0);
+
         Ok(OAuthCredentials {
             access_token: row.get("access_token"),
             refresh_token: row.get("refresh_token"),
             token_type: row.get("token_type"),
-            expires_at: row.get("expires_at"),
+            expires_in,
+            obtained_at: now.timestamp_millis(),
         })
     }
 
@@ -205,6 +210,9 @@ impl SyncManager {
         source_id: &str,
         creds: &OAuthCredentials,
     ) -> Result<()> {
+        let expires_at = chrono::DateTime::from_timestamp(creds.obtained_at / 1000, 0)
+            .unwrap_or(chrono::Utc::now()) + chrono::Duration::seconds(creds.expires_in);
+
         sqlx::query(
             "UPDATE oauth_credentials 
              SET access_token = $1, refresh_token = $2, token_type = $3, expires_at = $4, updated_at = CURRENT_TIMESTAMP 
@@ -213,7 +221,7 @@ impl SyncManager {
         .bind(&creds.access_token)
         .bind(&creds.refresh_token)
         .bind(&creds.token_type)
-        .bind(&creds.expires_at)
+        .bind(&expires_at)
         .bind(source_id)
         .execute(&self.pool)
         .await?;
