@@ -46,6 +46,8 @@ services:
     container_name: clio-searcher
     environment:
       - DATABASE_URL=${DATABASE_URL}
+      - DB_MAX_CONNECTIONS=${DB_MAX_CONNECTIONS:-10}
+      - DB_ACQUIRE_TIMEOUT_SECONDS=${DB_ACQUIRE_TIMEOUT_SECONDS:-3}
       - REDIS_URL=${REDIS_URL}
       - RUST_LOG=${RUST_LOG}
       - PORT=${SEARCHER_PORT}
@@ -68,6 +70,8 @@ services:
     container_name: clio-indexer
     environment:
       - DATABASE_URL=${DATABASE_URL}
+      - DB_MAX_CONNECTIONS=${DB_MAX_CONNECTIONS:-10}
+      - DB_ACQUIRE_TIMEOUT_SECONDS=${DB_ACQUIRE_TIMEOUT_SECONDS:-3}
       - REDIS_URL=${REDIS_URL}
       - RUST_LOG=${RUST_LOG}
       - PORT=${INDEXER_PORT}
@@ -90,6 +94,8 @@ services:
     container_name: clio-ai
     environment:
       - DATABASE_URL=${DATABASE_URL}
+      - DB_MAX_CONNECTIONS=${DB_MAX_CONNECTIONS:-10}
+      - DB_ACQUIRE_TIMEOUT_SECONDS=${DB_ACQUIRE_TIMEOUT_SECONDS:-3}
       - REDIS_URL=${REDIS_URL}
       - RUST_LOG=${RUST_LOG}
       - PORT=${AI_SERVICE_PORT}
@@ -181,6 +187,8 @@ services:
     container_name: clio-web
     environment:
       - DATABASE_URL=${DATABASE_URL}
+      - DB_MAX_CONNECTIONS=${DB_MAX_CONNECTIONS:-10}
+      - DB_ACQUIRE_TIMEOUT_SECONDS=${DB_ACQUIRE_TIMEOUT_SECONDS:-3}
       - REDIS_URL=${REDIS_URL}
       - SEARCHER_URL=${SEARCHER_URL}
       - INDEXER_URL=${INDEXER_URL}

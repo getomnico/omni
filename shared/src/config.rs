@@ -4,6 +4,8 @@ use std::process;
 #[derive(Debug, Clone)]
 pub struct DatabaseConfig {
     pub database_url: String,
+    pub max_connections: u32,
+    pub acquire_timeout_seconds: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -107,7 +109,25 @@ impl DatabaseConfig {
         let database_url = get_required_env("DATABASE_URL");
         let database_url = validate_url(&database_url, "DATABASE_URL");
         
-        Self { database_url }
+        let max_connections_str = get_optional_env("DB_MAX_CONNECTIONS", "10");
+        let max_connections = max_connections_str.parse::<u32>().unwrap_or_else(|_| {
+            eprintln!("ERROR: Invalid max connections in 'DB_MAX_CONNECTIONS': '{}'", max_connections_str);
+            eprintln!("Must be a positive number");
+            process::exit(1);
+        });
+        
+        let acquire_timeout_str = get_optional_env("DB_ACQUIRE_TIMEOUT_SECONDS", "3");
+        let acquire_timeout_seconds = acquire_timeout_str.parse::<u64>().unwrap_or_else(|_| {
+            eprintln!("ERROR: Invalid timeout in 'DB_ACQUIRE_TIMEOUT_SECONDS': '{}'", acquire_timeout_str);
+            eprintln!("Must be a positive number");
+            process::exit(1);
+        });
+        
+        Self { 
+            database_url,
+            max_connections,
+            acquire_timeout_seconds,
+        }
     }
 }
 

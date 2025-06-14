@@ -1,3 +1,4 @@
+use crate::config::DatabaseConfig;
 use crate::db::error::DatabaseError;
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use std::time::Duration;
@@ -27,6 +28,16 @@ impl DatabasePool {
             .max_connections(max_connections)
             .acquire_timeout(Duration::from_secs(timeout_seconds))
             .connect(database_url)
+            .await?;
+
+        Ok(Self { pool })
+    }
+
+    pub async fn from_config(config: &DatabaseConfig) -> Result<Self, DatabaseError> {
+        let pool = PgPoolOptions::new()
+            .max_connections(config.max_connections)
+            .acquire_timeout(Duration::from_secs(config.acquire_timeout_seconds))
+            .connect(&config.database_url)
             .await?;
 
         Ok(Self { pool })
