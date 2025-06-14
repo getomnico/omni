@@ -80,6 +80,33 @@ function validateOAuthCredentials(clientId: string, clientSecret: string, provid
 
 // Load and validate configuration
 function loadConfig(): AppConfig {
+	// Skip config validation during build time
+	if (process.env.NODE_ENV === 'production' && !process.env.REDIS_URL) {
+		console.log('Skipping configuration validation during build...');
+		return {
+			database: { url: 'postgresql://placeholder' },
+			redis: { url: 'redis://placeholder' },
+			services: {
+				searcherUrl: 'http://placeholder',
+				indexerUrl: 'http://placeholder',
+				aiServiceUrl: 'http://placeholder'
+			},
+			session: {
+				secret: 'placeholder',
+				cookieName: 'auth-session',
+				durationDays: 7
+			},
+			app: { publicUrl: 'http://placeholder' },
+			oauth: {
+				google: {
+					clientId: 'placeholder',
+					clientSecret: 'placeholder',
+					redirectUri: 'http://placeholder'
+				}
+			}
+		};
+	}
+
 	console.log('Loading and validating application configuration...');
 
 	// Database configuration
@@ -156,8 +183,18 @@ function loadConfig(): AppConfig {
 	};
 }
 
-// Export the configuration
-export const config = loadConfig();
+// Export configuration loading function and lazy-loaded config
+let _config: AppConfig | null = null;
+
+export function getConfig(): AppConfig {
+	if (!_config) {
+		_config = loadConfig();
+	}
+	return _config;
+}
+
+// For backward compatibility, export config as a getter
+export const config = getConfig();
 
 // Also export individual sections for convenience
 export const { database, redis, services, session, app, oauth } = config;

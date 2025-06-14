@@ -1,10 +1,16 @@
-import { pgTable, serial, integer, text, timestamp, jsonb, varchar } from 'drizzle-orm/pg-core';
+import { pgTable, integer, text, timestamp, jsonb, varchar, boolean } from 'drizzle-orm/pg-core';
 
 export const user = pgTable('user', {
 	id: text('id').primaryKey(),
 	age: integer('age'),
 	username: text('username').notNull().unique(),
-	passwordHash: text('password_hash').notNull()
+	passwordHash: text('password_hash').notNull(),
+	email: text('email').notNull().unique(),
+	role: text('role').notNull().default('user'), // admin, user, viewer
+	status: text('status').notNull().default('pending'), // pending, active, suspended
+	createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+	approvedAt: timestamp('approved_at', { withTimezone: true, mode: 'date' }),
+	approvedBy: text('approved_by').references(() => user.id)
 });
 
 export const session = pgTable('session', {
