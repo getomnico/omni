@@ -30,7 +30,7 @@ pub struct User {
 pub struct Source {
     pub id: String,
     pub name: String,
-    pub source_type: String,
+    pub source_type: SourceType,
     pub config: JsonValue,
     pub is_active: bool,
     pub last_sync_at: Option<OffsetDateTime>,
@@ -67,6 +67,16 @@ pub struct Embedding {
     pub embedding: Vector,
     pub model_name: String,
     pub created_at: OffsetDateTime,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
+#[sqlx(type_name = "text", rename_all = "lowercase")]
+pub enum SourceType {
+    Google,
+    Slack,
+    Confluence,
+    Github,
+    LocalFiles,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]

@@ -8,6 +8,7 @@ use tracing::{error, info, warn};
 use crate::auth::{AuthManager, OAuthCredentials};
 use crate::drive::DriveClient;
 use crate::models::{DocumentEvent, Source};
+use shared::models::SourceType;
 
 pub struct SyncManager {
     pool: PgPool,
@@ -46,11 +47,13 @@ impl SyncManager {
 
     async fn get_active_sources(&self) -> Result<Vec<Source>> {
         let sources = sqlx::query_as::<_, Source>(
-            "SELECT * FROM sources 
-             WHERE source_type = 'google_drive' 
-             AND is_active = true 
-             AND oauth_credentials IS NOT NULL",
+            "SELECT s.* FROM sources s
+             INNER JOIN oauth_credentials oc ON s.id = oc.source_id
+             WHERE s.source_type = $1 
+             AND s.is_active = true 
+             AND oc.provider = 'google'",
         )
+        .bind(SourceType::Google)
         .fetch_all(&self.pool)
         .await?;
 
@@ -60,16 +63,13 @@ impl SyncManager {
     async fn sync_source(&self, source: &Source) -> Result<()> {
         info!("Syncing source: {} ({})", source.name, source.id);
 
-        let oauth_creds = source
-            .oauth_credentials
-            .as_ref()
-            .ok_or_else(|| anyhow!("No OAuth credentials found"))?;
+        let oauth_creds = self.get_oauth_credentials(&source.id).await?;
+        let mut creds: OAuthCredentials = oauth_creds;
 
-        let mut creds: OAuthCredentials = serde_json::from_value(oauth_creds.clone())?;
-
+        let original_creds = creds.clone();
         self.auth_manager.ensure_valid_token(&mut creds).await?;
 
-        if serde_json::to_value(&creds)? != *oauth_creds {
+        if creds.access_token != original_creds.access_token || creds.refresh_token != original_creds.refresh_token {
             self.update_oauth_credentials(&source.id, &creds).await?;
         }
 
@@ -182,15 +182,38 @@ impl SyncManager {
         Ok(())
     }
 
+    async fn get_oauth_credentials(&self, source_id: &str) -> Result<OAuthCredentials> {
+        let row = sqlx::query(
+            "SELECT access_token, refresh_token, token_type, expires_at 
+             FROM oauth_credentials 
+             WHERE source_id = $1 AND provider = 'google'"
+        )
+        .bind(source_id)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(OAuthCredentials {
+            access_token: row.get("access_token"),
+            refresh_token: row.get("refresh_token"),
+            token_type: row.get("token_type"),
+            expires_at: row.get("expires_at"),
+        })
+    }
+
     async fn update_oauth_credentials(
         &self,
         source_id: &str,
         creds: &OAuthCredentials,
     ) -> Result<()> {
         sqlx::query(
-            "UPDATE sources SET oauth_credentials = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2"
+            "UPDATE oauth_credentials 
+             SET access_token = $1, refresh_token = $2, token_type = $3, expires_at = $4, updated_at = CURRENT_TIMESTAMP 
+             WHERE source_id = $5 AND provider = 'google'"
         )
-        .bind(serde_json::to_value(creds)?)
+        .bind(&creds.access_token)
+        .bind(&creds.refresh_token)
+        .bind(&creds.token_type)
+        .bind(&creds.expires_at)
         .bind(source_id)
         .execute(&self.pool)
         .await?;

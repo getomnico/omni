@@ -5,6 +5,7 @@ import { db } from '$lib/server/db'
 import { sources, oauthCredentials } from '$lib/server/db/schema'
 import { eq } from 'drizzle-orm'
 import { oauth } from '$lib/server/config'
+import { SourceType, OAuthProvider } from '$lib/types'
 import crypto from 'crypto'
 import { ulid } from 'ulid'
 
@@ -82,7 +83,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
         // Check for existing org-level Google connection
         const existingSource = await db.query.sources.findFirst({
-            where: eq(sources.sourceType, 'google'),
+            where: eq(sources.sourceType, SourceType.GOOGLE),
         })
 
         let sourceId: string
@@ -115,7 +116,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
                 id: sourceId,
                 createdBy: userId,
                 name: `Google Workspace`,
-                sourceType: 'google',
+                sourceType: SourceType.GOOGLE,
                 config: {
                     email: userInfo.email,
                     name: userInfo.name,
@@ -129,7 +130,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
         await db.insert(oauthCredentials).values({
             id: ulid(),
             sourceId: sourceId,
-            provider: 'google',
+            provider: OAuthProvider.GOOGLE,
             clientId: oauth.google.clientId,
             clientSecret: oauth.google.clientSecret,
             accessToken: tokens.access_token,

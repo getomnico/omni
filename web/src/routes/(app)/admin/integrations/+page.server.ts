@@ -4,7 +4,7 @@ import { sources } from '$lib/server/db/schema'
 import type { PageServerLoad } from './$types'
 
 export const load: PageServerLoad = async ({ locals }) => {
-    await requireAdmin(locals)
+    requireAdmin(locals)
 
     // Get all organization-level connected sources
     const connectedSources = await db.select().from(sources)

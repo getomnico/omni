@@ -3,6 +3,7 @@ import type { RequestHandler } from './$types'
 import { db } from '$lib/server/db'
 import { sources, oauthCredentials } from '$lib/server/db/schema'
 import { and, eq } from 'drizzle-orm'
+import { SourceType } from '$lib/types'
 
 export const POST: RequestHandler = async ({ params, locals }) => {
     if (!locals.user) {
@@ -24,7 +25,7 @@ export const POST: RequestHandler = async ({ params, locals }) => {
         where: eq(oauthCredentials.sourceId, sourceId),
     })
 
-    if (credentials && source.sourceType === 'google') {
+    if (credentials && source.sourceType === SourceType.GOOGLE) {
         try {
             if (credentials.accessToken) {
                 await fetch(
