@@ -9,6 +9,7 @@ use crate::auth::{AuthManager, OAuthCredentials};
 use crate::drive::DriveClient;
 use crate::models::{DocumentEvent, Source};
 use shared::models::SourceType;
+use shared::CONNECTOR_EVENTS_CHANNEL;
 
 pub struct SyncManager {
     pool: PgPool,
@@ -30,7 +31,6 @@ impl SyncState {
         format!("google:sync:{}:{}", source_id, file_id)
     }
 
-    #[cfg(test)]
     pub fn get_test_file_sync_key(&self, source_id: &str, file_id: &str) -> String {
         format!("google:sync:test:{}:{}", source_id, file_id)
     }
@@ -292,7 +292,7 @@ impl SyncManager {
             "permissions": event.permissions,
         });
 
-        conn.publish::<_, _, ()>("indexer:events", serde_json::to_string(&event_data)?)
+        conn.publish::<_, _, ()>(CONNECTOR_EVENTS_CHANNEL, serde_json::to_string(&event_data)?)
             .await?;
         Ok(())
     }
@@ -306,7 +306,7 @@ impl SyncManager {
             "document_id": document_id,
         });
 
-        conn.publish::<_, _, ()>("indexer:events", serde_json::to_string(&event_data)?)
+        conn.publish::<_, _, ()>(CONNECTOR_EVENTS_CHANNEL, serde_json::to_string(&event_data)?)
             .await?;
         Ok(())
     }

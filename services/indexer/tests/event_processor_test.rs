@@ -5,6 +5,7 @@ use clio_indexer::events::{ConnectorEvent, DocumentMetadata, DocumentPermissions
 use clio_indexer::processor::EventProcessor;
 use redis::AsyncCommands;
 use shared::db::repositories::DocumentRepository;
+use shared::CONNECTOR_EVENTS_CHANNEL;
 use std::collections::HashMap;
 use tokio::time::{sleep, timeout, Duration};
 
@@ -52,7 +53,7 @@ async fn test_event_processor_document_created() {
         .unwrap();
     let event_json = serde_json::to_string(&event).unwrap();
     let _: () = redis_conn
-        .publish("connector_events", event_json)
+        .publish(CONNECTOR_EVENTS_CHANNEL, event_json)
         .await
         .unwrap();
 
@@ -123,7 +124,7 @@ async fn test_event_processor_document_updated() {
         .unwrap();
     let create_json = serde_json::to_string(&create_event).unwrap();
     let _: () = redis_conn
-        .publish("connector_events", create_json)
+        .publish(CONNECTOR_EVENTS_CHANNEL, create_json)
         .await
         .unwrap();
 
@@ -162,7 +163,7 @@ async fn test_event_processor_document_updated() {
 
     let update_json = serde_json::to_string(&update_event).unwrap();
     let _: () = redis_conn
-        .publish("connector_events", update_json)
+        .publish(CONNECTOR_EVENTS_CHANNEL, update_json)
         .await
         .unwrap();
 
@@ -244,7 +245,7 @@ async fn test_event_processor_document_deleted() {
         .unwrap();
     let create_json = serde_json::to_string(&create_event).unwrap();
     let _: () = redis_conn
-        .publish("connector_events", create_json)
+        .publish(CONNECTOR_EVENTS_CHANNEL, create_json)
         .await
         .unwrap();
 
@@ -261,7 +262,7 @@ async fn test_event_processor_document_deleted() {
 
     let delete_json = serde_json::to_string(&delete_event).unwrap();
     let _: () = redis_conn
-        .publish("connector_events", delete_json)
+        .publish(CONNECTOR_EVENTS_CHANNEL, delete_json)
         .await
         .unwrap();
 
@@ -316,7 +317,7 @@ async fn test_event_processor_multiple_events() {
 
         let event_json = serde_json::to_string(&event).unwrap();
         let _: () = redis_conn
-            .publish("connector_events", event_json)
+            .publish(CONNECTOR_EVENTS_CHANNEL, event_json)
             .await
             .unwrap();
     }
@@ -365,7 +366,7 @@ async fn test_event_processor_invalid_event_handling() {
         .unwrap();
 
     let _: () = redis_conn
-        .publish("connector_events", "invalid json")
+        .publish(CONNECTOR_EVENTS_CHANNEL, "invalid json")
         .await
         .unwrap();
 
@@ -396,7 +397,7 @@ async fn test_event_processor_invalid_event_handling() {
 
     let valid_json = serde_json::to_string(&valid_event).unwrap();
     let _: () = redis_conn
-        .publish("connector_events", valid_json)
+        .publish(CONNECTOR_EVENTS_CHANNEL, valid_json)
         .await
         .unwrap();
 

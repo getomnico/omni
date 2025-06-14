@@ -3,6 +3,7 @@ use crate::AppState;
 use anyhow::Result;
 use shared::db::repositories::DocumentRepository;
 use shared::models::Document;
+use shared::CONNECTOR_EVENTS_CHANNEL;
 use tokio::time::{interval, Duration};
 use tokio_stream::StreamExt;
 use tracing::{error, info, warn};
@@ -16,7 +17,7 @@ impl EventProcessor {
     pub fn new(state: AppState) -> Self {
         Self {
             state,
-            channel: "connector_events".to_string(),
+            channel: CONNECTOR_EVENTS_CHANNEL.to_string(),
         }
     }
 
