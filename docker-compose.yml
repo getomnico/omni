@@ -101,8 +101,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      vllm:
-        condition: service_healthy
     restart: unless-stopped
 
   # vLLM Service for LLM inference
@@ -213,6 +211,9 @@ services:
       - SESSION_COOKIE_NAME=${SESSION_COOKIE_NAME}
       - SESSION_DURATION_DAYS=${SESSION_DURATION_DAYS}
       - PUBLIC_APP_URL=${PUBLIC_APP_URL}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI}
     networks:
       - clio-network
     depends_on:

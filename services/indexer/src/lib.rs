@@ -381,6 +381,7 @@ pub async fn run_server() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create database pool: {}", e))?;
 
+    // TODO: Ideally this should be done outside of this service
     info!("Running database migrations...");
     match run_migrations(db_pool.pool()).await {
         Ok(_) => info!("Database migrations completed successfully"),

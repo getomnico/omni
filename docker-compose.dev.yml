@@ -28,10 +28,7 @@ services:
     environment:
       - NODE_ENV=development
       - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
-      - SEARCHER_URL=http://searcher:3001
-      - INDEXER_URL=http://indexer:3002
-      - AI_SERVICE_URL=http://ai:3003
-    command: npm run dev -- --host 0.0.0.0
+    command: npm run dev -- --host 0.0.0.0 --port ${WEB_PORT}
 
   # Update database URLs for all services in dev
 
@@ -46,6 +43,7 @@ services:
   ai:
     environment:
       - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
+      - VLLM_URL=http://localhost:8000  # Dummy URL for dev
 
   google-connector:
     environment:
@@ -55,3 +53,8 @@ services:
   caddy:
     profiles:
       - production
+  
+  # Skip vLLM in dev for now
+  vllm:
+    profiles:
+      - with-vllm

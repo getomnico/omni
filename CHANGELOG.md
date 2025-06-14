@@ -71,4 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Session-based authentication with secure cookies and Argon2 password hashing
   - ULID-based user IDs and role-based access control (admin/user/viewer)
   - Rate limiting, admin approval workflow, and user status management
+- vLLM integration for local LLM inference
+  - Added vLLM container with GPU support using official vllm/vllm-openai image
+  - Configured with Microsoft Phi-3-mini-4k-instruct as default model with customizable options
 
