@@ -1,5 +1,3 @@
-version: '3.8'
-
 # Development-specific overrides
 # Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
 
@@ -11,7 +9,7 @@ services:
     environment:
       POSTGRES_DB: clio_dev
       POSTGRES_USER: clio_dev
-      POSTGRES_PASSWORD: dev_password
+      POSTGRES_PASSWORD: clio_dev_password
 
   redis:
     ports:
@@ -22,12 +20,14 @@ services:
     build:
       context: web
       dockerfile: Dockerfile.dev
+    ports:
+      - "${WEB_PORT}:${WEB_PORT}"
     volumes:
       - ./web/src:/app/src
       - ./web/static:/app/static
     environment:
       - NODE_ENV=development
-      - DATABASE_URL=postgresql://clio_dev:dev_password@postgres:5432/clio_dev
+      - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
       - SEARCHER_URL=http://searcher:3001
       - INDEXER_URL=http://indexer:3002
       - AI_SERVICE_URL=http://ai:3003
@@ -37,15 +37,19 @@ services:
 
   searcher:
     environment:
-      - DATABASE_URL=postgresql://clio_dev:dev_password@postgres:5432/clio_dev
+      - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
 
   indexer:
     environment:
-      - DATABASE_URL=postgresql://clio_dev:dev_password@postgres:5432/clio_dev
+      - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
 
   ai:
     environment:
-      - DATABASE_URL=postgresql://clio_dev:dev_password@postgres:5432/clio_dev
+      - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
+
+  google-connector:
+    environment:
+      - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
 
   # Remove production services for dev
   caddy:

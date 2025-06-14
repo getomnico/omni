@@ -1,10 +1,9 @@
 use anyhow::{anyhow, Result};
 use reqwest::Client;
 use serde::Deserialize;
-use tracing::{debug, info, warn};
+use tracing::debug;
 
-use crate::auth::OAuthCredentials;
-use crate::models::{GoogleDriveFile, Permission};
+use crate::models::GoogleDriveFile;
 
 const DRIVE_API_BASE: &str = "https://www.googleapis.com/drive/v3";
 const DOCS_API_BASE: &str = "https://docs.googleapis.com/v1";
@@ -26,7 +25,7 @@ impl DriveClient {
         token: &str,
         page_token: Option<&str>,
     ) -> Result<FilesListResponse> {
-        let mut url = format!("{}/files", DRIVE_API_BASE);
+        let url = format!("{}/files", DRIVE_API_BASE);
         
         let mut params = vec![
             ("pageSize", "100"),

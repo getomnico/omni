@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use redis::aio::Connection;
 use redis::{AsyncCommands, Client as RedisClient};
 use serde_json::json;
 use sqlx::{PgPool, Row};
@@ -141,7 +140,7 @@ impl SyncManager {
     }
 
     async fn publish_document_event(&self, event: &DocumentEvent, event_type: &str) -> Result<()> {
-        let mut conn = self.redis_client.get_async_connection().await?;
+        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
         
         let event_data = json!({
             "type": format!("document_{}", event_type),
@@ -159,7 +158,7 @@ impl SyncManager {
     }
 
     async fn publish_deletion_event(&self, source_id: &str, document_id: &str) -> Result<()> {
-        let mut conn = self.redis_client.get_async_connection().await?;
+        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
         
         let event_data = json!({
             "type": "document_deleted",

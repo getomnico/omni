@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Infrastructure Services
   postgres:
@@ -12,8 +10,6 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./services/indexer/migrations:/docker-entrypoint-initdb.d
-    ports:
-      - "5432:5432"
     networks:
       - clio-network
     healthcheck:
@@ -28,8 +24,6 @@ services:
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
-    ports:
-      - "6379:6379"
     networks:
       - clio-network
     healthcheck:
@@ -52,8 +46,6 @@ services:
       - RUST_LOG=${RUST_LOG}
       - PORT=${SEARCHER_PORT}
       - AI_SERVICE_URL=${AI_SERVICE_URL}
-    ports:
-      - "${SEARCHER_PORT}:${SEARCHER_PORT}"
     networks:
       - clio-network
     depends_on:
@@ -76,8 +68,6 @@ services:
       - RUST_LOG=${RUST_LOG}
       - PORT=${INDEXER_PORT}
       - AI_SERVICE_URL=${AI_SERVICE_URL}
-    ports:
-      - "${INDEXER_PORT}:${INDEXER_PORT}"
     networks:
       - clio-network
     depends_on:
@@ -89,8 +79,7 @@ services:
 
   ai:
     build:
-      context: .
-      dockerfile: services/ai/Dockerfile
+      context: services/ai
     container_name: clio-ai
     environment:
       - DATABASE_URL=${DATABASE_URL}
@@ -103,8 +92,6 @@ services:
       - EMBEDDING_MODEL=${EMBEDDING_MODEL}
       - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS}
       - VLLM_URL=${VLLM_URL}
-    ports:
-      - "${AI_SERVICE_PORT}:${AI_SERVICE_PORT}"
     networks:
       - clio-network
     volumes:
@@ -123,14 +110,13 @@ services:
       dockerfile: connectors/google/Dockerfile
     container_name: clio-google-connector
     environment:
+      - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=${REDIS_URL}
       - RUST_LOG=${RUST_LOG}
       - PORT=${GOOGLE_CONNECTOR_PORT}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI}
-    ports:
-      - "${GOOGLE_CONNECTOR_PORT}:${GOOGLE_CONNECTOR_PORT}"
     networks:
       - clio-network
     depends_on:
@@ -144,14 +130,13 @@ services:
       dockerfile: connectors/slack/Dockerfile
     container_name: clio-slack-connector
     environment:
+      - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=${REDIS_URL}
       - RUST_LOG=${RUST_LOG}
       - PORT=${SLACK_CONNECTOR_PORT}
       - SLACK_CLIENT_ID=${SLACK_CLIENT_ID}
       - SLACK_CLIENT_SECRET=${SLACK_CLIENT_SECRET}
       - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
-    ports:
-      - "${SLACK_CONNECTOR_PORT}:${SLACK_CONNECTOR_PORT}"
     networks:
       - clio-network
     depends_on:
@@ -165,13 +150,12 @@ services:
       dockerfile: connectors/atlassian/Dockerfile
     container_name: clio-atlassian-connector
     environment:
+      - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=${REDIS_URL}
       - RUST_LOG=${RUST_LOG}
       - PORT=${ATLASSIAN_CONNECTOR_PORT}
       - ATLASSIAN_CLIENT_ID=${ATLASSIAN_CLIENT_ID}
       - ATLASSIAN_CLIENT_SECRET=${ATLASSIAN_CLIENT_SECRET}
-    ports:
-      - "${ATLASSIAN_CONNECTOR_PORT}:${ATLASSIAN_CONNECTOR_PORT}"
     networks:
       - clio-network
     depends_on:
@@ -183,7 +167,6 @@ services:
   web:
     build:
       context: web
-      dockerfile: Dockerfile
     container_name: clio-web
     environment:
       - DATABASE_URL=${DATABASE_URL}
@@ -197,8 +180,6 @@ services:
       - SESSION_COOKIE_NAME=${SESSION_COOKIE_NAME}
       - SESSION_DURATION_DAYS=${SESSION_DURATION_DAYS}
       - PUBLIC_APP_URL=${PUBLIC_APP_URL}
-    ports:
-      - "${WEB_PORT}:${WEB_PORT}"
     networks:
       - clio-network
     depends_on:

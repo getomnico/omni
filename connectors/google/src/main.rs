@@ -1,6 +1,6 @@
 use anyhow::Result;
 use dotenvy::dotenv;
-use shared::GoogleConnectorConfig;
+use shared::{DatabasePool, GoogleConnectorConfig};
 use std::sync::Arc;
 use tokio::time::{interval, Duration};
 use tracing::{error, info};
@@ -31,7 +31,9 @@ async fn main() -> Result<()> {
 
     let redis_client = redis::Client::open(config.base.redis.redis_url)?;
     
-    let sync_manager = Arc::new(SyncManager::new(redis_client).await?);
+    let db_pool = DatabasePool::from_config(&config.database).await?;
+    
+    let sync_manager = Arc::new(SyncManager::new(db_pool.pool().clone(), redis_client).await?);
 
     let mut sync_interval = interval(Duration::from_secs(60));
 

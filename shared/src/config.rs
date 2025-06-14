@@ -49,6 +49,7 @@ pub struct ConnectorConfig {
 #[derive(Debug, Clone)]
 pub struct GoogleConnectorConfig {
     pub base: ConnectorConfig,
+    pub database: DatabaseConfig,
     pub client_id: String,
     pub client_secret: String,
     pub redirect_uri: String,
@@ -236,6 +237,7 @@ impl ConnectorConfig {
 impl GoogleConnectorConfig {
     pub fn from_env() -> Self {
         let base = ConnectorConfig::from_env();
+        let database = DatabaseConfig::from_env();
         
         let client_id = get_required_env("GOOGLE_CLIENT_ID");
         if client_id.trim().is_empty() || client_id == "your-google-client-id" {
@@ -256,6 +258,7 @@ impl GoogleConnectorConfig {
         
         Self {
             base,
+            database,
             client_id,
             client_secret,
             redirect_uri,
