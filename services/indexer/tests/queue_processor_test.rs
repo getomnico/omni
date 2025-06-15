@@ -1,9 +1,9 @@
 mod common;
 
 use chrono::Utc;
-use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use clio_indexer::QueueProcessor;
 use shared::db::repositories::DocumentRepository;
+use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use shared::queue::EventQueue;
 use std::collections::HashMap;
 use tokio::time::{sleep, timeout, Duration};
@@ -109,7 +109,10 @@ async fn test_queue_processor_document_updated() {
     };
 
     // Queue the create event using PostgreSQL queue
-    event_queue.enqueue(&source_id, &create_event).await.unwrap();
+    event_queue
+        .enqueue(&source_id, &create_event)
+        .await
+        .unwrap();
 
     // Wait for document to be created before updating
     let repo = DocumentRepository::new(fixture.state.db_pool.pool());
@@ -145,7 +148,10 @@ async fn test_queue_processor_document_updated() {
     };
 
     // Queue the update event using PostgreSQL queue
-    event_queue.enqueue(&source_id, &update_event).await.unwrap();
+    event_queue
+        .enqueue(&source_id, &update_event)
+        .await
+        .unwrap();
 
     // Wait for document to be updated (check for updated title)
     let updated_document = timeout(Duration::from_secs(5), async {
@@ -219,7 +225,10 @@ async fn test_queue_processor_document_deleted() {
     };
 
     // Queue the create event using PostgreSQL queue
-    event_queue.enqueue(&source_id, &create_event).await.unwrap();
+    event_queue
+        .enqueue(&source_id, &create_event)
+        .await
+        .unwrap();
 
     let repo = DocumentRepository::new(fixture.state.db_pool.pool());
     let _document =
@@ -233,7 +242,10 @@ async fn test_queue_processor_document_deleted() {
     };
 
     // Queue the delete event using PostgreSQL queue
-    event_queue.enqueue(&source_id, &delete_event).await.unwrap();
+    event_queue
+        .enqueue(&source_id, &delete_event)
+        .await
+        .unwrap();
 
     common::wait_for_document_deleted(&repo, source_id, doc_id, Duration::from_secs(5))
         .await

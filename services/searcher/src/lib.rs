@@ -62,6 +62,7 @@ pub struct AppState {
     pub db_pool: DatabasePool,
     pub redis_client: RedisClient,
     pub ai_client: AIClient,
+    pub config: SearcherConfig,
 }
 
 pub fn create_app(state: AppState) -> Router {
@@ -90,16 +91,17 @@ pub async fn run_server() -> AnyhowResult<()> {
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create database pool: {}", e))?;
 
-    let redis_client = RedisClient::open(config.redis.redis_url)?;
+    let redis_client = RedisClient::open(config.redis.redis_url.clone())?;
     info!("Redis client initialized");
 
-    let ai_client = AIClient::new(config.ai_service_url);
+    let ai_client = AIClient::new(config.ai_service_url.clone());
     info!("AI client initialized");
 
     let app_state = AppState {
         db_pool,
         redis_client,
         ai_client,
+        config: config.clone(),
     };
 
     let app = create_app(app_state);

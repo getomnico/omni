@@ -19,6 +19,9 @@ pub struct SearcherConfig {
     pub redis: RedisConfig,
     pub port: u16,
     pub ai_service_url: String,
+    pub typo_tolerance_enabled: bool,
+    pub typo_tolerance_max_distance: i32,
+    pub typo_tolerance_min_word_length: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -165,11 +168,35 @@ impl SearcherConfig {
         let ai_service_url = get_required_env("AI_SERVICE_URL");
         let ai_service_url = validate_url(&ai_service_url, "AI_SERVICE_URL");
 
+        let typo_tolerance_enabled = get_optional_env("TYPO_TOLERANCE_ENABLED", "true")
+            .parse::<bool>()
+            .unwrap_or(true);
+
+        let typo_tolerance_max_distance = get_optional_env("TYPO_TOLERANCE_MAX_DISTANCE", "2")
+            .parse::<i32>()
+            .unwrap_or_else(|_| {
+                eprintln!("ERROR: Invalid value for TYPO_TOLERANCE_MAX_DISTANCE");
+                eprintln!("Must be a positive integer");
+                process::exit(1);
+            });
+
+        let typo_tolerance_min_word_length =
+            get_optional_env("TYPO_TOLERANCE_MIN_WORD_LENGTH", "4")
+                .parse::<usize>()
+                .unwrap_or_else(|_| {
+                    eprintln!("ERROR: Invalid value for TYPO_TOLERANCE_MIN_WORD_LENGTH");
+                    eprintln!("Must be a positive integer");
+                    process::exit(1);
+                });
+
         Self {
             database,
             redis,
             port,
             ai_service_url,
+            typo_tolerance_enabled,
+            typo_tolerance_max_distance,
+            typo_tolerance_min_word_length,
         }
     }
 }

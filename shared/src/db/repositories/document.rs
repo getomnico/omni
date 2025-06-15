@@ -66,6 +66,100 @@ impl DocumentRepository {
         Ok(documents)
     }
 
+    pub async fn find_similar_words(
+        &self,
+        word: &str,
+        max_distance: i32,
+    ) -> Result<Vec<(String, i32)>, DatabaseError> {
+        let similar_words = sqlx::query_as::<_, (String, i32)>(
+            r#"
+            SELECT word, levenshtein_less_equal(lower(word), lower($1), $2) as distance
+            FROM unique_lexemes
+            WHERE levenshtein_less_equal(lower(word), lower($1), $2) < $2
+              AND length(word) >= 3
+            ORDER BY distance, ndoc DESC
+            LIMIT 5
+            "#,
+        )
+        .bind(word)
+        .bind(max_distance)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(similar_words)
+    }
+
+    pub async fn search_with_typo_tolerance(
+        &self,
+        query: &str,
+        limit: i64,
+        max_distance: i32,
+        min_word_length: usize,
+    ) -> Result<(Vec<Document>, Option<String>), DatabaseError> {
+        // First, try to search with the original query
+        let original_results = self.search(query, limit).await?;
+
+        // If we get reasonable results, return them without correction
+        if !original_results.is_empty() && original_results.len() >= (limit / 2) as usize {
+            return Ok((original_results, None));
+        }
+
+        // Tokenize the query
+        let words: Vec<&str> = query.split_whitespace().collect();
+        let mut corrected_words = Vec::new();
+        let mut any_correction_made = false;
+
+        // For each word, check if it exists in our lexeme dictionary
+        for word in words {
+            // Skip very short words
+            if word.len() < min_word_length {
+                corrected_words.push(word.to_string());
+                continue;
+            }
+
+            // Check if the word exists in our lexeme dictionary
+            let exists = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM unique_lexemes WHERE lower(word) = lower($1))",
+            )
+            .bind(word)
+            .fetch_one(&self.pool)
+            .await?;
+
+            if exists {
+                corrected_words.push(word.to_string());
+            } else {
+                // Find similar words
+                let similar = self.find_similar_words(word, max_distance).await?;
+
+                if let Some((corrected_word, _)) = similar.first() {
+                    corrected_words.push(corrected_word.clone());
+                    any_correction_made = true;
+                } else {
+                    // No correction found, use original word
+                    corrected_words.push(word.to_string());
+                }
+            }
+        }
+
+        // If no corrections were made, return original results
+        if !any_correction_made {
+            return Ok((original_results, None));
+        }
+
+        // Construct corrected query
+        let corrected_query = corrected_words.join(" ");
+
+        // Search with corrected query
+        let corrected_results = self.search(&corrected_query, limit).await?;
+
+        // Return the better result set
+        if corrected_results.len() > original_results.len() {
+            Ok((corrected_results, Some(corrected_query)))
+        } else {
+            Ok((original_results, None))
+        }
+    }
+
     pub async fn find_by_source(&self, source_id: &str) -> Result<Vec<Document>, DatabaseError> {
         let documents = sqlx::query_as::<_, Document>(
             r#"

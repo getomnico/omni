@@ -22,7 +22,7 @@ impl EventQueue {
         };
 
         let mut tx = self.pool.begin().await?;
-        
+
         sqlx::query(
             r#"
             INSERT INTO connector_events_queue (id, source_id, event_type, payload)
@@ -163,7 +163,7 @@ impl EventQueue {
             WHERE status = 'failed'
             AND retry_count < max_retries
             AND created_at > NOW() - INTERVAL '24 hours'
-            "#
+            "#,
         )
         .execute(&self.pool)
         .await?;
@@ -180,7 +180,7 @@ impl EventQueue {
             FROM connector_events_queue
             WHERE created_at > NOW() - INTERVAL '24 hours'
             GROUP BY status
-            "#
+            "#,
         )
         .fetch_all(&self.pool)
         .await?;
@@ -194,7 +194,7 @@ impl EventQueue {
         for row in rows {
             let status: String = row.get("status");
             let count: i64 = row.get("count");
-            
+
             match status.as_str() {
                 "pending" => pending = count,
                 "processing" => processing = count,
@@ -223,7 +223,7 @@ impl EventQueue {
             DELETE FROM connector_events_queue
             WHERE status = 'completed'
             AND processed_at < NOW() - INTERVAL '1 day' * $1
-            "#
+            "#,
         )
         .bind(retention_days)
         .execute(&mut *tx)
@@ -235,7 +235,7 @@ impl EventQueue {
             DELETE FROM connector_events_queue
             WHERE status = 'dead_letter'
             AND created_at < NOW() - INTERVAL '1 day' * $1
-            "#
+            "#,
         )
         .bind(retention_days)
         .execute(&mut *tx)
@@ -243,7 +243,7 @@ impl EventQueue {
 
         // Run VACUUM to reclaim space (this will run after the transaction commits)
         tx.commit().await?;
-        
+
         // VACUUM cannot run inside a transaction, so we run it separately
         sqlx::query("VACUUM ANALYZE connector_events_queue")
             .execute(&self.pool)

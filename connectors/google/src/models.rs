@@ -1,9 +1,8 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
-use std::collections::HashMap;
 use sqlx::types::time::OffsetDateTime;
-use chrono::{DateTime, Utc};
-
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoogleDriveFile {
@@ -47,7 +46,10 @@ impl GoogleDriveFile {
 
         let mut extra = HashMap::new();
         extra.insert("file_id".to_string(), serde_json::json!(self.id));
-        extra.insert("shared".to_string(), serde_json::json!(self.shared.unwrap_or(false)));
+        extra.insert(
+            "shared".to_string(),
+            serde_json::json!(self.shared.unwrap_or(false)),
+        );
 
         let metadata = DocumentMetadata {
             title: Some(self.name.clone()),

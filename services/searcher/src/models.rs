@@ -40,6 +40,16 @@ pub struct SearchResponse {
     pub query_time_ms: u64,
     pub has_more: bool,
     pub query: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub corrected_query: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub corrections: Option<Vec<WordCorrection>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WordCorrection {
+    pub original: String,
+    pub corrected: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

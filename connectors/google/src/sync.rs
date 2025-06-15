@@ -34,26 +34,42 @@ impl SyncState {
         format!("google:sync:test:{}:{}", source_id, file_id)
     }
 
-    pub async fn get_file_sync_state(&self, source_id: &str, file_id: &str) -> Result<Option<String>> {
+    pub async fn get_file_sync_state(
+        &self,
+        source_id: &str,
+        file_id: &str,
+    ) -> Result<Option<String>> {
         let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
         let key = self.get_file_sync_key(source_id, file_id);
-        
+
         let result: Option<String> = conn.get(&key).await?;
         Ok(result)
     }
 
-    pub async fn set_file_sync_state(&self, source_id: &str, file_id: &str, modified_time: &str) -> Result<()> {
-        self.set_file_sync_state_with_expiry(source_id, file_id, modified_time, 30 * 24 * 60 * 60).await
+    pub async fn set_file_sync_state(
+        &self,
+        source_id: &str,
+        file_id: &str,
+        modified_time: &str,
+    ) -> Result<()> {
+        self.set_file_sync_state_with_expiry(source_id, file_id, modified_time, 30 * 24 * 60 * 60)
+            .await
     }
 
-    async fn set_file_sync_state_with_expiry(&self, source_id: &str, file_id: &str, modified_time: &str, expiry_seconds: u64) -> Result<()> {
+    async fn set_file_sync_state_with_expiry(
+        &self,
+        source_id: &str,
+        file_id: &str,
+        modified_time: &str,
+        expiry_seconds: u64,
+    ) -> Result<()> {
         let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
         let key = if cfg!(test) {
             self.get_test_file_sync_key(source_id, file_id)
         } else {
             self.get_file_sync_key(source_id, file_id)
         };
-        
+
         let _: () = conn.set_ex(&key, modified_time, expiry_seconds).await?;
         Ok(())
     }
@@ -65,7 +81,7 @@ impl SyncState {
         } else {
             self.get_file_sync_key(source_id, file_id)
         };
-        
+
         let _: () = conn.del(&key).await?;
         Ok(())
     }
@@ -77,19 +93,18 @@ impl SyncState {
         } else {
             format!("google:sync:{}:*", source_id)
         };
-        
+
         let keys: Vec<String> = conn.keys(&pattern).await?;
         let prefix = if cfg!(test) {
             format!("google:sync:test:{}:", source_id)
         } else {
             format!("google:sync:{}:", source_id)
         };
-        let file_ids: HashSet<String> = keys.into_iter()
-            .filter_map(|key| {
-                key.strip_prefix(&prefix).map(|s| s.to_string())
-            })
+        let file_ids: HashSet<String> = keys
+            .into_iter()
+            .filter_map(|key| key.strip_prefix(&prefix).map(|s| s.to_string()))
             .collect();
-        
+
         Ok(file_ids)
     }
 }
@@ -185,7 +200,7 @@ impl SyncManager {
                             Some(last_modified) => {
                                 if last_modified != *modified_time {
                                     debug!(
-                                        "File {} has been modified (was: {}, now: {})", 
+                                        "File {} has been modified (was: {}, now: {})",
                                         file.name, last_modified, modified_time
                                     );
                                     true
@@ -212,21 +227,28 @@ impl SyncManager {
                         {
                             Ok(content) => {
                                 if !content.is_empty() {
-                                    let event = file.clone().to_connector_event(
-                                        source.id.clone(),
-                                        content,
-                                    );
-                                    
+                                    let event =
+                                        file.clone().to_connector_event(source.id.clone(), content);
+
                                     // Only update sync state if event was successfully queued
                                     match self.publish_connector_event(event).await {
                                         Ok(_) => {
                                             updated_count += 1;
                                             if let Some(modified_time) = &file.modified_time {
-                                                sync_state.set_file_sync_state(&source.id, &file.id, modified_time).await?;
+                                                sync_state
+                                                    .set_file_sync_state(
+                                                        &source.id,
+                                                        &file.id,
+                                                        modified_time,
+                                                    )
+                                                    .await?;
                                             }
                                         }
                                         Err(e) => {
-                                            error!("Failed to queue event for file {}: {}", file.name, e);
+                                            error!(
+                                                "Failed to queue event for file {}: {}",
+                                                file.name, e
+                                            );
                                         }
                                     }
                                 }
@@ -246,14 +268,19 @@ impl SyncManager {
         }
 
         for deleted_file_id in synced_files.difference(&current_files) {
-            info!("File {} was deleted, publishing deletion event", deleted_file_id);
+            info!(
+                "File {} was deleted, publishing deletion event",
+                deleted_file_id
+            );
             self.publish_deletion_event(&source.id, deleted_file_id)
                 .await?;
-            sync_state.delete_file_sync_state(&source.id, deleted_file_id).await?;
+            sync_state
+                .delete_file_sync_state(&source.id, deleted_file_id)
+                .await?;
         }
 
         info!(
-            "Sync completed for source {}: {} files processed, {} updated", 
+            "Sync completed for source {}: {} files processed, {} updated",
             source.id, processed_count, updated_count
         );
 
@@ -274,7 +301,6 @@ impl SyncManager {
         )
     }
 
-
     async fn publish_connector_event(&self, event: ConnectorEvent) -> Result<()> {
         let source_id = event.source_id();
         self.event_queue.enqueue(source_id, &event).await?;
@@ -286,7 +312,7 @@ impl SyncManager {
             source_id: source_id.to_string(),
             document_id: document_id.to_string(),
         };
-        
+
         self.publish_connector_event(event).await
     }
 

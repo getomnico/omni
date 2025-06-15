@@ -3,9 +3,9 @@ use anyhow::Result;
 use shared::db::repositories::DocumentRepository;
 use shared::models::{ConnectorEvent, Document, DocumentMetadata, DocumentPermissions};
 use shared::queue::EventQueue;
+use sqlx::postgres::PgListener;
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
-use sqlx::postgres::PgListener;
 
 pub struct QueueProcessor {
     pub state: AppState,
@@ -24,16 +24,19 @@ impl QueueProcessor {
     }
 
     pub async fn start(&self) -> Result<()> {
-        info!("Starting queue processor with batch size: {}", self.batch_size);
+        info!(
+            "Starting queue processor with batch size: {}",
+            self.batch_size
+        );
 
         let mut listener = PgListener::connect_with(self.state.db_pool.pool()).await?;
         listener.listen("indexer_queue").await?;
-        
+
         let mut poll_interval = interval(Duration::from_secs(60)); // Backup polling every minute
         let mut heartbeat_interval = interval(Duration::from_secs(30));
         let mut retry_interval = interval(Duration::from_secs(300)); // 5 minutes
         let mut cleanup_interval = interval(Duration::from_secs(3600)); // 1 hour
-        
+
         // Process any existing events first
         if let Err(e) = self.process_batch().await {
             error!("Failed to process initial batch: {}", e);
@@ -97,21 +100,23 @@ impl QueueProcessor {
 
     async fn process_batch(&self) -> Result<()> {
         let events = self.event_queue.dequeue_batch(self.batch_size).await?;
-        
+
         for event_item in events {
             let event_id = event_item.id.clone();
-            
+
             match self.process_event(&event_item.payload).await {
                 Ok(_) => {
                     self.event_queue.mark_completed(&event_id).await?;
                 }
                 Err(e) => {
                     error!("Failed to process event {}: {}", event_id, e);
-                    self.event_queue.mark_failed(&event_id, &e.to_string()).await?;
+                    self.event_queue
+                        .mark_failed(&event_id, &e.to_string())
+                        .await?;
                 }
             }
         }
-        
+
         Ok(())
     }
 
@@ -180,15 +185,17 @@ impl QueueProcessor {
         let permissions_json = serde_json::to_value(&permissions)?;
 
         // Extract file extension from URL or mime type
-        let file_extension = metadata.url.as_ref()
-            .and_then(|url| {
-                url.split('.').last()
-                    .filter(|ext| !ext.contains('/') && !ext.contains('?'))
-                    .map(|ext| ext.to_lowercase())
-            });
+        let file_extension = metadata.url.as_ref().and_then(|url| {
+            url.split('.')
+                .last()
+                .filter(|ext| !ext.contains('/') && !ext.contains('?'))
+                .map(|ext| ext.to_lowercase())
+        });
 
         // Parse file size from string to i64
-        let file_size = metadata.size.as_ref()
+        let file_size = metadata
+            .size
+            .as_ref()
             .and_then(|size_str| size_str.parse::<i64>().ok());
 
         let document = Document {

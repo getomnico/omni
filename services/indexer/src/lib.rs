@@ -1,9 +1,10 @@
 pub mod error;
+pub mod lexeme_refresh;
 pub mod queue_processor;
 
 pub use error::{IndexerError, Result};
-pub use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 pub use queue_processor::QueueProcessor;
+pub use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 
 pub use axum::Router;
 pub use redis::Client as RedisClient;
@@ -407,6 +408,12 @@ pub async fn run_server() -> anyhow::Result<()> {
         }
     });
 
+    // Start lexeme refresh background task
+    let lexeme_db_pool = app_state.db_pool.clone();
+    let lexeme_refresh_handle = tokio::spawn(async move {
+        lexeme_refresh::start_lexeme_refresh_task(lexeme_db_pool).await;
+    });
+
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     info!("Indexer service listening on {}", addr);
 
@@ -420,6 +427,9 @@ pub async fn run_server() -> anyhow::Result<()> {
         }
         _ = processor_handle => {
             error!("Event processor task completed unexpectedly");
+        }
+        _ = lexeme_refresh_handle => {
+            error!("Lexeme refresh task completed unexpectedly");
         }
     }
 

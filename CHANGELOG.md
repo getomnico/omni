@@ -84,4 +84,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Dedicated search results page (/search) with document previews, highlights, and metadata display
   - Search API endpoints (/api/search, /api/search/suggestions) for SvelteKit integration with searcher service
   - TypeScript type definitions for search functionality with proper error handling and loading states
+- Typo-tolerant search implementation
+  - Database migration to enable fuzzystrmatch extension and create unique_lexemes materialized view
+  - Levenshtein distance-based word correction for misspelled queries
+  - Configurable typo tolerance with max distance and minimum word length settings
+  - SearchResponse enhanced with corrected_query and corrections fields for user feedback
+  - Background task in indexer to periodically refresh lexeme dictionary
+  - Integration with existing fulltext and hybrid search modes
 

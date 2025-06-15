@@ -2,7 +2,7 @@ use crate::models::{SearchMode, SearchRequest, SearchResponse, SearchResult, Sug
 use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::db::repositories::{DocumentRepository, EmbeddingRepository};
-use shared::{AIClient, DatabasePool};
+use shared::{AIClient, DatabasePool, SearcherConfig};
 use std::time::Instant;
 use tracing::info;
 
@@ -10,18 +10,28 @@ pub struct SearchEngine {
     db_pool: DatabasePool,
     redis_client: RedisClient,
     ai_client: AIClient,
+    config: SearcherConfig,
 }
 
 impl SearchEngine {
-    pub fn new(db_pool: DatabasePool, redis_client: RedisClient, ai_client: AIClient) -> Self {
+    pub fn new(
+        db_pool: DatabasePool,
+        redis_client: RedisClient,
+        ai_client: AIClient,
+        config: SearcherConfig,
+    ) -> Self {
         Self {
             db_pool,
             redis_client,
             ai_client,
+            config,
         }
     }
 
-    fn truncate_document_content(&self, mut doc: shared::models::Document) -> shared::models::Document {
+    fn truncate_document_content(
+        &self,
+        mut doc: shared::models::Document,
+    ) -> shared::models::Document {
         const MAX_CONTENT_LENGTH: usize = 500;
         if let Some(content) = &doc.content {
             if content.len() > MAX_CONTENT_LENGTH {
@@ -56,9 +66,9 @@ impl SearchEngine {
         let repo = DocumentRepository::new(self.db_pool.pool());
         let limit = request.limit();
 
-        let results = if request.query.trim().is_empty() {
+        let (results, corrected_query) = if request.query.trim().is_empty() {
             let documents = repo.find_all(limit, request.offset()).await?;
-            documents
+            let results = documents
                 .into_iter()
                 .map(|doc| SearchResult {
                     document: self.truncate_document_content(doc),
@@ -66,11 +76,12 @@ impl SearchEngine {
                     highlights: vec![],
                     match_type: "listing".to_string(),
                 })
-                .collect()
+                .collect();
+            (results, None)
         } else {
             match request.search_mode() {
                 SearchMode::Fulltext => self.fulltext_search(&repo, &request).await?,
-                SearchMode::Semantic => self.semantic_search(&request).await?,
+                SearchMode::Semantic => (self.semantic_search(&request).await?, None),
                 SearchMode::Hybrid => self.hybrid_search(&request).await?,
             }
         };
@@ -91,6 +102,8 @@ impl SearchEngine {
             query_time_ms: query_time,
             has_more,
             query: request.query,
+            corrected_query,
+            corrections: None, // TODO: implement word-level corrections tracking
         };
 
         // Cache the response for 5 minutes
@@ -107,8 +120,18 @@ impl SearchEngine {
         &self,
         repo: &DocumentRepository,
         request: &SearchRequest,
-    ) -> Result<Vec<SearchResult>> {
-        let mut documents = repo.search(&request.query, request.limit()).await?;
+    ) -> Result<(Vec<SearchResult>, Option<String>)> {
+        let (mut documents, corrected_query) = if self.config.typo_tolerance_enabled {
+            repo.search_with_typo_tolerance(
+                &request.query,
+                request.limit(),
+                self.config.typo_tolerance_max_distance,
+                self.config.typo_tolerance_min_word_length,
+            )
+            .await?
+        } else {
+            (repo.search(&request.query, request.limit()).await?, None)
+        };
 
         if let Some(sources) = &request.sources {
             if !sources.is_empty() {
@@ -153,7 +176,7 @@ impl SearchEngine {
             })
             .collect();
 
-        Ok(results)
+        Ok((results, corrected_query))
     }
 
     async fn semantic_search(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
@@ -213,12 +236,15 @@ impl SearchEngine {
         self.ai_client.generate_embedding(query).await
     }
 
-    async fn hybrid_search(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
+    async fn hybrid_search(
+        &self,
+        request: &SearchRequest,
+    ) -> Result<(Vec<SearchResult>, Option<String>)> {
         info!("Performing hybrid search for query: '{}'", request.query);
 
         // Get results from both FTS and semantic search
         let repo = DocumentRepository::new(self.db_pool.pool());
-        let fts_results = self.fulltext_search(&repo, request).await?;
+        let (fts_results, corrected_query) = self.fulltext_search(&repo, request).await?;
         let semantic_results = self.semantic_search(request).await?;
 
         // Combine and deduplicate results
@@ -277,7 +303,7 @@ impl SearchEngine {
             final_results.truncate(request.limit() as usize);
         }
 
-        Ok(final_results)
+        Ok((final_results, corrected_query))
     }
 
     fn normalize_fts_score(&self, score: f32) -> f32 {

@@ -1,9 +1,9 @@
 mod common;
 
 use chrono::Utc;
-use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use clio_indexer::QueueProcessor;
 use shared::db::repositories::DocumentRepository;
+use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use shared::queue::EventQueue;
 use std::collections::HashMap;
 use tokio::time::{sleep, Duration};
@@ -50,22 +50,24 @@ async fn test_full_indexing_flow() {
     };
 
     // Queue the create event using PostgreSQL queue
-    event_queue.enqueue(&source_id, &create_event).await.unwrap();
+    event_queue
+        .enqueue(&source_id, &create_event)
+        .await
+        .unwrap();
 
     // Wait for document to be processed
     let repo = DocumentRepository::new(fixture.state.db_pool.pool());
-    let document = common::wait_for_document_exists(
-        &repo,
-        source_id,
-        "flow_doc_1",
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("Document should be created via event processing");
+    let document =
+        common::wait_for_document_exists(&repo, source_id, "flow_doc_1", Duration::from_secs(5))
+            .await
+            .expect("Document should be created via event processing");
 
     // 2. Verify document was created correctly
     assert_eq!(document.title, "Flow Test Document");
-    assert_eq!(document.content, Some("This is a complete flow test document".to_string()));
+    assert_eq!(
+        document.content,
+        Some("This is a complete flow test document".to_string())
+    );
     assert_eq!(document.source_id, source_id);
     assert_eq!(document.external_id, "flow_doc_1");
 
@@ -80,9 +82,7 @@ async fn test_full_indexing_flow() {
     assert_eq!(permissions["groups"].as_array().unwrap().len(), 1);
 
     // 3. Test document retrieval via API
-    let response = server
-        .get(&format!("/documents/{}", document.id))
-        .await;
+    let response = server.get(&format!("/documents/{}", document.id)).await;
 
     assert_eq!(response.status_code(), 200);
 
@@ -118,7 +118,10 @@ async fn test_full_indexing_flow() {
     };
 
     // Queue the update event using PostgreSQL queue
-    event_queue.enqueue(&source_id, &update_event).await.unwrap();
+    event_queue
+        .enqueue(&source_id, &update_event)
+        .await
+        .unwrap();
 
     // Wait for document to be updated
     let updated_document = common::wait_for_document_with_title(
@@ -133,11 +136,17 @@ async fn test_full_indexing_flow() {
 
     // 5. Verify document was updated correctly
     assert_eq!(updated_document.title, "Updated Flow Test Document");
-    assert_eq!(updated_document.content, Some("This is updated content for the flow test".to_string()));
+    assert_eq!(
+        updated_document.content,
+        Some("This is updated content for the flow test".to_string())
+    );
     assert_eq!(updated_document.id, document.id); // Same document ID
 
     let updated_metadata = updated_document.metadata.as_object().unwrap();
-    assert_eq!(updated_metadata["author"].as_str().unwrap(), "Integration Test Updated");
+    assert_eq!(
+        updated_metadata["author"].as_str().unwrap(),
+        "Integration Test Updated"
+    );
     assert_eq!(updated_metadata["priority"].as_str().unwrap(), "medium");
     assert_eq!(updated_metadata["status"].as_str().unwrap(), "updated");
 
@@ -147,15 +156,16 @@ async fn test_full_indexing_flow() {
     assert_eq!(updated_permissions["groups"].as_array().unwrap().len(), 2);
 
     // 6. Test updated document retrieval via API
-    let updated_response = server
-        .get(&format!("/documents/{}", document.id))
-        .await;
+    let updated_response = server.get(&format!("/documents/{}", document.id)).await;
 
     assert_eq!(updated_response.status_code(), 200);
 
     let updated_returned_doc: shared::models::Document = updated_response.json();
     assert_eq!(updated_returned_doc.title, "Updated Flow Test Document");
-    assert_eq!(updated_returned_doc.content, Some("This is updated content for the flow test".to_string()));
+    assert_eq!(
+        updated_returned_doc.content,
+        Some("This is updated content for the flow test".to_string())
+    );
 
     // 7. Delete document via event
     let delete_event = ConnectorEvent::DocumentDeleted {
@@ -164,22 +174,18 @@ async fn test_full_indexing_flow() {
     };
 
     // Queue the delete event using PostgreSQL queue
-    event_queue.enqueue(&source_id, &delete_event).await.unwrap();
+    event_queue
+        .enqueue(&source_id, &delete_event)
+        .await
+        .unwrap();
 
     // Wait for document to be deleted
-    common::wait_for_document_deleted(
-        &repo,
-        source_id,
-        "flow_doc_1",
-        Duration::from_secs(5),
-    )
-    .await
-    .expect("Document should be deleted via event processing");
+    common::wait_for_document_deleted(&repo, source_id, "flow_doc_1", Duration::from_secs(5))
+        .await
+        .expect("Document should be deleted via event processing");
 
     // 8. Verify document is no longer accessible via API
-    let deleted_response = server
-        .get(&format!("/documents/{}", document.id))
-        .await;
+    let deleted_response = server.get(&format!("/documents/{}", document.id)).await;
 
     assert_eq!(deleted_response.status_code(), 404);
 
