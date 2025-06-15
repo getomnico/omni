@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 import logging
 import asyncio
+import httpx
 from concurrent.futures import ThreadPoolExecutor
 
 from embeddings import (
@@ -90,6 +91,17 @@ class RAGResponse(BaseModel):
     relevant_chunks: List[str]
 
 
+class PromptRequest(BaseModel):
+    prompt: str
+    max_tokens: Optional[int] = 512
+    temperature: Optional[float] = 0.7
+    top_p: Optional[float] = 0.9
+
+
+class PromptResponse(BaseModel):
+    response: str
+
+
 @app.on_event("startup")
 async def startup_event():
     """Load model on startup"""
@@ -153,6 +165,54 @@ async def rag_inference(request: RAGRequest):
         answer="This is a placeholder RAG response",
         relevant_chunks=request.documents[:3],  # Return top 3 chunks
     )
+
+
+@app.post("/prompt", response_model=PromptResponse)
+async def generate_response(request: PromptRequest):
+    """Generate a response from the vLLM model for any given prompt"""
+    logger.info(f"Generating response for prompt: {request.prompt[:50]}...")
+    
+    try:
+        # Prepare the request payload for vLLM
+        vllm_payload = {
+            "prompt": request.prompt,
+            "max_tokens": request.max_tokens,
+            "temperature": request.temperature,
+            "top_p": request.top_p,
+        }
+        
+        # Make request to vLLM service
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{VLLM_URL}/generate",
+                json=vllm_payload
+            )
+            response.raise_for_status()
+            
+            vllm_response = response.json()
+            
+            # Extract the generated text from vLLM response
+            # vLLM typically returns {"text": [generated_text]}
+            generated_text = vllm_response.get("text", [""])[0] if "text" in vllm_response else ""
+            
+            if not generated_text:
+                raise HTTPException(status_code=500, detail="Empty response from vLLM service")
+            
+            logger.info(f"Successfully generated response of length: {len(generated_text)}")
+            return PromptResponse(response=generated_text)
+            
+    except httpx.TimeoutException:
+        logger.error("Timeout while calling vLLM service")
+        raise HTTPException(status_code=504, detail="Request to vLLM service timed out")
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error from vLLM service: {e.response.status_code} - {e.response.text}")
+        raise HTTPException(
+            status_code=502, 
+            detail=f"vLLM service error: {e.response.status_code}"
+        )
+    except Exception as e:
+        logger.error(f"Failed to generate response: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate response: {str(e)}")
 
 
 if __name__ == "__main__":
