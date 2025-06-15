@@ -179,17 +179,29 @@ impl QueueProcessor {
         let metadata_json = serde_json::to_value(&metadata)?;
         let permissions_json = serde_json::to_value(&permissions)?;
 
+        // Extract file extension from URL or mime type
+        let file_extension = metadata.url.as_ref()
+            .and_then(|url| {
+                url.split('.').last()
+                    .filter(|ext| !ext.contains('/') && !ext.contains('?'))
+                    .map(|ext| ext.to_lowercase())
+            });
+
+        // Parse file size from string to i64
+        let file_size = metadata.size.as_ref()
+            .and_then(|size_str| size_str.parse::<i64>().ok());
+
         let document = Document {
             id: ulid::Ulid::new().to_string(),
             source_id: source_id.clone(),
             external_id: document_id.clone(),
             title: metadata.title.unwrap_or_else(|| "Untitled".to_string()),
             content: Some(content.clone()),
-            content_type: None,
-            file_size: None,
-            file_extension: None,
-            url: None,
-            parent_id: None,
+            content_type: metadata.mime_type.clone(),
+            file_size,
+            file_extension,
+            url: metadata.url.clone(),
+            parent_id: metadata.parent_id.clone(),
             metadata: metadata_json,
             permissions: permissions_json,
             created_at: now,

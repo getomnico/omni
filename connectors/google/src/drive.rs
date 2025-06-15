@@ -95,7 +95,6 @@ impl DriveClient {
 
         debug!("Google Docs API response status: {}", response.status());
         let response_text = response.text().await?;
-        debug!("Google Docs API raw response: {}", response_text);
 
         let doc: GoogleDocument = serde_json::from_str(&response_text).map_err(|e| {
             anyhow!(
