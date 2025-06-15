@@ -1,4 +1,4 @@
-use crate::events::ConnectorEvent;
+use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use crate::AppState;
 use anyhow::Result;
 use shared::db::repositories::DocumentRepository;
@@ -108,8 +108,8 @@ impl EventProcessor {
         source_id: String,
         document_id: String,
         content: String,
-        metadata: crate::events::DocumentMetadata,
-        permissions: crate::events::DocumentPermissions,
+        metadata: DocumentMetadata,
+        permissions: DocumentPermissions,
     ) -> Result<()> {
         info!(
             "Processing document created: {} from source {}",
@@ -153,8 +153,8 @@ impl EventProcessor {
         source_id: String,
         document_id: String,
         content: String,
-        metadata: crate::events::DocumentMetadata,
-        permissions: Option<crate::events::DocumentPermissions>,
+        metadata: DocumentMetadata,
+        permissions: Option<DocumentPermissions>,
     ) -> Result<()> {
         info!(
             "Processing document updated: {} from source {}",

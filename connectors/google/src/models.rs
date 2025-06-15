@@ -1,23 +1,10 @@
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
+use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
+use sqlx::types::time::{self, OffsetDateTime};
+use std::collections::HashMap;
 
-#[derive(Debug, FromRow)]
-pub struct Source {
-    pub id: String,
-    pub name: String,
-    pub source_type: String,
-    pub config: serde_json::Value,
-    pub is_active: bool,
-    pub last_sync_at: Option<DateTime<Utc>>,
-    pub sync_status: Option<String>,
-    pub sync_error: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    pub created_by: String,
-}
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoogleDriveFile {
     pub id: String,
     pub name: String,
@@ -35,7 +22,7 @@ pub struct GoogleDriveFile {
     pub permissions: Option<Vec<Permission>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Permission {
     pub id: String,
     #[serde(rename = "type")]
@@ -45,44 +32,44 @@ pub struct Permission {
     pub role: String,
 }
 
-#[derive(Debug, Serialize)]
-pub struct DocumentEvent {
-    pub source_id: String,
-    pub document_id: String,
-    pub title: String,
-    pub content: String,
-    pub url: Option<String>,
-    pub metadata: serde_json::Value,
-    pub permissions: Vec<String>,
-}
+impl GoogleDriveFile {
+    pub fn to_connector_event(self, source_id: String, content: String) -> ConnectorEvent {
+        let mut users = Vec::new();
 
-impl DocumentEvent {
-    pub fn from_drive_file(source_id: String, file: &GoogleDriveFile, content: String) -> Self {
-        let mut permissions = Vec::new();
-
-        if let Some(file_permissions) = &file.permissions {
+        if let Some(file_permissions) = &self.permissions {
             for perm in file_permissions {
                 if let Some(email) = &perm.email_address {
-                    permissions.push(email.clone());
+                    users.push(email.clone());
                 }
             }
         }
 
-        let metadata = serde_json::json!({
-            "file_id": file.id,
-            "mime_type": file.mime_type,
-            "size": file.size,
-            "created_time": file.created_time,
-            "modified_time": file.modified_time,
-            "shared": file.shared.unwrap_or(false),
-        });
+        let mut extra = HashMap::new();
+        extra.insert("file_id".to_string(), serde_json::json!(self.id));
+        extra.insert("shared".to_string(), serde_json::json!(self.shared.unwrap_or(false)));
 
-        Self {
+        let metadata = DocumentMetadata {
+            title: Some(self.name.clone()),
+            author: None,
+            created_at: self.created_time.as_ref().and_then(|t| OffsetDateTime::parse(t, &time::format_description::well_known::Iso8601::DEFAULT).ok()),
+            updated_at: self.modified_time.as_ref().and_then(|t| OffsetDateTime::parse(t, &time::format_description::well_known::Iso8601::DEFAULT).ok()),
+            mime_type: Some(self.mime_type.clone()),
+            size: self.size.clone(),
+            url: self.web_view_link.clone(),
+            parent_id: self.parents.as_ref().and_then(|p| p.first().cloned()),
+            extra: Some(extra),
+        };
+
+        let permissions = DocumentPermissions {
+            public: false,
+            users,
+            groups: vec![],
+        };
+
+        ConnectorEvent::DocumentCreated {
             source_id,
-            document_id: file.id.clone(),
-            title: file.name.clone(),
+            document_id: self.id.clone(),
             content,
-            url: file.web_view_link.clone(),
             metadata,
             permissions,
         }

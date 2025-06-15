@@ -3,7 +3,7 @@ pub mod events;
 pub mod processor;
 
 pub use error::{IndexerError, Result};
-pub use events::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
+pub use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 pub use processor::EventProcessor;
 
 pub use axum::Router;

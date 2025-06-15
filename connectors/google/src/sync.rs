@@ -1,14 +1,12 @@
 use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
-use serde_json::json;
 use sqlx::{PgPool, Row};
 use std::collections::HashSet;
 use tracing::{debug, error, info, warn};
 
 use crate::auth::{AuthManager, OAuthCredentials};
 use crate::drive::DriveClient;
-use crate::models::{DocumentEvent, Source};
-use shared::models::SourceType;
+use shared::models::{ConnectorEvent, Source, SourceType};
 use shared::CONNECTOR_EVENTS_CHANNEL;
 
 pub struct SyncManager {
@@ -221,12 +219,11 @@ impl SyncManager {
                         {
                             Ok(content) => {
                                 if !content.is_empty() {
-                                    let event = DocumentEvent::from_drive_file(
+                                    let event = file.clone().to_connector_event(
                                         source.id.clone(),
-                                        &file,
                                         content,
                                     );
-                                    self.publish_document_event(&event, "created").await?;
+                                    self.publish_connector_event(event).await?;
                                     updated_count += 1;
 
                                     if let Some(modified_time) = &file.modified_time {
@@ -278,37 +275,21 @@ impl SyncManager {
     }
 
 
-    async fn publish_document_event(&self, event: &DocumentEvent, event_type: &str) -> Result<()> {
+    async fn publish_connector_event(&self, event: ConnectorEvent) -> Result<()> {
         let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
 
-        let event_data = json!({
-            "type": format!("document_{}", event_type),
-            "source_id": event.source_id,
-            "document_id": event.document_id,
-            "title": event.title,
-            "content": event.content,
-            "url": event.url,
-            "metadata": event.metadata,
-            "permissions": event.permissions,
-        });
-
-        conn.publish::<_, _, ()>(CONNECTOR_EVENTS_CHANNEL, serde_json::to_string(&event_data)?)
+        conn.publish::<_, _, ()>(CONNECTOR_EVENTS_CHANNEL, serde_json::to_string(&event)?)
             .await?;
         Ok(())
     }
 
     async fn publish_deletion_event(&self, source_id: &str, document_id: &str) -> Result<()> {
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-
-        let event_data = json!({
-            "type": "document_deleted",
-            "source_id": source_id,
-            "document_id": document_id,
-        });
-
-        conn.publish::<_, _, ()>(CONNECTOR_EVENTS_CHANNEL, serde_json::to_string(&event_data)?)
-            .await?;
-        Ok(())
+        let event = ConnectorEvent::DocumentDeleted {
+            source_id: source_id.to_string(),
+            document_id: document_id.to_string(),
+        };
+        
+        self.publish_connector_event(event).await
     }
 
     async fn get_oauth_credentials(&self, source_id: &str) -> Result<OAuthCredentials> {
