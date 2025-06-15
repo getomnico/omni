@@ -1,0 +1,39 @@
+export interface Document {
+    id: string
+    title: string
+    content: string
+    url: string | null
+    source: string
+    content_type: string
+    created_at: string
+    updated_at: string
+}
+
+export interface SearchResult {
+    document: Document
+    score: number
+    highlights: string[]
+    match_type: string
+}
+
+export interface SearchResponse {
+    results: SearchResult[]
+    total_count: number
+    query_time_ms: number
+    has_more: boolean
+    query: string
+}
+
+export interface SearchRequest {
+    query: string
+    sources?: string[]
+    content_types?: string[]
+    limit?: number
+    offset?: number
+    mode?: 'fulltext' | 'semantic' | 'hybrid'
+}
+
+export interface SuggestionsResponse {
+    suggestions: string[]
+    query: string
+}

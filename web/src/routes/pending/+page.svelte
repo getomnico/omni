@@ -46,7 +46,7 @@
                         Please contact your administrator if you have any questions.
                     </p>
 
-                    <Button on:click={logout} class="w-full">Sign out</Button>
+                    <Button onclick={logout} class="w-full">Sign out</Button>
                 </CardContent>
             </Card>
         </div>

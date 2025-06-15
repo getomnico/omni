@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
 
     let sync_manager = Arc::new(SyncManager::new(db_pool.pool().clone(), redis_client).await?);
 
-    let mut sync_interval = interval(Duration::from_secs(60));
+    let mut sync_interval = interval(Duration::from_secs(300));
 
     loop {
         sync_interval.tick().await;

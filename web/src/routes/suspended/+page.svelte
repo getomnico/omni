@@ -46,7 +46,7 @@
                         status.
                     </p>
 
-                    <Button on:click={logout} class="w-full">Sign out</Button>
+                    <Button onclick={logout} class="w-full">Sign out</Button>
                 </CardContent>
             </Card>
         </div>

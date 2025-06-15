@@ -2,10 +2,25 @@
     import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card/index.js'
     import { Button } from '$lib/components/ui/button/index.js'
     import type { PageData } from './$types.js'
-    import Input from '$lib/components/ui/input/input.svelte'
+    import { Input } from '$lib/components/ui/input/index.js'
     import { Search } from '@lucide/svelte'
+    import { goto } from '$app/navigation'
 
     export let data: PageData
+
+    let searchQuery = ''
+
+    function handleSearch() {
+        if (searchQuery.trim()) {
+            goto(`/search?q=${encodeURIComponent(searchQuery.trim())}`)
+        }
+    }
+
+    function handleKeyPress(event: KeyboardEvent) {
+        if (event.key === 'Enter') {
+            handleSearch()
+        }
+    }
 </script>
 
 <svelte:head>
@@ -30,10 +45,18 @@
                 </div>
                 <Input
                     type="text"
+                    bind:value={searchQuery}
                     placeholder="Ask anything..."
                     class="text-md md:text-md flex-1 rounded-full border-none bg-transparent px-0 py-4 shadow-none focus:border-none focus:ring-0 focus:outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
+                    onkeypress={handleKeyPress}
                 />
-                <Button class="m-2 cursor-pointer rounded-full px-6 py-2">Go</Button>
+                <Button 
+                    class="m-2 cursor-pointer rounded-full px-6 py-2"
+                    onclick={handleSearch}
+                    disabled={!searchQuery.trim()}
+                >
+                    Go
+                </Button>
             </div>
         </div>
     </div>
