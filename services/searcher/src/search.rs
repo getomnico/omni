@@ -21,6 +21,16 @@ impl SearchEngine {
         }
     }
 
+    fn truncate_document_content(&self, mut doc: shared::models::Document) -> shared::models::Document {
+        const MAX_CONTENT_LENGTH: usize = 500;
+        if let Some(content) = &doc.content {
+            if content.len() > MAX_CONTENT_LENGTH {
+                doc.content = Some(format!("{}...", &content[..MAX_CONTENT_LENGTH]));
+            }
+        }
+        doc
+    }
+
     pub async fn search(&self, request: SearchRequest) -> Result<SearchResponse> {
         let start_time = Instant::now();
 
@@ -51,7 +61,7 @@ impl SearchEngine {
             documents
                 .into_iter()
                 .map(|doc| SearchResult {
-                    document: doc,
+                    document: self.truncate_document_content(doc),
                     score: 1.0,
                     highlights: vec![],
                     match_type: "listing".to_string(),
@@ -135,7 +145,7 @@ impl SearchEngine {
                     vec![]
                 };
                 SearchResult {
-                    document: doc,
+                    document: self.truncate_document_content(doc),
                     score: 1.0,
                     highlights,
                     match_type: "fulltext".to_string(),
@@ -159,7 +169,7 @@ impl SearchEngine {
         let mut results: Vec<SearchResult> = documents_with_scores
             .into_iter()
             .map(|(doc, score)| SearchResult {
-                document: doc,
+                document: self.truncate_document_content(doc),
                 score,
                 highlights: vec![],
                 match_type: "semantic".to_string(),
@@ -221,7 +231,7 @@ impl SearchEngine {
             combined_results.insert(
                 doc_id,
                 SearchResult {
-                    document: result.document,
+                    document: self.truncate_document_content(result.document),
                     score: normalized_score * 0.6, // Weight FTS at 60%
                     highlights: result.highlights,
                     match_type: "hybrid".to_string(),
@@ -244,7 +254,7 @@ impl SearchEngine {
                     combined_results.insert(
                         doc_id,
                         SearchResult {
-                            document: result.document,
+                            document: self.truncate_document_content(result.document),
                             score: result.score * semantic_weight,
                             highlights: result.highlights,
                             match_type: "hybrid".to_string(),
