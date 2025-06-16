@@ -125,7 +125,10 @@ impl QueueProcessor {
 
         // After processing events, refresh lexemes if any documents were processed
         if processed_count > 0 {
-            info!("Refreshing lexemes after processing {} events", processed_count);
+            info!(
+                "Refreshing lexemes after processing {} events",
+                processed_count
+            );
             if let Err(e) = lexeme_refresh::refresh_lexemes(&self.state.db_pool).await {
                 error!("Failed to refresh lexemes after batch processing: {}", e);
             } else {

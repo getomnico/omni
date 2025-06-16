@@ -16,7 +16,7 @@ export const load: PageServerLoad = async ({ locals }) => {
                 id: 'google',
                 name: 'Google Workspace',
                 description: 'Connect to Google Drive, Docs, Gmail, and more',
-                connected: connectedSources.some((source) => source.sourceType === 'google'),
+                connected: connectedSources.some((source) => source.sourceType === 'google_drive' || source.sourceType === 'gmail'),
                 connectUrl: '/api/oauth/google/connect',
             },
             {
@@ -27,11 +27,11 @@ export const load: PageServerLoad = async ({ locals }) => {
                 connectUrl: '/api/oauth/slack/connect',
             },
             {
-                id: 'confluence',
-                name: 'Confluence',
-                description: 'Connect to Atlassian Confluence pages',
-                connected: connectedSources.some((source) => source.sourceType === 'confluence'),
-                connectUrl: '/api/oauth/confluence/connect',
+                id: 'atlassian',
+                name: 'Atlassian',
+                description: 'Connect to Confluence and Jira',
+                connected: connectedSources.some((source) => source.sourceType === 'confluence' || source.sourceType === 'jira'),
+                connectUrl: '/api/oauth/atlassian/connect',
             },
         ],
     }

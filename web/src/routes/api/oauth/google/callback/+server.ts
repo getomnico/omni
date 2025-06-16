@@ -83,7 +83,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
         // Check for existing org-level Google connection
         const existingSource = await db.query.sources.findFirst({
-            where: eq(sources.sourceType, SourceType.GOOGLE),
+            where: eq(sources.sourceType, SourceType.GOOGLE_DRIVE),
         })
 
         let sourceId: string
@@ -116,7 +116,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
                 id: sourceId,
                 createdBy: userId,
                 name: `Google Workspace`,
-                sourceType: SourceType.GOOGLE,
+                sourceType: SourceType.GOOGLE_DRIVE,
                 config: {
                     email: userInfo.email,
                     name: userInfo.name,

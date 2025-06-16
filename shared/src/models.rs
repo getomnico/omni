@@ -71,11 +71,13 @@ pub struct Embedding {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
-#[sqlx(type_name = "varchar", rename_all = "lowercase")]
+#[sqlx(type_name = "varchar", rename_all = "snake_case")]
 pub enum SourceType {
-    Google,
-    Slack,
+    GoogleDrive,
+    Gmail,
     Confluence,
+    Jira,
+    Slack,
     Github,
     LocalFiles,
 }

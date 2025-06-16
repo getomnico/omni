@@ -147,7 +147,7 @@ impl SyncManager {
              AND s.is_active = true 
              AND oc.provider = 'google'",
         )
-        .bind(SourceType::Google)
+        .bind(SourceType::GoogleDrive)
         .fetch_all(&self.pool)
         .await?;
 
