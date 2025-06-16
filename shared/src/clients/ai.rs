@@ -1,9 +1,9 @@
 use anyhow::Result;
+use futures_util::Stream;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tracing::warn;
-use futures_util::Stream;
 use std::pin::Pin;
+use tracing::warn;
 
 #[derive(Serialize)]
 pub struct EmbeddingRequest {
@@ -114,14 +114,14 @@ impl AIClient {
         // Convert response text to stream by reading it all at once
         // This is a simplified approach - in a real implementation you'd want proper streaming
         let text = response.text().await?;
-        
+
         // Create a simple stream that yields the text in small chunks to simulate streaming
         let string_stream = futures_util::stream::iter(
             text.chars()
                 .collect::<Vec<char>>()
                 .chunks(5) // Send 5 characters at a time to simulate streaming
                 .map(|chunk| Ok(chunk.iter().collect::<String>()))
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
         );
 
         Ok(Box::pin(string_stream))

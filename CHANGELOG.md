@@ -94,4 +94,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Search facets for filtering and result counts
   - Added facet support with counts for source_type, content_type, last_updated time buckets, and owner
   - GIN indexes on documents.metadata and permissions fields for efficient facet queries
+- Streaming AI-powered answers with RAG (Retrieval-Augmented Generation)
+  - Real-time streaming from vLLM through clio-ai, clio-searcher, and clio-web to browser
+  - Hybrid search (FTS + vector) for optimal RAG context extraction with top 5 documents
+  - Citation system with [Source: Document Title] format for answer attribution
+  - Frontend component with live streaming display and clickable source references
 

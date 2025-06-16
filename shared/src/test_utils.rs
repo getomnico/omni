@@ -44,7 +44,10 @@ impl BaseTestFixture {
     /// Get database config for tests
     pub fn database_config(&self) -> crate::config::DatabaseConfig {
         crate::config::DatabaseConfig {
-            database_url: format!("postgresql://clio:clio_password@localhost:5432/{}", &self.db_name),
+            database_url: format!(
+                "postgresql://clio:clio_password@localhost:5432/{}",
+                &self.db_name
+            ),
             max_connections: 5,
             acquire_timeout_seconds: 30,
         }

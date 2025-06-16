@@ -199,13 +199,14 @@ impl SearcherConfig {
                 process::exit(1);
             });
 
-        let hybrid_search_semantic_weight = get_optional_env("HYBRID_SEARCH_SEMANTIC_WEIGHT", "0.4")
-            .parse::<f32>()
-            .unwrap_or_else(|_| {
-                eprintln!("ERROR: Invalid value for HYBRID_SEARCH_SEMANTIC_WEIGHT");
-                eprintln!("Must be a float between 0.0 and 1.0");
-                process::exit(1);
-            });
+        let hybrid_search_semantic_weight =
+            get_optional_env("HYBRID_SEARCH_SEMANTIC_WEIGHT", "0.4")
+                .parse::<f32>()
+                .unwrap_or_else(|_| {
+                    eprintln!("ERROR: Invalid value for HYBRID_SEARCH_SEMANTIC_WEIGHT");
+                    eprintln!("Must be a float between 0.0 and 1.0");
+                    process::exit(1);
+                });
 
         Self {
             database,

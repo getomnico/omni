@@ -1,16 +1,16 @@
 use crate::models::{SearchRequest, SuggestionsQuery};
 use crate::search::SearchEngine;
 use crate::{AppState, Result as SearcherResult};
+use axum::body::Body;
 use axum::{
     extract::{Query, State},
-    response::Json,
     http::StatusCode,
+    response::Json,
 };
-use axum::body::Body;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 use sqlx::types::time::OffsetDateTime;
-use tracing::{info, error};
+use tracing::{error, info};
 
 pub async fn health_check(State(state): State<AppState>) -> SearcherResult<Json<Value>> {
     sqlx::query("SELECT 1")
@@ -104,13 +104,11 @@ pub async fn ai_answer(
     };
 
     // Convert AI stream to bytes stream
-    let byte_stream = ai_stream.map(|chunk| {
-        match chunk {
-            Ok(text) => Ok(text.into_bytes()),
-            Err(e) => {
-                error!("AI stream error: {}", e);
-                Err(std::io::Error::new(std::io::ErrorKind::Other, e))
-            }
+    let byte_stream = ai_stream.map(|chunk| match chunk {
+        Ok(text) => Ok(text.into_bytes()),
+        Err(e) => {
+            error!("AI stream error: {}", e);
+            Err(std::io::Error::new(std::io::ErrorKind::Other, e))
         }
     });
 

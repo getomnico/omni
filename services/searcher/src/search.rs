@@ -449,26 +449,33 @@ impl SearchEngine {
     /// Generate RAG context from search request by running hybrid search
     pub async fn get_rag_context(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
         info!("Generating RAG context for query: '{}'", request.query);
-        
+
         // Always use hybrid search for RAG to get best context
         let (results, _) = self.hybrid_search(request).await?;
-        
+
         // Take top 5 results for RAG context
         let context_results: Vec<SearchResult> = results.into_iter().take(5).collect();
-        
-        info!("Generated RAG context with {} documents", context_results.len());
+
+        info!(
+            "Generated RAG context with {} documents",
+            context_results.len()
+        );
         Ok(context_results)
     }
 
     /// Build RAG prompt with context documents and citation instructions
     pub fn build_rag_prompt(&self, query: &str, context: &[SearchResult]) -> String {
         let mut prompt = String::new();
-        
+
         prompt.push_str("You are a helpful AI assistant that answers questions based on the provided context documents. ");
-        prompt.push_str("Please provide a comprehensive answer using the information from the documents. ");
+        prompt.push_str(
+            "Please provide a comprehensive answer using the information from the documents. ",
+        );
         prompt.push_str("When referencing information from a document, cite it using the format [Source: Document Title]. ");
-        prompt.push_str("If the context doesn't contain enough information to answer the question, say so.\n\n");
-        
+        prompt.push_str(
+            "If the context doesn't contain enough information to answer the question, say so.\n\n",
+        );
+
         prompt.push_str("Context Documents:\n");
         for (i, result) in context.iter().enumerate() {
             prompt.push_str(&format!("Document {}: {}\n", i + 1, result.document.title));
@@ -483,10 +490,10 @@ impl SearchEngine {
             }
             prompt.push_str("\n");
         }
-        
+
         prompt.push_str(&format!("Question: {}\n\n", query));
         prompt.push_str("Answer:");
-        
+
         prompt
     }
 }

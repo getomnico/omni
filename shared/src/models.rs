@@ -199,13 +199,13 @@ impl Document {
 
         while current_pos < content.len() {
             let end_pos = std::cmp::min(current_pos + max_chunk_size, content.len());
-            
+
             // Try to break at sentence boundaries for better semantic coherence
             let chunk_text = if end_pos < content.len() {
                 // Look for sentence endings within the last 100 characters
                 let search_start = std::cmp::max(current_pos, end_pos.saturating_sub(100));
                 let search_slice = &content[search_start..end_pos];
-                
+
                 if let Some(sentence_end) = search_slice.rfind('.') {
                     let actual_end = search_start + sentence_end + 1;
                     content[current_pos..actual_end].to_string()

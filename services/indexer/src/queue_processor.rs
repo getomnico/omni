@@ -1,5 +1,6 @@
 use crate::{lexeme_refresh, AppState};
 use anyhow::Result;
+use pgvector::Vector;
 use shared::db::repositories::{DocumentRepository, EmbeddingRepository};
 use shared::models::{ConnectorEvent, Document, DocumentMetadata, DocumentPermissions, Embedding};
 use shared::queue::EventQueue;
@@ -7,7 +8,6 @@ use sqlx::postgres::PgListener;
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
 use ulid::Ulid;
-use pgvector::Vector;
 
 pub struct QueueProcessor {
     pub state: AppState,
@@ -241,13 +241,16 @@ impl QueueProcessor {
         let upserted = repo.upsert(document).await?;
 
         repo.update_search_vector(&upserted.id).await?;
-        
+
         // Generate embeddings for the document
         if let Err(e) = self.generate_embeddings(&upserted).await {
-            error!("Failed to generate embeddings for document {}: {}", document_id, e);
+            error!(
+                "Failed to generate embeddings for document {}: {}",
+                document_id, e
+            );
             // Don't fail the entire operation if embeddings fail
         }
-        
+
         repo.mark_as_indexed(&upserted.id).await?;
 
         info!("Document upserted successfully: {}", document_id);
@@ -284,15 +287,18 @@ impl QueueProcessor {
 
             let updated_document = repo.update(&doc_id, document).await?;
             repo.update_search_vector(&doc_id).await?;
-            
+
             // Generate embeddings for the updated document
             if let Some(updated_doc) = &updated_document {
                 if let Err(e) = self.generate_embeddings(updated_doc).await {
-                    error!("Failed to generate embeddings for updated document {}: {}", document_id, e);
+                    error!(
+                        "Failed to generate embeddings for updated document {}: {}",
+                        document_id, e
+                    );
                     // Don't fail the entire operation if embeddings fail
                 }
             }
-            
+
             repo.mark_as_indexed(&doc_id).await?;
 
             info!("Document updated successfully: {}", document_id);
@@ -318,10 +324,13 @@ impl QueueProcessor {
             // Delete embeddings first
             let embedding_repo = EmbeddingRepository::new(self.state.db_pool.pool());
             embedding_repo.delete_by_document_id(&document.id).await?;
-            
+
             // Then delete the document
             repo.delete(&document.id).await?;
-            info!("Document and embeddings deleted successfully: {}", document_id);
+            info!(
+                "Document and embeddings deleted successfully: {}",
+                document_id
+            );
         } else {
             warn!(
                 "Document not found for deletion: {} from source {}",
@@ -335,10 +344,13 @@ impl QueueProcessor {
     /// Generate embeddings for a document by chunking and calling the AI service
     async fn generate_embeddings(&self, document: &Document) -> Result<()> {
         const MAX_CHUNK_SIZE: usize = 1000; // Maximum characters per chunk
-        
+
         // Skip documents without content
         if document.content.is_none() || document.content.as_ref().unwrap().trim().is_empty() {
-            info!("Skipping embedding generation for document {} - no content", document.id);
+            info!(
+                "Skipping embedding generation for document {} - no content",
+                document.id
+            );
             return Ok(());
         }
 
@@ -350,17 +362,21 @@ impl QueueProcessor {
 
         // Chunk the document content
         let chunks = document.chunk_content(MAX_CHUNK_SIZE);
-        
+
         if chunks.is_empty() {
             info!("No chunks generated for document {}", document.id);
             return Ok(());
         }
 
-        info!("Generated {} chunks for document {}", chunks.len(), document.id);
+        info!(
+            "Generated {} chunks for document {}",
+            chunks.len(),
+            document.id
+        );
 
         // Generate embeddings for each chunk
         let mut embeddings = Vec::new();
-        
+
         for chunk in chunks {
             match self.state.ai_client.generate_embedding(&chunk.text).await {
                 Ok(embedding_vec) => {
@@ -376,8 +392,10 @@ impl QueueProcessor {
                     embeddings.push(embedding);
                 }
                 Err(e) => {
-                    error!("Failed to generate embedding for chunk {} of document {}: {}", 
-                           chunk.index, document.id, e);
+                    error!(
+                        "Failed to generate embedding for chunk {} of document {}: {}",
+                        chunk.index, document.id, e
+                    );
                     // Continue with other chunks even if one fails
                 }
             }
@@ -386,8 +404,10 @@ impl QueueProcessor {
         if !embeddings.is_empty() {
             let embedding_count = embeddings.len();
             embedding_repo.bulk_create(embeddings).await?;
-            info!("Successfully stored {} embeddings for document {}", 
-                  embedding_count, document.id);
+            info!(
+                "Successfully stored {} embeddings for document {}",
+                embedding_count, document.id
+            );
         } else {
             warn!("No embeddings were generated for document {}", document.id);
         }

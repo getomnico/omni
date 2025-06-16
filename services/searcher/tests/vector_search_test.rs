@@ -68,7 +68,7 @@ mod tests {
         ];
 
         assert_eq!(modes.len(), 3);
-        
+
         // Test serialization works
         for mode in modes {
             let serialized = serde_json::to_string(&mode).unwrap();
