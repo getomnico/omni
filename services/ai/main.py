@@ -92,7 +92,7 @@ class EmbeddingRequest(BaseModel):
 class EmbeddingResponse(BaseModel):
     embeddings: List[List[List[float]]]
     chunks_count: List[int]  # Number of chunks per text
-    chunks: List[List[Tuple[int, int]]]  # Token offset spans for each chunk
+    chunks: List[List[Tuple[int, int]]]  # Character offset spans for each chunk
 
 
 class RAGRequest(BaseModel):

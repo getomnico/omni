@@ -161,34 +161,34 @@ def generate_embeddings_sync(
             if chunking_mode == "sentence":
                 # Use sentence-based chunking with 1 sentence per chunk
                 logger.info("Processing sentence-based chunking...")
-                chunk_spans = chunker.chunk(
+                token_spans, char_spans = chunker.chunk(
                     text,
                     tokenizer,
                     n_sentences=1,
                     embedding_model_name=CHUNKING_MODEL_NAME,
                 )
-                logger.info(f"Found {len(chunk_spans)} sentence spans")
+                logger.info(f"Found {len(token_spans)} sentence spans")
             elif chunking_mode == "semantic":
                 # Use semantic chunking
                 logger.info("Processing semantic chunking...")
-                chunk_spans = chunker.chunk(
+                token_spans, char_spans = chunker.chunk(
                     text, tokenizer, embedding_model_name=CHUNKING_MODEL_NAME
                 )
-                logger.info(f"Found {len(chunk_spans)} semantic spans")
+                logger.info(f"Found {len(token_spans)} semantic spans")
             else:
                 # Use fixed-size chunking (default)
                 logger.info("Processing fixed-size chunking...")
-                chunk_spans = chunker.chunk(
+                token_spans, char_spans = chunker.chunk(
                     text,
                     tokenizer,
                     chunk_size=chunk_size,
                     embedding_model_name=CHUNKING_MODEL_NAME,
                 )
-                logger.info(f"Found {len(chunk_spans)} fixed-size spans")
+                logger.info(f"Found {len(token_spans)} fixed-size spans")
 
-            # Apply the chunking to embeddings
+            # Apply the chunking to embeddings using token spans
             chunk_embeddings = apply_chunking_to_embeddings(
-                token_embeddings, chunk_spans
+                token_embeddings, token_spans
             )
             logger.info(f"Chunking produced {len(chunk_embeddings)} chunks")
 
@@ -201,16 +201,15 @@ def generate_embeddings_sync(
                 chunk_emb_np = chunk_emb.float().cpu().numpy().tolist()
                 text_embeddings.append(chunk_emb_np[0])
 
-            # Flatten the embeddings for this text
             logger.info(
-                f"Extending all_embeddings with text_embeddings of len {len(text_embeddings)}"
+                f"Adding all_embeddings with text_embeddings of len {len(text_embeddings)}"
             )
             logger.info(
                 f"Text embeddings array content lens: {[len(x) for x in text_embeddings]}"
             )
             all_embeddings.append(text_embeddings)
             chunks_count.append(len(chunk_embeddings))
-            all_chunk_spans.append(chunk_spans)
+            all_chunk_spans.append(char_spans)
             logger.info(f"Completed processing text {i+1}/{len(texts)}")
 
         logger.info("All embeddings generated successfully")

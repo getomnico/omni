@@ -94,10 +94,18 @@ services:
       - EMBEDDING_MODEL=${EMBEDDING_MODEL}
       - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS}
       - VLLM_URL=${VLLM_URL:-http://vllm:8000}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
     networks:
       - clio-network
     volumes:
       - ai_models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     depends_on:
       postgres:
         condition: service_healthy

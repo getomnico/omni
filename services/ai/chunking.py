@@ -43,7 +43,7 @@ class Chunker:
         text: str,
         tokenizer: "AutoTokenizer",
         embedding_model_name: Optional[str] = None,
-    ) -> List[Tuple[int, int]]:
+    ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
         if self.embed_model is None:
             self._setup_semantic_chunking(embedding_model_name)
 
@@ -65,7 +65,8 @@ class Chunker:
         )
         token_offsets = tokens.offset_mapping
 
-        chunk_spans = []
+        token_spans = []
+        char_spans = []
 
         for char_start, char_end in nodes:
             # Convert char indices to token indices
@@ -80,43 +81,50 @@ class Chunker:
             if start_chunk_index < len(token_offsets) and end_chunk_index <= len(
                 token_offsets
             ):
-                chunk_spans.append((start_chunk_index, end_chunk_index))
+                token_spans.append((start_chunk_index, end_chunk_index))
+                char_spans.append((char_start, char_end))
             else:
                 break
 
-        return chunk_spans
+        return token_spans, char_spans
 
     def chunk_by_tokens(
         self,
         text: str,
         chunk_size: int,
         tokenizer: "AutoTokenizer",
-    ) -> List[Tuple[int, int, int]]:
+    ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
         tokens = tokenizer.encode_plus(
             text, return_offsets_mapping=True, add_special_tokens=False
         )
         token_offsets = tokens.offset_mapping
 
-        chunk_spans = []
+        token_spans = []
+        char_spans = []
         for i in range(0, len(token_offsets), chunk_size):
             chunk_end = min(i + chunk_size, len(token_offsets))
             if chunk_end - i > 0:
-                chunk_spans.append((i, chunk_end))
+                token_spans.append((i, chunk_end))
+                # Get character indices from token offsets
+                char_start = token_offsets[i][0]
+                char_end = token_offsets[chunk_end - 1][1]
+                char_spans.append((char_start, char_end))
 
-        return chunk_spans
+        return token_spans, char_spans
 
     def chunk_by_sentences(
         self,
         text: str,
         n_sentences: int,
         tokenizer: "AutoTokenizer",
-    ) -> List[Tuple[int, int, int]]:
+    ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
         tokens = tokenizer.encode_plus(
             text, return_offsets_mapping=True, add_special_tokens=False
         )
         token_offsets = tokens.offset_mapping
 
-        chunk_spans = []
+        token_spans = []
+        char_spans = []
         chunk_start = 0
         count_chunks = 0
         for i in range(0, len(token_offsets)):
@@ -126,12 +134,20 @@ class Chunker:
             ):
                 count_chunks += 1
                 if count_chunks == n_sentences:
-                    chunk_spans.append((chunk_start, i + 1))
+                    token_spans.append((chunk_start, i + 1))
+                    # Get character indices from token offsets
+                    char_start = token_offsets[chunk_start][0]
+                    char_end = token_offsets[i][1]
+                    char_spans.append((char_start, char_end))
                     chunk_start = i + 1
                     count_chunks = 0
         if len(tokens.tokens(0)) - chunk_start > 1:
-            chunk_spans.append((chunk_start, len(tokens.tokens(0))))
-        return chunk_spans
+            token_spans.append((chunk_start, len(tokens.tokens(0))))
+            # Get character indices for the last chunk
+            char_start = token_offsets[chunk_start][0]
+            char_end = token_offsets[-1][1]
+            char_spans.append((char_start, char_end))
+        return token_spans, char_spans
 
     def chunk(
         self,
