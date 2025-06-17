@@ -1,0 +1,90 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+    
+    - name: Cache Cargo dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+    
+    # Docker is pre-installed on GitHub Actions Ubuntu runners
+    - name: Start Docker
+      run: |
+        sudo systemctl start docker
+        sudo docker info
+
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+    
+    - name: Check with Clippy
+      run: cargo clippy --workspace --all-targets -- -D warnings
+    
+    - name: Run unit tests
+      run: cargo test --workspace --lib
+    
+    - name: Run integration tests
+      run: |
+        # Run integration tests for core services
+        cargo test -p clio-searcher --test integration_tests
+        cargo test -p clio-indexer --test api_integration_test
+        cargo test -p clio-indexer --test full_flow_test
+        cargo test -p clio-indexer --test queue_processor_test
+        
+        # Run shared tests
+        cargo test -p shared
+
+  # Separate job for checking compilation of all packages
+  compile:
+    name: Compile All Packages
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Cache Cargo dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-compile-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-compile-
+          ${{ runner.os }}-cargo-
+    
+    - name: Check workspace compilation
+      run: cargo check --workspace --all-targets

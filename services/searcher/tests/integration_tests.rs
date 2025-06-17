@@ -6,31 +6,28 @@ use axum::{
 };
 use clio_searcher::{create_app, AppState};
 use serde_json::{json, Value};
-use shared::test_utils::{create_test_documents_with_embeddings, BaseTestFixture};
+use shared::test_environment::TestEnvironment;
+use shared::test_utils::create_test_documents_with_embeddings;
 use shared::{AIClient, SearcherConfig};
-use std::env;
 use tower::ServiceExt;
 
 /// Test fixture specifically for searcher service
 struct SearcherTestFixture {
-    base: BaseTestFixture,
+    test_env: TestEnvironment,
     app: Router,
 }
 
 impl SearcherTestFixture {
     async fn new() -> Result<Self> {
-        // Set migrations directory to point to indexer migrations (the source of truth)
-        env::set_var("TEST_MIGRATIONS_DIR", "../indexer/migrations");
-
-        let base = BaseTestFixture::new().await?;
+        let test_env = TestEnvironment::new().await?;
 
         // Create test AI client and config
-        let ai_client = AIClient::new("http://localhost:8000".to_string());
+        let ai_client = AIClient::new(test_env.mock_ai_server.base_url.clone());
         let config = SearcherConfig {
             port: 8002,
-            database: base.database_config().clone(),
-            redis: base.redis_config().clone(),
-            ai_service_url: "http://localhost:8000".to_string(),
+            database: test_env.database_config(),
+            redis: test_env.redis_config(),
+            ai_service_url: test_env.mock_ai_server.base_url.clone(),
             typo_tolerance_enabled: true,
             typo_tolerance_max_distance: 2,
             typo_tolerance_min_word_length: 4,
@@ -39,20 +36,20 @@ impl SearcherTestFixture {
         };
 
         let app_state = AppState {
-            db_pool: base.db_pool().clone(),
-            redis_client: base.redis_client().clone(),
+            db_pool: test_env.db_pool.clone(),
+            redis_client: test_env.redis_client.clone(),
             ai_client,
             config,
         };
 
         let app = create_app(app_state);
 
-        Ok(Self { base, app })
+        Ok(Self { test_env, app })
     }
 
     /// Populate the database with test data including embeddings
     async fn seed_search_data(&self) -> Result<Vec<String>> {
-        create_test_documents_with_embeddings(self.base.db_pool().pool()).await
+        create_test_documents_with_embeddings(self.test_env.db_pool.pool()).await
     }
 
     /// Helper method to make search requests
@@ -145,16 +142,18 @@ async fn test_health_check() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_empty_search_returns_all_documents() -> Result<()> {
+async fn test_empty_search_returns_error() -> Result<()> {
     let fixture = SearcherTestFixture::new().await?;
     let _doc_ids = fixture.seed_search_data().await?;
 
     let (status, response) = fixture.search("", None, None).await?;
 
-    assert_eq!(status, StatusCode::OK);
-    assert!(response["results"].is_array());
-    assert_eq!(response["results"].as_array().unwrap().len(), 5);
-    assert_eq!(response["total_count"], 5);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(response["error"].is_string());
+    assert!(response["error"]
+        .as_str()
+        .unwrap()
+        .contains("Query cannot be empty"));
 
     Ok(())
 }

@@ -8,6 +8,8 @@ pub mod traits;
 
 pub mod test_utils;
 
+pub mod test_environment;
+
 pub use clients::ai::AIClient;
 pub use config::*;
 pub use constants::*;

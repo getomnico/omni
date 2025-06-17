@@ -99,4 +99,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Hybrid search (FTS + vector) for optimal RAG context extraction with top 5 documents
   - Citation system with [Source: Document Title] format for answer attribution
   - Frontend component with live streaming display and clickable source references
+- Robust test infrastructure with testcontainers
+  - Automatic dependency management using Docker containers for PostgreSQL and Redis
+  - Mock AI service with HTTP endpoints for embeddings, RAG, and generation
+  - TestEnvironment struct providing isolated test databases and cleanup for each test suite
+  - GitHub Actions CI/CD workflow with parallel test execution and dependency caching
 

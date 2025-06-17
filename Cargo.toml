@@ -44,6 +44,12 @@ oauth2 = "4.4"
 governor = "0.6"
 validator = { version = "0.18", features = ["derive"] }
 
+# Test dependencies
+testcontainers = "0.21"
+testcontainers-modules = { version = "0.9", features = ["postgres", "redis"] }
+wiremock = "0.6"
+axum-test = "15.3"
+
 [profile.release]
 opt-level = 3
 lto = true

@@ -23,3 +23,6 @@ tracing-subscriber = { workspace = true }
 dotenvy = { workspace = true }
 reqwest = { workspace = true }
 futures-util = "0.3"
+testcontainers = { workspace = true }
+testcontainers-modules = { workspace = true }
+axum = { workspace = true }

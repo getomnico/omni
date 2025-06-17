@@ -6,6 +6,7 @@ use std::time::Duration;
 #[derive(Clone)]
 pub struct DatabasePool {
     pool: PgPool,
+    database_url: String,
 }
 
 impl DatabasePool {
@@ -16,7 +17,10 @@ impl DatabasePool {
             .connect(database_url)
             .await?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            database_url: database_url.to_string(),
+        })
     }
 
     pub async fn new_with_options(
@@ -30,7 +34,10 @@ impl DatabasePool {
             .connect(database_url)
             .await?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            database_url: database_url.to_string(),
+        })
     }
 
     pub async fn from_config(config: &DatabaseConfig) -> Result<Self, DatabaseError> {
@@ -40,11 +47,18 @@ impl DatabasePool {
             .connect(&config.database_url)
             .await?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            database_url: config.database_url.clone(),
+        })
     }
 
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    pub fn database_url(&self) -> &str {
+        &self.database_url
     }
 
     pub async fn close(&self) {

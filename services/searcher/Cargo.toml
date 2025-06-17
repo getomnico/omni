@@ -40,3 +40,6 @@ shared = { path = "../../shared" }
 
 [dev-dependencies]
 urlencoding = "2.1"
+testcontainers = { workspace = true }
+testcontainers-modules = { workspace = true }
+axum-test = { workspace = true }
