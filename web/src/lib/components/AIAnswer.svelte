@@ -136,6 +136,22 @@
 
 <style>
     :global(.citation) {
-        @apply inline-flex items-center px-1 py-0.5 text-xs bg-blue-100 text-blue-700 rounded border border-blue-200 cursor-pointer hover:bg-blue-200 transition-colors;
+        display: inline-flex;
+        align-items: center;
+        padding: 0.125rem 0.25rem;
+        font-size: 0.75rem;
+        line-height: 1rem;
+        background-color: rgb(219 234 254);
+        color: rgb(29 78 216);
+        border-radius: 0.25rem;
+        border: 1px solid rgb(191 219 254);
+        cursor: pointer;
+        transition-property: background-color;
+        transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+        transition-duration: 150ms;
+    }
+    
+    :global(.citation:hover) {
+        background-color: rgb(191 219 254);
     }
 </style>

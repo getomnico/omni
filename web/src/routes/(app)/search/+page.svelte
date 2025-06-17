@@ -10,11 +10,10 @@
 
     let { data }: { data: PageData } = $props()
 
-    let searchQuery = $state('')
-    
-    $effect(() => {
-        searchQuery = $page.url.searchParams.get('q') || ''
-    })
+    // inputQuery represents the current value in the search input
+    let inputQuery = $state($page.url.searchParams.get('q') || '')
+    // searchQuery represents the submitted query (from URL param)
+    let searchQuery = $state($page.url.searchParams.get('q') || '')
     let isLoading = $state(false)
     let selectedFilters = $state<Map<string, Set<string>>>(new Map())
 
@@ -116,8 +115,8 @@
     }
 
     function handleSearch() {
-        if (searchQuery.trim()) {
-            window.location.href = `/search?q=${encodeURIComponent(searchQuery.trim())}`
+        if (inputQuery.trim()) {
+            window.location.href = `/search?q=${encodeURIComponent(inputQuery.trim())}`
         }
     }
 
@@ -151,7 +150,7 @@
                 </div>
                 <Input
                     type="text"
-                    bind:value={searchQuery}
+                    bind:value={inputQuery}
                     placeholder="Search across your organization..."
                     class="flex-1 border-none bg-transparent shadow-none focus:ring-0 focus-visible:ring-0"
                     onkeypress={handleKeyPress}
