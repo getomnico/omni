@@ -396,6 +396,54 @@ impl SearchEngine {
         highlights
     }
 
+    fn extract_context_around_matches(&self, content: &str, query: &str) -> String {
+        if content.is_empty() || query.is_empty() {
+            return String::new();
+        }
+
+        let query_lower = query.to_lowercase();
+        let content_lower = content.to_lowercase();
+        let terms: Vec<&str> = query_lower.split_whitespace().collect();
+
+        let mut contexts = Vec::new();
+
+        for term in terms {
+            if term.len() < 3 {
+                continue;
+            }
+
+            if let Some(pos) = content_lower.find(term) {
+                // Extract larger context around the match (200 chars before and after)
+                let context_start = pos.saturating_sub(200);
+                let context_end = (pos + term.len() + 200).min(content.len());
+
+                // Find sentence boundaries for cleaner context
+                let start = content[..context_start]
+                    .rfind('.')
+                    .map(|i| i + 1)
+                    .unwrap_or(context_start);
+
+                let end = content[context_end..]
+                    .find('.')
+                    .map(|i| context_end + i + 1)
+                    .unwrap_or(context_end);
+
+                let context_text = content[start..end].trim();
+                if !context_text.is_empty() && !contexts.contains(&context_text) {
+                    contexts.push(context_text);
+                }
+            }
+        }
+
+        // Join contexts and limit total length
+        let combined = contexts.join(" ... ");
+        if combined.len() > 1000 {
+            format!("{}...", &combined[..1000])
+        } else {
+            combined
+        }
+    }
+
     pub async fn suggest(&self, query: &str, limit: i64) -> Result<SuggestionsResponse> {
         info!("Getting suggestions for query: '{}'", query);
 
@@ -428,47 +476,122 @@ impl SearchEngine {
         })
     }
 
-    /// Generate RAG context from search request by running hybrid search
+    /// Generate RAG context from search request using chunk-based approach
     pub async fn get_rag_context(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
         info!("Generating RAG context for query: '{}'", request.query);
 
-        // Always use hybrid search for RAG to get best context
-        let (results, _) = self.hybrid_search(request).await?;
+        // Get embedding chunks that match the query semantically
+        let query_embedding = self.generate_query_embedding(&request.query).await?;
+        let embedding_repo = EmbeddingRepository::new(self.db_pool.pool());
 
-        // Take top 5 results for RAG context
-        let context_results: Vec<SearchResult> = results.into_iter().take(5).collect();
+        // Get multiple chunks per document for better context
+        let embedding_chunks = embedding_repo
+            .find_rag_chunks(
+                query_embedding,
+                3,   // max 3 chunks per document
+                0.7, // similarity threshold
+                15,  // max 15 total chunks
+            )
+            .await?;
+
+        // Get full-text search results to extract context around exact matches
+        let repo = DocumentRepository::new(self.db_pool.pool());
+        let (fts_results, _) = self.fulltext_search(&repo, request).await?;
+
+        // Combine embedding chunks and fulltext context
+        let mut combined_results = Vec::new();
+
+        // Add embedding chunks as SearchResults
+        for (doc, score, chunk_text) in embedding_chunks {
+            let mut doc_with_chunk = self.truncate_document_content(doc);
+            // Replace content with the specific chunk for semantic matches
+            doc_with_chunk.content = Some(chunk_text);
+
+            combined_results.push(SearchResult {
+                document: doc_with_chunk,
+                score,
+                highlights: vec![],
+                match_type: "semantic_chunk".to_string(),
+            });
+        }
+
+        // Add context around fulltext matches
+        for fts_result in fts_results.into_iter().take(5) {
+            if let Some(content) = &fts_result.document.content {
+                let context = self.extract_context_around_matches(content, &request.query);
+
+                combined_results.push(SearchResult {
+                    document: fts_result.document,
+                    score: fts_result.score,
+                    highlights: vec![context],
+                    match_type: "fulltext_context".to_string(),
+                });
+            }
+        }
+
+        // Sort by score and take top results
+        combined_results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        combined_results.truncate(10);
 
         info!(
-            "Generated RAG context with {} documents",
-            context_results.len()
+            "Generated RAG context with {} chunks",
+            combined_results.len()
         );
-        Ok(context_results)
+        Ok(combined_results)
     }
 
-    /// Build RAG prompt with context documents and citation instructions
+    /// Build RAG prompt with context chunks and citation instructions
     pub fn build_rag_prompt(&self, query: &str, context: &[SearchResult]) -> String {
         let mut prompt = String::new();
 
-        prompt.push_str("You are a helpful AI assistant that answers questions based on the provided context documents. ");
+        prompt.push_str("You are a helpful AI assistant that answers questions based on the provided context from various documents. ");
         prompt.push_str(
-            "Please provide a comprehensive answer using the information from the documents. ",
+            "Please provide a comprehensive answer using the information from the context. ",
         );
-        prompt.push_str("When referencing information from a document, cite it using the format [Source: Document Title]. ");
+        prompt.push_str(
+            "When referencing information, cite it using the format [Source: Document Title]. ",
+        );
         prompt.push_str(
             "If the context doesn't contain enough information to answer the question, say so.\n\n",
         );
 
-        prompt.push_str("Context Documents:\n");
+        prompt.push_str("Context Information:\n");
         for (i, result) in context.iter().enumerate() {
-            prompt.push_str(&format!("Document {}: {}\n", i + 1, result.document.title));
-            if let Some(content) = &result.document.content {
-                // Truncate content for context (keep more than search results)
-                let truncated_content = if content.len() > 2000 {
-                    format!("{}...", &content[..2000])
-                } else {
-                    content.clone()
-                };
-                prompt.push_str(&format!("Content: {}\n", truncated_content));
+            prompt.push_str(&format!(
+                "Context {}: From \"{}\" ({})\n",
+                i + 1,
+                result.document.title,
+                result.match_type
+            ));
+
+            match result.match_type.as_str() {
+                "semantic_chunk" => {
+                    // For semantic chunks, use the truncated content as it represents the relevant chunk
+                    if let Some(content) = &result.document.content {
+                        prompt.push_str(&format!("Content: {}\n", content));
+                    }
+                }
+                "fulltext_context" => {
+                    // For fulltext matches, use the highlights which contain context around matches
+                    if !result.highlights.is_empty() {
+                        prompt.push_str(&format!("Relevant excerpt: {}\n", result.highlights[0]));
+                    }
+                }
+                _ => {
+                    // Fallback to truncated content
+                    if let Some(content) = &result.document.content {
+                        let truncated_content = if content.len() > 800 {
+                            format!("{}...", &content[..800])
+                        } else {
+                            content.clone()
+                        };
+                        prompt.push_str(&format!("Content: {}\n", truncated_content));
+                    }
+                }
             }
             prompt.push_str("\n");
         }

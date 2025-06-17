@@ -296,7 +296,8 @@ impl EmbeddingRepository {
                 d.content_type, d.file_size, d.file_extension, d.url, d.parent_id,
                 d.metadata, d.permissions, d.created_at, d.updated_at, d.last_indexed_at,
                 e.embedding <=> $1 as distance,
-                e.chunk_text
+                e.chunk_start_offset,
+                e.chunk_end_offset
             FROM embeddings e
             JOIN documents d ON e.document_id = d.id
             ORDER BY e.embedding <=> $1
@@ -305,6 +306,88 @@ impl EmbeddingRepository {
         )
         .bind(&vector)
         .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let chunks_with_scores = results
+            .into_iter()
+            .map(|row| {
+                let doc = Document {
+                    id: row.get("id"),
+                    source_id: row.get("source_id"),
+                    external_id: row.get("external_id"),
+                    title: row.get("title"),
+                    content: row.get("content"),
+                    content_type: row.get("content_type"),
+                    file_size: row.get("file_size"),
+                    file_extension: row.get("file_extension"),
+                    url: row.get("url"),
+                    parent_id: row.get("parent_id"),
+                    metadata: row.get("metadata"),
+                    permissions: row.get("permissions"),
+                    created_at: row.get("created_at"),
+                    updated_at: row.get("updated_at"),
+                    last_indexed_at: row.get("last_indexed_at"),
+                };
+                let distance: Option<f32> = row.get("distance");
+                let similarity = 1.0 - distance.unwrap_or(1.0);
+                // Extract chunk text from document content using offsets
+                let chunk_start_offset: i32 = row.get("chunk_start_offset");
+                let chunk_end_offset: i32 = row.get("chunk_end_offset");
+                let chunk_text = if let Some(content) = &doc.content {
+                    Self::extract_chunk_text(content, chunk_start_offset, chunk_end_offset)
+                } else {
+                    String::new()
+                };
+                (doc, similarity, chunk_text)
+            })
+            .collect();
+
+        Ok(chunks_with_scores)
+    }
+
+    /// Find multiple relevant chunks per document for RAG context
+    /// Returns up to max_chunks_per_doc chunks per document, with similarity threshold
+    pub async fn find_rag_chunks(
+        &self,
+        embedding: Vec<f32>,
+        max_chunks_per_doc: i32,
+        similarity_threshold: f32,
+        max_total_chunks: i64,
+    ) -> Result<Vec<(Document, f32, String)>, DatabaseError> {
+        let vector = Vector::from(embedding);
+        let distance_threshold = 1.0 - similarity_threshold;
+
+        let results = sqlx::query(
+            r#"
+            WITH ranked_chunks AS (
+                SELECT 
+                    e.document_id,
+                    e.embedding <=> $1 as distance,
+                    e.chunk_start_offset,
+                    e.chunk_end_offset,
+                    ROW_NUMBER() OVER (PARTITION BY e.document_id ORDER BY e.embedding <=> $1) as chunk_rank
+                FROM embeddings e
+                WHERE e.embedding <=> $1 <= $4
+            )
+            SELECT 
+                d.id, d.source_id, d.external_id, d.title, d.content,
+                d.content_type, d.file_size, d.file_extension, d.url, d.parent_id,
+                d.metadata, d.permissions, d.created_at, d.updated_at, d.last_indexed_at,
+                rc.distance,
+                rc.chunk_start_offset,
+                rc.chunk_end_offset
+            FROM ranked_chunks rc
+            JOIN documents d ON rc.document_id = d.id
+            WHERE rc.chunk_rank <= $2
+            ORDER BY rc.distance
+            LIMIT $3
+            "#,
+        )
+        .bind(&vector)
+        .bind(max_chunks_per_doc)
+        .bind(max_total_chunks)
+        .bind(distance_threshold)
         .fetch_all(&self.pool)
         .await?;
 
