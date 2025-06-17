@@ -66,7 +66,8 @@ pub struct Embedding {
     pub id: String,
     pub document_id: String,
     pub chunk_index: i32,
-    pub chunk_text: String,
+    pub chunk_start_offset: i32, // Character start offset in original document
+    pub chunk_end_offset: i32,   // Character end offset in original document
     pub embedding: Vector,
     pub model_name: String,
     pub created_at: OffsetDateTime,

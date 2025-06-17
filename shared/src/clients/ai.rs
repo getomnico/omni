@@ -7,16 +7,23 @@ use tracing::warn;
 
 #[derive(Serialize)]
 pub struct EmbeddingRequest {
-    pub text: String,
-    pub model: String,
+    pub texts: Vec<String>,
+    pub task: Option<String>,
+    pub chunk_size: Option<i32>,
+    pub chunking_mode: Option<String>,
 }
 
 #[derive(Deserialize)]
 pub struct EmbeddingResponse {
-    pub embedding: Vec<f32>,
-    #[allow(dead_code)]
-    pub model: String,
-    pub dimensions: usize,
+    pub embeddings: Vec<Vec<Vec<f32>>>, // embeddings per text per chunk
+    pub chunks_count: Vec<i32>,         // number of chunks per text
+    pub chunks: Vec<Vec<(i32, i32)>>,   // character offset spans for each chunk
+}
+
+#[derive(Debug, Clone)]
+pub struct TextEmbedding {
+    pub chunk_embeddings: Vec<Vec<f32>>,
+    pub chunk_spans: Vec<(i32, i32)>, // character start/end offsets
 }
 
 #[derive(Serialize)]
@@ -42,10 +49,23 @@ impl AIClient {
         }
     }
 
-    pub async fn generate_embedding(&self, text: &str) -> Result<Vec<f32>> {
+    pub async fn generate_embeddings(&self, texts: &[String]) -> Result<Vec<TextEmbedding>> {
+        self.generate_embeddings_with_options(texts, None, None, None)
+            .await
+    }
+
+    pub async fn generate_embeddings_with_options(
+        &self,
+        texts: &[String],
+        task: Option<String>,
+        chunk_size: Option<i32>,
+        chunking_mode: Option<String>,
+    ) -> Result<Vec<TextEmbedding>> {
         let request = EmbeddingRequest {
-            text: text.to_string(),
-            model: "e5-large-v2".to_string(),
+            texts: texts.to_vec(),
+            task,
+            chunk_size,
+            chunking_mode,
         };
 
         let response = self
@@ -59,29 +79,63 @@ impl AIClient {
             Ok(res) => {
                 if res.status().is_success() {
                     let embedding_response: EmbeddingResponse = res.json().await?;
-                    if embedding_response.dimensions != 1024 {
-                        warn!(
-                            "Unexpected embedding dimensions: {} (expected 1024)",
-                            embedding_response.dimensions
-                        );
+
+                    let mut result = Vec::new();
+                    for (i, text_embeddings) in embedding_response.embeddings.iter().enumerate() {
+                        let chunk_spans = embedding_response
+                            .chunks
+                            .get(i)
+                            .cloned()
+                            .unwrap_or_default();
+                        result.push(TextEmbedding {
+                            chunk_embeddings: text_embeddings.clone(),
+                            chunk_spans,
+                        });
                     }
-                    Ok(embedding_response.embedding)
+
+                    Ok(result)
                 } else {
                     warn!(
-                        "AI service returned error status: {}, using placeholder embedding",
+                        "AI service returned error status: {}, using placeholder embeddings",
                         res.status()
                     );
-                    Ok(vec![0.0; 1024])
+                    // Return placeholder embeddings for each text
+                    Ok(texts
+                        .iter()
+                        .map(|_| TextEmbedding {
+                            chunk_embeddings: vec![vec![0.0; 1024]],
+                            chunk_spans: vec![(0, 0)],
+                        })
+                        .collect())
                 }
             }
             Err(e) => {
                 warn!(
-                    "Failed to connect to AI service: {}, using placeholder embedding",
+                    "Failed to connect to AI service: {}, using placeholder embeddings",
                     e
                 );
-                Ok(vec![0.0; 1024])
+                // Return placeholder embeddings for each text
+                Ok(texts
+                    .iter()
+                    .map(|_| TextEmbedding {
+                        chunk_embeddings: vec![vec![0.0; 1024]],
+                        chunk_spans: vec![(0, 0)],
+                    })
+                    .collect())
             }
         }
+    }
+
+    // Keep backward compatibility method for single text
+    #[deprecated(note = "Use generate_embeddings instead")]
+    pub async fn generate_embedding(&self, text: &str) -> Result<Vec<f32>> {
+        let embeddings = self.generate_embeddings(&[text.to_string()]).await?;
+        if let Some(first_text) = embeddings.first() {
+            if let Some(first_chunk) = first_text.chunk_embeddings.first() {
+                return Ok(first_chunk.clone());
+            }
+        }
+        Ok(vec![0.0; 1024])
     }
 
     /// Stream AI response from the prompt endpoint

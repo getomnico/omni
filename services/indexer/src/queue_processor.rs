@@ -343,8 +343,6 @@ impl QueueProcessor {
 
     /// Generate embeddings for a document by chunking and calling the AI service
     async fn generate_embeddings(&self, document: &Document) -> Result<()> {
-        const MAX_CHUNK_SIZE: usize = 1000; // Maximum characters per chunk
-
         // Skip documents without content
         if document.content.is_none() || document.content.as_ref().unwrap().trim().is_empty() {
             info!(
@@ -360,45 +358,72 @@ impl QueueProcessor {
         let embedding_repo = EmbeddingRepository::new(self.state.db_pool.pool());
         embedding_repo.delete_by_document_id(&document.id).await?;
 
-        // Chunk the document content
-        let chunks = document.chunk_content(MAX_CHUNK_SIZE);
+        // Generate embeddings using AI service's semantic chunking
+        let content = match &document.content {
+            Some(content) => content.clone(),
+            None => {
+                info!("No content to embed for document {}", document.id);
+                return Ok(());
+            }
+        };
 
-        if chunks.is_empty() {
-            info!("No chunks generated for document {}", document.id);
+        info!("Generating embeddings for document {}", document.id);
+
+        // Use AI service to generate embeddings with semantic chunking
+        let text_embeddings = match self
+            .state
+            .ai_client
+            .generate_embeddings_with_options(
+                &[content],
+                Some("retrieval.passage".to_string()),
+                None, // no chunk size needed for semantic chunking
+                Some("semantic".to_string()),
+            )
+            .await
+        {
+            Ok(embeddings) => embeddings,
+            Err(e) => {
+                error!(
+                    "Failed to generate embeddings for document {}: {}",
+                    document.id, e
+                );
+                return Ok(());
+            }
+        };
+
+        if text_embeddings.is_empty() {
+            info!("No embeddings generated for document {}", document.id);
             return Ok(());
         }
 
+        let text_embedding = &text_embeddings[0]; // We only sent one text
+
         info!(
             "Generated {} chunks for document {}",
-            chunks.len(),
+            text_embedding.chunk_embeddings.len(),
             document.id
         );
 
-        // Generate embeddings for each chunk
+        // Create embedding records from AI service response
         let mut embeddings = Vec::new();
 
-        for chunk in chunks {
-            match self.state.ai_client.generate_embedding(&chunk.text).await {
-                Ok(embedding_vec) => {
-                    let embedding = Embedding {
-                        id: Ulid::new().to_string(),
-                        document_id: document.id.clone(),
-                        chunk_index: chunk.index,
-                        chunk_text: chunk.text,
-                        embedding: Vector::from(embedding_vec),
-                        model_name: "intfloat/e5-large-v2".to_string(),
-                        created_at: sqlx::types::time::OffsetDateTime::now_utc(),
-                    };
-                    embeddings.push(embedding);
-                }
-                Err(e) => {
-                    error!(
-                        "Failed to generate embedding for chunk {} of document {}: {}",
-                        chunk.index, document.id, e
-                    );
-                    // Continue with other chunks even if one fails
-                }
-            }
+        for (chunk_index, (chunk_embedding, chunk_span)) in text_embedding
+            .chunk_embeddings
+            .iter()
+            .zip(text_embedding.chunk_spans.iter())
+            .enumerate()
+        {
+            let embedding = Embedding {
+                id: Ulid::new().to_string(),
+                document_id: document.id.clone(),
+                chunk_index: chunk_index as i32,
+                chunk_start_offset: chunk_span.0,
+                chunk_end_offset: chunk_span.1,
+                embedding: Vector::from(chunk_embedding.clone()),
+                model_name: "jinaai/jina-embeddings-v3".to_string(),
+                created_at: sqlx::types::time::OffsetDateTime::now_utc(),
+            };
+            embeddings.push(embedding);
         }
 
         if !embeddings.is_empty() {

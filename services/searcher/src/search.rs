@@ -209,7 +209,16 @@ impl SearchEngine {
     }
 
     async fn generate_query_embedding(&self, query: &str) -> Result<Vec<f32>> {
-        self.ai_client.generate_embedding(query).await
+        let embeddings = self
+            .ai_client
+            .generate_embeddings(&[query.to_string()])
+            .await?;
+        if let Some(first_embedding) = embeddings.first() {
+            if let Some(first_chunk) = first_embedding.chunk_embeddings.first() {
+                return Ok(first_chunk.clone());
+            }
+        }
+        Err(anyhow::anyhow!("Failed to generate embedding for query"))
     }
 
     async fn hybrid_search(

@@ -14,13 +14,29 @@ impl EmbeddingRepository {
         Self { pool: pool.clone() }
     }
 
+    /// Extract chunk text from document content using character offsets
+    pub fn extract_chunk_text(
+        document_content: &str,
+        start_offset: i32,
+        end_offset: i32,
+    ) -> String {
+        let start = start_offset as usize;
+        let end = end_offset as usize;
+
+        if start >= document_content.len() || end > document_content.len() || start >= end {
+            return String::new();
+        }
+
+        document_content[start..end].to_string()
+    }
+
     pub async fn find_by_document_id(
         &self,
         document_id: &str,
     ) -> Result<Vec<Embedding>, DatabaseError> {
         let embeddings = sqlx::query_as::<_, Embedding>(
             r#"
-            SELECT id, document_id, chunk_index, chunk_text, embedding, model_name, created_at
+            SELECT id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name, created_at
             FROM embeddings
             WHERE document_id = $1
             ORDER BY chunk_index
@@ -36,15 +52,16 @@ impl EmbeddingRepository {
     pub async fn create(&self, embedding: Embedding) -> Result<Embedding, DatabaseError> {
         let created_embedding = sqlx::query_as::<_, Embedding>(
             r#"
-            INSERT INTO embeddings (id, document_id, chunk_index, chunk_text, embedding, model_name)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id, document_id, chunk_index, chunk_text, embedding, model_name, created_at
+            INSERT INTO embeddings (id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name, created_at
             "#,
         )
         .bind(&embedding.id)
         .bind(&embedding.document_id)
         .bind(&embedding.chunk_index)
-        .bind(&embedding.chunk_text)
+        .bind(&embedding.chunk_start_offset)
+        .bind(&embedding.chunk_end_offset)
         .bind(&embedding.embedding)
         .bind(&embedding.model_name)
         .fetch_one(&self.pool)
@@ -71,17 +88,19 @@ impl EmbeddingRepository {
         for embedding in embeddings {
             sqlx::query(
                 r#"
-                INSERT INTO embeddings (id, document_id, chunk_index, chunk_text, embedding, model_name)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                INSERT INTO embeddings (id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 ON CONFLICT (document_id, chunk_index, model_name) DO UPDATE
-                SET chunk_text = EXCLUDED.chunk_text,
+                SET chunk_start_offset = EXCLUDED.chunk_start_offset,
+                    chunk_end_offset = EXCLUDED.chunk_end_offset,
                     embedding = EXCLUDED.embedding
                 "#,
             )
             .bind(&embedding.id)
             .bind(&embedding.document_id)
             .bind(&embedding.chunk_index)
-            .bind(&embedding.chunk_text)
+            .bind(&embedding.chunk_start_offset)
+            .bind(&embedding.chunk_end_offset)
             .bind(&embedding.embedding)
             .bind(&embedding.model_name)
             .execute(&mut *tx)
@@ -106,7 +125,8 @@ impl EmbeddingRepository {
                 SELECT 
                     e.document_id,
                     e.embedding <=> $1 as distance,
-                    e.chunk_text,
+                    e.chunk_start_offset,
+                    e.chunk_end_offset,
                     ROW_NUMBER() OVER (PARTITION BY e.document_id ORDER BY e.embedding <=> $1) as rn
                 FROM embeddings e
             )
@@ -115,7 +135,8 @@ impl EmbeddingRepository {
                 d.content_type, d.file_size, d.file_extension, d.url, d.parent_id,
                 d.metadata, d.permissions, d.created_at, d.updated_at, d.last_indexed_at,
                 re.distance,
-                re.chunk_text
+                re.chunk_start_offset,
+                re.chunk_end_offset
             FROM ranked_embeddings re
             JOIN documents d ON re.document_id = d.id
             WHERE re.rn = 1
@@ -194,7 +215,8 @@ impl EmbeddingRepository {
                 SELECT 
                     e.document_id,
                     e.embedding <=> $1 as distance,
-                    e.chunk_text,
+                    e.chunk_start_offset,
+                    e.chunk_end_offset,
                     ROW_NUMBER() OVER (PARTITION BY e.document_id ORDER BY e.embedding <=> $1) as rn
                 FROM embeddings e
             )
@@ -308,7 +330,14 @@ impl EmbeddingRepository {
                 };
                 let distance: Option<f32> = row.get("distance");
                 let similarity = 1.0 - distance.unwrap_or(1.0);
-                let chunk_text: String = row.get("chunk_text");
+                // Extract chunk text from document content using offsets
+                let chunk_start_offset: i32 = row.get("chunk_start_offset");
+                let chunk_end_offset: i32 = row.get("chunk_end_offset");
+                let chunk_text = if let Some(content) = &doc.content {
+                    Self::extract_chunk_text(content, chunk_start_offset, chunk_end_offset)
+                } else {
+                    String::new()
+                };
                 (doc, similarity, chunk_text)
             })
             .collect();
