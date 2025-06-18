@@ -54,7 +54,7 @@ impl AIClient {
             texts,
             Some("retrieval.query".to_string()),
             None,
-            None,
+            Some("none".to_string()),
         )
         .await
     }

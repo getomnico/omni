@@ -287,7 +287,7 @@
                                                 {formatDate(result.document.created_at)}
                                             </div>
                                             <div class="rounded bg-gray-100 px-2 py-1 text-xs">
-                                                Score: {result.score.toFixed(2)}
+                                                Score: {result.score?.toFixed(2)}
                                             </div>
                                         </div>
                                     </div>

@@ -141,9 +141,10 @@ async def generate_embeddings(request: EmbeddingRequest):
     logger.info(
         f"Generating embeddings for {len(request.texts)} texts with chunking_mode={request.chunking_mode}, chunk_size={request.chunk_size}"
     )
+    logger.info(f"Input text for generating embeddings: {request.texts}")
 
     # Validate chunking method
-    valid_chunking_modes = ["sentence", "fixed", "semantic"]
+    valid_chunking_modes = ["sentence", "fixed", "semantic", "none"]
     if request.chunking_mode not in valid_chunking_modes:
         raise HTTPException(
             status_code=422,

@@ -54,6 +54,10 @@ def get_chunker(chunking_mode: str) -> Chunker:
     """Get or create a chunker instance for the given mode"""
     global _chunkers
 
+    # Skip chunker creation for "none" mode
+    if chunking_mode == "none":
+        return None
+
     with _chunker_lock:
         if chunking_mode not in _chunkers:
             logger.info(f"Creating new chunker for mode: {chunking_mode}")
@@ -97,7 +101,7 @@ def generate_embeddings_sync(
         model, tokenizer = load_model()
         logger.info("Model and tokenizer loaded successfully")
 
-        # Get cached chunker instance
+        # Get cached chunker instance (None for "none" mode)
         chunker = get_chunker(chunking_mode)
 
         # Batch tokenization
@@ -157,8 +161,18 @@ def generate_embeddings_sync(
             # Apply chunking based on the selected mode
             logger.info(f"Applying chunking mode: {chunking_mode}")
 
-            # Get chunk spans using the Chunker
-            if chunking_mode == "sentence":
+            if chunking_mode == "none":
+                # No chunking - use the entire text as a single chunk
+                logger.info("Skipping chunking - using entire text as single chunk")
+                # Get the actual token length (excluding padding)
+                attention_mask = inputs["attention_mask"][i]
+                token_length = attention_mask.sum().item()
+                token_spans = [(0, token_length)]
+                char_spans = [(0, len(text))]
+                logger.info(
+                    f"Single span created: token_span={token_spans[0]}, char_span={char_spans[0]}"
+                )
+            elif chunking_mode == "sentence":
                 # Use sentence-based chunking with 1 sentence per chunk
                 logger.info("Processing sentence-based chunking...")
                 token_spans, char_spans = chunker.chunk(
