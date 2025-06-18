@@ -298,6 +298,7 @@ impl SyncManager {
                 | "text/plain"
                 | "text/html"
                 | "text/csv"
+                | "application/pdf"
         )
     }
 

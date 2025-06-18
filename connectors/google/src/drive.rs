@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use pdfium_render::prelude::*;
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::debug;
@@ -76,6 +77,7 @@ impl DriveClient {
             "text/plain" | "text/html" | "text/csv" => {
                 self.download_file_content(token, &file.id).await
             }
+            "application/pdf" => self.get_pdf_content(token, &file.id).await,
             _ => {
                 debug!("Unsupported file type: {}", file.mime_type);
                 Ok(String::new())
@@ -164,6 +166,53 @@ impl DriveClient {
         }
 
         response.text().await.map_err(Into::into)
+    }
+
+    async fn get_pdf_content(&self, token: &str, file_id: &str) -> Result<String> {
+        let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, file_id);
+
+        let response = self.client.get(&url).bearer_auth(token).send().await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            return Err(anyhow!("Failed to download PDF: {}", error_text));
+        }
+
+        let pdf_bytes = response.bytes().await?;
+
+        // Initialize pdfium
+        let pdfium = Pdfium::default();
+
+        // Load PDF from bytes
+        let document = match pdfium.load_pdf_from_byte_slice(&pdf_bytes, None) {
+            Ok(doc) => doc,
+            Err(e) => {
+                debug!(
+                    "Failed to load PDF: {}. File might be corrupted or password-protected.",
+                    e
+                );
+                return Ok(String::new());
+            }
+        };
+
+        let mut full_text = String::new();
+
+        // Extract text from each page
+        for page in document.pages().iter() {
+            match page.text() {
+                Ok(page_text) => {
+                    let text = page_text.all();
+                    full_text.push_str(&text);
+                    full_text.push('\n'); // Add page separator
+                }
+                Err(e) => {
+                    debug!("Failed to extract text from PDF page: {}", e);
+                    // Continue with other pages
+                }
+            }
+        }
+
+        Ok(full_text.trim().to_string())
     }
 }
 
