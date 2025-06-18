@@ -59,7 +59,3 @@ services:
     profiles:
       - production
   
-  # Skip vLLM in dev for now
-  vllm:
-    profiles:
-      - with-vllm

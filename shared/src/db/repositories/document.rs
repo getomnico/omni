@@ -57,7 +57,7 @@ impl DocumentRepository {
                    metadata, permissions, created_at, updated_at, last_indexed_at
             FROM documents
             WHERE tsv_content @@ websearch_to_tsquery('english', $1)
-            ORDER BY ts_rank(tsv_content, websearch_to_tsquery('english', $1)) DESC
+            ORDER BY ts_rank_cd(tsv_content, websearch_to_tsquery('english', $1)) DESC
             LIMIT $2
             "#,
         )
