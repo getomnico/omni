@@ -25,7 +25,7 @@ export const POST: RequestHandler = async ({ params, locals }) => {
         where: eq(oauthCredentials.sourceId, sourceId),
     })
 
-    if (credentials && source.sourceType === SourceType.GOOGLE) {
+    if (credentials && source.sourceType === SourceType.GOOGLE_DRIVE) {
         try {
             if (credentials.accessToken) {
                 await fetch(

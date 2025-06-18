@@ -6,6 +6,7 @@
 
     let liveIndexingStatus = data.indexingStatus
     let eventSource: EventSource | null = null
+    let disconnectingSourceId: string | null = null
 
     function formatDate(date: Date | null) {
         if (!date) return 'N/A'
@@ -67,6 +68,27 @@
         })
         overall.total = overall.pending + overall.processing + overall.completed + overall.failed
         return overall
+    }
+
+    async function disconnectSource(sourceId: string) {
+        disconnectingSourceId = sourceId
+        try {
+            const response = await fetch(`/api/sources/${sourceId}/disconnect`, {
+                method: 'POST',
+            })
+
+            if (!response.ok) {
+                throw new Error('Failed to disconnect source')
+            }
+
+            // Refresh the page to show updated connection status
+            window.location.reload()
+        } catch (error) {
+            console.error('Error disconnecting source:', error)
+            alert('Failed to disconnect source. Please try again.')
+        } finally {
+            disconnectingSourceId = null
+        }
     }
 
     onMount(() => {
@@ -330,9 +352,13 @@
                                         Sync Now
                                     </button>
                                     <button
-                                        class="border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground rounded-md border px-4 py-2 text-sm font-medium transition-colors"
+                                        class="border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground rounded-md border px-4 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                                        disabled={disconnectingSourceId === connectedSource.id}
+                                        on:click={() => disconnectSource(connectedSource.id)}
                                     >
-                                        Disconnect
+                                        {disconnectingSourceId === connectedSource.id
+                                            ? 'Disconnecting...'
+                                            : 'Disconnect'}
                                     </button>
                                 </div>
                             {:else if integration.id === 'google'}
