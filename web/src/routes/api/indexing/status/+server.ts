@@ -7,15 +7,25 @@ export const GET: RequestHandler = async ({ url }) => {
     const stream = new ReadableStream({
         start(controller) {
             const encoder = new TextEncoder()
+            let isClosed = false
 
             // Function to send data to client
             const sendData = (data: any) => {
-                const message = `data: ${JSON.stringify(data)}\n\n`
-                controller.enqueue(encoder.encode(message))
+                if (isClosed) return
+
+                try {
+                    const message = `data: ${JSON.stringify(data)}\n\n`
+                    controller.enqueue(encoder.encode(message))
+                } catch (error) {
+                    console.error('Error sending SSE data:', error)
+                    isClosed = true
+                }
             }
 
             // Function to fetch and send status updates
             const fetchStatus = async () => {
+                if (isClosed) return
+
                 try {
                     // Get overall status counts
                     const statusCounts = await db
@@ -76,12 +86,13 @@ export const GET: RequestHandler = async ({ url }) => {
                         (acc, item) => {
                             if (!acc[item.sourceId]) {
                                 acc[item.sourceId] = {
-                                    sourceName: item.sourceName,
-                                    sourceType: item.sourceType,
-                                    statuses: {},
+                                    pending: 0,
+                                    processing: 0,
+                                    completed: 0,
+                                    failed: 0,
                                 }
                             }
-                            acc[item.sourceId].statuses[item.status] = item.count
+                            acc[item.sourceId][item.status] = item.count
                             return acc
                         },
                         {} as Record<string, any>,
@@ -103,7 +114,9 @@ export const GET: RequestHandler = async ({ url }) => {
                     sendData(statusData)
                 } catch (error) {
                     console.error('Error fetching indexing status:', error)
-                    sendData({ error: 'Failed to fetch status' })
+                    if (!isClosed) {
+                        sendData({ error: 'Failed to fetch status' })
+                    }
                 }
             }
 
@@ -115,7 +128,13 @@ export const GET: RequestHandler = async ({ url }) => {
 
             // Cleanup on connection close
             return () => {
+                isClosed = true
                 clearInterval(interval)
+                try {
+                    controller.close()
+                } catch (error) {
+                    // Controller might already be closed
+                }
             }
         },
     })

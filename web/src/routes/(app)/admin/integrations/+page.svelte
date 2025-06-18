@@ -1,6 +1,8 @@
 <script lang="ts">
     import type { PageData } from './$types'
     import { onMount, onDestroy } from 'svelte'
+    import { Button } from '$lib/components/ui/button'
+    import * as AlertDialog from '$lib/components/ui/alert-dialog'
 
     export let data: PageData
 
@@ -92,28 +94,53 @@
     }
 
     onMount(() => {
-        // Start listening to SSE updates
-        eventSource = new EventSource('/api/indexing/status')
+        let reconnectAttempts = 0
+        const maxReconnectAttempts = 5
+        const reconnectDelay = 3000
 
-        eventSource.onmessage = (event) => {
-            try {
-                const statusData = JSON.parse(event.data)
-                if (statusData.sources) {
-                    liveIndexingStatus = statusData.sources
+        function connectSSE() {
+            eventSource = new EventSource('/api/indexing/status')
+
+            eventSource.onopen = () => {
+                reconnectAttempts = 0
+                console.log('SSE connection established')
+            }
+
+            eventSource.onmessage = (event) => {
+                try {
+                    const statusData = JSON.parse(event.data)
+                    if (statusData.sources) {
+                        liveIndexingStatus = statusData.sources
+                    }
+                } catch (error) {
+                    console.error('Error parsing SSE data:', error)
                 }
-            } catch (error) {
-                console.error('Error parsing SSE data:', error)
+            }
+
+            eventSource.onerror = (error) => {
+                console.error('SSE connection error:', error)
+                eventSource?.close()
+                eventSource = null
+
+                // Attempt to reconnect with exponential backoff
+                if (reconnectAttempts < maxReconnectAttempts) {
+                    reconnectAttempts++
+                    const delay = reconnectDelay * Math.pow(2, reconnectAttempts - 1)
+                    console.log(`Reconnecting SSE in ${delay}ms (attempt ${reconnectAttempts})`)
+                    setTimeout(connectSSE, delay)
+                } else {
+                    console.error('Max SSE reconnection attempts reached')
+                }
             }
         }
 
-        eventSource.onerror = (error) => {
-            console.error('SSE connection error:', error)
-        }
+        connectSSE()
     })
 
     onDestroy(() => {
         if (eventSource) {
             eventSource.close()
+            eventSource = null
         }
     })
 </script>
@@ -346,26 +373,52 @@
                                 {/if}
 
                                 <div class="flex space-x-2">
-                                    <button
-                                        class="bg-muted hover:bg-muted/80 text-foreground flex-1 rounded-md px-4 py-2 text-sm font-medium transition-colors"
-                                    >
+                                    <Button variant="secondary" class="flex-1 cursor-pointer">
                                         Sync Now
-                                    </button>
-                                    <button
-                                        class="border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground rounded-md border px-4 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50"
-                                        disabled={disconnectingSourceId === connectedSource.id}
-                                        on:click={() => disconnectSource(connectedSource.id)}
-                                    >
-                                        {disconnectingSourceId === connectedSource.id
-                                            ? 'Disconnecting...'
-                                            : 'Disconnect'}
-                                    </button>
+                                    </Button>
+                                    <AlertDialog.Root>
+                                        <AlertDialog.Trigger>
+                                            <Button
+                                                variant="destructive"
+                                                disabled={disconnectingSourceId ===
+                                                    connectedSource.id}
+                                                class="cursor-pointer"
+                                            >
+                                                {disconnectingSourceId === connectedSource.id
+                                                    ? 'Disconnecting...'
+                                                    : 'Disconnect'}
+                                            </Button>
+                                        </AlertDialog.Trigger>
+                                        <AlertDialog.Content>
+                                            <AlertDialog.Header>
+                                                <AlertDialog.Title
+                                                    >Disconnect {integration.name}?</AlertDialog.Title
+                                                >
+                                                <AlertDialog.Description>
+                                                    This action will disconnect {integration.name} from
+                                                    your workspace. All indexed data will remain searchable,
+                                                    but no new data will be synced. You can reconnect
+                                                    this source at any time.
+                                                </AlertDialog.Description>
+                                            </AlertDialog.Header>
+                                            <AlertDialog.Footer>
+                                                <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+                                                <AlertDialog.Action
+                                                    onclick={() =>
+                                                        disconnectSource(connectedSource.id)}
+                                                >
+                                                    Disconnect
+                                                </AlertDialog.Action>
+                                            </AlertDialog.Footer>
+                                        </AlertDialog.Content>
+                                    </AlertDialog.Root>
                                 </div>
                             {:else if integration.id === 'google'}
                                 <!-- Official Google Sign-in Button -->
-                                <a
+                                <Button
                                     href={integration.connectUrl}
-                                    class="inline-flex w-full items-center justify-center rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:outline-none"
+                                    variant="outline"
+                                    class="w-full border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
                                 >
                                     <!-- Google G Logo SVG -->
                                     <svg class="mr-3 h-5 w-5" viewBox="0 0 24 24">
@@ -387,7 +440,7 @@
                                         />
                                     </svg>
                                     Connect with Google
-                                </a>
+                                </Button>
                             {:else if integration.id === 'slack'}
                                 <!-- Official Slack Add to Slack Button -->
                                 <a
@@ -404,9 +457,9 @@
                                 </a>
                             {:else if integration.id === 'atlassian'}
                                 <!-- Atlassian Connect Button -->
-                                <a
+                                <Button
                                     href={integration.connectUrl}
-                                    class="inline-flex w-full items-center justify-center rounded-md bg-[#0052CC] px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-[#0747A6] focus:ring-2 focus:ring-[#0052CC] focus:ring-offset-2 focus:outline-none"
+                                    class="w-full bg-[#0052CC] text-white hover:bg-[#0747A6]"
                                 >
                                     <!-- Atlassian Logo -->
                                     <svg class="mr-2 h-5 w-5" viewBox="0 0 24 24" fill="none">
@@ -416,14 +469,11 @@
                                         />
                                     </svg>
                                     Connect with Atlassian
-                                </a>
+                                </Button>
                             {:else}
-                                <a
-                                    href={integration.connectUrl}
-                                    class="text-primary-foreground bg-primary hover:bg-primary/90 inline-flex w-full items-center justify-center rounded-md border border-transparent px-4 py-2 text-sm font-medium transition-colors"
-                                >
+                                <Button href={integration.connectUrl} class="w-full">
                                     Connect to {integration.name}
-                                </a>
+                                </Button>
                             {/if}
                         </div>
                     {/each}
