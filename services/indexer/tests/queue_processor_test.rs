@@ -24,6 +24,7 @@ async fn test_queue_processor_document_created() {
     let doc_id = "doc_123";
 
     let event = ConnectorEvent::DocumentCreated {
+        sync_run_id: "test_sync_run_created".to_string(),
         source_id: source_id.to_string(),
         document_id: doc_id.to_string(),
         content: "This is content from a connector event".to_string(),
@@ -87,6 +88,7 @@ async fn test_queue_processor_document_updated() {
     let doc_id = "doc_456";
 
     let create_event = ConnectorEvent::DocumentCreated {
+        sync_run_id: "test_sync_run_updated".to_string(),
         source_id: source_id.to_string(),
         document_id: doc_id.to_string(),
         content: "Initial content".to_string(),
@@ -122,6 +124,7 @@ async fn test_queue_processor_document_updated() {
             .expect("Initial document should be created");
 
     let update_event = ConnectorEvent::DocumentUpdated {
+        sync_run_id: "test_sync_run_updated".to_string(),
         source_id: source_id.to_string(),
         document_id: doc_id.to_string(),
         content: "Updated content with more information".to_string(),
@@ -203,6 +206,7 @@ async fn test_queue_processor_document_deleted() {
     let doc_id = "doc_789";
 
     let create_event = ConnectorEvent::DocumentCreated {
+        sync_run_id: "test_sync_run_deleted".to_string(),
         source_id: source_id.to_string(),
         document_id: doc_id.to_string(),
         content: "Content to be deleted".to_string(),
@@ -237,6 +241,7 @@ async fn test_queue_processor_document_deleted() {
             .expect("Document should be created");
 
     let delete_event = ConnectorEvent::DocumentDeleted {
+        sync_run_id: "test_sync_run_deleted".to_string(),
         source_id: source_id.to_string(),
         document_id: doc_id.to_string(),
     };
@@ -269,6 +274,7 @@ async fn test_queue_processor_multiple_events() {
 
     for i in 0..5 {
         let event = ConnectorEvent::DocumentCreated {
+            sync_run_id: format!("test_sync_run_multi_{}", i),
             source_id: source_id.to_string(),
             document_id: format!("multi_doc_{}", i),
             content: format!("Content for document {}", i),
@@ -336,6 +342,7 @@ async fn test_queue_processor_batch_processing() {
     // Queue multiple events rapidly to test batch processing
     for i in 0..15 {
         let event = ConnectorEvent::DocumentCreated {
+            sync_run_id: format!("test_sync_run_batch_{}", i),
             source_id: source_id.to_string(),
             document_id: format!("batch_doc_{}", i),
             content: format!("Batch content {}", i),

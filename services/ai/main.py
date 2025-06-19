@@ -93,6 +93,7 @@ class EmbeddingResponse(BaseModel):
     embeddings: List[List[List[float]]]
     chunks_count: List[int]  # Number of chunks per text
     chunks: List[List[Tuple[int, int]]]  # Character offset spans for each chunk
+    model_name: str  # Name of the model used for embeddings
 
 
 class RAGRequest(BaseModel):
@@ -168,7 +169,10 @@ async def generate_embeddings(request: EmbeddingRequest):
 
         logger.info(f"Generated embeddings with chunks: {chunks_count}")
         return EmbeddingResponse(
-            embeddings=embeddings, chunks_count=chunks_count, chunks=chunk_spans
+            embeddings=embeddings,
+            chunks_count=chunks_count,
+            chunks=chunk_spans,
+            model_name=EMBEDDING_MODEL,
         )
 
     except Exception as e:

@@ -18,12 +18,14 @@ pub struct EmbeddingResponse {
     pub embeddings: Vec<Vec<Vec<f32>>>, // embeddings per text per chunk
     pub chunks_count: Vec<i32>,         // number of chunks per text
     pub chunks: Vec<Vec<(i32, i32)>>,   // character offset spans for each chunk
+    pub model_name: String,             // name of the model used for embeddings
 }
 
 #[derive(Debug, Clone)]
 pub struct TextEmbedding {
     pub chunk_embeddings: Vec<Vec<f32>>,
     pub chunk_spans: Vec<(i32, i32)>, // character start/end offsets
+    pub model_name: Option<String>,   // name of the model used for embeddings
 }
 
 #[derive(Serialize)]
@@ -95,6 +97,7 @@ impl AIClient {
                         result.push(TextEmbedding {
                             chunk_embeddings: text_embeddings.clone(),
                             chunk_spans,
+                            model_name: Some(embedding_response.model_name.clone()),
                         });
                     }
 
@@ -110,6 +113,7 @@ impl AIClient {
                         .map(|_| TextEmbedding {
                             chunk_embeddings: vec![vec![0.0; 1024]],
                             chunk_spans: vec![(0, 0)],
+                            model_name: None,
                         })
                         .collect())
                 }
@@ -125,6 +129,7 @@ impl AIClient {
                     .map(|_| TextEmbedding {
                         chunk_embeddings: vec![vec![0.0; 1024]],
                         chunk_spans: vec![(0, 0)],
+                        model_name: None,
                     })
                     .collect())
             }

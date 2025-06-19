@@ -25,6 +25,7 @@ async fn test_full_indexing_flow() {
 
     // 1. Create document via event
     let create_event = ConnectorEvent::DocumentCreated {
+        sync_run_id: "test_sync_run_1".to_string(),
         source_id: source_id.to_string(),
         document_id: "flow_doc_1".to_string(),
         content: "This is a complete flow test document".to_string(),
@@ -92,6 +93,7 @@ async fn test_full_indexing_flow() {
 
     // 4. Update document via event
     let update_event = ConnectorEvent::DocumentUpdated {
+        sync_run_id: "test_sync_run_1".to_string(),
         source_id: source_id.to_string(),
         document_id: "flow_doc_1".to_string(),
         content: "This is updated content for the flow test".to_string(),
@@ -169,6 +171,7 @@ async fn test_full_indexing_flow() {
 
     // 7. Delete document via event
     let delete_event = ConnectorEvent::DocumentDeleted {
+        sync_run_id: "test_sync_run_1".to_string(),
         source_id: source_id.to_string(),
         document_id: "flow_doc_1".to_string(),
     };
@@ -213,6 +216,7 @@ async fn test_concurrent_event_processing() {
         let src_id = source_id.to_string();
         let handle = tokio::spawn(async move {
             let event = ConnectorEvent::DocumentCreated {
+                sync_run_id: format!("concurrent_sync_run_{}", i),
                 source_id: src_id.clone(),
                 document_id: format!("concurrent_doc_{}", i),
                 content: format!("Concurrent content {}", i),

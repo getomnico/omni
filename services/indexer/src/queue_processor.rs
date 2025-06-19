@@ -498,7 +498,10 @@ impl ProcessorContext {
                 chunk_start_offset: chunk_span.0,
                 chunk_end_offset: chunk_span.1,
                 embedding: Vector::from(chunk_embedding.clone()),
-                model_name: "jinaai/jina-embeddings-v3".to_string(),
+                model_name: text_embedding
+                    .model_name
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
                 created_at: sqlx::types::time::OffsetDateTime::now_utc(),
             };
             embeddings.push(embedding);
