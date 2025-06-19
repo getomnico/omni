@@ -10,6 +10,7 @@ mod api;
 mod auth;
 mod drive;
 mod models;
+mod rate_limiter;
 mod sync;
 
 use api::{create_router, ApiState};

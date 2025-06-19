@@ -1,14 +1,18 @@
 use anyhow::Result;
+use futures::stream::{self, StreamExt};
 use redis::{AsyncCommands, Client as RedisClient};
 use sqlx::types::time::OffsetDateTime;
 use sqlx::{PgPool, Row};
 use std::collections::HashSet;
+use std::sync::Arc;
 use time;
+use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 
 use crate::auth::{AuthManager, OAuthCredentials};
 use crate::drive::DriveClient;
 use crate::models::{WebhookChannel, WebhookChannelResponse, WebhookNotification};
+use crate::rate_limiter::RateLimiter;
 use shared::models::{
     ConnectorEvent, Source, SourceType, SyncRun, SyncStatus, SyncType,
     WebhookChannel as DatabaseWebhookChannel,
@@ -24,6 +28,7 @@ pub struct SyncManager {
     event_queue: EventQueue,
 }
 
+#[derive(Clone)]
 pub struct SyncState {
     redis_client: RedisClient,
 }
@@ -122,11 +127,24 @@ impl SyncManager {
         let client_secret = std::env::var("GOOGLE_CLIENT_SECRET")?;
         let event_queue = EventQueue::new(pool.clone());
 
+        let api_rate_limit = std::env::var("GOOGLE_API_RATE_LIMIT")
+            .unwrap_or_else(|_| "180".to_string())
+            .parse::<u32>()
+            .unwrap_or(180);
+
+        let max_retries = std::env::var("GOOGLE_MAX_RETRIES")
+            .unwrap_or_else(|_| "5".to_string())
+            .parse::<u32>()
+            .unwrap_or(5);
+
+        let rate_limiter = Arc::new(RateLimiter::new(api_rate_limit, max_retries));
+        let drive_client = DriveClient::with_rate_limiter(rate_limiter);
+
         Ok(Self {
             pool,
             redis_client,
             auth_manager: AuthManager::new(client_id, client_secret),
-            drive_client: DriveClient::new(),
+            drive_client,
             event_queue,
         })
     }
@@ -222,9 +240,9 @@ impl SyncManager {
         let synced_files = sync_state.get_all_synced_file_ids(&source.id).await?;
         let mut current_files = HashSet::new();
         let mut page_token: Option<String> = None;
-        let mut processed_count = 0;
-        let mut updated_count = 0;
+        let mut all_files_to_process = Vec::new();
 
+        // First, collect all files that need processing
         loop {
             debug!(
                 "Calling Drive API list_files with page_token: {:?}",
@@ -241,7 +259,6 @@ impl SyncManager {
 
             for file in response.files {
                 current_files.insert(file.id.clone());
-                processed_count += 1;
 
                 if self.should_index_file(&file) {
                     let should_process = if let Some(modified_time) = &file.modified_time {
@@ -269,46 +286,7 @@ impl SyncManager {
                     };
 
                     if should_process {
-                        match self
-                            .drive_client
-                            .get_file_content(&creds.access_token, &file)
-                            .await
-                        {
-                            Ok(content) => {
-                                if !content.is_empty() {
-                                    let event = file.clone().to_connector_event(
-                                        sync_run_id.to_string(),
-                                        source.id.clone(),
-                                        content,
-                                    );
-
-                                    // Only update sync state if event was successfully queued
-                                    match self.publish_connector_event(event).await {
-                                        Ok(_) => {
-                                            updated_count += 1;
-                                            if let Some(modified_time) = &file.modified_time {
-                                                sync_state
-                                                    .set_file_sync_state(
-                                                        &source.id,
-                                                        &file.id,
-                                                        modified_time,
-                                                    )
-                                                    .await?;
-                                            }
-                                        }
-                                        Err(e) => {
-                                            error!(
-                                                "Failed to queue event for file {}: {}",
-                                                file.name, e
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!("Failed to get content for file {}: {}", file.name, e);
-                            }
-                        }
+                        all_files_to_process.push(file);
                     }
                 }
             }
@@ -319,6 +297,93 @@ impl SyncManager {
             }
         }
 
+        let processed_count = current_files.len();
+        info!(
+            "Found {} files to process concurrently",
+            all_files_to_process.len()
+        );
+
+        // Get concurrency limit from environment
+        let max_concurrent_downloads = std::env::var("GOOGLE_MAX_CONCURRENT_DOWNLOADS")
+            .unwrap_or_else(|_| "10".to_string())
+            .parse::<usize>()
+            .unwrap_or(10);
+
+        let semaphore = Arc::new(Semaphore::new(max_concurrent_downloads));
+
+        // Process files concurrently
+        let results = stream::iter(all_files_to_process)
+            .map(|file| {
+                let sync_state = sync_state.clone();
+                let sync_run_id = sync_run_id.to_string();
+                let source_id = source.id.clone();
+                let creds = creds.clone();
+                let drive_client = &self.drive_client;
+                let event_queue = &self.event_queue;
+                let semaphore = Arc::clone(&semaphore);
+
+                async move {
+                    let _permit = semaphore.acquire().await.unwrap();
+
+                    match drive_client
+                        .get_file_content(&creds.access_token, &file)
+                        .await
+                    {
+                        Ok(content) => {
+                            if !content.is_empty() {
+                                let event = file.clone().to_connector_event(
+                                    sync_run_id.clone(),
+                                    source_id.clone(),
+                                    content,
+                                );
+
+                                match event_queue.enqueue(&source_id, &event).await {
+                                    Ok(_) => {
+                                        if let Some(modified_time) = &file.modified_time {
+                                            if let Err(e) = sync_state
+                                                .set_file_sync_state(
+                                                    &source_id,
+                                                    &file.id,
+                                                    modified_time,
+                                                )
+                                                .await
+                                            {
+                                                error!(
+                                                    "Failed to update sync state for file {}: {}",
+                                                    file.name, e
+                                                );
+                                                return None;
+                                            }
+                                        }
+                                        Some(())
+                                    }
+                                    Err(e) => {
+                                        error!(
+                                            "Failed to queue event for file {}: {}",
+                                            file.name, e
+                                        );
+                                        None
+                                    }
+                                }
+                            } else {
+                                debug!("File {} has empty content, skipping", file.name);
+                                None
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to get content for file {}: {}", file.name, e);
+                            None
+                        }
+                    }
+                }
+            })
+            .buffer_unordered(max_concurrent_downloads)
+            .collect::<Vec<_>>()
+            .await;
+
+        let updated_count = results.iter().filter(|r| r.is_some()).count();
+
+        // Handle deletions
         for deleted_file_id in synced_files.difference(&current_files) {
             info!(
                 "File {} was deleted, publishing deletion event",

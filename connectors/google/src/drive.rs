@@ -2,11 +2,13 @@ use anyhow::{anyhow, Result};
 use pdfium_render::prelude::*;
 use reqwest::Client;
 use serde::Deserialize;
+use std::sync::Arc;
 use tracing::debug;
 
 use crate::models::{
     DriveChangesResponse, GoogleDriveFile, WebhookChannel, WebhookChannelResponse,
 };
+use crate::rate_limiter::RateLimiter;
 
 const DRIVE_API_BASE: &str = "https://www.googleapis.com/drive/v3";
 const DOCS_API_BASE: &str = "https://docs.googleapis.com/v1";
@@ -14,12 +16,21 @@ const SHEETS_API_BASE: &str = "https://sheets.googleapis.com/v4";
 
 pub struct DriveClient {
     client: Client,
+    rate_limiter: Option<Arc<RateLimiter>>,
 }
 
 impl DriveClient {
     pub fn new() -> Self {
         Self {
             client: Client::new(),
+            rate_limiter: None,
+        }
+    }
+
+    pub fn with_rate_limiter(rate_limiter: Arc<RateLimiter>) -> Self {
+        Self {
+            client: Client::new(),
+            rate_limiter: Some(rate_limiter),
         }
     }
 
@@ -28,44 +39,51 @@ impl DriveClient {
         token: &str,
         page_token: Option<&str>,
     ) -> Result<FilesListResponse> {
-        let url = format!("{}/files", DRIVE_API_BASE);
+        let list_files_impl = || async {
+            let url = format!("{}/files", DRIVE_API_BASE);
 
-        let mut params = vec![
-            ("pageSize", "100"),
-            ("fields", "nextPageToken,files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,permissions(id,type,emailAddress,role))"),
-            ("q", "trashed=false"),
-            ("includeItemsFromAllDrives", "true"),
-            ("supportsAllDrives", "true"),
-        ];
+            let mut params = vec![
+                ("pageSize", "100"),
+                ("fields", "nextPageToken,files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,permissions(id,type,emailAddress,role))"),
+                ("q", "trashed=false"),
+                ("includeItemsFromAllDrives", "true"),
+                ("supportsAllDrives", "true"),
+            ];
 
-        if let Some(token) = page_token {
-            params.push(("pageToken", token));
+            if let Some(token) = page_token {
+                params.push(("pageToken", token));
+            }
+
+            let response = self
+                .client
+                .get(&url)
+                .bearer_auth(token)
+                .query(&params)
+                .send()
+                .await?;
+
+            if !response.status().is_success() {
+                let error_text = response.text().await?;
+                return Err(anyhow!("Failed to list files: {}", error_text));
+            }
+
+            debug!("Drive API response status: {}", response.status());
+            let response_text = response.text().await?;
+            debug!("Drive API raw response: {}", response_text);
+
+            serde_json::from_str(&response_text).map_err(|e| {
+                anyhow!(
+                    "Failed to parse Drive API response: {}. Raw response: {}",
+                    e,
+                    response_text
+                )
+            })
+        };
+
+        match &self.rate_limiter {
+            Some(limiter) => limiter.execute_with_retry(list_files_impl).await,
+            None => list_files_impl().await,
         }
-
-        let response = self
-            .client
-            .get(&url)
-            .bearer_auth(token)
-            .query(&params)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let error_text = response.text().await?;
-            return Err(anyhow!("Failed to list files: {}", error_text));
-        }
-
-        debug!("Drive API response status: {}", response.status());
-        let response_text = response.text().await?;
-        debug!("Drive API raw response: {}", response_text);
-
-        serde_json::from_str(&response_text).map_err(|e| {
-            anyhow!(
-                "Failed to parse Drive API response: {}. Raw response: {}",
-                e,
-                response_text
-            )
-        })
     }
 
     pub async fn get_file_content(&self, token: &str, file: &GoogleDriveFile) -> Result<String> {
@@ -88,133 +106,188 @@ impl DriveClient {
     }
 
     async fn get_google_doc_content(&self, token: &str, file_id: &str) -> Result<String> {
-        let url = format!("{}/documents/{}", DOCS_API_BASE, file_id);
+        let token = token.to_string();
+        let file_id = file_id.to_string();
 
-        let response = self.client.get(&url).bearer_auth(token).send().await?;
+        let get_doc_impl = || async {
+            let url = format!("{}/documents/{}", DOCS_API_BASE, &file_id);
 
-        if !response.status().is_success() {
-            let error_text = response.text().await?;
-            return Err(anyhow!("Failed to get document content: {}", error_text));
+            let response = self.client.get(&url).bearer_auth(&token).send().await?;
+
+            if !response.status().is_success() {
+                let error_text = response.text().await?;
+                return Err(anyhow!("Failed to get document content: {}", error_text));
+            }
+
+            debug!("Google Docs API response status: {}", response.status());
+            let response_text = response.text().await?;
+
+            let doc: GoogleDocument = serde_json::from_str(&response_text).map_err(|e| {
+                anyhow!(
+                    "Failed to parse Google Docs API response: {}. Raw response: {}",
+                    e,
+                    response_text
+                )
+            })?;
+            Ok(extract_text_from_document(&doc))
+        };
+
+        match &self.rate_limiter {
+            Some(limiter) => limiter.execute_with_retry(get_doc_impl).await,
+            None => get_doc_impl().await,
         }
-
-        debug!("Google Docs API response status: {}", response.status());
-        let response_text = response.text().await?;
-
-        let doc: GoogleDocument = serde_json::from_str(&response_text).map_err(|e| {
-            anyhow!(
-                "Failed to parse Google Docs API response: {}. Raw response: {}",
-                e,
-                response_text
-            )
-        })?;
-        Ok(extract_text_from_document(&doc))
     }
 
     async fn get_google_sheet_content(&self, token: &str, file_id: &str) -> Result<String> {
-        let url = format!("{}/spreadsheets/{}", SHEETS_API_BASE, file_id);
+        let token = token.to_string();
+        let file_id = file_id.to_string();
 
-        let response = self.client.get(&url).bearer_auth(token).send().await?;
+        let get_sheet_impl = || async {
+            let url = format!("{}/spreadsheets/{}", SHEETS_API_BASE, &file_id);
 
-        if !response.status().is_success() {
-            let error_text = response.text().await?;
-            return Err(anyhow!(
-                "Failed to get spreadsheet metadata: {}",
-                error_text
-            ));
-        }
+            let response = self.client.get(&url).bearer_auth(&token).send().await?;
 
-        let sheet: GoogleSpreadsheet = response.json().await?;
-        let mut content = String::new();
+            if !response.status().is_success() {
+                let error_text = response.text().await?;
+                return Err(anyhow!(
+                    "Failed to get spreadsheet metadata: {}",
+                    error_text
+                ));
+            }
 
-        for sheet_info in &sheet.sheets {
-            let sheet_name = &sheet_info.properties.title;
-            let range = format!("'{}'", sheet_name);
+            let sheet: GoogleSpreadsheet = response.json().await?;
+            let mut content = String::new();
 
-            let values_url = format!(
-                "{}/spreadsheets/{}/values/{}",
-                SHEETS_API_BASE, file_id, range
-            );
+            for sheet_info in &sheet.sheets {
+                let sheet_name = &sheet_info.properties.title;
+                let range = format!("'{}'", sheet_name);
 
-            let values_response = self
-                .client
-                .get(&values_url)
-                .bearer_auth(token)
-                .send()
-                .await?;
+                let values_url = format!(
+                    "{}/spreadsheets/{}/values/{}",
+                    SHEETS_API_BASE, &file_id, range
+                );
 
-            if values_response.status().is_success() {
-                if let Ok(values) = values_response.json::<ValueRange>().await {
-                    content.push_str(&format!("Sheet: {}\n", sheet_name));
-                    for row in values.values.unwrap_or_default() {
-                        content.push_str(&row.join("\t"));
+                let values_response = match &self.rate_limiter {
+                    Some(limiter) => {
+                        limiter
+                            .execute(|| async {
+                                self.client
+                                    .get(&values_url)
+                                    .bearer_auth(&token)
+                                    .send()
+                                    .await
+                                    .map_err(|e| anyhow::anyhow!("Request failed: {}", e))
+                            })
+                            .await?
+                    }
+                    None => {
+                        self.client
+                            .get(&values_url)
+                            .bearer_auth(&token)
+                            .send()
+                            .await?
+                    }
+                };
+
+                if values_response.status().is_success() {
+                    if let Ok(values) = values_response.json::<ValueRange>().await {
+                        content.push_str(&format!("Sheet: {}\n", sheet_name));
+                        for row in values.values.unwrap_or_default() {
+                            content.push_str(&row.join("\t"));
+                            content.push('\n');
+                        }
                         content.push('\n');
                     }
-                    content.push('\n');
                 }
             }
-        }
 
-        Ok(content)
+            Ok(content)
+        };
+
+        match &self.rate_limiter {
+            Some(limiter) => limiter.execute_with_retry(get_sheet_impl).await,
+            None => get_sheet_impl().await,
+        }
     }
 
     async fn download_file_content(&self, token: &str, file_id: &str) -> Result<String> {
-        let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, file_id);
+        let token = token.to_string();
+        let file_id = file_id.to_string();
 
-        let response = self.client.get(&url).bearer_auth(token).send().await?;
+        let download_impl = || async {
+            let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, &file_id);
 
-        if !response.status().is_success() {
-            let error_text = response.text().await?;
-            return Err(anyhow!("Failed to download file: {}", error_text));
+            let response = self.client.get(&url).bearer_auth(&token).send().await?;
+
+            if !response.status().is_success() {
+                let error_text = response.text().await?;
+                return Err(anyhow!("Failed to download file: {}", error_text));
+            }
+
+            response.text().await.map_err(Into::into)
+        };
+
+        match &self.rate_limiter {
+            Some(limiter) => limiter.execute_with_retry(download_impl).await,
+            None => download_impl().await,
         }
-
-        response.text().await.map_err(Into::into)
     }
 
     async fn get_pdf_content(&self, token: &str, file_id: &str) -> Result<String> {
-        let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, file_id);
+        let token = token.to_string();
+        let file_id = file_id.to_string();
 
-        let response = self.client.get(&url).bearer_auth(token).send().await?;
+        let get_pdf_impl = || async {
+            let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, &file_id);
 
-        if !response.status().is_success() {
-            let error_text = response.text().await?;
-            return Err(anyhow!("Failed to download PDF: {}", error_text));
-        }
+            let response = self.client.get(&url).bearer_auth(&token).send().await?;
 
-        let pdf_bytes = response.bytes().await?;
-
-        // Initialize pdfium
-        let pdfium = Pdfium::default();
-
-        // Load PDF from bytes
-        let document = match pdfium.load_pdf_from_byte_slice(&pdf_bytes, None) {
-            Ok(doc) => doc,
-            Err(e) => {
-                debug!(
-                    "Failed to load PDF: {}. File might be corrupted or password-protected.",
-                    e
-                );
-                return Ok(String::new());
+            if !response.status().is_success() {
+                let error_text = response.text().await?;
+                return Err(anyhow!("Failed to download PDF: {}", error_text));
             }
+
+            let pdf_bytes = response.bytes().await?;
+
+            // Initialize pdfium
+            let pdfium = Pdfium::default();
+
+            // Load PDF from bytes
+            let document = match pdfium.load_pdf_from_byte_slice(&pdf_bytes, None) {
+                Ok(doc) => doc,
+                Err(e) => {
+                    debug!(
+                        "Failed to load PDF: {}. File might be corrupted or password-protected.",
+                        e
+                    );
+                    return Ok(String::new());
+                }
+            };
+
+            let mut full_text = String::new();
+
+            // Extract text from each page
+            for page in document.pages().iter() {
+                match page.text() {
+                    Ok(page_text) => {
+                        let text = page_text.all();
+                        full_text.push_str(&text);
+                        full_text.push('\n'); // Add page separator
+                    }
+                    Err(e) => {
+                        debug!("Failed to extract text from PDF page: {}", e);
+                        // Continue with other pages
+                    }
+                }
+            }
+
+            Ok(full_text.trim().to_string())
         };
 
-        let mut full_text = String::new();
-
-        // Extract text from each page
-        for page in document.pages().iter() {
-            match page.text() {
-                Ok(page_text) => {
-                    let text = page_text.all();
-                    full_text.push_str(&text);
-                    full_text.push('\n'); // Add page separator
-                }
-                Err(e) => {
-                    debug!("Failed to extract text from PDF page: {}", e);
-                    // Continue with other pages
-                }
-            }
+        match &self.rate_limiter {
+            Some(limiter) => limiter.execute_with_retry(get_pdf_impl).await,
+            None => get_pdf_impl().await,
         }
-
-        Ok(full_text.trim().to_string())
     }
 
     pub async fn register_changes_webhook(

@@ -42,6 +42,9 @@ dotenvy = "0.15"
 async-trait = "0.1"
 oauth2 = "4.4"
 governor = "0.6"
+futures = "0.3"
+nonzero_ext = "0.3"
+rand = "0.8"
 validator = { version = "0.18", features = ["derive"] }
 
 # Test dependencies
