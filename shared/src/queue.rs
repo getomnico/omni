@@ -26,11 +26,12 @@ impl EventQueue {
 
         sqlx::query(
             r#"
-            INSERT INTO connector_events_queue (id, source_id, event_type, payload)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO connector_events_queue (id, sync_run_id, source_id, event_type, payload)
+            VALUES ($1, $2, $3, $4, $5)
             "#,
         )
         .bind(&id)
+        .bind(event.sync_run_id())
         .bind(source_id)
         .bind(event_type)
         .bind(serde_json::to_value(event)?)
@@ -63,6 +64,7 @@ impl EventQueue {
             WHERE q.id = batch.id
             RETURNING 
                 q.id,
+                q.sync_run_id,
                 q.source_id,
                 q.event_type,
                 q.payload,
@@ -92,6 +94,7 @@ impl EventQueue {
 
             events.push(ConnectorEventQueueItem {
                 id: row.get("id"),
+                sync_run_id: row.get("sync_run_id"),
                 source_id: row.get("source_id"),
                 event_type: row.get("event_type"),
                 payload: row.get("payload"),

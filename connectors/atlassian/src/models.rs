@@ -242,7 +242,12 @@ impl ConfluencePage {
             .join(" ")
     }
 
-    pub fn to_connector_event(&self, source_id: String, base_url: &str) -> ConnectorEvent {
+    pub fn to_connector_event(
+        &self,
+        sync_run_id: String,
+        source_id: String,
+        base_url: &str,
+    ) -> ConnectorEvent {
         let document_id = format!("confluence_page_{}_{}", self.space.key, self.id);
 
         let created_at = DateTime::parse_from_rfc3339(&self.version.when)
@@ -314,6 +319,7 @@ impl ConfluencePage {
         };
 
         ConnectorEvent::DocumentCreated {
+            sync_run_id,
             source_id,
             document_id,
             content: self.extract_plain_text(),
@@ -406,7 +412,12 @@ impl JiraIssue {
         content
     }
 
-    pub fn to_connector_event(&self, source_id: String, base_url: &str) -> ConnectorEvent {
+    pub fn to_connector_event(
+        &self,
+        sync_run_id: String,
+        source_id: String,
+        base_url: &str,
+    ) -> ConnectorEvent {
         let document_id = format!("jira_issue_{}_{}", self.fields.project.key, self.key);
 
         let created_at = DateTime::parse_from_rfc3339(&self.fields.created)
@@ -485,6 +496,7 @@ impl JiraIssue {
         };
 
         ConnectorEvent::DocumentCreated {
+            sync_run_id,
             source_id,
             document_id,
             content: self.to_document_content(),

@@ -122,13 +122,18 @@ impl QueueProcessor {
             return Ok(());
         }
 
-        info!("Processing batch of {} events with parallelism: {}", events.len(), self.parallelism);
+        info!(
+            "Processing batch of {} events with parallelism: {}",
+            events.len(),
+            self.parallelism
+        );
 
         // Process events concurrently
         let mut tasks = Vec::new();
 
         for event_item in events {
             let event_id = event_item.id.clone();
+            let _sync_run_id = event_item.sync_run_id.clone();
             let payload = event_item.payload.clone();
             let state = self.state.clone();
             let event_queue = self.event_queue.clone();
@@ -137,7 +142,7 @@ impl QueueProcessor {
             let task = tokio::spawn(async move {
                 // Acquire semaphore permit to limit concurrency
                 let _permit = semaphore.acquire().await.unwrap();
-                
+
                 info!("Processing event {} on task thread", event_id);
 
                 let processor = ProcessorContext::new(state);
@@ -204,9 +209,19 @@ impl ProcessorContext {
 
     async fn process_event(&self, payload: &serde_json::Value) -> Result<()> {
         let event: ConnectorEvent = serde_json::from_value(payload.clone())?;
+        let sync_run_id = event.sync_run_id().to_string();
+
+        // Update sync run progress
+        if let Err(e) = self.increment_sync_run_progress(&sync_run_id).await {
+            warn!(
+                "Failed to update sync run progress for {}: {}",
+                sync_run_id, e
+            );
+        }
 
         match event {
             ConnectorEvent::DocumentCreated {
+                sync_run_id: _,
                 source_id,
                 document_id,
                 content,
@@ -223,6 +238,7 @@ impl ProcessorContext {
                 .await?;
             }
             ConnectorEvent::DocumentUpdated {
+                sync_run_id: _,
                 source_id,
                 document_id,
                 content,
@@ -239,6 +255,7 @@ impl ProcessorContext {
                 .await?;
             }
             ConnectorEvent::DocumentDeleted {
+                sync_run_id: _,
                 source_id,
                 document_id,
             } => {
@@ -497,6 +514,20 @@ impl ProcessorContext {
         } else {
             warn!("No embeddings were generated for document {}", document.id);
         }
+
+        Ok(())
+    }
+
+    async fn increment_sync_run_progress(&self, sync_run_id: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE sync_runs 
+             SET files_processed = files_processed + 1, 
+                 updated_at = CURRENT_TIMESTAMP 
+             WHERE id = $1",
+        )
+        .bind(sync_run_id)
+        .execute(self.state.db_pool.pool())
+        .await?;
 
         Ok(())
     }

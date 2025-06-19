@@ -216,7 +216,10 @@ impl JiraProcessor {
                 content.len()
             );
 
-            let event = issue.to_connector_event(source_id.to_string(), base_url);
+            // TODO: Add proper sync_run_id when sync runs are implemented for Atlassian
+            let placeholder_sync_run_id = shared::utils::generate_ulid();
+            let event =
+                issue.to_connector_event(placeholder_sync_run_id, source_id.to_string(), base_url);
             events.push(event);
         }
 
@@ -269,7 +272,13 @@ impl JiraProcessor {
             return Ok(());
         }
 
-        let event = issue.to_connector_event(source_id.to_string(), &creds.base_url);
+        // TODO: Add proper sync_run_id when sync runs are implemented for Atlassian
+        let placeholder_sync_run_id = shared::utils::generate_ulid();
+        let event = issue.to_connector_event(
+            placeholder_sync_run_id,
+            source_id.to_string(),
+            &creds.base_url,
+        );
         self.event_queue.enqueue(source_id, &event).await?;
 
         info!("Successfully queued issue: {}", issue.fields.summary);
@@ -285,7 +294,10 @@ impl JiraProcessor {
         info!("Deleting JIRA issue: {}", issue_key);
 
         let document_id = format!("jira_issue_{}_{}", project_key, issue_key);
+        // TODO: Add proper sync_run_id when sync runs are implemented for Atlassian
+        let placeholder_sync_run_id = shared::utils::generate_ulid();
         let event = shared::models::ConnectorEvent::DocumentDeleted {
+            sync_run_id: placeholder_sync_run_id,
             source_id: source_id.to_string(),
             document_id,
         };

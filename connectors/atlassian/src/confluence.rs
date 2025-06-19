@@ -228,7 +228,10 @@ impl ConfluenceProcessor {
                 content.len()
             );
 
-            let event = page.to_connector_event(source_id.to_string(), base_url);
+            // TODO: Add proper sync_run_id when sync runs are implemented for Atlassian
+            let placeholder_sync_run_id = shared::utils::generate_ulid();
+            let event =
+                page.to_connector_event(placeholder_sync_run_id, source_id.to_string(), base_url);
             events.push(event);
         }
 
@@ -280,7 +283,13 @@ impl ConfluenceProcessor {
             return Ok(());
         }
 
-        let event = page.to_connector_event(source_id.to_string(), &creds.base_url);
+        // TODO: Add proper sync_run_id when sync runs are implemented for Atlassian
+        let placeholder_sync_run_id = shared::utils::generate_ulid();
+        let event = page.to_connector_event(
+            placeholder_sync_run_id,
+            source_id.to_string(),
+            &creds.base_url,
+        );
         self.event_queue.enqueue(source_id, &event).await?;
 
         info!("Successfully queued page: {}", page.title);
@@ -291,7 +300,10 @@ impl ConfluenceProcessor {
         info!("Deleting Confluence page: {}", page_id);
 
         let document_id = format!("confluence_page_{}_{}", space_key, page_id);
+        // TODO: Add proper sync_run_id when sync runs are implemented for Atlassian
+        let placeholder_sync_run_id = shared::utils::generate_ulid();
         let event = shared::models::ConnectorEvent::DocumentDeleted {
+            sync_run_id: placeholder_sync_run_id,
             source_id: source_id.to_string(),
             document_id,
         };

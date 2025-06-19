@@ -1,6 +1,7 @@
 -- Create connector events queue table for reliable message processing
 CREATE TABLE IF NOT EXISTS connector_events_queue (
     id CHAR(26) PRIMARY KEY,
+    sync_run_id CHAR(26) NOT NULL,
     source_id CHAR(26) NOT NULL,
     event_type VARCHAR(50) NOT NULL,
     payload JSONB NOT NULL,
@@ -24,3 +25,6 @@ CREATE INDEX idx_queue_status ON connector_events_queue(status);
 
 -- Index for finding failed events that need retry
 CREATE INDEX idx_queue_retry ON connector_events_queue(status, retry_count) WHERE status = 'failed' AND retry_count < max_retries;
+
+-- Index for querying events by sync run
+CREATE INDEX idx_queue_sync_run_id ON connector_events_queue(sync_run_id);

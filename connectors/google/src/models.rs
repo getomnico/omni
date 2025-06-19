@@ -33,7 +33,12 @@ pub struct Permission {
 }
 
 impl GoogleDriveFile {
-    pub fn to_connector_event(self, source_id: String, content: String) -> ConnectorEvent {
+    pub fn to_connector_event(
+        self,
+        sync_run_id: String,
+        source_id: String,
+        content: String,
+    ) -> ConnectorEvent {
         let mut users = Vec::new();
 
         if let Some(file_permissions) = &self.permissions {
@@ -78,6 +83,7 @@ impl GoogleDriveFile {
         };
 
         ConnectorEvent::DocumentCreated {
+            sync_run_id,
             source_id,
             document_id: self.id.clone(),
             content,

@@ -199,7 +199,7 @@ impl SyncManager {
     async fn sync_source_internal(
         &self,
         source: &Source,
-        _sync_run_id: &str,
+        sync_run_id: &str,
     ) -> Result<(usize, usize)> {
         let oauth_creds = self.get_oauth_credentials(&source.id).await?;
         let mut creds: OAuthCredentials = oauth_creds;
@@ -271,8 +271,11 @@ impl SyncManager {
                         {
                             Ok(content) => {
                                 if !content.is_empty() {
-                                    let event =
-                                        file.clone().to_connector_event(source.id.clone(), content);
+                                    let event = file.clone().to_connector_event(
+                                        sync_run_id.to_string(),
+                                        source.id.clone(),
+                                        content,
+                                    );
 
                                     // Only update sync state if event was successfully queued
                                     match self.publish_connector_event(event).await {
@@ -316,7 +319,7 @@ impl SyncManager {
                 "File {} was deleted, publishing deletion event",
                 deleted_file_id
             );
-            self.publish_deletion_event(&source.id, deleted_file_id)
+            self.publish_deletion_event(sync_run_id, &source.id, deleted_file_id)
                 .await?;
             sync_state
                 .delete_file_sync_state(&source.id, deleted_file_id)
@@ -352,8 +355,14 @@ impl SyncManager {
         Ok(())
     }
 
-    async fn publish_deletion_event(&self, source_id: &str, document_id: &str) -> Result<()> {
+    async fn publish_deletion_event(
+        &self,
+        sync_run_id: &str,
+        source_id: &str,
+        document_id: &str,
+    ) -> Result<()> {
         let event = ConnectorEvent::DocumentDeleted {
+            sync_run_id: sync_run_id.to_string(),
             source_id: source_id.to_string(),
             document_id: document_id.to_string(),
         };

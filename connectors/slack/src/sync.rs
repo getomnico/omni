@@ -319,7 +319,9 @@ impl SyncManager {
 
         // Publish message groups
         for group in message_groups {
-            let event = group.to_connector_event(source_id.to_string());
+            // TODO: Add proper sync_run_id when sync runs are implemented for Slack
+            let placeholder_sync_run_id = shared::utils::generate_ulid();
+            let event = group.to_connector_event(placeholder_sync_run_id, source_id.to_string());
             match self.event_queue.enqueue(source_id, &event).await {
                 Ok(_) => published_groups += 1,
                 Err(e) => error!("Failed to queue message group event: {}", e),
@@ -331,7 +333,10 @@ impl SyncManager {
         for file in files {
             match self.slack_client.download_file(token, file).await {
                 Ok(content) if !content.is_empty() => {
+                    // TODO: Add proper sync_run_id when sync runs are implemented for Slack
+                    let placeholder_sync_run_id = shared::utils::generate_ulid();
                     let event = file.to_connector_event(
+                        placeholder_sync_run_id,
                         source_id.to_string(),
                         channel.id.clone(),
                         channel.name.clone(),

@@ -136,6 +136,7 @@ pub struct DocumentPermissions {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ConnectorEvent {
     DocumentCreated {
+        sync_run_id: String,
         source_id: String,
         document_id: String,
         content: String,
@@ -143,6 +144,7 @@ pub enum ConnectorEvent {
         permissions: DocumentPermissions,
     },
     DocumentUpdated {
+        sync_run_id: String,
         source_id: String,
         document_id: String,
         content: String,
@@ -150,12 +152,21 @@ pub enum ConnectorEvent {
         permissions: Option<DocumentPermissions>,
     },
     DocumentDeleted {
+        sync_run_id: String,
         source_id: String,
         document_id: String,
     },
 }
 
 impl ConnectorEvent {
+    pub fn sync_run_id(&self) -> &str {
+        match self {
+            ConnectorEvent::DocumentCreated { sync_run_id, .. } => sync_run_id,
+            ConnectorEvent::DocumentUpdated { sync_run_id, .. } => sync_run_id,
+            ConnectorEvent::DocumentDeleted { sync_run_id, .. } => sync_run_id,
+        }
+    }
+
     pub fn source_id(&self) -> &str {
         match self {
             ConnectorEvent::DocumentCreated { source_id, .. } => source_id,
@@ -266,6 +277,7 @@ pub enum EventStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ConnectorEventQueueItem {
     pub id: String,
+    pub sync_run_id: String,
     pub source_id: String,
     pub event_type: String,
     pub payload: JsonValue,

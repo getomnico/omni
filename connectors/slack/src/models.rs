@@ -172,7 +172,7 @@ impl MessageGroup {
         content.trim().to_string()
     }
 
-    pub fn to_connector_event(&self, source_id: String) -> ConnectorEvent {
+    pub fn to_connector_event(&self, sync_run_id: String, source_id: String) -> ConnectorEvent {
         let title = if self.is_thread {
             format!("Thread in #{} - {}", self.channel_name, self.date)
         } else {
@@ -299,6 +299,7 @@ impl MessageGroup {
         };
 
         ConnectorEvent::DocumentCreated {
+            sync_run_id,
             source_id,
             document_id,
             content: self.to_document_content(),
@@ -311,6 +312,7 @@ impl MessageGroup {
 impl SlackFile {
     pub fn to_connector_event(
         &self,
+        sync_run_id: String,
         source_id: String,
         channel_id: String,
         channel_name: String,
@@ -352,6 +354,7 @@ impl SlackFile {
         };
 
         ConnectorEvent::DocumentCreated {
+            sync_run_id,
             source_id,
             document_id,
             content,
