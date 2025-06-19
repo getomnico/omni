@@ -15,16 +15,16 @@ CREATE TABLE IF NOT EXISTS connector_events_queue (
 );
 
 -- Index for efficient polling of pending events
-CREATE INDEX idx_queue_status_created ON connector_events_queue(status, created_at) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_queue_status_created ON connector_events_queue(status, created_at) WHERE status = 'pending';
 
 -- Index for querying events by source
-CREATE INDEX idx_queue_source_id ON connector_events_queue(source_id);
+CREATE INDEX IF NOT EXISTS idx_queue_source_id ON connector_events_queue(source_id);
 
 -- Index for monitoring processing status
-CREATE INDEX idx_queue_status ON connector_events_queue(status);
+CREATE INDEX IF NOT EXISTS idx_queue_status ON connector_events_queue(status);
 
 -- Index for finding failed events that need retry
-CREATE INDEX idx_queue_retry ON connector_events_queue(status, retry_count) WHERE status = 'failed' AND retry_count < max_retries;
+CREATE INDEX IF NOT EXISTS idx_queue_retry ON connector_events_queue(status, retry_count) WHERE status = 'failed' AND retry_count < max_retries;
 
 -- Index for querying events by sync run
-CREATE INDEX idx_queue_sync_run_id ON connector_events_queue(sync_run_id);
+CREATE INDEX IF NOT EXISTS idx_queue_sync_run_id ON connector_events_queue(sync_run_id);

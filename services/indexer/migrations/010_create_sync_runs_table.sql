@@ -16,13 +16,13 @@ CREATE TABLE IF NOT EXISTS sync_runs (
 );
 
 -- Index for finding latest sync runs by source
-CREATE INDEX idx_sync_runs_source_completed ON sync_runs(source_id, completed_at DESC) WHERE status = 'completed';
+CREATE INDEX IF NOT EXISTS idx_sync_runs_source_completed ON sync_runs(source_id, completed_at DESC) WHERE status = 'completed';
 
 -- Index for finding running syncs
-CREATE INDEX idx_sync_runs_running ON sync_runs(source_id, status) WHERE status = 'running';
+CREATE INDEX IF NOT EXISTS idx_sync_runs_running ON sync_runs(source_id, status) WHERE status = 'running';
 
 -- Index for monitoring and analytics
-CREATE INDEX idx_sync_runs_source_type ON sync_runs(source_id, sync_type);
+CREATE INDEX IF NOT EXISTS idx_sync_runs_source_type ON sync_runs(source_id, sync_type);
 
 -- Trigger to update updated_at
 DROP TRIGGER IF EXISTS update_sync_runs_updated_at ON sync_runs;
