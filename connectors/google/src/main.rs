@@ -53,7 +53,11 @@ async fn main() -> Result<()> {
     // Run HTTP server and sync loop concurrently
     let http_server = axum::serve(listener, app);
     let sync_loop = async {
-        let mut sync_interval = interval(Duration::from_secs(3600));
+        let sync_interval_seconds = env::var("GOOGLE_SYNC_INTERVAL_SECONDS")
+            .unwrap_or_else(|_| "86400".to_string())
+            .parse::<u64>()
+            .expect("SYNC_INTERVAL_SECONDS must be a valid number");
+        let mut sync_interval = interval(Duration::from_secs(sync_interval_seconds));
         loop {
             sync_interval.tick().await;
             info!("Starting sync cycle");
