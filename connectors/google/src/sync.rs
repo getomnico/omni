@@ -1,13 +1,15 @@
 use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
+use sqlx::types::time::OffsetDateTime;
 use sqlx::{PgPool, Row};
 use std::collections::HashSet;
 use tracing::{debug, error, info, warn};
 
 use crate::auth::{AuthManager, OAuthCredentials};
 use crate::drive::DriveClient;
-use shared::models::{ConnectorEvent, Source, SourceType};
+use shared::models::{ConnectorEvent, Source, SourceType, SyncRun, SyncStatus, SyncType};
 use shared::queue::EventQueue;
+use shared::utils::generate_ulid;
 
 pub struct SyncManager {
     pool: PgPool,
@@ -130,9 +132,22 @@ impl SyncManager {
         info!("Found {} active Google Drive sources", sources.len());
 
         for source in sources {
-            if let Err(e) = self.sync_source(&source).await {
-                error!("Failed to sync source {}: {}", source.id, e);
-                self.update_source_status(&source.id, "failed").await?;
+            // Check if we should run a full sync for this source
+            match self.should_run_full_sync(&source.id).await {
+                Ok(should_sync) => {
+                    if should_sync {
+                        if let Err(e) = self.sync_source(&source).await {
+                            error!("Failed to sync source {}: {}", source.id, e);
+                            self.update_source_status(&source.id, "failed").await?;
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        "Failed to check sync status for source {}: {}",
+                        source.id, e
+                    );
+                }
             }
         }
 
@@ -157,6 +172,35 @@ impl SyncManager {
     async fn sync_source(&self, source: &Source) -> Result<()> {
         info!("Syncing source: {} ({})", source.name, source.id);
 
+        // Create a sync run record
+        let sync_run_id = self.create_sync_run(&source.id, SyncType::Full).await?;
+
+        let result = self.sync_source_internal(source, &sync_run_id).await;
+
+        // Update sync run based on result
+        match &result {
+            Ok((files_processed, files_updated)) => {
+                self.update_sync_run_completed(
+                    &sync_run_id,
+                    *files_processed as i32,
+                    *files_updated as i32,
+                )
+                .await?;
+            }
+            Err(e) => {
+                self.update_sync_run_failed(&sync_run_id, &e.to_string())
+                    .await?;
+            }
+        }
+
+        result.map(|_| ())
+    }
+
+    async fn sync_source_internal(
+        &self,
+        source: &Source,
+        _sync_run_id: &str,
+    ) -> Result<(usize, usize)> {
         let oauth_creds = self.get_oauth_credentials(&source.id).await?;
         let mut creds: OAuthCredentials = oauth_creds;
 
@@ -287,7 +331,7 @@ impl SyncManager {
         self.update_source_status(&source.id, "completed").await?;
 
         info!("Completed sync for source: {}", source.id);
-        Ok(())
+        Ok((processed_count, updated_count))
     }
 
     fn should_index_file(&self, file: &crate::models::GoogleDriveFile) -> bool {
@@ -392,9 +436,125 @@ impl SyncManager {
                 if !source.is_active {
                     return Err(anyhow::anyhow!("Source {} is not active", source_id));
                 }
+                // Manual sync always runs regardless of last sync time
                 self.sync_source(&source).await
             }
             None => Err(anyhow::anyhow!("Source {} not found", source_id)),
+        }
+    }
+
+    async fn get_last_completed_full_sync(&self, source_id: &str) -> Result<Option<SyncRun>> {
+        let sync_run = sqlx::query_as::<_, SyncRun>(
+            "SELECT * FROM sync_runs 
+             WHERE source_id = $1 
+             AND sync_type = $2 
+             AND status = $3 
+             ORDER BY completed_at DESC 
+             LIMIT 1",
+        )
+        .bind(source_id)
+        .bind(SyncType::Full)
+        .bind(SyncStatus::Completed)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(sync_run)
+    }
+
+    async fn create_sync_run(&self, source_id: &str, sync_type: SyncType) -> Result<String> {
+        let id = generate_ulid();
+
+        sqlx::query(
+            "INSERT INTO sync_runs (id, source_id, sync_type, status) 
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(&id)
+        .bind(source_id)
+        .bind(sync_type)
+        .bind(SyncStatus::Running)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(id)
+    }
+
+    async fn update_sync_run_completed(
+        &self,
+        sync_run_id: &str,
+        files_processed: i32,
+        files_updated: i32,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE sync_runs 
+             SET status = $1, completed_at = CURRENT_TIMESTAMP, 
+                 files_processed = $2, files_updated = $3,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $4",
+        )
+        .bind(SyncStatus::Completed)
+        .bind(files_processed)
+        .bind(files_updated)
+        .bind(sync_run_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn update_sync_run_failed(&self, sync_run_id: &str, error: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE sync_runs 
+             SET status = $1, completed_at = CURRENT_TIMESTAMP, 
+                 error_message = $2, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $3",
+        )
+        .bind(SyncStatus::Failed)
+        .bind(error)
+        .bind(sync_run_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn should_run_full_sync(&self, source_id: &str) -> Result<bool> {
+        let last_sync = self.get_last_completed_full_sync(source_id).await?;
+
+        match last_sync {
+            Some(sync_run) => {
+                let sync_interval_seconds = std::env::var("GOOGLE_SYNC_INTERVAL_SECONDS")
+                    .unwrap_or_else(|_| "86400".to_string())
+                    .parse::<i64>()
+                    .expect("GOOGLE_SYNC_INTERVAL_SECONDS must be a valid number");
+
+                if let Some(completed_at) = sync_run.completed_at {
+                    let now = OffsetDateTime::now_utc();
+                    let elapsed = now - completed_at;
+                    let should_sync = elapsed.whole_seconds() >= sync_interval_seconds;
+
+                    if !should_sync {
+                        info!(
+                            "Skipping full sync for source {}. Last sync was {} seconds ago, interval is {} seconds",
+                            source_id,
+                            elapsed.whole_seconds(),
+                            sync_interval_seconds
+                        );
+                    }
+
+                    Ok(should_sync)
+                } else {
+                    // If completed_at is None, the sync didn't complete properly
+                    Ok(true)
+                }
+            }
+            None => {
+                // No previous sync found, should run
+                info!(
+                    "No previous full sync found for source {}, will run full sync",
+                    source_id
+                );
+                Ok(true)
+            }
         }
     }
 }

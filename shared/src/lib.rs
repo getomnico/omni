@@ -5,6 +5,7 @@ pub mod db;
 pub mod models;
 pub mod queue;
 pub mod traits;
+pub mod utils;
 
 pub mod test_utils;
 

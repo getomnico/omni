@@ -276,3 +276,33 @@ pub struct ConnectorEventQueueItem {
     pub processed_at: Option<OffsetDateTime>,
     pub error_message: Option<String>,
 }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
+#[sqlx(type_name = "text", rename_all = "lowercase")]
+pub enum SyncType {
+    Full,
+    Incremental,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
+#[sqlx(type_name = "text", rename_all = "lowercase")]
+pub enum SyncStatus {
+    Running,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct SyncRun {
+    pub id: String,
+    pub source_id: String,
+    pub sync_type: SyncType,
+    pub started_at: OffsetDateTime,
+    pub completed_at: Option<OffsetDateTime>,
+    pub status: SyncStatus,
+    pub files_processed: i32,
+    pub files_updated: i32,
+    pub error_message: Option<String>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
+}

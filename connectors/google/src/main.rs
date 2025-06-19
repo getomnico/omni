@@ -53,14 +53,25 @@ async fn main() -> Result<()> {
     // Run HTTP server and sync loop concurrently
     let http_server = axum::serve(listener, app);
     let sync_loop = async {
-        let sync_interval_seconds = env::var("GOOGLE_SYNC_INTERVAL_SECONDS")
+        let sync_interval_seconds = std::env::var("GOOGLE_SYNC_INTERVAL_SECONDS")
             .unwrap_or_else(|_| "86400".to_string())
             .parse::<u64>()
             .expect("SYNC_INTERVAL_SECONDS must be a valid number");
+
+        // Check for initial sync on startup
+        info!("Checking if initial sync is needed on startup");
+        let sync_manager_clone = Arc::clone(&sync_manager);
+        tokio::spawn(async move {
+            if let Err(e) = sync_manager_clone.sync_all_sources().await {
+                error!("Initial sync check failed: {}", e);
+            }
+        });
+
+        // Continue with regular interval syncs
         let mut sync_interval = interval(Duration::from_secs(sync_interval_seconds));
         loop {
             sync_interval.tick().await;
-            info!("Starting sync cycle");
+            info!("Starting scheduled sync cycle");
 
             let sync_manager_clone = Arc::clone(&sync_manager);
             tokio::spawn(async move {
