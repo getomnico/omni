@@ -26,3 +26,6 @@ futures-util = "0.3"
 testcontainers = { workspace = true }
 testcontainers-modules = { workspace = true }
 axum = { workspace = true }
+jsonwebtoken = "9"
+base64 = "0.22"
+chrono = { workspace = true }

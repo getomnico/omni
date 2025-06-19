@@ -4,6 +4,7 @@ pub mod constants;
 pub mod db;
 pub mod models;
 pub mod queue;
+pub mod service_auth;
 pub mod traits;
 pub mod utils;
 
@@ -19,6 +20,7 @@ pub use db::repositories::{
 pub use db::{DatabaseError, DatabasePool};
 pub use models::*;
 pub use queue::{EventQueue, QueueStats};
+pub use service_auth::{create_service_auth, ServiceAuth, ServiceCredentialsRepo};
 pub use traits::Repository;
 
 pub fn init() {

@@ -23,13 +23,6 @@ export interface AppConfig {
     app: {
         publicUrl: string
     }
-    oauth: {
-        google: {
-            clientId: string
-            clientSecret: string
-            redirectUri: string
-        }
-    }
 }
 
 function getRequiredEnv(key: string): string {
@@ -65,24 +58,6 @@ function validatePositiveNumber(value: string, name: string): number {
     return num
 }
 
-function validateOAuthCredentials(clientId: string, clientSecret: string, provider: string): void {
-    const defaultIds = [`your-${provider}-client-id`, `your-${provider}-client-secret`]
-
-    if (!clientId || !clientSecret) {
-        console.error(`ERROR: ${provider} OAuth credentials are not set`)
-        console.error(
-            `Please set ${provider.toUpperCase()}_CLIENT_ID and ${provider.toUpperCase()}_CLIENT_SECRET`,
-        )
-        process.exit(1)
-    }
-
-    if (defaultIds.includes(clientId) || defaultIds.includes(clientSecret)) {
-        console.error(`ERROR: ${provider} OAuth credentials are using default placeholder values`)
-        console.error(`Please configure your ${provider} OAuth credentials`)
-        process.exit(1)
-    }
-}
-
 // Load and validate configuration
 function loadConfig(): AppConfig {
     // Skip config validation during build time
@@ -96,6 +71,8 @@ function loadConfig(): AppConfig {
                 indexerUrl: 'http://placeholder',
                 aiServiceUrl: 'http://placeholder',
                 googleConnectorUrl: 'http://placeholder',
+                slackConnectorUrl: 'http://placeholder',
+                atlassianConnectorUrl: 'http://placeholder',
             },
             session: {
                 secret: 'placeholder',
@@ -103,13 +80,6 @@ function loadConfig(): AppConfig {
                 durationDays: 7,
             },
             app: { publicUrl: 'http://placeholder' },
-            oauth: {
-                google: {
-                    clientId: 'placeholder',
-                    clientSecret: 'placeholder',
-                    redirectUri: 'http://placeholder',
-                },
-            },
         }
     }
 
@@ -158,14 +128,6 @@ function loadConfig(): AppConfig {
     const publicAppUrl = getRequiredEnv('APP_URL')
     validateUrl(publicAppUrl, 'APP_URL')
 
-    // Google OAuth configuration
-    const googleClientId = getRequiredEnv('GOOGLE_CLIENT_ID')
-    const googleClientSecret = getRequiredEnv('GOOGLE_CLIENT_SECRET')
-    const googleRedirectUri = getRequiredEnv('GOOGLE_REDIRECT_URI')
-
-    validateOAuthCredentials(googleClientId, googleClientSecret, 'google')
-    validateUrl(googleRedirectUri, 'GOOGLE_REDIRECT_URI')
-
     console.log('Configuration validation completed successfully')
 
     return {
@@ -191,13 +153,6 @@ function loadConfig(): AppConfig {
         app: {
             publicUrl: publicAppUrl,
         },
-        oauth: {
-            google: {
-                clientId: googleClientId,
-                clientSecret: googleClientSecret,
-                redirectUri: googleRedirectUri,
-            },
-        },
     }
 }
 
@@ -215,4 +170,4 @@ export function getConfig(): AppConfig {
 export const config = getConfig()
 
 // Also export individual sections for convenience
-export const { database, redis, services, session, app, oauth } = config
+export const { database, redis, services, session, app } = config

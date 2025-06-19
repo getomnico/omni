@@ -9,13 +9,13 @@ use time;
 use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 
-use crate::auth::{AuthManager, OAuthCredentials};
+use crate::auth::ServiceAccountAuth;
 use crate::drive::DriveClient;
 use crate::models::{WebhookChannel, WebhookChannelResponse, WebhookNotification};
 use crate::rate_limiter::RateLimiter;
 use shared::models::{
-    ConnectorEvent, Source, SourceType, SyncRun, SyncStatus, SyncType,
-    WebhookChannel as DatabaseWebhookChannel,
+    AuthType, ConnectorEvent, ServiceCredentials, ServiceProvider, Source, SourceType, SyncRun,
+    SyncStatus, SyncType, WebhookChannel as DatabaseWebhookChannel,
 };
 use shared::queue::EventQueue;
 use shared::utils::generate_ulid;
@@ -23,7 +23,6 @@ use shared::utils::generate_ulid;
 pub struct SyncManager {
     pool: PgPool,
     redis_client: RedisClient,
-    auth_manager: AuthManager,
     drive_client: DriveClient,
     event_queue: EventQueue,
 }
@@ -123,8 +122,6 @@ impl SyncState {
 
 impl SyncManager {
     pub async fn new(pool: PgPool, redis_client: RedisClient) -> Result<Self> {
-        let client_id = std::env::var("GOOGLE_CLIENT_ID")?;
-        let client_secret = std::env::var("GOOGLE_CLIENT_SECRET")?;
         let event_queue = EventQueue::new(pool.clone());
 
         let api_rate_limit = std::env::var("GOOGLE_API_RATE_LIMIT")
@@ -143,7 +140,6 @@ impl SyncManager {
         Ok(Self {
             pool,
             redis_client,
-            auth_manager: AuthManager::new(client_id, client_secret),
             drive_client,
             event_queue,
         })
@@ -180,10 +176,10 @@ impl SyncManager {
     async fn get_active_sources(&self) -> Result<Vec<Source>> {
         let sources = sqlx::query_as::<_, Source>(
             "SELECT s.* FROM sources s
-             INNER JOIN oauth_credentials oc ON s.id = oc.source_id
+             INNER JOIN service_credentials sc ON s.id = sc.source_id
              WHERE s.source_type = $1 
              AND s.is_active = true 
-             AND oc.provider = 'google'",
+             AND sc.provider = 'google'",
         )
         .bind(SourceType::GoogleDrive)
         .fetch_all(&self.pool)
@@ -224,17 +220,9 @@ impl SyncManager {
         source: &Source,
         sync_run_id: &str,
     ) -> Result<(usize, usize)> {
-        let oauth_creds = self.get_oauth_credentials(&source.id).await?;
-        let mut creds: OAuthCredentials = oauth_creds;
-
-        let original_creds = creds.clone();
-        self.auth_manager.ensure_valid_token(&mut creds).await?;
-
-        if creds.access_token != original_creds.access_token
-            || creds.refresh_token != original_creds.refresh_token
-        {
-            self.update_oauth_credentials(&source.id, &creds).await?;
-        }
+        let service_creds = self.get_service_credentials(&source.id).await?;
+        let service_auth = self.create_service_auth(&service_creds)?;
+        let access_token = service_auth.get_access_token().await?;
 
         let sync_state = SyncState::new(self.redis_client.clone());
         let synced_files = sync_state.get_all_synced_file_ids(&source.id).await?;
@@ -250,7 +238,7 @@ impl SyncManager {
             );
             let response = self
                 .drive_client
-                .list_files(&creds.access_token, page_token.as_deref())
+                .list_files(&access_token, page_token.as_deref())
                 .await
                 .map_err(|e| {
                     error!("Drive API list_files call failed: {}", e);
@@ -325,10 +313,7 @@ impl SyncManager {
                 async move {
                     let _permit = semaphore.acquire().await.unwrap();
 
-                    match drive_client
-                        .get_file_content(&creds.access_token, &file)
-                        .await
-                    {
+                    match drive_client.get_file_content(&access_token, &file).await {
                         Ok(content) => {
                             if !content.is_empty() {
                                 let event = file.clone().to_connector_event(
@@ -440,52 +425,43 @@ impl SyncManager {
         self.publish_connector_event(event).await
     }
 
-    async fn get_oauth_credentials(&self, source_id: &str) -> Result<OAuthCredentials> {
-        let row = sqlx::query(
-            "SELECT access_token, refresh_token, token_type, expires_at 
-             FROM oauth_credentials 
+    async fn get_service_credentials(&self, source_id: &str) -> Result<ServiceCredentials> {
+        let creds = sqlx::query_as::<_, ServiceCredentials>(
+            "SELECT * FROM service_credentials 
              WHERE source_id = $1 AND provider = 'google'",
         )
         .bind(source_id)
         .fetch_one(&self.pool)
         .await?;
 
-        let expires_at: chrono::DateTime<chrono::Utc> = row.get("expires_at");
-        let now = chrono::Utc::now();
-        let expires_in = (expires_at - now).num_seconds().max(0);
-
-        Ok(OAuthCredentials {
-            access_token: row.get("access_token"),
-            refresh_token: row.get("refresh_token"),
-            token_type: row.get("token_type"),
-            expires_in,
-            obtained_at: now.timestamp_millis(),
-        })
+        Ok(creds)
     }
 
-    async fn update_oauth_credentials(
-        &self,
-        source_id: &str,
-        creds: &OAuthCredentials,
-    ) -> Result<()> {
-        let expires_at = chrono::DateTime::from_timestamp(creds.obtained_at / 1000, 0)
-            .unwrap_or(chrono::Utc::now())
-            + chrono::Duration::seconds(creds.expires_in);
+    fn create_service_auth(&self, creds: &ServiceCredentials) -> Result<ServiceAccountAuth> {
+        let service_account_json = creds
+            .credentials
+            .get("service_account_key")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("Missing service_account_key in credentials"))?;
 
-        sqlx::query(
-            "UPDATE oauth_credentials 
-             SET access_token = $1, refresh_token = $2, token_type = $3, expires_at = $4, updated_at = CURRENT_TIMESTAMP 
-             WHERE source_id = $5 AND provider = 'google'"
-        )
-        .bind(&creds.access_token)
-        .bind(&creds.refresh_token)
-        .bind(&creds.token_type)
-        .bind(&expires_at)
-        .bind(source_id)
-        .execute(&self.pool)
-        .await?;
+        let scopes = creds
+            .config
+            .get("scopes")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_else(|| vec!["https://www.googleapis.com/auth/drive.readonly".to_string()]);
 
-        Ok(())
+        let delegated_user = creds
+            .config
+            .get("delegated_user")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
+        ServiceAccountAuth::new(service_account_json, scopes, delegated_user)
     }
 
     async fn update_source_status(&self, source_id: &str, status: &str) -> Result<()> {
@@ -734,22 +710,14 @@ impl SyncManager {
             }
         }
 
-        let oauth_creds = self.get_oauth_credentials(source_id).await?;
-        let mut creds: OAuthCredentials = oauth_creds;
-
-        let original_creds = creds.clone();
-        self.auth_manager.ensure_valid_token(&mut creds).await?;
-
-        if creds.access_token != original_creds.access_token
-            || creds.refresh_token != original_creds.refresh_token
-        {
-            self.update_oauth_credentials(source_id, &creds).await?;
-        }
+        let service_creds = self.get_service_credentials(source_id).await?;
+        let service_auth = self.create_service_auth(&service_creds)?;
+        let access_token = service_auth.get_access_token().await?;
 
         // Get the current start page token for change tracking
         let start_page_token = self
             .drive_client
-            .get_start_page_token(&creds.access_token)
+            .get_start_page_token(&access_token)
             .await?;
 
         // Create webhook channel
@@ -758,7 +726,7 @@ impl SyncManager {
         // Register the webhook with Google
         let webhook_response = self
             .drive_client
-            .register_changes_webhook(&creds.access_token, &webhook_channel, &start_page_token)
+            .register_changes_webhook(&access_token, &webhook_channel, &start_page_token)
             .await?;
 
         // Parse expiration timestamp from Google response
@@ -793,21 +761,13 @@ impl SyncManager {
         channel_id: &str,
         resource_id: &str,
     ) -> Result<()> {
-        let oauth_creds = self.get_oauth_credentials(source_id).await?;
-        let mut creds: OAuthCredentials = oauth_creds;
-
-        let original_creds = creds.clone();
-        self.auth_manager.ensure_valid_token(&mut creds).await?;
-
-        if creds.access_token != original_creds.access_token
-            || creds.refresh_token != original_creds.refresh_token
-        {
-            self.update_oauth_credentials(source_id, &creds).await?;
-        }
+        let service_creds = self.get_service_credentials(source_id).await?;
+        let service_auth = self.create_service_auth(&service_creds)?;
+        let access_token = service_auth.get_access_token().await?;
 
         // Stop the webhook with Google
         self.drive_client
-            .stop_webhook_channel(&creds.access_token, channel_id, resource_id)
+            .stop_webhook_channel(&access_token, channel_id, resource_id)
             .await?;
 
         // Remove from database
@@ -847,23 +807,15 @@ impl SyncManager {
             source.name, source.id
         );
 
-        let oauth_creds = self.get_oauth_credentials(&source.id).await?;
-        let mut creds: OAuthCredentials = oauth_creds;
-
-        let original_creds = creds.clone();
-        self.auth_manager.ensure_valid_token(&mut creds).await?;
-
-        if creds.access_token != original_creds.access_token
-            || creds.refresh_token != original_creds.refresh_token
-        {
-            self.update_oauth_credentials(&source.id, &creds).await?;
-        }
+        let service_creds = self.get_service_credentials(&source.id).await?;
+        let service_auth = self.create_service_auth(&service_creds)?;
+        let access_token = service_auth.get_access_token().await?;
 
         // For incremental sync, we would ideally use the changes API with a stored page token
         // For now, we'll just get the latest changes using the current start page token
         let start_page_token = self
             .drive_client
-            .get_start_page_token(&creds.access_token)
+            .get_start_page_token(&access_token)
             .await?;
 
         // Create a sync run record for incremental sync
@@ -874,7 +826,7 @@ impl SyncManager {
         // List recent changes
         match self
             .drive_client
-            .list_changes(&creds.access_token, &start_page_token)
+            .list_changes(&access_token, &start_page_token)
             .await
         {
             Ok(changes_response) => {
@@ -905,7 +857,7 @@ impl SyncManager {
                                 if self.should_index_file(&file) {
                                     match self
                                         .drive_client
-                                        .get_file_content(&creds.access_token, &file)
+                                        .get_file_content(&access_token, &file)
                                         .await
                                     {
                                         Ok(content) => {

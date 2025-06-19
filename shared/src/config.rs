@@ -55,9 +55,6 @@ pub struct ConnectorConfig {
 pub struct GoogleConnectorConfig {
     pub base: ConnectorConfig,
     pub database: DatabaseConfig,
-    pub client_id: String,
-    pub client_secret: String,
-    pub redirect_uri: String,
     pub webhook_url: Option<String>,
 }
 
@@ -305,25 +302,6 @@ impl GoogleConnectorConfig {
         let base = ConnectorConfig::from_env();
         let database = DatabaseConfig::from_env();
 
-        let client_id = get_required_env("GOOGLE_CLIENT_ID");
-        if client_id.trim().is_empty() || client_id == "your-google-client-id" {
-            eprintln!("ERROR: GOOGLE_CLIENT_ID must be set to a valid Google OAuth client ID");
-            eprintln!("Please configure your Google OAuth credentials");
-            process::exit(1);
-        }
-
-        let client_secret = get_required_env("GOOGLE_CLIENT_SECRET");
-        if client_secret.trim().is_empty() || client_secret == "your-google-client-secret" {
-            eprintln!(
-                "ERROR: GOOGLE_CLIENT_SECRET must be set to a valid Google OAuth client secret"
-            );
-            eprintln!("Please configure your Google OAuth credentials");
-            process::exit(1);
-        }
-
-        let redirect_uri = get_required_env("GOOGLE_REDIRECT_URI");
-        let redirect_uri = validate_url(&redirect_uri, "GOOGLE_REDIRECT_URI");
-
         let webhook_url = env::var("GOOGLE_WEBHOOK_URL").ok();
         if let Some(ref url) = webhook_url {
             if !url.trim().is_empty() {
@@ -339,9 +317,6 @@ impl GoogleConnectorConfig {
         Self {
             base,
             database,
-            client_id,
-            client_secret,
-            redirect_uri,
             webhook_url,
         }
     }

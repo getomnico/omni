@@ -122,4 +122,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Google Drive webhook integration for real-time document sync with automatic HTTPS configuration and channel persistence
 - Separated database migrations into dedicated container service for cleaner architecture and faster startup times
 - Multi-threaded Google Drive connector with concurrent file downloads, rate limiting, and exponential backoff for 5-10x performance improvement
+- **BREAKING CHANGE**: Migrated from OAuth to service account authentication for simplified self-hosting
+  - Replaced oauth_credentials table with service_credentials table supporting multiple auth types (JWT, API keys, bot tokens)
+  - Google connector now uses service account JSON keys instead of OAuth client credentials for better security and domain-wide access
+  - Updated admin UI to support service account setup through intuitive credential upload dialogs
+  - Eliminated complex OAuth app registration requirements for self-hosted deployments
 

@@ -86,8 +86,8 @@ pub enum SourceType {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
-#[sqlx(type_name = "text", rename_all = "lowercase")]
-pub enum OAuthProvider {
+#[sqlx(type_name = "varchar", rename_all = "lowercase")]
+pub enum ServiceProvider {
     Google,
     Slack,
     Atlassian,
@@ -95,19 +95,27 @@ pub enum OAuthProvider {
     Microsoft,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
+#[sqlx(type_name = "varchar", rename_all = "snake_case")]
+pub enum AuthType {
+    Jwt,
+    ApiKey,
+    BasicAuth,
+    BearerToken,
+    BotToken,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct OAuthCredentials {
+pub struct ServiceCredentials {
     pub id: String,
     pub source_id: String,
-    pub provider: OAuthProvider,
-    pub client_id: Option<String>,
-    pub client_secret: Option<String>,
-    pub access_token: Option<String>,
-    pub refresh_token: Option<String>,
-    pub token_type: Option<String>,
+    pub provider: ServiceProvider,
+    pub auth_type: AuthType,
+    pub principal_email: Option<String>,
+    pub credentials: JsonValue,
+    pub config: JsonValue,
     pub expires_at: Option<OffsetDateTime>,
-    pub scopes: Option<Vec<String>>,
-    pub metadata: JsonValue,
+    pub last_validated_at: Option<OffsetDateTime>,
     pub created_at: OffsetDateTime,
     pub updated_at: OffsetDateTime,
 }

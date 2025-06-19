@@ -39,28 +39,29 @@ export const load: PageServerLoad = async ({ locals }) => {
             {
                 id: 'google',
                 name: 'Google Workspace',
-                description: 'Connect to Google Drive, Docs, Gmail, and more',
+                description:
+                    'Connect to Google Drive, Docs, Gmail, and more using a service account',
                 connected: connectedSources.some(
                     (source) =>
                         source.sourceType === 'google_drive' || source.sourceType === 'gmail',
                 ),
-                connectUrl: '/api/oauth/google/connect',
+                authType: 'service_account',
             },
             {
                 id: 'slack',
                 name: 'Slack',
-                description: 'Connect to Slack messages and files',
+                description: 'Connect to Slack messages and files using a bot token',
                 connected: connectedSources.some((source) => source.sourceType === 'slack'),
-                connectUrl: '/api/oauth/slack/connect',
+                authType: 'bot_token',
             },
             {
                 id: 'atlassian',
                 name: 'Atlassian',
-                description: 'Connect to Confluence and Jira',
+                description: 'Connect to Confluence and Jira using an API token',
                 connected: connectedSources.some(
                     (source) => source.sourceType === 'confluence' || source.sourceType === 'jira',
                 ),
-                connectUrl: '/api/oauth/atlassian/connect',
+                authType: 'api_token',
             },
         ],
     }

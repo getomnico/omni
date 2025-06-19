@@ -59,19 +59,18 @@ export const embeddings = pgTable('embeddings', {
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
 
-export const oauthCredentials = pgTable('oauth_credentials', {
+export const serviceCredentials = pgTable('service_credentials', {
     id: text('id').primaryKey(),
     sourceId: text('source_id')
         .notNull()
         .references(() => sources.id, { onDelete: 'cascade' }),
     provider: text('provider').notNull(),
-    clientId: text('client_id'),
-    clientSecret: text('client_secret'),
-    accessToken: text('access_token'),
-    refreshToken: text('refresh_token'),
-    tokenType: text('token_type'),
+    authType: text('auth_type').notNull(),
+    principalEmail: text('principal_email'),
+    credentials: jsonb('credentials').notNull(),
+    config: jsonb('config').notNull().default({}),
     expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }),
-    metadata: jsonb('metadata').notNull().default({}),
+    lastValidatedAt: timestamp('last_validated_at', { withTimezone: true, mode: 'date' }),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
@@ -109,6 +108,6 @@ export type User = typeof user.$inferSelect
 export type Source = typeof sources.$inferSelect
 export type Document = typeof documents.$inferSelect
 export type Embedding = typeof embeddings.$inferSelect
-export type OAuthCredentials = typeof oauthCredentials.$inferSelect
+export type ServiceCredentials = typeof serviceCredentials.$inferSelect
 export type ConnectorEventsQueue = typeof connectorEventsQueue.$inferSelect
 export type SyncRun = typeof syncRuns.$inferSelect

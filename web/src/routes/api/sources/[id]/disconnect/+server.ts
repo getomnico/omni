@@ -1,51 +1,33 @@
 import { json, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
 import { db } from '$lib/server/db'
-import { sources, oauthCredentials } from '$lib/server/db/schema'
+import { sources, serviceCredentials } from '$lib/server/db/schema'
 import { and, eq } from 'drizzle-orm'
-import { SourceType } from '$lib/types'
 
 export const POST: RequestHandler = async ({ params, locals }) => {
     if (!locals.user) {
         throw error(401, 'Unauthorized')
     }
 
+    // Only admins can disconnect sources
+    if (locals.user.role !== 'admin') {
+        throw error(403, 'Admin access required')
+    }
+
     const sourceId = params.id
 
     const source = await db.query.sources.findFirst({
-        where: and(eq(sources.id, sourceId), eq(sources.createdBy, locals.user.id)),
+        where: eq(sources.id, sourceId),
     })
 
     if (!source) {
         throw error(404, 'Source not found')
     }
 
-    // Get OAuth credentials for this source
-    const credentials = await db.query.oauthCredentials.findFirst({
-        where: eq(oauthCredentials.sourceId, sourceId),
-    })
+    // Delete service credentials for this source
+    await db.delete(serviceCredentials).where(eq(serviceCredentials.sourceId, sourceId))
 
-    if (credentials && source.sourceType === SourceType.GOOGLE_DRIVE) {
-        try {
-            if (credentials.accessToken) {
-                await fetch(
-                    `https://oauth2.googleapis.com/revoke?token=${credentials.accessToken}`,
-                    {
-                        method: 'POST',
-                    },
-                )
-            }
-        } catch (err) {
-            console.error('Failed to revoke Google token:', err)
-        }
-    }
-
-    // Delete OAuth credentials
-    if (credentials) {
-        await db.delete(oauthCredentials).where(eq(oauthCredentials.sourceId, sourceId))
-    }
-
-    // Update source status
+    // Mark source as inactive
     await db
         .update(sources)
         .set({

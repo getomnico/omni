@@ -2,8 +2,20 @@
     import type { PageData } from './$types'
     import { onMount, onDestroy } from 'svelte'
     import { Button } from '$lib/components/ui/button'
+    import {
+        Card,
+        CardContent,
+        CardDescription,
+        CardHeader,
+        CardTitle,
+    } from '$lib/components/ui/card'
+    import { Label } from '$lib/components/ui/label'
+    import { Textarea } from '$lib/components/ui/textarea'
+    import { Input } from '$lib/components/ui/input'
     import * as AlertDialog from '$lib/components/ui/alert-dialog'
+    import * as Dialog from '$lib/components/ui/dialog'
     import { toast } from 'svelte-sonner'
+    import { ServiceProvider, AuthType } from '$lib/types'
 
     export let data: PageData
 
@@ -12,13 +24,21 @@
     let disconnectingSourceId: string | null = null
     let syncingSourceId: string | null = null
 
+    // Service account setup state
+    let showSetupDialog = false
+    let selectedIntegration: any = null
+    let serviceAccountJson = ''
+    let apiToken = ''
+    let principalEmail = ''
+    let delegatedUser = ''
+    let isSubmitting = false
+
     function formatDate(date: Date | null) {
         if (!date) return 'N/A'
         return new Date(date).toLocaleDateString()
     }
 
     function getSourceByType(providerId: string) {
-        // Map OAuth provider IDs to their associated source types
         if (providerId === 'google') {
             return data.connectedSources.find(
                 (source) => source.sourceType === 'google_drive' || source.sourceType === 'gmail',
@@ -28,7 +48,6 @@
                 (source) => source.sourceType === 'confluence' || source.sourceType === 'jira',
             )
         }
-        // For other providers, the ID matches the source type
         return data.connectedSources.find((source) => source.sourceType === providerId)
     }
 
@@ -74,6 +93,110 @@
         return overall
     }
 
+    function openSetupDialog(integration: any) {
+        selectedIntegration = integration
+        showSetupDialog = true
+        serviceAccountJson = ''
+        apiToken = ''
+        principalEmail = ''
+        delegatedUser = ''
+    }
+
+    async function setupServiceAccount() {
+        if (!selectedIntegration) return
+
+        isSubmitting = true
+        try {
+            let credentials: any = {}
+            let config: any = {}
+            let provider: string = selectedIntegration.id
+            let authType: string = ''
+
+            if (selectedIntegration.id === 'google') {
+                if (!serviceAccountJson.trim()) {
+                    throw new Error('Service account JSON is required')
+                }
+
+                // Validate JSON
+                try {
+                    JSON.parse(serviceAccountJson)
+                } catch {
+                    throw new Error('Invalid JSON format')
+                }
+
+                credentials = { service_account_key: serviceAccountJson }
+                config = {
+                    scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+                    delegated_user: delegatedUser || null,
+                }
+                authType = AuthType.JWT
+            } else if (selectedIntegration.id === 'atlassian') {
+                if (!principalEmail.trim() || !apiToken.trim()) {
+                    throw new Error('Email and API token are required')
+                }
+
+                credentials = { api_key: apiToken }
+                config = {}
+                authType = AuthType.API_KEY
+            } else if (selectedIntegration.id === 'slack') {
+                if (!apiToken.trim()) {
+                    throw new Error('Bot token is required')
+                }
+
+                credentials = { bot_token: apiToken }
+                config = {}
+                authType = AuthType.BOT_TOKEN
+            }
+
+            // First create the source
+            const sourceResponse = await fetch('/api/sources', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: `${selectedIntegration.name} Source`,
+                    sourceType:
+                        selectedIntegration.id === 'google'
+                            ? 'google_drive'
+                            : selectedIntegration.id,
+                    config: {},
+                }),
+            })
+
+            if (!sourceResponse.ok) {
+                throw new Error('Failed to create source')
+            }
+
+            const { source } = await sourceResponse.json()
+
+            // Then create the service credentials
+            const credentialsResponse = await fetch('/api/service-credentials', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sourceId: source.id,
+                    provider: provider,
+                    authType: authType,
+                    principalEmail: principalEmail || null,
+                    credentials: credentials,
+                    config: config,
+                }),
+            })
+
+            if (!credentialsResponse.ok) {
+                throw new Error('Failed to create service credentials')
+            }
+
+            toast.success(`${selectedIntegration.name} connected successfully!`)
+            showSetupDialog = false
+            window.location.reload()
+        } catch (error: any) {
+            console.error('Error setting up service account:', error)
+            toast.error(error.message || 'Failed to set up service account')
+        } finally {
+            isSubmitting = false
+        }
+    }
+
     async function disconnectSource(sourceId: string) {
         disconnectingSourceId = sourceId
         try {
@@ -86,7 +209,6 @@
             }
 
             toast.success('Source disconnected successfully')
-            // Refresh the page to show updated connection status
             window.location.reload()
         } catch (error) {
             console.error('Error disconnecting source:', error)
@@ -97,7 +219,7 @@
     }
 
     async function syncSource(sourceId: string) {
-        if (syncingSourceId) return // Prevent multiple syncs
+        if (syncingSourceId) return
 
         syncingSourceId = sourceId
         try {
@@ -106,479 +228,309 @@
             })
 
             if (!response.ok) {
-                throw new Error('Failed to trigger sync')
+                throw new Error('Failed to start sync')
             }
 
-            const result = await response.json()
-            toast.success('Sync triggered successfully')
+            toast.success('Sync started successfully')
         } catch (error) {
-            console.error('Error triggering sync:', error)
-            toast.error('Failed to trigger sync. Please try again.')
+            console.error('Error syncing source:', error)
+            toast.error('Failed to start sync. Please try again.')
         } finally {
             syncingSourceId = null
         }
     }
 
     onMount(() => {
-        let reconnectAttempts = 0
-        const maxReconnectAttempts = 5
-        const reconnectDelay = 3000
-
-        function connectSSE() {
-            eventSource = new EventSource('/api/indexing/status')
-
-            eventSource.onopen = () => {
-                reconnectAttempts = 0
-                console.log('SSE connection established')
-            }
-
-            eventSource.onmessage = (event) => {
-                try {
-                    const statusData = JSON.parse(event.data)
-                    if (statusData.sources) {
-                        liveIndexingStatus = statusData.sources
-                    }
-                } catch (error) {
-                    console.error('Error parsing SSE data:', error)
-                }
-            }
-
-            eventSource.onerror = (error) => {
-                console.error('SSE connection error:', error)
-                eventSource?.close()
-                eventSource = null
-
-                // Attempt to reconnect with exponential backoff
-                if (reconnectAttempts < maxReconnectAttempts) {
-                    reconnectAttempts++
-                    const delay = reconnectDelay * Math.pow(2, reconnectAttempts - 1)
-                    console.log(`Reconnecting SSE in ${delay}ms (attempt ${reconnectAttempts})`)
-                    setTimeout(connectSSE, delay)
-                } else {
-                    console.error('Max SSE reconnection attempts reached')
-                }
+        // Set up Server-Sent Events for live indexing status updates
+        eventSource = new EventSource('/api/indexing-status/stream')
+        eventSource.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data)
+                liveIndexingStatus = data
+            } catch (error) {
+                console.error('Error parsing SSE data:', error)
             }
         }
 
-        connectSSE()
+        eventSource.onerror = (error) => {
+            console.error('SSE error:', error)
+        }
     })
 
     onDestroy(() => {
         if (eventSource) {
             eventSource.close()
-            eventSource = null
         }
     })
+
+    $: overallStats = getOverallStats()
 </script>
 
-<div class="bg-background min-h-screen">
-    <nav class="bg-card border-b shadow">
-        <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-            <div class="flex h-16 justify-between">
-                <div class="flex items-center">
-                    <h1 class="text-xl font-semibold">Clio Admin - Integrations</h1>
-                </div>
-                <div class="flex items-center space-x-4">
-                    <a
-                        href="/admin/users"
-                        class="text-muted-foreground hover:text-foreground text-sm"
-                        >User Management</a
-                    >
-                    <a href="/" class="text-muted-foreground hover:text-foreground text-sm"
-                        >Back to Home</a
-                    >
-                </div>
-            </div>
-        </div>
-    </nav>
+<svelte:head>
+    <title>Integrations - Clio Admin</title>
+</svelte:head>
 
-    <main class="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        <!-- Overall Indexing Status Summary -->
-        {#if getOverallStats().total > 0}
-            {@const overallStats = getOverallStats()}
-            <div class="bg-card mb-6 rounded-lg border shadow">
-                <div class="px-4 py-5 sm:p-6">
-                    <h2 class="text-foreground mb-2 text-lg font-medium">System Indexing Status</h2>
-                    <p class="text-muted-foreground mb-4 text-sm">
-                        Real-time indexing progress across all connected data sources.
-                    </p>
+<div class="space-y-6">
+    <div>
+        <h1 class="text-2xl font-bold tracking-tight">Integrations</h1>
+        <p class="text-muted-foreground">
+            Connect Clio to your data sources using service accounts and API tokens.
+        </p>
+    </div>
 
-                    <div class="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                        <div class="text-center">
-                            <div class="text-2xl font-bold text-yellow-600 dark:text-yellow-400">
-                                {overallStats.pending}
-                            </div>
-                            <div class="text-muted-foreground text-sm">Pending</div>
-                        </div>
-                        <div class="text-center">
-                            <div class="text-2xl font-bold text-blue-600 dark:text-blue-400">
-                                {overallStats.processing}
-                            </div>
-                            <div class="text-muted-foreground text-sm">Processing</div>
-                        </div>
-                        <div class="text-center">
-                            <div class="text-2xl font-bold text-green-600 dark:text-green-400">
-                                {overallStats.completed}
-                            </div>
-                            <div class="text-muted-foreground text-sm">Completed</div>
-                        </div>
-                        <div class="text-center">
-                            <div class="text-2xl font-bold text-red-600 dark:text-red-400">
-                                {overallStats.failed}
-                            </div>
-                            <div class="text-muted-foreground text-sm">Failed</div>
-                        </div>
+    <!-- Overall Indexing Status -->
+    {#if overallStats.total > 0}
+        <Card>
+            <CardHeader>
+                <CardTitle>Overall Indexing Status</CardTitle>
+                <CardDescription
+                    >Real-time status of document processing across all sources</CardDescription
+                >
+            </CardHeader>
+            <CardContent>
+                <div class="grid grid-cols-2 gap-4 md:grid-cols-5">
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-yellow-600">{overallStats.pending}</div>
+                        <div class="text-muted-foreground text-sm">Pending</div>
                     </div>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-blue-600">
+                            {overallStats.processing}
+                        </div>
+                        <div class="text-muted-foreground text-sm">Processing</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-green-600">
+                            {overallStats.completed}
+                        </div>
+                        <div class="text-muted-foreground text-sm">Completed</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold text-red-600">{overallStats.failed}</div>
+                        <div class="text-muted-foreground text-sm">Failed</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-2xl font-bold">{overallStats.total}</div>
+                        <div class="text-muted-foreground text-sm">Total</div>
+                    </div>
+                </div>
+            </CardContent>
+        </Card>
+    {/if}
 
-                    {#if overallStats.total > 0}
-                        {@const completedPercentage =
-                            ((overallStats.completed + overallStats.failed) / overallStats.total) *
-                            100}
-                        <div class="mt-4">
-                            <div class="text-muted-foreground mb-1 flex justify-between text-sm">
-                                <span>Overall Progress</span>
-                                <span
-                                    >{Math.round(completedPercentage)}% ({overallStats.completed +
-                                        overallStats.failed} of {overallStats.total})</span
-                                >
-                            </div>
-                            <div
-                                class="h-3 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700"
+    <!-- Available Integrations -->
+    <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+        {#each data.availableIntegrations as integration}
+            {@const connectedSource = getSourceByType(integration.id)}
+            <Card>
+                <CardHeader>
+                    <CardTitle class="flex items-center justify-between">
+                        {integration.name}
+                        {#if connectedSource}
+                            <span
+                                class="inline-flex items-center rounded-full bg-green-100 px-2 py-1 text-xs font-medium text-green-800 dark:bg-green-900/20 dark:text-green-400"
                             >
-                                <div
-                                    class="h-full bg-gradient-to-r from-blue-500 to-green-500 transition-all duration-500 ease-in-out"
-                                    style="width: {completedPercentage}%"
-                                ></div>
-                            </div>
-                        </div>
-                    {/if}
-                </div>
-            </div>
-        {/if}
-
-        <div class="bg-card rounded-lg border shadow">
-            <div class="px-4 py-5 sm:p-6">
-                <h2 class="text-foreground mb-2 text-lg font-medium">Data Source Integrations</h2>
-                <p class="text-muted-foreground mb-6 text-sm">
-                    Connect organization-wide data sources. Once connected, all users can search
-                    across these data sources.
-                </p>
-
-                <div class="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-                    {#each data.availableIntegrations as integration (integration.id)}
-                        {@const connectedSource = getSourceByType(integration.id)}
-                        <div
-                            class="bg-background rounded-lg border p-6 transition-shadow hover:shadow-md"
-                        >
-                            <div class="mb-4 flex items-center justify-between">
-                                <div class="flex items-center space-x-3">
-                                    <h3 class="text-foreground text-lg font-medium">
-                                        {integration.name}
-                                    </h3>
-                                </div>
-                                <div class="flex items-center">
-                                    {#if integration.connected}
-                                        <span
-                                            class="inline-flex items-center rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/20 dark:text-green-400"
-                                        >
-                                            <span class="mr-1 h-1.5 w-1.5 rounded-full bg-green-400"
-                                            ></span>
-                                            Connected
-                                        </span>
-                                    {:else}
-                                        <span
-                                            class="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-800 dark:bg-gray-800 dark:text-gray-300"
-                                        >
-                                            <span class="mr-1 h-1.5 w-1.5 rounded-full bg-gray-400"
-                                            ></span>
-                                            Not Connected
-                                        </span>
-                                    {/if}
+                                Connected
+                            </span>
+                        {:else}
+                            <span
+                                class="inline-flex items-center rounded-full bg-gray-100 px-2 py-1 text-xs font-medium text-gray-800 dark:bg-gray-800 dark:text-gray-300"
+                            >
+                                Not Connected
+                            </span>
+                        {/if}
+                    </CardTitle>
+                    <CardDescription>{integration.description}</CardDescription>
+                </CardHeader>
+                <CardContent>
+                    {#if connectedSource}
+                        {@const indexingStatus = getIndexingStatus(connectedSource.id)}
+                        <div class="space-y-3">
+                            <div>
+                                <div class="text-sm font-medium">Last Sync</div>
+                                <div class="text-muted-foreground text-sm">
+                                    {formatDate(connectedSource.lastSyncAt)}
                                 </div>
                             </div>
 
-                            <p class="text-muted-foreground mb-4 text-sm">
-                                {integration.description}
-                            </p>
-
-                            {#if integration.connected && connectedSource}
-                                {@const indexingStats = getIndexingStatus(connectedSource.id)}
-                                <div class="mb-4 space-y-2 text-sm">
-                                    <div class="flex justify-between">
-                                        <span class="text-muted-foreground">Last Sync:</span>
-                                        <span class="text-foreground"
-                                            >{formatDate(connectedSource.lastSyncAt)}</span
-                                        >
-                                    </div>
-                                    <div class="flex justify-between">
-                                        <span class="text-muted-foreground">Status:</span>
-                                        <span
-                                            class={connectedSource.isActive
-                                                ? 'text-green-600 dark:text-green-400'
-                                                : 'text-destructive'}
-                                        >
-                                            {connectedSource.isActive ? 'Active' : 'Inactive'}
-                                        </span>
-                                    </div>
-                                    <div class="flex justify-between">
-                                        <span class="text-muted-foreground">Sync Status:</span>
-                                        <span class="text-foreground"
-                                            >{connectedSource.syncStatus || 'Unknown'}</span
-                                        >
-                                    </div>
-                                </div>
-
-                                <!-- Indexing Status Section -->
-                                {#if indexingStats.total > 0}
-                                    <div class="bg-muted/20 mb-4 rounded-md border p-3">
-                                        <div class="mb-2 flex items-center justify-between">
-                                            <span class="text-foreground text-sm font-medium"
-                                                >Indexing Progress</span
-                                            >
-                                            <span class="text-muted-foreground text-xs"
-                                                >{indexingStats.total} items</span
+                            {#if indexingStatus.total > 0}
+                                <div>
+                                    <div class="mb-2 text-sm font-medium">Indexing Status</div>
+                                    <div class="grid grid-cols-2 gap-2 text-xs">
+                                        <div class="flex justify-between">
+                                            <span>Pending:</span>
+                                            <span class="font-medium">{indexingStatus.pending}</span
                                             >
                                         </div>
-
-                                        <!-- Progress Bar -->
-                                        {#if indexingStats.total > 0}
-                                            {@const completedPercentage =
-                                                ((indexingStats.completed + indexingStats.failed) /
-                                                    indexingStats.total) *
-                                                100}
-                                            <div
-                                                class="mb-2 h-2 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700"
+                                        <div class="flex justify-between">
+                                            <span>Processing:</span>
+                                            <span class="font-medium"
+                                                >{indexingStatus.processing}</span
                                             >
-                                                <div
-                                                    class="h-full bg-blue-500 transition-all duration-300 ease-in-out"
-                                                    style="width: {completedPercentage}%"
-                                                ></div>
-                                            </div>
-                                        {/if}
-
-                                        <!-- Status Badges -->
-                                        <div class="flex flex-wrap gap-1">
-                                            {#if indexingStats.processing > 0}
-                                                <span
-                                                    class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {getStatusColor(
-                                                        'processing',
-                                                    )}"
-                                                >
-                                                    Processing: {indexingStats.processing}
-                                                </span>
-                                            {/if}
-                                            {#if indexingStats.pending > 0}
-                                                <span
-                                                    class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {getStatusColor(
-                                                        'pending',
-                                                    )}"
-                                                >
-                                                    Pending: {indexingStats.pending}
-                                                </span>
-                                            {/if}
-                                            {#if indexingStats.completed > 0}
-                                                <span
-                                                    class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {getStatusColor(
-                                                        'completed',
-                                                    )}"
-                                                >
-                                                    Completed: {indexingStats.completed}
-                                                </span>
-                                            {/if}
-                                            {#if indexingStats.failed > 0}
-                                                <span
-                                                    class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium {getStatusColor(
-                                                        'failed',
-                                                    )}"
-                                                >
-                                                    Failed: {indexingStats.failed}
-                                                </span>
-                                            {/if}
+                                        </div>
+                                        <div class="flex justify-between">
+                                            <span>Completed:</span>
+                                            <span class="font-medium"
+                                                >{indexingStatus.completed}</span
+                                            >
+                                        </div>
+                                        <div class="flex justify-between">
+                                            <span>Failed:</span>
+                                            <span class="font-medium">{indexingStatus.failed}</span>
                                         </div>
                                     </div>
-                                {/if}
-
-                                <div class="flex space-x-2">
-                                    <Button
-                                        variant="secondary"
-                                        class="flex-1"
-                                        disabled={syncingSourceId === connectedSource.id}
-                                        onclick={() => syncSource(connectedSource.id)}
-                                    >
-                                        {syncingSourceId === connectedSource.id
-                                            ? 'Working...'
-                                            : 'Sync Now'}
-                                    </Button>
-                                    <AlertDialog.Root>
-                                        <AlertDialog.Trigger>
-                                            <Button
-                                                variant="destructive"
-                                                disabled={disconnectingSourceId ===
-                                                    connectedSource.id}
-                                                class="cursor-pointer"
-                                            >
-                                                {disconnectingSourceId === connectedSource.id
-                                                    ? 'Disconnecting...'
-                                                    : 'Disconnect'}
-                                            </Button>
-                                        </AlertDialog.Trigger>
-                                        <AlertDialog.Content>
-                                            <AlertDialog.Header>
-                                                <AlertDialog.Title
-                                                    >Disconnect {integration.name}?</AlertDialog.Title
-                                                >
-                                                <AlertDialog.Description>
-                                                    This action will disconnect {integration.name} from
-                                                    your workspace. All indexed data will remain searchable,
-                                                    but no new data will be synced. You can reconnect
-                                                    this source at any time.
-                                                </AlertDialog.Description>
-                                            </AlertDialog.Header>
-                                            <AlertDialog.Footer>
-                                                <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
-                                                <AlertDialog.Action
-                                                    onclick={() =>
-                                                        disconnectSource(connectedSource.id)}
-                                                >
-                                                    Disconnect
-                                                </AlertDialog.Action>
-                                            </AlertDialog.Footer>
-                                        </AlertDialog.Content>
-                                    </AlertDialog.Root>
                                 </div>
-                            {:else if integration.id === 'google'}
-                                <!-- Official Google Sign-in Button -->
-                                <Button
-                                    href={integration.connectUrl}
-                                    variant="outline"
-                                    class="w-full border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
-                                >
-                                    <!-- Google G Logo SVG -->
-                                    <svg class="mr-3 h-5 w-5" viewBox="0 0 24 24">
-                                        <path
-                                            fill="#4285F4"
-                                            d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                                        />
-                                        <path
-                                            fill="#34A853"
-                                            d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                                        />
-                                        <path
-                                            fill="#FBBC05"
-                                            d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
-                                        />
-                                        <path
-                                            fill="#EA4335"
-                                            d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
-                                        />
-                                    </svg>
-                                    Connect with Google
-                                </Button>
-                            {:else if integration.id === 'slack'}
-                                <!-- Official Slack Add to Slack Button -->
-                                <a
-                                    href={integration.connectUrl}
-                                    class="inline-flex w-full items-center justify-center"
-                                >
-                                    <img
-                                        alt="Add to Slack"
-                                        height="40"
-                                        width="139"
-                                        src="https://platform.slack-edge.com/img/add_to_slack.png"
-                                        srcset="https://platform.slack-edge.com/img/add_to_slack.png 1x, https://platform.slack-edge.com/img/add_to_slack@2x.png 2x"
-                                    />
-                                </a>
-                            {:else if integration.id === 'atlassian'}
-                                <!-- Atlassian Connect Button -->
-                                <Button
-                                    href={integration.connectUrl}
-                                    class="w-full bg-[#0052CC] text-white hover:bg-[#0747A6]"
-                                >
-                                    <!-- Atlassian Logo -->
-                                    <svg class="mr-2 h-5 w-5" viewBox="0 0 24 24" fill="none">
-                                        <path
-                                            d="M7.99 11.411c-.267-.415-.81-.299-.915.195l-2.757 12.96c-.066.31.162.599.476.599h5.34c.196 0 .37-.127.43-.313l2.538-7.853c.209-.647-.745-1.115-1.011-.496L7.99 11.411zM11.348.305a.477.477 0 00-.9.007L4.543 15.001a.477.477 0 00.432.687h5.452c.196 0 .37-.126.43-.312l3.04-9.404c.206-.637-.735-1.105-1.01-.496L11.348.305z"
-                                            fill="currentColor"
-                                        />
-                                    </svg>
-                                    Connect with Atlassian
-                                </Button>
-                            {:else}
-                                <Button href={integration.connectUrl} class="w-full">
-                                    Connect to {integration.name}
-                                </Button>
                             {/if}
+
+                            <div class="flex gap-2">
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    on:click={() => syncSource(connectedSource.id)}
+                                    disabled={syncingSourceId === connectedSource.id}
+                                >
+                                    {syncingSourceId === connectedSource.id
+                                        ? 'Syncing...'
+                                        : 'Sync Now'}
+                                </Button>
+                                <AlertDialog.Root>
+                                    <AlertDialog.Trigger asChild let:builder>
+                                        <Button
+                                            builders={[builder]}
+                                            variant="outline"
+                                            size="sm"
+                                            disabled={disconnectingSourceId === connectedSource.id}
+                                        >
+                                            {disconnectingSourceId === connectedSource.id
+                                                ? 'Disconnecting...'
+                                                : 'Disconnect'}
+                                        </Button>
+                                    </AlertDialog.Trigger>
+                                    <AlertDialog.Content>
+                                        <AlertDialog.Header>
+                                            <AlertDialog.Title
+                                                >Disconnect {integration.name}?</AlertDialog.Title
+                                            >
+                                            <AlertDialog.Description>
+                                                This will stop syncing data from {integration.name} and
+                                                remove access credentials. Existing indexed documents
+                                                will remain searchable.
+                                            </AlertDialog.Description>
+                                        </AlertDialog.Header>
+                                        <AlertDialog.Footer>
+                                            <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+                                            <AlertDialog.Action
+                                                on:click={() =>
+                                                    disconnectSource(connectedSource.id)}
+                                            >
+                                                Disconnect
+                                            </AlertDialog.Action>
+                                        </AlertDialog.Footer>
+                                    </AlertDialog.Content>
+                                </AlertDialog.Root>
+                            </div>
                         </div>
-                    {/each}
+                    {:else}
+                        <Button on:click={() => openSetupDialog(integration)}>
+                            Connect {integration.name}
+                        </Button>
+                    {/if}
+                </CardContent>
+            </Card>
+        {/each}
+    </div>
+</div>
+
+<!-- Service Account Setup Dialog -->
+<Dialog.Root bind:open={showSetupDialog}>
+    <Dialog.Content class="max-w-2xl">
+        <Dialog.Header>
+            <Dialog.Title>Connect {selectedIntegration?.name}</Dialog.Title>
+            <Dialog.Description>
+                Set up your {selectedIntegration?.name} integration using service account credentials.
+            </Dialog.Description>
+        </Dialog.Header>
+
+        <div class="space-y-4">
+            {#if selectedIntegration?.id === 'google'}
+                <div class="space-y-2">
+                    <Label for="service-account-json">Service Account JSON Key</Label>
+                    <Textarea
+                        id="service-account-json"
+                        bind:value={serviceAccountJson}
+                        placeholder="Paste your Google service account JSON key here..."
+                        rows={10}
+                        class="font-mono text-sm"
+                    />
+                    <p class="text-muted-foreground text-sm">
+                        Download this from the Google Cloud Console under "Service Accounts" >
+                        "Keys".
+                    </p>
                 </div>
 
-                {#if data.connectedSources.length > 0}
-                    <div class="mt-8">
-                        <h3 class="text-foreground mb-4 text-lg font-medium">
-                            Connected Sources Details
-                        </h3>
-                        <div class="ring-border overflow-hidden shadow ring-1 md:rounded-lg">
-                            <table class="divide-border min-w-full divide-y">
-                                <thead class="bg-muted/50">
-                                    <tr>
-                                        <th
-                                            class="text-foreground px-6 py-3 text-left text-sm font-semibold"
-                                            >Source</th
-                                        >
-                                        <th
-                                            class="text-foreground px-6 py-3 text-left text-sm font-semibold"
-                                            >Type</th
-                                        >
-                                        <th
-                                            class="text-foreground px-6 py-3 text-left text-sm font-semibold"
-                                            >Status</th
-                                        >
-                                        <th
-                                            class="text-foreground px-6 py-3 text-left text-sm font-semibold"
-                                            >Last Sync</th
-                                        >
-                                        <th
-                                            class="text-foreground px-6 py-3 text-left text-sm font-semibold"
-                                            >Created</th
-                                        >
-                                    </tr>
-                                </thead>
-                                <tbody class="divide-border bg-background divide-y">
-                                    {#each data.connectedSources as source (source.id)}
-                                        <tr>
-                                            <td
-                                                class="text-foreground px-6 py-4 text-sm font-medium"
-                                                >{source.name}</td
-                                            >
-                                            <td
-                                                class="text-muted-foreground px-6 py-4 text-sm capitalize"
-                                                >{source.sourceType}</td
-                                            >
-                                            <td class="px-6 py-4 text-sm">
-                                                <span
-                                                    class="inline-flex rounded-full px-2 text-xs leading-5 font-semibold
-													{source.isActive
-                                                        ? 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400'
-                                                        : 'bg-destructive/10 text-destructive'}
-												"
-                                                >
-                                                    {source.isActive ? 'Active' : 'Inactive'}
-                                                </span>
-                                            </td>
-                                            <td class="text-muted-foreground px-6 py-4 text-sm"
-                                                >{formatDate(source.lastSyncAt)}</td
-                                            >
-                                            <td class="text-muted-foreground px-6 py-4 text-sm"
-                                                >{formatDate(source.createdAt)}</td
-                                            >
-                                        </tr>
-                                    {/each}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                {/if}
-            </div>
+                <div class="space-y-2">
+                    <Label for="delegated-user">Delegated User Email (Optional)</Label>
+                    <Input
+                        id="delegated-user"
+                        bind:value={delegatedUser}
+                        placeholder="user@yourdomain.com"
+                        type="email"
+                    />
+                    <p class="text-muted-foreground text-sm">
+                        If using domain-wide delegation, specify the user to impersonate.
+                    </p>
+                </div>
+            {:else if selectedIntegration?.id === 'atlassian'}
+                <div class="space-y-2">
+                    <Label for="principal-email">Your Atlassian Email</Label>
+                    <Input
+                        id="principal-email"
+                        bind:value={principalEmail}
+                        placeholder="your.email@company.com"
+                        type="email"
+                        required
+                    />
+                </div>
+
+                <div class="space-y-2">
+                    <Label for="api-token">API Token</Label>
+                    <Input
+                        id="api-token"
+                        bind:value={apiToken}
+                        placeholder="Your Atlassian API token"
+                        type="password"
+                        required
+                    />
+                    <p class="text-muted-foreground text-sm">
+                        Create an API token at <a
+                            href="https://id.atlassian.com/manage-profile/security/api-tokens"
+                            target="_blank"
+                            class="text-blue-600 hover:underline">id.atlassian.com</a
+                        >
+                    </p>
+                </div>
+            {:else if selectedIntegration?.id === 'slack'}
+                <div class="space-y-2">
+                    <Label for="bot-token">Bot Token</Label>
+                    <Input
+                        id="bot-token"
+                        bind:value={apiToken}
+                        placeholder="xoxb-your-slack-bot-token"
+                        type="password"
+                        required
+                    />
+                    <p class="text-muted-foreground text-sm">
+                        Get this from your Slack app settings under "OAuth & Permissions".
+                    </p>
+                </div>
+            {/if}
         </div>
-    </main>
-</div>
+
+        <Dialog.Footer>
+            <Button variant="outline" on:click={() => (showSetupDialog = false)}>Cancel</Button>
+            <Button on:click={setupServiceAccount} disabled={isSubmitting}>
+                {isSubmitting ? 'Connecting...' : 'Connect'}
+            </Button>
+        </Dialog.Footer>
+    </Dialog.Content>
+</Dialog.Root>

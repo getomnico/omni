@@ -1,91 +1,147 @@
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{Duration, Utc};
+use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use tracing::{debug, info};
 
-const GOOGLE_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct OAuthCredentials {
-    pub access_token: String,
-    pub refresh_token: String,
-    pub token_type: String,
-    pub expires_in: i64,
-    pub obtained_at: i64,
+pub struct GoogleServiceAccountKey {
+    #[serde(rename = "type")]
+    pub key_type: String,
+    pub project_id: String,
+    pub private_key_id: String,
+    pub private_key: String,
+    pub client_email: String,
+    pub client_id: String,
+    pub auth_uri: String,
+    pub token_uri: String,
+    pub auth_provider_x509_cert_url: String,
+    pub client_x509_cert_url: String,
 }
 
-impl OAuthCredentials {
-    pub fn is_expired(&self) -> bool {
-        let obtained_at =
-            DateTime::from_timestamp(self.obtained_at / 1000, 0).unwrap_or(Utc::now());
-        let expires_at = obtained_at + Duration::seconds(self.expires_in - 300);
-
-        Utc::now() >= expires_at
-    }
+#[derive(Debug, Serialize)]
+struct GoogleJwtClaims {
+    iss: String,
+    sub: Option<String>,
+    scope: String,
+    aud: String,
+    exp: i64,
+    iat: i64,
 }
 
-pub struct AuthManager {
+#[derive(Debug, Clone)]
+struct CachedToken {
+    access_token: String,
+    expires_at: i64,
+}
+
+pub struct ServiceAccountAuth {
+    service_account: GoogleServiceAccountKey,
+    scopes: Vec<String>,
+    delegated_user: Option<String>,
     client: Client,
-    client_id: String,
-    client_secret: String,
+    token_cache: Arc<RwLock<Option<CachedToken>>>,
 }
 
-impl AuthManager {
-    pub fn new(client_id: String, client_secret: String) -> Self {
-        Self {
-            client: Client::new(),
-            client_id,
-            client_secret,
+impl ServiceAccountAuth {
+    pub fn new(
+        service_account_json: &str,
+        scopes: Vec<String>,
+        delegated_user: Option<String>,
+    ) -> Result<Self> {
+        let service_account: GoogleServiceAccountKey = serde_json::from_str(service_account_json)?;
+
+        if service_account.key_type != "service_account" {
+            return Err(anyhow!(
+                "Invalid key type: expected 'service_account', got '{}'",
+                service_account.key_type
+            ));
         }
+
+        Ok(Self {
+            service_account,
+            scopes,
+            delegated_user,
+            client: Client::new(),
+            token_cache: Arc::new(RwLock::new(None)),
+        })
     }
 
-    pub async fn refresh_token(&self, refresh_token: &str) -> Result<OAuthCredentials> {
-        info!("Refreshing Google OAuth token");
+    pub async fn get_access_token(&self) -> Result<String> {
+        // Check cache first
+        {
+            let cache = self.token_cache.read().await;
+            if let Some(cached) = &*cache {
+                let now = Utc::now().timestamp();
+                if cached.expires_at > now + 300 {
+                    debug!("Using cached access token");
+                    return Ok(cached.access_token.clone());
+                }
+            }
+        }
 
+        info!("Generating new access token for service account");
+
+        let now = Utc::now();
+        let exp = now + Duration::hours(1);
+
+        let claims = GoogleJwtClaims {
+            iss: self.service_account.client_email.clone(),
+            sub: self.delegated_user.clone(),
+            scope: self.scopes.join(" "),
+            aud: self.service_account.token_uri.clone(),
+            exp: exp.timestamp(),
+            iat: now.timestamp(),
+        };
+
+        let header = Header::new(Algorithm::RS256);
+        let key = EncodingKey::from_rsa_pem(self.service_account.private_key.as_bytes())?;
+        let jwt = encode(&header, &claims, &key)?;
+
+        // Exchange JWT for access token
         let params = [
-            ("refresh_token", refresh_token),
-            ("client_id", &self.client_id),
-            ("client_secret", &self.client_secret),
-            ("grant_type", "refresh_token"),
+            ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
+            ("assertion", &jwt),
         ];
 
         let response = self
             .client
-            .post(GOOGLE_TOKEN_URL)
+            .post(&self.service_account.token_uri)
             .form(&params)
             .send()
             .await?;
 
         if !response.status().is_success() {
             let error_text = response.text().await?;
-            return Err(anyhow!("Failed to refresh token: {}", error_text));
+            return Err(anyhow!("Failed to get access token: {}", error_text));
+        }
+
+        #[derive(Deserialize)]
+        struct TokenResponse {
+            access_token: String,
+            expires_in: i64,
         }
 
         let token_response: TokenResponse = response.json().await?;
 
-        Ok(OAuthCredentials {
-            access_token: token_response.access_token,
-            refresh_token: refresh_token.to_string(),
-            token_type: token_response.token_type,
-            expires_in: token_response.expires_in,
-            obtained_at: Utc::now().timestamp_millis(),
-        })
+        // Cache the token
+        {
+            let mut cache = self.token_cache.write().await;
+            *cache = Some(CachedToken {
+                access_token: token_response.access_token.clone(),
+                expires_at: now.timestamp() + token_response.expires_in,
+            });
+        }
+
+        Ok(token_response.access_token)
     }
 
-    pub async fn ensure_valid_token(&self, creds: &mut OAuthCredentials) -> Result<()> {
-        if creds.is_expired() {
-            debug!("Token expired, refreshing");
-            let new_creds = self.refresh_token(&creds.refresh_token).await?;
-            *creds = new_creds;
-        }
+    pub async fn validate(&self) -> Result<()> {
+        // Try to get an access token to validate the service account
+        self.get_access_token().await?;
         Ok(())
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    token_type: String,
-    expires_in: i64,
 }
