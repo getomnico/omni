@@ -57,7 +57,27 @@ impl DocumentRepository {
                    metadata, permissions, created_at, updated_at, last_indexed_at
             FROM documents
             WHERE tsv_content @@ websearch_to_tsquery('english', $1)
-            ORDER BY ts_rank_cd(tsv_content, websearch_to_tsquery('english', $1)) DESC
+            ORDER BY (
+                -- Base FTS ranking with custom weights (D=0.1, C=0.2, B=0.4, A=1.0)
+                ts_rank_cd('{0.1, 0.2, 0.4, 1.0}', tsv_content, websearch_to_tsquery('english', $1)) *
+                -- Recency boost: newer documents get slight boost (max 30% boost for very recent)
+                (1.0 + GREATEST(-1.0, (EXTRACT(EPOCH FROM (NOW() - updated_at)) / 86400.0 / -365.0)) * 0.3) *
+                -- Document type boost based on actual Google Drive content types
+                CASE 
+                    WHEN content_type = 'application/vnd.google-apps.document' THEN 1.3  -- Google Docs highest
+                    WHEN content_type = 'application/vnd.google-apps.spreadsheet' THEN 1.2  -- Google Sheets
+                    WHEN content_type = 'application/pdf' THEN 1.2  -- PDFs are valuable
+                    WHEN content_type = 'text/html' THEN 1.1  -- HTML content
+                    WHEN content_type = 'text/plain' THEN 1.0  -- Plain text baseline
+                    WHEN content_type = 'text/csv' THEN 0.9  -- CSVs less searchable
+                    ELSE 1.0  -- Default for unknown types
+                END *
+                -- Title exact match boost (case-insensitive partial match)
+                CASE 
+                    WHEN title ILIKE '%' || $1 || '%' THEN 1.4
+                    ELSE 1.0
+                END
+            ) DESC
             LIMIT $2
             "#,
         )
@@ -111,7 +131,27 @@ impl DocumentRepository {
         };
 
         let full_query = format!(
-            "{}{}{} ORDER BY ts_rank(tsv_content, websearch_to_tsquery('english', $1)) DESC LIMIT {} OFFSET {}",
+            r#"{}{}{} ORDER BY (
+                -- Base FTS ranking with custom weights (D=0.1, C=0.2, B=0.4, A=1.0)
+                ts_rank_cd('{{0.1, 0.2, 0.4, 1.0}}', tsv_content, websearch_to_tsquery('english', $1)) *
+                -- Recency boost: newer documents get slight boost (max 30% boost for very recent)
+                (1.0 + GREATEST(-1.0, (EXTRACT(EPOCH FROM (NOW() - updated_at)) / 86400.0 / -365.0)) * 0.3) *
+                -- Document type boost based on actual Google Drive content types
+                CASE 
+                    WHEN content_type = 'application/vnd.google-apps.document' THEN 1.3
+                    WHEN content_type = 'application/vnd.google-apps.spreadsheet' THEN 1.2
+                    WHEN content_type = 'application/pdf' THEN 1.2
+                    WHEN content_type = 'text/html' THEN 1.1
+                    WHEN content_type = 'text/plain' THEN 1.0
+                    WHEN content_type = 'text/csv' THEN 0.9
+                    ELSE 1.0
+                END *
+                -- Title exact match boost
+                CASE 
+                    WHEN title ILIKE '%' || $1 || '%' THEN 1.4
+                    ELSE 1.0
+                END
+            ) DESC LIMIT {} OFFSET {}"#,
             base_query, source_filter, content_type_filter, limit_param, offset_param
         );
 
