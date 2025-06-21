@@ -69,6 +69,10 @@ class Chunker:
         char_spans = []
 
         for char_start, char_end in nodes:
+            # Validate character bounds
+            if char_start >= char_end or char_start < 0 or char_end > len(text):
+                continue
+
             # Convert char indices to token indices
             start_chunk_index = bisect.bisect_left(
                 [offset[0] for offset in token_offsets], char_start
@@ -77,14 +81,14 @@ class Chunker:
                 [offset[1] for offset in token_offsets], char_end
             )
 
-            # Add the chunk span if it's within the tokenized text
-            if start_chunk_index < len(token_offsets) and end_chunk_index <= len(
-                token_offsets
+            # Validate token bounds and ensure start < end
+            if (
+                start_chunk_index < len(token_offsets)
+                and end_chunk_index <= len(token_offsets)
+                and start_chunk_index < end_chunk_index
             ):
                 token_spans.append((start_chunk_index, end_chunk_index))
                 char_spans.append((char_start, char_end))
-            else:
-                break
 
         return token_spans, char_spans
 
@@ -94,6 +98,9 @@ class Chunker:
         chunk_size: int,
         tokenizer: "AutoTokenizer",
     ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+        if not text or chunk_size < 1:
+            return [], []
+
         tokens = tokenizer.encode_plus(
             text, return_offsets_mapping=True, add_special_tokens=False
         )
@@ -103,12 +110,15 @@ class Chunker:
         char_spans = []
         for i in range(0, len(token_offsets), chunk_size):
             chunk_end = min(i + chunk_size, len(token_offsets))
-            if chunk_end - i > 0:
-                token_spans.append((i, chunk_end))
+            if chunk_end > i:  # Ensure valid span
                 # Get character indices from token offsets
                 char_start = token_offsets[i][0]
                 char_end = token_offsets[chunk_end - 1][1]
-                char_spans.append((char_start, char_end))
+
+                # Validate character bounds
+                if char_start < char_end and char_start >= 0 and char_end <= len(text):
+                    token_spans.append((i, chunk_end))
+                    char_spans.append((char_start, char_end))
 
         return token_spans, char_spans
 
@@ -118,35 +128,63 @@ class Chunker:
         n_sentences: int,
         tokenizer: "AutoTokenizer",
     ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+        if not text or n_sentences < 1:
+            return [], []
+
         tokens = tokenizer.encode_plus(
             text, return_offsets_mapping=True, add_special_tokens=False
         )
         token_offsets = tokens.offset_mapping
 
+        if not token_offsets:
+            return [], []
+
         token_spans = []
         char_spans = []
         chunk_start = 0
         count_chunks = 0
+
         for i in range(0, len(token_offsets)):
-            if tokens.tokens(0)[i] in (".", "!", "?") and (
-                (len(tokens.tokens(0)) == i + 1)
-                or (tokens.token_to_chars(i).end != tokens.token_to_chars(i + 1).start)
+            if (
+                i < len(tokens.tokens(0))
+                and tokens.tokens(0)[i] in (".", "!", "?")
+                and (
+                    (len(tokens.tokens(0)) == i + 1)
+                    or (
+                        i + 1 < len(token_offsets)
+                        and tokens.token_to_chars(i).end
+                        != tokens.token_to_chars(i + 1).start
+                    )
+                )
             ):
                 count_chunks += 1
-                if count_chunks == n_sentences:
-                    token_spans.append((chunk_start, i + 1))
+                if count_chunks == n_sentences and i + 1 > chunk_start:
                     # Get character indices from token offsets
                     char_start = token_offsets[chunk_start][0]
                     char_end = token_offsets[i][1]
-                    char_spans.append((char_start, char_end))
+
+                    # Validate bounds
+                    if (
+                        char_start < char_end
+                        and char_start >= 0
+                        and char_end <= len(text)
+                    ):
+                        token_spans.append((chunk_start, i + 1))
+                        char_spans.append((char_start, char_end))
+
                     chunk_start = i + 1
                     count_chunks = 0
-        if len(tokens.tokens(0)) - chunk_start > 1:
-            token_spans.append((chunk_start, len(tokens.tokens(0))))
-            # Get character indices for the last chunk
+
+        # Handle the last chunk if there's remaining text
+        if chunk_start < len(token_offsets):
             char_start = token_offsets[chunk_start][0]
             char_end = token_offsets[-1][1]
-            char_spans.append((char_start, char_end))
+
+            # Validate bounds
+            if char_start < char_end and char_start >= 0 and char_end <= len(text):
+                token_spans.append((chunk_start, len(token_offsets)))
+                char_spans.append((char_start, char_end))
+
         return token_spans, char_spans
 
     def chunk(

@@ -323,8 +323,16 @@ impl ProcessorContext {
         // Generate embeddings for the document
         if let Err(e) = self.generate_embeddings(&upserted).await {
             error!(
-                "Failed to generate embeddings for document {}: {}",
-                document_id, e
+                "Failed to generate embeddings for document {} (title: '{}', content length: {}): {}",
+                document_id,
+                upserted.title,
+                content.len(),
+                e
+            );
+            // Log more details about the failure
+            warn!(
+                "Document {} embedding failure details - source: {}, external_id: {}, content_type: {:?}",
+                document_id, source_id, document_id, metadata.mime_type
             );
             // Don't fail the entire operation if embeddings fail
         }
@@ -484,6 +492,7 @@ impl ProcessorContext {
 
         // Create embedding records from AI service response
         let mut embeddings = Vec::new();
+        let mut skipped_chunks = 0;
 
         for (chunk_index, (chunk_embedding, chunk_span)) in text_embedding
             .chunk_embeddings
@@ -491,6 +500,16 @@ impl ProcessorContext {
             .zip(text_embedding.chunk_spans.iter())
             .enumerate()
         {
+            // Validate chunk bounds before creating embedding
+            if chunk_span.0 >= chunk_span.1 {
+                warn!(
+                    "Skipping invalid chunk {} for document {} - invalid bounds: start={}, end={}",
+                    chunk_index, document.id, chunk_span.0, chunk_span.1
+                );
+                skipped_chunks += 1;
+                continue;
+            }
+
             let embedding = Embedding {
                 id: Ulid::new().to_string(),
                 document_id: document.id.clone(),
@@ -505,6 +524,15 @@ impl ProcessorContext {
                 created_at: sqlx::types::time::OffsetDateTime::now_utc(),
             };
             embeddings.push(embedding);
+        }
+
+        if skipped_chunks > 0 {
+            warn!(
+                "Skipped {} invalid chunks out of {} total for document {}",
+                skipped_chunks,
+                text_embedding.chunk_embeddings.len(),
+                document.id
+            );
         }
 
         if !embeddings.is_empty() {
