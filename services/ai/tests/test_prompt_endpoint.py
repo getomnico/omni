@@ -6,6 +6,7 @@ import httpx
 import asyncio
 import json
 import sys
+import os
 
 
 async def test_prompt_endpoint():
@@ -19,8 +20,8 @@ async def test_prompt_endpoint():
         "top_p": 0.9,
     }
 
-    # AI service URL (adjust if needed)
-    ai_service_url = "http://localhost:3003"
+    # AI service URL from environment or default
+    ai_service_url = os.environ.get("AI_SERVICE_URL", "http://localhost:3003")
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -47,7 +48,7 @@ async def test_prompt_endpoint():
 
 async def test_health_endpoint():
     """Test the health endpoint first"""
-    ai_service_url = "http://localhost:3003"
+    ai_service_url = os.environ.get("AI_SERVICE_URL", "http://localhost:3003")
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:

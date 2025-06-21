@@ -95,8 +95,8 @@ class TestChunkBySentences:
         chunks = [text[start:end] for start, end in char_spans]
 
         # Should properly identify sentence boundaries despite abbreviations
-        assert len(chunks) >= 1
-        assert len(char_spans) >= 1
+        assert len(chunks) == 4
+        assert len(char_spans) == 4
 
     def test_span_annotations_validity(self, tokenizer, chunker):
         """Test that span annotations are valid token indices"""
@@ -137,9 +137,9 @@ class TestChunkBySentences:
         chunks = [text[start:end] for start, end in char_spans]
 
         # Should identify multiple sentences
-        assert len(chunks) >= 2
-        assert len(char_spans) >= 2
-        assert len(chunks) == len(char_spans)
+        print(f"Chunker returned {len(chunks)} chunks.")
+        assert len(chunks) == 2
+        assert len(char_spans) == 2
 
         # Verify that chunks contain expected content
         full_text = "".join(chunks)

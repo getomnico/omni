@@ -158,6 +158,7 @@ class TestSemanticChunking:
         chunk_embeddings = result["embeddings"][0]
 
         # Verify we got multiple chunks (semantic chunking should create fewer chunks than sentences)
+        print(f"Embeddings API returned {len(chunk_spans)} chunks")
         assert (
             len(chunk_spans) > 1
         ), f"Expected multiple semantic chunks, got {len(chunk_spans)}"
@@ -172,7 +173,7 @@ class TestSemanticChunking:
 
         # Verify embedding properties
         for i, embedding in enumerate(chunk_embeddings):
-            assert len(embedding) == 1024  # e5-large-v2 dimension
+            assert len(embedding) == 1024  # jina-embeddings-v3 embedding dimensions
             norm = np.linalg.norm(embedding)
             assert 0.99 < norm < 1.01, f"Embedding {i} should be normalized"
 
@@ -247,12 +248,12 @@ class TestChunkingModes:
     @pytest.mark.parametrize(
         "mode,expected_chunks",
         [
-            ("sentence", None),  # Will be determined by sentence count
-            ("fixed", None),  # Will be determined by text length
-            ("semantic", None),  # Will be determined by semantic boundaries
+            ("sentence", 3),  # Will be determined by sentence count
+            ("fixed", 4),  # Will be determined by text length
+            ("semantic", 2),  # Will be determined by semantic boundaries
         ],
     )
-    def test_chunking_mode(self, embeddings_url: str, mode: str, expected_chunks):
+    def test_chunking_mode(self, embeddings_url: str, mode: str, expected_chunks: int):
         """Test different chunking modes"""
         test_text = (
             "This is a test. It has multiple sentences. Each sentence is separate."
@@ -265,16 +266,19 @@ class TestChunkingModes:
         }
 
         if mode == "fixed":
-            payload["chunk_size"] = 512
+            payload["chunk_size"] = 4
 
         response = requests.post(embeddings_url, json=payload)
         assert response.status_code == 200
 
         result = response.json()
         embeddings = result["embeddings"][0]
+        chunk_spans = result["chunks"][0]
 
         assert len(embeddings) > 0
         assert all(len(emb) == 1024 for emb in embeddings)
+
+        assert len(chunk_spans) == expected_chunks
 
 
 class TestEdgeCases:
