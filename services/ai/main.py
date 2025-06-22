@@ -85,8 +85,9 @@ _executor = ThreadPoolExecutor(max_workers=2)
 class EmbeddingRequest(BaseModel):
     texts: List[str]
     task: Optional[str] = TASK  # Allow different tasks
-    chunk_size: Optional[int] = 512  # Chunk size for fixed-size chunking
-    chunking_mode: Optional[str] = "sentence"  # "sentence" or "fixed"
+    chunk_size: Optional[int] = 512  # Chunk size in tokens for both fixed and sentence modes
+    chunking_mode: Optional[str] = "sentence"  # "sentence", "fixed", "semantic", or "none"
+    n_sentences: Optional[int] = None  # Number of sentences per chunk (sentence mode only, overrides chunk_size)
 
 
 class EmbeddingResponse(BaseModel):
@@ -138,9 +139,16 @@ async def health_check():
 
 @app.post("/embeddings", response_model=EmbeddingResponse)
 async def generate_embeddings(request: EmbeddingRequest):
-    """Generate embeddings for input texts using configurable chunking"""
+    """Generate embeddings for input texts using configurable chunking
+    
+    Chunking behavior:
+    - fixed mode: chunk_size sets the number of tokens per chunk
+    - sentence mode: 
+      - If n_sentences is provided: groups n_sentences per chunk
+      - If only chunk_size is provided: groups sentences until chunk_size tokens limit
+    """
     logger.info(
-        f"Generating embeddings for {len(request.texts)} texts with chunking_mode={request.chunking_mode}, chunk_size={request.chunk_size}"
+        f"Generating embeddings for {len(request.texts)} texts with chunking_mode={request.chunking_mode}, chunk_size={request.chunk_size}, n_sentences={request.n_sentences}"
     )
     logger.info(f"Input text for generating embeddings: {request.texts}")
 
@@ -165,6 +173,7 @@ async def generate_embeddings(request: EmbeddingRequest):
             request.task,
             request.chunk_size,
             request.chunking_mode,
+            request.n_sentences,
         )
 
         logger.info(f"Generated embeddings with chunks: {chunks_count}")

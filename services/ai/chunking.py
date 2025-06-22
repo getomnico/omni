@@ -187,6 +187,81 @@ class Chunker:
 
         return token_spans, char_spans
 
+    def chunk_sentences_by_tokens(
+        self,
+        text: str,
+        chunk_size: int,
+        tokenizer: "AutoTokenizer",
+    ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+        """Chunk text by sentences, keeping chunks under chunk_size tokens"""
+        if not text or chunk_size < 1:
+            return [], []
+
+        tokens = tokenizer.encode_plus(
+            text, return_offsets_mapping=True, add_special_tokens=False
+        )
+        token_offsets = tokens.offset_mapping
+
+        if not token_offsets:
+            return [], []
+
+        token_spans = []
+        char_spans = []
+        chunk_start = 0
+        last_sentence_end = 0
+
+        for i in range(len(token_offsets)):
+            # Check if this is a sentence boundary
+            if (
+                i < len(tokens.tokens(0))
+                and tokens.tokens(0)[i] in (".", "!", "?")
+                and (
+                    (len(tokens.tokens(0)) == i + 1)
+                    or (
+                        i + 1 < len(token_offsets)
+                        and tokens.token_to_chars(i).end
+                        != tokens.token_to_chars(i + 1).start
+                    )
+                )
+            ):
+                # This is a sentence boundary
+                sentence_end = i + 1
+                current_chunk_tokens = sentence_end - chunk_start
+
+                # Check if adding this sentence would exceed the limit
+                if (
+                    current_chunk_tokens > chunk_size
+                    and last_sentence_end > chunk_start
+                ):
+                    # Create chunk up to the previous sentence
+                    char_start = token_offsets[chunk_start][0]
+                    char_end = token_offsets[last_sentence_end - 1][1]
+
+                    if (
+                        char_start < char_end
+                        and char_start >= 0
+                        and char_end <= len(text)
+                    ):
+                        token_spans.append((chunk_start, last_sentence_end))
+                        char_spans.append((char_start, char_end))
+
+                    # Start new chunk from the current sentence
+                    chunk_start = last_sentence_end
+
+                # Update last sentence end
+                last_sentence_end = sentence_end
+
+        # Handle the last chunk
+        if chunk_start < len(token_offsets):
+            char_start = token_offsets[chunk_start][0]
+            char_end = token_offsets[-1][1]
+
+            if char_start < char_end and char_start >= 0 and char_end <= len(text):
+                token_spans.append((chunk_start, len(token_offsets)))
+                char_spans.append((char_start, char_end))
+
+        return token_spans, char_spans
+
     def chunk(
         self,
         text: str,
@@ -208,6 +283,11 @@ class Chunker:
                 raise ValueError("Chunk size must be >= 4.")
             return self.chunk_by_tokens(text, chunk_size, tokenizer)
         elif chunking_strategy == "sentence":
-            return self.chunk_by_sentences(text, n_sentences, tokenizer)
+            if n_sentences is not None:
+                # Use n_sentences-based chunking
+                return self.chunk_by_sentences(text, n_sentences, tokenizer)
+            else:
+                # Use token-based sentence chunking with chunk_size
+                return self.chunk_sentences_by_tokens(text, chunk_size, tokenizer)
         else:
             raise ValueError("Unsupported chunking strategy")

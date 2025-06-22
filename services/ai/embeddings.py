@@ -93,7 +93,14 @@ def apply_chunking_to_embeddings(
 
 
 def process_single_text(
-    text: str, model, tokenizer, chunker, task: str, chunk_size: int, chunking_mode: str
+    text: str,
+    model,
+    tokenizer,
+    chunker,
+    task: str,
+    chunk_size: int,
+    chunking_mode: str,
+    n_sentences: int = None,
 ) -> Tuple[List[List[float]], int, List[Tuple[int, int]]]:
     """Process a single text, handling long documents by segmenting if needed"""
 
@@ -110,7 +117,15 @@ def process_single_text(
         # Process normally
         logger.info(f"Text has {total_tokens} tokens, processing as single segment")
         return process_text_segment(
-            text, model, tokenizer, chunker, task, chunk_size, chunking_mode, 0
+            text,
+            model,
+            tokenizer,
+            chunker,
+            task,
+            chunk_size,
+            chunking_mode,
+            n_sentences,
+            0,
         )
     else:
         # Text is too long, need to segment it
@@ -155,6 +170,7 @@ def process_single_text(
                 task,
                 chunk_size,
                 chunking_mode,
+                n_sentences,
                 segment_start,
             )
 
@@ -291,6 +307,7 @@ def process_text_segment(
     task: str,
     chunk_size: int,
     chunking_mode: str,
+    n_sentences: int = None,
     char_offset: int = 0,
 ) -> Tuple[List[List[float]], int, List[Tuple[int, int]]]:
     """Process a single text segment and return embeddings"""
@@ -328,7 +345,11 @@ def process_text_segment(
         # Use the chunker
         if chunking_mode == "sentence":
             token_spans, local_char_spans = chunker.chunk(
-                text, tokenizer, n_sentences=1, embedding_model_name=CHUNKING_MODEL_NAME
+                text,
+                tokenizer,
+                chunk_size=chunk_size,
+                n_sentences=n_sentences,
+                embedding_model_name=CHUNKING_MODEL_NAME,
             )
         elif chunking_mode == "semantic":
             token_spans, local_char_spans = chunker.chunk(
@@ -367,7 +388,11 @@ def process_text_segment(
 
 
 def generate_embeddings_sync(
-    texts: List[str], task: str, chunk_size: int, chunking_mode: str
+    texts: List[str],
+    task: str,
+    chunk_size: int,
+    chunking_mode: str,
+    n_sentences: int = None,
 ) -> Tuple[List[List[float]], List[int], List[List[Tuple[int, int]]]]:
     """Synchronous embedding generation with configurable chunking"""
     try:
@@ -398,7 +423,14 @@ def generate_embeddings_sync(
 
             # For very long texts, we need to handle them in segments
             text_embeddings, text_chunks_count, text_chunk_spans = process_single_text(
-                text, model, tokenizer, chunker, task, chunk_size, chunking_mode
+                text,
+                model,
+                tokenizer,
+                chunker,
+                task,
+                chunk_size,
+                chunking_mode,
+                n_sentences,
             )
 
             all_embeddings.append(text_embeddings)

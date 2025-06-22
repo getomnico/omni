@@ -9,7 +9,7 @@ use sqlx::postgres::PgListener;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio::time::{interval, Duration};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use ulid::Ulid;
 
 pub struct QueueProcessor {
@@ -208,16 +208,23 @@ impl ProcessorContext {
     }
 
     async fn process_event(&self, payload: &serde_json::Value) -> Result<()> {
+        let start_time = std::time::Instant::now();
         let event: ConnectorEvent = serde_json::from_value(payload.clone())?;
         let sync_run_id = event.sync_run_id().to_string();
+        debug!("Started processing event, sync_run_id: {}", sync_run_id);
 
         // Update sync run progress
+        let sync_update_start = std::time::Instant::now();
         if let Err(e) = self.increment_sync_run_progress(&sync_run_id).await {
             warn!(
                 "Failed to update sync run progress for {}: {}",
                 sync_run_id, e
             );
         }
+        debug!(
+            "Sync run progress update took: {:?}",
+            sync_update_start.elapsed()
+        );
 
         match event {
             ConnectorEvent::DocumentCreated {
@@ -263,6 +270,7 @@ impl ProcessorContext {
             }
         }
 
+        debug!("Total event processing time: {:?}", start_time.elapsed());
         Ok(())
     }
 
@@ -316,11 +324,19 @@ impl ProcessorContext {
         };
 
         let repo = DocumentRepository::new(self.state.db_pool.pool());
+        let upsert_start = std::time::Instant::now();
         let upserted = repo.upsert(document).await?;
+        debug!("Document upsert took: {:?}", upsert_start.elapsed());
 
+        let search_vector_start = std::time::Instant::now();
         repo.update_search_vector(&upserted.id).await?;
+        debug!(
+            "Search vector update took: {:?}",
+            search_vector_start.elapsed()
+        );
 
         // Generate embeddings for the document
+        let embeddings_start = std::time::Instant::now();
         if let Err(e) = self.generate_embeddings(&upserted).await {
             error!(
                 "Failed to generate embeddings for document {} (title: '{}', content length: {}): {}",
@@ -335,9 +351,16 @@ impl ProcessorContext {
                 document_id, source_id, document_id, metadata.mime_type
             );
             // Don't fail the entire operation if embeddings fail
+        } else {
+            debug!(
+                "Embeddings generation took: {:?}",
+                embeddings_start.elapsed()
+            );
         }
 
+        let mark_indexed_start = std::time::Instant::now();
         repo.mark_as_indexed(&upserted.id).await?;
+        debug!("Mark as indexed took: {:?}", mark_indexed_start.elapsed());
 
         info!("Document upserted successfully: {}", document_id);
         Ok(())
@@ -456,14 +479,15 @@ impl ProcessorContext {
         info!("Generating embeddings for document {}", document.id);
 
         // Use AI service to generate embeddings with semantic chunking
+        let ai_service_start = std::time::Instant::now();
         let text_embeddings = match self
             .state
             .ai_client
             .generate_embeddings_with_options(
                 &[content],
                 Some("retrieval.passage".to_string()),
-                None, // no chunk size needed for semantic chunking
-                Some("semantic".to_string()),
+                Some(512),
+                Some("sentence".to_string()),
             )
             .await
         {
@@ -476,6 +500,10 @@ impl ProcessorContext {
                 return Ok(());
             }
         };
+        debug!(
+            "AI service embedding generation took: {:?}",
+            ai_service_start.elapsed()
+        );
 
         if text_embeddings.is_empty() {
             info!("No embeddings generated for document {}", document.id);
@@ -537,10 +565,13 @@ impl ProcessorContext {
 
         if !embeddings.is_empty() {
             let embedding_count = embeddings.len();
+            let bulk_create_start = std::time::Instant::now();
             embedding_repo.bulk_create(embeddings).await?;
-            info!(
-                "Successfully stored {} embeddings for document {}",
-                embedding_count, document.id
+            debug!(
+                "Successfully stored {} embeddings for document {} (bulk create took: {:?})",
+                embedding_count,
+                document.id,
+                bulk_create_start.elapsed()
             );
         } else {
             warn!("No embeddings were generated for document {}", document.id);

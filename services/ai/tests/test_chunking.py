@@ -161,6 +161,115 @@ class TestChunkBySentences:
         assert "What about this." in chunks[2]
         assert "And this?" in chunks[3]
 
+    def test_n_sentences_parameter(self, tokenizer, chunker):
+        """Test chunking with different n_sentences values"""
+        text = "First sentence. Second sentence. Third sentence. Fourth sentence. Fifth sentence. Sixth sentence."
+
+        # Test with n_sentences=1
+        token_spans, char_spans = chunker.chunk(text, tokenizer, n_sentences=1)
+        chunks = [text[start:end] for start, end in char_spans]
+        assert len(chunks) == 6
+        assert "First sentence" in chunks[0]
+        assert "Second sentence" in chunks[1]
+
+        # Test with n_sentences=2
+        token_spans, char_spans = chunker.chunk(text, tokenizer, n_sentences=2)
+        chunks = [text[start:end] for start, end in char_spans]
+        assert len(chunks) == 3
+        assert "First sentence. Second sentence" in chunks[0]
+        assert "Third sentence. Fourth sentence" in chunks[1]
+        assert "Fifth sentence. Sixth sentence" in chunks[2]
+
+        # Test with n_sentences=3
+        token_spans, char_spans = chunker.chunk(text, tokenizer, n_sentences=3)
+        chunks = [text[start:end] for start, end in char_spans]
+        assert len(chunks) == 2
+        assert "First sentence. Second sentence. Third sentence" in chunks[0]
+        assert "Fourth sentence. Fifth sentence. Sixth sentence" in chunks[1]
+
+    def test_n_sentences_with_uneven_split(self, tokenizer, chunker):
+        """Test n_sentences when text doesn't divide evenly"""
+        text = "One. Two. Three. Four. Five."
+
+        # Test with n_sentences=2 (5 sentences, should create 3 chunks)
+        token_spans, char_spans = chunker.chunk(text, tokenizer, n_sentences=2)
+        chunks = [text[start:end] for start, end in char_spans]
+        assert len(chunks) == 3
+        assert "One. Two" in chunks[0]
+        assert "Three. Four" in chunks[1]
+        assert "Five" in chunks[2]
+
+    def test_n_sentences_with_spacing_variations(self, tokenizer, chunker):
+        """Test n_sentences with various spacing between sentences"""
+        text = "First sentence.  Second sentence.   Third sentence.    Fourth sentence."
+
+        # Test with n_sentences=2
+        token_spans, char_spans = chunker.chunk(text, tokenizer, n_sentences=2)
+        chunks = [text[start:end] for start, end in char_spans]
+        assert len(chunks) == 2
+        # Verify chunks contain expected sentences despite spacing variations
+        assert "First sentence" in chunks[0] and "Second sentence" in chunks[0]
+        assert "Third sentence" in chunks[1] and "Fourth sentence" in chunks[1]
+
+    def test_chunk_size_sentence_mode(self, tokenizer, chunker):
+        """Test token-based sentence chunking using chunk_size"""
+        # Create text with sentences of varying token lengths
+        text = "Short one. This is a medium length sentence with more words. This sentence is even longer and contains many more tokens than the previous ones. Tiny. Another medium sized sentence here."
+
+        # Test with small token limit
+        token_spans, char_spans = chunker.chunk(
+            text, tokenizer, chunk_size=15
+        )
+        chunks = [text[start:end] for start, end in char_spans]
+
+        # Should create multiple chunks based on token count
+        assert len(chunks) >= 3
+
+        # Verify each chunk respects sentence boundaries
+        for chunk in chunks:
+            # Each chunk should end with punctuation (except possibly the last)
+            assert chunk.strip().endswith((".", "!", "?")) or chunk == chunks[-1]
+
+    def test_chunk_size_single_long_sentence(self, tokenizer, chunker):
+        """Test chunk_size when a single sentence exceeds the limit"""
+        # Create a very long single sentence
+        text = "This is an extremely long sentence that contains many words and will definitely exceed our token limit but since it's a single sentence it should still be kept together as one chunk despite being over the limit."
+
+        # Test with token limit smaller than the sentence
+        token_spans, char_spans = chunker.chunk(
+            text, tokenizer, chunk_size=20
+        )
+        chunks = [text[start:end] for start, end in char_spans]
+
+        # Should create exactly one chunk (can't split a single sentence)
+        assert len(chunks) == 1
+        assert chunks[0].strip() == text.strip()
+
+    def test_n_sentences_vs_chunk_size(self, tokenizer, chunker):
+        """Test that n_sentences takes precedence over chunk_size when both are provided"""
+        text = "First sentence. Second sentence. Third sentence. Fourth sentence."
+
+        # Test with both n_sentences and chunk_size (n_sentences should take precedence)
+        token_spans, char_spans = chunker.chunk(
+            text, tokenizer, n_sentences=2, chunk_size=100
+        )
+        chunks = [text[start:end] for start, end in char_spans]
+
+        # Should create chunks based on n_sentences, not chunk_size
+        assert len(chunks) == 2
+        assert "First sentence. Second sentence" in chunks[0]
+        assert "Third sentence. Fourth sentence" in chunks[1]
+
+        # Test with only chunk_size (should use token-based chunking)
+        token_spans, char_spans = chunker.chunk(
+            text, tokenizer, chunk_size=100
+        )
+        chunks = [text[start:end] for start, end in char_spans]
+
+        # With high token limit, all sentences should be in one chunk
+        assert len(chunks) == 1
+        assert "First sentence" in chunks[0] and "Fourth sentence" in chunks[0]
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
