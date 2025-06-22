@@ -1,9 +1,11 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use pdfium_render::prelude::*;
 use reqwest::Client;
 use serde::Deserialize;
 use std::sync::Arc;
-use tracing::debug;
+use std::time::Duration;
+use tokio::time::sleep;
+use tracing::{debug, warn};
 
 use crate::models::{
     DriveChangesResponse, GoogleDriveFile, GooglePresentation, WebhookChannel,
@@ -23,15 +25,27 @@ pub struct DriveClient {
 
 impl DriveClient {
     pub fn new() -> Self {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(60)) // 60 second timeout for all requests
+            .connect_timeout(Duration::from_secs(10)) // 10 second connection timeout
+            .build()
+            .expect("Failed to build HTTP client");
+
         Self {
-            client: Client::new(),
+            client,
             rate_limiter: None,
         }
     }
 
     pub fn with_rate_limiter(rate_limiter: Arc<RateLimiter>) -> Self {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(60)) // 60 second timeout for all requests
+            .connect_timeout(Duration::from_secs(10)) // 10 second connection timeout
+            .build()
+            .expect("Failed to build HTTP client");
+
         Self {
-            client: Client::new(),
+            client,
             rate_limiter: Some(rate_limiter),
         }
     }
@@ -117,21 +131,40 @@ impl DriveClient {
         let get_doc_impl = || async {
             let url = format!("{}/documents/{}", DOCS_API_BASE, &file_id);
 
-            let response = self.client.get(&url).bearer_auth(&token).send().await?;
+            let response = self
+                .client
+                .get(&url)
+                .bearer_auth(&token)
+                .send()
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to send request to Google Docs API for file {}",
+                        file_id
+                    )
+                })?;
 
             if !response.status().is_success() {
+                let status = response.status();
                 let error_text = response.text().await?;
-                return Err(anyhow!("Failed to get document content: {}", error_text));
+                return Err(anyhow!(
+                    "Google Docs API returned error for file {}: HTTP {} - {}",
+                    file_id,
+                    status,
+                    error_text
+                ));
             }
 
             debug!("Google Docs API response status: {}", response.status());
-            let response_text = response.text().await?;
+            let response_text = response
+                .text()
+                .await
+                .context("Failed to read response body from Google Docs API")?;
 
-            let doc: GoogleDocument = serde_json::from_str(&response_text).map_err(|e| {
-                anyhow!(
-                    "Failed to parse Google Docs API response: {}. Raw response: {}",
-                    e,
-                    response_text
+            let doc: GoogleDocument = serde_json::from_str(&response_text).with_context(|| {
+                format!(
+                    "Failed to parse Google Docs API response for file {}. Raw response: {}",
+                    file_id, response_text
                 )
             })?;
             Ok(extract_text_from_document(&doc))
@@ -260,14 +293,30 @@ impl DriveClient {
         let download_impl = || async {
             let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, &file_id);
 
-            let response = self.client.get(&url).bearer_auth(&token).send().await?;
+            debug!("Downloading file: {}", file_id);
+            let response = self
+                .client
+                .get(&url)
+                .bearer_auth(&token)
+                .send()
+                .await
+                .with_context(|| format!("Failed to send request for file {}", file_id))?;
 
             if !response.status().is_success() {
+                let status = response.status();
                 let error_text = response.text().await?;
-                return Err(anyhow!("Failed to download file: {}", error_text));
+                return Err(anyhow!(
+                    "Failed to download file {}: HTTP {} - {}",
+                    file_id,
+                    status,
+                    error_text
+                ));
             }
 
-            response.text().await.map_err(Into::into)
+            response
+                .text()
+                .await
+                .with_context(|| format!("Failed to read file content for {}", file_id))
         };
 
         match &self.rate_limiter {
@@ -283,14 +332,44 @@ impl DriveClient {
         let get_pdf_impl = || async {
             let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, &file_id);
 
-            let response = self.client.get(&url).bearer_auth(&token).send().await?;
+            debug!("Downloading PDF file: {}", file_id);
+            let response = self
+                .client
+                .get(&url)
+                .bearer_auth(&token)
+                .send()
+                .await
+                .with_context(|| format!("Failed to send request for PDF file {}", file_id))?;
 
             if !response.status().is_success() {
+                let status = response.status();
                 let error_text = response.text().await?;
-                return Err(anyhow!("Failed to download PDF: {}", error_text));
+                return Err(anyhow!(
+                    "Failed to download PDF {}: HTTP {} - {}",
+                    file_id,
+                    status,
+                    error_text
+                ));
             }
 
-            let pdf_bytes = response.bytes().await?;
+            // Check content length to warn about large files
+            if let Some(content_length) = response.headers().get(reqwest::header::CONTENT_LENGTH) {
+                if let Ok(length_str) = content_length.to_str() {
+                    if let Ok(length) = length_str.parse::<u64>() {
+                        let mb = length as f64 / (1024.0 * 1024.0);
+                        if mb > 10.0 {
+                            warn!("Downloading large PDF file {} ({:.2} MB)", file_id, mb);
+                        } else {
+                            debug!("PDF file {} size: {:.2} MB", file_id, mb);
+                        }
+                    }
+                }
+            }
+
+            let pdf_bytes = response
+                .bytes()
+                .await
+                .with_context(|| format!("Failed to read PDF content for file {}", file_id))?;
 
             // Initialize pdfium
             let pdfium = Pdfium::default();

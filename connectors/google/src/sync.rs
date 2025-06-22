@@ -1,12 +1,15 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures::stream::{self, StreamExt};
 use redis::{AsyncCommands, Client as RedisClient};
 use sqlx::types::time::OffsetDateTime;
 use sqlx::PgPool;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use time;
 use tokio::sync::Semaphore;
+use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 
 use crate::admin::AdminClient;
@@ -249,8 +252,15 @@ impl SyncManager {
         let mut all_files_to_process = Vec::new();
 
         // Iterate over all users to collect files
+        let mut user_count = 0;
+        let total_users = all_users.len();
+
         for user in &all_users {
-            info!("Processing files for user: {}", user.primary_email);
+            user_count += 1;
+            info!(
+                "Processing files for user {} ({}/{})",
+                user.primary_email, user_count, total_users
+            );
 
             // Get access token for this user
             let user_access_token = match service_auth.get_access_token(&user.primary_email).await {
@@ -262,6 +272,8 @@ impl SyncManager {
             };
 
             let mut page_token: Option<String> = None;
+            let mut user_file_count = 0;
+            let mut user_files_to_process = 0;
 
             // List all files accessible to this user
             loop {
@@ -274,18 +286,30 @@ impl SyncManager {
                     .drive_client
                     .list_files(&user_access_token, page_token.as_deref())
                     .await
-                {
+                    .with_context(|| {
+                        format!(
+                            "Failed to list files for user {} (page_token: {:?})",
+                            user.primary_email, page_token
+                        )
+                    }) {
                     Ok(resp) => resp,
                     Err(e) => {
                         warn!(
-                            "Failed to list files for user {}: {}",
+                            "Failed to list files for user {}: {:?}",
                             user.primary_email, e
                         );
                         break;
                     }
                 };
 
+                debug!(
+                    "Got {} files in this page for user {}",
+                    response.files.len(),
+                    user.primary_email
+                );
+
                 for file in response.files {
+                    user_file_count += 1;
                     current_files.insert(file.id.clone());
 
                     if self.should_index_file(&file) {
@@ -314,6 +338,7 @@ impl SyncManager {
                         };
 
                         if should_process {
+                            user_files_to_process += 1;
                             // Store file with the user's access token for later processing
                             all_files_to_process.push((file, user_access_token.clone()));
                         }
@@ -322,14 +347,22 @@ impl SyncManager {
 
                 page_token = response.next_page_token;
                 if page_token.is_none() {
+                    debug!("No more pages for user {}", user.primary_email);
                     break;
                 }
+                debug!("Moving to next page for user {}", user.primary_email);
             }
+
+            info!(
+                "User {} complete: {} total files, {} to process",
+                user.primary_email, user_file_count, user_files_to_process
+            );
         }
 
         let processed_count = current_files.len();
         info!(
-            "Found {} files to process concurrently",
+            "File collection complete: {} total files across all users, {} files to process",
+            current_files.len(),
             all_files_to_process.len()
         );
 
@@ -341,6 +374,51 @@ impl SyncManager {
 
         let semaphore = Arc::new(Semaphore::new(max_concurrent_downloads));
 
+        info!(
+            "Starting concurrent file processing with max concurrency: {}",
+            max_concurrent_downloads
+        );
+        let processed_count_tracker = Arc::new(AtomicUsize::new(0));
+        let success_count_tracker = Arc::new(AtomicUsize::new(0));
+        let failed_count_tracker = Arc::new(AtomicUsize::new(0));
+        let total_to_process = all_files_to_process.len();
+        let last_progress_time = Arc::new(std::sync::Mutex::new(Instant::now()));
+
+        // Spawn a task to monitor progress
+        let monitor_processed = Arc::clone(&processed_count_tracker);
+        let monitor_success = Arc::clone(&success_count_tracker);
+        let monitor_failed = Arc::clone(&failed_count_tracker);
+        let monitor_last_progress = Arc::clone(&last_progress_time);
+        let monitor_handle = tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_secs(30));
+            loop {
+                ticker.tick().await;
+                let current = monitor_processed.load(Ordering::SeqCst);
+                let success = monitor_success.load(Ordering::SeqCst);
+                let failed = monitor_failed.load(Ordering::SeqCst);
+
+                let last_update = monitor_last_progress.lock().unwrap();
+                let time_since_progress = last_update.elapsed();
+                drop(last_update);
+
+                if time_since_progress > Duration::from_secs(120) {
+                    warn!(
+                        "No progress in {} seconds! Stuck at {}/{} files (success: {}, failed: {})",
+                        time_since_progress.as_secs(),
+                        current,
+                        total_to_process,
+                        success,
+                        failed
+                    );
+                } else {
+                    debug!(
+                        "Progress heartbeat: {}/{} files (success: {}, failed: {})",
+                        current, total_to_process, success, failed
+                    );
+                }
+            }
+        });
+
         // Process files concurrently
         let results = stream::iter(all_files_to_process)
             .map(|(file, user_access_token)| {
@@ -350,14 +428,24 @@ impl SyncManager {
                 let drive_client = &self.drive_client;
                 let event_queue = &self.event_queue;
                 let semaphore = Arc::clone(&semaphore);
+                let processed_count = Arc::clone(&processed_count_tracker);
+                let success_count = Arc::clone(&success_count_tracker);
+                let failed_count = Arc::clone(&failed_count_tracker);
+                let progress_time = Arc::clone(&last_progress_time);
 
                 async move {
                     let _permit = semaphore.acquire().await.unwrap();
 
-                    match drive_client
+                    let file_name = file.name.clone();
+                    let file_id = file.id.clone();
+                    debug!("Starting to process file: {} ({})", file_name, file_id);
+
+                    let result = match drive_client
                         .get_file_content(&user_access_token, &file)
                         .await
-                    {
+                        .with_context(|| {
+                            format!("Getting content for file {} ({})", file.name, file.id)
+                        }) {
                         Ok(content) => {
                             if !content.is_empty() {
                                 let event = file.clone().to_connector_event(
@@ -366,7 +454,14 @@ impl SyncManager {
                                     content,
                                 );
 
-                                match event_queue.enqueue(&source_id, &event).await {
+                                match event_queue.enqueue(&source_id, &event).await.with_context(
+                                    || {
+                                        format!(
+                                            "Enqueueing event for file {} ({})",
+                                            file.name, file.id
+                                        )
+                                    },
+                                ) {
                                     Ok(_) => {
                                         if let Some(modified_time) = &file.modified_time {
                                             if let Err(e) = sync_state
@@ -376,21 +471,34 @@ impl SyncManager {
                                                     modified_time,
                                                 )
                                                 .await
+                                                .with_context(|| {
+                                                    format!(
+                                                        "Updating sync state for file {} ({})",
+                                                        file.name, file.id
+                                                    )
+                                                })
                                             {
                                                 error!(
-                                                    "Failed to update sync state for file {}: {}",
+                                                    "Failed to update sync state for file {}: {:?}",
                                                     file.name, e
                                                 );
+                                                failed_count.fetch_add(1, Ordering::SeqCst);
                                                 return None;
                                             }
                                         }
+                                        debug!(
+                                            "Successfully processed file: {} ({})",
+                                            file_name, file_id
+                                        );
+                                        success_count.fetch_add(1, Ordering::SeqCst);
                                         Some(())
                                     }
                                     Err(e) => {
                                         error!(
-                                            "Failed to queue event for file {}: {}",
+                                            "Failed to queue event for file {}: {:?}",
                                             file.name, e
                                         );
+                                        failed_count.fetch_add(1, Ordering::SeqCst);
                                         None
                                     }
                                 }
@@ -400,17 +508,53 @@ impl SyncManager {
                             }
                         }
                         Err(e) => {
-                            warn!("Failed to get content for file {}: {}", file.name, e);
+                            warn!(
+                                "Failed to get content for file {} ({}): {:?}",
+                                file.name, file.id, e
+                            );
+                            failed_count.fetch_add(1, Ordering::SeqCst);
                             None
                         }
+                    };
+
+                    // Update progress counters
+                    let current_processed = processed_count.fetch_add(1, Ordering::SeqCst) + 1;
+
+                    // Update last progress time
+                    *progress_time.lock().unwrap() = Instant::now();
+
+                    // Log progress every 100 files or at end
+                    if current_processed % 100 == 0 || current_processed == total_to_process {
+                        let current_success = success_count.load(Ordering::SeqCst);
+                        let current_failed = failed_count.load(Ordering::SeqCst);
+                        info!(
+                            "Progress: {}/{} files processed ({:.1}%) - {} successful, {} failed",
+                            current_processed,
+                            total_to_process,
+                            (current_processed as f64 / total_to_process as f64) * 100.0,
+                            current_success,
+                            current_failed
+                        );
                     }
+
+                    result
                 }
             })
             .buffer_unordered(max_concurrent_downloads)
             .collect::<Vec<_>>()
             .await;
 
+        // Stop the monitor task
+        monitor_handle.abort();
+
         let updated_count = results.iter().filter(|r| r.is_some()).count();
+
+        info!(
+            "File processing complete. Total: {}, Success: {}, Failed: {}",
+            processed_count_tracker.load(Ordering::SeqCst),
+            success_count_tracker.load(Ordering::SeqCst),
+            failed_count_tracker.load(Ordering::SeqCst)
+        );
 
         // Handle deletions
         for deleted_file_id in synced_files.difference(&current_files) {

@@ -10,8 +10,6 @@
 
     let searchQuery = $state('')
 
-    $inspect(searchQuery)
-
     function handleSearch() {
         console.log('calling handleSearch', searchQuery)
         if (searchQuery.trim()) {
