@@ -1,3 +1,4 @@
+pub mod embedding_processor;
 pub mod error;
 pub mod lexeme_refresh;
 pub mod queue_processor;
@@ -21,7 +22,7 @@ use axum::{
 use error::Result as IndexerResult;
 use serde_json::json;
 use shared::IndexerConfig;
-use sqlx::{types::time::OffsetDateTime, PgPool};
+use sqlx::types::time::OffsetDateTime;
 use std::net::SocketAddr;
 use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
@@ -33,6 +34,7 @@ pub struct AppState {
     pub db_pool: DatabasePool,
     pub redis_client: RedisClient,
     pub ai_client: AIClient,
+    pub embedding_queue: shared::embedding_queue::EmbeddingQueue,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -387,10 +389,14 @@ pub async fn run_server() -> anyhow::Result<()> {
     let ai_client = AIClient::new(config.ai_service_url.clone());
     info!("AI client initialized");
 
+    let embedding_queue = shared::embedding_queue::EmbeddingQueue::new(db_pool.pool().clone());
+    info!("Embedding queue initialized");
+
     let app_state = AppState {
         db_pool,
         redis_client,
         ai_client,
+        embedding_queue,
     };
 
     let app = create_app(app_state.clone());
@@ -399,6 +405,14 @@ pub async fn run_server() -> anyhow::Result<()> {
     let processor_handle = tokio::spawn(async move {
         if let Err(e) = queue_processor.start().await {
             error!("Queue processor failed: {}", e);
+        }
+    });
+
+    // Start embedding processor
+    let embedding_processor = embedding_processor::EmbeddingProcessor::new(app_state.clone());
+    let embedding_handle = tokio::spawn(async move {
+        if let Err(e) = embedding_processor.start().await {
+            error!("Embedding processor failed: {}", e);
         }
     });
 
@@ -421,6 +435,9 @@ pub async fn run_server() -> anyhow::Result<()> {
         }
         _ = processor_handle => {
             error!("Event processor task completed unexpectedly");
+        }
+        _ = embedding_handle => {
+            error!("Embedding processor task completed unexpectedly");
         }
         _ = lexeme_refresh_handle => {
             error!("Lexeme refresh task completed unexpectedly");

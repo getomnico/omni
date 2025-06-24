@@ -2,6 +2,7 @@ pub mod clients;
 pub mod config;
 pub mod constants;
 pub mod db;
+pub mod embedding_queue;
 pub mod models;
 pub mod queue;
 pub mod rate_limiter;
@@ -19,6 +20,7 @@ pub use db::repositories::{
     DocumentRepository, EmbeddingRepository, SourceRepository, UserRepository,
 };
 pub use db::{DatabaseError, DatabasePool};
+pub use embedding_queue::{EmbeddingQueue, EmbeddingQueueItem};
 pub use models::*;
 pub use queue::{EventQueue, QueueStats};
 pub use rate_limiter::RateLimiter;

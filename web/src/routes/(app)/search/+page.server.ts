@@ -15,7 +15,7 @@ export const load = async ({ url, fetch }) => {
             query: query.trim(),
             limit: 20,
             offset: 0,
-            mode: 'hybrid',
+            mode: 'semantic',
         }
 
         console.log('Waiting for searcher...')

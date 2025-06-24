@@ -1,20 +1,20 @@
 use crate::{lexeme_refresh, AppState};
 use anyhow::Result;
 use futures::future::join_all;
-use pgvector::Vector;
 use shared::db::repositories::{DocumentRepository, EmbeddingRepository};
-use shared::models::{ConnectorEvent, Document, DocumentMetadata, DocumentPermissions, Embedding};
+use shared::embedding_queue::EmbeddingQueue;
+use shared::models::{ConnectorEvent, Document, DocumentMetadata, DocumentPermissions};
 use shared::queue::EventQueue;
 use sqlx::postgres::PgListener;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
-use ulid::Ulid;
 
 pub struct QueueProcessor {
     pub state: AppState,
     pub event_queue: EventQueue,
+    pub embedding_queue: EmbeddingQueue,
     pub batch_size: i32,
     pub parallelism: usize,
     semaphore: Arc<Semaphore>,
@@ -23,11 +23,13 @@ pub struct QueueProcessor {
 impl QueueProcessor {
     pub fn new(state: AppState) -> Self {
         let event_queue = EventQueue::new(state.db_pool.pool().clone());
+        let embedding_queue = EmbeddingQueue::new(state.db_pool.pool().clone());
         let parallelism = (num_cpus::get() / 2).max(1); // Half the CPU cores, minimum 1
         let semaphore = Arc::new(Semaphore::new(parallelism));
         Self {
             state,
             event_queue,
+            embedding_queue,
             batch_size: 10,
             parallelism,
             semaphore,
@@ -335,27 +337,31 @@ impl ProcessorContext {
             search_vector_start.elapsed()
         );
 
-        // Generate embeddings for the document
-        let embeddings_start = std::time::Instant::now();
-        if let Err(e) = self.generate_embeddings(&upserted).await {
-            error!(
-                "Failed to generate embeddings for document {} (title: '{}', content length: {}): {}",
-                document_id,
-                upserted.title,
-                content.len(),
-                e
+        // Queue embeddings for async generation instead of generating them synchronously
+        if content.trim().is_empty() {
+            info!(
+                "Skipping embedding queue for document {} - no content",
+                document_id
             );
-            // Log more details about the failure
-            warn!(
-                "Document {} embedding failure details - source: {}, external_id: {}, content_type: {:?}",
-                document_id, source_id, document_id, metadata.mime_type
-            );
-            // Don't fail the entire operation if embeddings fail
         } else {
-            debug!(
-                "Embeddings generation took: {:?}",
-                embeddings_start.elapsed()
-            );
+            let queue_start = std::time::Instant::now();
+            if let Err(e) = self
+                .state
+                .embedding_queue
+                .enqueue(upserted.id.clone(), content.clone())
+                .await
+            {
+                error!(
+                    "Failed to queue embeddings for document {}: {}",
+                    document_id, e
+                );
+            } else {
+                debug!(
+                    "Embeddings queued for document {} (took: {:?})",
+                    document_id,
+                    queue_start.elapsed()
+                );
+            }
         }
 
         let mark_indexed_start = std::time::Instant::now();
@@ -397,14 +403,22 @@ impl ProcessorContext {
             let updated_document = repo.update(&doc_id, document).await?;
             repo.update_search_vector(&doc_id).await?;
 
-            // Generate embeddings for the updated document
+            // Queue embeddings for async generation
             if let Some(updated_doc) = &updated_document {
-                if let Err(e) = self.generate_embeddings(updated_doc).await {
-                    error!(
-                        "Failed to generate embeddings for updated document {}: {}",
-                        document_id, e
-                    );
-                    // Don't fail the entire operation if embeddings fail
+                if let Some(doc_content) = &updated_doc.content {
+                    if !doc_content.trim().is_empty() {
+                        if let Err(e) = self
+                            .state
+                            .embedding_queue
+                            .enqueue(doc_id.clone(), doc_content.clone())
+                            .await
+                        {
+                            error!(
+                                "Failed to queue embeddings for updated document {}: {}",
+                                document_id, e
+                            );
+                        }
+                    }
                 }
             }
 
@@ -445,136 +459,6 @@ impl ProcessorContext {
                 "Document not found for deletion: {} from source {}",
                 document_id, source_id
             );
-        }
-
-        Ok(())
-    }
-
-    /// Generate embeddings for a document by chunking and calling the AI service
-    async fn generate_embeddings(&self, document: &Document) -> Result<()> {
-        // Skip documents without content
-        if document.content.is_none() || document.content.as_ref().unwrap().trim().is_empty() {
-            info!(
-                "Skipping embedding generation for document {} - no content",
-                document.id
-            );
-            return Ok(());
-        }
-
-        info!("Generating embeddings for document: {}", document.id);
-
-        // First, delete existing embeddings for this document
-        let embedding_repo = EmbeddingRepository::new(self.state.db_pool.pool());
-        embedding_repo.delete_by_document_id(&document.id).await?;
-
-        // Generate embeddings using AI service's semantic chunking
-        let content = match &document.content {
-            Some(content) => content.clone(),
-            None => {
-                info!("No content to embed for document {}", document.id);
-                return Ok(());
-            }
-        };
-
-        info!("Generating embeddings for document {}", document.id);
-
-        // Use AI service to generate embeddings with semantic chunking
-        let ai_service_start = std::time::Instant::now();
-        let text_embeddings = match self
-            .state
-            .ai_client
-            .generate_embeddings_with_options(
-                &[content],
-                Some("retrieval.passage".to_string()),
-                Some(512),
-                Some("sentence".to_string()),
-            )
-            .await
-        {
-            Ok(embeddings) => embeddings,
-            Err(e) => {
-                error!(
-                    "Failed to generate embeddings for document {}: {}",
-                    document.id, e
-                );
-                return Ok(());
-            }
-        };
-        debug!(
-            "AI service embedding generation took: {:?}",
-            ai_service_start.elapsed()
-        );
-
-        if text_embeddings.is_empty() {
-            info!("No embeddings generated for document {}", document.id);
-            return Ok(());
-        }
-
-        let text_embedding = &text_embeddings[0]; // We only sent one text
-
-        info!(
-            "Generated {} chunks for document {}",
-            text_embedding.chunk_embeddings.len(),
-            document.id
-        );
-
-        // Create embedding records from AI service response
-        let mut embeddings = Vec::new();
-        let mut skipped_chunks = 0;
-
-        for (chunk_index, (chunk_embedding, chunk_span)) in text_embedding
-            .chunk_embeddings
-            .iter()
-            .zip(text_embedding.chunk_spans.iter())
-            .enumerate()
-        {
-            // Validate chunk bounds before creating embedding
-            if chunk_span.0 >= chunk_span.1 {
-                warn!(
-                    "Skipping invalid chunk {} for document {} - invalid bounds: start={}, end={}",
-                    chunk_index, document.id, chunk_span.0, chunk_span.1
-                );
-                skipped_chunks += 1;
-                continue;
-            }
-
-            let embedding = Embedding {
-                id: Ulid::new().to_string(),
-                document_id: document.id.clone(),
-                chunk_index: chunk_index as i32,
-                chunk_start_offset: chunk_span.0,
-                chunk_end_offset: chunk_span.1,
-                embedding: Vector::from(chunk_embedding.clone()),
-                model_name: text_embedding
-                    .model_name
-                    .clone()
-                    .unwrap_or_else(|| "unknown".to_string()),
-                created_at: sqlx::types::time::OffsetDateTime::now_utc(),
-            };
-            embeddings.push(embedding);
-        }
-
-        if skipped_chunks > 0 {
-            warn!(
-                "Skipped {} invalid chunks out of {} total for document {}",
-                skipped_chunks,
-                text_embedding.chunk_embeddings.len(),
-                document.id
-            );
-        }
-
-        if !embeddings.is_empty() {
-            let embedding_count = embeddings.len();
-            let bulk_create_start = std::time::Instant::now();
-            embedding_repo.bulk_create(embeddings).await?;
-            debug!(
-                "Successfully stored {} embeddings for document {} (bulk create took: {:?})",
-                embedding_count,
-                document.id,
-                bulk_create_start.elapsed()
-            );
-        } else {
-            warn!("No embeddings were generated for document {}", document.id);
         }
 
         Ok(())

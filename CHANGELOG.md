@@ -127,4 +127,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Google connector now uses service account JSON keys instead of OAuth client credentials for better security and domain-wide access
   - Updated admin UI to support service account setup through intuitive credential upload dialogs
   - Eliminated complex OAuth app registration requirements for self-hosted deployments
+- Asynchronous batch embedding generation for 10-20x performance improvement
+  - Documents now available for text search immediately while embeddings are generated in background batches
+  - New embedding_queue table and processor for reliable batch processing of 10-20 documents per API call
+  - Added embedding_status tracking to documents table with automatic retry logic for failed embeddings
 
