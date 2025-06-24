@@ -10,10 +10,10 @@ import httpx
 import json
 from concurrent.futures import ThreadPoolExecutor
 
-from embeddings import (
+from embeddings_v2 import (
     load_model,
     generate_embeddings_sync,
-    TASK,
+    DEFAULT_TASK,
 )
 
 
@@ -84,10 +84,16 @@ _executor = ThreadPoolExecutor(max_workers=2)
 # Pydantic models
 class EmbeddingRequest(BaseModel):
     texts: List[str]
-    task: Optional[str] = TASK  # Allow different tasks
-    chunk_size: Optional[int] = 512  # Chunk size in tokens for both fixed and sentence modes
-    chunking_mode: Optional[str] = "sentence"  # "sentence", "fixed", "semantic", or "none"
-    n_sentences: Optional[int] = None  # Number of sentences per chunk (sentence mode only, overrides chunk_size)
+    task: Optional[str] = DEFAULT_TASK  # Allow different tasks
+    chunk_size: Optional[int] = (
+        512  # Chunk size in tokens for both fixed and sentence modes
+    )
+    chunking_mode: Optional[str] = (
+        "sentence"  # "sentence", "fixed", "semantic", or "none"
+    )
+    n_sentences: Optional[int] = (
+        None  # Number of sentences per chunk (sentence mode only, overrides chunk_size)
+    )
 
 
 class EmbeddingResponse(BaseModel):
@@ -140,10 +146,10 @@ async def health_check():
 @app.post("/embeddings", response_model=EmbeddingResponse)
 async def generate_embeddings(request: EmbeddingRequest):
     """Generate embeddings for input texts using configurable chunking
-    
+
     Chunking behavior:
     - fixed mode: chunk_size sets the number of tokens per chunk
-    - sentence mode: 
+    - sentence mode:
       - If n_sentences is provided: groups n_sentences per chunk
       - If only chunk_size is provided: groups sentences until chunk_size tokens limit
     """
@@ -162,11 +168,7 @@ async def generate_embeddings(request: EmbeddingRequest):
 
     try:
         # Run embedding generation in thread pool to avoid blocking
-        (
-            embeddings,
-            chunks_count,
-            chunk_spans,
-        ) = await asyncio.get_event_loop().run_in_executor(
+        chunk_batch = await asyncio.get_event_loop().run_in_executor(
             _executor,
             generate_embeddings_sync,
             request.texts,
@@ -176,11 +178,13 @@ async def generate_embeddings(request: EmbeddingRequest):
             request.n_sentences,
         )
 
-        logger.info(f"Generated embeddings with chunks: {chunks_count}")
+        logger.info(
+            f"Generated these many chunks for each input text: {[len(chunks) for chunks in chunk_batch]}"
+        )
         return EmbeddingResponse(
-            embeddings=embeddings,
-            chunks_count=chunks_count,
-            chunks=chunk_spans,
+            embeddings=[[c.embedding for c in chunks] for chunks in chunk_batch],
+            chunks_count=[len(chunks) for chunks in chunk_batch],
+            chunks=[[c.span for c in chunks] for chunks in chunk_batch],
             model_name=EMBEDDING_MODEL,
         )
 

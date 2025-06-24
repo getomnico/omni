@@ -1,9 +1,9 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use futures_util::Stream;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
-use tracing::warn;
+use tracing::error;
 
 #[derive(Serialize)]
 pub struct EmbeddingRequest {
@@ -103,35 +103,22 @@ impl AIClient {
 
                     Ok(result)
                 } else {
-                    warn!(
-                        "AI service returned error status: {}, using placeholder embeddings",
+                    error!(
+                        "AI service returned error status: {}, embeddings gen failed.",
                         res.status()
                     );
-                    // Return placeholder embeddings for each text
-                    Ok(texts
-                        .iter()
-                        .map(|_| TextEmbedding {
-                            chunk_embeddings: vec![vec![0.0; 1024]],
-                            chunk_spans: vec![(0, 0)],
-                            model_name: None,
-                        })
-                        .collect())
+                    let status_code = res.status();
+                    let resp_text = res.text().await?;
+                    Err(anyhow!(
+                        "Embeddings API failed with error: [{}] {:?}",
+                        status_code,
+                        resp_text
+                    ))
                 }
             }
             Err(e) => {
-                warn!(
-                    "Failed to connect to AI service: {}, using placeholder embeddings",
-                    e
-                );
-                // Return placeholder embeddings for each text
-                Ok(texts
-                    .iter()
-                    .map(|_| TextEmbedding {
-                        chunk_embeddings: vec![vec![0.0; 1024]],
-                        chunk_spans: vec![(0, 0)],
-                        model_name: None,
-                    })
-                    .collect())
+                error!("Failed to connect to embeddings API: {:?}", e);
+                Err(anyhow!("Failed to connect to embeddings API: {:?}.", e))
             }
         }
     }

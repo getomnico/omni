@@ -401,6 +401,7 @@ def generate_embeddings_sync(
         logger.info("Model and tokenizer loaded successfully")
 
         # Get cached chunker instance (None for "none" mode)
+        logger.info(f"Using chunking mode: {chunking_mode}")
         chunker = get_chunker(chunking_mode)
 
         # Process each text individually to handle long documents

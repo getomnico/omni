@@ -217,9 +217,7 @@ class TestChunkBySentences:
         text = "Short one. This is a medium length sentence with more words. This sentence is even longer and contains many more tokens than the previous ones. Tiny. Another medium sized sentence here."
 
         # Test with small token limit
-        token_spans, char_spans = chunker.chunk(
-            text, tokenizer, chunk_size=15
-        )
+        token_spans, char_spans = chunker.chunk(text, tokenizer, chunk_size=15)
         chunks = [text[start:end] for start, end in char_spans]
 
         # Should create multiple chunks based on token count
@@ -236,9 +234,7 @@ class TestChunkBySentences:
         text = "This is an extremely long sentence that contains many words and will definitely exceed our token limit but since it's a single sentence it should still be kept together as one chunk despite being over the limit."
 
         # Test with token limit smaller than the sentence
-        token_spans, char_spans = chunker.chunk(
-            text, tokenizer, chunk_size=20
-        )
+        token_spans, char_spans = chunker.chunk(text, tokenizer, chunk_size=20)
         chunks = [text[start:end] for start, end in char_spans]
 
         # Should create exactly one chunk (can't split a single sentence)
@@ -261,9 +257,7 @@ class TestChunkBySentences:
         assert "Third sentence. Fourth sentence" in chunks[1]
 
         # Test with only chunk_size (should use token-based chunking)
-        token_spans, char_spans = chunker.chunk(
-            text, tokenizer, chunk_size=100
-        )
+        token_spans, char_spans = chunker.chunk(text, tokenizer, chunk_size=100)
         chunks = [text[start:end] for start, end in char_spans]
 
         # With high token limit, all sentences should be in one chunk
