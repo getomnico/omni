@@ -34,8 +34,9 @@ services:
   # Database Migrator
   migrator:
     build:
-      context: .
+      context: ..
       dockerfile: services/migrations/Dockerfile
+    image: clio-migrator
     container_name: clio-migrator
     environment:
       - DATABASE_URL=${DATABASE_URL}
@@ -49,8 +50,9 @@ services:
   # Core Services
   searcher:
     build:
-      context: .
+      context: ..
       dockerfile: services/searcher/Dockerfile
+    image: clio-searcher
     container_name: clio-searcher
     environment:
       - DATABASE_URL=${DATABASE_URL}
@@ -76,8 +78,9 @@ services:
 
   indexer:
     build:
-      context: .
+      context: ..
       dockerfile: services/indexer/Dockerfile
+    image: clio-indexer
     container_name: clio-indexer
     environment:
       - DATABASE_URL=${DATABASE_URL}
@@ -100,7 +103,8 @@ services:
 
   ai:
     build:
-      context: services/ai
+      context: ../services/ai
+    image: clio-ai
     container_name: clio-ai
     environment:
       - DATABASE_URL=${DATABASE_URL}
@@ -168,8 +172,9 @@ services:
   # Connector Services
   google-connector:
     build:
-      context: .
+      context: ..
       dockerfile: connectors/google/Dockerfile
+    image: clio-google-connector
     container_name: clio-google-connector
     environment:
       - DATABASE_URL=${DATABASE_URL}
@@ -195,8 +200,9 @@ services:
 
   slack-connector:
     build:
-      context: .
+      context: ..
       dockerfile: connectors/slack/Dockerfile
+    image: clio-slack-connector
     container_name: clio-slack-connector
     environment:
       - DATABASE_URL=${DATABASE_URL}
@@ -219,8 +225,9 @@ services:
 
   atlassian-connector:
     build:
-      context: .
+      context: ..
       dockerfile: connectors/atlassian/Dockerfile
+    image: clio-atlassian-connector
     container_name: clio-atlassian-connector
     environment:
       - DATABASE_URL=${DATABASE_URL}
@@ -246,7 +253,8 @@ services:
   # Web Application (SvelteKit frontend + backend)
   web:
     build:
-      context: web
+      context: ../web
+    image: clio-web
     container_name: clio-web
     environment:
       - DATABASE_URL=${DATABASE_URL}

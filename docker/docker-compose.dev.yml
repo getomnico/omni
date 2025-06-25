@@ -18,13 +18,13 @@ services:
   # Override for development with hot reload
   web:
     build:
-      context: web
+      context: ../web
       dockerfile: Dockerfile.dev
     ports:
       - "${WEB_PORT}:${WEB_PORT}"
     volumes:
-      - ./web/src:/app/src
-      - ./web/static:/app/static
+      - ../web/src:/app/src
+      - ../web/static:/app/static
     environment:
       - NODE_ENV=development
       - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
@@ -51,7 +51,7 @@ services:
       - DATABASE_URL=postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
       - VLLM_URL=http://localhost:8000  # Dummy URL for dev
     volumes:
-      - ./services/ai:/app
+      - ../services/ai:/app
     command: python -m uvicorn main:app --host 0.0.0.0 --port ${AI_SERVICE_PORT} --reload
 
   google-connector:
@@ -60,6 +60,10 @@ services:
 
   # Remove production services for dev
   caddy:
+    profiles:
+      - production
+
+  vllm:
     profiles:
       - production
   
