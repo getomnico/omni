@@ -190,9 +190,17 @@ def generate_embeddings_sync(
         model, tokenizer = load_model()
         logger.info("Model and tokenizer loaded successfully")
 
-        # We will always use sentenced-based chunk-size limited chunking
-
         tokens = tokenize(tokenizer, texts)
+
+        if chunking_mode == "none":
+            logger.info(f"Skipping chunking for embeddings input {texts}, task {task}.")
+            embeddings = forward(model, tokens, task=task) # (B, T, C) tensor
+            embeddings = embeddings.mean(dim=1) # Mean pooling
+            embeddings = F.normalize(embeddings, p=2, dim=1).tolist() # Normalize to unit norm
+
+            return [[Chunk((0, len(t)), embeddings[i])] for i, t in enumerate(texts)]
+
+        # We will always use sentenced-based chunk-size limited chunking
         batch_chunk_char_spans, batch_chunk_token_spans = chunk_by_sentences(
             tokens, tokenizer, chunk_size=chunk_size
         )
