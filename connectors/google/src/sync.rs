@@ -1373,4 +1373,159 @@ impl SyncManager {
         info!("Completed automatic webhook registration");
         Ok(())
     }
+
+    pub async fn get_running_sync_for_source(&self, source_id: &str) -> Result<Option<SyncRun>> {
+        let running_sync = sqlx::query_as::<_, SyncRun>(
+            "SELECT * FROM sync_runs 
+             WHERE source_id = $1 
+             AND status = $2 
+             ORDER BY started_at DESC 
+             LIMIT 1",
+        )
+        .bind(source_id)
+        .bind(SyncStatus::Running)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(running_sync)
+    }
+
+    pub async fn recover_interrupted_syncs(&self) -> Result<()> {
+        info!("Checking for interrupted running syncs from previous connector instance");
+
+        let running_syncs = sqlx::query_as::<_, SyncRun>(
+            "SELECT * FROM sync_runs WHERE status = $1 ORDER BY started_at ASC",
+        )
+        .bind(SyncStatus::Running)
+        .fetch_all(&self.pool)
+        .await?;
+
+        if running_syncs.is_empty() {
+            info!("No interrupted running syncs found");
+            return Ok(());
+        }
+
+        info!(
+            "Found {} interrupted running syncs, marking as failed",
+            running_syncs.len()
+        );
+
+        for sync_run in running_syncs {
+            info!(
+                "Marking interrupted sync as failed: id={}, source_id={}, started_at={:?}",
+                sync_run.id, sync_run.source_id, sync_run.started_at
+            );
+
+            let error_message = "Sync interrupted by connector restart";
+
+            if let Err(e) = sqlx::query(
+                "UPDATE sync_runs 
+                 SET status = $1, completed_at = CURRENT_TIMESTAMP, 
+                     error_message = $2, updated_at = CURRENT_TIMESTAMP
+                 WHERE id = $3",
+            )
+            .bind(SyncStatus::Failed)
+            .bind(error_message)
+            .bind(&sync_run.id)
+            .execute(&self.pool)
+            .await
+            {
+                error!(
+                    "Failed to mark interrupted sync {} as failed: {}",
+                    sync_run.id, e
+                );
+            }
+        }
+
+        info!("Completed interrupted sync recovery");
+        Ok(())
+    }
+
+    pub async fn startup_sync_check(&self) -> Result<()> {
+        info!(
+            "Running startup sync check: recovering interrupted syncs and checking sync schedule"
+        );
+
+        // First, check for interrupted running syncs
+        let running_syncs = sqlx::query_as::<_, SyncRun>(
+            "SELECT * FROM sync_runs WHERE status = $1 ORDER BY started_at ASC",
+        )
+        .bind(SyncStatus::Running)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut force_sync = false;
+
+        if !running_syncs.is_empty() {
+            info!("Found {} interrupted running syncs, marking as failed and triggering immediate sync", running_syncs.len());
+
+            for sync_run in running_syncs {
+                info!(
+                    "Marking interrupted sync as failed: id={}, source_id={}, started_at={:?}",
+                    sync_run.id, sync_run.source_id, sync_run.started_at
+                );
+
+                let error_message = "Sync interrupted by connector restart";
+
+                if let Err(e) = sqlx::query(
+                    "UPDATE sync_runs 
+                     SET status = $1, completed_at = CURRENT_TIMESTAMP, 
+                         error_message = $2, updated_at = CURRENT_TIMESTAMP
+                     WHERE id = $3",
+                )
+                .bind(SyncStatus::Failed)
+                .bind(error_message)
+                .bind(&sync_run.id)
+                .execute(&self.pool)
+                .await
+                {
+                    error!(
+                        "Failed to mark interrupted sync {} as failed: {}",
+                        sync_run.id, e
+                    );
+                }
+            }
+
+            // Force sync immediately after recovery
+            force_sync = true;
+            info!("Interrupted sync recovery completed, will trigger immediate full sync");
+        } else {
+            info!("No interrupted running syncs found");
+        }
+
+        // Now check for scheduled syncs (or force sync if we recovered from interruption)
+        let sources = self.get_active_sources().await?;
+        info!("Found {} active Google Drive sources", sources.len());
+
+        for source in sources {
+            let should_sync = if force_sync {
+                info!(
+                    "Forcing sync for source {} due to startup recovery",
+                    source.id
+                );
+                true
+            } else {
+                match self.should_run_full_sync(&source.id).await {
+                    Ok(should_sync) => should_sync,
+                    Err(e) => {
+                        error!(
+                            "Failed to check sync status for source {}: {}",
+                            source.id, e
+                        );
+                        continue;
+                    }
+                }
+            };
+
+            if should_sync {
+                if let Err(e) = self.sync_source(&source).await {
+                    error!("Failed to sync source {}: {}", source.id, e);
+                    self.update_source_status(&source.id, "failed").await?;
+                }
+            }
+        }
+
+        info!("Startup sync check completed");
+        Ok(())
+    }
 }

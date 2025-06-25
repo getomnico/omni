@@ -61,12 +61,12 @@ async fn main() -> Result<()> {
             .expect("GOOGLE_SYNC_INTERVAL_SECONDS must be a valid number");
         info!("Sync interval set to {} secs.", sync_interval_seconds);
 
-        // Check for initial sync on startup
-        info!("Checking if initial sync is needed on startup");
+        // Combined startup sync check: recover interrupted syncs and check sync schedule
+        info!("Running combined startup sync check");
         let sync_manager_clone = Arc::clone(&sync_manager);
         tokio::spawn(async move {
-            if let Err(e) = sync_manager_clone.sync_all_sources().await {
-                error!("Initial sync check failed: {}", e);
+            if let Err(e) = sync_manager_clone.startup_sync_check().await {
+                error!("Startup sync check failed: {}", e);
             }
         });
 
