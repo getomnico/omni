@@ -5,13 +5,13 @@ use shared::db::repositories::EmbeddingRepository;
 use shared::models::Embedding;
 use shared::{EmbeddingQueue, EmbeddingQueueItem};
 use sqlx::postgres::PgListener;
-use std::collections::HashMap;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 use ulid::Ulid;
 
 const MAX_DOCUMENT_CHARS: usize = 24_576; // 8192 tokens * 3 chars/token
 const CHUNK_OVERLAP: usize = 300; // Overlap between input chunks
+const MAX_EMBEDDING_BATCH_SIZE: usize = 32; // Maximum number of input texts per embedding API call
 
 pub struct EmbeddingProcessor {
     pub state: AppState,
@@ -150,13 +150,19 @@ impl EmbeddingProcessor {
     async fn process_embedding_batch(&self, batch: Vec<EmbeddingQueueItem>) -> Result<()> {
         let start_time = std::time::Instant::now();
 
-        // Build input batch with chunking for large documents
-        let mut input_texts = Vec::new();
-        let mut document_input_map: HashMap<String, Vec<usize>> = HashMap::new();
+        // Step 1: Split all documents into input chunks and build metadata
+        #[derive(Debug)]
+        struct InputChunkInfo {
+            document_id: String,
+            input_chunk_index: usize, // Index within this document's input chunks
+            input_text: String,
+        }
+
+        let mut all_input_chunks = Vec::new();
+        let mut document_metadata = std::collections::HashMap::new(); // document_id -> original item
 
         for item in &batch {
             let input_chunks = Self::split_large_content(&item.content);
-            let start_idx = input_texts.len();
 
             if input_chunks.len() > 1 {
                 info!(
@@ -167,120 +173,171 @@ impl EmbeddingProcessor {
                 );
             }
 
-            for chunk in input_chunks {
-                input_texts.push(chunk);
-            }
+            document_metadata.insert(item.document_id.clone(), item);
 
-            let indices: Vec<usize> = (start_idx..input_texts.len()).collect();
-            document_input_map.insert(item.document_id.clone(), indices);
+            for (chunk_idx, input_text) in input_chunks.into_iter().enumerate() {
+                all_input_chunks.push(InputChunkInfo {
+                    document_id: item.document_id.clone(),
+                    input_chunk_index: chunk_idx,
+                    input_text,
+                });
+            }
         }
 
         info!(
-            "Generating embeddings for {} documents split into {} input chunks",
+            "Processing {} documents with total {} input chunks",
             batch.len(),
-            input_texts.len()
+            all_input_chunks.len()
         );
 
-        // Call AI service to generate embeddings for all texts at once
-        let ai_service_start = std::time::Instant::now();
-        let text_embeddings = match self
-            .state
-            .ai_client
-            .generate_embeddings_with_options(
-                &input_texts,
-                Some("retrieval.passage".to_string()),
-                Some(512),
-                Some("sentence".to_string()),
-            )
-            .await
-        {
-            Ok(embeddings) => embeddings,
-            Err(e) => {
-                error!("Failed to generate embeddings: {}", e);
-                // Mark all items as failed
-                let ids: Vec<String> = batch.iter().map(|item| item.id.clone()).collect();
-                self.embedding_queue
-                    .mark_failed_batch(&ids, &e.to_string())
-                    .await?;
-                return Ok(());
-            }
-        };
-        debug!(
-            "AI service batch embedding generation took: {:?}",
-            ai_service_start.elapsed()
-        );
-
-        // Process results for each document
+        // Step 2: Process input chunks in batches of MAX_EMBEDDING_BATCH_SIZE
         let embedding_repo = EmbeddingRepository::new(self.state.db_pool.pool());
-        let mut success_ids = Vec::new();
-        let mut failed_ids = Vec::new();
+        let mut all_embeddings_by_document: std::collections::HashMap<
+            String,
+            Vec<(Vec<f32>, (i32, i32))>,
+        > = std::collections::HashMap::new();
+        let mut model_name: Option<String> = None;
+        let mut failed_document_ids = std::collections::HashSet::new();
 
-        for item in &batch {
-            // Get the input chunk indices for this document
-            let input_indices = match document_input_map.get(&item.document_id) {
-                Some(indices) => indices,
-                None => {
-                    error!("No input indices found for document {}", item.document_id);
-                    failed_ids.push(item.id.clone());
+        for input_batch_start in (0..all_input_chunks.len()).step_by(MAX_EMBEDDING_BATCH_SIZE) {
+            let input_batch_end =
+                (input_batch_start + MAX_EMBEDDING_BATCH_SIZE).min(all_input_chunks.len());
+            let input_batch = &all_input_chunks[input_batch_start..input_batch_end];
+
+            info!(
+                "Processing input batch {}-{} of {} total chunks",
+                input_batch_start + 1,
+                input_batch_end,
+                all_input_chunks.len()
+            );
+
+            // Extract just the text for the API call
+            let input_texts: Vec<String> = input_batch
+                .iter()
+                .map(|chunk| chunk.input_text.clone())
+                .collect();
+
+            // Call AI service for this batch
+            let ai_service_start = std::time::Instant::now();
+            let text_embeddings = match self
+                .state
+                .ai_client
+                .generate_embeddings_with_options(
+                    &input_texts,
+                    Some("retrieval.passage".to_string()),
+                    Some(512),
+                    Some("sentence".to_string()),
+                )
+                .await
+            {
+                Ok(embeddings) => embeddings,
+                Err(e) => {
+                    error!("Failed to generate embeddings for input batch: {}", e);
+                    // Mark all documents in this batch as failed
+                    for chunk_info in input_batch {
+                        failed_document_ids.insert(chunk_info.document_id.clone());
+                    }
                     continue;
                 }
             };
+            debug!(
+                "AI service batch embedding generation took: {:?}",
+                ai_service_start.elapsed()
+            );
 
-            // Collect all output chunks for this document
-            let mut all_output_chunks = Vec::new();
-            let mut all_output_spans = Vec::new();
+            // Store model name from first successful response
+            if model_name.is_none() && !text_embeddings.is_empty() {
+                model_name = text_embeddings[0].model_name.clone();
+            }
 
-            for (input_chunk_idx, &input_idx) in input_indices.iter().enumerate() {
-                let text_embedding = &text_embeddings[input_idx];
-
-                // Calculate offset adjustment for chunks after the first
-                let offset_adjustment = if input_chunk_idx > 0 {
-                    (input_chunk_idx * MAX_DOCUMENT_CHARS) - (input_chunk_idx * CHUNK_OVERLAP)
+            // Step 3: Map each response back to the correct document and calculate offsets
+            for (chunk_info, text_embedding) in input_batch.iter().zip(text_embeddings.iter()) {
+                // Calculate offset adjustment for this input chunk within its document
+                let offset_adjustment = if chunk_info.input_chunk_index > 0 {
+                    (chunk_info.input_chunk_index * MAX_DOCUMENT_CHARS)
+                        - (chunk_info.input_chunk_index * CHUNK_OVERLAP)
                 } else {
                     0
                 };
 
-                // Add all output chunks with adjusted offsets
+                // Add all output chunks with adjusted offsets to the document's collection
+                let document_embeddings = all_embeddings_by_document
+                    .entry(chunk_info.document_id.clone())
+                    .or_insert_with(Vec::new);
+
                 for (chunk_emb, (start, end)) in text_embedding
                     .chunk_embeddings
                     .iter()
                     .zip(text_embedding.chunk_spans.iter())
                 {
-                    all_output_chunks.push(chunk_emb.clone());
-                    all_output_spans.push((
-                        start + offset_adjustment as i32,
-                        end + offset_adjustment as i32,
+                    document_embeddings.push((
+                        chunk_emb.clone(),
+                        (
+                            start + offset_adjustment as i32,
+                            end + offset_adjustment as i32,
+                        ),
                     ));
                 }
+
+                debug!(
+                    "Processed input chunk {} for document {} -> {} output chunks",
+                    chunk_info.input_chunk_index,
+                    chunk_info.document_id,
+                    text_embedding.chunk_embeddings.len()
+                );
+            }
+        }
+
+        // Step 4: Store embeddings for each document and track success/failure
+        let mut success_ids = Vec::new();
+        let mut failed_ids = Vec::new();
+
+        for item in &batch {
+            if failed_document_ids.contains(&item.document_id) {
+                failed_ids.push(item.id.clone());
+                continue;
             }
 
-            // Create a combined TextEmbedding for storage
-            let combined_embedding = shared::clients::ai::TextEmbedding {
-                chunk_embeddings: all_output_chunks,
-                chunk_spans: all_output_spans,
-                model_name: text_embeddings.first().and_then(|e| e.model_name.clone()),
-            };
-
-            match self
-                .store_embeddings(&embedding_repo, &item.document_id, &combined_embedding)
-                .await
-            {
-                Ok(_) => {
-                    success_ids.push(item.id.clone());
-                    debug!(
-                        "Successfully stored embeddings for document {} ({} output chunks from {} input chunks)",
-                        item.document_id,
-                        combined_embedding.chunk_embeddings.len(),
-                        input_indices.len()
-                    );
-                }
-                Err(e) => {
-                    error!(
-                        "Failed to store embeddings for document {}: {}",
-                        item.document_id, e
-                    );
+            if let Some(document_embeddings) = all_embeddings_by_document.get(&item.document_id) {
+                if document_embeddings.is_empty() {
+                    error!("No embeddings generated for document {}", item.document_id);
                     failed_ids.push(item.id.clone());
+                    continue;
                 }
+
+                // Create combined embedding for storage
+                let (chunk_embeddings, chunk_spans): (Vec<Vec<f32>>, Vec<(i32, i32)>) =
+                    document_embeddings.iter().cloned().unzip();
+
+                let combined_embedding = shared::clients::ai::TextEmbedding {
+                    chunk_embeddings,
+                    chunk_spans,
+                    model_name: model_name.clone(),
+                };
+
+                match self
+                    .store_embeddings(&embedding_repo, &item.document_id, &combined_embedding)
+                    .await
+                {
+                    Ok(_) => {
+                        success_ids.push(item.id.clone());
+                        debug!(
+                            "Successfully stored embeddings for document {} ({} output chunks)",
+                            item.document_id,
+                            combined_embedding.chunk_embeddings.len()
+                        );
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to store embeddings for document {}: {}",
+                            item.document_id, e
+                        );
+                        failed_ids.push(item.id.clone());
+                    }
+                }
+            } else {
+                error!("No embeddings found for document {}", item.document_id);
+                failed_ids.push(item.id.clone());
             }
         }
 
@@ -467,5 +524,51 @@ mod tests {
             // This would panic if boundaries were wrong
             let _ = chunk.chars().count();
         }
+    }
+
+    #[test]
+    fn test_batch_size_limits() {
+        // Test that MAX_EMBEDDING_BATCH_SIZE is set to a reasonable value
+        assert_eq!(MAX_EMBEDDING_BATCH_SIZE, 32);
+
+        // Test that we can handle batching logic
+        let total_chunks = 100;
+        let expected_batches =
+            (total_chunks + MAX_EMBEDDING_BATCH_SIZE - 1) / MAX_EMBEDDING_BATCH_SIZE;
+        assert_eq!(expected_batches, 4); // 100 / 32 = 3.125, rounded up to 4
+
+        // Verify batch ranges
+        let mut ranges = Vec::new();
+        for batch_start in (0..total_chunks).step_by(MAX_EMBEDDING_BATCH_SIZE) {
+            let batch_end = (batch_start + MAX_EMBEDDING_BATCH_SIZE).min(total_chunks);
+            ranges.push((batch_start, batch_end));
+        }
+
+        assert_eq!(ranges.len(), 4);
+        assert_eq!(ranges[0], (0, 32));
+        assert_eq!(ranges[1], (32, 64));
+        assert_eq!(ranges[2], (64, 96));
+        assert_eq!(ranges[3], (96, 100));
+    }
+
+    #[test]
+    fn test_offset_calculation() {
+        // Test offset calculation for multiple input chunks from same document
+        let chunk_0_offset = 0;
+        let chunk_1_offset = (1 * MAX_DOCUMENT_CHARS) - (1 * CHUNK_OVERLAP);
+        let chunk_2_offset = (2 * MAX_DOCUMENT_CHARS) - (2 * CHUNK_OVERLAP);
+
+        // First chunk should have no offset
+        assert_eq!(chunk_0_offset, 0);
+
+        // Second chunk should account for first chunk size minus overlap
+        assert_eq!(chunk_1_offset, 24_576 - 300); // 24,276
+
+        // Third chunk should account for two chunks minus two overlaps
+        assert_eq!(chunk_2_offset, 2 * 24_576 - 2 * 300); // 48,552
+
+        // Verify the chunks properly overlap
+        assert!(chunk_1_offset < MAX_DOCUMENT_CHARS); // Second chunk starts before first ends
+        assert!(chunk_2_offset < 2 * MAX_DOCUMENT_CHARS); // Third chunk starts before second ends
     }
 }
