@@ -41,6 +41,9 @@ web/dist/
 web/build/
 web/.svelte-kit/
 
+# Python venv
+services/ai/venv
+
 # Temporary files
 *.tmp
 *.temp

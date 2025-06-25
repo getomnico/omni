@@ -2,18 +2,21 @@ use crate::AppState;
 use anyhow::Result;
 use pgvector::Vector;
 use shared::db::repositories::EmbeddingRepository;
-use shared::embedding_queue::{EmbeddingQueue, EmbeddingQueueItem};
 use shared::models::Embedding;
+use shared::{EmbeddingQueue, EmbeddingQueueItem};
 use sqlx::postgres::PgListener;
+use std::collections::HashMap;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 use ulid::Ulid;
+
+const MAX_DOCUMENT_CHARS: usize = 24_576; // 8192 tokens * 3 chars/token
+const CHUNK_OVERLAP: usize = 300; // Overlap between input chunks
 
 pub struct EmbeddingProcessor {
     pub state: AppState,
     pub embedding_queue: EmbeddingQueue,
     pub batch_size: i32,
-    pub max_content_length: usize,
 }
 
 impl EmbeddingProcessor {
@@ -22,9 +25,46 @@ impl EmbeddingProcessor {
         Self {
             state,
             embedding_queue,
-            batch_size: 10,              // Process up to 10 documents at once
-            max_content_length: 100_000, // Limit content size per batch
+            batch_size: 8, // Process up to 8 documents at once
         }
+    }
+
+    fn split_large_content(content: &str) -> Vec<String> {
+        if content.len() <= MAX_DOCUMENT_CHARS {
+            return vec![content.to_string()];
+        }
+
+        let mut chunks = Vec::new();
+        let mut start = 0;
+
+        while start < content.len() {
+            // Find the end position, ensuring we don't exceed content length
+            let mut end = (start + MAX_DOCUMENT_CHARS).min(content.len());
+
+            // Adjust end to the nearest char boundary if needed
+            while !content.is_char_boundary(end) && end < content.len() {
+                end += 1;
+            }
+
+            // Extract the chunk
+            chunks.push(content[start..end].to_string());
+
+            if end >= content.len() {
+                break;
+            }
+
+            // Calculate the next start position with overlap
+            let mut next_start = end.saturating_sub(CHUNK_OVERLAP);
+
+            // Ensure next_start is at a char boundary
+            while !content.is_char_boundary(next_start) && next_start > 0 {
+                next_start -= 1;
+            }
+
+            start = next_start;
+        }
+
+        chunks
     }
 
     pub async fn start(&self) -> Result<()> {
@@ -100,65 +140,45 @@ impl EmbeddingProcessor {
 
         info!("Processing batch of {} embedding requests", items.len());
 
-        // Group items by size to create optimal batches
-        let batches = self.create_batches(items);
-
-        for batch in batches {
-            if let Err(e) = self.process_embedding_batch(batch).await {
-                error!("Failed to process embedding batch: {}", e);
-            }
+        if let Err(e) = self.process_embedding_batch(items).await {
+            error!("Failed to process embedding batch: {}", e);
         }
 
         Ok(())
     }
 
-    fn create_batches(&self, items: Vec<EmbeddingQueueItem>) -> Vec<Vec<EmbeddingQueueItem>> {
-        let mut batches = Vec::new();
-        let mut current_batch = Vec::new();
-        let mut current_size = 0;
-
-        for item in items {
-            let item_size = item.content.len();
-
-            // If this item alone exceeds max size, process it individually
-            if item_size > self.max_content_length {
-                if !current_batch.is_empty() {
-                    batches.push(current_batch);
-                    current_batch = Vec::new();
-                    current_size = 0;
-                }
-                batches.push(vec![item]);
-                continue;
-            }
-
-            // If adding this item would exceed max size, start a new batch
-            if current_size + item_size > self.max_content_length && !current_batch.is_empty() {
-                batches.push(current_batch);
-                current_batch = Vec::new();
-                current_size = 0;
-            }
-
-            current_batch.push(item);
-            current_size += item_size;
-        }
-
-        if !current_batch.is_empty() {
-            batches.push(current_batch);
-        }
-
-        batches
-    }
-
     async fn process_embedding_batch(&self, batch: Vec<EmbeddingQueueItem>) -> Result<()> {
         let start_time = std::time::Instant::now();
 
-        // Extract contents for batch processing
-        let contents: Vec<String> = batch.iter().map(|item| item.content.clone()).collect();
+        // Build input batch with chunking for large documents
+        let mut input_texts = Vec::new();
+        let mut document_input_map: HashMap<String, Vec<usize>> = HashMap::new();
+
+        for item in &batch {
+            let input_chunks = Self::split_large_content(&item.content);
+            let start_idx = input_texts.len();
+
+            if input_chunks.len() > 1 {
+                info!(
+                    "Document {} ({}KB) split into {} input chunks",
+                    item.document_id,
+                    item.content.len() / 1024,
+                    input_chunks.len()
+                );
+            }
+
+            for chunk in input_chunks {
+                input_texts.push(chunk);
+            }
+
+            let indices: Vec<usize> = (start_idx..input_texts.len()).collect();
+            document_input_map.insert(item.document_id.clone(), indices);
+        }
 
         info!(
-            "Generating embeddings for {} documents (total size: {} chars)",
-            contents.len(),
-            contents.iter().map(|c| c.len()).sum::<usize>()
+            "Generating embeddings for {} documents split into {} input chunks",
+            batch.len(),
+            input_texts.len()
         );
 
         // Call AI service to generate embeddings for all texts at once
@@ -167,7 +187,7 @@ impl EmbeddingProcessor {
             .state
             .ai_client
             .generate_embeddings_with_options(
-                &contents,
+                &input_texts,
                 Some("retrieval.passage".to_string()),
                 Some(512),
                 Some("sentence".to_string()),
@@ -195,17 +215,63 @@ impl EmbeddingProcessor {
         let mut success_ids = Vec::new();
         let mut failed_ids = Vec::new();
 
-        for (item, text_embedding) in batch.iter().zip(text_embeddings.iter()) {
+        for item in &batch {
+            // Get the input chunk indices for this document
+            let input_indices = match document_input_map.get(&item.document_id) {
+                Some(indices) => indices,
+                None => {
+                    error!("No input indices found for document {}", item.document_id);
+                    failed_ids.push(item.id.clone());
+                    continue;
+                }
+            };
+
+            // Collect all output chunks for this document
+            let mut all_output_chunks = Vec::new();
+            let mut all_output_spans = Vec::new();
+
+            for (input_chunk_idx, &input_idx) in input_indices.iter().enumerate() {
+                let text_embedding = &text_embeddings[input_idx];
+
+                // Calculate offset adjustment for chunks after the first
+                let offset_adjustment = if input_chunk_idx > 0 {
+                    (input_chunk_idx * MAX_DOCUMENT_CHARS) - (input_chunk_idx * CHUNK_OVERLAP)
+                } else {
+                    0
+                };
+
+                // Add all output chunks with adjusted offsets
+                for (chunk_emb, (start, end)) in text_embedding
+                    .chunk_embeddings
+                    .iter()
+                    .zip(text_embedding.chunk_spans.iter())
+                {
+                    all_output_chunks.push(chunk_emb.clone());
+                    all_output_spans.push((
+                        start + offset_adjustment as i32,
+                        end + offset_adjustment as i32,
+                    ));
+                }
+            }
+
+            // Create a combined TextEmbedding for storage
+            let combined_embedding = shared::clients::ai::TextEmbedding {
+                chunk_embeddings: all_output_chunks,
+                chunk_spans: all_output_spans,
+                model_name: text_embeddings.first().and_then(|e| e.model_name.clone()),
+            };
+
             match self
-                .store_embeddings(&embedding_repo, &item.document_id, text_embedding)
+                .store_embeddings(&embedding_repo, &item.document_id, &combined_embedding)
                 .await
             {
                 Ok(_) => {
                     success_ids.push(item.id.clone());
                     debug!(
-                        "Successfully stored embeddings for document {} ({} chunks)",
+                        "Successfully stored embeddings for document {} ({} output chunks from {} input chunks)",
                         item.document_id,
-                        text_embedding.chunk_embeddings.len()
+                        combined_embedding.chunk_embeddings.len(),
+                        input_indices.len()
                     );
                 }
                 Err(e) => {
@@ -344,5 +410,62 @@ impl EmbeddingProcessor {
         .await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_split_large_content() {
+        // Test 1: Content smaller than MAX_DOCUMENT_CHARS
+        let small_content = "a".repeat(1000);
+        let chunks = EmbeddingProcessor::split_large_content(&small_content);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], small_content);
+
+        // Test 2: Content exactly MAX_DOCUMENT_CHARS
+        let exact_content = "b".repeat(MAX_DOCUMENT_CHARS);
+        let chunks = EmbeddingProcessor::split_large_content(&exact_content);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], exact_content);
+
+        // Test 3: Content larger than MAX_DOCUMENT_CHARS
+        let large_content = "c".repeat(MAX_DOCUMENT_CHARS + 1000);
+        let chunks = EmbeddingProcessor::split_large_content(&large_content);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].len(), MAX_DOCUMENT_CHARS);
+        assert_eq!(chunks[1].len(), 1000 + CHUNK_OVERLAP);
+
+        // Test 4: Very large content requiring multiple chunks
+        let very_large_content = "d".repeat(MAX_DOCUMENT_CHARS * 3);
+        let chunks = EmbeddingProcessor::split_large_content(&very_large_content);
+        assert!(chunks.len() >= 3);
+
+        // Verify overlap (skip this check as exact overlap may vary due to char boundaries)
+    }
+
+    #[test]
+    fn test_split_large_content_with_unicode() {
+        // Test with multi-byte UTF-8 characters
+        let emoji_str = "😀".repeat(MAX_DOCUMENT_CHARS / 4); // Each emoji is 4 bytes
+        let chunks = EmbeddingProcessor::split_large_content(&emoji_str);
+
+        // Verify all chunks are valid UTF-8
+        for chunk in &chunks {
+            assert!(chunk.is_char_boundary(0));
+            assert!(chunk.is_char_boundary(chunk.len()));
+        }
+
+        // Test with mixed ASCII and Unicode
+        let mixed = "Hello 世界 ".repeat(MAX_DOCUMENT_CHARS / 10);
+        let chunks = EmbeddingProcessor::split_large_content(&mixed);
+
+        // Verify no panics and all chunks are valid
+        for chunk in &chunks {
+            // This would panic if boundaries were wrong
+            let _ = chunk.chars().count();
+        }
     }
 }

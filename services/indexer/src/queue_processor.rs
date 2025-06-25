@@ -30,7 +30,7 @@ impl QueueProcessor {
             state,
             event_queue,
             embedding_queue,
-            batch_size: 10,
+            batch_size: 32,
             parallelism,
             semaphore,
         }

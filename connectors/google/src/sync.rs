@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use time;
+use tokio::sync::Semaphore;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 
@@ -248,7 +249,11 @@ impl SyncManager {
         let sync_state = SyncState::new(self.redis_client.clone());
         let synced_files = sync_state.get_all_synced_file_ids(&source.id).await?;
         let mut current_files = HashSet::new();
-        let mut all_files_to_process = Vec::new();
+
+        // Create maps directly during file collection
+        let mut access_tokens_by_user: HashMap<String, String> = HashMap::new();
+        let mut files_by_user: HashMap<String, Vec<crate::models::GoogleDriveFile>> =
+            HashMap::new();
 
         // Iterate over all users to collect files
         let mut user_count = 0;
@@ -338,12 +343,14 @@ impl SyncManager {
 
                         if should_process {
                             user_files_to_process += 1;
-                            // Store file with the user's access token and email for later processing
-                            all_files_to_process.push((
-                                file,
-                                user_access_token.clone(),
-                                user.primary_email.clone(),
-                            ));
+                            // Store access token once per user and add file to user's list
+                            access_tokens_by_user
+                                .entry(user.primary_email.clone())
+                                .or_insert_with(|| user_access_token.clone());
+                            files_by_user
+                                .entry(user.primary_email.clone())
+                                .or_insert_with(Vec::new)
+                                .push(file);
                         }
                     }
                 }
@@ -363,16 +370,20 @@ impl SyncManager {
         }
 
         let processed_count = current_files.len();
+        let total_files_to_process = files_by_user
+            .values()
+            .map(|files| files.len())
+            .sum::<usize>();
         info!(
             "File collection complete: {} total files across all users, {} files to process",
             current_files.len(),
-            all_files_to_process.len()
+            total_files_to_process
         );
 
         let processed_count_tracker = Arc::new(AtomicUsize::new(0));
         let success_count_tracker = Arc::new(AtomicUsize::new(0));
         let failed_count_tracker = Arc::new(AtomicUsize::new(0));
-        let total_to_process = all_files_to_process.len();
+        let total_to_process = total_files_to_process;
         let last_progress_time = Arc::new(std::sync::Mutex::new(Instant::now()));
 
         // Spawn a task to monitor progress
@@ -410,23 +421,27 @@ impl SyncManager {
             }
         });
 
-        // Group files by user email
-        let mut files_by_user: HashMap<String, Vec<(crate::models::GoogleDriveFile, String)>> =
-            HashMap::new();
-        for (file, access_token, user_email) in all_files_to_process {
-            files_by_user
-                .entry(user_email)
-                .or_insert_with(Vec::new)
-                .push((file, access_token));
-        }
-
         info!(
             "Starting concurrent file processing for {} users",
             files_by_user.len()
         );
 
+        // Create global semaphore to limit concurrent requests across all users
+        // Google Drive API limit: 3000 requests per minute per project = 50 req/sec
+        let max_concurrent_requests = std::env::var("GOOGLE_MAX_CONCURRENT_REQUESTS")
+            .unwrap_or_else(|_| "50".to_string())
+            .parse::<usize>()
+            .unwrap_or(50);
+        let global_semaphore = Arc::new(Semaphore::new(max_concurrent_requests));
+
+        info!(
+            "Using global semaphore with {} concurrent request limit",
+            max_concurrent_requests
+        );
+
         // Process files concurrently with per-user rate limiting
         let user_streams = files_by_user.into_iter().map(|(user_email, user_files)| {
+            let user_access_token = access_tokens_by_user.get(&user_email).unwrap().clone();
             let sync_state = sync_state.clone();
             let sync_run_id = sync_run_id.to_string();
             let source_id = source.id.clone();
@@ -436,15 +451,17 @@ impl SyncManager {
             let success_count = Arc::clone(&success_count_tracker);
             let failed_count = Arc::clone(&failed_count_tracker);
             let progress_time = Arc::clone(&last_progress_time);
+            let global_semaphore = Arc::clone(&global_semaphore);
             let user_file_count = user_files.len();
 
-            // Create per-user rate limiter for 5 requests per second
+            // Create per-user rate limiter for 5 requests per second (300 per minute per user limit)
+            // The rate limiter handles both rate limiting and retries on 429/503 errors
             let user_rate_limiter = Arc::new(RateLimiter::new(5, 3)); // 5 req/sec, 3 retries
 
-            info!("Processing {} files for user {}", user_file_count, user_email);
+            info!("Processing {} files for user {} with rate limiting (5 req/sec)", user_file_count, user_email);
 
             stream::iter(user_files)
-                .then(move |(file, user_access_token)| {
+                .map(move |file| {
                     let sync_state = sync_state.clone();
                     let sync_run_id = sync_run_id.clone();
                     let source_id = source_id.clone();
@@ -456,23 +473,31 @@ impl SyncManager {
                     let user_email = user_email.clone();
                     let drive_client = drive_client.clone();
                     let event_queue = event_queue.clone();
+                    let user_access_token = user_access_token.clone();
+                    let global_semaphore = global_semaphore.clone();
 
                     async move {
-                        // Apply per-user rate limiting
-                        rate_limiter.check_rate_limit().await.unwrap_or_else(|e| {
-                            warn!("Rate limiter error for user {}: {}", user_email, e);
-                        });
+                        // Acquire global semaphore permit first to limit total concurrent requests
+                        let _global_permit = global_semaphore.acquire().await.expect("Global semaphore should not be closed");
 
                         let file_name = file.name.clone();
                         let file_id = file.id.clone();
                         debug!("Starting to process file: {} ({}) for user {}", file_name, file_id, user_email);
 
-                        let result = match drive_client
-                            .get_file_content(&user_access_token, &file)
-                            .await
-                            .with_context(|| {
-                                format!("Getting content for file {} ({})", file.name, file.id)
-                            }) {
+                        // Use rate limiter's execute_with_retry for proper error handling and retries
+                        let result = match rate_limiter.execute_with_retry(|| {
+                            let drive_client = drive_client.clone();
+                            let user_access_token = user_access_token.clone();
+                            let file = file.clone();
+                            async move {
+                                drive_client
+                                    .get_file_content(&user_access_token, &file)
+                                    .await
+                                    .with_context(|| {
+                                        format!("Getting content for file {} ({})", file.name, file.id)
+                                    })
+                            }
+                        }).await {
                             Ok(content) => {
                                 if !content.is_empty() {
                                     let event = file.clone().to_connector_event(
@@ -567,6 +592,7 @@ impl SyncManager {
                         result
                     }
                 })
+                .buffer_unordered(20) // Allow more tasks to queue up, rate limiter will control actual rate
                 .collect::<Vec<_>>()
         });
 
