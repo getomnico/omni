@@ -214,7 +214,7 @@ impl SearchEngine {
     async fn generate_query_embedding(&self, query: &str) -> Result<Vec<f32>> {
         let embeddings = self
             .ai_client
-            .generate_embeddings(&[query.to_string()])
+            .generate_embeddings(vec![query.to_string()])
             .await?;
         if let Some(first_embedding) = embeddings.first() {
             if let Some(first_chunk) = first_embedding.chunk_embeddings.first() {

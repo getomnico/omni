@@ -25,13 +25,13 @@ impl EmbeddingProcessor {
         Self {
             state,
             embedding_queue,
-            batch_size: 8, // Process up to 8 documents at once
+            batch_size: 512, // Deque up to 512 documents at once
         }
     }
 
-    fn split_large_content(content: &str) -> Vec<String> {
+    fn split_large_content<'a>(content: &'a str) -> Vec<&'a str> {
         if content.len() <= MAX_DOCUMENT_CHARS {
-            return vec![content.to_string()];
+            return vec![content];
         }
 
         let mut chunks = Vec::new();
@@ -47,7 +47,7 @@ impl EmbeddingProcessor {
             }
 
             // Extract the chunk
-            chunks.push(content[start..end].to_string());
+            chunks.push(&content[start..end]);
 
             if end >= content.len() {
                 break;
@@ -183,10 +183,10 @@ impl EmbeddingProcessor {
 
         // Step 1: Split all documents into input chunks and build metadata
         #[derive(Debug)]
-        struct InputChunkInfo {
+        struct InputChunkInfo<'a> {
             document_id: String,
             input_chunk_index: usize, // Index within this document's input chunks
-            input_text: String,
+            input_text: &'a str,
         }
 
         let mut all_input_chunks = Vec::new();
@@ -245,7 +245,7 @@ impl EmbeddingProcessor {
             // Extract just the text for the API call
             let input_texts: Vec<String> = input_batch
                 .iter()
-                .map(|chunk| chunk.input_text.clone())
+                .map(|chunk| chunk.input_text.to_string())
                 .collect();
 
             // Call AI service for this batch
@@ -254,7 +254,7 @@ impl EmbeddingProcessor {
                 .state
                 .ai_client
                 .generate_embeddings_with_options(
-                    &input_texts,
+                    input_texts,
                     Some("retrieval.passage".to_string()),
                     Some(512),
                     Some("sentence".to_string()),

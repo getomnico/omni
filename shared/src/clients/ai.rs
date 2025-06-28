@@ -51,7 +51,7 @@ impl AIClient {
         }
     }
 
-    pub async fn generate_embeddings(&self, texts: &[String]) -> Result<Vec<TextEmbedding>> {
+    pub async fn generate_embeddings(&self, texts: Vec<String>) -> Result<Vec<TextEmbedding>> {
         self.generate_embeddings_with_options(
             texts,
             Some("retrieval.query".to_string()),
@@ -63,13 +63,13 @@ impl AIClient {
 
     pub async fn generate_embeddings_with_options(
         &self,
-        texts: &[String],
+        texts: Vec<String>,
         task: Option<String>,
         chunk_size: Option<i32>,
         chunking_mode: Option<String>,
     ) -> Result<Vec<TextEmbedding>> {
         let request = EmbeddingRequest {
-            texts: texts.to_vec(),
+            texts,
             task,
             chunk_size,
             chunking_mode,
@@ -126,7 +126,7 @@ impl AIClient {
     // Keep backward compatibility method for single text
     #[deprecated(note = "Use generate_embeddings instead")]
     pub async fn generate_embedding(&self, text: &str) -> Result<Vec<f32>> {
-        let embeddings = self.generate_embeddings(&[text.to_string()]).await?;
+        let embeddings = self.generate_embeddings(vec![text.to_string()]).await?;
         if let Some(first_text) = embeddings.first() {
             if let Some(first_chunk) = first_text.chunk_embeddings.first() {
                 return Ok(first_chunk.clone());
