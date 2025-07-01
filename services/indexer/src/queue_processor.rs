@@ -7,7 +7,7 @@ use shared::models::{ConnectorEvent, Document, DocumentMetadata, DocumentPermiss
 use shared::queue::EventQueue;
 use sqlx::postgres::PgListener;
 use std::sync::Arc;
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Semaphore};
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 
@@ -18,6 +18,7 @@ pub struct QueueProcessor {
     pub batch_size: i32,
     pub parallelism: usize,
     semaphore: Arc<Semaphore>,
+    processing_mutex: Arc<Mutex<()>>,
 }
 
 impl QueueProcessor {
@@ -26,6 +27,7 @@ impl QueueProcessor {
         let embedding_queue = EmbeddingQueue::new(state.db_pool.pool().clone());
         let parallelism = (num_cpus::get() / 2).max(1); // Half the CPU cores, minimum 1
         let semaphore = Arc::new(Semaphore::new(parallelism));
+        let processing_mutex = Arc::new(Mutex::new(()));
         Self {
             state,
             event_queue,
@@ -33,6 +35,7 @@ impl QueueProcessor {
             batch_size: 32,
             parallelism,
             semaphore,
+            processing_mutex,
         }
     }
 
@@ -70,7 +73,7 @@ impl QueueProcessor {
         let mut recovery_interval = interval(Duration::from_secs(300)); // 5 minutes
 
         // Process any existing events first
-        if let Err(e) = self.process_batch().await {
+        if let Err(e) = self.process_batch_safe().await {
             error!("Failed to process initial batch: {}", e);
         }
 
@@ -79,7 +82,7 @@ impl QueueProcessor {
                 notification = listener.recv() => {
                     match notification {
                         Ok(_) => {
-                            if let Err(e) = self.process_batch().await {
+                            if let Err(e) = self.process_batch_safe().await {
                                 error!("Failed to process batch after notification: {}", e);
                             }
                         }
@@ -97,7 +100,7 @@ impl QueueProcessor {
                 }
                 _ = poll_interval.tick() => {
                     // Backup polling mechanism
-                    if let Err(e) = self.process_batch().await {
+                    if let Err(e) = self.process_batch_safe().await {
                         error!("Failed to process batch during backup poll: {}", e);
                     }
                 }
@@ -138,86 +141,101 @@ impl QueueProcessor {
         }
     }
 
+    async fn process_batch_safe(&self) -> Result<()> {
+        let _guard = self.processing_mutex.lock().await;
+        self.process_batch().await
+    }
+
     async fn process_batch(&self) -> Result<()> {
-        let events = self.event_queue.dequeue_batch(self.batch_size).await?;
+        let mut total_processed = 0;
 
-        if events.is_empty() {
-            return Ok(());
-        }
+        loop {
+            let events = self.event_queue.dequeue_batch(self.batch_size).await?;
 
-        info!(
-            "Processing batch of {} events with parallelism: {}",
-            events.len(),
-            self.parallelism
-        );
-
-        // Process events concurrently
-        let mut tasks = Vec::new();
-
-        for event_item in events {
-            let event_id = event_item.id.clone();
-            let _sync_run_id = event_item.sync_run_id.clone();
-            let payload = event_item.payload.clone();
-            let state = self.state.clone();
-            let event_queue = self.event_queue.clone();
-            let semaphore = self.semaphore.clone();
-
-            let task = tokio::spawn(async move {
-                // Acquire semaphore permit to limit concurrency
-                let _permit = semaphore.acquire().await.unwrap();
-
-                info!("Processing event {} on task thread", event_id);
-
-                let processor = ProcessorContext::new(state);
-                match processor.process_event(&payload).await {
-                    Ok(_) => {
-                        if let Err(e) = event_queue.mark_completed(&event_id).await {
-                            error!("Failed to mark event {} as completed: {}", event_id, e);
-                            false
-                        } else {
-                            true
-                        }
-                    }
-                    Err(e) => {
-                        error!("Failed to process event {}: {}", event_id, e);
-                        if let Err(mark_err) =
-                            event_queue.mark_failed(&event_id, &e.to_string()).await
-                        {
-                            error!("Failed to mark event {} as failed: {}", event_id, mark_err);
-                        }
-                        false
-                    }
+            if events.is_empty() {
+                if total_processed > 0 {
+                    info!(
+                        "Finished processing all available events. Total processed: {}",
+                        total_processed
+                    );
                 }
-            });
+                return Ok(());
+            }
 
-            tasks.push(task);
+            info!(
+                "Processing batch of {} events with parallelism: {}",
+                events.len(),
+                self.parallelism
+            );
+
+            // Process events concurrently
+            let mut tasks = Vec::new();
+
+            for event_item in events {
+                let event_id = event_item.id.clone();
+                let _sync_run_id = event_item.sync_run_id.clone();
+                let payload = event_item.payload.clone();
+                let state = self.state.clone();
+                let event_queue = self.event_queue.clone();
+                let semaphore = self.semaphore.clone();
+
+                let task = tokio::spawn(async move {
+                    // Acquire semaphore permit to limit concurrency
+                    let _permit = semaphore.acquire().await.unwrap();
+
+                    info!("Processing event {} on task thread", event_id);
+
+                    let processor = ProcessorContext::new(state);
+                    match processor.process_event(&payload).await {
+                        Ok(_) => {
+                            if let Err(e) = event_queue.mark_completed(&event_id).await {
+                                error!("Failed to mark event {} as completed: {}", event_id, e);
+                                false
+                            } else {
+                                true
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to process event {}: {}", event_id, e);
+                            if let Err(mark_err) =
+                                event_queue.mark_failed(&event_id, &e.to_string()).await
+                            {
+                                error!("Failed to mark event {} as failed: {}", event_id, mark_err);
+                            }
+                            false
+                        }
+                    }
+                });
+
+                tasks.push(task);
+            }
+
+            // Wait for all tasks to complete
+            let results = join_all(tasks).await;
+
+            // Count successful processes
+            let processed_count = results
+                .iter()
+                .filter_map(|r| r.as_ref().ok())
+                .filter(|&&success| success)
+                .count();
+
+            total_processed += processed_count;
+
+            // After processing events, refresh lexemes if any documents were processed
+            // TODO: This slows down ingestion, check and re-enable later
+            // if processed_count > 0 {
+            //     info!(
+            //         "Refreshing lexemes after processing {} events",
+            //         processed_count
+            //     );
+            //     if let Err(e) = lexeme_refresh::refresh_lexemes(&self.state.db_pool).await {
+            //         error!("Failed to refresh lexemes after batch processing: {}", e);
+            //     } else {
+            //         info!("Lexeme refresh completed after batch processing");
+            //     }
+            // }
         }
-
-        // Wait for all tasks to complete
-        let results = join_all(tasks).await;
-
-        // Count successful processes
-        let processed_count = results
-            .iter()
-            .filter_map(|r| r.as_ref().ok())
-            .filter(|&&success| success)
-            .count();
-
-        // After processing events, refresh lexemes if any documents were processed
-        // TODO: This slows down ingestion, check and re-enable later
-        // if processed_count > 0 {
-        //     info!(
-        //         "Refreshing lexemes after processing {} events",
-        //         processed_count
-        //     );
-        //     if let Err(e) = lexeme_refresh::refresh_lexemes(&self.state.db_pool).await {
-        //         error!("Failed to refresh lexemes after batch processing: {}", e);
-        //     } else {
-        //         info!("Lexeme refresh completed after batch processing");
-        //     }
-        // }
-
-        Ok(())
     }
 }
 

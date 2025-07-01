@@ -5,6 +5,8 @@ use shared::db::repositories::EmbeddingRepository;
 use shared::models::Embedding;
 use shared::{EmbeddingQueue, EmbeddingQueueItem};
 use sqlx::postgres::PgListener;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 use ulid::Ulid;
@@ -17,15 +19,18 @@ pub struct EmbeddingProcessor {
     pub state: AppState,
     pub embedding_queue: EmbeddingQueue,
     pub batch_size: i32,
+    processing_mutex: Arc<Mutex<()>>,
 }
 
 impl EmbeddingProcessor {
     pub fn new(state: AppState) -> Self {
         let embedding_queue = EmbeddingQueue::new(state.db_pool.pool().clone());
+        let processing_mutex = Arc::new(Mutex::new(()));
         Self {
             state,
             embedding_queue,
             batch_size: 512, // Deque up to 512 documents at once
+            processing_mutex,
         }
     }
 
@@ -104,7 +109,7 @@ impl EmbeddingProcessor {
         let mut recovery_interval = interval(Duration::from_secs(300)); // Recovery every 5 minutes
 
         // Process any existing items first
-        if let Err(e) = self.process_batch().await {
+        if let Err(e) = self.process_batch_safe().await {
             error!("Failed to process initial batch: {}", e);
         }
 
@@ -113,7 +118,7 @@ impl EmbeddingProcessor {
                 notification = listener.recv() => {
                     match notification {
                         Ok(_) => {
-                            if let Err(e) = self.process_batch().await {
+                            if let Err(e) = self.process_batch_safe().await {
                                 error!("Failed to process batch after notification: {}", e);
                             }
                         }
@@ -131,7 +136,7 @@ impl EmbeddingProcessor {
                 }
                 _ = poll_interval.tick() => {
                     // Backup polling mechanism
-                    if let Err(e) = self.process_batch().await {
+                    if let Err(e) = self.process_batch_safe().await {
                         error!("Failed to process batch during backup poll: {}", e);
                     }
                 }
@@ -162,20 +167,36 @@ impl EmbeddingProcessor {
         }
     }
 
+    async fn process_batch_safe(&self) -> Result<()> {
+        let _guard = self.processing_mutex.lock().await;
+        self.process_batch().await
+    }
+
     async fn process_batch(&self) -> Result<()> {
-        let items = self.embedding_queue.dequeue_batch(self.batch_size).await?;
+        let mut total_processed = 0;
 
-        if items.is_empty() {
-            return Ok(());
+        loop {
+            let items = self.embedding_queue.dequeue_batch(self.batch_size).await?;
+
+            if items.is_empty() {
+                if total_processed > 0 {
+                    info!(
+                        "Finished processing all available embedding requests. Total processed: {}",
+                        total_processed
+                    );
+                }
+                return Ok(());
+            }
+
+            info!("Processing batch of {} embedding requests", items.len());
+            let batch_size = items.len();
+
+            if let Err(e) = self.process_embedding_batch(items).await {
+                error!("Failed to process embedding batch: {}", e);
+            } else {
+                total_processed += batch_size;
+            }
         }
-
-        info!("Processing batch of {} embedding requests", items.len());
-
-        if let Err(e) = self.process_embedding_batch(items).await {
-            error!("Failed to process embedding batch: {}", e);
-        }
-
-        Ok(())
     }
 
     async fn process_embedding_batch(&self, batch: Vec<EmbeddingQueueItem>) -> Result<()> {
