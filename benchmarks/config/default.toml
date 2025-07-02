@@ -33,6 +33,8 @@ datasets = [
     "webis-touche2020",
     "quora"
 ]
+# Specify which dataset to use for benchmarking (if not set, uses first available)
+selected_dataset = "fiqa"
 download_url_base = "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets"
 cache_dir = "benchmarks/data/beir"
 

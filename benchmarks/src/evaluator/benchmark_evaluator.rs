@@ -1,5 +1,6 @@
 use crate::config::BenchmarkConfig;
 use crate::datasets::DatasetLoader;
+use crate::datasets::Query;
 use crate::evaluator::metrics::{
     AggregatedMetrics, EvaluationMetrics, MetricsCalculator, QueryResult, RelevantDocument,
     RetrievedDocument,
@@ -38,12 +39,12 @@ impl BenchmarkEvaluator {
             return Err(anyhow::anyhow!("Search service is not healthy"));
         }
 
-        // Load dataset
-        let dataset = dataset_loader.load_dataset().await?;
-        info!("Loaded dataset with {} queries", dataset.queries.len());
+        // Load queries
+        let queries: Vec<Result<Query>> = dataset_loader.stream_queries().collect().await;
+        info!("Loaded dataset with {} queries", queries.len());
 
         // Create progress bar
-        let progress_bar = ProgressBar::new(dataset.queries.len() as u64);
+        let progress_bar = ProgressBar::new(queries.len() as u64);
         progress_bar.set_style(
             ProgressStyle::default_bar()
                 .template(
@@ -54,7 +55,7 @@ impl BenchmarkEvaluator {
         );
 
         // Process queries concurrently with rate limiting
-        let query_results = stream::iter(dataset.queries.into_iter())
+        let query_results = stream::iter(queries.into_iter())
             .map(|query| {
                 let search_client = &self.search_client;
                 let search_mode = search_mode.to_string();
@@ -62,11 +63,19 @@ impl BenchmarkEvaluator {
                 let progress_bar = progress_bar.clone();
 
                 async move {
-                    let result = self
-                        .process_query(search_client, &query, &search_mode, &config)
-                        .await;
-                    progress_bar.inc(1);
-                    result
+                    match query {
+                        Ok(q) => {
+                            let result = self
+                                .process_query(search_client, &q, &search_mode, &config)
+                                .await;
+                            progress_bar.inc(1);
+                            result
+                        }
+                        Err(e) => {
+                            warn!("Failed to load query: {}", e);
+                            Err(e)
+                        }
+                    }
                 }
             })
             .buffer_unordered(config.concurrent_queries)

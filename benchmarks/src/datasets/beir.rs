@@ -15,6 +15,7 @@ pub struct BeirDataset {
     cache_dir: String,
     dataset_names: Vec<String>,
     download_url_base: String,
+    selected_dataset: Option<String>,
 }
 
 impl BeirDataset {
@@ -37,6 +38,7 @@ impl BeirDataset {
             ],
             download_url_base: "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets"
                 .to_string(),
+            selected_dataset: None,
         }
     }
 
@@ -48,6 +50,25 @@ impl BeirDataset {
     pub fn with_download_url(mut self, url_base: String) -> Self {
         self.download_url_base = url_base;
         self
+    }
+
+    pub fn with_selected_dataset(mut self, dataset_name: String) -> Self {
+        self.selected_dataset = Some(dataset_name);
+        self
+    }
+
+    fn get_dataset_to_use(&self) -> Option<&str> {
+        if let Some(ref selected) = self.selected_dataset {
+            // Verify the selected dataset is in the available list
+            if self.dataset_names.contains(selected) {
+                Some(selected)
+            } else {
+                None
+            }
+        } else {
+            // Return first available dataset if none selected
+            self.dataset_names.first().map(|s| s.as_str())
+        }
     }
 
     pub async fn download_all(&self) -> Result<()> {
@@ -356,54 +377,82 @@ impl BeirDataset {
         let queries_path = queries_path.to_string();
         let qrels_path = qrels_path.to_string();
 
+        // Load qrels outside the closure to avoid lifetime issues
+        let qrels = match self.load_qrels(&qrels_path) {
+            Ok(qrels) => qrels,
+            Err(e) => {
+                return Box::pin(stream::once(async move {
+                    Err(anyhow::anyhow!("Failed to load qrels: {}", e))
+                }))
+            }
+        };
+
         Box::pin(stream::try_unfold(
-            (
-                queries_path,
-                qrels_path,
-                None::<(
-                    HashMap<String, String>,
-                    HashMap<String, Vec<(String, f64)>>,
-                    std::collections::hash_map::IntoIter<String, String>,
-                )>,
-            ),
-            move |(queries_path, qrels_path, mut state_opt)| async move {
-                // Initialize state if needed
-                if state_opt.is_none() {
-                    // Create a new instance to avoid borrowing self
-                    let temp_dataset = BeirDataset::new("".to_string());
-                    let queries = temp_dataset.load_queries(&queries_path)?;
-                    let qrels = temp_dataset.load_qrels(&qrels_path)?;
-                    let queries_iter = queries.into_iter();
-                    state_opt = Some((HashMap::new(), qrels, queries_iter));
+            (queries_path, qrels, None::<BufReader<File>>),
+            move |(queries_path, qrels, mut queries_reader_opt)| async move {
+                // Initialize queries reader if needed
+                if queries_reader_opt.is_none() {
+                    let queries_file = File::open(&queries_path)?;
+                    let queries_reader = BufReader::new(queries_file);
+                    queries_reader_opt = Some(queries_reader);
                 }
 
-                let (_, qrels, queries_iter) = state_opt.as_mut().unwrap();
+                let queries_reader = queries_reader_opt.as_mut().unwrap();
+                let mut query_line = String::new();
 
-                while let Some((query_id, query_text)) = queries_iter.next() {
-                    let relevant_docs: Vec<RelevantDoc> = qrels
-                        .get(&query_id)
-                        .map(|rels| {
-                            rels.iter()
-                                .map(|(doc_id, relevance)| RelevantDoc {
-                                    doc_id: doc_id.clone(),
-                                    relevance_score: *relevance,
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                loop {
+                    query_line.clear();
+                    match queries_reader.read_line(&mut query_line) {
+                        Ok(0) => return Ok(None), // EOF
+                        Ok(_) => {
+                            if query_line.trim().is_empty() {
+                                continue;
+                            }
 
-                    // Only yield queries that have relevant documents
-                    if !relevant_docs.is_empty() {
-                        let query = Query {
-                            id: query_id,
-                            text: query_text,
-                            relevant_docs,
-                        };
-                        return Ok(Some((query, (queries_path, qrels_path, state_opt))));
+                            let query_data: serde_json::Value =
+                                match serde_json::from_str(&query_line) {
+                                    Ok(data) => data,
+                                    Err(e) => {
+                                        tracing::warn!("Failed to parse query JSON line: {}", e);
+                                        continue;
+                                    }
+                                };
+
+                            if let (Some(query_id), Some(query_text)) =
+                                (query_data["_id"].as_str(), query_data["text"].as_str())
+                            {
+                                // Look up relevance judgments for this query
+                                let relevant_docs: Vec<RelevantDoc> = qrels
+                                    .get(query_id)
+                                    .map(|rels| {
+                                        rels.iter()
+                                            .map(|(doc_id, relevance)| RelevantDoc {
+                                                doc_id: doc_id.clone(),
+                                                relevance_score: *relevance,
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+
+                                // Only return queries that have relevant documents
+                                if !relevant_docs.is_empty() {
+                                    let query = Query {
+                                        id: query_id.to_string(),
+                                        text: query_text.to_string(),
+                                        relevant_docs,
+                                    };
+                                    return Ok(Some((
+                                        query,
+                                        (queries_path, qrels, queries_reader_opt),
+                                    )));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            return Err(anyhow::anyhow!("Failed to read queries file: {}", e))
+                        }
                     }
                 }
-
-                Ok(None) // No more queries
             },
         ))
     }
@@ -416,17 +465,20 @@ impl DatasetLoader for BeirDataset {
     }
 
     async fn load_dataset(&self) -> Result<Dataset> {
-        // For simplicity, load the first available dataset
-        // In practice, you might want to combine multiple datasets or allow selection
-        for dataset_name in &self.dataset_names {
+        if let Some(dataset_name) = self.get_dataset_to_use() {
             let dataset_dir = format!("{}/{}", self.cache_dir, dataset_name);
             if Path::new(&dataset_dir).exists() {
                 return self.load_single_dataset(dataset_name).await;
+            } else {
+                return Err(anyhow::anyhow!(
+                    "Selected BEIR dataset '{}' not found. Please download first.",
+                    dataset_name
+                ));
             }
         }
 
         Err(anyhow::anyhow!(
-            "No BEIR datasets found. Please download first."
+            "No BEIR dataset configured or available. Please download first."
         ))
     }
 
@@ -439,9 +491,7 @@ impl DatasetLoader for BeirDataset {
     }
 
     fn stream_documents(&self) -> Pin<Box<dyn Stream<Item = Result<Document>> + Send>> {
-        // For simplicity, stream documents from the first available dataset
-        // In practice, you might want to allow dataset selection
-        for dataset_name in &self.dataset_names {
+        if let Some(dataset_name) = self.get_dataset_to_use() {
             let dataset_dir = format!("{}/{}", self.cache_dir, dataset_name);
             if Path::new(&dataset_dir).exists() {
                 let corpus_path = format!("{}/corpus.jsonl", dataset_dir);
@@ -454,8 +504,7 @@ impl DatasetLoader for BeirDataset {
     }
 
     fn stream_queries(&self) -> Pin<Box<dyn Stream<Item = Result<Query>> + Send>> {
-        // For simplicity, stream queries from the first available dataset
-        for dataset_name in &self.dataset_names {
+        if let Some(dataset_name) = self.get_dataset_to_use() {
             let dataset_dir = format!("{}/{}", self.cache_dir, dataset_name);
             if Path::new(&dataset_dir).exists() {
                 let queries_path = format!("{}/queries.jsonl", dataset_dir);

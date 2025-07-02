@@ -141,7 +141,17 @@ async fn run_benchmarks(config_path: &str, dataset: &str, search_mode: &str) -> 
 
     // Load the specified dataset
     let dataset_loader: Box<dyn DatasetLoader> = match dataset {
-        "beir" => Box::new(BeirDataset::new(config.datasets.beir.cache_dir.clone())),
+        "beir" => {
+            let mut beir_dataset = BeirDataset::new(config.datasets.beir.cache_dir.clone())
+                .with_datasets(config.datasets.beir.datasets.clone())
+                .with_download_url(config.datasets.beir.download_url_base.clone());
+
+            if let Some(selected) = &config.datasets.beir.selected_dataset {
+                beir_dataset = beir_dataset.with_selected_dataset(selected.clone());
+            }
+
+            Box::new(beir_dataset)
+        }
         "msmarco" => Box::new(MsMarcoDataset::new(
             config.datasets.msmarco.cache_dir.clone(),
         )),
@@ -166,14 +176,6 @@ async fn run_benchmarks(config_path: &str, dataset: &str, search_mode: &str) -> 
     } else {
         None
     };
-
-    // Load queries for evaluation (still need these in memory for the evaluation logic)
-    info!("Loading queries for evaluation: {}", dataset);
-    let dataset_data = dataset_loader.load_dataset().await?;
-    info!(
-        "Loaded {} queries for evaluation",
-        dataset_data.queries.len()
-    );
 
     // Initialize search client and evaluator
     let search_client = ClioSearchClient::new(&config.searcher_url)?;

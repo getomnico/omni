@@ -161,7 +161,7 @@ impl BenchmarkIndexer {
             }
 
             // Small delay between batches to avoid overwhelming the queue
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            // tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
         // Notify indexer to start processing the queued events
@@ -400,12 +400,12 @@ impl BenchmarkIndexer {
             // Check if both connector queue and embedding queue are empty and document count is stable
             let embedding_pending = embedding_queue_stats
                 .iter()
-                .find(|(status, _)| status == EmbeddingQueueStatus::Pending.to_string())
+                .find(|(status, _)| *status == EmbeddingQueueStatus::Pending.to_string())
                 .map(|(_, count)| *count)
                 .unwrap_or(0);
             let embedding_processing = embedding_queue_stats
                 .iter()
-                .find(|(status, _)| status == EmbeddingQueueStatus::Processing.to_string())
+                .find(|(status, _)| *status == EmbeddingQueueStatus::Processing.to_string())
                 .map(|(_, count)| *count)
                 .unwrap_or(0);
 

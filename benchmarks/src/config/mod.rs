@@ -32,6 +32,7 @@ pub struct BeirConfig {
     pub datasets: Vec<String>,
     pub download_url_base: String,
     pub cache_dir: String,
+    pub selected_dataset: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +126,7 @@ impl Default for BeirConfig {
             download_url_base: "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets"
                 .to_string(),
             cache_dir: "benchmarks/data/beir".to_string(),
+            selected_dataset: None,
         }
     }
 }

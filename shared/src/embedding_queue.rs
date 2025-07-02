@@ -60,7 +60,7 @@ impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for EmbeddingQueueItem {
                 .parse::<EmbeddingQueueStatus>()
                 .map_err(|e| sqlx::Error::ColumnDecode {
                     index: "status".to_string(),
-                    source: Box::new(e),
+                    source: e.into(),
                 })?;
 
         Ok(EmbeddingQueueItem {
