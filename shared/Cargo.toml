@@ -32,3 +32,4 @@ chrono = { workspace = true }
 governor = "0.6"
 nonzero_ext = "0.3"
 rand = "0.8"
+ring = "0.17"
