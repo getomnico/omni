@@ -5,6 +5,7 @@ import { serviceCredentials, sources } from '$lib/server/db/schema'
 import { eq } from 'drizzle-orm'
 import { ServiceProvider, AuthType } from '$lib/types'
 import { ulid } from 'ulid'
+import { INDEXER_URL } from '$env/static/private'
 
 export const POST: RequestHandler = async ({ request, locals, fetch }) => {
     if (!locals.user) {
@@ -42,22 +43,34 @@ export const POST: RequestHandler = async ({ request, locals, fetch }) => {
     }
 
     try {
-        // Delete existing credentials for this source
-        await db.delete(serviceCredentials).where(eq(serviceCredentials.sourceId, sourceId))
-
-        // Create new credentials
-        const newCredentials = await db
-            .insert(serviceCredentials)
-            .values({
-                id: ulid(),
-                sourceId: sourceId,
+        // Call indexer service to create encrypted credentials
+        const indexerResponse = await fetch(`${INDEXER_URL}/service-credentials`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                source_id: sourceId,
                 provider: provider,
-                authType: authType,
-                principalEmail: principalEmail || null,
+                auth_type: authType,
+                principal_email: principalEmail || null,
                 credentials: credentials,
                 config: config || {},
-            })
-            .returning()
+            }),
+        })
+
+        if (!indexerResponse.ok) {
+            const errorText = await indexerResponse.text()
+            console.error('Indexer service error:', errorText)
+            throw error(500, 'Failed to create service credentials')
+        }
+
+        const indexerResult = await indexerResponse.json()
+
+        if (!indexerResult.success) {
+            console.error('Indexer service failed:', indexerResult.message)
+            throw error(500, indexerResult.message || 'Failed to create service credentials')
+        }
 
         // Trigger initial sync after credentials are saved
         try {
@@ -78,16 +91,16 @@ export const POST: RequestHandler = async ({ request, locals, fetch }) => {
         return json({
             success: true,
             credentials: {
-                id: newCredentials[0].id,
-                sourceId: newCredentials[0].sourceId,
-                provider: newCredentials[0].provider,
-                authType: newCredentials[0].authType,
-                principalEmail: newCredentials[0].principalEmail,
-                config: newCredentials[0].config,
-                expiresAt: newCredentials[0].expiresAt,
-                lastValidatedAt: newCredentials[0].lastValidatedAt,
-                createdAt: newCredentials[0].createdAt,
-                updatedAt: newCredentials[0].updatedAt,
+                id: ulid(), // Generate a temporary ID for response
+                sourceId: sourceId,
+                provider: provider,
+                authType: authType,
+                principalEmail: principalEmail || null,
+                config: config || {},
+                expiresAt: null,
+                lastValidatedAt: null,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
                 // Don't return sensitive credentials
             },
         })

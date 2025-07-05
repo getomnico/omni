@@ -194,9 +194,11 @@ def generate_embeddings_sync(
 
         if chunking_mode == "none":
             logger.info(f"Skipping chunking for embeddings input {texts}, task {task}.")
-            embeddings = forward(model, tokens, task=task) # (B, T, C) tensor
-            embeddings = embeddings.mean(dim=1) # Mean pooling
-            embeddings = F.normalize(embeddings, p=2, dim=1).tolist() # Normalize to unit norm
+            embeddings = forward(model, tokens, task=task)  # (B, T, C) tensor
+            embeddings = embeddings.mean(dim=1)  # Mean pooling
+            embeddings = F.normalize(
+                embeddings, p=2, dim=1
+            ).tolist()  # Normalize to unit norm
 
             return [[Chunk((0, len(t)), embeddings[i])] for i, t in enumerate(texts)]
 
