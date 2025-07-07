@@ -1,7 +1,6 @@
 export interface Document {
     id: string
     title: string
-    content: string
     url: string | null
     source: string
     content_type: string
@@ -14,6 +13,7 @@ export interface SearchResult {
     score: number
     highlights: string[]
     match_type: string
+    content?: string
 }
 
 export interface FacetValue {

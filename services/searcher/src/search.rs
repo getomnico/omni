@@ -164,20 +164,29 @@ impl SearchEngine {
 
         let mut results = Vec::new();
         for doc in documents {
-            // Fetch content from LOB storage for highlight generation
-            let highlights = if let Some(content_id) = &doc.content_id {
+            // Fetch content from LOB storage for highlight generation and content display
+            let (highlights, content) = if let Some(content_id) = &doc.content_id {
                 match self.content_storage.get_text(content_id).await {
-                    Ok(content) => self.extract_highlights(&content, &request.query),
+                    Ok(content) => {
+                        let highlights = self.extract_highlights(&content, &request.query);
+                        // Truncate content for display (first 500 chars)
+                        let truncated_content = if content.len() > 500 {
+                            format!("{}...", content.chars().take(500).collect::<String>())
+                        } else {
+                            content.clone()
+                        };
+                        (highlights, Some(truncated_content))
+                    }
                     Err(e) => {
                         debug!(
                             "Failed to fetch content for highlights from document {}: {}",
                             doc.id, e
                         );
-                        vec![]
+                        (vec![], None)
                     }
                 }
             } else {
-                vec![]
+                (vec![], None)
             };
 
             let prepared_doc = self.prepare_document_for_response(doc);
@@ -186,6 +195,7 @@ impl SearchEngine {
                 score: 1.0,
                 highlights,
                 match_type: "fulltext".to_string(),
+                content,
             });
         }
 
@@ -221,6 +231,7 @@ impl SearchEngine {
                 score,
                 highlights: vec![],
                 match_type: "semantic".to_string(),
+                content: None, // Semantic search doesn't need full content
             });
         }
 
@@ -271,6 +282,7 @@ impl SearchEngine {
                     score: normalized_score * self.config.hybrid_search_fts_weight,
                     highlights: result.highlights,
                     match_type: "hybrid".to_string(),
+                    content: result.content,
                 },
             );
         }
@@ -294,6 +306,7 @@ impl SearchEngine {
                             score: result.score * self.config.hybrid_search_semantic_weight,
                             highlights: result.highlights,
                             match_type: "hybrid".to_string(),
+                            content: result.content,
                         },
                     );
                 }
@@ -590,6 +603,7 @@ impl SearchEngine {
                 score,
                 highlights: vec![],
                 match_type: "semantic_chunk".to_string(),
+                content: Some(chunk_text),
             });
         }
 
@@ -602,6 +616,7 @@ impl SearchEngine {
                 score: fts_result.score,
                 highlights: fts_result.highlights,
                 match_type: "fulltext_context".to_string(),
+                content: fts_result.content,
             });
         }
 

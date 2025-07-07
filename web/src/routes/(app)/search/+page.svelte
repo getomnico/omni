@@ -292,9 +292,11 @@
                                         </div>
                                     </div>
 
-                                    <div class="mb-3 text-gray-700">
-                                        {truncateContent(result.document.content)}
-                                    </div>
+                                    {#if result.content}
+                                        <div class="mb-3 text-gray-700">
+                                            {truncateContent(result.content)}
+                                        </div>
+                                    {/if}
 
                                     {#if result.highlights.length > 0}
                                         <div class="mb-3">

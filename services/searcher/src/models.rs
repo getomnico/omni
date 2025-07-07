@@ -70,6 +70,8 @@ pub struct SearchResult {
     pub score: f32,
     pub highlights: Vec<String>,
     pub match_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
