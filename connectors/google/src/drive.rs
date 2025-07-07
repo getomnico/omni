@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, warn};
 
+use crate::auth::ServiceAccountAuth;
 use crate::models::{
     DriveChangesResponse, GoogleDriveFile, GooglePresentation, WebhookChannel,
     WebhookChannelResponse,
@@ -16,6 +17,17 @@ const DRIVE_API_BASE: &str = "https://www.googleapis.com/drive/v3";
 const DOCS_API_BASE: &str = "https://docs.googleapis.com/v1";
 const SHEETS_API_BASE: &str = "https://sheets.googleapis.com/v4";
 const SLIDES_API_BASE: &str = "https://slides.googleapis.com/v1";
+
+fn is_auth_error(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::UNAUTHORIZED
+}
+
+#[derive(Debug)]
+enum ApiResult<T> {
+    Success(T),
+    AuthError,
+    OtherError(anyhow::Error),
+}
 
 #[derive(Clone)]
 pub struct DriveClient {
@@ -37,6 +49,52 @@ impl DriveClient {
         }
     }
 
+    async fn execute_with_auth_retry<T, F, Fut>(
+        &self,
+        auth: &ServiceAccountAuth,
+        user_email: &str,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: Fn(String) -> Fut,
+        Fut: std::future::Future<Output = Result<ApiResult<T>>>,
+    {
+        let mut token = auth.get_fresh_token(user_email).await?;
+
+        for attempt in 0..2 {
+            let api_result = match &self.rate_limiter {
+                Some(limiter) => {
+                    let token_clone = token.clone();
+                    limiter
+                        .execute_with_retry(|| operation(token_clone.clone()))
+                        .await?
+                }
+                None => operation(token.clone()).await?,
+            };
+
+            match api_result {
+                ApiResult::Success(response) => return Ok(response),
+                ApiResult::AuthError if attempt == 0 => {
+                    warn!(
+                        "Got 401 error for user {}, refreshing token and retrying",
+                        user_email
+                    );
+                    token = auth.refresh_access_token(user_email).await?;
+                    continue;
+                }
+                ApiResult::AuthError => {
+                    return Err(anyhow!(
+                        "Authentication failed for user {} after token refresh",
+                        user_email
+                    ));
+                }
+                ApiResult::OtherError(e) => return Err(e),
+            }
+        }
+
+        unreachable!()
+    }
+
     pub fn with_rate_limiter(rate_limiter: Arc<RateLimiter>) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(60)) // 60 second timeout for all requests
@@ -52,10 +110,15 @@ impl DriveClient {
 
     pub async fn list_files(
         &self,
-        token: &str,
+        auth: &ServiceAccountAuth,
+        user_email: &str,
         page_token: Option<&str>,
     ) -> Result<FilesListResponse> {
-        let list_files_impl = || async {
+        let page_token = page_token.map(|s| s.to_string());
+
+        self.execute_with_auth_retry(auth, user_email, |token| {
+            let page_token = page_token.clone();
+            async move {
             let url = format!("{}/files", DRIVE_API_BASE);
 
             let mut params = vec![
@@ -66,57 +129,66 @@ impl DriveClient {
                 ("supportsAllDrives", "true"),
             ];
 
-            if let Some(token) = page_token {
-                params.push(("pageToken", token));
+            if let Some(ref page_token) = page_token {
+                params.push(("pageToken", page_token));
             }
 
             let response = self
                 .client
                 .get(&url)
-                .bearer_auth(token)
+                .bearer_auth(&token)
                 .query(&params)
                 .send()
                 .await?;
 
-            if !response.status().is_success() {
+            let status = response.status();
+            if is_auth_error(status) {
+                return Ok(ApiResult::AuthError);
+            } else if !status.is_success() {
                 let error_text = response.text().await?;
-                return Err(anyhow!("Failed to list files: {}", error_text));
+                return Ok(ApiResult::OtherError(anyhow!("Failed to list files: HTTP {} - {}", status, error_text)));
             }
 
-            debug!("Drive API response status: {}", response.status());
+            debug!("Drive API response status: {}", status);
             let response_text = response.text().await?;
             debug!("Drive API raw response: {}", response_text);
 
-            serde_json::from_str(&response_text).map_err(|e| {
+            let parsed_response = serde_json::from_str(&response_text).map_err(|e| {
                 anyhow!(
                     "Failed to parse Drive API response: {}. Raw response: {}",
                     e,
                     response_text
                 )
-            })
-        };
+            })?;
 
-        match &self.rate_limiter {
-            Some(limiter) => limiter.execute_with_retry(list_files_impl).await,
-            None => list_files_impl().await,
-        }
+            Ok(ApiResult::Success(parsed_response))
+            }
+        }).await
     }
 
-    pub async fn get_file_content(&self, token: &str, file: &GoogleDriveFile) -> Result<String> {
+    pub async fn get_file_content(
+        &self,
+        auth: &ServiceAccountAuth,
+        user_email: &str,
+        file: &GoogleDriveFile,
+    ) -> Result<String> {
         match file.mime_type.as_str() {
             "application/vnd.google-apps.document" => {
-                self.get_google_doc_content(token, &file.id).await
+                self.get_google_doc_content(auth, user_email, &file.id)
+                    .await
             }
             "application/vnd.google-apps.spreadsheet" => {
-                self.get_google_sheet_content(token, &file.id).await
+                self.get_google_sheet_content(auth, user_email, &file.id)
+                    .await
             }
             "application/vnd.google-apps.presentation" => {
-                self.get_google_slides_content(token, &file.id).await
+                self.get_google_slides_content(auth, user_email, &file.id)
+                    .await
             }
             "text/plain" | "text/html" | "text/csv" => {
-                self.download_file_content(token, &file.id).await
+                self.download_file_content(auth, user_email, &file.id).await
             }
-            "application/pdf" => self.get_pdf_content(token, &file.id).await,
+            "application/pdf" => self.get_pdf_content(auth, user_email, &file.id).await,
             _ => {
                 debug!("Unsupported file type: {}", file.mime_type);
                 Ok(String::new())
@@ -124,292 +196,309 @@ impl DriveClient {
         }
     }
 
-    async fn get_google_doc_content(&self, token: &str, file_id: &str) -> Result<String> {
-        let token = token.to_string();
+    async fn get_google_doc_content(
+        &self,
+        auth: &ServiceAccountAuth,
+        user_email: &str,
+        file_id: &str,
+    ) -> Result<String> {
         let file_id = file_id.to_string();
 
-        let get_doc_impl = || async {
-            let url = format!("{}/documents/{}", DOCS_API_BASE, &file_id);
+        self.execute_with_auth_retry(auth, user_email, |token| {
+            let file_id = file_id.clone();
+            async move {
+                let url = format!("{}/documents/{}", DOCS_API_BASE, &file_id);
 
-            let response = self
-                .client
-                .get(&url)
-                .bearer_auth(&token)
-                .send()
-                .await
-                .with_context(|| {
-                    format!(
-                        "Failed to send request to Google Docs API for file {}",
-                        file_id
-                    )
-                })?;
+                let response = self
+                    .client
+                    .get(&url)
+                    .bearer_auth(&token)
+                    .send()
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to send request to Google Docs API for file {}",
+                            file_id
+                        )
+                    })?;
 
-            if !response.status().is_success() {
                 let status = response.status();
-                let error_text = response.text().await?;
-                return Err(anyhow!(
-                    "Google Docs API returned error for file {}: HTTP {} - {}",
-                    file_id,
-                    status,
-                    error_text
-                ));
+                if is_auth_error(status) {
+                    return Ok(ApiResult::AuthError);
+                } else if !status.is_success() {
+                    let error_text = response.text().await?;
+                    return Ok(ApiResult::OtherError(anyhow!(
+                        "Google Docs API returned error for file {}: HTTP {} - {}",
+                        file_id,
+                        status,
+                        error_text
+                    )));
+                }
+
+                debug!("Google Docs API response status: {}", status);
+                let response_text = response
+                    .text()
+                    .await
+                    .context("Failed to read response body from Google Docs API")?;
+
+                let doc: GoogleDocument =
+                    serde_json::from_str(&response_text).with_context(|| {
+                        format!(
+                        "Failed to parse Google Docs API response for file {}. Raw response: {}",
+                        file_id, response_text
+                    )
+                    })?;
+
+                Ok(ApiResult::Success(extract_text_from_document(&doc)))
             }
-
-            debug!("Google Docs API response status: {}", response.status());
-            let response_text = response
-                .text()
-                .await
-                .context("Failed to read response body from Google Docs API")?;
-
-            let doc: GoogleDocument = serde_json::from_str(&response_text).with_context(|| {
-                format!(
-                    "Failed to parse Google Docs API response for file {}. Raw response: {}",
-                    file_id, response_text
-                )
-            })?;
-            Ok(extract_text_from_document(&doc))
-        };
-
-        match &self.rate_limiter {
-            Some(limiter) => limiter.execute_with_retry(get_doc_impl).await,
-            None => get_doc_impl().await,
-        }
+        })
+        .await
     }
 
-    async fn get_google_sheet_content(&self, token: &str, file_id: &str) -> Result<String> {
-        let token = token.to_string();
+    async fn get_google_sheet_content(
+        &self,
+        auth: &ServiceAccountAuth,
+        user_email: &str,
+        file_id: &str,
+    ) -> Result<String> {
         let file_id = file_id.to_string();
 
-        let get_sheet_impl = || async {
-            let url = format!("{}/spreadsheets/{}", SHEETS_API_BASE, &file_id);
+        self.execute_with_auth_retry(auth, user_email, |token| {
+            let file_id = file_id.clone();
+            async move {
+                let url = format!("{}/spreadsheets/{}", SHEETS_API_BASE, &file_id);
 
-            let response = self.client.get(&url).bearer_auth(&token).send().await?;
+                let response = self.client.get(&url).bearer_auth(&token).send().await?;
 
-            if !response.status().is_success() {
-                let error_text = response.text().await?;
-                return Err(anyhow!(
-                    "Failed to get spreadsheet metadata: {}",
-                    error_text
-                ));
-            }
+                let status = response.status();
+                if is_auth_error(status) {
+                    return Ok(ApiResult::AuthError);
+                } else if !status.is_success() {
+                    let error_text = response.text().await?;
+                    return Ok(ApiResult::OtherError(anyhow!(
+                        "Failed to get spreadsheet metadata: {}",
+                        error_text
+                    )));
+                }
 
-            let sheet: GoogleSpreadsheet = response.json().await?;
-            let mut content = String::new();
+                let sheet: GoogleSpreadsheet = response.json().await?;
+                let mut content = String::new();
 
-            for sheet_info in &sheet.sheets {
-                let sheet_name = &sheet_info.properties.title;
-                let range = format!("'{}'", sheet_name);
+                for sheet_info in &sheet.sheets {
+                    let sheet_name = &sheet_info.properties.title;
+                    let range = format!("'{}'", sheet_name);
 
-                let values_url = format!(
-                    "{}/spreadsheets/{}/values/{}",
-                    SHEETS_API_BASE, &file_id, range
-                );
+                    let values_url = format!(
+                        "{}/spreadsheets/{}/values/{}",
+                        SHEETS_API_BASE, &file_id, range
+                    );
 
-                let values_response = match &self.rate_limiter {
-                    Some(limiter) => {
-                        limiter
-                            .execute(|| async {
-                                self.client
-                                    .get(&values_url)
-                                    .bearer_auth(&token)
-                                    .send()
-                                    .await
-                                    .map_err(|e| anyhow::anyhow!("Request failed: {}", e))
-                            })
-                            .await?
+                    let values_response = self
+                        .client
+                        .get(&values_url)
+                        .bearer_auth(&token)
+                        .send()
+                        .await?;
+
+                    if values_response.status().is_success() {
+                        if let Ok(values) = values_response.json::<ValueRange>().await {
+                            content.push_str(&format!("Sheet: {}\n", sheet_name));
+                            for row in values.values.unwrap_or_default() {
+                                content.push_str(&row.join("\t"));
+                                content.push('\n');
+                            }
+                            content.push('\n');
+                        }
                     }
-                    None => {
-                        self.client
-                            .get(&values_url)
-                            .bearer_auth(&token)
-                            .send()
-                            .await?
+                }
+
+                Ok(ApiResult::Success(content))
+            }
+        })
+        .await
+    }
+
+    async fn get_google_slides_content(
+        &self,
+        auth: &ServiceAccountAuth,
+        user_email: &str,
+        file_id: &str,
+    ) -> Result<String> {
+        let file_id = file_id.to_string();
+
+        self.execute_with_auth_retry(auth, user_email, |token| {
+            let file_id = file_id.clone();
+            async move {
+                let url = format!("{}/presentations/{}", SLIDES_API_BASE, &file_id);
+
+                let response = self.client.get(&url).bearer_auth(&token).send().await?;
+
+                let status = response.status();
+                if is_auth_error(status) {
+                    return Ok(ApiResult::AuthError);
+                } else if !status.is_success() {
+                    let error_text = response.text().await?;
+                    return Ok(ApiResult::OtherError(anyhow!(
+                        "Failed to get presentation content: {}",
+                        error_text
+                    )));
+                }
+
+                debug!("Google Slides API response status: {}", status);
+                let response_text = response.text().await?;
+
+                let presentation: GooglePresentation = serde_json::from_str(&response_text)
+                    .map_err(|e| {
+                        anyhow!(
+                            "Failed to parse Google Slides API response: {}. Raw response: {}",
+                            e,
+                            response_text
+                        )
+                    })?;
+
+                Ok(ApiResult::Success(extract_text_from_presentation(
+                    &presentation,
+                )))
+            }
+        })
+        .await
+    }
+
+    async fn download_file_content(
+        &self,
+        auth: &ServiceAccountAuth,
+        user_email: &str,
+        file_id: &str,
+    ) -> Result<String> {
+        let file_id = file_id.to_string();
+
+        self.execute_with_auth_retry(auth, user_email, |token| {
+            let file_id = file_id.clone();
+            async move {
+                let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, &file_id);
+
+                debug!("Downloading file: {}", file_id);
+                let response = self
+                    .client
+                    .get(&url)
+                    .bearer_auth(&token)
+                    .send()
+                    .await
+                    .with_context(|| format!("Failed to send request for file {}", file_id))?;
+
+                let status = response.status();
+                if is_auth_error(status) {
+                    return Ok(ApiResult::AuthError);
+                } else if !status.is_success() {
+                    let error_text = response.text().await?;
+                    return Ok(ApiResult::OtherError(anyhow!(
+                        "Failed to download file {}: HTTP {} - {}",
+                        file_id,
+                        status,
+                        error_text
+                    )));
+                }
+
+                let content = response
+                    .text()
+                    .await
+                    .with_context(|| format!("Failed to read file content for {}", file_id))?;
+
+                Ok(ApiResult::Success(content))
+            }
+        })
+        .await
+    }
+
+    async fn get_pdf_content(
+        &self,
+        auth: &ServiceAccountAuth,
+        user_email: &str,
+        file_id: &str,
+    ) -> Result<String> {
+        let file_id = file_id.to_string();
+
+        self.execute_with_auth_retry(auth, user_email, |token| {
+            let file_id = file_id.clone();
+            async move {
+                let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, &file_id);
+
+                debug!("Downloading PDF file: {}", file_id);
+                let response = self
+                    .client
+                    .get(&url)
+                    .bearer_auth(&token)
+                    .send()
+                    .await
+                    .with_context(|| format!("Failed to send request for PDF file {}", file_id))?;
+
+                let status = response.status();
+                if is_auth_error(status) {
+                    return Ok(ApiResult::AuthError);
+                } else if !status.is_success() {
+                    let error_text = response.text().await?;
+                    return Ok(ApiResult::OtherError(anyhow!(
+                        "Failed to download PDF {}: HTTP {} - {}",
+                        file_id,
+                        status,
+                        error_text
+                    )));
+                }
+
+                // Check content length to warn about large files
+                if let Some(content_length) = response.headers().get(reqwest::header::CONTENT_LENGTH) {
+                    if let Ok(length_str) = content_length.to_str() {
+                        if let Ok(length) = length_str.parse::<u64>() {
+                            let mb = length as f64 / (1024.0 * 1024.0);
+                            if mb > 10.0 {
+                                warn!("Downloading large PDF file {} ({:.2} MB)", file_id, mb);
+                            } else {
+                                debug!("PDF file {} size: {:.2} MB", file_id, mb);
+                            }
+                        }
+                    }
+                }
+
+                let pdf_bytes = response
+                    .bytes()
+                    .await
+                    .with_context(|| format!("Failed to read PDF content for file {}", file_id))?;
+
+                // Initialize pdfium
+                let pdfium = Pdfium::default();
+
+                // Load PDF from bytes
+                let document = match pdfium.load_pdf_from_byte_slice(&pdf_bytes, None) {
+                    Ok(doc) => doc,
+                    Err(e) => {
+                        debug!(
+                            "Failed to load PDF: {}. File might be corrupted or password-protected.",
+                            e
+                        );
+                        return Ok(ApiResult::Success(String::new()));
                     }
                 };
 
-                if values_response.status().is_success() {
-                    if let Ok(values) = values_response.json::<ValueRange>().await {
-                        content.push_str(&format!("Sheet: {}\n", sheet_name));
-                        for row in values.values.unwrap_or_default() {
-                            content.push_str(&row.join("\t"));
-                            content.push('\n');
+                let mut full_text = String::new();
+
+                // Extract text from each page
+                for page in document.pages().iter() {
+                    match page.text() {
+                        Ok(page_text) => {
+                            let text = page_text.all();
+                            full_text.push_str(&text);
+                            full_text.push('\n'); // Add page separator
                         }
-                        content.push('\n');
-                    }
-                }
-            }
-
-            Ok(content)
-        };
-
-        match &self.rate_limiter {
-            Some(limiter) => limiter.execute_with_retry(get_sheet_impl).await,
-            None => get_sheet_impl().await,
-        }
-    }
-
-    async fn get_google_slides_content(&self, token: &str, file_id: &str) -> Result<String> {
-        let token = token.to_string();
-        let file_id = file_id.to_string();
-
-        let get_slides_impl = || async {
-            let url = format!("{}/presentations/{}", SLIDES_API_BASE, &file_id);
-
-            let response = self.client.get(&url).bearer_auth(&token).send().await?;
-
-            if !response.status().is_success() {
-                let error_text = response.text().await?;
-                return Err(anyhow!(
-                    "Failed to get presentation content: {}",
-                    error_text
-                ));
-            }
-
-            debug!("Google Slides API response status: {}", response.status());
-            let response_text = response.text().await?;
-
-            let presentation: GooglePresentation =
-                serde_json::from_str(&response_text).map_err(|e| {
-                    anyhow!(
-                        "Failed to parse Google Slides API response: {}. Raw response: {}",
-                        e,
-                        response_text
-                    )
-                })?;
-
-            Ok(extract_text_from_presentation(&presentation))
-        };
-
-        match &self.rate_limiter {
-            Some(limiter) => limiter.execute_with_retry(get_slides_impl).await,
-            None => get_slides_impl().await,
-        }
-    }
-
-    async fn download_file_content(&self, token: &str, file_id: &str) -> Result<String> {
-        let token = token.to_string();
-        let file_id = file_id.to_string();
-
-        let download_impl = || async {
-            let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, &file_id);
-
-            debug!("Downloading file: {}", file_id);
-            let response = self
-                .client
-                .get(&url)
-                .bearer_auth(&token)
-                .send()
-                .await
-                .with_context(|| format!("Failed to send request for file {}", file_id))?;
-
-            if !response.status().is_success() {
-                let status = response.status();
-                let error_text = response.text().await?;
-                return Err(anyhow!(
-                    "Failed to download file {}: HTTP {} - {}",
-                    file_id,
-                    status,
-                    error_text
-                ));
-            }
-
-            response
-                .text()
-                .await
-                .with_context(|| format!("Failed to read file content for {}", file_id))
-        };
-
-        match &self.rate_limiter {
-            Some(limiter) => limiter.execute_with_retry(download_impl).await,
-            None => download_impl().await,
-        }
-    }
-
-    async fn get_pdf_content(&self, token: &str, file_id: &str) -> Result<String> {
-        let token = token.to_string();
-        let file_id = file_id.to_string();
-
-        let get_pdf_impl = || async {
-            let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, &file_id);
-
-            debug!("Downloading PDF file: {}", file_id);
-            let response = self
-                .client
-                .get(&url)
-                .bearer_auth(&token)
-                .send()
-                .await
-                .with_context(|| format!("Failed to send request for PDF file {}", file_id))?;
-
-            if !response.status().is_success() {
-                let status = response.status();
-                let error_text = response.text().await?;
-                return Err(anyhow!(
-                    "Failed to download PDF {}: HTTP {} - {}",
-                    file_id,
-                    status,
-                    error_text
-                ));
-            }
-
-            // Check content length to warn about large files
-            if let Some(content_length) = response.headers().get(reqwest::header::CONTENT_LENGTH) {
-                if let Ok(length_str) = content_length.to_str() {
-                    if let Ok(length) = length_str.parse::<u64>() {
-                        let mb = length as f64 / (1024.0 * 1024.0);
-                        if mb > 10.0 {
-                            warn!("Downloading large PDF file {} ({:.2} MB)", file_id, mb);
-                        } else {
-                            debug!("PDF file {} size: {:.2} MB", file_id, mb);
+                        Err(e) => {
+                            debug!("Failed to extract text from PDF page: {}", e);
+                            // Continue with other pages
                         }
                     }
                 }
+
+                Ok(ApiResult::Success(full_text.trim().to_string()))
             }
-
-            let pdf_bytes = response
-                .bytes()
-                .await
-                .with_context(|| format!("Failed to read PDF content for file {}", file_id))?;
-
-            // Initialize pdfium
-            let pdfium = Pdfium::default();
-
-            // Load PDF from bytes
-            let document = match pdfium.load_pdf_from_byte_slice(&pdf_bytes, None) {
-                Ok(doc) => doc,
-                Err(e) => {
-                    debug!(
-                        "Failed to load PDF: {}. File might be corrupted or password-protected.",
-                        e
-                    );
-                    return Ok(String::new());
-                }
-            };
-
-            let mut full_text = String::new();
-
-            // Extract text from each page
-            for page in document.pages().iter() {
-                match page.text() {
-                    Ok(page_text) => {
-                        let text = page_text.all();
-                        full_text.push_str(&text);
-                        full_text.push('\n'); // Add page separator
-                    }
-                    Err(e) => {
-                        debug!("Failed to extract text from PDF page: {}", e);
-                        // Continue with other pages
-                    }
-                }
-            }
-
-            Ok(full_text.trim().to_string())
-        };
-
-        match &self.rate_limiter {
-            Some(limiter) => limiter.execute_with_retry(get_pdf_impl).await,
-            None => get_pdf_impl().await,
-        }
+        }).await
     }
 
     pub async fn register_changes_webhook(
@@ -511,51 +600,58 @@ impl DriveClient {
 
     pub async fn get_folder_metadata(
         &self,
-        token: &str,
+        auth: &ServiceAccountAuth,
+        user_email: &str,
         folder_id: &str,
     ) -> Result<GoogleDriveFile> {
-        let get_folder_impl = || async {
-            let url = format!("{}/files/{}", DRIVE_API_BASE, folder_id);
+        let folder_id = folder_id.to_string();
 
-            let params = vec![
-                ("fields", "id,name,parents,mimeType"),
-                ("supportsAllDrives", "true"),
-            ];
+        self.execute_with_auth_retry(auth, user_email, |token| {
+            let folder_id = folder_id.clone();
+            async move {
+                let url = format!("{}/files/{}", DRIVE_API_BASE, folder_id);
 
-            let response = self
-                .client
-                .get(&url)
-                .bearer_auth(token)
-                .query(&params)
-                .send()
-                .await?;
+                let params = vec![
+                    ("fields", "id,name,parents,mimeType"),
+                    ("supportsAllDrives", "true"),
+                ];
 
-            if !response.status().is_success() {
-                let error_text = response.text().await?;
-                return Err(anyhow!(
-                    "Failed to get folder metadata for {}: {}",
-                    folder_id,
-                    error_text
-                ));
+                let response = self
+                    .client
+                    .get(&url)
+                    .bearer_auth(&token)
+                    .query(&params)
+                    .send()
+                    .await?;
+
+                let status = response.status();
+                if is_auth_error(status) {
+                    return Ok(ApiResult::AuthError);
+                } else if !status.is_success() {
+                    let error_text = response.text().await?;
+                    return Ok(ApiResult::OtherError(anyhow!(
+                        "Failed to get folder metadata for {}: {}",
+                        folder_id,
+                        error_text
+                    )));
+                }
+
+                let response_text = response.text().await?;
+                debug!("Folder metadata response: {}", response_text);
+
+                let folder_metadata = serde_json::from_str(&response_text).map_err(|e| {
+                    anyhow!(
+                        "Failed to parse folder metadata response for {}: {}. Raw response: {}",
+                        folder_id,
+                        e,
+                        response_text
+                    )
+                })?;
+
+                Ok(ApiResult::Success(folder_metadata))
             }
-
-            let response_text = response.text().await?;
-            debug!("Folder metadata response: {}", response_text);
-
-            serde_json::from_str(&response_text).map_err(|e| {
-                anyhow!(
-                    "Failed to parse folder metadata response for {}: {}. Raw response: {}",
-                    folder_id,
-                    e,
-                    response_text
-                )
-            })
-        };
-
-        match &self.rate_limiter {
-            Some(limiter) => limiter.execute_with_retry(get_folder_impl).await,
-            None => get_folder_impl().await,
-        }
+        })
+        .await
     }
 
     pub async fn list_changes(

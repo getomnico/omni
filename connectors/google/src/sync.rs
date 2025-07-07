@@ -279,6 +279,7 @@ impl SyncManager {
                         let user_email = user_email.clone();
                         let sync_state = sync_state.clone();
                         let source_id = source_id.clone();
+                        let service_auth = service_auth.clone();
 
                         async move {
                             if is_done {
@@ -292,7 +293,7 @@ impl SyncManager {
                             );
 
                             let response = match drive_client
-                                .list_files(&user_access_token, page_token.as_deref())
+                                .list_files(&service_auth, &user_email, page_token.as_deref())
                                 .await
                                 .with_context(|| {
                                     format!(
@@ -519,6 +520,7 @@ impl SyncManager {
                 let global_semaphore = Arc::clone(&global_semaphore);
                 let current_files = Arc::clone(&current_files);
                 let user_rate_limiters = Arc::clone(&user_rate_limiters);
+                let service_auth = service_auth.clone();
 
                 async move {
                     let batch = match batch_result {
@@ -574,9 +576,10 @@ impl SyncManager {
                             let user_email = batch.user_email.clone();
                             let drive_client = drive_client.clone();
                             let event_queue = event_queue.clone();
-                            let user_access_token = batch.access_token.clone();
+                            let _user_access_token = batch.access_token.clone();
                             let global_semaphore = global_semaphore.clone();
                             let discovered_count = discovered_count.clone();
+                            let service_auth_for_files = service_auth.clone();
 
                             async move {
                                 // Acquire global semaphore permit first to limit total concurrent requests
@@ -592,12 +595,13 @@ impl SyncManager {
                                 debug!("Executing rate limiter for file: {} ({})", file_name, file_id);
                                 let result = match rate_limiter.execute_with_retry(|| {
                                     let drive_client = drive_client.clone();
-                                    let user_access_token = user_access_token.clone();
+                                    let service_auth = service_auth_for_files.clone();
+                                    let user_email = user_email.clone();
                                     let file = file.clone();
                                     async move {
                                         debug!("Inside rate limiter callback, calling get_file_content for file: {} ({})", file.name, file.id);
                                         let result = drive_client
-                                            .get_file_content(&user_access_token, &file)
+                                            .get_file_content(&service_auth, &user_email, &file)
                                             .await
                                             .with_context(|| {
                                                 format!("Getting content for file {} ({})", file.name, file.id)
@@ -611,7 +615,7 @@ impl SyncManager {
                                             debug!("File content is not empty for file: {} ({}), content length: {}", file.name, file.id, content.len());
                                             // Resolve the full path for this file
                                             debug!("Resolving file path for file: {} ({})", file.name, file.id);
-                                            let file_path = match self.resolve_file_path(&user_access_token, &file, rate_limiter.clone()).await {
+                                            let file_path = match self.resolve_file_path(&service_auth_for_files, &user_email, &file, rate_limiter.clone()).await {
                                                 Ok(path) => {
                                                     debug!("Successfully resolved path for file: {} ({}), path: {}", file.name, file.id, path);
                                                     Some(path)
@@ -1278,7 +1282,7 @@ impl SyncManager {
                                 if self.should_index_file(&file) {
                                     match self
                                         .drive_client
-                                        .get_file_content(&access_token, &file)
+                                        .get_file_content(&service_auth, &user_email, &file)
                                         .await
                                     {
                                         Ok(content) => {
@@ -1286,7 +1290,8 @@ impl SyncManager {
                                                 // Resolve the full path for this file
                                                 let file_path = match self
                                                     .resolve_file_path(
-                                                        &access_token,
+                                                        &service_auth,
+                                                        &user_email,
                                                         &file,
                                                         rate_limiter.clone(),
                                                     )
@@ -1642,14 +1647,15 @@ impl SyncManager {
 
     async fn resolve_file_path(
         &self,
-        token: &str,
+        auth: &ServiceAccountAuth,
+        user_email: &str,
         file: &crate::models::GoogleDriveFile,
         rate_limiter: Arc<RateLimiter>,
     ) -> Result<String> {
         if let Some(parents) = &file.parents {
             if let Some(parent_id) = parents.first() {
                 return self
-                    .build_full_path(token, parent_id, &file.name, rate_limiter)
+                    .build_full_path(auth, user_email, parent_id, &file.name, rate_limiter)
                     .await;
             }
         }
@@ -1660,7 +1666,8 @@ impl SyncManager {
 
     async fn build_full_path(
         &self,
-        token: &str,
+        auth: &ServiceAccountAuth,
+        user_email: &str,
         folder_id: &str,
         file_name: &str,
         rate_limiter: Arc<RateLimiter>,
@@ -1714,14 +1721,19 @@ impl SyncManager {
                         "Folder {} not found in cache, fetching metadata.",
                         current_folder_id
                     );
-                    let folder_metadata = rate_limiter.execute_with_retry(|| {
-                        let drive_client = self.drive_client.clone();
-                        let token = token.to_string();
-                        let folder_id = current_folder_id.clone();
-                        async move {
-                            drive_client.get_folder_metadata(&token, &folder_id).await
-                        }
-                    }).await;
+                    let folder_metadata = rate_limiter
+                        .execute_with_retry(|| {
+                            let drive_client = self.drive_client.clone();
+                            let auth = auth.clone();
+                            let user_email = user_email.to_string();
+                            let folder_id = current_folder_id.clone();
+                            async move {
+                                drive_client
+                                    .get_folder_metadata(&auth, &user_email, &folder_id)
+                                    .await
+                            }
+                        })
+                        .await;
 
                     match folder_metadata {
                         Ok(folder_metadata) => {

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GoogleServiceAccountKey {
@@ -39,6 +39,7 @@ struct CachedToken {
     expires_at: i64,
 }
 
+#[derive(Clone)]
 pub struct ServiceAccountAuth {
     service_account: GoogleServiceAccountKey,
     scopes: Vec<String>,
@@ -144,5 +145,48 @@ impl ServiceAccountAuth {
         // Try to get an access token to validate the service account
         self.get_access_token(test_user).await?;
         Ok(())
+    }
+
+    pub async fn is_token_near_expiry(&self, user: &str, buffer: Duration) -> bool {
+        let cache = self.token_cache.read().await;
+        if let Some(cached) = cache.get(user) {
+            let now = Utc::now().timestamp();
+            let buffer_seconds = buffer.num_seconds();
+            cached.expires_at <= now + buffer_seconds
+        } else {
+            true // No token means we need to get one
+        }
+    }
+
+    pub async fn refresh_access_token(&self, impersonate_user: &str) -> Result<String> {
+        info!(
+            "Force refreshing access token for user: {}, scopes: {:?}",
+            impersonate_user, self.scopes
+        );
+
+        // Clear any existing cached token to force refresh
+        {
+            let mut cache = self.token_cache.write().await;
+            cache.remove(impersonate_user);
+        }
+
+        // Get a fresh token (this will create a new one since cache is cleared)
+        self.get_access_token(impersonate_user).await
+    }
+
+    pub async fn get_fresh_token(&self, impersonate_user: &str) -> Result<String> {
+        // Check if token is near expiry (within 10 minutes)
+        if self
+            .is_token_near_expiry(impersonate_user, Duration::minutes(10))
+            .await
+        {
+            warn!(
+                "Token for user {} is near expiry, refreshing proactively",
+                impersonate_user
+            );
+            self.refresh_access_token(impersonate_user).await
+        } else {
+            self.get_access_token(impersonate_user).await
+        }
     }
 }
