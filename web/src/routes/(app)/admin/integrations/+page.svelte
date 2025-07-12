@@ -453,6 +453,51 @@
             </Card>
         {/each}
     </div>
+
+    <!-- Recent Sync Runs -->
+    {#if latestSyncRuns.length > 0}
+        <Card>
+            <CardHeader>
+                <CardTitle>Recent Sync Activity</CardTitle>
+                <CardDescription>Latest sync runs across all sources</CardDescription>
+            </CardHeader>
+            <CardContent>
+                <div class="space-y-2">
+                    {#each latestSyncRuns as sync}
+                        <div class="flex items-center justify-between rounded-lg border p-3">
+                            <div class="flex-1">
+                                <div class="mb-1 flex items-center gap-2">
+                                    <span class="text-sm font-medium"
+                                        >{sync.sourceName || 'Unknown Source'}</span
+                                    >
+                                    <span
+                                        class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(sync.status)}`}
+                                    >
+                                        {sync.status}
+                                    </span>
+                                    <span class="text-muted-foreground text-xs"
+                                        >{sync.syncType}</span
+                                    >
+                                </div>
+                                <div class="text-muted-foreground text-xs">
+                                    Started: {new Date(sync.startedAt).toLocaleString()}
+                                    {#if sync.completedAt}
+                                        • Completed: {new Date(sync.completedAt).toLocaleString()}
+                                    {/if}
+                                </div>
+                            </div>
+                            <div class="text-right">
+                                <div class="text-sm font-medium">
+                                    {sync.documentsProcessed || 0}
+                                </div>
+                                <div class="text-muted-foreground text-xs">documents</div>
+                            </div>
+                        </div>
+                    {/each}
+                </div>
+            </CardContent>
+        </Card>
+    {/if}
 </div>
 
 <!-- Service Account Setup Dialog -->
@@ -565,44 +610,3 @@
         </Dialog.Footer>
     </Dialog.Content>
 </Dialog.Root>
-
-<!-- Recent Sync Runs -->
-{#if latestSyncRuns.length > 0}
-    <Card>
-        <CardHeader>
-            <CardTitle>Recent Sync Activity</CardTitle>
-            <CardDescription>Latest sync runs across all sources</CardDescription>
-        </CardHeader>
-        <CardContent>
-            <div class="space-y-2">
-                {#each latestSyncRuns as sync}
-                    <div class="flex items-center justify-between rounded-lg border p-3">
-                        <div class="flex-1">
-                            <div class="mb-1 flex items-center gap-2">
-                                <span class="text-sm font-medium"
-                                    >{sync.sourceName || 'Unknown Source'}</span
-                                >
-                                <span
-                                    class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(sync.status)}`}
-                                >
-                                    {sync.status}
-                                </span>
-                                <span class="text-muted-foreground text-xs">{sync.syncType}</span>
-                            </div>
-                            <div class="text-muted-foreground text-xs">
-                                Started: {new Date(sync.startedAt).toLocaleString()}
-                                {#if sync.completedAt}
-                                    • Completed: {new Date(sync.completedAt).toLocaleString()}
-                                {/if}
-                            </div>
-                        </div>
-                        <div class="text-right">
-                            <div class="text-sm font-medium">{sync.documentsProcessed || 0}</div>
-                            <div class="text-muted-foreground text-xs">documents</div>
-                        </div>
-                    </div>
-                {/each}
-            </div>
-        </CardContent>
-    </Card>
-{/if}

@@ -94,6 +94,8 @@
 
     <!-- Main content -->
     <main class="flex-1">
-        <slot />
+        <div class="container mx-auto max-w-7xl px-6 py-8">
+            <slot />
+        </div>
     </main>
 </div>

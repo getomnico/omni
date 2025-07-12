@@ -145,7 +145,7 @@
     <title>Search Results - Clio</title>
 </svelte:head>
 
-<div class="container mx-auto px-4 py-6">
+<div>
     <!-- Search Header -->
     <div class="mb-8">
         <div class="mb-4 flex items-center gap-4">
