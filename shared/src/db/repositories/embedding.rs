@@ -29,40 +29,6 @@ impl EmbeddingRepository {
         )
     }
 
-    /// Extract chunk text from document content using byte offsets
-    pub fn extract_chunk_text(
-        document_content: &str,
-        start_offset: i32,
-        end_offset: i32,
-    ) -> String {
-        let start = start_offset as usize;
-        let end = end_offset as usize;
-
-        let bytes = document_content.as_bytes();
-
-        if start >= bytes.len() || end > bytes.len() || start >= end {
-            return String::new();
-        }
-
-        // Find the nearest character boundary at or after start
-        let mut actual_start = start;
-        while actual_start < bytes.len() && !document_content.is_char_boundary(actual_start) {
-            actual_start += 1;
-        }
-
-        // Find the nearest character boundary at or before end
-        let mut actual_end = end;
-        while actual_end > actual_start && !document_content.is_char_boundary(actual_end) {
-            actual_end -= 1;
-        }
-
-        if actual_start >= actual_end {
-            return String::new();
-        }
-
-        document_content[actual_start..actual_end].to_string()
-    }
-
     pub async fn find_by_document_id(
         &self,
         document_id: &str,
@@ -270,94 +236,6 @@ impl EmbeddingRepository {
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
-
-        let chunks_with_scores = results
-            .into_iter()
-            .map(|row| {
-                let doc = Document {
-                    id: row.get("id"),
-                    source_id: row.get("source_id"),
-                    external_id: row.get("external_id"),
-                    title: row.get("title"),
-                    content_id: row.get("content_id"),
-                    content_type: row.get("content_type"),
-                    file_size: row.get("file_size"),
-                    file_extension: row.get("file_extension"),
-                    url: row.get("url"),
-                    metadata: row.get("metadata"),
-                    permissions: row.get("permissions"),
-                    created_at: row.get("created_at"),
-                    updated_at: row.get("updated_at"),
-                    last_indexed_at: row.get("last_indexed_at"),
-                };
-                let distance: Option<f64> = row.get("distance");
-                let similarity = (1.0 - distance.unwrap_or(1.0)) as f32;
-                // Extract chunk text from document content using offsets
-                let chunk_start_offset: i32 = row.get("chunk_start_offset");
-                let chunk_end_offset: i32 = row.get("chunk_end_offset");
-                // TODO: Extract chunk text from LOB storage if needed for debugging
-                let chunk_text = String::new();
-                (doc, similarity, chunk_text)
-            })
-            .collect();
-
-        Ok(chunks_with_scores)
-    }
-
-    /// Find multiple relevant chunks per document for RAG context
-    /// Returns up to max_chunks_per_doc chunks per document, with similarity threshold
-    pub async fn find_rag_chunks(
-        &self,
-        embedding: Vec<f32>,
-        max_chunks_per_doc: i32,
-        similarity_threshold: f32,
-        max_total_chunks: i64,
-        user_email: Option<&str>,
-    ) -> Result<Vec<(Document, f32, String)>, DatabaseError> {
-        let vector = Vector::from(embedding);
-        let distance_threshold = 1.0 - similarity_threshold;
-
-        let permission_filter = if let Some(email) = user_email {
-            format!(" AND {}", self.generate_permission_filter(email))
-        } else {
-            "".to_string()
-        };
-
-        let query_str = format!(
-            r#"
-            WITH ranked_chunks AS (
-                SELECT 
-                    e.document_id,
-                    e.embedding <=> $1 as distance,
-                    e.chunk_start_offset,
-                    e.chunk_end_offset,
-                    ROW_NUMBER() OVER (PARTITION BY e.document_id ORDER BY e.embedding <=> $1) as chunk_rank
-                FROM embeddings e
-                WHERE e.embedding <=> $1 <= $4
-            )
-            SELECT 
-                d.id, d.source_id, d.external_id, d.title, d.content_id,
-                d.content_type, d.file_size, d.file_extension, d.url,
-                d.metadata, d.permissions, d.created_at, d.updated_at, d.last_indexed_at,
-                rc.distance,
-                rc.chunk_start_offset,
-                rc.chunk_end_offset
-            FROM ranked_chunks rc
-            JOIN documents d ON rc.document_id = d.id
-            WHERE rc.chunk_rank <= $2{}
-            ORDER BY rc.distance
-            LIMIT $3
-            "#,
-            permission_filter
-        );
-
-        let results = sqlx::query(&query_str)
-            .bind(&vector)
-            .bind(max_chunks_per_doc)
-            .bind(max_total_chunks)
-            .bind(distance_threshold)
-            .fetch_all(&self.pool)
-            .await?;
 
         let chunks_with_scores = results
             .into_iter()

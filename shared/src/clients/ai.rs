@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use futures_util::Stream;
+use futures_util::{Stream, StreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
@@ -162,18 +162,49 @@ impl AIClient {
             ));
         }
 
-        // Convert response text to stream by reading it all at once
-        // This is a simplified approach - in a real implementation you'd want proper streaming
-        let text = response.text().await?;
+        // Get the actual streaming bytes from the response
+        let byte_stream = response.bytes_stream();
 
-        // Create a simple stream that yields the text in small chunks to simulate streaming
-        let string_stream = futures_util::stream::iter(
-            text.chars()
-                .collect::<Vec<char>>()
-                .chunks(5) // Send 5 characters at a time to simulate streaming
-                .map(|chunk| Ok(chunk.iter().collect::<String>()))
-                .collect::<Vec<_>>(),
-        );
+        // Convert bytes stream to string stream with proper UTF-8 handling
+        let string_stream = {
+            let mut buffer = Vec::new();
+            byte_stream.map(move |chunk_result| {
+                match chunk_result {
+                    Ok(chunk) => {
+                        // Add new bytes to buffer
+                        buffer.extend_from_slice(&chunk);
+
+                        // Try to convert buffer to UTF-8 string
+                        match std::str::from_utf8(&buffer) {
+                            Ok(valid_str) => {
+                                // All bytes form valid UTF-8, return the string and clear buffer
+                                let result = valid_str.to_string();
+                                buffer.clear();
+                                Ok(result)
+                            }
+                            Err(error) => {
+                                // Check if error is due to incomplete UTF-8 sequence at the end
+                                let valid_up_to = error.valid_up_to();
+                                if valid_up_to > 0 {
+                                    // Extract valid UTF-8 portion
+                                    let valid_str = std::str::from_utf8(&buffer[..valid_up_to])
+                                        .expect("Should be valid UTF-8");
+                                    let result = valid_str.to_string();
+
+                                    // Keep incomplete bytes in buffer for next chunk
+                                    buffer.drain(..valid_up_to);
+                                    Ok(result)
+                                } else {
+                                    // No valid UTF-8 at all, keep accumulating
+                                    Ok(String::new())
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => Err(anyhow!("Stream error: {}", e)),
+                }
+            })
+        };
 
         Ok(Box::pin(string_stream))
     }

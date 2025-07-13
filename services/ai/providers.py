@@ -11,12 +11,7 @@ import logging
 
 import httpx
 from anthropic import AsyncAnthropic
-from anthropic.types import MessageStreamEvent
-
-# from anthropic.types.message_stream_event import (
-#     ContentBlockDeltaEvent,
-#     ContentBlockStartEvent,
-# )
+from anthropic.types import ContentBlockDeltaEvent, ContentBlockStartEvent
 
 logger = logging.getLogger(__name__)
 

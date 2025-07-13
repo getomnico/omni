@@ -287,6 +287,9 @@
                                                 <Calendar class="h-3 w-3" />
                                                 {formatDate(result.document.created_at)}
                                             </div>
+                                            <div class="flex items-center gap-1">
+                                                {result.score}
+                                            </div>
                                         </div>
                                     </div>
 

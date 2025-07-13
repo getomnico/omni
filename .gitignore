@@ -3,3 +3,4 @@ target/
 .env
 benchmarks/benchmarks
 benchmarks/results
+venv/

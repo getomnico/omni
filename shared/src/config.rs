@@ -195,7 +195,7 @@ impl SearcherConfig {
                     process::exit(1);
                 });
 
-        let hybrid_search_fts_weight = get_optional_env("HYBRID_SEARCH_FTS_WEIGHT", "0.6")
+        let hybrid_search_fts_weight = get_optional_env("HYBRID_SEARCH_FTS_WEIGHT", "0.3")
             .parse::<f32>()
             .unwrap_or_else(|_| {
                 eprintln!("ERROR: Invalid value for HYBRID_SEARCH_FTS_WEIGHT");
@@ -204,7 +204,7 @@ impl SearcherConfig {
             });
 
         let hybrid_search_semantic_weight =
-            get_optional_env("HYBRID_SEARCH_SEMANTIC_WEIGHT", "0.4")
+            get_optional_env("HYBRID_SEARCH_SEMANTIC_WEIGHT", "1.0")
                 .parse::<f32>()
                 .unwrap_or_else(|_| {
                     eprintln!("ERROR: Invalid value for HYBRID_SEARCH_SEMANTIC_WEIGHT");

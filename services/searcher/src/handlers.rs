@@ -10,7 +10,7 @@ use axum::{
 use futures_util::StreamExt;
 use serde_json::{json, Value};
 use sqlx::types::time::OffsetDateTime;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 pub async fn health_check(State(state): State<AppState>) -> SearcherResult<Json<Value>> {
     sqlx::query("SELECT 1")
@@ -100,6 +100,7 @@ pub async fn ai_answer(
     // Build RAG prompt with context and citation instructions
     let prompt = search_engine.build_rag_prompt(&request.query, &context);
     info!("Built RAG prompt of length: {}", prompt.len());
+    debug!("RAG prompt: {}", prompt);
 
     // Stream AI response
     let ai_stream = match state.ai_client.stream_prompt(&prompt).await {

@@ -2,6 +2,7 @@
     import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card/index.js'
     import { Loader2, Bot, ExternalLink } from '@lucide/svelte'
     import type { SearchRequest } from '$lib/types/search.js'
+    import { marked } from 'marked'
 
     interface Props {
         searchRequest: SearchRequest
@@ -54,9 +55,8 @@
 
                 const chunk = decoder.decode(value, { stream: true })
                 answer += chunk
+                isLoading = false
             }
-
-            isLoading = false
         } catch (err) {
             console.error('Error streaming AI answer:', err)
             error = 'Failed to generate AI answer. Please try again.'
@@ -79,17 +79,34 @@
         return { text, citations }
     }
 
-    function formatAnswerWithCitations(text: string): string {
-        // Convert [Source: Title] to clickable links
-        return text.replace(
-            /\[Source: ([^\]]+)\]/g,
+    async function formatAnswerWithMarkdown(text: string): Promise<string> {
+        // First convert [Source: Title] to simple placeholder
+        const withPlaceholders = text.replace(/\[Source: ([^\]]+)\]/g, 'CITATIONSTART$1CITATIONEND')
+
+        // Parse markdown
+        const htmlContent = await marked.parse(withPlaceholders)
+
+        // Convert placeholders back to clickable citation spans
+        return htmlContent.replace(
+            /CITATIONSTART(.+?)CITATIONEND/g,
             '<span class="citation" data-source="$1">[Source: $1]</span>',
         )
     }
 
     // Use runes instead of legacy reactive statements
     let parsedAnswer = $derived(parseAnswer(answer))
-    let formattedAnswer = $derived(formatAnswerWithCitations(parsedAnswer.text))
+    let formattedAnswer = $state('')
+
+    // Update formatted answer when answer changes
+    $effect(() => {
+        if (parsedAnswer.text) {
+            formatAnswerWithMarkdown(parsedAnswer.text).then((html) => {
+                formattedAnswer = html
+            })
+        } else {
+            formattedAnswer = ''
+        }
+    })
 </script>
 
 <Card class="mb-6 border-blue-200 bg-blue-50">

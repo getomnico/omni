@@ -97,6 +97,7 @@ export function setSessionTokenCookie(cookies: any, token: string, expiresAt: Da
     cookies.set(sessionCookieName, token, {
         expires: expiresAt,
         path: '/',
+        secure: false,
     })
 }
 

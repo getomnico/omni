@@ -2,6 +2,7 @@ use crate::AppState;
 use anyhow::Result;
 use shared::db::repositories::EmbeddingRepository;
 use shared::models::Embedding;
+use shared::utils::safe_str_slice;
 use shared::{EmbeddingQueue, EmbeddingQueueItem};
 use sqlx::postgres::PgListener;
 use std::collections::HashMap;
@@ -12,7 +13,7 @@ use tracing::{debug, error, info, warn};
 use ulid::Ulid;
 
 const MAX_DOCUMENT_CHARS: usize = 24_576; // 8192 tokens * 3 chars/token
-const CHUNK_OVERLAP: usize = 300; // Overlap between input chunks
+const CHUNK_OVERLAP_CHARS: usize = 300; // Character overlap between input chunks
 const MAX_EMBEDDING_BATCH_SIZE: usize = 32; // Maximum number of input texts per embedding API call
 
 pub struct EmbeddingProcessor {
@@ -44,29 +45,18 @@ impl EmbeddingProcessor {
 
         while start < content.len() {
             // Find the end position, ensuring we don't exceed content length
-            let mut end = (start + MAX_DOCUMENT_CHARS).min(content.len());
+            let end = (start + MAX_DOCUMENT_CHARS).min(content.len());
 
-            // Adjust end to the nearest char boundary if needed
-            while !content.is_char_boundary(end) && end < content.len() {
-                end += 1;
-            }
-
-            // Extract the chunk
-            chunks.push(&content[start..end]);
+            // Extract the chunk using our safe utility
+            let chunk = safe_str_slice(content, start, end);
+            chunks.push(chunk);
 
             if end >= content.len() {
                 break;
             }
 
             // Calculate the next start position with overlap
-            let mut next_start = end.saturating_sub(CHUNK_OVERLAP);
-
-            // Ensure next_start is at a char boundary
-            while !content.is_char_boundary(next_start) && next_start > 0 {
-                next_start -= 1;
-            }
-
-            start = next_start;
+            start = end.saturating_sub(CHUNK_OVERLAP_CHARS);
         }
 
         chunks
@@ -339,7 +329,7 @@ impl EmbeddingProcessor {
                 // Calculate offset adjustment for this input chunk within its document
                 let offset_adjustment = if chunk_info.input_chunk_index > 0 {
                     (chunk_info.input_chunk_index * MAX_DOCUMENT_CHARS)
-                        - (chunk_info.input_chunk_index * CHUNK_OVERLAP)
+                        - (chunk_info.input_chunk_index * CHUNK_OVERLAP_CHARS)
                 } else {
                     0
                 };
@@ -585,7 +575,7 @@ mod tests {
         let chunks = EmbeddingProcessor::split_large_content(&large_content);
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].len(), MAX_DOCUMENT_CHARS);
-        assert_eq!(chunks[1].len(), 1000 + CHUNK_OVERLAP);
+        assert_eq!(chunks[1].len(), 1000 + CHUNK_OVERLAP_CHARS);
 
         // Test 4: Very large content requiring multiple chunks
         let very_large_content = "d".repeat(MAX_DOCUMENT_CHARS * 3);
@@ -647,8 +637,8 @@ mod tests {
     fn test_offset_calculation() {
         // Test offset calculation for multiple input chunks from same document
         let chunk_0_offset = 0;
-        let chunk_1_offset = (1 * MAX_DOCUMENT_CHARS) - (1 * CHUNK_OVERLAP);
-        let chunk_2_offset = (2 * MAX_DOCUMENT_CHARS) - (2 * CHUNK_OVERLAP);
+        let chunk_1_offset = (1 * MAX_DOCUMENT_CHARS) - (1 * CHUNK_OVERLAP_CHARS);
+        let chunk_2_offset = (2 * MAX_DOCUMENT_CHARS) - (2 * CHUNK_OVERLAP_CHARS);
 
         // First chunk should have no offset
         assert_eq!(chunk_0_offset, 0);

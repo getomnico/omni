@@ -3,9 +3,11 @@ use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::db::repositories::{DocumentRepository, EmbeddingRepository};
 use shared::models::ChunkResult;
+use shared::utils::safe_str_slice;
 use shared::{AIClient, ContentStorage, DatabasePool, SearcherConfig};
+use std::collections::HashMap;
 use std::time::Instant;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 pub struct SearchEngine {
     db_pool: DatabasePool,
@@ -223,14 +225,13 @@ impl SearchEngine {
             .collect();
 
         let documents = doc_repo.find_by_ids(&document_ids).await?;
-        let documents_map: std::collections::HashMap<String, _> = documents
+        let documents_map: HashMap<String, _> = documents
             .into_iter()
             .map(|doc| (doc.id.clone(), doc))
             .collect();
 
         // Group chunks by document_id to collect all matching chunks per document
-        let mut document_chunks: std::collections::HashMap<String, Vec<&ChunkResult>> =
-            std::collections::HashMap::new();
+        let mut document_chunks: HashMap<String, Vec<&ChunkResult>> = HashMap::new();
         for chunk_result in &chunk_results {
             document_chunks
                 .entry(chunk_result.document_id.clone())
@@ -261,7 +262,10 @@ impl SearchEngine {
 
                             if !trimmed_text.is_empty() {
                                 let highlight_text = if trimmed_text.len() > 240 {
-                                    format!("{}...", &trimmed_text[..240])
+                                    format!(
+                                        "{}...",
+                                        trimmed_text.get(0..240).unwrap_or(trimmed_text)
+                                    )
                                 } else {
                                     trimmed_text.to_string()
                                 };
@@ -320,23 +324,7 @@ impl SearchEngine {
             return String::new();
         }
 
-        // Find the nearest character boundary at or after start
-        let mut actual_start = start;
-        while actual_start < content.len() && !content.is_char_boundary(actual_start) {
-            actual_start += 1;
-        }
-
-        // Find the nearest character boundary at or before end
-        let mut actual_end = end;
-        while actual_end > actual_start && !content.is_char_boundary(actual_end) {
-            actual_end -= 1;
-        }
-
-        if actual_start >= actual_end {
-            return String::new();
-        }
-
-        content[actual_start..actual_end].to_string()
+        safe_str_slice(content, start, end).to_string()
     }
 
     async fn generate_query_embedding(&self, query: &str) -> Result<Vec<f32>> {
@@ -375,12 +363,13 @@ impl SearchEngine {
         );
 
         // Combine and deduplicate results
-        let mut combined_results = std::collections::HashMap::new();
+        let mut combined_results = HashMap::new();
 
         // Add FTS results with normalized scores
         for result in fts_results {
             let doc_id = result.document.id.clone();
             let normalized_score = self.normalize_fts_score(result.score);
+            debug!("FTS result document {}, score={}", doc_id, normalized_score);
             let prepared_doc = self.prepare_document_for_response(result.document);
             combined_results.insert(
                 doc_id,
@@ -388,7 +377,7 @@ impl SearchEngine {
                     document: prepared_doc,
                     score: normalized_score * self.config.hybrid_search_fts_weight,
                     highlights: result.highlights,
-                    match_type: "hybrid".to_string(),
+                    match_type: "fulltext".to_string(),
                     content: result.content,
                 },
             );
@@ -398,6 +387,10 @@ impl SearchEngine {
         for result in semantic_results {
             let doc_id = result.document.id.clone();
 
+            debug!(
+                "Semantic result document {}, score={}",
+                doc_id, result.score
+            );
             match combined_results.get_mut(&doc_id) {
                 Some(existing) => {
                     // Combine scores for documents found in both searches
@@ -412,7 +405,7 @@ impl SearchEngine {
                             document: prepared_doc,
                             score: result.score * self.config.hybrid_search_semantic_weight,
                             highlights: result.highlights,
-                            match_type: "hybrid".to_string(),
+                            match_type: "semantic".to_string(),
                             content: result.content,
                         },
                     );
@@ -477,121 +470,6 @@ impl SearchEngine {
         format!("search:{:x}", hasher.finish())
     }
 
-    // Simple highlight extraction for semantic search (not using database ts_headline)
-    fn extract_highlights(&self, content: &str, query: &str) -> Vec<String> {
-        if content.is_empty() || query.is_empty() {
-            return vec![];
-        }
-
-        let query_lower = query.to_lowercase();
-        let content_lower = content.to_lowercase();
-        let terms: Vec<&str> = query_lower.split_whitespace().collect();
-
-        // For semantic search, just look for the first occurrence of any term
-        for term in terms {
-            if term.len() < 3 {
-                continue;
-            }
-
-            if let Some(pos) = content_lower.find(term) {
-                let start = pos.saturating_sub(30);
-                let end = (pos + term.len() + 30).min(content.len());
-
-                // Ensure we're on valid UTF-8 character boundaries
-                let safe_start = self.find_char_boundary(content, start, true);
-                let safe_end = self.find_char_boundary(content, end, false);
-
-                let mut snippet = String::new();
-                if safe_start > 0 {
-                    snippet.push_str("...");
-                }
-
-                let snippet_text = &content[safe_start..safe_end];
-
-                // Find the actual term position within the safe boundaries
-                let term_start = pos.max(safe_start);
-                let term_end = (pos + term.len()).min(safe_end);
-
-                if term_start < term_end && term_start >= safe_start && term_end <= safe_end {
-                    let highlighted = snippet_text.replace(
-                        &content[term_start..term_end],
-                        &format!("**{}**", &content[term_start..term_end]),
-                    );
-                    snippet.push_str(&highlighted);
-                } else {
-                    snippet.push_str(snippet_text);
-                }
-
-                if safe_end < content.len() {
-                    snippet.push_str("...");
-                }
-
-                return vec![snippet];
-            }
-        }
-
-        vec![]
-    }
-
-    fn extract_context_around_matches(&self, content: &str, query: &str) -> String {
-        if content.is_empty() || query.is_empty() {
-            return String::new();
-        }
-
-        let query_lower = query.to_lowercase();
-        let content_lower = content.to_lowercase();
-        let terms: Vec<&str> = query_lower.split_whitespace().collect();
-
-        let mut contexts = Vec::new();
-
-        for term in terms {
-            if term.len() < 3 {
-                continue;
-            }
-
-            if let Some(pos) = content_lower.find(term) {
-                // Extract larger context around the match (200 chars before and after)
-                let context_start = pos.saturating_sub(200);
-                let context_end = (pos + term.len() + 200).min(content.len());
-
-                // Find sentence boundaries for cleaner context, ensuring UTF-8 char boundaries
-                let start = if context_start == 0 {
-                    0
-                } else {
-                    let safe_start = self.find_char_boundary(content, context_start, true);
-                    content[..safe_start]
-                        .rfind('.')
-                        .map(|i| i + 1)
-                        .unwrap_or(safe_start)
-                };
-
-                let end = if context_end >= content.len() {
-                    content.len()
-                } else {
-                    let safe_end = self.find_char_boundary(content, context_end, false);
-                    content[safe_end..]
-                        .find('.')
-                        .map(|i| safe_end + i + 1)
-                        .unwrap_or(safe_end)
-                };
-
-                let context_text = content[start..end].trim();
-                if !context_text.is_empty() && !contexts.contains(&context_text) {
-                    contexts.push(context_text);
-                }
-            }
-        }
-
-        // Join contexts and limit total length
-        let combined = contexts.join(" ... ");
-        if combined.chars().count() > 1000 {
-            let truncated: String = combined.chars().take(1000).collect();
-            format!("{}...", truncated)
-        } else {
-            combined
-        }
-    }
-
     pub async fn suggest(&self, query: &str, limit: i64) -> Result<SuggestionsResponse> {
         info!("Getting suggestions for query: '{}'", query);
 
@@ -628,41 +506,19 @@ impl SearchEngine {
     pub async fn get_rag_context(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
         info!("Generating RAG context for query: '{}'", request.query);
 
-        // Get embedding chunks that match the query semantically
-        let query_embedding = self.generate_query_embedding(&request.query).await?;
-        let embedding_repo = EmbeddingRepository::new(self.db_pool.pool());
-
-        // Get multiple chunks per document for better context
-        let embedding_chunks = embedding_repo
-            .find_rag_chunks(
-                query_embedding,
-                3,   // max 3 chunks per document
-                0.7, // similarity threshold
-                15,  // max 15 total chunks
-                request.user_email().map(|e| e.as_str()),
-            )
-            .await?;
-
         // Get full-text search results to extract context around exact matches
         let repo = DocumentRepository::new(self.db_pool.pool());
         let (fts_results, _) = self.fulltext_search(&repo, request).await?;
 
-        // Combine embedding chunks and fulltext context
+        // Get semantic search results and convert them for RAG use
+        let semantic_results = self.semantic_search(request).await?;
+
+        // Combine semantic and fulltext context
         let mut combined_results = Vec::new();
 
-        // Add embedding chunks as SearchResults
-        for (doc, score, chunk_text) in embedding_chunks {
-            let mut doc_with_chunk = self.prepare_document_for_response(doc);
-            // Create a new document with the specific chunk for semantic matches
-            // Note: We don't set content field as it's not part of the Document model anymore
-
-            combined_results.push(SearchResult {
-                document: doc_with_chunk,
-                score,
-                highlights: vec![],
-                match_type: "semantic_chunk".to_string(),
-                content: Some(chunk_text),
-            });
+        // Add semantic search results
+        for semantic_result in semantic_results {
+            combined_results.push(semantic_result);
         }
 
         // Add context around fulltext matches
@@ -673,7 +529,7 @@ impl SearchEngine {
                 document: fts_result.document,
                 score: fts_result.score,
                 highlights: fts_result.highlights,
-                match_type: "fulltext_context".to_string(),
+                match_type: "fulltext".to_string(),
                 content: fts_result.content,
             });
         }
@@ -693,36 +549,6 @@ impl SearchEngine {
         Ok(combined_results)
     }
 
-    /// Helper function to find a safe UTF-8 character boundary
-    fn find_char_boundary(&self, content: &str, pos: usize, round_down: bool) -> usize {
-        if pos == 0 {
-            return 0;
-        }
-        if pos >= content.len() {
-            return content.len();
-        }
-
-        if content.is_char_boundary(pos) {
-            return pos;
-        }
-
-        if round_down {
-            // Find the nearest character boundary at or before pos
-            let mut safe_pos = pos;
-            while safe_pos > 0 && !content.is_char_boundary(safe_pos) {
-                safe_pos -= 1;
-            }
-            safe_pos
-        } else {
-            // Find the nearest character boundary at or after pos
-            let mut safe_pos = pos;
-            while safe_pos < content.len() && !content.is_char_boundary(safe_pos) {
-                safe_pos += 1;
-            }
-            safe_pos
-        }
-    }
-
     /// Build RAG prompt with context chunks and citation instructions
     pub fn build_rag_prompt(&self, query: &str, context: &[SearchResult]) -> String {
         let mut prompt = String::new();
@@ -732,7 +558,7 @@ impl SearchEngine {
             "Please provide a comprehensive answer using the information from the context. ",
         );
         prompt.push_str(
-            "When referencing information, cite it using the format [Source: Document Title]. ",
+            "When referencing information, cite it using the format [Source: Document Title]. Return your response in well-formatted markdown. ",
         );
         prompt.push_str(
             "If the context doesn't contain enough information to answer the question, say so.\n\n",
@@ -748,13 +574,13 @@ impl SearchEngine {
             ));
 
             match result.match_type.as_str() {
-                "semantic_chunk" => {
+                "semantic" => {
                     // For semantic chunks, use the highlights if available
                     if !result.highlights.is_empty() {
                         prompt.push_str(&format!("Content: {}\n", result.highlights[0]));
                     }
                 }
-                "fulltext_context" => {
+                "fulltext" => {
                     // For fulltext matches, use the highlights which contain context around matches
                     if !result.highlights.is_empty() {
                         prompt.push_str(&format!("Relevant excerpt: {}\n", result.highlights[0]));
@@ -775,7 +601,6 @@ impl SearchEngine {
         }
 
         prompt.push_str(&format!("Question: {}\n\n", query));
-        prompt.push_str("Answer:");
 
         prompt
     }
