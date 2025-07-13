@@ -144,7 +144,7 @@ impl EmbeddingRepository {
         if let Some(ct) = content_types {
             if !ct.is_empty() {
                 where_conditions.push(format!("d.content_type = ANY(${})", bind_index));
-                bind_index += 1;
+                // bind_index would be incremented here for additional filters
             }
         }
 
@@ -259,8 +259,8 @@ impl EmbeddingRepository {
                 let distance: Option<f64> = row.get("distance");
                 let similarity = (1.0 - distance.unwrap_or(1.0)) as f32;
                 // Extract chunk text from document content using offsets
-                let chunk_start_offset: i32 = row.get("chunk_start_offset");
-                let chunk_end_offset: i32 = row.get("chunk_end_offset");
+                let _chunk_start_offset: i32 = row.get("chunk_start_offset");
+                let _chunk_end_offset: i32 = row.get("chunk_end_offset");
                 // TODO: Extract chunk text from LOB storage if needed for debugging
                 let chunk_text = String::new();
                 (doc, similarity, chunk_text)

@@ -59,7 +59,7 @@ impl TestEnvironment {
         // Run migrations - migrations are always in services/indexer/migrations
         let mut current_dir = std::env::current_dir()?;
         loop {
-            let migration_dir = current_dir.join("services/indexer/migrations");
+            let migration_dir = current_dir.join("services/migrations");
             if migration_dir.exists() {
                 let migrator = sqlx::migrate::Migrator::new(migration_dir).await?;
                 migrator.run(db_pool.pool()).await?;
@@ -67,7 +67,7 @@ impl TestEnvironment {
             }
             if !current_dir.pop() {
                 return Err(anyhow::anyhow!(
-                    "Could not find migrations directory services/indexer/migrations"
+                    "Could not find migrations directory services/migrations"
                 ));
             }
         }

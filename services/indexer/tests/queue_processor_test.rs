@@ -23,11 +23,19 @@ async fn test_queue_processor_document_created() {
     let source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7"; // Use the source ID from seed data
     let doc_id = "doc_123";
 
+    // Create content in content storage
+    let content_id = fixture
+        .state
+        .content_storage
+        .store_content("This is content from a connector event".as_bytes())
+        .await
+        .unwrap();
+
     let event = ConnectorEvent::DocumentCreated {
         sync_run_id: "test_sync_run_created".to_string(),
         source_id: source_id.to_string(),
         document_id: doc_id.to_string(),
-        content: "This is content from a connector event".to_string(),
+        content_id: content_id,
         metadata: DocumentMetadata {
             title: Some("Event Document".to_string()),
             author: Some("Event Author".to_string()),
@@ -36,7 +44,7 @@ async fn test_queue_processor_document_created() {
             mime_type: Some("text/plain".to_string()),
             size: Some("1024".to_string()),
             url: Some("https://example.com/doc".to_string()),
-            parent_id: None,
+            path: Some("/docs/event_document".to_string()),
             extra: Some(HashMap::new()),
         },
         permissions: DocumentPermissions {
@@ -56,10 +64,16 @@ async fn test_queue_processor_document_created() {
             .expect("Document should be created");
 
     assert_eq!(document.title, "Event Document");
-    assert_eq!(
-        document.content,
-        Some("This is content from a connector event".to_string())
-    );
+
+    // Verify content is stored correctly
+    let stored_content_bytes = fixture
+        .state
+        .content_storage
+        .get_content(&document.content_id.unwrap())
+        .await
+        .unwrap();
+    let stored_content = String::from_utf8(stored_content_bytes).unwrap();
+    assert_eq!(stored_content, "This is content from a connector event");
     assert!(document.last_indexed_at > document.created_at);
 
     let metadata = document.metadata.as_object().unwrap();
@@ -87,11 +101,19 @@ async fn test_queue_processor_document_updated() {
     let source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7"; // Use the source ID from seed data
     let doc_id = "doc_456";
 
+    // Create content in content storage for initial document
+    let create_content_id = fixture
+        .state
+        .content_storage
+        .store_content("Initial content".as_bytes())
+        .await
+        .unwrap();
+
     let create_event = ConnectorEvent::DocumentCreated {
         sync_run_id: "test_sync_run_updated".to_string(),
         source_id: source_id.to_string(),
         document_id: doc_id.to_string(),
-        content: "Initial content".to_string(),
+        content_id: create_content_id,
         metadata: DocumentMetadata {
             title: Some("Initial Title".to_string()),
             author: Some("Initial Author".to_string()),
@@ -100,7 +122,7 @@ async fn test_queue_processor_document_updated() {
             mime_type: Some("text/plain".to_string()),
             size: Some("500".to_string()),
             url: None,
-            parent_id: None,
+            path: Some("/docs/initial_document".to_string()),
             extra: Some(HashMap::new()),
         },
         permissions: DocumentPermissions {
@@ -123,11 +145,19 @@ async fn test_queue_processor_document_updated() {
             .await
             .expect("Initial document should be created");
 
+    // Create content in content storage for updated document
+    let update_content_id = fixture
+        .state
+        .content_storage
+        .store_content("Updated content with more information".as_bytes())
+        .await
+        .unwrap();
+
     let update_event = ConnectorEvent::DocumentUpdated {
         sync_run_id: "test_sync_run_updated".to_string(),
         source_id: source_id.to_string(),
         document_id: doc_id.to_string(),
-        content: "Updated content with more information".to_string(),
+        content_id: update_content_id,
         metadata: DocumentMetadata {
             title: Some("Updated Title".to_string()),
             author: Some("Updated Author".to_string()),
@@ -136,7 +166,7 @@ async fn test_queue_processor_document_updated() {
             mime_type: Some("text/markdown".to_string()),
             size: Some("1500".to_string()),
             url: Some("https://example.com/updated".to_string()),
-            parent_id: None,
+            path: Some("/docs/updated_document".to_string()),
             extra: Some(HashMap::new()),
         },
         permissions: Some(DocumentPermissions {
@@ -173,10 +203,16 @@ async fn test_queue_processor_document_updated() {
     let document = updated_document;
 
     assert_eq!(document.title, "Updated Title");
-    assert_eq!(
-        document.content,
-        Some("Updated content with more information".to_string())
-    );
+
+    // Verify updated content is stored correctly
+    let updated_content_bytes = fixture
+        .state
+        .content_storage
+        .get_content(&document.content_id.unwrap())
+        .await
+        .unwrap();
+    let updated_content = String::from_utf8(updated_content_bytes).unwrap();
+    assert_eq!(updated_content, "Updated content with more information");
 
     let metadata = document.metadata.as_object().unwrap();
     assert_eq!(metadata["author"].as_str().unwrap(), "Updated Author");
@@ -205,11 +241,19 @@ async fn test_queue_processor_document_deleted() {
     let source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7"; // Use the source ID from seed data
     let doc_id = "doc_789";
 
+    // Create content in content storage for delete test
+    let delete_content_id = fixture
+        .state
+        .content_storage
+        .store_content("Content to be deleted".as_bytes())
+        .await
+        .unwrap();
+
     let create_event = ConnectorEvent::DocumentCreated {
         sync_run_id: "test_sync_run_deleted".to_string(),
         source_id: source_id.to_string(),
         document_id: doc_id.to_string(),
-        content: "Content to be deleted".to_string(),
+        content_id: delete_content_id,
         metadata: DocumentMetadata {
             title: Some("Delete Me".to_string()),
             author: Some("Test Author".to_string()),
@@ -218,7 +262,7 @@ async fn test_queue_processor_document_deleted() {
             mime_type: Some("text/plain".to_string()),
             size: Some("100".to_string()),
             url: None,
-            parent_id: None,
+            path: Some("/docs/delete_test_document".to_string()),
             extra: Some(HashMap::new()),
         },
         permissions: DocumentPermissions {
@@ -273,11 +317,19 @@ async fn test_queue_processor_multiple_events() {
     let source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7"; // Use the source ID from seed data
 
     for i in 0..5 {
+        // Create content in content storage for each document
+        let multi_content_id = fixture
+            .state
+            .content_storage
+            .store_content(format!("Content for document {}", i).as_bytes())
+            .await
+            .unwrap();
+
         let event = ConnectorEvent::DocumentCreated {
             sync_run_id: format!("test_sync_run_multi_{}", i),
             source_id: source_id.to_string(),
             document_id: format!("multi_doc_{}", i),
-            content: format!("Content for document {}", i),
+            content_id: multi_content_id,
             metadata: DocumentMetadata {
                 title: Some(format!("Document {}", i)),
                 author: Some("Batch Author".to_string()),
@@ -286,7 +338,7 @@ async fn test_queue_processor_multiple_events() {
                 mime_type: Some("text/plain".to_string()),
                 size: Some((100 * (i + 1)).to_string()),
                 url: None,
-                parent_id: None,
+                path: Some(format!("/docs/multi_document_{}", i)),
                 extra: Some(HashMap::new()),
             },
             permissions: DocumentPermissions {
@@ -314,10 +366,18 @@ async fn test_queue_processor_multiple_events() {
         .expect(&format!("Document {} should exist", i));
 
         assert_eq!(document.title, format!("Document {}", i));
-        assert_eq!(
-            document.content,
-            Some(format!("Content for document {}", i))
-        );
+
+        // For the first document, verify content is stored correctly
+        if i == 0 && document.content_id.is_some() {
+            let stored_content_bytes = fixture
+                .state
+                .content_storage
+                .get_content(&document.content_id.unwrap())
+                .await
+                .unwrap();
+            let stored_content = String::from_utf8(stored_content_bytes).unwrap();
+            assert_eq!(stored_content, format!("Content for document {}", i));
+        }
 
         let permissions = document.permissions.as_object().unwrap();
         assert_eq!(permissions["public"].as_bool().unwrap(), i % 2 == 0);
@@ -341,11 +401,19 @@ async fn test_queue_processor_batch_processing() {
 
     // Queue multiple events rapidly to test batch processing
     for i in 0..15 {
+        // Create content in content storage for each batch document
+        let batch_content_id = fixture
+            .state
+            .content_storage
+            .store_content(format!("Batch content {}", i).as_bytes())
+            .await
+            .unwrap();
+
         let event = ConnectorEvent::DocumentCreated {
             sync_run_id: format!("test_sync_run_batch_{}", i),
             source_id: source_id.to_string(),
             document_id: format!("batch_doc_{}", i),
-            content: format!("Batch content {}", i),
+            content_id: batch_content_id,
             metadata: DocumentMetadata {
                 title: Some(format!("Batch Document {}", i)),
                 author: Some("Batch Author".to_string()),
@@ -354,7 +422,7 @@ async fn test_queue_processor_batch_processing() {
                 mime_type: Some("text/plain".to_string()),
                 size: Some("100".to_string()),
                 url: None,
-                parent_id: None,
+                path: Some(format!("/docs/batch_document_{}", i)),
                 extra: Some(HashMap::new()),
             },
             permissions: DocumentPermissions {
@@ -392,12 +460,20 @@ async fn test_queue_recovery_on_startup() {
     let event_queue = EventQueue::new(fixture.state.db_pool.pool().clone());
     let source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
 
+    // Create content in content storage for recovery test
+    let recovery_content_id = fixture
+        .state
+        .content_storage
+        .store_content("Recovery test content".as_bytes())
+        .await
+        .unwrap();
+
     // Manually insert some events directly into the processing state to simulate a restart scenario
     let event = ConnectorEvent::DocumentCreated {
         sync_run_id: "test_sync_run_recovery".to_string(),
         source_id: source_id.to_string(),
         document_id: "recovery_doc_1".to_string(),
-        content: "Recovery test content".to_string(),
+        content_id: recovery_content_id,
         metadata: DocumentMetadata {
             title: Some("Recovery Document".to_string()),
             author: Some("Recovery Author".to_string()),
@@ -406,7 +482,7 @@ async fn test_queue_recovery_on_startup() {
             mime_type: Some("text/plain".to_string()),
             size: Some("1024".to_string()),
             url: None,
-            parent_id: None,
+            path: Some("/docs/recovery_document".to_string()),
             extra: Some(HashMap::new()),
         },
         permissions: DocumentPermissions {
@@ -468,7 +544,16 @@ async fn test_queue_recovery_on_startup() {
     .expect("Recovered document should be processed");
 
     assert_eq!(document.title, "Recovery Document");
-    assert_eq!(document.content, Some("Recovery test content".to_string()));
+
+    // Verify content is stored correctly
+    let stored_content_bytes = fixture
+        .state
+        .content_storage
+        .get_content(&document.content_id.unwrap())
+        .await
+        .unwrap();
+    let stored_content = String::from_utf8(stored_content_bytes).unwrap();
+    assert_eq!(stored_content, "Recovery test content");
 
     processor_handle.abort();
 }
@@ -480,7 +565,7 @@ async fn test_embedding_queue_recovery() {
 
     // Add a document to the embedding queue
     let document_id = "test_doc_for_embedding";
-    let content = "This is test content for embedding recovery";
+    let _content = "This is test content for embedding recovery";
 
     let queue_id = embedding_queue
         .enqueue(document_id.to_string())

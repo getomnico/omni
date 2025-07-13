@@ -8,12 +8,15 @@ use tokio::time::{sleep, timeout, Duration};
 /// Test fixture that automatically cleans up the test database on drop
 pub struct TestFixture {
     pub state: AppState,
+    #[allow(dead_code)]
     pub app: axum::Router,
+    #[allow(dead_code)]
     test_env: TestEnvironment,
 }
 
 impl TestFixture {
     /// Get a reference to the app router
+    #[allow(dead_code)]
     pub fn app(&self) -> &axum::Router {
         &self.app
     }
@@ -21,6 +24,13 @@ impl TestFixture {
 
 /// Setup test app with automatic cleanup via TestFixture
 pub async fn setup_test_fixture() -> Result<TestFixture> {
+    // Set up encryption environment variables for tests
+    std::env::set_var(
+        "ENCRYPTION_KEY",
+        "test_master_key_that_is_long_enough_32_chars",
+    );
+    std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars");
+
     let test_env = TestEnvironment::new().await?;
 
     let ai_client = shared::AIClient::new(test_env.mock_ai_server.base_url.clone());
@@ -28,11 +38,19 @@ pub async fn setup_test_fixture() -> Result<TestFixture> {
     let embedding_queue =
         shared::embedding_queue::EmbeddingQueue::new(test_env.db_pool.pool().clone());
 
+    let content_storage = shared::ContentStorage::new(test_env.db_pool.pool().clone());
+
+    let service_credentials_repo = std::sync::Arc::new(
+        shared::ServiceCredentialsRepo::new(test_env.db_pool.pool().clone()).unwrap(),
+    );
+
     let app_state = AppState {
         db_pool: test_env.db_pool.clone(),
         redis_client: test_env.redis_client.clone(),
         ai_client,
         embedding_queue,
+        content_storage,
+        service_credentials_repo,
     };
 
     let app = create_app(app_state.clone());
@@ -48,6 +66,7 @@ pub mod fixtures {
     use clio_indexer::{CreateDocumentRequest, UpdateDocumentRequest};
     use serde_json::json;
 
+    #[allow(dead_code)]
     pub fn create_document_request() -> CreateDocumentRequest {
         CreateDocumentRequest {
             source_id: "01JGF7V3E0Y2R1X8P5Q7W9T4N7".to_string(),
@@ -65,6 +84,7 @@ pub mod fixtures {
         }
     }
 
+    #[allow(dead_code)]
     pub fn update_document_request() -> UpdateDocumentRequest {
         UpdateDocumentRequest {
             title: Some("Updated Test Document".to_string()),
@@ -83,6 +103,7 @@ pub mod fixtures {
 }
 
 /// Wait for a document to exist in the database with polling and timeout
+#[allow(dead_code)]
 pub async fn wait_for_document_exists(
     repo: &DocumentRepository,
     source_id: &str,
@@ -109,6 +130,7 @@ pub async fn wait_for_document_exists(
 }
 
 /// Wait for a document to be deleted from the database with polling and timeout
+#[allow(dead_code)]
 pub async fn wait_for_document_deleted(
     repo: &DocumentRepository,
     source_id: &str,
@@ -135,6 +157,7 @@ pub async fn wait_for_document_deleted(
 }
 
 /// Wait for a document to exist with a specific title in the database with polling and timeout
+#[allow(dead_code)]
 pub async fn wait_for_document_with_title(
     repo: &DocumentRepository,
     source_id: &str,

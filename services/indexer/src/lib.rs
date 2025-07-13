@@ -142,10 +142,17 @@ async fn create_document(
     let document_id = Ulid::new().to_string();
     let now = OffsetDateTime::now_utc();
 
+    // Store content in content_blobs table
+    let content_id = state
+        .content_storage
+        .store_content_with_type(request.content.as_bytes(), Some("text/plain"))
+        .await
+        .map_err(|e| error::IndexerError::Internal(format!("Failed to store content: {}", e)))?;
+
     let document = sqlx::query_as::<_, shared::models::Document>(
         r#"
-        INSERT INTO documents (id, source_id, external_id, title, content, metadata, permissions, created_at, updated_at, last_indexed_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, metadata, permissions, created_at, updated_at, last_indexed_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING *
         "#,
     )
@@ -153,7 +160,8 @@ async fn create_document(
     .bind(&request.source_id)
     .bind(&request.external_id)
     .bind(&request.title)
-    .bind(Some(&request.content))
+    .bind(Some(&content_id))
+    .bind(Some("text/plain"))
     .bind(&request.metadata)
     .bind(&request.permissions)
     .bind(now)
@@ -206,11 +214,26 @@ async fn update_document(
         }
     };
 
+    // Store new content if provided
+    let content_id = if let Some(content) = &request.content {
+        Some(
+            state
+                .content_storage
+                .store_content_with_type(content.as_bytes(), Some("text/plain"))
+                .await
+                .map_err(|e| {
+                    error::IndexerError::Internal(format!("Failed to store content: {}", e))
+                })?,
+        )
+    } else {
+        None
+    };
+
     let updated_doc = sqlx::query_as::<_, shared::models::Document>(
         r#"
         UPDATE documents 
         SET title = COALESCE($2, title),
-            content = COALESCE($3, content),
+            content_id = COALESCE($3, content_id),
             metadata = COALESCE($4, metadata),
             permissions = COALESCE($5, permissions),
             updated_at = $6
@@ -220,7 +243,7 @@ async fn update_document(
     )
     .bind(&id)
     .bind(&request.title)
-    .bind(&request.content)
+    .bind(&content_id)
     .bind(&request.metadata)
     .bind(&request.permissions)
     .bind(OffsetDateTime::now_utc())
@@ -321,17 +344,25 @@ async fn process_create_operation(
     let document_id = Ulid::new().to_string();
     let now = OffsetDateTime::now_utc();
 
+    // Store content in content_blobs table
+    let content_id = state
+        .content_storage
+        .store_content_with_type(request.content.as_bytes(), Some("text/plain"))
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to store content: {}", e))?;
+
     sqlx::query(
         r#"
-        INSERT INTO documents (id, source_id, external_id, title, content, metadata, permissions, created_at, updated_at, last_indexed_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, metadata, permissions, created_at, updated_at, last_indexed_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         "#,
     )
     .bind(&document_id)
     .bind(&request.source_id)
     .bind(&request.external_id)
     .bind(&request.title)
-    .bind(Some(&request.content))
+    .bind(Some(&content_id))
+    .bind(Some("text/plain"))
     .bind(&request.metadata)
     .bind(&request.permissions)
     .bind(now)
@@ -348,11 +379,24 @@ async fn process_update_operation(
     id: String,
     request: UpdateDocumentRequest,
 ) -> anyhow::Result<()> {
+    // Store new content if provided
+    let content_id = if let Some(content) = &request.content {
+        Some(
+            state
+                .content_storage
+                .store_content_with_type(content.as_bytes(), Some("text/plain"))
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to store content: {}", e))?,
+        )
+    } else {
+        None
+    };
+
     let result = sqlx::query(
         r#"
         UPDATE documents 
         SET title = COALESCE($2, title),
-            content = COALESCE($3, content),
+            content_id = COALESCE($3, content_id),
             metadata = COALESCE($4, metadata),
             permissions = COALESCE($5, permissions),
             updated_at = $6
@@ -361,7 +405,7 @@ async fn process_update_operation(
     )
     .bind(&id)
     .bind(&request.title)
-    .bind(&request.content)
+    .bind(&content_id)
     .bind(&request.metadata)
     .bind(&request.permissions)
     .bind(OffsetDateTime::now_utc())

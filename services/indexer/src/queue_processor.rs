@@ -36,6 +36,7 @@ impl EventBatch {
             && self.documents_deleted.is_empty()
     }
 
+    #[allow(dead_code)]
     fn total_events(&self) -> usize {
         self.documents_created.len() + self.documents_updated.len() + self.documents_deleted.len()
     }
@@ -651,7 +652,7 @@ impl QueueProcessor {
 
             // Queue embeddings and mark as indexed
             let mut embedding_tasks = Vec::new();
-            for (event_id, updated_doc) in updated_documents {
+            for (_event_id, updated_doc) in updated_documents {
                 // Queue embeddings if there's content
                 if let Some(content_id) = &updated_doc.content_id {
                     if let Some(content) = content_map.get(content_id) {
