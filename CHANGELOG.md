@@ -131,4 +131,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Documents now available for text search immediately while embeddings are generated in background batches
   - New embedding_queue table and processor for reliable batch processing of 10-20 documents per API call
   - Added embedding_status tracking to documents table with automatic retry logic for failed embeddings
+- Google Sign-in OAuth implementation for enterprise authentication
+  - Complete OAuth 2.0 flow with CSRF protection, rate limiting, and secure token storage
+  - Account linking by email for existing users with automatic domain approval integration
+  - Personal OAuth account management in settings with link/unlink functionality
+  - Enterprise-ready with Google Workspace support and comprehensive error handling
 

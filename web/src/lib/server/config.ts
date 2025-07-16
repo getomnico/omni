@@ -23,6 +23,14 @@ export interface AppConfig {
     app: {
         publicUrl: string
     }
+    oauth: {
+        google: {
+            clientId: string
+            clientSecret: string
+            redirectUri: string
+            scopes: string[]
+        }
+    }
 }
 
 function getRequiredEnv(key: string): string {
@@ -80,6 +88,14 @@ function loadConfig(): AppConfig {
                 durationDays: 7,
             },
             app: { publicUrl: 'http://placeholder' },
+            oauth: {
+                google: {
+                    clientId: 'placeholder',
+                    clientSecret: 'placeholder',
+                    redirectUri: 'http://placeholder',
+                    scopes: ['openid', 'profile', 'email'],
+                },
+            },
         }
     }
 
@@ -128,6 +144,22 @@ function loadConfig(): AppConfig {
     const publicAppUrl = getRequiredEnv('APP_URL')
     validateUrl(publicAppUrl, 'APP_URL')
 
+    // OAuth configuration
+    const googleOAuthClientId = getOptionalEnv('GOOGLE_OAUTH_CLIENT_ID', '')
+    const googleOAuthClientSecret = getOptionalEnv('GOOGLE_OAUTH_CLIENT_SECRET', '')
+    const googleOAuthRedirectUri = getOptionalEnv(
+        'GOOGLE_OAUTH_REDIRECT_URI',
+        `${publicAppUrl}/auth/google/callback`,
+    )
+    const googleOAuthScopes = getOptionalEnv('GOOGLE_OAUTH_SCOPES', 'openid,profile,email').split(
+        ',',
+    )
+
+    // Validate OAuth redirect URI
+    if (googleOAuthClientId && googleOAuthRedirectUri) {
+        validateUrl(googleOAuthRedirectUri, 'GOOGLE_OAUTH_REDIRECT_URI')
+    }
+
     console.log('Configuration validation completed successfully')
 
     return {
@@ -153,6 +185,14 @@ function loadConfig(): AppConfig {
         app: {
             publicUrl: publicAppUrl,
         },
+        oauth: {
+            google: {
+                clientId: googleOAuthClientId,
+                clientSecret: googleOAuthClientSecret,
+                redirectUri: googleOAuthRedirectUri,
+                scopes: googleOAuthScopes,
+            },
+        },
     }
 }
 
@@ -170,4 +210,4 @@ export function getConfig(): AppConfig {
 export const config = getConfig()
 
 // Also export individual sections for convenience
-export const { database, redis, services, session, app } = config
+export const { database, redis, services, session, app, oauth } = config

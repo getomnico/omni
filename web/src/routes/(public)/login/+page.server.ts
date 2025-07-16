@@ -41,10 +41,74 @@ function checkRateLimit(ip: string): boolean {
     return true
 }
 
-export const load: PageServerLoad = async ({ cookies, locals }) => {
+export const load: PageServerLoad = async ({ cookies, locals, url }) => {
     if (locals.user) {
         throw redirect(302, '/')
     }
+
+    // Handle OAuth error messages from URL parameters
+    const error = url.searchParams.get('error')
+    const errorDetails = url.searchParams.get('details')
+
+    if (error) {
+        let errorMessage = 'An error occurred during authentication.'
+
+        switch (error) {
+            case 'oauth_not_configured':
+                errorMessage =
+                    'Google Sign-in is not configured. Please contact your administrator.'
+                break
+            case 'oauth_error':
+                errorMessage = errorDetails || 'An error occurred during Google authentication.'
+                break
+            case 'domain_not_approved':
+                errorMessage = errorDetails || 'Your domain is not approved for registration.'
+                break
+            case 'account_already_linked':
+                errorMessage =
+                    errorDetails || 'This Google account is already linked to another user.'
+                break
+            case 'email_mismatch':
+                errorMessage = errorDetails || 'Email addresses do not match.'
+                break
+            case 'rate_limit':
+                errorMessage = 'Too many authentication attempts. Please try again later.'
+                break
+            case 'invalid_redirect':
+                errorMessage = 'Invalid redirect URL.'
+                break
+            case 'invalid_oauth_response':
+                errorMessage = 'Invalid OAuth response from Google.'
+                break
+            case 'authentication_required':
+                errorMessage = 'Authentication required.'
+                break
+            case 'session_expired':
+                errorMessage = 'Your session has expired. Please sign in again.'
+                break
+        }
+
+        return {
+            error: errorMessage,
+        }
+    }
+
+    // Handle success messages
+    const welcome = url.searchParams.get('welcome')
+    const linked = url.searchParams.get('linked')
+
+    if (welcome) {
+        return {
+            success: 'Welcome to Clio! Your account has been created successfully.',
+        }
+    }
+
+    if (linked) {
+        return {
+            success: `Your ${linked} account has been successfully linked.`,
+        }
+    }
+
     return {}
 }
 
