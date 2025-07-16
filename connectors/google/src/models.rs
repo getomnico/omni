@@ -33,9 +33,26 @@ pub struct Permission {
     pub role: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct FolderMetadata {
+    pub id: String,
+    pub name: String,
+    pub parents: Option<Vec<String>>,
+}
+
+impl From<GoogleDriveFile> for FolderMetadata {
+    fn from(file: GoogleDriveFile) -> Self {
+        Self {
+            id: file.id,
+            name: file.name,
+            parents: file.parents,
+        }
+    }
+}
+
 impl GoogleDriveFile {
     pub fn to_connector_event(
-        self,
+        &self,
         sync_run_id: String,
         source_id: String,
         content_id: String,
@@ -44,7 +61,7 @@ impl GoogleDriveFile {
     }
 
     pub fn to_connector_event_with_path(
-        self,
+        &self,
         sync_run_id: String,
         source_id: String,
         content_id: String,

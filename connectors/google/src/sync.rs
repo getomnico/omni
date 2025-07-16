@@ -16,8 +16,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::admin::AdminClient;
 use crate::auth::ServiceAccountAuth;
+use crate::cache::LruFolderCache;
 use crate::drive::DriveClient;
-use crate::models::GoogleDriveFile;
+use crate::models::{FolderMetadata, GoogleDriveFile};
 use crate::models::{WebhookChannel, WebhookChannelResponse, WebhookNotification};
 use shared::db::repositories::ServiceCredentialsRepo;
 use shared::models::{
@@ -36,7 +37,7 @@ pub struct SyncManager {
     event_queue: EventQueue,
     content_storage: ContentStorage,
     service_credentials_repo: ServiceCredentialsRepo,
-    folder_cache: Arc<Mutex<HashMap<String, GoogleDriveFile>>>,
+    folder_cache: LruFolderCache,
 }
 
 #[derive(Clone)]
@@ -169,7 +170,7 @@ impl SyncManager {
             event_queue,
             content_storage,
             service_credentials_repo,
-            folder_cache: Arc::new(Mutex::new(HashMap::new())),
+            folder_cache: LruFolderCache::new(10_000), // Cache up to 10,000 folder metadata entries
         })
     }
 
@@ -449,12 +450,13 @@ impl SyncManager {
         let total_files_discovered = Arc::new(AtomicUsize::new(0));
         let last_progress_time = Arc::new(std::sync::Mutex::new(Instant::now()));
 
-        // Spawn a task to monitor progress
+        // Spawn a task to monitor progress and memory usage
         let monitor_processed = Arc::clone(&processed_count_tracker);
         let monitor_success = Arc::clone(&success_count_tracker);
         let monitor_failed = Arc::clone(&failed_count_tracker);
         let monitor_discovered = Arc::clone(&total_files_discovered);
         let monitor_last_progress = Arc::clone(&last_progress_time);
+        let monitor_cache = self.folder_cache.clone();
         let monitor_handle = tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(30));
             loop {
@@ -463,6 +465,7 @@ impl SyncManager {
                 let success = monitor_success.load(Ordering::SeqCst);
                 let failed = monitor_failed.load(Ordering::SeqCst);
                 let discovered = monitor_discovered.load(Ordering::SeqCst);
+                let cache_size = monitor_cache.len();
 
                 let last_update = monitor_last_progress.lock().unwrap();
                 let time_since_progress = last_update.elapsed();
@@ -470,17 +473,18 @@ impl SyncManager {
 
                 if time_since_progress > Duration::from_secs(120) {
                     warn!(
-                        "No progress in {} seconds! Stuck at {}/{} files (success: {}, failed: {})",
+                        "No progress in {} seconds! Stuck at {}/{} files (success: {}, failed: {}), cache size: {}",
                         time_since_progress.as_secs(),
                         current,
                         discovered,
                         success,
-                        failed
+                        failed,
+                        cache_size
                     );
                 } else {
                     debug!(
-                        "Progress heartbeat: {}/{} files (success: {}, failed: {})",
-                        current, discovered, success, failed
+                        "Progress heartbeat: {}/{} files (success: {}, failed: {}), cache size: {}",
+                        current, discovered, success, failed, cache_size
                     );
                 }
             }
@@ -597,16 +601,17 @@ impl SyncManager {
                                     let drive_client = drive_client.clone();
                                     let service_auth = service_auth_for_files.clone();
                                     let user_email = user_email.clone();
-                                    let file = file.clone();
+                                    let file_id = file.id.clone();
+                                    let file_name = file.name.clone();
                                     async move {
-                                        debug!("Inside rate limiter callback, calling get_file_content for file: {} ({})", file.name, file.id);
+                                        debug!("Inside rate limiter callback, calling get_file_content for file: {} ({})", file_name, file_id);
                                         let result = drive_client
                                             .get_file_content(&service_auth, &user_email, &file)
                                             .await
                                             .with_context(|| {
-                                                format!("Getting content for file {} ({})", file.name, file.id)
+                                                format!("Getting content for file {} ({})", file_name, file_id)
                                             });
-                                        debug!("get_file_content completed for file: {} ({}), result: {:?}", file.name, file.id, result.is_ok());
+                                        debug!("get_file_content completed for file: {} ({}), result: {:?}", file_name, file_id, result.is_ok());
                                         result
                                     }
                                 }).await {
@@ -640,7 +645,7 @@ impl SyncManager {
                                             };
 
                                             debug!("Creating connector event for file: {} ({})", file.name, file.id);
-                                            let event = file.clone().to_connector_event_with_path(
+                                            let event = file.to_connector_event_with_path(
                                                 sync_run_id.clone(),
                                                 source_id.clone(),
                                                 content_id,
@@ -791,6 +796,9 @@ impl SyncManager {
         );
 
         self.update_source_status(&source.id, "completed").await?;
+
+        // Clear folder cache to free memory after sync
+        self.folder_cache.clear();
 
         info!("Completed sync for source: {}", source.id);
         Ok((current_files_set.len(), updated_count))
@@ -1317,13 +1325,12 @@ impl SyncManager {
                                                     }
                                                 };
 
-                                                let event =
-                                                    file.clone().to_connector_event_with_path(
-                                                        sync_run_id.clone(),
-                                                        source.id.clone(),
-                                                        content_id,
-                                                        file_path,
-                                                    );
+                                                let event = file.to_connector_event_with_path(
+                                                    sync_run_id.clone(),
+                                                    source.id.clone(),
+                                                    content_id,
+                                                    file_path,
+                                                );
 
                                                 match self.publish_connector_event(event).await {
                                                     Ok(_) => {
@@ -1697,13 +1704,7 @@ impl SyncManager {
                 break;
             }
 
-            let cached_folder = match self.folder_cache.lock() {
-                Ok(cache) => cache.get(&current_folder_id).cloned(),
-                Err(e) => {
-                    warn!("Failed to lock folder cache: {}", e);
-                    None
-                }
-            };
+            let cached_folder = self.folder_cache.get(&current_folder_id);
 
             let parent_folder_id: Option<String> = match cached_folder {
                 Some(folder) => {
@@ -1755,10 +1756,8 @@ impl SyncManager {
                             );
 
                             // Cache the folder
-                            {
-                                let mut cache = self.folder_cache.lock().unwrap();
-                                cache.insert(current_folder_id.clone(), folder_metadata);
-                            }
+                            self.folder_cache
+                                .insert(current_folder_id.clone(), folder_metadata.into());
 
                             path_components.push(name);
                             parent_folder_id

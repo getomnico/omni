@@ -16,9 +16,9 @@ use tracing::{debug, error, info, warn};
 // Batch processing types
 #[derive(Debug)]
 struct EventBatch {
-    documents_created: Vec<(String, Document)>, // (event_id, document)
-    documents_updated: Vec<(String, Document)>, // (event_id, document)
-    documents_deleted: Vec<(String, String, String)>, // (event_id, source_id, document_id)
+    documents_created: Vec<(Document, Vec<String>)>, // (document, event_ids)
+    documents_updated: Vec<(Document, Vec<String>)>, // (document, event_ids)
+    documents_deleted: Vec<(String, String, Vec<String>)>, // (source_id, document_id, event_ids)
 }
 
 impl EventBatch {
@@ -38,7 +38,20 @@ impl EventBatch {
 
     #[allow(dead_code)]
     fn total_events(&self) -> usize {
-        self.documents_created.len() + self.documents_updated.len() + self.documents_deleted.len()
+        self.documents_created
+            .iter()
+            .map(|(_, event_ids)| event_ids.len())
+            .sum::<usize>()
+            + self
+                .documents_updated
+                .iter()
+                .map(|(_, event_ids)| event_ids.len())
+                .sum::<usize>()
+            + self
+                .documents_deleted
+                .iter()
+                .map(|(_, _, event_ids)| event_ids.len())
+                .sum::<usize>()
     }
 }
 
@@ -226,10 +239,13 @@ impl QueueProcessor {
             }
 
             info!(
-                "Batch contains: {} created, {} updated, {} deleted documents",
+                "Batch contains: {} created, {} updated, {} deleted documents ({} created events, {} updated events, {} deleted events)",
                 batch.documents_created.len(),
                 batch.documents_updated.len(),
-                batch.documents_deleted.len()
+                batch.documents_deleted.len(),
+                batch.documents_created.iter().map(|(_, event_ids)| event_ids.len()).sum::<usize>(),
+                batch.documents_updated.iter().map(|(_, event_ids)| event_ids.len()).sum::<usize>(),
+                batch.documents_deleted.iter().map(|(_, _, event_ids)| event_ids.len()).sum::<usize>()
             );
 
             // Process the batch with fallback to individual processing
@@ -309,6 +325,14 @@ impl QueueProcessor {
     ) -> Result<EventBatch> {
         let mut batch = EventBatch::new();
 
+        // Temporary storage for grouping events by document key
+        let mut created_docs: std::collections::HashMap<String, (Document, Vec<String>)> =
+            std::collections::HashMap::new();
+        let mut updated_docs: std::collections::HashMap<String, (Document, Vec<String>)> =
+            std::collections::HashMap::new();
+        let mut deleted_docs: std::collections::HashMap<String, (String, String, Vec<String>)> =
+            std::collections::HashMap::new();
+
         for event_item in events {
             let event_id = event_item.id.clone();
             let sync_run_id = event_item.sync_run_id.clone();
@@ -334,13 +358,23 @@ impl QueueProcessor {
                     ..
                 } => {
                     let document = self.create_document_from_event(
-                        source_id,
-                        document_id,
+                        source_id.clone(),
+                        document_id.clone(),
                         content_id,
                         metadata,
                         permissions,
                     )?;
-                    batch.documents_created.push((event_id, document));
+
+                    // Use source_id + external_id as deduplication key
+                    let key = format!("{}:{}", source_id, document_id);
+
+                    if let Some((_, event_ids)) = created_docs.get_mut(&key) {
+                        // Already have this document, just add the event_id
+                        event_ids.push(event_id);
+                    } else {
+                        // New document, create new entry
+                        created_docs.insert(key, (document, vec![event_id]));
+                    }
                 }
                 ConnectorEvent::DocumentUpdated {
                     source_id,
@@ -352,15 +386,24 @@ impl QueueProcessor {
                 } => {
                     let document = self
                         .create_document_from_event_update(
-                            source_id,
-                            document_id,
+                            source_id.clone(),
+                            document_id.clone(),
                             content_id,
                             metadata,
                             permissions,
                         )
                         .await?;
                     if let Some(doc) = document {
-                        batch.documents_updated.push((event_id, doc));
+                        // Use source_id + external_id as deduplication key
+                        let key = format!("{}:{}", source_id, document_id);
+
+                        if let Some((_, event_ids)) = updated_docs.get_mut(&key) {
+                            // Already have this document, just add the event_id
+                            event_ids.push(event_id);
+                        } else {
+                            // New document, create new entry
+                            updated_docs.insert(key, (doc, vec![event_id]));
+                        }
                     }
                 }
                 ConnectorEvent::DocumentDeleted {
@@ -368,12 +411,24 @@ impl QueueProcessor {
                     document_id,
                     ..
                 } => {
-                    batch
-                        .documents_deleted
-                        .push((event_id, source_id, document_id));
+                    // Use source_id + external_id as deduplication key
+                    let key = format!("{}:{}", source_id, document_id);
+
+                    if let Some((_, _, event_ids)) = deleted_docs.get_mut(&key) {
+                        // Already have this deletion, just add the event_id
+                        event_ids.push(event_id);
+                    } else {
+                        // New deletion, create new entry
+                        deleted_docs.insert(key, (source_id, document_id, vec![event_id]));
+                    }
                 }
             }
         }
+
+        // Convert the HashMap results to Vec format for EventBatch
+        batch.documents_created = created_docs.into_values().collect();
+        batch.documents_updated = updated_docs.into_values().collect();
+        batch.documents_deleted = deleted_docs.into_values().collect();
 
         Ok(batch)
     }
@@ -393,8 +448,10 @@ impl QueueProcessor {
                 Err(e) => {
                     error!("Batch document creation failed: {}", e);
                     // Add all creation events to failed list
-                    for (event_id, _) in batch.documents_created {
-                        result.failed_events.push((event_id, e.to_string()));
+                    for (_, event_ids) in batch.documents_created {
+                        for event_id in event_ids {
+                            result.failed_events.push((event_id, e.to_string()));
+                        }
                     }
                 }
             }
@@ -412,8 +469,10 @@ impl QueueProcessor {
                 Err(e) => {
                     error!("Batch document update failed: {}", e);
                     // Add all update events to failed list
-                    for (event_id, _) in batch.documents_updated {
-                        result.failed_events.push((event_id, e.to_string()));
+                    for (_, event_ids) in batch.documents_updated {
+                        for event_id in event_ids {
+                            result.failed_events.push((event_id, e.to_string()));
+                        }
                     }
                 }
             }
@@ -431,8 +490,10 @@ impl QueueProcessor {
                 Err(e) => {
                     error!("Batch document deletion failed: {}", e);
                     // Add all deletion events to failed list
-                    for (event_id, _, _) in batch.documents_deleted {
-                        result.failed_events.push((event_id, e.to_string()));
+                    for (_, _, event_ids) in batch.documents_deleted {
+                        for event_id in event_ids {
+                            result.failed_events.push((event_id, e.to_string()));
+                        }
                     }
                 }
             }
@@ -541,12 +602,12 @@ impl QueueProcessor {
 
     async fn process_documents_created_batch(
         &self,
-        documents_with_event_ids: &[(String, Document)],
+        documents_with_event_ids: &[(Document, Vec<String>)],
     ) -> Result<Vec<String>> {
         let start_time = std::time::Instant::now();
         let documents: Vec<Document> = documents_with_event_ids
             .iter()
-            .map(|(_, doc)| doc.clone())
+            .map(|(doc, _)| doc.clone())
             .collect();
 
         let repo = DocumentRepository::new(self.state.db_pool.pool());
@@ -620,16 +681,16 @@ impl QueueProcessor {
             upserted_documents.len() as f64 / total_duration.as_secs_f64()
         );
 
-        // Return the event IDs that were successful
+        // Return all the event IDs that were successful
         Ok(documents_with_event_ids
             .iter()
-            .map(|(event_id, _)| event_id.clone())
+            .flat_map(|(_, event_ids)| event_ids.clone())
             .collect())
     }
 
     async fn process_documents_updated_batch(
         &self,
-        documents_with_event_ids: &[(String, Document)],
+        documents_with_event_ids: &[(Document, Vec<String>)],
     ) -> Result<Vec<String>> {
         let repo = DocumentRepository::new(self.state.db_pool.pool());
 
@@ -637,11 +698,11 @@ impl QueueProcessor {
         let mut successful_event_ids = Vec::new();
         let mut updated_documents = Vec::new();
 
-        for (event_id, document) in documents_with_event_ids {
+        for (document, event_ids) in documents_with_event_ids {
             match repo.update(&document.id, document.clone()).await {
                 Ok(Some(updated_doc)) => {
-                    updated_documents.push((event_id.clone(), updated_doc));
-                    successful_event_ids.push(event_id.clone());
+                    updated_documents.push((event_ids.clone(), updated_doc));
+                    successful_event_ids.extend(event_ids.clone());
                 }
                 Ok(None) => {
                     warn!("Document not found for update: {}", document.external_id);
@@ -674,7 +735,7 @@ impl QueueProcessor {
 
             // Queue embeddings and mark as indexed
             let mut embedding_tasks = Vec::new();
-            for (_event_id, updated_doc) in updated_documents {
+            for (_event_ids, updated_doc) in updated_documents {
                 // Queue embeddings if there's content
                 if let Some(content_id) = &updated_doc.content_id {
                     if let Some(content) = content_map.get(content_id) {
@@ -716,7 +777,7 @@ impl QueueProcessor {
 
     async fn process_documents_deleted_batch(
         &self,
-        deletions: &[(String, String, String)], // (event_id, source_id, document_id)
+        deletions: &[(String, String, Vec<String>)], // (source_id, document_id, event_ids)
     ) -> Result<Vec<String>> {
         let start_time = std::time::Instant::now();
         let repo = DocumentRepository::new(self.state.db_pool.pool());
@@ -726,17 +787,17 @@ impl QueueProcessor {
         let mut document_ids_to_delete = Vec::new();
 
         // First, find all documents that exist
-        for (event_id, source_id, document_id) in deletions {
+        for (source_id, document_id, event_ids) in deletions {
             if let Some(document) = repo.find_by_external_id(source_id, document_id).await? {
                 document_ids_to_delete.push(document.id.clone());
-                successful_event_ids.push(event_id.clone());
+                successful_event_ids.extend(event_ids.clone());
             } else {
                 warn!(
                     "Document not found for deletion: {} from source {}",
                     document_id, source_id
                 );
                 // Still count as successful since the document doesn't exist
-                successful_event_ids.push(event_id.clone());
+                successful_event_ids.extend(event_ids.clone());
             }
         }
 
