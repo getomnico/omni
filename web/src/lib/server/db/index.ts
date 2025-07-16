@@ -6,3 +6,6 @@ import { database } from '../config'
 const client = postgres(database.url)
 
 export const db = drizzle(client, { schema })
+
+process.on('SIGTERM', () => client.end())
+process.on('SIGINT', () => client.end())
