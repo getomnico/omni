@@ -3,7 +3,14 @@ use serde::{Deserialize, Serialize};
 use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use sqlx::types::time::OffsetDateTime;
 use std::collections::HashMap;
+use std::sync::Arc;
 use uuid::Uuid;
+
+#[derive(Debug, Clone)]
+pub struct UserFile {
+    pub user_email: Arc<String>,
+    pub file: GoogleDriveFile,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoogleDriveFile {
@@ -21,6 +28,16 @@ pub struct GoogleDriveFile {
     pub parents: Option<Vec<String>>,
     pub shared: Option<bool>,
     pub permissions: Option<Vec<Permission>>,
+    pub owners: Option<Vec<Owner>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Owner {
+    pub id: String,
+    #[serde(rename = "emailAddress")]
+    pub email_address: Option<String>,
+    #[serde(rename = "displayName")]
+    pub display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,15 +69,6 @@ impl From<GoogleDriveFile> for FolderMetadata {
 
 impl GoogleDriveFile {
     pub fn to_connector_event(
-        &self,
-        sync_run_id: String,
-        source_id: String,
-        content_id: String,
-    ) -> ConnectorEvent {
-        self.to_connector_event_with_path(sync_run_id, source_id, content_id, None)
-    }
-
-    pub fn to_connector_event_with_path(
         &self,
         sync_run_id: String,
         source_id: String,

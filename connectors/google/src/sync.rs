@@ -4,13 +4,12 @@ use futures::stream::{self, StreamExt};
 use redis::{AsyncCommands, Client as RedisClient};
 use sqlx::types::time::OffsetDateTime;
 use sqlx::PgPool;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use time;
-use tokio::sync::Semaphore;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 
@@ -18,8 +17,7 @@ use crate::admin::AdminClient;
 use crate::auth::ServiceAccountAuth;
 use crate::cache::LruFolderCache;
 use crate::drive::DriveClient;
-use crate::models::{FolderMetadata, GoogleDriveFile};
-use crate::models::{WebhookChannel, WebhookChannelResponse, WebhookNotification};
+use crate::models::{UserFile, WebhookChannel, WebhookChannelResponse, WebhookNotification};
 use shared::db::repositories::ServiceCredentialsRepo;
 use shared::models::{
     ConnectorEvent, ServiceCredentials, ServiceProvider, Source, SourceType, SyncRun, SyncStatus,
@@ -43,14 +41,6 @@ pub struct SyncManager {
 #[derive(Clone)]
 pub struct SyncState {
     redis_client: RedisClient,
-}
-
-#[derive(Clone)]
-pub struct FileBatch {
-    pub user_email: String,
-    pub access_token: String,
-    pub files: Vec<crate::models::GoogleDriveFile>,
-    pub current_file_ids: Vec<String>, // All file IDs from this page (for deletion tracking)
 }
 
 impl SyncState {
@@ -244,167 +234,157 @@ impl SyncManager {
         result.map(|_| ())
     }
 
-    fn create_file_stream<'a>(
+    fn create_user_stream<'a>(
         &'a self,
         users: Vec<crate::admin::User>,
         service_auth: Arc<ServiceAccountAuth>,
-        source_id: &'a str,
-        sync_state: &'a SyncState,
-    ) -> Pin<Box<dyn Stream<Item = Result<FileBatch>> + Send + 'a>> {
-        Box::pin(stream::iter(users).then(move |user| {
+    ) -> Pin<Box<dyn Stream<Item = (String, String)> + Send + 'a>> {
+        Box::pin(stream::iter(users).filter_map(move |user| {
             let service_auth = service_auth.clone();
-            let sync_state = sync_state.clone();
-            let source_id = source_id.to_string();
-            let drive_client = self.drive_client.clone();
-
             async move {
                 let user_email = user.primary_email.clone();
-                info!("Processing files for user {}", user_email);
-                debug!("User stream starting for user: {}", user_email);
-
-                // Get access token for this user
-                let user_access_token = match service_auth.get_access_token(&user_email).await {
-                    Ok(token) => token,
+                match service_auth.get_access_token(&user_email).await {
+                    Ok(token) => {
+                        info!("Got access token for user {}", user_email);
+                        Some((user_email, token))
+                    }
                     Err(e) => {
                         warn!("Failed to get access token for user {}: {}. This user may not have Drive access.", user_email, e);
-                        return Ok::<Option<_>, anyhow::Error>(None);
+                        None
                     }
-                };
+                }
+            }
+        }))
+    }
 
-                // Create a stream of file batches for this user
-                let file_batches = stream::unfold(
-                    (None, false), // (page_token, is_done)
-                    move |(page_token, is_done)| {
-                        let drive_client = drive_client.clone();
-                        let user_access_token = user_access_token.clone();
-                        let user_email = user_email.clone();
-                        let sync_state = sync_state.clone();
-                        let source_id = source_id.clone();
-                        let service_auth = service_auth.clone();
+    fn create_file_stream_for_user<'a>(
+        &'a self,
+        user_email: String,
+        _access_token: String,
+        service_auth: Arc<ServiceAccountAuth>,
+        source_id: &'a str,
+        sync_state: &'a SyncState,
+        current_files: Arc<Mutex<HashSet<String>>>,
+    ) -> Pin<Box<dyn Stream<Item = Result<UserFile>> + Send + 'a>> {
+        Box::pin(
+            stream::unfold(
+                (None, false), // (page_token, is_done)
+                move |state| {
+                    let drive_client = self.drive_client.clone();
+                    let service_auth = service_auth.clone();
+                    let user_email = user_email.clone();
+                    let user_email_arc = Arc::new(user_email.clone());
+                    let sync_state = sync_state.clone();
+                    let source_id = source_id.to_string();
+                    let current_files = current_files.clone();
 
-                        async move {
-                            if is_done {
-                                debug!("Stream is done for user {}", user_email);
+                    async move {
+                        let (page_token, is_done) = state;
+                        if is_done {
+                            return None;
+                        }
+
+                        debug!(
+                            "Listing files for user {} with page_token: {:?}",
+                            user_email, page_token
+                        );
+
+                        let response = match drive_client
+                            .list_files(&service_auth, &user_email, page_token.as_deref())
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "Failed to list files for user {} (page_token: {:?})",
+                                    user_email, page_token
+                                )
+                            }) {
+                            Ok(resp) => resp,
+                            Err(e) => {
+                                warn!("Failed to list files for user {}: {:?}", user_email, e);
                                 return None;
                             }
+                        };
 
-                            debug!(
-                                "Calling Drive API list_files for user {} with page_token: {:?}",
-                                user_email, page_token
-                            );
+                        debug!(
+                            "Got {} files in this page for user {}",
+                            response.files.len(),
+                            user_email
+                        );
 
-                            let response = match drive_client
-                                .list_files(&service_auth, &user_email, page_token.as_deref())
-                                .await
-                                .with_context(|| {
-                                    format!(
-                                        "Failed to list files for user {} (page_token: {:?})",
-                                        user_email, page_token
-                                    )
-                                }) {
-                                Ok(resp) => resp,
-                                Err(e) => {
-                                    warn!(
-                                        "Failed to list files for user {}: {:?}",
-                                        user_email, e
-                                    );
-                                    return None;
-                                }
-                            };
+                        // Track all current files and filter for processing
+                        let mut files_to_process = Vec::new();
+                        for file in response.files {
+                            // Track this file as currently existing
+                            {
+                                let mut current_files_guard = current_files.lock().unwrap();
+                                current_files_guard.insert(file.id.clone());
+                            }
 
-                            debug!(
-                                "Got {} files in this page for user {}",
-                                response.files.len(),
-                                user_email
-                            );
-
-                            // Filter files that should be processed and track all current files
-                            let mut files_to_process = Vec::new();
-                            let mut all_current_files = Vec::new();
-
-                            for file in response.files {
-                                // Track this file as currently existing
-                                all_current_files.push(file.id.clone());
-
-                                if self.should_index_file(&file) {
-                                    let should_process = if let Some(modified_time) = &file.modified_time {
-                                        match sync_state.get_file_sync_state(&source_id, &file.id).await {
-                                            Ok(Some(last_modified)) => {
-                                                if last_modified != *modified_time {
-                                                    debug!(
-                                                        "File {} has been modified (was: {}, now: {})",
-                                                        file.name, last_modified, modified_time
-                                                    );
-                                                    true
-                                                } else {
-                                                    debug!("File {} unchanged, skipping", file.name);
-                                                    false
-                                                }
-                                            }
-                                            Ok(None) => {
-                                                debug!("File {} is new, processing", file.name);
+                            if self.should_index_file(&file) {
+                                let should_process = if let Some(modified_time) =
+                                    &file.modified_time
+                                {
+                                    match sync_state.get_file_sync_state(&source_id, &file.id).await
+                                    {
+                                        Ok(Some(last_modified)) => {
+                                            if last_modified != *modified_time {
+                                                debug!(
+                                                    "File {} has been modified (was: {}, now: {})",
+                                                    file.name, last_modified, modified_time
+                                                );
                                                 true
-                                            }
-                                            Err(e) => {
-                                                warn!("Failed to get sync state for file {}: {}", file.name, e);
-                                                true // Process anyway
+                                            } else {
+                                                debug!("File {} unchanged, skipping", file.name);
+                                                false
                                             }
                                         }
-                                    } else {
-                                        warn!("File {} has no modified_time, processing anyway", file.name);
-                                        true
-                                    };
-
-                                    if should_process {
-                                        files_to_process.push(file);
+                                        Ok(None) => {
+                                            debug!("File {} is new, processing", file.name);
+                                            true
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                "Failed to get sync state for file {}: {}",
+                                                file.name, e
+                                            );
+                                            true // Process anyway
+                                        }
                                     }
+                                } else {
+                                    warn!(
+                                        "File {} has no modified_time, processing anyway",
+                                        file.name
+                                    );
+                                    true
+                                };
+
+                                if should_process {
+                                    files_to_process.push(UserFile {
+                                        user_email: user_email_arc.clone(),
+                                        file,
+                                    });
                                 }
                             }
-
-                            info!(
-                                "User {} page complete: {} files to process",
-                                user_email, files_to_process.len()
-                            );
-
-                            let batch = FileBatch {
-                                user_email: user_email.clone(),
-                                access_token: user_access_token.clone(),
-                                files: files_to_process,
-                                current_file_ids: all_current_files,
-                            };
-
-                            let next_page_token = response.next_page_token;
-                            let is_done = next_page_token.is_none();
-
-                            if is_done {
-                                debug!("No more pages for user {}", user_email);
-                            } else {
-                                debug!("Moving to next page for user {}", user_email);
-                            }
-
-                            Some((Ok(batch), (next_page_token, is_done)))
                         }
-                    }
-                );
 
-                Ok::<Option<_>, anyhow::Error>(Some(file_batches))
-            }
-        }).filter_map(|result| async {
-            match result {
-                Ok(Some(batches)) => {
-                    debug!("User processed successfully, yielding batches");
-                    Some(batches)
-                }
-                Ok(None) => {
-                    debug!("User processing returned None (no access or error)");
-                    None
-                }
-                Err(e) => {
-                    error!("Error processing user: {}", e);
-                    None
-                }
-            }
-        }).flatten())
+                        let next_page_token = response.next_page_token;
+                        let is_done = next_page_token.is_none();
+
+                        info!(
+                            "User {} page complete: {} files to process",
+                            user_email,
+                            files_to_process.len()
+                        );
+
+                        Some((
+                            stream::iter(files_to_process.into_iter().map(Ok)),
+                            (next_page_token, is_done),
+                        ))
+                    }
+                },
+            )
+            .flatten(),
+        )
     }
 
     async fn sync_source_internal(
@@ -440,17 +420,14 @@ impl SyncManager {
             all_users.len()
         );
 
-        // Create the file stream that will yield file batches as they're discovered
-        let file_stream =
-            self.create_file_stream(all_users, service_auth.clone(), &source.id, &sync_state);
-
+        // Initialize progress tracking
         let processed_count_tracker = Arc::new(AtomicUsize::new(0));
         let success_count_tracker = Arc::new(AtomicUsize::new(0));
         let failed_count_tracker = Arc::new(AtomicUsize::new(0));
         let total_files_discovered = Arc::new(AtomicUsize::new(0));
         let last_progress_time = Arc::new(std::sync::Mutex::new(Instant::now()));
 
-        // Spawn a task to monitor progress and memory usage
+        // Spawn progress monitor
         let monitor_processed = Arc::clone(&processed_count_tracker);
         let monitor_success = Arc::clone(&success_count_tracker);
         let monitor_failed = Arc::clone(&failed_count_tracker);
@@ -474,12 +451,7 @@ impl SyncManager {
                 if time_since_progress > Duration::from_secs(120) {
                     warn!(
                         "No progress in {} seconds! Stuck at {}/{} files (success: {}, failed: {}), cache size: {}",
-                        time_since_progress.as_secs(),
-                        current,
-                        discovered,
-                        success,
-                        failed,
-                        cache_size
+                        time_since_progress.as_secs(), current, discovered, success, failed, cache_size
                     );
                 } else {
                     debug!(
@@ -490,276 +462,165 @@ impl SyncManager {
             }
         });
 
-        // Create global semaphore to limit concurrent requests across all users
-        // Google Drive API limit: 3000 requests per minute per project = 50 req/sec
-        let max_concurrent_requests = std::env::var("GOOGLE_MAX_CONCURRENT_REQUESTS")
-            .unwrap_or_else(|_| "50".to_string())
-            .parse::<usize>()
-            .unwrap_or(50);
-        let global_semaphore = Arc::new(Semaphore::new(max_concurrent_requests));
+        // Use single global rate limiter (200 req/sec), Google Drive allows 12k req/min
+        let global_rate_limiter = Arc::new(RateLimiter::new(200, 5));
+        info!("Using single global rate limiter at 200 req/sec");
 
-        // Create map to store per-user rate limiters
-        let user_rate_limiters: Arc<std::sync::Mutex<HashMap<String, Arc<RateLimiter>>>> =
-            Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let user_stream = self.create_user_stream(all_users, service_auth.clone());
 
-        info!(
-            "Using global semaphore with {} concurrent request limit",
-            max_concurrent_requests
-        );
+        let combined_file_stream = user_stream
+            .map(|(user_email, access_token)| {
+                info!("Creating file stream for user: {}", user_email);
+                self.create_file_stream_for_user(
+                    user_email,
+                    access_token,
+                    service_auth.clone(),
+                    &source.id,
+                    &sync_state,
+                    current_files.clone(),
+                )
+            })
+            .flatten();
 
-        // Process file batches as they arrive from the stream
-        debug!("Starting to process file batches from stream");
-        let results: Vec<Option<()>> = file_stream
-            .then(|batch_result| {
-                let sync_state = sync_state.clone();
-                let sync_run_id = sync_run_id.to_string();
+        // Process all files with the simplified processor
+        debug!("Starting to process file stream");
+        combined_file_stream
+            .for_each_concurrent(30, |file_result| {
+                let service_auth = service_auth.clone();
                 let source_id = source.id.clone();
-                let drive_client = self.drive_client.clone();
-                let event_queue = self.event_queue.clone();
+                let sync_run_id = sync_run_id.to_string();
+                let sync_state = sync_state.clone();
                 let processed_count = Arc::clone(&processed_count_tracker);
                 let success_count = Arc::clone(&success_count_tracker);
                 let failed_count = Arc::clone(&failed_count_tracker);
                 let discovered_count = Arc::clone(&total_files_discovered);
                 let progress_time = Arc::clone(&last_progress_time);
-                let global_semaphore = Arc::clone(&global_semaphore);
-                let current_files = Arc::clone(&current_files);
-                let user_rate_limiters = Arc::clone(&user_rate_limiters);
-                let service_auth = service_auth.clone();
+                let rate_limiter = global_rate_limiter.clone();
+                let drive_client = self.drive_client.clone();
+                let event_queue = self.event_queue.clone();
+                let content_storage = self.content_storage.clone();
 
                 async move {
-                    let batch = match batch_result {
-                        Ok(batch) => batch,
+                    let user_file = match file_result {
+                        Ok(user_file) => user_file,
                         Err(e) => {
-                            error!("Error processing file batch: {}", e);
-                            return Vec::new();
+                            error!("Error in file stream: {}", e);
+                            failed_count.fetch_add(1, Ordering::SeqCst);
+                            return ();
                         }
                     };
 
-                    let batch_size = batch.files.len();
-                    discovered_count.fetch_add(batch_size, Ordering::SeqCst);
+                    discovered_count.fetch_add(1, Ordering::SeqCst);
 
-                    // Add all current file IDs to the global current_files set for deletion tracking
-                    {
-                        let mut current_files_guard = current_files.lock().unwrap();
-                        for file_id in &batch.current_file_ids {
-                            current_files_guard.insert(file_id.clone());
+                    let file_name = user_file.file.name.clone();
+                    let file_id = user_file.file.id.clone();
+                    debug!("Processing file: {} ({}) for user: {}", file_name, file_id, user_file.user_email);
+
+                    // Use rate limiter for file content download
+                    let _result = match rate_limiter.execute_with_retry(|| {
+                        let drive_client = drive_client.clone();
+                        let service_auth = service_auth.clone();
+                        let user_file = user_file.clone();
+                        async move {
+                            drive_client
+                                .get_file_content(&service_auth, &user_file.user_email, &user_file.file)
+                                .await
+                                .with_context(|| format!("Getting content for file {} ({})", user_file.file.name, user_file.file.id))
                         }
-                    }
-
-                    if batch_size > 0 {
-                        info!(
-                            "Processing batch of {} files for user {} (page had {} total files)",
-                            batch_size, batch.user_email, batch.current_file_ids.len()
-                        );
-                        debug!("Files in batch: {:?}", batch.files.iter().map(|f| format!("{}({})", f.name, f.id)).collect::<Vec<_>>());
-                    } else {
-                        debug!(
-                            "Empty batch for user {} (page had {} total files)",
-                            batch.user_email, batch.current_file_ids.len()
-                        );
-                    }
-
-                    // Get or create per-user rate limiter for 5 requests per second (300 per minute per user limit)
-                    let user_rate_limiter = {
-                        let mut limiters = user_rate_limiters.lock().unwrap();
-                        limiters.entry(batch.user_email.clone())
-                            .or_insert_with(|| Arc::new(RateLimiter::new(5, 3))) // 5 req/sec, 3 retries
-                            .clone()
-                    };
-
-                    let file_results = stream::iter(batch.files)
-                        .map(|file| {
-                            let sync_state = sync_state.clone();
-                            let sync_run_id = sync_run_id.clone();
-                            let source_id = source_id.clone();
-                            let processed_count = processed_count.clone();
-                            let success_count = success_count.clone();
-                            let failed_count = failed_count.clone();
-                            let progress_time = progress_time.clone();
-                            let rate_limiter = user_rate_limiter.clone();
-                            let user_email = batch.user_email.clone();
-                            let drive_client = drive_client.clone();
-                            let event_queue = event_queue.clone();
-                            let _user_access_token = batch.access_token.clone();
-                            let global_semaphore = global_semaphore.clone();
-                            let discovered_count = discovered_count.clone();
-                            let service_auth_for_files = service_auth.clone();
-
-                            async move {
-                                // Acquire global semaphore permit first to limit total concurrent requests
-                                debug!("Acquiring global semaphore permit for file: {} ({})", file.name, file.id);
-                                let _global_permit = global_semaphore.acquire().await.expect("Global semaphore should not be closed");
-                                debug!("Global semaphore permit acquired for file: {} ({})", file.name, file.id);
-
-                                let file_name = file.name.clone();
-                                let file_id = file.id.clone();
-                                debug!("Starting to process file: {} ({}) for user {}", file_name, file_id, user_email);
-
-                                // Use rate limiter's execute_with_retry for proper error handling and retries
-                                debug!("Executing rate limiter for file: {} ({})", file_name, file_id);
-                                let result = match rate_limiter.execute_with_retry(|| {
-                                    let drive_client = drive_client.clone();
-                                    let service_auth = service_auth_for_files.clone();
-                                    let user_email = user_email.clone();
-                                    let file_id = file.id.clone();
-                                    let file_name = file.name.clone();
-                                    async move {
-                                        debug!("Inside rate limiter callback, calling get_file_content for file: {} ({})", file_name, file_id);
-                                        let result = drive_client
-                                            .get_file_content(&service_auth, &user_email, &file)
+                    }).await {
+                        Ok(content) => {
+                            if !content.is_empty() {
+                                match content_storage.store_text(&content).await {
+                                    Ok(content_id) => {
+                                        // Resolve the full path for this file
+                                        let file_path = match self
+                                            .resolve_file_path(
+                                                &service_auth,
+                                                &user_file.user_email,
+                                                &user_file.file,
+                                                rate_limiter.clone(),
+                                            )
                                             .await
-                                            .with_context(|| {
-                                                format!("Getting content for file {} ({})", file_name, file_id)
-                                            });
-                                        debug!("get_file_content completed for file: {} ({}), result: {:?}", file_name, file_id, result.is_ok());
-                                        result
-                                    }
-                                }).await {
-                                    Ok(content) => {
-                                        if !content.is_empty() {
-                                            debug!("File content is not empty for file: {} ({}), content length: {}", file.name, file.id, content.len());
-                                            // Resolve the full path for this file
-                                            debug!("Resolving file path for file: {} ({})", file.name, file.id);
-                                            let file_path = match self.resolve_file_path(&service_auth_for_files, &user_email, &file, rate_limiter.clone()).await {
-                                                Ok(path) => {
-                                                    debug!("Successfully resolved path for file: {} ({}), path: {}", file.name, file.id, path);
-                                                    Some(path)
-                                                }
-                                                Err(e) => {
-                                                    warn!("Failed to resolve path for file {}: {}", file.name, e);
-                                                    None
-                                                }
-                                            };
-
-                                            debug!("Storing content in LOB storage for file: {} ({})", file.name, file.id);
-                                            let content_id = match self.content_storage.store_text(&content).await {
-                                                Ok(id) => {
-                                                    debug!("Content stored with ID {} for file: {} ({})", id, file.name, file.id);
-                                                    id
-                                                }
-                                                Err(e) => {
-                                                    error!("Failed to store content for file {}: {}", file.name, e);
-                                                    failed_count.fetch_add(1, Ordering::SeqCst);
-                                                    return None;
-                                                }
-                                            };
-
-                                            debug!("Creating connector event for file: {} ({})", file.name, file.id);
-                                            let event = file.to_connector_event_with_path(
-                                                sync_run_id.clone(),
-                                                source_id.clone(),
-                                                content_id,
-                                                file_path,
-                                            );
-
-                                            debug!("Enqueueing event for file: {} ({})", file.name, file.id);
-                                            match event_queue.enqueue(&source_id, &event).await.with_context(
-                                                || {
-                                                    format!(
-                                                        "Enqueueing event for file {} ({})",
-                                                        file.name, file.id
-                                                    )
-                                                },
-                                            ) {
-                                                Ok(_) => {
-                                                    debug!("Event successfully enqueued for file: {} ({})", file.name, file.id);
-                                                    if let Some(modified_time) = &file.modified_time {
-                                                        debug!("Updating sync state for file: {} ({})", file.name, file.id);
-                                                        if let Err(e) = sync_state
-                                                            .set_file_sync_state(
-                                                                &source_id,
-                                                                &file.id,
-                                                                modified_time,
-                                                            )
-                                                            .await
-                                                            .with_context(|| {
-                                                                format!(
-                                                                    "Updating sync state for file {} ({})",
-                                                                    file.name, file.id
-                                                                )
-                                                            })
-                                                        {
-                                                            error!(
-                                                                "Failed to update sync state for file {}: {:?}",
-                                                                file.name, e
-                                                            );
-                                                            failed_count.fetch_add(1, Ordering::SeqCst);
-                                                            return None;
-                                                        }
-                                                        debug!("Sync state updated for file: {} ({})", file.name, file.id);
-                                                    }
-                                                    debug!(
-                                                        "Successfully processed file: {} ({})",
-                                                        file_name, file_id
-                                                    );
-                                                    success_count.fetch_add(1, Ordering::SeqCst);
-                                                    Some(())
-                                                }
-                                                Err(e) => {
-                                                    error!(
-                                                        "Failed to queue event for file {}: {:?}",
-                                                        file.name, e
-                                                    );
-                                                    failed_count.fetch_add(1, Ordering::SeqCst);
-                                                    None
-                                                }
+                                        {
+                                            Ok(path) => Some(path),
+                                            Err(e) => {
+                                                warn!("Failed to resolve path for file {}: {}", user_file.file.name, e);
+                                                Some(format!("/{}", user_file.file.name))
                                             }
-                                        } else {
-                                            debug!("File {} has empty content, skipping", file.name);
-                                            None
+                                        };
+
+                                        let event = user_file.file.to_connector_event(
+                                            sync_run_id.clone(),
+                                            source_id.clone(),
+                                            content_id,
+                                            file_path,
+                                        );
+
+                                        match event_queue.enqueue(&source_id, &event).await {
+                                            Ok(_) => {
+                                                if let Some(modified_time) = &user_file.file.modified_time {
+                                                    if let Err(e) = sync_state
+                                                        .set_file_sync_state(&source_id, &user_file.file.id, modified_time)
+                                                        .await
+                                                    {
+                                                        error!("Failed to update sync state for file {}: {:?}", user_file.file.name, e);
+                                                        failed_count.fetch_add(1, Ordering::SeqCst);
+                                                        return;
+                                                    }
+                                                }
+                                                success_count.fetch_add(1, Ordering::SeqCst);
+                                                ()
+                                            }
+                                            Err(e) => {
+                                                error!("Failed to queue event for file {}: {:?}", user_file.file.name, e);
+                                                failed_count.fetch_add(1, Ordering::SeqCst);
+                                                ()
+                                            }
                                         }
                                     }
                                     Err(e) => {
-                                        warn!(
-                                            "Failed to get content for file {} ({}): {:?}",
-                                            file.name, file.id, e
-                                        );
+                                        error!("Failed to store content for file {}: {}", user_file.file.name, e);
                                         failed_count.fetch_add(1, Ordering::SeqCst);
-                                        None
+                                        ()
                                     }
-                                };
-
-                                // Update progress counters
-                                let current_processed = processed_count.fetch_add(1, Ordering::SeqCst) + 1;
-                                let current_discovered = discovered_count.load(Ordering::SeqCst);
-
-                                // Update last progress time
-                                *progress_time.lock().unwrap() = Instant::now();
-
-                                // Log progress every 100 files or periodically
-                                if current_processed % 100 == 0 {
-                                    let current_success = success_count.load(Ordering::SeqCst);
-                                    let current_failed = failed_count.load(Ordering::SeqCst);
-                                    info!(
-                                        "Progress: {}/{} files processed ({:.1}%) - {} successful, {} failed",
-                                        current_processed,
-                                        current_discovered,
-                                        if current_discovered > 0 { (current_processed as f64 / current_discovered as f64) * 100.0 } else { 0.0 },
-                                        current_success,
-                                        current_failed
-                                    );
                                 }
-
-                                result
+                            } else {
+                                debug!("File {} has empty content, skipping", user_file.file.name);
+                                ()
                             }
-                        })
-                        .buffer_unordered(20) // Allow more tasks to queue up, rate limiter will control actual rate
-                        .collect::<Vec<_>>()
-                        .await;
+                        }
+                        Err(e) => {
+                            warn!("Failed to get content for file {} ({}): {:?}", user_file.file.name, user_file.file.id, e);
+                            failed_count.fetch_add(1, Ordering::SeqCst);
+                            ()
+                        }
+                    };
 
-                    file_results
+                    // Update progress
+                    let current_processed = processed_count.fetch_add(1, Ordering::SeqCst) + 1;
+                    let current_discovered = discovered_count.load(Ordering::SeqCst);
+                    *progress_time.lock().unwrap() = Instant::now();
+
+                    if current_processed % 100 == 0 {
+                        let current_success = success_count.load(Ordering::SeqCst);
+                        let current_failed = failed_count.load(Ordering::SeqCst);
+                        info!(
+                            "Progress: {}/{} files processed ({:.1}%) - {} successful, {} failed",
+                            current_processed,
+                            current_discovered,
+                            if current_discovered > 0 { (current_processed as f64 / current_discovered as f64) * 100.0 } else { 0.0 },
+                            current_success,
+                            current_failed
+                        );
+                    }
+
                 }
             })
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .flatten()
-            .collect();
+            .await;
 
         // Stop the monitor task
         monitor_handle.abort();
 
-        let updated_count = results.iter().filter(|r| r.is_some()).count();
         let processed_count = processed_count_tracker.load(Ordering::SeqCst);
 
         info!(
@@ -788,11 +649,10 @@ impl SyncManager {
         }
 
         info!(
-            "Sync completed for source {}: {} files discovered, {} processed, {} updated",
+            "Sync completed for source {}: {} files discovered, {} processed",
             source.id,
             current_files_set.len(),
-            processed_count,
-            updated_count
+            processed_count
         );
 
         self.update_source_status(&source.id, "completed").await?;
@@ -801,7 +661,7 @@ impl SyncManager {
         self.folder_cache.clear();
 
         info!("Completed sync for source: {}", source.id);
-        Ok((current_files_set.len(), updated_count))
+        Ok((current_files_set.len(), processed_count))
     }
 
     fn should_index_file(&self, file: &crate::models::GoogleDriveFile) -> bool {
@@ -1325,7 +1185,7 @@ impl SyncManager {
                                                     }
                                                 };
 
-                                                let event = file.to_connector_event_with_path(
+                                                let event = file.to_connector_event(
                                                     sync_run_id.clone(),
                                                     source.id.clone(),
                                                     content_id,
