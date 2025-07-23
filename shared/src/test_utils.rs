@@ -266,7 +266,7 @@ pub async fn create_test_documents(pool: &PgPool) -> Result<Vec<String>> {
 
     // Document 1: Technical documentation
     let doc_1_id = Ulid::new().to_string();
-    let content_1 = "This is a comprehensive guide to Rust programming language. It covers memory safety, ownership, borrowing, and lifetimes. Rust is a systems programming language that runs blazingly fast, prevents segfaults, and guarantees thread safety.";
+    let content_1 = "This is a comprehensive guide to Rust programming language. It covers memory safety, ownership, borrowing, and lifetimes. Rust is a systems programming language that runs blazingly fast, prevents segfaults, and guarantees thread safety.".to_string();
     let content_1_id = content_storage.store_text(content_1).await?;
     sqlx::query(
         r#"
@@ -287,7 +287,7 @@ pub async fn create_test_documents(pool: &PgPool) -> Result<Vec<String>> {
 
     // Document 2: Meeting notes
     let doc_2_id = Ulid::new().to_string();
-    let content_2 = "Attendees discussed the roadmap for Q4. Key priorities include improving search functionality, implementing semantic search, and optimizing database queries. The team will focus on PostgreSQL performance and Redis caching.";
+    let content_2 = "Attendees discussed the roadmap for Q4. Key priorities include improving search functionality, implementing semantic search, and optimizing database queries. The team will focus on PostgreSQL performance and Redis caching.".to_string();
     let content_2_id = content_storage.store_text(content_2).await?;
     sqlx::query(
         r#"
@@ -308,7 +308,7 @@ pub async fn create_test_documents(pool: &PgPool) -> Result<Vec<String>> {
 
     // Document 3: Project specifications
     let doc_3_id = Ulid::new().to_string();
-    let content_3 = "The search engine combines full-text search with vector embeddings. It uses PostgreSQL with pgvector extension for similarity search. The architecture includes caching layer with Redis and supports multiple search modes: fulltext, semantic, and hybrid.";
+    let content_3 = "The search engine combines full-text search with vector embeddings. It uses PostgreSQL with pgvector extension for similarity search. The architecture includes caching layer with Redis and supports multiple search modes: fulltext, semantic, and hybrid.".to_string();
     let content_3_id = content_storage.store_text(content_3).await?;
     sqlx::query(
         r#"
@@ -329,7 +329,7 @@ pub async fn create_test_documents(pool: &PgPool) -> Result<Vec<String>> {
 
     // Document 4: API documentation
     let doc_4_id = Ulid::new().to_string();
-    let content_4 = "The API provides endpoints for document management and search. POST /search accepts queries with different modes. GET /suggestions returns autocomplete suggestions. All endpoints require authentication via JWT tokens.";
+    let content_4 = "The API provides endpoints for document management and search. POST /search accepts queries with different modes. GET /suggestions returns autocomplete suggestions. All endpoints require authentication via JWT tokens.".to_string();
     let content_4_id = content_storage.store_text(content_4).await?;
     sqlx::query(
         r#"
@@ -350,7 +350,7 @@ pub async fn create_test_documents(pool: &PgPool) -> Result<Vec<String>> {
 
     // Document 5: User guide
     let doc_5_id = Ulid::new().to_string();
-    let content_5 = "Welcome to Clio! This guide will help you get started with searching across your organization's documents. You can search using keywords, phrases, or ask questions in natural language. The system will find relevant documents and highlight important passages.";
+    let content_5 = "Welcome to Clio! This guide will help you get started with searching across your organization's documents. You can search using keywords, phrases, or ask questions in natural language. The system will find relevant documents and highlight important passages.".to_string();
     let content_5_id = content_storage.store_text(content_5).await?;
     sqlx::query(
         r#"

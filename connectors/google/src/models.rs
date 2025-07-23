@@ -70,9 +70,9 @@ impl From<GoogleDriveFile> for FolderMetadata {
 impl GoogleDriveFile {
     pub fn to_connector_event(
         &self,
-        sync_run_id: String,
-        source_id: String,
-        content_id: String,
+        sync_run_id: &str,
+        source_id: &str,
+        content_id: &str,
         path: Option<String>,
     ) -> ConnectorEvent {
         let mut users = Vec::new();
@@ -132,10 +132,10 @@ impl GoogleDriveFile {
         };
 
         ConnectorEvent::DocumentCreated {
-            sync_run_id,
-            source_id,
+            sync_run_id: sync_run_id.to_string(),
+            source_id: source_id.to_string(),
             document_id: self.id.clone(),
-            content_id,
+            content_id: content_id.to_string(),
             metadata,
             permissions,
         }

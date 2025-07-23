@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use reqwest::Client;
 use serde::Deserialize;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{debug, info};
 
 use shared::RateLimiter;
@@ -45,15 +46,29 @@ pub struct AdminClient {
 
 impl AdminClient {
     pub fn new() -> Self {
+        let client = Client::builder()
+            .pool_max_idle_per_host(5) // Reuse connections for admin API requests
+            .pool_idle_timeout(Duration::from_secs(90))
+            .tcp_keepalive(Duration::from_secs(60))
+            .build()
+            .expect("Failed to build HTTP client");
+
         Self {
-            client: Client::new(),
+            client,
             rate_limiter: None,
         }
     }
 
     pub fn with_rate_limiter(rate_limiter: Arc<RateLimiter>) -> Self {
+        let client = Client::builder()
+            .pool_max_idle_per_host(5) // Reuse connections for admin API requests
+            .pool_idle_timeout(Duration::from_secs(90))
+            .tcp_keepalive(Duration::from_secs(60))
+            .build()
+            .expect("Failed to build HTTP client");
+
         Self {
-            client: Client::new(),
+            client,
             rate_limiter: Some(rate_limiter),
         }
     }

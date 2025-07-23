@@ -33,6 +33,7 @@ enum ApiResult<T> {
 pub struct DriveClient {
     client: Client,
     rate_limiter: Option<Arc<RateLimiter>>,
+    pdfium: Arc<Pdfium>,
 }
 
 impl DriveClient {
@@ -40,12 +41,18 @@ impl DriveClient {
         let client = Client::builder()
             .timeout(Duration::from_secs(60)) // 60 second timeout for all requests
             .connect_timeout(Duration::from_secs(10)) // 10 second connection timeout
+            .pool_max_idle_per_host(10) // Reuse connections to reduce SSL handshakes
+            .pool_idle_timeout(Duration::from_secs(90)) // Keep connections alive longer
+            .tcp_keepalive(Duration::from_secs(60)) // Enable TCP keepalive
             .build()
             .expect("Failed to build HTTP client");
+
+        let pdfium = Arc::new(Pdfium::default());
 
         Self {
             client,
             rate_limiter: None,
+            pdfium,
         }
     }
 
@@ -99,12 +106,18 @@ impl DriveClient {
         let client = Client::builder()
             .timeout(Duration::from_secs(60)) // 60 second timeout for all requests
             .connect_timeout(Duration::from_secs(10)) // 10 second connection timeout
+            .pool_max_idle_per_host(10) // Reuse connections to reduce SSL handshakes
+            .pool_idle_timeout(Duration::from_secs(90)) // Keep connections alive longer
+            .tcp_keepalive(Duration::from_secs(60)) // Enable TCP keepalive
             .build()
             .expect("Failed to build HTTP client");
+
+        let pdfium = Arc::new(Pdfium::default());
 
         Self {
             client,
             rate_limiter: Some(rate_limiter),
+            pdfium,
         }
     }
 
@@ -464,11 +477,8 @@ impl DriveClient {
                     .await
                     .with_context(|| format!("Failed to read PDF content for file {}", file_id))?;
 
-                // Initialize pdfium
-                let pdfium = Pdfium::default();
-
-                // Load PDF from bytes
-                let document = match pdfium.load_pdf_from_byte_slice(&pdf_bytes, None) {
+                // Use shared pdfium instance
+                let document = match self.pdfium.load_pdf_from_byte_slice(&pdf_bytes, None) {
                     Ok(doc) => doc,
                     Err(e) => {
                         debug!(

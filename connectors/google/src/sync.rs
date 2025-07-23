@@ -530,7 +530,7 @@ impl SyncManager {
                     }).await {
                         Ok(content) => {
                             if !content.is_empty() {
-                                match content_storage.store_text(&content).await {
+                                match content_storage.store_text(content).await {
                                     Ok(content_id) => {
                                         // Resolve the full path for this file
                                         let file_path = match self
@@ -550,9 +550,9 @@ impl SyncManager {
                                         };
 
                                         let event = user_file.file.to_connector_event(
-                                            sync_run_id.clone(),
-                                            source_id.clone(),
-                                            content_id,
+                                            &sync_run_id,
+                                            &source_id,
+                                            &content_id,
                                             file_path,
                                         );
 
@@ -1175,7 +1175,7 @@ impl SyncManager {
                                                 // Store content in LOB and get OID
                                                 let content_id = match self
                                                     .content_storage
-                                                    .store_text(&content)
+                                                    .store_text(content)
                                                     .await
                                                 {
                                                     Ok(oid) => oid,
@@ -1186,9 +1186,9 @@ impl SyncManager {
                                                 };
 
                                                 let event = file.to_connector_event(
-                                                    sync_run_id.clone(),
-                                                    source.id.clone(),
-                                                    content_id,
+                                                    &sync_run_id,
+                                                    &source.id,
+                                                    &content_id,
                                                     file_path,
                                                 );
 

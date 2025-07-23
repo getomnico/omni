@@ -93,7 +93,7 @@ impl ContentStorage {
     }
 
     /// Store content as string (convenience method)
-    pub async fn store_text(&self, content: &str) -> Result<String, ContentStorageError> {
+    pub async fn store_text(&self, content: String) -> Result<String, ContentStorageError> {
         self.store_content_with_type(content.as_bytes(), Some("text/plain"))
             .await
     }

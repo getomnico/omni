@@ -58,10 +58,17 @@ impl ServiceAccountAuth {
             ));
         }
 
+        let client = Client::builder()
+            .pool_max_idle_per_host(5) // Reuse connections for token requests
+            .pool_idle_timeout(std::time::Duration::from_secs(90))
+            .tcp_keepalive(std::time::Duration::from_secs(60))
+            .build()
+            .map_err(|e| anyhow!("Failed to build HTTP client: {}", e))?;
+
         Ok(Self {
             service_account,
             scopes,
-            client: Client::new(),
+            client,
             token_cache: Arc::new(RwLock::new(HashMap::new())),
         })
     }
