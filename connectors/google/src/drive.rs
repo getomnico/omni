@@ -477,8 +477,8 @@ impl DriveClient {
                     .await
                     .with_context(|| format!("Failed to read PDF content for file {}", file_id))?;
 
-                // Use shared pdfium instance
-                let document = match self.pdfium.load_pdf_from_byte_slice(&pdf_bytes, None) {
+                let pdfium = Pdfium::default();
+                let document = match pdfium.load_pdf_from_byte_slice(&pdf_bytes, None) {
                     Ok(doc) => doc,
                     Err(e) => {
                         debug!(

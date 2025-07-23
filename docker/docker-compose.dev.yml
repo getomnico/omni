@@ -83,4 +83,8 @@ services:
   vllm:
     profiles:
       - production
+
+  caddy:
+    profiles:
+      - production
   

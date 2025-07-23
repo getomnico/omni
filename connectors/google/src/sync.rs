@@ -170,6 +170,27 @@ impl SyncManager {
         info!("Found {} active Google Drive sources", sources.len());
 
         for source in sources {
+            // Check if this source already has a running sync
+            match self.get_running_sync_for_source(&source.id).await {
+                Ok(Some(running_sync)) => {
+                    info!(
+                        "Source {} already has a running sync (id: {}), skipping scheduled sync",
+                        source.id, running_sync.id
+                    );
+                    continue;
+                }
+                Ok(None) => {
+                    // No running sync, proceed with checking if we should run a full sync
+                }
+                Err(e) => {
+                    error!(
+                        "Failed to check for running sync for source {}: {}",
+                        source.id, e
+                    );
+                    continue;
+                }
+            }
+
             // Check if we should run a full sync for this source
             match self.should_run_full_sync(&source.id).await {
                 Ok(should_sync) => {
@@ -209,6 +230,15 @@ impl SyncManager {
 
     async fn sync_source(&self, source: &Source) -> Result<()> {
         info!("Syncing source: {} ({})", source.name, source.id);
+
+        // Double-check for running sync to prevent race conditions
+        if let Some(running_sync) = self.get_running_sync_for_source(&source.id).await? {
+            warn!(
+                "Found running sync for source {} (id: {}) just before creating new sync, aborting",
+                source.id, running_sync.id
+            );
+            return Ok(());
+        }
 
         // Create a sync run record
         let sync_run_id = self.create_sync_run(&source.id, SyncType::Full).await?;
@@ -1660,73 +1690,90 @@ impl SyncManager {
         .fetch_all(&self.pool)
         .await?;
 
-        let mut force_sync = false;
-
         if !running_syncs.is_empty() {
-            info!("Found {} interrupted running syncs, marking as failed and triggering immediate sync", running_syncs.len());
+            info!(
+                "Found {} interrupted running syncs, continuing them",
+                running_syncs.len()
+            );
 
             for sync_run in running_syncs {
                 info!(
-                    "Marking interrupted sync as failed: id={}, source_id={}, started_at={:?}",
+                    "Continuing interrupted sync: id={}, source_id={}, started_at={:?}",
                     sync_run.id, sync_run.source_id, sync_run.started_at
                 );
 
-                let error_message = "Sync interrupted by connector restart";
+                // Get the source for this sync run
+                if let Some(source) = self.get_source_by_id(&sync_run.source_id).await? {
+                    if source.is_active {
+                        // Continue the sync using the existing sync run ID
+                        let result = self.sync_source_internal(&source, &sync_run.id).await;
 
-                if let Err(e) = sqlx::query(
-                    "UPDATE sync_runs
-                     SET status = $1, completed_at = CURRENT_TIMESTAMP,
-                         error_message = $2, updated_at = CURRENT_TIMESTAMP
-                     WHERE id = $3",
-                )
-                .bind(SyncStatus::Failed)
-                .bind(error_message)
-                .bind(&sync_run.id)
-                .execute(&self.pool)
-                .await
-                {
-                    error!(
-                        "Failed to mark interrupted sync {} as failed: {}",
-                        sync_run.id, e
+                        // Update sync run based on result
+                        match result {
+                            Ok((files_processed, files_updated)) => {
+                                self.update_sync_run_completed(
+                                    &sync_run.id,
+                                    files_processed as i32,
+                                    files_updated as i32,
+                                )
+                                .await?;
+                                info!("Successfully continued and completed sync {}", sync_run.id);
+                            }
+                            Err(e) => {
+                                error!("Failed to continue sync {}: {}", sync_run.id, e);
+                                self.update_sync_run_failed(&sync_run.id, &e.to_string())
+                                    .await?;
+                                self.update_source_status(&source.id, "failed").await?;
+                            }
+                        }
+                    } else {
+                        info!("Source {} is not active, marking sync as failed", source.id);
+                        self.update_sync_run_failed(&sync_run.id, "Source is not active")
+                            .await?;
+                    }
+                } else {
+                    warn!(
+                        "Source {} not found for sync run {}, marking as failed",
+                        sync_run.source_id, sync_run.id
                     );
+                    self.update_sync_run_failed(&sync_run.id, "Source not found")
+                        .await?;
                 }
             }
 
-            // Force sync immediately after recovery
-            force_sync = true;
-            info!("Interrupted sync recovery completed, will trigger immediate full sync");
+            info!("Interrupted sync recovery completed");
         } else {
             info!("No interrupted running syncs found");
         }
 
-        // Now check for scheduled syncs (or force sync if we recovered from interruption)
+        // Now check for scheduled syncs for sources without running syncs
         let sources = self.get_active_sources().await?;
         info!("Found {} active Google Drive sources", sources.len());
 
         for source in sources {
-            let should_sync = if force_sync {
+            // Check if this source already has a running sync (from recovery above)
+            if let Some(_running_sync) = self.get_running_sync_for_source(&source.id).await? {
                 info!(
-                    "Forcing sync for source {} due to startup recovery",
+                    "Source {} already has a running sync, skipping scheduled check",
                     source.id
                 );
-                true
-            } else {
-                match self.should_run_full_sync(&source.id).await {
-                    Ok(should_sync) => should_sync,
-                    Err(e) => {
-                        error!(
-                            "Failed to check sync status for source {}: {}",
-                            source.id, e
-                        );
-                        continue;
+                continue;
+            }
+
+            match self.should_run_full_sync(&source.id).await {
+                Ok(should_sync) => {
+                    if should_sync {
+                        if let Err(e) = self.sync_source(&source).await {
+                            error!("Failed to sync source {}: {}", source.id, e);
+                            self.update_source_status(&source.id, "failed").await?;
+                        }
                     }
                 }
-            };
-
-            if should_sync {
-                if let Err(e) = self.sync_source(&source).await {
-                    error!("Failed to sync source {}: {}", source.id, e);
-                    self.update_source_status(&source.id, "failed").await?;
+                Err(e) => {
+                    error!(
+                        "Failed to check sync status for source {}: {}",
+                        source.id, e
+                    );
                 }
             }
         }
