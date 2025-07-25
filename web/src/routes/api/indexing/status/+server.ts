@@ -3,7 +3,7 @@ import { syncRuns, sources, documents } from '$lib/server/db/schema.js'
 import { sql, eq, desc } from 'drizzle-orm'
 import type { RequestHandler } from './$types.js'
 import postgres from 'postgres'
-import { DATABASE_URL } from '$env/static/private'
+import { env } from '$env/dynamic/private'
 
 export const GET: RequestHandler = async ({ url }) => {
     const stream = new ReadableStream({
@@ -93,7 +93,7 @@ export const GET: RequestHandler = async ({ url }) => {
             // Setup PostgreSQL LISTEN/NOTIFY for real-time updates
             const setupNotifications = async () => {
                 try {
-                    listenSql = postgres(DATABASE_URL)
+                    listenSql = postgres(env.DATABASE_URL)
 
                     // Listen for sync_runs updates
                     await listenSql.listen('sync_run_update', async () => {

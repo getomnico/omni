@@ -37,12 +37,6 @@ jobs:
           - name: clio-google-connector
             context: .
             dockerfile: connectors/google/Dockerfile
-          - name: clio-slack-connector
-            context: .
-            dockerfile: connectors/slack/Dockerfile
-          - name: clio-atlassian-connector
-            context: .
-            dockerfile: connectors/atlassian/Dockerfile
 
     steps:
       - name: Checkout repository
