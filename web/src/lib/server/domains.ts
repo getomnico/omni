@@ -184,3 +184,11 @@ export class DomainService {
         }
     }
 }
+
+export async function isEmailFromApprovedDomain(email: string): Promise<boolean> {
+    const domain = DomainService.extractDomainFromEmail(email)
+    if (!domain) {
+        return false
+    }
+    return await DomainService.isDomainApproved(domain)
+}

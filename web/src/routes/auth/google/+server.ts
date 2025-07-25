@@ -1,12 +1,12 @@
 import { redirect } from '@sveltejs/kit'
 import { GoogleOAuthService } from '$lib/server/oauth/google'
-import { applyRateLimit } from '$lib/server/rateLimit'
+import { checkRateLimit } from '$lib/server/rateLimit'
 import type { RequestHandler } from './$types'
 
 export const GET: RequestHandler = async ({ url, getClientAddress }) => {
     try {
         // Apply rate limiting for OAuth requests
-        await applyRateLimit(getClientAddress(), 'oauth-initiate', 5, 60) // 5 requests per minute
+        await checkRateLimit(getClientAddress(), 'oauth-initiate', 5, 60) // 5 requests per minute
 
         // Check if Google OAuth is configured
         if (!GoogleOAuthService.isConfigured()) {

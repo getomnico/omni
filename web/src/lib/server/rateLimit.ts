@@ -98,6 +98,22 @@ export async function rateLimit(
     }
 }
 
+export async function applyRateLimit(
+    ip: string,
+    key: string,
+    maxAttempts: number,
+    windowSeconds: number,
+): Promise<void> {
+    const rateLimitKey = `${ip}:${key}`
+    const result = await rateLimit(rateLimitKey, maxAttempts, windowSeconds)
+
+    if (!result.success) {
+        throw new Error(
+            `Rate limit exceeded. Try again at ${new Date(result.resetTime!).toISOString()}`,
+        )
+    }
+}
+
 function getClientIp(event: RequestEvent): string {
     // Check various headers for the real IP
     const forwarded = event.request.headers.get('x-forwarded-for')

@@ -127,3 +127,8 @@ export async function createUserSession(userId: string) {
         }
     }
 }
+
+export async function validateSession(sessionToken: string) {
+    const result = await validateSessionToken(sessionToken)
+    return result.user ? result : null
+}
