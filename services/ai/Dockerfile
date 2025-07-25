@@ -1,51 +1,31 @@
-FROM nvidia/cuda:12.1.0-devel-ubuntu22.04
+FROM python:3.12-slim
 
-# Set timezone and prevent interactive prompts
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=UTC
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
-# Install Python 3.12
-# Temporarily disable NVIDIA sources to avoid mirror sync issues
-RUN mv /etc/apt/sources.list.d/cuda-ubuntu2204-x86_64.list /etc/apt/sources.list.d/cuda-ubuntu2204-x86_64.list.bak && \
-    apt-get update && apt-get install -y \
-    software-properties-common \
-    tzdata \
-    && add-apt-repository ppa:deadsnakes/ppa \
-    && apt-get update && apt-get install -y \
-    python3.12 \
-    python3.12-venv \
-    python3.12-dev \
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
-    ninja-build \
     curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && mv /etc/apt/sources.list.d/cuda-ubuntu2204-x86_64.list.bak /etc/apt/sources.list.d/cuda-ubuntu2204-x86_64.list
-
-# Create symlinks for python
-RUN ln -s /usr/bin/python3.12 /usr/bin/python
-
-# Install pip using ensurepip
-RUN python -m ensurepip --upgrade
-
-# Install build dependencies first
-RUN python -m pip install --upgrade pip setuptools wheel
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install flash-attn separately with build isolation disabled
-RUN python -m pip install torch --index-url https://download.pytorch.org/whl/cu126
-RUN python -m pip install --no-build-isolation flash-attn --no-cache-dir
+# Copy requirements and create CPU-only version
+COPY requirements.txt requirements-original.txt
 
-# Install pip manually
-RUN curl -sS https://bootstrap.pypa.io/get-pip.py | python
+# Create CPU-only requirements by removing GPU-specific packages
+RUN grep -v -E "(flash-attn|nvidia-|triton)" requirements-original.txt > requirements-cpu.txt
 
-# Copy requirements and install Python dependencies
-COPY requirements.txt .
-RUN python -m pip install --no-cache-dir -r requirements.txt
+# Install CPU-only PyTorch (much smaller - ~200MB vs 3GB+)
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+# Install remaining dependencies
+RUN pip install --no-cache-dir -r requirements-cpu.txt
 
 # Copy application code
 COPY . .
 
 # Run the application
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
