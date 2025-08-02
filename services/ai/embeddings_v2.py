@@ -67,7 +67,11 @@ def forward(
         (num_examples,), task_id, dtype=torch.int32, device=model.device
     )
 
-    inputs = {k: v.cuda() for k, v in inputs.items()}
+    # Move inputs to the same device as the model
+    if torch.cuda.is_available() and model.device.type == 'cuda':
+        inputs = {k: v.cuda() for k, v in inputs.items()}
+    else:
+        inputs = {k: v.cpu() for k, v in inputs.items()}
 
     start = time.time_ns()
     with torch.no_grad():

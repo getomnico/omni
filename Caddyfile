@@ -29,6 +29,9 @@
 
     # Handle Google webhook notifications (must be before OAuth routes)
     handle /google-webhook {
+        # Rewrite path to connector's webhook endpoint
+        rewrite /google-webhook /webhook
+        
         reverse_proxy google-connector:4001 {
             # Health check for the connector
             health_uri /health
@@ -42,9 +45,6 @@
             
             # Preserve all webhook headers from Google
             header_up X-Goog-* {>X-Goog-*}
-            
-            # Rewrite path to connector's webhook endpoint
-            rewrite /google-webhook /webhook
         }
     }
 
