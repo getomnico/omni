@@ -254,7 +254,10 @@ impl SyncManager {
     pub async fn sync_all_sources(&self) -> Result<()> {
         let sources = self.get_active_sources().await?;
 
-        info!("Found {} active Google Drive sources", sources.len());
+        info!(
+            "Found {} active Google sources (Drive & Gmail)",
+            sources.len()
+        );
 
         for source in sources {
             // Check if this source already has a running sync
@@ -304,11 +307,12 @@ impl SyncManager {
         let sources = sqlx::query_as::<_, Source>(
             "SELECT s.* FROM sources s
              INNER JOIN service_credentials sc ON s.id = sc.source_id
-             WHERE s.source_type = $1
+             WHERE s.source_type IN ($1, $2)
              AND s.is_active = true
              AND sc.provider = 'google'",
         )
         .bind(SourceType::GoogleDrive)
+        .bind(SourceType::Gmail)
         .fetch_all(&self.pool)
         .await?;
 
@@ -330,7 +334,16 @@ impl SyncManager {
         // Create a sync run record
         let sync_run_id = self.create_sync_run(&source.id, SyncType::Full).await?;
 
-        let result = self.sync_source_internal(source, &sync_run_id).await;
+        let result = match source.source_type {
+            SourceType::GoogleDrive => self.sync_drive_source_internal(source, &sync_run_id).await,
+            SourceType::Gmail => self.sync_gmail_source_internal(source, &sync_run_id).await,
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Unsupported source type: {:?}",
+                    source.source_type
+                ))
+            }
+        };
 
         // Update sync run based on result
         match &result {
@@ -349,85 +362,6 @@ impl SyncManager {
         }
 
         result.map(|_| ())
-    }
-
-    async fn sync_source_for_user(
-        &self,
-        user_email: &str,
-        service_auth: Arc<ServiceAccountAuth>,
-        source_id: &str,
-        sync_run_id: &str,
-        sync_state: &SyncState,
-        current_files: Arc<std::sync::Mutex<HashSet<String>>>,
-        rate_limiter: Arc<RateLimiter>,
-        processed_threads: Arc<std::sync::Mutex<HashSet<String>>>,
-    ) -> Result<(usize, usize)> {
-        info!("Processing all data for user: {}", user_email);
-
-        let mut total_processed = 0;
-        let mut total_updated = 0;
-
-        // Step 1: Sync Google Drive files
-        info!("Starting Google Drive sync for user: {}", user_email);
-        match self
-            .sync_drive_for_user(
-                user_email,
-                service_auth.clone(),
-                source_id,
-                sync_run_id,
-                sync_state,
-                current_files.clone(),
-                rate_limiter.clone(),
-            )
-            .await
-        {
-            Ok((drive_processed, drive_updated)) => {
-                total_processed += drive_processed;
-                total_updated += drive_updated;
-                info!(
-                    "Google Drive sync completed for user {}: {} processed, {} updated",
-                    user_email, drive_processed, drive_updated
-                );
-            }
-            Err(e) => {
-                error!("Google Drive sync failed for user {}: {}", user_email, e);
-                // Continue with Gmail sync even if Drive fails
-            }
-        }
-
-        // Step 2: Sync Gmail
-        info!("Starting Gmail sync for user: {}", user_email);
-        match self
-            .sync_gmail_for_user(
-                user_email,
-                service_auth.clone(),
-                source_id,
-                sync_run_id,
-                processed_threads.clone(),
-                rate_limiter.clone(),
-            )
-            .await
-        {
-            Ok((gmail_processed, gmail_updated)) => {
-                total_processed += gmail_processed;
-                total_updated += gmail_updated;
-                info!(
-                    "Gmail sync completed for user {}: {} processed, {} updated",
-                    user_email, gmail_processed, gmail_updated
-                );
-            }
-            Err(e) => {
-                error!("Gmail sync failed for user {}: {}", user_email, e);
-                // Continue even if Gmail fails
-            }
-        }
-
-        info!(
-            "Completed sync for user {}: {} total processed, {} total updated",
-            user_email, total_processed, total_updated
-        );
-
-        Ok((total_processed, total_updated))
     }
 
     async fn sync_drive_for_user(
@@ -700,7 +634,7 @@ impl SyncManager {
         Ok((processed, updated))
     }
 
-    async fn sync_source_internal(
+    async fn sync_drive_source_internal(
         &self,
         source: &Source,
         sync_run_id: &str,
@@ -727,7 +661,7 @@ impl SyncManager {
         let sync_state = SyncState::new(self.redis_client.clone());
         let synced_files = sync_state.get_all_synced_file_ids(&source.id).await?;
         let current_files = Arc::new(std::sync::Mutex::new(HashSet::new()));
-        let processed_threads = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let processed_threads = Arc::new(std::sync::Mutex::new(HashSet::<String>::new()));
 
         // Use single global rate limiter (200 req/sec) for ALL Google API calls
         let global_rate_limiter = Arc::new(RateLimiter::new(200, 5));
@@ -749,7 +683,7 @@ impl SyncManager {
                 Ok(_token) => {
                     info!("Processing user: {}", user_email);
                     match self
-                        .sync_source_for_user(
+                        .sync_drive_for_user(
                             &user_email,
                             service_auth.clone(),
                             &source.id,
@@ -757,7 +691,6 @@ impl SyncManager {
                             &sync_state,
                             current_files.clone(),
                             global_rate_limiter.clone(),
-                            processed_threads.clone(),
                         )
                         .await
                     {
@@ -817,6 +750,92 @@ impl SyncManager {
 
         info!("Completed sync for source: {}", source.id);
         Ok((current_files_set.len(), total_processed))
+    }
+
+    async fn sync_gmail_source_internal(
+        &self,
+        source: &Source,
+        sync_run_id: &str,
+    ) -> Result<(usize, usize)> {
+        let service_creds = self.get_service_credentials(&source.id).await?;
+        let service_auth = Arc::new(self.create_service_auth(&service_creds)?);
+        let domain = self.get_domain_from_credentials(&service_creds)?;
+        let user_email = self.get_user_email_from_source(&source.id).await
+            .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source.id, e))?;
+
+        // Get all users in the organization
+        info!("Listing all users in domain: {}", domain);
+
+        // Use the logged-in user's email to list all users (they should be a super-admin)
+        info!("Using user email: {}", user_email);
+        let admin_access_token = service_auth.get_access_token(&user_email).await
+            .map_err(|e| anyhow::anyhow!("Failed to get access token for user {}: {}. Make sure the user is a super-admin and the service account has domain-wide delegation enabled.", user_email, e))?;
+        let all_users = self
+            .admin_client
+            .list_all_users(&admin_access_token, &domain)
+            .await?;
+        info!("Found {} users in domain {}", all_users.len(), domain);
+
+        let processed_threads = Arc::new(std::sync::Mutex::new(HashSet::<String>::new()));
+
+        // Use single global rate limiter (200 req/sec) for ALL Google API calls
+        let global_rate_limiter = Arc::new(RateLimiter::new(200, 5));
+        info!("Using single global rate limiter at 200 req/sec for all API calls");
+
+        info!(
+            "Starting sequential user processing for {} users (Gmail only)",
+            all_users.len()
+        );
+
+        let mut total_processed = 0;
+        let mut total_updated = 0;
+
+        for user in all_users {
+            let user_email = user.primary_email.clone();
+
+            // Get access token for this user
+            match service_auth.get_access_token(&user_email).await {
+                Ok(_token) => {
+                    info!("Processing user: {}", user_email);
+                    match self
+                        .sync_gmail_for_user(
+                            &user_email,
+                            service_auth.clone(),
+                            &source.id,
+                            sync_run_id,
+                            processed_threads.clone(),
+                            global_rate_limiter.clone(),
+                        )
+                        .await
+                    {
+                        Ok((processed, updated)) => {
+                            total_processed += processed;
+                            total_updated += updated;
+                            info!(
+                                "User {} Gmail sync completed: {} processed, {} updated",
+                                user_email, processed, updated
+                            );
+                        }
+                        Err(e) => {
+                            error!("Failed to process Gmail for user {}: {}", user_email, e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to get access token for user {}: {}. This user may not have Gmail access.", user_email, e);
+                }
+            }
+        }
+
+        info!(
+            "Gmail sync completed for source {}: {} total processed, {} total updated",
+            source.id, total_processed, total_updated
+        );
+
+        self.update_source_status(&source.id, "completed").await?;
+
+        info!("Completed Gmail sync for source: {}", source.id);
+        Ok((total_processed, total_updated))
     }
 
     fn should_index_file(&self, file: &crate::models::GoogleDriveFile) -> bool {
@@ -938,12 +957,14 @@ impl SyncManager {
     pub async fn sync_source_by_id(&self, source_id: String) -> Result<()> {
         info!("Manually triggered sync for source: {}", source_id);
 
-        let source =
-            sqlx::query_as::<_, Source>("SELECT * FROM sources WHERE id = $1 AND source_type = $2")
-                .bind(&source_id)
-                .bind(SourceType::GoogleDrive)
-                .fetch_optional(&self.pool)
-                .await?;
+        let source = sqlx::query_as::<_, Source>(
+            "SELECT * FROM sources WHERE id = $1 AND source_type IN ($2, $3)",
+        )
+        .bind(&source_id)
+        .bind(SourceType::GoogleDrive)
+        .bind(SourceType::Gmail)
+        .fetch_optional(&self.pool)
+        .await?;
 
         match source {
             Some(source) => {
@@ -1560,7 +1581,7 @@ impl SyncManager {
 
         let sources = self.get_active_sources().await?;
         info!(
-            "Found {} active Google Drive sources for webhook registration",
+            "Found {} active Google sources (Drive & Gmail) for webhook registration",
             sources.len()
         );
 
@@ -2131,7 +2152,18 @@ impl SyncManager {
                 if let Some(source) = self.get_source_by_id(&sync_run.source_id).await? {
                     if source.is_active {
                         // Continue the sync using the existing sync run ID
-                        let result = self.sync_source_internal(&source, &sync_run.id).await;
+                        let result = match source.source_type {
+                            SourceType::GoogleDrive => {
+                                self.sync_drive_source_internal(&source, &sync_run.id).await
+                            }
+                            SourceType::Gmail => {
+                                self.sync_gmail_source_internal(&source, &sync_run.id).await
+                            }
+                            _ => Err(anyhow::anyhow!(
+                                "Unsupported source type: {:?}",
+                                source.source_type
+                            )),
+                        };
 
                         // Update sync run based on result
                         match result {
@@ -2173,7 +2205,10 @@ impl SyncManager {
 
         // Now check for scheduled syncs for sources without running syncs
         let sources = self.get_active_sources().await?;
-        info!("Found {} active Google Drive sources", sources.len());
+        info!(
+            "Found {} active Google sources (Drive & Gmail)",
+            sources.len()
+        );
 
         for source in sources {
             // Check if this source already has a running sync (from recovery above)

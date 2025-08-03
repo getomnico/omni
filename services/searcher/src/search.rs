@@ -328,6 +328,7 @@ impl SearchEngine {
     }
 
     async fn generate_query_embedding(&self, query: &str) -> Result<Vec<f32>> {
+        debug!("Generating query embeddings for query '{}'", query);
         let embeddings = self
             .ai_client
             .generate_embeddings(vec![query.to_string()])

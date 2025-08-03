@@ -56,9 +56,15 @@
 
     function getSourceByType(providerId: string) {
         if (providerId === 'google') {
-            return data.connectedSources.find(
-                (source) => source.sourceType === 'google_drive' || source.sourceType === 'gmail',
+            // Check if we have both Google Drive and Gmail sources
+            const driveSource = data.connectedSources.find(
+                (source) => source.sourceType === 'google_drive',
             )
+            const gmailSource = data.connectedSources.find(
+                (source) => source.sourceType === 'gmail',
+            )
+            // Return true if we have at least one Google source
+            return driveSource || gmailSource
         } else if (providerId === 'atlassian') {
             return data.connectedSources.find(
                 (source) => source.sourceType === 'confluence' || source.sourceType === 'jira',
@@ -154,42 +160,112 @@
                 authType = AuthType.BOT_TOKEN
             }
 
-            // First create the source
-            const sourceResponse = await fetch('/api/sources', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    name: `${selectedIntegration.name} Source`,
-                    sourceType:
-                        selectedIntegration.id === 'google'
-                            ? 'google_drive'
-                            : selectedIntegration.id,
-                    config: {},
-                }),
-            })
+            // For Google, create separate sources for Drive and Gmail
+            if (selectedIntegration.id === 'google') {
+                // Create Google Drive source
+                const driveSourceResponse = await fetch('/api/sources', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: 'Google Drive',
+                        sourceType: 'google_drive',
+                        config: {},
+                    }),
+                })
 
-            if (!sourceResponse.ok) {
-                throw new Error('Failed to create source')
-            }
+                if (!driveSourceResponse.ok) {
+                    throw new Error('Failed to create Google Drive source')
+                }
 
-            const source = await sourceResponse.json()
+                const driveSource = await driveSourceResponse.json()
 
-            // Then create the service credentials
-            const credentialsResponse = await fetch('/api/service-credentials', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    sourceId: source.id,
-                    provider: provider,
-                    authType: authType,
-                    principalEmail: principalEmail || null,
-                    credentials: credentials,
-                    config: config,
-                }),
-            })
+                // Create service credentials for Drive source
+                const driveCredentialsResponse = await fetch('/api/service-credentials', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sourceId: driveSource.id,
+                        provider: provider,
+                        authType: authType,
+                        principalEmail: principalEmail || null,
+                        credentials: credentials,
+                        config: config,
+                    }),
+                })
 
-            if (!credentialsResponse.ok) {
-                throw new Error('Failed to create service credentials')
+                if (!driveCredentialsResponse.ok) {
+                    throw new Error('Failed to create Google Drive service credentials')
+                }
+
+                // Create Gmail source
+                const gmailSourceResponse = await fetch('/api/sources', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: 'Gmail',
+                        sourceType: 'gmail',
+                        config: {},
+                    }),
+                })
+
+                if (!gmailSourceResponse.ok) {
+                    throw new Error('Failed to create Gmail source')
+                }
+
+                const gmailSource = await gmailSourceResponse.json()
+
+                // Create service credentials for Gmail source (same credentials as Drive)
+                const gmailCredentialsResponse = await fetch('/api/service-credentials', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sourceId: gmailSource.id,
+                        provider: provider,
+                        authType: authType,
+                        principalEmail: principalEmail || null,
+                        credentials: credentials,
+                        config: config,
+                    }),
+                })
+
+                if (!gmailCredentialsResponse.ok) {
+                    throw new Error('Failed to create Gmail service credentials')
+                }
+            } else {
+                // For non-Google integrations, create single source as before
+                const sourceResponse = await fetch('/api/sources', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: `${selectedIntegration.name} Source`,
+                        sourceType: selectedIntegration.id,
+                        config: {},
+                    }),
+                })
+
+                if (!sourceResponse.ok) {
+                    throw new Error('Failed to create source')
+                }
+
+                const source = await sourceResponse.json()
+
+                // Then create the service credentials
+                const credentialsResponse = await fetch('/api/service-credentials', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sourceId: source.id,
+                        provider: provider,
+                        authType: authType,
+                        principalEmail: principalEmail || null,
+                        credentials: credentials,
+                        config: config,
+                    }),
+                })
+
+                if (!credentialsResponse.ok) {
+                    throw new Error('Failed to create service credentials')
+                }
             }
 
             toast.success(`${selectedIntegration.name} connected successfully!`)
@@ -361,81 +437,123 @@
                 </CardHeader>
                 <CardContent>
                     {#if connectedSource}
-                        {@const latestSync = getLatestSyncForSource(connectedSource.id)}
-                        <div class="space-y-3">
-                            <div>
-                                <div class="text-sm font-medium">Last Sync</div>
-                                <div class="text-muted-foreground text-sm">
-                                    {formatDate(connectedSource.lastSyncAt)}
-                                </div>
-                            </div>
-
-                            {#if latestSync}
-                                <div>
-                                    <div class="mb-2 text-sm font-medium">Latest Sync</div>
-                                    <div class="space-y-1 text-xs">
-                                        <div class="flex items-center gap-2">
-                                            <span
-                                                class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(latestSync.status)}`}
-                                            >
-                                                {latestSync.status}
-                                            </span>
-                                            <span class="text-muted-foreground"
-                                                >{latestSync.syncType}</span
-                                            >
-                                        </div>
-                                        {#if latestSync.documentsProcessed > 0}
-                                            <div class="text-muted-foreground">
-                                                {latestSync.documentsProcessed} documents processed
-                                                {#if latestSync.documentsUpdated > 0}
-                                                    ({latestSync.documentsUpdated} updated)
+                        {#if integration.id === 'google'}
+                            {@const driveSource = data.connectedSources.find(
+                                (source) => source.sourceType === 'google_drive',
+                            )}
+                            {@const gmailSource = data.connectedSources.find(
+                                (source) => source.sourceType === 'gmail',
+                            )}
+                            <div class="space-y-4">
+                                <!-- Google Drive Section -->
+                                {#if driveSource}
+                                    {@const driveSync = getLatestSyncForSource(driveSource.id)}
+                                    <div class="rounded-lg border p-3">
+                                        <div class="mb-2 text-sm font-medium">Google Drive</div>
+                                        <div class="space-y-2 text-xs">
+                                            {#if driveSync}
+                                                <div class="flex items-center gap-2">
+                                                    <span
+                                                        class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(driveSync.status)}`}
+                                                    >
+                                                        {driveSync.status}
+                                                    </span>
+                                                    <span class="text-muted-foreground"
+                                                        >{driveSync.syncType}</span
+                                                    >
+                                                </div>
+                                                {#if driveSync.documentsProcessed > 0}
+                                                    <div class="text-muted-foreground">
+                                                        {driveSync.documentsProcessed} documents processed
+                                                    </div>
                                                 {/if}
+                                            {/if}
+                                            <div class="flex gap-1">
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onclick={() => syncSource(driveSource.id)}
+                                                    disabled={syncingSourceId === driveSource.id}
+                                                    class="h-7 px-2 text-xs"
+                                                >
+                                                    {syncingSourceId === driveSource.id
+                                                        ? 'Syncing...'
+                                                        : 'Sync'}
+                                                </Button>
                                             </div>
-                                        {/if}
-                                        {#if latestSync.errorMessage}
-                                            <div class="text-red-600 dark:text-red-400">
-                                                {latestSync.errorMessage}
-                                            </div>
-                                        {/if}
+                                        </div>
                                     </div>
-                                </div>
-                            {/if}
+                                {/if}
 
-                            <div class="flex gap-2">
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    onclick={() => syncSource(connectedSource.id)}
-                                    disabled={syncingSourceId === connectedSource.id}
-                                >
-                                    {syncingSourceId === connectedSource.id
-                                        ? 'Syncing...'
-                                        : 'Sync Now'}
-                                </Button>
+                                <!-- Gmail Section -->
+                                {#if gmailSource}
+                                    {@const gmailSync = getLatestSyncForSource(gmailSource.id)}
+                                    <div class="rounded-lg border p-3">
+                                        <div class="mb-2 text-sm font-medium">Gmail</div>
+                                        <div class="space-y-2 text-xs">
+                                            {#if gmailSync}
+                                                <div class="flex items-center gap-2">
+                                                    <span
+                                                        class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(gmailSync.status)}`}
+                                                    >
+                                                        {gmailSync.status}
+                                                    </span>
+                                                    <span class="text-muted-foreground"
+                                                        >{gmailSync.syncType}</span
+                                                    >
+                                                </div>
+                                                {#if gmailSync.documentsProcessed > 0}
+                                                    <div class="text-muted-foreground">
+                                                        {gmailSync.documentsProcessed} documents processed
+                                                    </div>
+                                                {/if}
+                                            {/if}
+                                            <div class="flex gap-1">
+                                                <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onclick={() => syncSource(gmailSource.id)}
+                                                    disabled={syncingSourceId === gmailSource.id}
+                                                    class="h-7 px-2 text-xs"
+                                                >
+                                                    {syncingSourceId === gmailSource.id
+                                                        ? 'Syncing...'
+                                                        : 'Sync'}
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                {/if}
+
+                                <!-- Disconnect Button for Google -->
                                 <AlertDialog.Root>
                                     <AlertDialog.Trigger
                                         class={buttonVariants({ variant: 'outline', size: 'sm' })}
-                                        disabled={disconnectingSourceId === connectedSource.id}
+                                        disabled={disconnectingSourceId}
                                     >
-                                        {disconnectingSourceId === connectedSource.id
+                                        {disconnectingSourceId
                                             ? 'Disconnecting...'
-                                            : 'Disconnect'}
+                                            : 'Disconnect All'}
                                     </AlertDialog.Trigger>
                                     <AlertDialog.Content>
                                         <AlertDialog.Header>
-                                            <AlertDialog.Title
-                                                >Disconnect {integration.name}?</AlertDialog.Title
+                                            <AlertDialog.Title>Disconnect Google?</AlertDialog.Title
                                             >
                                             <AlertDialog.Description>
-                                                This will stop syncing data from {integration.name} and
-                                                remove access credentials. Existing indexed documents
-                                                will remain searchable.
+                                                This will disconnect both Google Drive and Gmail
+                                                sources and remove access credentials. Existing
+                                                indexed documents will remain searchable.
                                             </AlertDialog.Description>
                                         </AlertDialog.Header>
                                         <AlertDialog.Footer>
                                             <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
                                             <AlertDialog.Action
-                                                onclick={() => disconnectSource(connectedSource.id)}
+                                                onclick={() => {
+                                                    if (driveSource)
+                                                        disconnectSource(driveSource.id)
+                                                    if (gmailSource)
+                                                        disconnectSource(gmailSource.id)
+                                                }}
                                             >
                                                 Disconnect
                                             </AlertDialog.Action>
@@ -443,7 +561,95 @@
                                     </AlertDialog.Content>
                                 </AlertDialog.Root>
                             </div>
-                        </div>
+                        {:else}
+                            {@const latestSync = getLatestSyncForSource(connectedSource.id)}
+                            <div class="space-y-3">
+                                <div>
+                                    <div class="text-sm font-medium">Last Sync</div>
+                                    <div class="text-muted-foreground text-sm">
+                                        {formatDate(connectedSource.lastSyncAt)}
+                                    </div>
+                                </div>
+
+                                {#if latestSync}
+                                    <div>
+                                        <div class="mb-2 text-sm font-medium">Latest Sync</div>
+                                        <div class="space-y-1 text-xs">
+                                            <div class="flex items-center gap-2">
+                                                <span
+                                                    class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(latestSync.status)}`}
+                                                >
+                                                    {latestSync.status}
+                                                </span>
+                                                <span class="text-muted-foreground"
+                                                    >{latestSync.syncType}</span
+                                                >
+                                            </div>
+                                            {#if latestSync.documentsProcessed > 0}
+                                                <div class="text-muted-foreground">
+                                                    {latestSync.documentsProcessed} documents processed
+                                                    {#if latestSync.documentsUpdated > 0}
+                                                        ({latestSync.documentsUpdated} updated)
+                                                    {/if}
+                                                </div>
+                                            {/if}
+                                            {#if latestSync.errorMessage}
+                                                <div class="text-red-600 dark:text-red-400">
+                                                    {latestSync.errorMessage}
+                                                </div>
+                                            {/if}
+                                        </div>
+                                    </div>
+                                {/if}
+
+                                <div class="flex gap-2">
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onclick={() => syncSource(connectedSource.id)}
+                                        disabled={syncingSourceId === connectedSource.id}
+                                    >
+                                        {syncingSourceId === connectedSource.id
+                                            ? 'Syncing...'
+                                            : 'Sync Now'}
+                                    </Button>
+                                    <AlertDialog.Root>
+                                        <AlertDialog.Trigger
+                                            class={buttonVariants({
+                                                variant: 'outline',
+                                                size: 'sm',
+                                            })}
+                                            disabled={disconnectingSourceId === connectedSource.id}
+                                        >
+                                            {disconnectingSourceId === connectedSource.id
+                                                ? 'Disconnecting...'
+                                                : 'Disconnect'}
+                                        </AlertDialog.Trigger>
+                                        <AlertDialog.Content>
+                                            <AlertDialog.Header>
+                                                <AlertDialog.Title
+                                                    >Disconnect {integration.name}?</AlertDialog.Title
+                                                >
+                                                <AlertDialog.Description>
+                                                    This will stop syncing data from {integration.name}
+                                                    and remove access credentials. Existing indexed documents
+                                                    will remain searchable.
+                                                </AlertDialog.Description>
+                                            </AlertDialog.Header>
+                                            <AlertDialog.Footer>
+                                                <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+                                                <AlertDialog.Action
+                                                    onclick={() =>
+                                                        disconnectSource(connectedSource.id)}
+                                                >
+                                                    Disconnect
+                                                </AlertDialog.Action>
+                                            </AlertDialog.Footer>
+                                        </AlertDialog.Content>
+                                    </AlertDialog.Root>
+                                </div>
+                            </div>
+                        {/if}
                     {:else}
                         <Button onclick={() => openSetupDialog(integration)}>
                             Connect {integration.name}
