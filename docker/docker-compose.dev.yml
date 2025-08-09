@@ -65,8 +65,14 @@ services:
     command: python -m uvicorn main:app --host 0.0.0.0 --port ${AI_SERVICE_PORT} --reload
 
   google-connector:
+    build:
+      context: ../
+      dockerfile: connectors/google/Dockerfile
+      args:
+        BUILD_MODE: debug
     environment:
       <<: *dev-database-url
+      RUST_BACKTRACE: full
 
   slack-connector:
     environment:

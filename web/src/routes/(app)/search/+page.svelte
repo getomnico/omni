@@ -7,8 +7,14 @@
     import type { PageData } from './$types.js'
     import type { SearchResponse, SearchRequest } from '$lib/types/search.js'
     import AIAnswer from '$lib/components/AIAnswer.svelte'
+    import { getSourceIconPath, getSourceTypeFromId } from '$lib/utils/icons'
 
     let { data }: { data: PageData } = $props()
+
+    // Create sources lookup map for efficient access
+    let sourcesLookup = $derived(
+        data.sources ? new Map(data.sources.map((s: any) => [s.id, s.sourceType])) : new Map(),
+    )
 
     // inputQuery represents the current value in the search input
     let inputQuery = $state($page.url.searchParams.get('q') || '')
@@ -139,6 +145,16 @@
         if (content.length <= maxLength) return content
         return content.substring(0, maxLength) + '...'
     }
+
+    function getSourceIcon(sourceId: string): { iconPath: string | null; useFileText: boolean } {
+        const sourceType = sourcesLookup.get(sourceId)
+        if (!sourceType) {
+            return { iconPath: null, useFileText: true }
+        }
+
+        const iconPath = getSourceIconPath(sourceType)
+        return { iconPath, useFileText: !iconPath }
+    }
 </script>
 
 <svelte:head>
@@ -265,7 +281,16 @@
                                 <CardContent class="p-6">
                                     <div class="mb-3 flex items-start justify-between">
                                         <div class="flex items-center gap-2">
-                                            <FileText class="h-4 w-4 text-blue-600" />
+                                            {#if getSourceIcon(result.document.source).useFileText}
+                                                <FileText class="h-4 w-4 text-blue-600" />
+                                            {:else}
+                                                <img
+                                                    src={getSourceIcon(result.document.source)
+                                                        .iconPath}
+                                                    alt="Source icon"
+                                                    class="h-4 w-4"
+                                                />
+                                            {/if}
                                             <h3
                                                 class="text-lg font-semibold text-blue-600 hover:text-blue-800"
                                             >

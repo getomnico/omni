@@ -9,6 +9,7 @@ import asyncio
 import httpx
 import json
 from concurrent.futures import ThreadPoolExecutor
+import base64
 
 from embeddings_v2 import (
     load_model,
@@ -16,6 +17,7 @@ from embeddings_v2 import (
     DEFAULT_TASK,
 )
 from providers import create_llm_provider, LLMProvider
+from pdf_extractor import PDFExtractionRequest, PDFExtractionResponse, extract_text_from_pdf
 
 
 def get_required_env(key: str) -> str:
@@ -288,6 +290,27 @@ async def generate_response(request: PromptRequest):
         media_type="text/plain",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
+
+
+@app.post("/extract_pdf", response_model=PDFExtractionResponse)
+async def extract_pdf(request: PDFExtractionRequest):
+    """Extract text from a PDF file"""
+    logger.info(f"Extracting text from PDF ({len(request.pdf_bytes)} bytes)")
+    
+    # Run PDF extraction in executor to avoid blocking
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        _executor,
+        extract_text_from_pdf,
+        request.pdf_bytes
+    )
+    
+    if result.error:
+        logger.warning(f"PDF extraction completed with error: {result.error}")
+    else:
+        logger.info(f"PDF extraction successful: {result.page_count} pages, {len(result.text)} characters")
+    
+    return result
 
 
 async def generate_non_streaming_response(request: PromptRequest) -> PromptResponse:

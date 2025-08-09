@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Context, Result};
-use pdfium_render::prelude::*;
 use reqwest::Client;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -11,7 +10,7 @@ use crate::models::{
     DriveChangesResponse, GoogleDriveFile, GooglePresentation, WebhookChannel,
     WebhookChannelResponse,
 };
-use shared::RateLimiter;
+use shared::{AIClient, RateLimiter};
 
 const DRIVE_API_BASE: &str = "https://www.googleapis.com/drive/v3";
 const DOCS_API_BASE: &str = "https://docs.googleapis.com/v1";
@@ -22,7 +21,7 @@ const SLIDES_API_BASE: &str = "https://slides.googleapis.com/v1";
 pub struct DriveClient {
     client: Client,
     rate_limiter: Option<Arc<RateLimiter>>,
-    pdfium: Arc<Pdfium>,
+    ai_client: Option<AIClient>,
 }
 
 impl DriveClient {
@@ -36,16 +35,14 @@ impl DriveClient {
             .build()
             .expect("Failed to build HTTP client");
 
-        let pdfium = Arc::new(Pdfium::default());
-
         Self {
             client,
             rate_limiter: None,
-            pdfium,
+            ai_client: None,
         }
     }
 
-    pub fn with_rate_limiter(rate_limiter: Arc<RateLimiter>) -> Self {
+    pub fn with_rate_limiter(rate_limiter: Arc<RateLimiter>, ai_client: AIClient) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(60)) // 60 second timeout for all requests
             .connect_timeout(Duration::from_secs(10)) // 10 second connection timeout
@@ -55,12 +52,10 @@ impl DriveClient {
             .build()
             .expect("Failed to build HTTP client");
 
-        let pdfium = Arc::new(Pdfium::default());
-
         Self {
             client,
             rate_limiter: Some(rate_limiter),
-            pdfium,
+            ai_client: Some(ai_client),
         }
     }
 
@@ -372,10 +367,21 @@ impl DriveClient {
         user_email: &str,
         file_id: &str,
     ) -> Result<String> {
+        // Check if AI client is available
+        let ai_client = match &self.ai_client {
+            Some(client) => client,
+            None => {
+                warn!("AI client not configured, cannot extract PDF text");
+                return Ok(String::new());
+            }
+        };
+
         let file_id = file_id.to_string();
+        let ai_client = ai_client.clone();
 
         execute_with_auth_retry(auth, user_email, &self.rate_limiter, |token| {
             let file_id = file_id.clone();
+            let ai_client = ai_client.clone();
             async move {
                 let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, &file_id);
 
@@ -403,7 +409,9 @@ impl DriveClient {
                 }
 
                 // Check content length to warn about large files
-                if let Some(content_length) = response.headers().get(reqwest::header::CONTENT_LENGTH) {
+                if let Some(content_length) =
+                    response.headers().get(reqwest::header::CONTENT_LENGTH)
+                {
                     if let Ok(length_str) = content_length.to_str() {
                         if let Ok(length) = length_str.parse::<u64>() {
                             let mb = length as f64 / (1024.0 * 1024.0);
@@ -421,37 +429,37 @@ impl DriveClient {
                     .await
                     .with_context(|| format!("Failed to read PDF content for file {}", file_id))?;
 
-                let document = match self.pdfium.load_pdf_from_byte_slice(&pdf_bytes, None) {
-                    Ok(doc) => doc,
-                    Err(e) => {
-                        debug!(
-                            "Failed to load PDF: {}. File might be corrupted or password-protected.",
-                            e
-                        );
-                        return Ok(ApiResult::Success(String::new()));
+                debug!("Sending PDF to AI service for text extraction: {}", file_id);
+
+                // Use AI service to extract text from PDF
+                match ai_client.extract_pdf_text(pdf_bytes.to_vec()).await {
+                    Ok(extraction_result) => {
+                        if let Some(error) = extraction_result.error {
+                            debug!(
+                                "PDF extraction completed with error for file {}: {}",
+                                file_id, error
+                            );
+                            // Return empty string if extraction failed
+                            Ok(ApiResult::Success(String::new()))
+                        } else {
+                            debug!(
+                                "Successfully extracted text from PDF {}: {} pages, {} characters",
+                                file_id,
+                                extraction_result.page_count,
+                                extraction_result.text.len()
+                            );
+                            Ok(ApiResult::Success(extraction_result.text))
+                        }
                     }
-                };
-
-                let mut full_text = String::new();
-
-                // Extract text from each page
-                for page in document.pages().iter() {
-                    match page.text() {
-                        Ok(page_text) => {
-                            let text = page_text.all();
-                            full_text.push_str(&text);
-                            full_text.push('\n'); // Add page separator
-                        }
-                        Err(e) => {
-                            debug!("Failed to extract text from PDF page: {}", e);
-                            // Continue with other pages
-                        }
+                    Err(e) => {
+                        warn!("Failed to extract text from PDF {}: {:#}", file_id, e);
+                        // Return empty string if extraction failed
+                        Ok(ApiResult::Success(String::new()))
                     }
                 }
-
-                Ok(ApiResult::Success(full_text.trim().to_string()))
             }
-        }).await
+        })
+        .await
     }
 
     pub async fn register_changes_webhook(

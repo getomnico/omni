@@ -38,7 +38,14 @@ async fn main() -> Result<()> {
 
     let db_pool = DatabasePool::from_config(&config.database).await?;
 
-    let sync_manager = Arc::new(SyncManager::new(db_pool.pool().clone(), redis_client).await?);
+    let sync_manager = Arc::new(
+        SyncManager::new(
+            db_pool.pool().clone(),
+            redis_client,
+            config.ai_service_url.clone(),
+        )
+        .await?,
+    );
 
     // Create API state
     let api_state = ApiState {

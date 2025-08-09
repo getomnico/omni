@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y \
     g++ \
     ninja-build \
     curl \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Create symlinks for python
@@ -36,14 +37,15 @@ COPY requirements.txt .
 
 # Install PyTorch first with pre-built wheels
 RUN python -m pip install torch --index-url https://download.pytorch.org/whl/cu126 --no-cache-dir
+RUN python -m pip install numpy
 
-# Install flash-attn with optimizations
-RUN MAX_JOBS=4 python -m pip install --no-build-isolation flash-attn==2.7.0 --no-cache-dir
+# Install flash-attn with memory constraints
+# RUN MAX_JOBS=1 python -m pip install --no-build-isolation flash-attn==2.7.0.post2 --no-cache-dir
 
 # Install remaining dependencies
 RUN python -m pip install --no-cache-dir -r requirements.txt
 
-# Runtime stage - use smaller runtime image
+# Runtime stage - use smaller runtime image but include build tools for Triton
 FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -52,13 +54,15 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install Python 3.12 runtime only
+# Install Python 3.12 and essential build tools needed by Triton
 RUN apt-get update && apt-get install -y \
     software-properties-common \
     && add-apt-repository ppa:deadsnakes/ppa \
     && apt-get update && apt-get install -y \
     python3.12 \
     python3.12-venv \
+    gcc \
+    g++ \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/python3.12 /usr/bin/python
 

@@ -1,9 +1,10 @@
 use anyhow::{anyhow, Result};
+use base64::{engine::general_purpose, Engine as _};
 use futures_util::{Stream, StreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
-use tracing::error;
+use tracing::{debug, error};
 
 #[derive(Serialize)]
 pub struct EmbeddingRequest {
@@ -35,6 +36,18 @@ pub struct PromptRequest {
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub stream: Option<bool>,
+}
+
+#[derive(Serialize)]
+pub struct PDFExtractionRequest {
+    pub pdf_bytes: String, // Base64-encoded PDF bytes
+}
+
+#[derive(Deserialize)]
+pub struct PDFExtractionResponse {
+    pub text: String,
+    pub page_count: i32,
+    pub error: Option<String>,
 }
 
 #[derive(Clone)]
@@ -207,5 +220,54 @@ impl AIClient {
         };
 
         Ok(Box::pin(string_stream))
+    }
+
+    /// Extract text from a PDF file
+    pub async fn extract_pdf_text(&self, pdf_bytes: Vec<u8>) -> Result<PDFExtractionResponse> {
+        debug!(
+            "Sending PDF ({} bytes) to AI service for text extraction",
+            pdf_bytes.len()
+        );
+
+        // Encode PDF bytes as base64
+        let pdf_bytes_b64 = general_purpose::STANDARD.encode(&pdf_bytes);
+        let request = PDFExtractionRequest {
+            pdf_bytes: pdf_bytes_b64,
+        };
+
+        let response = self
+            .client
+            .post(format!("{}/extract_pdf", self.base_url))
+            .json(&request)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await?;
+            error!(
+                "PDF extraction failed with status {}: {}",
+                status, error_text
+            );
+            return Err(anyhow!(
+                "PDF extraction failed with status {}: {}",
+                status,
+                error_text
+            ));
+        }
+
+        let extraction_response: PDFExtractionResponse = response.json().await?;
+
+        if let Some(ref error) = extraction_response.error {
+            debug!("PDF extraction completed with error: {}", error);
+        } else {
+            debug!(
+                "PDF extraction successful: {} pages, {} characters",
+                extraction_response.page_count,
+                extraction_response.text.len()
+            );
+        }
+
+        Ok(extraction_response)
     }
 }

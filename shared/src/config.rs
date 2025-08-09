@@ -56,6 +56,7 @@ pub struct GoogleConnectorConfig {
     pub base: ConnectorConfig,
     pub database: DatabaseConfig,
     pub webhook_url: Option<String>,
+    pub ai_service_url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -319,10 +320,14 @@ impl GoogleConnectorConfig {
             }
         }
 
+        let ai_service_url = get_required_env("AI_SERVICE_URL");
+        let ai_service_url = validate_url(&ai_service_url, "AI_SERVICE_URL");
+
         Self {
             base,
             database,
             webhook_url,
+            ai_service_url,
         }
     }
 }

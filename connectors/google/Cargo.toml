@@ -30,7 +30,6 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 jsonwebtoken = "9"
 base64 = "0.21"
-pdfium-render = { version = "0.8.33", features = ["sync"] }
 uuid = { workspace = true }
 time = { workspace = true }
 futures = { workspace = true }

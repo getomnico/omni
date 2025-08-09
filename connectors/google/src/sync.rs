@@ -22,7 +22,7 @@ use shared::models::{
 };
 use shared::queue::EventQueue;
 use shared::utils::generate_ulid;
-use shared::{ContentStorage, RateLimiter};
+use shared::{AIClient, ContentStorage, RateLimiter};
 
 pub struct SyncManager {
     pool: PgPool,
@@ -34,6 +34,7 @@ pub struct SyncManager {
     content_storage: ContentStorage,
     service_credentials_repo: ServiceCredentialsRepo,
     folder_cache: LruFolderCache,
+    ai_client: AIClient,
 }
 
 #[derive(Clone)]
@@ -217,7 +218,11 @@ impl SyncState {
 }
 
 impl SyncManager {
-    pub async fn new(pool: PgPool, redis_client: RedisClient) -> Result<Self> {
+    pub async fn new(
+        pool: PgPool,
+        redis_client: RedisClient,
+        ai_service_url: String,
+    ) -> Result<Self> {
         let event_queue = EventQueue::new(pool.clone());
         let service_credentials_repo = ServiceCredentialsRepo::new(pool.clone())?;
 
@@ -232,7 +237,8 @@ impl SyncManager {
             .unwrap_or(5);
 
         let rate_limiter = Arc::new(RateLimiter::new(api_rate_limit, max_retries));
-        let drive_client = DriveClient::with_rate_limiter(rate_limiter.clone());
+        let ai_client = AIClient::new(ai_service_url);
+        let drive_client = DriveClient::with_rate_limiter(rate_limiter.clone(), ai_client.clone());
         let gmail_client = GmailClient::with_rate_limiter(rate_limiter.clone());
         let admin_client = AdminClient::with_rate_limiter(rate_limiter);
 
@@ -248,6 +254,7 @@ impl SyncManager {
             content_storage,
             service_credentials_repo,
             folder_cache: LruFolderCache::new(10_000), // Cache up to 10,000 folder metadata entries
+            ai_client,
         })
     }
 

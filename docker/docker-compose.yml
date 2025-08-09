@@ -105,9 +105,10 @@ services:
     restart: unless-stopped
 
   ai:
-    build:
-      context: ../services/ai
-    image: clio-ai
+    # build:
+    #   context: ../services/ai
+    #   dockerfile: Dockerfile.gpu
+    image: ghcr.io/cliohq/clio-ai:latest
     container_name: clio-ai
     environment:
       - DATABASE_URL=${DATABASE_URL}
@@ -190,6 +191,7 @@ services:
       - REDIS_URL=${REDIS_URL}
       - RUST_LOG=${RUST_LOG}
       - PORT=${GOOGLE_CONNECTOR_PORT}
+      - AI_SERVICE_URL=${AI_SERVICE_URL}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI}
