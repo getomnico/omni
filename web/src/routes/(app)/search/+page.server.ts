@@ -3,11 +3,13 @@ import type { SearchResponse, SearchRequest } from '$lib/types/search.js'
 
 export const load = async ({ url, fetch }) => {
     const query = url.searchParams.get('q')
+    const aiAnswerEnabled = env.AI_ANSWER_ENABLED !== 'false' // Default to true if not set
 
     if (!query || query.trim() === '') {
         return {
             searchResults: null,
             sources: null,
+            aiAnswerEnabled,
         }
     }
 
@@ -24,7 +26,7 @@ export const load = async ({ url, fetch }) => {
                     query: query.trim(),
                     limit: 20,
                     offset: 0,
-                    mode: 'hybrid',
+                    mode: 'fulltext',
                 } as SearchRequest),
             }),
             // Sources request
@@ -46,6 +48,7 @@ export const load = async ({ url, fetch }) => {
                 searchResults: null,
                 sources: null,
                 error: 'Search service unavailable',
+                aiAnswerEnabled,
             }
         }
 
@@ -62,10 +65,12 @@ export const load = async ({ url, fetch }) => {
             )
         }
 
-        console.log('Search Results:', JSON.stringify(searchResults, null, 2))
+        // console.log('Search Results:', JSON.stringify(searchResults, null, 2))
+        console.log('Sources Results:', JSON.stringify(sources, null, 2))
         return {
             searchResults,
             sources,
+            aiAnswerEnabled,
         }
     } catch (error) {
         console.error('Error performing search:', error)
@@ -73,6 +78,7 @@ export const load = async ({ url, fetch }) => {
             searchResults: null,
             sources: null,
             error: 'Failed to perform search',
+            aiAnswerEnabled,
         }
     }
 }

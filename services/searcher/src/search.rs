@@ -331,7 +331,13 @@ impl SearchEngine {
         debug!("Generating query embeddings for query '{}'", query);
         let embeddings = self
             .ai_client
-            .generate_embeddings(vec![query.to_string()])
+            .generate_embeddings_with_options(
+                vec![query.to_string()],
+                Some("retrieval.query".to_string()),
+                None,
+                Some("none".to_string()),
+                Some("high".to_string()), // High priority for search queries
+            )
             .await?;
         if let Some(first_embedding) = embeddings.first() {
             if let Some(first_chunk) = first_embedding.chunk_embeddings.first() {

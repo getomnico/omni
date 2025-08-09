@@ -3,13 +3,17 @@ import sys
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Literal
 import logging
 import asyncio
 import httpx
 import json
 from concurrent.futures import ThreadPoolExecutor
 import base64
+import multiprocessing
+from enum import IntEnum
+from dataclasses import dataclass, field
+import time
 
 from embeddings_v2 import (
     load_model,
@@ -86,8 +90,28 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Clio AI Service", version="0.1.0")
 
-# Thread pool for async operations
-_executor = ThreadPoolExecutor(max_workers=2)
+# Thread pool for async operations - scale based on CPU cores
+# Reserve some cores for the web server and other processes
+max_workers = max(2, min(multiprocessing.cpu_count() - 1, 8))
+_executor = ThreadPoolExecutor(max_workers=max_workers)
+
+# Priority queue for managing embedding requests
+class Priority(IntEnum):
+    HIGH = 1    # Searcher requests
+    NORMAL = 2  # Default
+    LOW = 3     # Indexer bulk requests
+
+@dataclass(order=True)
+class PrioritizedRequest:
+    priority: int
+    request_id: str = field(compare=False)
+    request: 'EmbeddingRequest' = field(compare=False)
+    future: asyncio.Future = field(compare=False)
+    timestamp: float = field(default_factory=time.time, compare=False)
+
+# Global priority queue
+_request_queue: asyncio.PriorityQueue = None
+_queue_processor_task = None
 
 # Global LLM provider instance
 llm_provider: Optional[LLMProvider] = None
@@ -106,6 +130,7 @@ class EmbeddingRequest(BaseModel):
     n_sentences: Optional[int] = (
         None  # Number of sentences per chunk (sentence mode only, overrides chunk_size)
     )
+    priority: Optional[Literal["high", "normal", "low"]] = "normal"  # Request priority
 
 
 class EmbeddingResponse(BaseModel):
@@ -140,10 +165,18 @@ class PromptResponse(BaseModel):
 @app.on_event("startup")
 async def startup_event():
     """Load model and initialize LLM provider on startup"""
-    global llm_provider
+    global llm_provider, _request_queue, _queue_processor_task
 
+    # Initialize priority queue
+    _request_queue = asyncio.PriorityQueue(maxsize=100)
+    
+    # Start queue processor task
+    _queue_processor_task = asyncio.create_task(process_embedding_queue())
+    
     # Load embedding model
     await asyncio.get_event_loop().run_in_executor(_executor, load_model)
+    
+    logger.info(f"Initialized with {max_workers} thread pool workers")
 
     # Initialize LLM provider
     try:
@@ -166,6 +199,71 @@ async def startup_event():
     except Exception as e:
         logger.error(f"Failed to initialize LLM provider: {e}")
         raise e
+
+
+async def process_embedding_queue():
+    """Process embedding requests from the priority queue"""
+    while True:
+        try:
+            # Get the highest priority request
+            prioritized_request = await _request_queue.get()
+            request = prioritized_request.request
+            future = prioritized_request.future
+            
+            # Log queue wait time for monitoring
+            wait_time = time.time() - prioritized_request.timestamp
+            if wait_time > 1.0:
+                logger.warning(
+                    f"Request {prioritized_request.request_id} waited {wait_time:.2f}s in queue (priority: {prioritized_request.priority})"
+                )
+            
+            try:
+                # Process the embedding request
+                chunk_batch = await asyncio.get_event_loop().run_in_executor(
+                    _executor,
+                    generate_embeddings_sync,
+                    request.texts,
+                    request.task,
+                    request.chunk_size,
+                    request.chunking_mode,
+                    request.n_sentences,
+                )
+                
+                response = EmbeddingResponse(
+                    embeddings=[[c.embedding for c in chunks] for chunks in chunk_batch],
+                    chunks_count=[len(chunks) for chunks in chunk_batch],
+                    chunks=[[c.span for c in chunks] for chunks in chunk_batch],
+                    model_name=EMBEDDING_MODEL,
+                )
+                
+                # Set the result on the future
+                future.set_result(response)
+                
+            except Exception as e:
+                logger.error(f"Failed to process embedding request: {e}")
+                future.set_exception(e)
+                
+        except asyncio.CancelledError:
+            logger.info("Queue processor task cancelled")
+            break
+        except Exception as e:
+            logger.error(f"Error in queue processor: {e}")
+            await asyncio.sleep(0.1)  # Brief pause on error
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown"""
+    global _queue_processor_task
+    
+    if _queue_processor_task:
+        _queue_processor_task.cancel()
+        try:
+            await _queue_processor_task
+        except asyncio.CancelledError:
+            pass
+    
+    logger.info("AI service shutdown complete")
 
 
 @app.get("/health")
@@ -203,7 +301,7 @@ async def generate_embeddings(request: EmbeddingRequest):
       - If only chunk_size is provided: groups sentences until chunk_size tokens limit
     """
     logger.info(
-        f"Generating embeddings for {len(request.texts)} texts with chunking_mode={request.chunking_mode}, chunk_size={request.chunk_size}, n_sentences={request.n_sentences}"
+        f"Generating embeddings for {len(request.texts)} texts with priority={request.priority}, chunking_mode={request.chunking_mode}, chunk_size={request.chunk_size}, n_sentences={request.n_sentences}"
     )
     logger.info(f"Input text for generating embeddings: {request.texts}")
 
@@ -216,26 +314,44 @@ async def generate_embeddings(request: EmbeddingRequest):
         )
 
     try:
-        # Run embedding generation in thread pool to avoid blocking
-        chunk_batch = await asyncio.get_event_loop().run_in_executor(
-            _executor,
-            generate_embeddings_sync,
-            request.texts,
-            request.task,
-            request.chunk_size,
-            request.chunking_mode,
-            request.n_sentences,
+        # Map priority string to enum
+        priority_map = {
+            "high": Priority.HIGH,
+            "normal": Priority.NORMAL,
+            "low": Priority.LOW
+        }
+        priority = priority_map.get(request.priority, Priority.NORMAL)
+        
+        # Create a future for this request
+        future = asyncio.Future()
+        
+        # Generate a unique request ID
+        import uuid
+        request_id = str(uuid.uuid4())[:8]
+        
+        # Create prioritized request
+        prioritized_request = PrioritizedRequest(
+            priority=priority,
+            request_id=request_id,
+            request=request,
+            future=future
         )
-
+        
+        # Add to queue
+        await _request_queue.put(prioritized_request)
+        
+        # Log queue size if it's getting large
+        queue_size = _request_queue.qsize()
+        if queue_size > 10:
+            logger.warning(f"Embedding queue size: {queue_size}")
+        
+        # Wait for the result
+        response = await future
+        
         logger.info(
-            f"Generated these many chunks for each input text: {[len(chunks) for chunks in chunk_batch]}"
+            f"Generated these many chunks for each input text: {response.chunks_count}"
         )
-        return EmbeddingResponse(
-            embeddings=[[c.embedding for c in chunks] for chunks in chunk_batch],
-            chunks_count=[len(chunks) for chunks in chunk_batch],
-            chunks=[[c.span for c in chunks] for chunks in chunk_batch],
-            model_name=EMBEDDING_MODEL,
-        )
+        return response
 
     except Exception as e:
         logger.error(f"Failed to generate embeddings: {str(e)}")

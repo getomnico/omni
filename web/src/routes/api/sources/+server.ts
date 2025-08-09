@@ -10,12 +10,11 @@ export const GET: RequestHandler = async ({ locals }) => {
         throw error(401, 'Unauthorized')
     }
 
-    const userSources = await db.query.sources.findMany({
-        where: eq(sources.createdBy, locals.user.id),
-    })
+    const allSources = await db.query.sources.findMany()
+    console.log(`/api/sources: found ${allSources.length} sources.`)
 
     // Get service credentials for all sources
-    const sourceIds = userSources.map((s) => s.id)
+    const sourceIds = allSources.map((s) => s.id)
     const credentials =
         sourceIds.length > 0
             ? await db.query.serviceCredentials.findMany({
@@ -26,7 +25,7 @@ export const GET: RequestHandler = async ({ locals }) => {
     // Create a map of source ID to whether it has credentials
     const credentialsMap = new Map(credentials.map((c) => [c.sourceId, true]))
 
-    const sanitizedSources = userSources.map((source) => ({
+    const sanitizedSources = allSources.map((source) => ({
         id: source.id,
         name: source.name,
         sourceType: source.sourceType,
@@ -39,6 +38,8 @@ export const GET: RequestHandler = async ({ locals }) => {
         updatedAt: source.updatedAt,
         isConnected: credentialsMap.has(source.id),
     }))
+
+    console.log(`Sources: `, sanitizedSources)
 
     return json(sanitizedSources)
 }

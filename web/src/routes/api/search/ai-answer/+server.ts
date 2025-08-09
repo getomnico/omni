@@ -4,6 +4,11 @@ import type { RequestHandler } from './$types.js'
 import type { SearchRequest } from '$lib/types/search.js'
 
 export const POST: RequestHandler = async ({ request, fetch, locals }) => {
+    // Check if AI answers are enabled
+    if (env.AI_ANSWER_ENABLED === 'false') {
+        throw error(503, 'AI answers are currently disabled')
+    }
+
     let searchRequest: SearchRequest
 
     try {

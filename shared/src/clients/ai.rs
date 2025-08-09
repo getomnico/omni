@@ -12,6 +12,7 @@ pub struct EmbeddingRequest {
     pub task: Option<String>,
     pub chunk_size: Option<i32>,
     pub chunking_mode: Option<String>,
+    pub priority: Option<String>, // "high", "normal", or "low"
 }
 
 #[derive(Deserialize)]
@@ -70,6 +71,7 @@ impl AIClient {
             Some("retrieval.query".to_string()),
             None,
             Some("none".to_string()),
+            None, // Default priority
         )
         .await
     }
@@ -80,12 +82,14 @@ impl AIClient {
         task: Option<String>,
         chunk_size: Option<i32>,
         chunking_mode: Option<String>,
+        priority: Option<String>,
     ) -> Result<Vec<TextEmbedding>> {
         let request = EmbeddingRequest {
             texts,
             task,
             chunk_size,
             chunking_mode,
+            priority,
         };
 
         let response = self

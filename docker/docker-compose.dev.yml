@@ -60,9 +60,10 @@ services:
     environment:
       <<: *dev-database-url
       VLLM_URL: http://localhost:8000  # Dummy URL for dev
+      AI_WORKERS: ${AI_WORKERS:-1}  # Number of uvicorn workers
     volumes:
       - ../services/ai:/app
-    command: python -m uvicorn main:app --host 0.0.0.0 --port ${AI_SERVICE_PORT} --reload
+    command: python -m uvicorn main:app --host 0.0.0.0 --port ${AI_SERVICE_PORT} --reload --workers ${AI_WORKERS:-1}
 
   google-connector:
     build:

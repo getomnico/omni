@@ -2,7 +2,7 @@ export interface Document {
     id: string
     title: string
     url: string | null
-    source: string
+    source_id: string
     content_type: string
     created_at: string
     updated_at: string

@@ -126,6 +126,7 @@ services:
       - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-3-5-sonnet-20241022}
       - ANTHROPIC_MAX_TOKENS=${ANTHROPIC_MAX_TOKENS:-4096}
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - AI_WORKERS=${AI_WORKERS:-1}  # Number of uvicorn workers
     networks:
       - clio-network
     volumes:
@@ -293,6 +294,7 @@ services:
       - EMAIL_USER=${EMAIL_USER}
       - EMAIL_PASSWORD=${EMAIL_PASSWORD}
       - EMAIL_SECURE=${EMAIL_SECURE}
+      - AI_ANSWER_ENABLED=${AI_ANSWER_ENABLED}
     networks:
       - clio-network
     depends_on:

@@ -311,6 +311,7 @@ impl EmbeddingProcessor {
                     Some("retrieval.passage".to_string()),
                     Some(512),
                     Some("sentence".to_string()),
+                    Some("low".to_string()), // Low priority for bulk indexing
                 )
                 .await
             {

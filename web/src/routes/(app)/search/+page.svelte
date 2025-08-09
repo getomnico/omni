@@ -7,7 +7,7 @@
     import type { PageData } from './$types.js'
     import type { SearchResponse, SearchRequest } from '$lib/types/search.js'
     import AIAnswer from '$lib/components/AIAnswer.svelte'
-    import { getSourceIconPath, getSourceTypeFromId } from '$lib/utils/icons'
+    import { getDocumentIconPath, getSourceTypeFromId } from '$lib/utils/icons'
 
     let { data }: { data: PageData } = $props()
 
@@ -15,6 +15,10 @@
     let sourcesLookup = $derived(
         data.sources ? new Map(data.sources.map((s: any) => [s.id, s.sourceType])) : new Map(),
     )
+
+    $inspect(sourcesLookup).with((t, v) => {
+        console.log(t, v)
+    })
 
     // inputQuery represents the current value in the search input
     let inputQuery = $state($page.url.searchParams.get('q') || '')
@@ -137,7 +141,6 @@
     }
 
     function formatDate(dateStr: string) {
-        console.log('Formatting date string', dateStr)
         return new Date(dateStr).toLocaleDateString()
     }
 
@@ -146,14 +149,36 @@
         return content.substring(0, maxLength) + '...'
     }
 
-    function getSourceIcon(sourceId: string): { iconPath: string | null; useFileText: boolean } {
+    function getSourceIcon(
+        sourceId: string,
+        contentType: string,
+    ): { iconPath: string | null; useFileText: boolean } {
+        console.log(`Looking up icon for source id ${sourceId}`)
         const sourceType = sourcesLookup.get(sourceId)
         if (!sourceType) {
             return { iconPath: null, useFileText: true }
         }
 
-        const iconPath = getSourceIconPath(sourceType)
+        const iconPath = getDocumentIconPath(sourceType, contentType)
         return { iconPath, useFileText: !iconPath }
+    }
+
+    function formatUrlAsBreadcrumbs(url: string): string {
+        if (!url || url === 'No URL available') return url
+
+        try {
+            const urlObj = new URL(url)
+            const domain = urlObj.hostname
+            const pathParts = urlObj.pathname.split('/').filter((part) => part && part !== '')
+
+            if (pathParts.length === 0) {
+                return domain
+            }
+
+            return [domain, ...pathParts].join(' › ')
+        } catch {
+            return url
+        }
     }
 </script>
 
@@ -166,11 +191,9 @@
     <div class="mb-8">
         <div class="mb-4 flex items-center gap-4">
             <div
-                class="flex flex-1 items-center rounded-lg border border-gray-300 bg-white shadow-sm"
+                class="flex flex-1 items-center rounded-full border border-gray-300 bg-white p-3 shadow-sm"
             >
-                <div class="p-3">
-                    <Search class="h-5 w-5 text-gray-400" />
-                </div>
+                <div class="w-1"></div>
                 <Input
                     type="text"
                     bind:value={inputQuery}
@@ -178,14 +201,14 @@
                     class="flex-1 border-none bg-transparent shadow-none focus:ring-0 focus-visible:ring-0"
                     onkeypress={handleKeyPress}
                 />
-                <Button class="m-2 px-6" onclick={handleSearch} disabled={isLoading}>
-                    {isLoading ? 'Searching...' : 'Search'}
+                <Button size="icon" variant="link" onclick={handleSearch} disabled={isLoading}>
+                    <Search class="h-6 w-6" />
                 </Button>
             </div>
         </div>
 
         {#if filteredResults && data.searchResults}
-            <div class="text-sm text-gray-600">
+            <div class="px-6 text-sm text-gray-600">
                 Found {filteredResults.total_count} results in {data.searchResults.query_time_ms}ms
                 for "{data.searchResults.query}"
                 {#if getTotalSelectedFilters() > 0}
@@ -259,7 +282,7 @@
     {/if}
 
     <!-- AI Answer Section -->
-    {#if filteredResults && searchQuery.trim()}
+    {#if filteredResults && searchQuery.trim() && data.aiAnswerEnabled}
         <AIAnswer
             searchRequest={{
                 query: searchQuery,
@@ -270,83 +293,76 @@
         />
     {/if}
 
-    <div class="flex gap-6">
+    <div class="flex gap-6 px-6">
         <!-- Search Results -->
         <div class="flex-1">
             {#if filteredResults}
                 {#if filteredResults.results.length > 0}
-                    <div class="space-y-4">
+                    <div class="space-y-8">
                         {#each filteredResults.results as result}
-                            <Card class="transition-shadow hover:shadow-md">
-                                <CardContent class="p-6">
-                                    <div class="mb-3 flex items-start justify-between">
-                                        <div class="flex items-center gap-2">
-                                            {#if getSourceIcon(result.document.source).useFileText}
-                                                <FileText class="h-4 w-4 text-blue-600" />
-                                            {:else}
-                                                <img
-                                                    src={getSourceIcon(result.document.source)
-                                                        .iconPath}
-                                                    alt="Source icon"
-                                                    class="h-4 w-4"
-                                                />
-                                            {/if}
-                                            <h3
-                                                class="text-lg font-semibold text-blue-600 hover:text-blue-800"
-                                            >
-                                                <a
-                                                    href={result.document.url || '#'}
-                                                    target="_blank"
-                                                    rel="noopener noreferrer"
-                                                >
-                                                    {result.document.title}
-                                                </a>
-                                            </h3>
+                            {@const srcIcon = getSourceIcon(
+                                result.document.source_id,
+                                result.document.content_type,
+                            )}
+                            <div class="flex gap-3">
+                                <!-- Icon -->
+                                <div class="flex-shrink-0 pt-1">
+                                    {#if srcIcon.useFileText}
+                                        <FileText class="h-5 w-5 text-gray-400" />
+                                    {:else}
+                                        <img
+                                            src={srcIcon.iconPath}
+                                            alt="Source icon"
+                                            class="h-5 w-5"
+                                        />
+                                    {/if}
+                                </div>
+
+                                <!-- Content -->
+                                <div class="min-w-0 flex-1">
+                                    <!-- Title + URL as single link -->
+                                    <a
+                                        href={result.document.url || '#'}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        class="group block"
+                                    >
+                                        <h3
+                                            class="text-lg leading-tight text-blue-700 group-hover:underline"
+                                        >
+                                            {result.document.title}
+                                        </h3>
+                                        <div
+                                            class="mb-1 text-sm text-green-700 group-hover:underline"
+                                        >
+                                            {formatUrlAsBreadcrumbs(
+                                                result.document.url || 'No URL available',
+                                            )}
                                         </div>
-                                        <div class="flex items-center gap-4 text-sm text-gray-500">
-                                            <div class="flex items-center gap-1">
-                                                <User class="h-3 w-3" />
-                                                {result.document.source}
-                                            </div>
-                                            <div class="flex items-center gap-1">
-                                                <Calendar class="h-3 w-3" />
-                                                {formatDate(result.document.created_at)}
-                                            </div>
-                                            <div class="flex items-center gap-1">
-                                                {result.score}
-                                            </div>
-                                        </div>
+                                    </a>
+
+                                    <!-- Date -->
+                                    <div class="mb-2 text-sm text-gray-500">
+                                        {formatDate(result.document.created_at)}
                                     </div>
 
-                                    {#if result.content}
-                                        <div class="mb-3 text-gray-700">
+                                    <!-- Excerpt/Content -->
+                                    {#if result.highlights.length > 0}
+                                        <div class="text-sm leading-relaxed text-gray-600">
+                                            {#each result.highlights.slice(0, 2) as highlight}
+                                                <span>{@html highlight}</span>
+                                                {#if highlight !== result.highlights[result.highlights.length - 1]}
+                                                    <span> ... </span>
+                                                {/if}
+                                            {/each}
+                                        </div>
+                                    {:else if result.content}
+                                        <div class="text-sm leading-relaxed text-gray-600">
                                             {truncateContent(result.content)}
                                         </div>
                                     {/if}
-
-                                    {#if result.highlights.length > 0}
-                                        <div class="mb-3">
-                                            <h4 class="mb-2 text-sm font-medium text-gray-900">
-                                                Highlights:
-                                            </h4>
-                                            <div class="space-y-1">
-                                                {#each result.highlights as highlight}
-                                                    <div
-                                                        class="rounded bg-yellow-50 p-2 text-sm text-gray-600"
-                                                    >
-                                                        {@html highlight}
-                                                    </div>
-                                                {/each}
-                                            </div>
-                                        </div>
-                                    {/if}
-
-                                    <div class="text-xs text-gray-500">
-                                        Match type: {result.match_type} • Content type: {result
-                                            .document.content_type}
-                                    </div>
-                                </CardContent>
-                            </Card>
+                                </div>
+                            </div>
                         {/each}
                     </div>
 

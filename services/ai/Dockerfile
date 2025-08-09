@@ -28,4 +28,5 @@ RUN pip install --no-cache-dir -r requirements-cpu.txt
 COPY . .
 
 # Run the application
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use AI_WORKERS environment variable for number of workers (defaults to 1)
+CMD sh -c "python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers ${AI_WORKERS:-1}"
