@@ -37,7 +37,7 @@ export interface SearchResponse {
 
 export interface SearchRequest {
     query: string
-    sources?: string[]
+    source_types?: string[]
     content_types?: string[]
     limit?: number
     offset?: number

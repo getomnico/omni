@@ -17,16 +17,14 @@
         data.sources ? new Map(data.sources.map((s: any) => [s.id, s.sourceType])) : new Map(),
     )
 
-    $inspect(sourcesLookup).with((t, v) => {
-        console.log(t, v)
-    })
-
     // inputQuery represents the current value in the search input
     let inputQuery = $state($page.url.searchParams.get('q') || '')
     // searchQuery represents the submitted query (from URL param)
     let searchQuery = $state($page.url.searchParams.get('q') || '')
     let isLoading = $state(false)
-    let selectedFilters = $state<Map<string, Set<string>>>(new Map())
+
+    // Get selected source types from server data (parsed from URL params)
+    let selectedSourceTypes = $derived(new Set(data.selectedSourceTypes || []))
 
     const facetDisplayNames: Record<string, string> = {
         source_type: 'Source Type',
@@ -45,9 +43,6 @@
     let allFacets = $derived(data.searchResults?.facets || [])
     let sourceFacet = $derived(allFacets.find((f) => f.name === 'source_type'))
     let otherFacets = $derived(allFacets.filter((f) => f.name !== 'source_type'))
-    let filteredResults = $derived(
-        data.searchResults ? filterResults(data.searchResults, selectedFilters) : null,
-    )
 
     function getDisplayValue(facetField: string, value: string): string {
         if (facetField === 'source_type') {
@@ -56,77 +51,42 @@
         return value
     }
 
-    function filterResults(
-        searchResults: SearchResponse,
-        selectedFilters: Map<string, Set<string>>,
-    ): SearchResponse {
-        if (selectedFilters.size === 0) {
-            return searchResults
-        }
-
-        const filteredResults = searchResults.results.filter((result) => {
-            // Check if result matches all selected filters
-            for (const [facetField, selectedValues] of selectedFilters) {
-                if (selectedValues.size === 0) continue
-
-                let fieldValue: string
-                switch (facetField) {
-                    case 'source_type':
-                        // For now, we'll need to map source_id to source_type
-                        // This is a simplified approach - in practice we'd need the actual source_type from the backend
-                        fieldValue = result.document.source
-                        break
-                    default:
-                        continue
-                }
-
-                if (!selectedValues.has(fieldValue)) {
-                    return false
-                }
-            }
-            return true
-        })
-
-        return {
-            ...searchResults,
-            results: filteredResults,
-            total_count: filteredResults.length,
-        }
-    }
-
     function toggleFilter(facetField: string, value: string) {
-        const currentFilters = selectedFilters.get(facetField) || new Set()
+        const currentUrl = new URL(window.location.href)
+        const currentValues = currentUrl.searchParams.getAll(facetField)
 
-        if (currentFilters.has(value)) {
-            currentFilters.delete(value)
+        if (currentValues.includes(value)) {
+            // Remove this value
+            currentUrl.searchParams.delete(facetField)
+            currentValues
+                .filter((v) => v !== value)
+                .forEach((v) => {
+                    currentUrl.searchParams.append(facetField, v)
+                })
         } else {
-            currentFilters.add(value)
+            // Add this value
+            currentUrl.searchParams.append(facetField, value)
         }
 
-        if (currentFilters.size === 0) {
-            selectedFilters.delete(facetField)
-        } else {
-            selectedFilters.set(facetField, currentFilters)
-        }
-
-        selectedFilters = new Map(selectedFilters)
+        // Navigate to the new URL
+        window.location.href = currentUrl.toString()
     }
 
     function clearFilters() {
-        selectedFilters = new Map()
+        const currentUrl = new URL(window.location.href)
+        // Remove all filter params (for now just source_type)
+        currentUrl.searchParams.delete('source_type')
+        window.location.href = currentUrl.toString()
     }
 
     function clearFacetFilters(facetField: string) {
-        selectedFilters.delete(facetField)
-        selectedFilters = new Map(selectedFilters)
+        const currentUrl = new URL(window.location.href)
+        currentUrl.searchParams.delete(facetField)
+        window.location.href = currentUrl.toString()
     }
 
     function getTotalSelectedFilters(): number {
-        let total = 0
-        for (const filterSet of selectedFilters.values()) {
-            total += filterSet.size
-        }
-        return total
+        return selectedSourceTypes.size
     }
 
     function handleSearch() {
@@ -213,10 +173,10 @@
             </div>
         </div>
 
-        {#if filteredResults && data.searchResults}
+        {#if data.searchResults}
             <div class="px-6 text-sm text-gray-600">
-                Found {filteredResults.total_count} results in {data.searchResults.query_time_ms}ms
-                for "{data.searchResults.query}"
+                Found {data.searchResults.total_count} results in {data.searchResults
+                    .query_time_ms}ms for "{data.searchResults.query}"
                 {#if getTotalSelectedFilters() > 0}
                     <span class="ml-2"
                         >• {getTotalSelectedFilters()} filter{getTotalSelectedFilters() > 1
@@ -229,7 +189,7 @@
     </div>
 
     <!-- Other Facets (above search results) -->
-    {#if filteredResults && otherFacets.length > 0}
+    {#if data.searchResults && otherFacets.length > 0}
         <div class="mb-6">
             <div class="flex flex-wrap gap-4">
                 {#each otherFacets as facet}
@@ -238,7 +198,7 @@
                             <h3 class="text-sm font-medium text-gray-900">
                                 {facetDisplayNames[facet.name] || facet.name}
                             </h3>
-                            {#if selectedFilters.has(facet.name) && selectedFilters.get(facet.name)?.size > 0}
+                            {#if facet.name === 'source_type' && selectedSourceTypes.size > 0}
                                 <Button
                                     variant="ghost"
                                     size="sm"
@@ -257,9 +217,8 @@
                                     <div class="flex items-center gap-2">
                                         <input
                                             type="checkbox"
-                                            checked={selectedFilters
-                                                .get(facet.name)
-                                                ?.has(facetValue.value) || false}
+                                            checked={facet.name === 'source_type' &&
+                                                selectedSourceTypes.has(facetValue.value)}
                                             onchange={() =>
                                                 toggleFilter(facet.name, facetValue.value)}
                                             class="h-3 w-3 rounded border-gray-300 text-blue-600"
@@ -288,7 +247,7 @@
     {/if}
 
     <!-- AI Answer Section -->
-    {#if filteredResults && searchQuery.trim() && data.aiAnswerEnabled}
+    {#if data.searchResults && searchQuery.trim() && data.aiAnswerEnabled}
         <AIAnswer
             searchRequest={{
                 query: searchQuery,
@@ -302,10 +261,10 @@
     <div class="flex gap-6 px-6">
         <!-- Search Results -->
         <div class="flex-1">
-            {#if filteredResults}
-                {#if filteredResults.results.length > 0}
+            {#if data.searchResults}
+                {#if data.searchResults.results.length > 0}
                     <div class="space-y-8">
-                        {#each filteredResults.results as result}
+                        {#each data.searchResults.results as result}
                             {@const srcIcon = getSourceIcon(
                                 result.document.source_id,
                                 result.document.content_type,
@@ -430,7 +389,7 @@
                             <div class="flex-1">Filter by Source</div>
                             <Funnel class="h-4 w-4" />
                         </h3>
-                        {#if selectedFilters.has('source_type') && selectedFilters.get('source_type')?.size > 0}
+                        {#if selectedSourceTypes.size > 0}
                             <Button
                                 variant="ghost"
                                 size="sm"
@@ -444,11 +403,12 @@
                     <div class="flex flex-col space-y-2">
                         {#each sourceFacet.values as facetValue}
                             {@const sourceIcon = getSourceIconPath(facetValue.value)}
-                            {@const isSelected =
-                                selectedFilters.get('source_type')?.has(facetValue.value) || false}
+                            {@const isSelected = selectedSourceTypes.has(facetValue.value)}
                             <Button
                                 variant="ghost"
-                                class="flex cursor-pointer justify-between rounded-full"
+                                class="flex cursor-pointer justify-between rounded-full {isSelected
+                                    ? 'bg-blue-50 hover:bg-blue-100'
+                                    : 'hover:bg-gray-50'}"
                                 onclick={() => toggleFilter('source_type', facetValue.value)}
                             >
                                 <div class="flex items-center gap-2">

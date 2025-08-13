@@ -6,7 +6,7 @@ mod tests {
     fn test_search_request_defaults() {
         let request = SearchRequest {
             query: "test".to_string(),
-            sources: None,
+            source_types: None,
             content_types: None,
             limit: None,
             offset: None,
@@ -23,7 +23,7 @@ mod tests {
     fn test_search_request_limits() {
         let request = SearchRequest {
             query: "test".to_string(),
-            sources: None,
+            source_types: None,
             content_types: None,
             limit: Some(200),
             offset: Some(-10),
@@ -46,7 +46,7 @@ mod tests {
         for mode in modes {
             let request = SearchRequest {
                 query: "test".to_string(),
-                sources: None,
+                source_types: None,
                 content_types: None,
                 limit: None,
                 offset: None,

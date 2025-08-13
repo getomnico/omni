@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
-use shared::models::{Document, Facet};
+use shared::{
+    models::{Document, Facet},
+    SourceType,
+};
 
 #[derive(Debug, Clone, Deserialize, Serialize, Hash, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -12,7 +15,7 @@ pub enum SearchMode {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SearchRequest {
     pub query: String,
-    pub sources: Option<Vec<String>>,
+    pub source_types: Option<Vec<SourceType>>,
     pub content_types: Option<Vec<String>>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,

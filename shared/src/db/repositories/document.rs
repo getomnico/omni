@@ -1,6 +1,7 @@
 use crate::{
     db::error::DatabaseError,
     models::{Document, Facet, FacetValue},
+    SourceType,
 };
 use sqlx::{FromRow, PgPool};
 
@@ -135,7 +136,7 @@ impl DocumentRepository {
     pub async fn search_with_filters(
         &self,
         query: &str,
-        sources: Option<&[String]>,
+        source_types: Option<&[SourceType]>,
         content_types: Option<&[String]>,
         limit: i64,
         offset: i64,
@@ -150,12 +151,12 @@ impl DocumentRepository {
                 WHERE tsv_content @@ websearch_to_tsquery('english', $1)
         "#;
 
-        let has_sources = sources.map_or(false, |s| !s.is_empty());
+        let has_sources = source_types.map_or(false, |s| !s.is_empty());
         let has_content_types = content_types.map_or(false, |ct| !ct.is_empty());
         let has_user_filter = user_email.is_some();
 
         let source_filter = if has_sources {
-            " AND source_id = ANY($2)"
+            " AND source_id IN (SELECT id FROM sources WHERE source_type = ANY($2))"
         } else {
             ""
         };
@@ -231,7 +232,7 @@ impl DocumentRepository {
 
         let mut query = sqlx::query_as::<_, DocumentWithHighlight>(&full_query).bind(query);
 
-        if let Some(src) = sources {
+        if let Some(src) = source_types {
             if !src.is_empty() {
                 query = query.bind(src);
             }
@@ -347,7 +348,7 @@ impl DocumentRepository {
     pub async fn search_with_typo_tolerance_and_filters(
         &self,
         query: &str,
-        sources: Option<&[String]>,
+        source_types: Option<&[SourceType]>,
         content_types: Option<&[String]>,
         limit: i64,
         offset: i64,
@@ -357,7 +358,14 @@ impl DocumentRepository {
     ) -> Result<(Vec<DocumentWithHighlight>, Option<String>), DatabaseError> {
         // First, try to search with the original query
         let original_results = self
-            .search_with_filters(query, sources, content_types, limit, offset, user_email)
+            .search_with_filters(
+                query,
+                source_types,
+                content_types,
+                limit,
+                offset,
+                user_email,
+            )
             .await?;
 
         // If we get reasonable results, return them without correction
@@ -414,7 +422,7 @@ impl DocumentRepository {
         let corrected_results = self
             .search_with_filters(
                 &corrected_query,
-                sources,
+                source_types,
                 content_types,
                 limit,
                 offset,
@@ -625,16 +633,16 @@ impl DocumentRepository {
     pub async fn get_facet_counts_with_filters(
         &self,
         query: &str,
-        sources: Option<&[String]>,
+        source_types: Option<&[SourceType]>,
         content_types: Option<&[String]>,
     ) -> Result<Vec<Facet>, DatabaseError> {
         let mut where_conditions =
             vec!["d.tsv_content @@ websearch_to_tsquery('english', $1::text)".to_string()];
         let mut bind_index = 2;
 
-        if let Some(src) = sources {
+        if let Some(src) = source_types {
             if !src.is_empty() {
-                where_conditions.push(format!("d.source_id = ANY(${})", bind_index));
+                where_conditions.push(format!("s.source_type = ANY(${})", bind_index));
                 bind_index += 1;
             }
         }
@@ -661,7 +669,7 @@ impl DocumentRepository {
 
         let mut query = sqlx::query_as::<_, (String, String, i64)>(&query_str).bind(query);
 
-        if let Some(src) = sources {
+        if let Some(src) = source_types {
             if !src.is_empty() {
                 query = query.bind(src);
             }

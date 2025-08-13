@@ -1,6 +1,7 @@
 use crate::{
     db::error::DatabaseError,
     models::{ChunkResult, Document, Embedding},
+    SourceType,
 };
 use pgvector::Vector;
 use sqlx::{PgPool, Row};
@@ -122,7 +123,7 @@ impl EmbeddingRepository {
     pub async fn find_similar_with_filters(
         &self,
         embedding: Vec<f32>,
-        sources: Option<&[String]>,
+        source_types: Option<&[SourceType]>,
         content_types: Option<&[String]>,
         limit: i64,
         offset: i64,
@@ -134,9 +135,12 @@ impl EmbeddingRepository {
 
         let mut bind_index = 4; // Starting after $1 (vector) and $2 (limit) and $3 (offset)
 
-        if let Some(src) = sources {
+        if let Some(src) = source_types {
             if !src.is_empty() {
-                where_conditions.push(format!("d.source_id = ANY(${})", bind_index));
+                where_conditions.push(format!(
+                    "d.source_id IN (SELECT id FROM sources WHERE source_type = ANY(${}))",
+                    bind_index
+                ));
                 bind_index += 1;
             }
         }
@@ -180,7 +184,7 @@ impl EmbeddingRepository {
             .bind(limit)
             .bind(offset);
 
-        if let Some(src) = sources {
+        if let Some(src) = source_types {
             if !src.is_empty() {
                 query = query.bind(src);
             }

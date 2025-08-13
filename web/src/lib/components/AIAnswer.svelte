@@ -123,10 +123,10 @@
     })
 </script>
 
-<Card class="mb-6 border-0 bg-gradient-to-br from-slate-100 via-blue-100 to-indigo-100 shadow-lg">
+<Card class="mb-12 border-0 bg-gradient-to-br from-fuchsia-100 via-cyan-100 to-teal-100 shadow-lg">
     <CardHeader>
         <CardTitle class="flex items-center gap-2 text-lg">
-            <Sparkles class="h-6 w-6 text-indigo-600" />
+            <Sparkles class="h-6 w-6 text-cyan-600" />
             AI Answer
         </CardTitle>
     </CardHeader>
@@ -154,7 +154,7 @@
 
                     {#if !isExpanded && shouldShowExpandButton}
                         <div
-                            class="pointer-events-none absolute -right-6 bottom-0 -left-6 h-20 bg-gradient-to-t from-indigo-100 to-transparent"
+                            class="pointer-events-none absolute -right-6 bottom-0 -left-6 h-20 bg-gradient-to-t from-teal-100 to-transparent"
                         ></div>
                     {/if}
                 </div>
@@ -162,7 +162,7 @@
                 {#if shouldShowExpandButton}
                     <button
                         onclick={() => (isExpanded = !isExpanded)}
-                        class="mt-2 flex items-center gap-1 text-sm text-indigo-600 transition-colors hover:text-indigo-700"
+                        class="mt-4 flex items-center gap-1 text-sm text-cyan-600 transition-colors hover:text-cyan-700"
                     >
                         {#if isExpanded}
                             <ChevronUp class="h-4 w-4" />

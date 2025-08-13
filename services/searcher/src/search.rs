@@ -182,7 +182,7 @@ impl SearchEngine {
 
         // Get facets if requested
         let facets = if request.include_facets() {
-            let sources = request.sources.as_deref();
+            let sources = request.source_types.as_deref();
             let content_types = request.content_types.as_deref();
 
             repo.get_facet_counts_with_filters(&request.query, sources, content_types)
@@ -226,7 +226,7 @@ impl SearchEngine {
         request: &SearchRequest,
     ) -> Result<(Vec<SearchResult>, Option<String>)> {
         let start_time = Instant::now();
-        let sources = request.sources.as_deref();
+        let sources = request.source_types.as_deref();
         let content_types = request.content_types.as_deref();
 
         let (results_with_highlights, corrected_query) = if self.config.typo_tolerance_enabled {
@@ -296,7 +296,7 @@ impl SearchEngine {
         let embedding_repo = EmbeddingRepository::new(self.db_pool.pool());
         let doc_repo = DocumentRepository::new(self.db_pool.pool());
 
-        let sources = request.sources.as_deref();
+        let sources = request.source_types.as_deref();
         let content_types = request.content_types.as_deref();
 
         let chunk_results = embedding_repo
@@ -569,7 +569,7 @@ impl SearchEngine {
         request.limit().hash(&mut hasher);
         request.offset().hash(&mut hasher);
 
-        if let Some(sources) = &request.sources {
+        if let Some(sources) = &request.source_types {
             for source in sources {
                 source.hash(&mut hasher);
             }
@@ -749,7 +749,7 @@ impl SearchEngine {
             "Please provide a comprehensive answer using the information from the context. ",
         );
         prompt.push_str(
-            "When referencing information, cite it using the format [<Document Title>](<Document URL>). Return your response in markdown format. ",
+            "When referencing information, cite it using the format [<Document Title>](<Document URL>). Return your response in markdown format. VERY IMPORTANT: ONLY REFERENCE DOCUMENTS PROVIDED AS CONTEXT BELOW, DO NOT CITE ANYTHING ELSE. ",
         );
         prompt.push_str(
             "If the context doesn't contain enough information to answer the question, say so.\n\n",

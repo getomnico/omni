@@ -5,11 +5,15 @@ export const load = async ({ url, fetch, locals }) => {
     const query = url.searchParams.get('q')
     const aiAnswerEnabled = env.AI_ANSWER_ENABLED !== 'false' // Default to true if not set
 
+    // Parse source_type filter from URL params (can be multiple)
+    const sourceTypes = url.searchParams.getAll('source_type')
+
     if (!query || query.trim() === '') {
         return {
             searchResults: null,
             sources: null,
             aiAnswerEnabled,
+            selectedSourceTypes: sourceTypes,
         }
     }
 
@@ -28,6 +32,7 @@ export const load = async ({ url, fetch, locals }) => {
                     offset: 0,
                     mode: 'hybrid',
                     user_id: locals.user?.id,
+                    source_types: sourceTypes.length > 0 ? sourceTypes : undefined,
                 } as SearchRequest),
             }),
             // Sources request
@@ -50,6 +55,7 @@ export const load = async ({ url, fetch, locals }) => {
                 sources: null,
                 error: 'Search service unavailable',
                 aiAnswerEnabled,
+                selectedSourceTypes: sourceTypes,
             }
         }
 
@@ -72,6 +78,7 @@ export const load = async ({ url, fetch, locals }) => {
             searchResults,
             sources,
             aiAnswerEnabled,
+            selectedSourceTypes: sourceTypes,
         }
     } catch (error) {
         console.error('Error performing search:', error)
@@ -80,6 +87,7 @@ export const load = async ({ url, fetch, locals }) => {
             sources: null,
             error: 'Failed to perform search',
             aiAnswerEnabled,
+            selectedSourceTypes: sourceTypes,
         }
     }
 }

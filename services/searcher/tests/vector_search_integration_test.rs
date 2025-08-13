@@ -187,7 +187,7 @@ async fn test_vector_search() {
     // Create search request with semantic mode
     let request = SearchRequest {
         query: "machine learning".to_string(),
-        sources: None,
+        source_types: None,
         content_types: None,
         limit: Some(10),
         offset: None,
@@ -256,7 +256,7 @@ async fn test_hybrid_search() {
     // Create search request with hybrid mode
     let request = SearchRequest {
         query: "database performance".to_string(),
-        sources: None,
+        source_types: None,
         content_types: None,
         limit: Some(10),
         offset: None,
@@ -318,7 +318,7 @@ async fn test_vector_search_similarity_ranking() {
     // Create search request
     let request = SearchRequest {
         query: "artificial intelligence deep learning".to_string(),
-        sources: None,
+        source_types: None,
         content_types: None,
         limit: Some(5),
         offset: None,

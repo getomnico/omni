@@ -92,8 +92,9 @@ pub struct Embedding {
     pub created_at: OffsetDateTime,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq, Hash)]
 #[sqlx(type_name = "varchar", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum SourceType {
     GoogleDrive,
     Gmail,

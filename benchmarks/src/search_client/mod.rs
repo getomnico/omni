@@ -2,6 +2,7 @@ use anyhow::Result;
 use clio_searcher::models::{SearchMode, SearchRequest, SearchResponse};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use shared::SourceType;
 use std::time::Duration;
 use tracing::{debug, error};
 
@@ -85,7 +86,7 @@ pub fn create_search_request(query: String, search_mode: SearchMode) -> SearchRe
         mode: Some(search_mode),
         limit: Some(20),
         offset: Some(0),
-        sources: None,
+        source_types: None,
         content_types: None,
         include_facets: Some(false),
         user_email: None,
@@ -102,8 +103,8 @@ pub fn with_offset(mut request: SearchRequest, offset: i64) -> SearchRequest {
     request
 }
 
-pub fn with_sources(mut request: SearchRequest, sources: Vec<String>) -> SearchRequest {
-    request.sources = Some(sources);
+pub fn with_sources(mut request: SearchRequest, sources: Vec<SourceType>) -> SearchRequest {
+    request.source_types = Some(sources);
     request
 }
 
@@ -133,7 +134,7 @@ mod tests {
         assert_eq!(request.mode, Some(SearchMode::Hybrid));
         assert_eq!(request.limit, Some(10));
         assert_eq!(request.offset, Some(0));
-        assert_eq!(request.sources, Some(vec!["google".to_string()]));
+        assert_eq!(request.source_types, Some(vec!["google".to_string()]));
         assert_eq!(request.include_facets, Some(true));
     }
 }

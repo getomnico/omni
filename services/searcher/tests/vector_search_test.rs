@@ -6,7 +6,7 @@ mod tests {
     fn test_search_request_semantic_mode() {
         let request = SearchRequest {
             query: "machine learning algorithms".to_string(),
-            sources: None,
+            source_types: None,
             content_types: None,
             limit: Some(10),
             offset: None,
@@ -23,7 +23,7 @@ mod tests {
     fn test_search_request_hybrid_mode() {
         let request = SearchRequest {
             query: "technical documentation".to_string(),
-            sources: Some(vec!["docs".to_string()]),
+            source_types: Some(vec!["docs".to_string()]),
             content_types: None,
             limit: None,
             offset: None,
@@ -34,7 +34,7 @@ mod tests {
         assert_eq!(request.search_mode(), &SearchMode::Hybrid);
         assert_eq!(request.limit(), 20); // default
         assert!(request.include_facets()); // default true
-        assert_eq!(request.sources.as_ref().unwrap().len(), 1);
+        assert_eq!(request.source_types.as_ref().unwrap().len(), 1);
     }
 
     #[test]

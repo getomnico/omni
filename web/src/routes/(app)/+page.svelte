@@ -4,7 +4,7 @@
     import * as Popover from '$lib/components/ui/popover'
     import type { PageProps } from './$types'
     import { Input } from '$lib/components/ui/input'
-    import { Search, Clock, History } from '@lucide/svelte'
+    import { Search, Clock, History, Loader2 } from '@lucide/svelte'
     import { goto } from '$app/navigation'
     import { cn } from '$lib/utils'
 
@@ -13,6 +13,7 @@
     let searchQuery = $state('')
     let popoverOpen = $state(false)
     let popoverContainer: HTMLDivElement | undefined = $state()
+    let isSearching = $state(false)
 
     $inspect(popoverOpen).with((t, v) => console.log('popover', t, v))
     $inspect(popoverContainer).with((t, v) => console.log('popover container', t, v))
@@ -20,7 +21,8 @@
 
     function handleSearch() {
         console.log('calling handleSearch', searchQuery)
-        if (searchQuery.trim()) {
+        if (searchQuery.trim() && !isSearching) {
+            isSearching = true
             popoverOpen = false
             goto(`/search?q=${encodeURIComponent(searchQuery.trim())}`)
         }
@@ -90,9 +92,13 @@
                 <Button
                     class="m-2 cursor-pointer rounded-full px-6 py-2"
                     onclick={handleSearch}
-                    disabled={!searchQuery.trim()}
+                    disabled={!searchQuery.trim() || isSearching}
                 >
-                    Go
+                    {#if isSearching}
+                        <Loader2 class="h-4 w-4 animate-spin" />
+                    {:else}
+                        Go
+                    {/if}
                 </Button>
             </div>
             <div class="" bind:this={popoverContainer}></div>
