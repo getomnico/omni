@@ -15,10 +15,6 @@ from enum import IntEnum
 from dataclasses import dataclass, field
 import time
 
-from embeddings_v2 import (
-    generate_embeddings_sync,
-    DEFAULT_TASK,
-)
 from providers import create_llm_provider, LLMProvider
 from pdf_extractor import PDFExtractionRequest, PDFExtractionResponse, extract_text_from_pdf
 
@@ -75,6 +71,30 @@ EMBEDDING_DIMENSIONS = validate_embedding_dimensions(
 )
 REDIS_URL = get_required_env("REDIS_URL")
 DATABASE_URL = get_required_env("DATABASE_URL")
+
+# Embedding Provider configuration
+EMBEDDING_PROVIDER = get_optional_env("EMBEDDING_PROVIDER", "local").lower()
+JINA_API_KEY = get_optional_env("JINA_API_KEY", "")
+JINA_MODEL = get_optional_env("JINA_MODEL", "jina-embeddings-v3")
+JINA_API_URL = get_optional_env("JINA_API_URL", "https://api.jina.ai/v1/embeddings")
+
+# Import the appropriate embedding module based on provider
+if EMBEDDING_PROVIDER == "jina":
+    from jina_embeddings import (
+        generate_embeddings_sync,
+        DEFAULT_TASK,
+    )
+    if not JINA_API_KEY:
+        print(
+            "ERROR: JINA_API_KEY is required when using JINA embedding provider",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+else:
+    from embeddings_v2 import (
+        generate_embeddings_sync,
+        DEFAULT_TASK,
+    )
 
 # LLM Provider configuration
 LLM_PROVIDER = get_optional_env("LLM_PROVIDER", "vllm").lower()
@@ -225,11 +245,14 @@ async def process_embedding_queue():
                     request.n_sentences,
                 )
                 
+                # Determine which model name to report
+                model_name = JINA_MODEL if EMBEDDING_PROVIDER == "jina" else EMBEDDING_MODEL
+                
                 response = EmbeddingResponse(
                     embeddings=[[c.embedding for c in chunks] for chunks in chunk_batch],
                     chunks_count=[len(chunks) for chunks in chunk_batch],
                     chunks=[[c.span for c in chunks] for chunks in chunk_batch],
-                    model_name=EMBEDDING_MODEL,
+                    model_name=model_name,
                 )
                 
                 # Set the result on the future
@@ -275,10 +298,14 @@ async def health_check():
         except Exception:
             llm_health = False
 
+    # Determine effective embedding model
+    effective_embedding_model = JINA_MODEL if EMBEDDING_PROVIDER == "jina" else EMBEDDING_MODEL
+
     return {
         "status": "healthy",
         "service": "ai",
-        "model": EMBEDDING_MODEL,
+        "embedding_provider": EMBEDDING_PROVIDER,
+        "embedding_model": effective_embedding_model,
         "port": PORT,
         "embedding_dimensions": EMBEDDING_DIMENSIONS,
         "llm_provider": LLM_PROVIDER,
@@ -453,8 +480,13 @@ if __name__ == "__main__":
     import uvicorn
 
     logger.info(f"Starting AI service on port {PORT}")
-    logger.info(f"Using embedding model: {EMBEDDING_MODEL}")
-    logger.info(f"Model path: {MODEL_PATH}")
+    logger.info(f"Embedding Provider: {EMBEDDING_PROVIDER}")
+    if EMBEDDING_PROVIDER == "jina":
+        logger.info(f"Using JINA embedding model: {JINA_MODEL}")
+        logger.info(f"JINA API URL: {JINA_API_URL}")
+    else:
+        logger.info(f"Using local embedding model: {EMBEDDING_MODEL}")
+        logger.info(f"Model path: {MODEL_PATH}")
     logger.info(f"Embedding dimensions: {EMBEDDING_DIMENSIONS}")
     logger.info(f"LLM Provider: {LLM_PROVIDER}")
     if LLM_PROVIDER == "vllm":

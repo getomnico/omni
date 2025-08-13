@@ -127,6 +127,8 @@ services:
       - ANTHROPIC_MAX_TOKENS=${ANTHROPIC_MAX_TOKENS:-4096}
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
       - AI_WORKERS=${AI_WORKERS:-1}  # Number of uvicorn workers
+      - JINA_API_KEY=${JINA_API_KEY}
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER}
     networks:
       - clio-network
     volumes:
