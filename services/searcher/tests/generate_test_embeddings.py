@@ -41,7 +41,7 @@ test_queries = [
 ]
 
 def generate_embeddings(texts, task="retrieval.passage"):
-    """Call clio-ai service to generate embeddings"""
+    """Call omni-ai service to generate embeddings"""
     response = requests.post(
         "http://localhost:3003/embeddings",
         json={"texts": texts, "task": task}

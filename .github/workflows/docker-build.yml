@@ -21,20 +21,20 @@ jobs:
     strategy:
       matrix:
         service:
-          - name: clio-searcher
+          - name: omni-searcher
             context: .
             dockerfile: services/searcher/Dockerfile
-          - name: clio-indexer
+          - name: omni-indexer
             context: .
             dockerfile: services/indexer/Dockerfile
-          - name: clio-ai
+          - name: omni-ai
             context: services/ai
-          - name: clio-web
+          - name: omni-web
             context: web
-          - name: clio-migrator
+          - name: omni-migrator
             context: .
             dockerfile: services/migrations/Dockerfile
-          - name: clio-google-connector
+          - name: omni-google-connector
             context: .
             dockerfile: connectors/google/Dockerfile
 

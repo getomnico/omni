@@ -5,7 +5,7 @@ use shared::queue::EventQueue;
 use shared::test_environment::TestEnvironment;
 use tokio::test;
 
-use clio_atlassian_connector::{
+use omni_atlassian_connector::{
     AtlassianCredentials, AuthManager, ConfluenceProcessor, JiraProcessor, SyncManager,
 };
 
@@ -182,7 +182,7 @@ async fn test_jira_processor_initialization() -> Result<()> {
 
 #[tokio::test]
 async fn test_document_mapping() {
-    use clio_atlassian_connector::models::{
+    use omni_atlassian_connector::models::{
         ConfluencePage, ConfluenceSpace, ConfluenceUser, ConfluenceVersion, JiraFields, JiraIssue,
         JiraIssueType, JiraProject, JiraStatus, JiraStatusCategory,
     };

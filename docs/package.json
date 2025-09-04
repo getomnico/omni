@@ -1,10 +1,10 @@
 {
-  "name": "clio-docs",
+  "name": "omni-docs",
   "version": "1.0.0",
-  "description": "Documentation for Clio - The Open-Source Enterprise AI Search Platform",
+  "description": "Documentation for Omni - The Open-Source Enterprise AI Search Platform",
   "repository": {
     "type": "git",
-    "url": "https://github.com/cliohq/clio.git",
+    "url": "https://github.com/omnihq/omni.git",
     "directory": "docs"
   },
   "private": true,

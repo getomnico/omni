@@ -1,4 +1,4 @@
-use clio_searcher::search::SearchEngine;
+use omni_searcher::search::SearchEngine;
 use shared::models::{SearchMode, SearchRequest};
 use shared::test_utils::setup_test_environment;
 

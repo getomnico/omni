@@ -1,6 +1,6 @@
 # Docker Deployment
 
-Get Clio running quickly using Docker Compose. This guide covers development/testing deployments. For production, see the [Production Setup Guide](../deployment/production-setup).
+Get Omni running quickly using Docker Compose. This guide covers development/testing deployments. For production, see the [Production Setup Guide](../deployment/production-setup).
 
 ## Prerequisites
 
@@ -22,8 +22,8 @@ git --version
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/cliohq/clio.git
-cd clio
+git clone https://github.com/omnihq/omni.git
+cd omni
 ```
 
 ### 2. Start All Services
@@ -36,7 +36,7 @@ docker compose up -d
 docker compose ps
 ```
 
-### 3. Access Clio
+### 3. Access Omni
 
 Open your browser and navigate to:
 - **HTTP**: http://localhost
@@ -46,7 +46,7 @@ The first startup takes 5-10 minutes as Docker images are downloaded and built.
 
 ## Docker Compose Files
 
-Clio uses multiple compose files for different environments:
+Omni uses multiple compose files for different environments:
 
 | File | Purpose |
 |------|---------|
@@ -79,14 +79,14 @@ When you run `docker compose up -d`, these services start:
 
 | Service | Container Name | Purpose |
 |---------|----------------|---------|
-| **clio-web** | clio-web | Frontend and API gateway |
-| **clio-searcher** | clio-searcher | Search processing |
-| **clio-indexer** | clio-indexer | Document indexing |
-| **clio-ai** | clio-ai | AI/ML processing |
-| **postgres** | clio-postgres | Primary database |
-| **redis** | clio-redis | Cache and message queue |
-| **caddy** | clio-caddy | Load balancer and SSL |
-| **vllm** | clio-vllm | Local LLM inference |
+| **omni-web** | omni-web | Frontend and API gateway |
+| **omni-searcher** | omni-searcher | Search processing |
+| **omni-indexer** | omni-indexer | Document indexing |
+| **omni-ai** | omni-ai | AI/ML processing |
+| **postgres** | omni-postgres | Primary database |
+| **redis** | omni-redis | Cache and message queue |
+| **caddy** | omni-caddy | Load balancer and SSL |
+| **vllm** | omni-vllm | Local LLM inference |
 
 ## Initial Setup
 
@@ -94,7 +94,7 @@ When you run `docker compose up -d`, these services start:
 
 ```bash
 # Create the first admin user
-docker compose exec clio-web npm run create-admin-user
+docker compose exec omni-web npm run create-admin-user
 ```
 
 ### 2. Configure Data Sources
@@ -113,10 +113,10 @@ Log in as admin and configure your first data source:
 docker compose logs
 
 # Specific service
-docker compose logs clio-searcher
+docker compose logs omni-searcher
 
 # Follow logs in real-time
-docker compose logs -f clio-web
+docker compose logs -f omni-web
 ```
 
 ### Service Management
@@ -126,20 +126,20 @@ docker compose logs -f clio-web
 docker compose down
 
 # Restart a specific service
-docker compose restart clio-searcher
+docker compose restart omni-searcher
 
 # Rebuild and restart
-docker compose up -d --build clio-web
+docker compose up -d --build omni-web
 ```
 
 ### Database Access
 
 ```bash
 # Connect to PostgreSQL
-docker compose exec postgres psql -U clio -d clio
+docker compose exec postgres psql -U omni -d omni
 
 # Run a backup
-docker compose exec postgres pg_dump -U clio clio > backup.sql
+docker compose exec postgres pg_dump -U omni omni > backup.sql
 ```
 
 ### Monitoring
@@ -160,7 +160,7 @@ Create a `.env` file in the project root:
 
 ```bash
 # Database
-DATABASE_URL=postgresql://clio:clio_password@postgres:5432/clio
+DATABASE_URL=postgresql://omni:omni_password@postgres:5432/omni
 
 # Redis
 REDIS_URL=redis://redis:6379
@@ -182,7 +182,7 @@ To use a custom domain, update the `Caddyfile`:
 
 ```caddyfile
 your-domain.com {
-    reverse_proxy clio-web:3000
+    reverse_proxy omni-web:3000
 }
 ```
 
@@ -219,22 +219,22 @@ docker compose exec postgres pg_stat_activity
 ```bash
 # Reset database (⚠️ destroys all data)
 docker compose down
-docker volume rm clio_postgres_data
+docker volume rm omni_postgres_data
 docker compose up -d
 
 # Run database migrations manually
-docker compose exec clio-indexer cargo run --bin migrate
+docker compose exec omni-indexer cargo run --bin migrate
 ```
 
 ### Network Issues
 
 ```bash
 # Check network connectivity
-docker compose exec clio-web wget -qO- http://clio-searcher:8080/health
+docker compose exec omni-web wget -qO- http://omni-searcher:8080/health
 
 # Inspect Docker networks
 docker network ls
-docker network inspect clio_default
+docker network inspect omni_default
 ```
 
 ## Health Checks
@@ -261,12 +261,12 @@ To backup data:
 
 ```bash
 # Create volume backup
-docker run --rm -v clio_postgres_data:/data -v $(pwd):/backup alpine tar czf /backup/postgres_backup.tar.gz /data
+docker run --rm -v omni_postgres_data:/data -v $(pwd):/backup alpine tar czf /backup/postgres_backup.tar.gz /data
 ```
 
 ## Next Steps
 
-Once Clio is running:
+Once Omni is running:
 
 1. **[Production Setup](../deployment/production-setup)** - Prepare for production
 2. **[Monitoring](../operations/monitoring)** - Set up monitoring and alerts

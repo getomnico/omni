@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use clio_searcher::models::{SearchMode, SearchRequest, SearchResponse};
+    use omni_searcher::models::{SearchMode, SearchRequest, SearchResponse};
 
     #[test]
     fn test_search_request_semantic_mode() {

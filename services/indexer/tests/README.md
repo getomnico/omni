@@ -15,10 +15,10 @@ Or run them locally:
 
 ```bash
 # PostgreSQL
-docker run -d --name clio-postgres -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:17
+docker run -d --name omni-postgres -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:17
 
 # Redis
-docker run -d --name clio-redis -p 6379:6379 redis:7-alpine
+docker run -d --name omni-redis -p 6379:6379 redis:7-alpine
 ```
 
 ## Running Tests

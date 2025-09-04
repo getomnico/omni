@@ -35,9 +35,9 @@ impl TestEnvironment {
                 "database system is ready to accept connections",
             ))
             .with_exposed_port(ContainerPort::Tcp(5432))
-            .with_env_var("POSTGRES_DB", "clio_test")
-            .with_env_var("POSTGRES_USER", "clio")
-            .with_env_var("POSTGRES_PASSWORD", "clio_password");
+            .with_env_var("POSTGRES_DB", "omni_test")
+            .with_env_var("POSTGRES_USER", "omni")
+            .with_env_var("POSTGRES_PASSWORD", "omni_password");
         let postgres_container = postgres_image.start().await?;
         let postgres_port = postgres_container
             .get_host_port_ipv4(ContainerPort::Tcp(5432))
@@ -51,7 +51,7 @@ impl TestEnvironment {
 
         // Create database connection
         let database_url = format!(
-            "postgresql://clio:clio_password@localhost:{}/clio_test",
+            "postgresql://omni:omni_password@localhost:{}/omni_test",
             postgres_port
         );
         let db_pool = DatabasePool::new(&database_url).await?;

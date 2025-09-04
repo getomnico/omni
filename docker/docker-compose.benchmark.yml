@@ -2,10 +2,10 @@
 # Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.benchmark.yml up
 
 x-benchmark-database-url: &benchmark-database-url
-  DATABASE_URL: postgresql://clio_dev:clio_dev_password@postgres:5432/clio_benchmark
+  DATABASE_URL: postgresql://omni_dev:omni_dev_password@postgres:5432/omni_benchmark
 
 services:
-  # Override database URLs for benchmark services to use clio_benchmark database
+  # Override database URLs for benchmark services to use omni_benchmark database
   searcher:
     environment:
       <<: *benchmark-database-url

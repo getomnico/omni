@@ -5,7 +5,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
 const config: Config = {
-  title: 'Clio',
+  title: 'Omni',
   tagline: 'The Open-Source Enterprise AI Search Platform',
   favicon: 'img/favicon.ico',
 
@@ -15,15 +15,15 @@ const config: Config = {
   },
 
   // Set the production url of your site here
-  url: 'https://cliodocs.dev',
+  url: 'https://omnidocs.dev',
   // Set the /<baseUrl>/ pathname under which your site is served
   // For GitHub pages deployment, it is often '/<projectName>/'
   baseUrl: '/',
 
   // GitHub pages deployment config.
   // If you aren't using GitHub pages, you don't need these.
-  organizationName: 'cliohq', // Usually your GitHub org/user name.
-  projectName: 'clio', // Usually your repo name.
+  organizationName: 'omnihq', // Usually your GitHub org/user name.
+  projectName: 'omni', // Usually your repo name.
 
   onBrokenLinks: 'throw',
   onBrokenMarkdownLinks: 'warn',
@@ -45,7 +45,7 @@ const config: Config = {
           // Please change this to your repo.
           // Remove this to remove the "edit this page" links.
           editUrl:
-            'https://github.com/cliohq/clio/tree/main/docs/',
+            'https://github.com/omnihq/omni/tree/main/docs/',
         },
         blog: {
           showReadingTime: true,
@@ -56,7 +56,7 @@ const config: Config = {
           // Please change this to your repo.
           // Remove this to remove the "edit this page" links.
           editUrl:
-            'https://github.com/cliohq/clio/tree/main/docs/',
+            'https://github.com/omnihq/omni/tree/main/docs/',
           // Useful options to enforce blogging best practices
           onInlineTags: 'warn',
           onInlineAuthors: 'warn',
@@ -71,11 +71,11 @@ const config: Config = {
 
   themeConfig: {
     // Replace with your project's social card
-    image: 'img/clio-social-card.jpg',
+    image: 'img/omni-social-card.jpg',
     navbar: {
-      title: 'Clio',
+      title: 'Omni',
       logo: {
-        alt: 'Clio Logo',
+        alt: 'Omni Logo',
         src: 'img/logo.svg',
       },
       items: [
@@ -87,7 +87,7 @@ const config: Config = {
         },
         {to: '/blog', label: 'Blog', position: 'left'},
         {
-          href: 'https://github.com/cliohq/clio',
+          href: 'https://github.com/omnihq/omni',
           label: 'GitHub',
           position: 'right',
         },
@@ -118,15 +118,15 @@ const config: Config = {
           items: [
             {
               label: 'GitHub Issues',
-              href: 'https://github.com/cliohq/clio/issues',
+              href: 'https://github.com/omnihq/omni/issues',
             },
             {
               label: 'Discussions',
-              href: 'https://github.com/cliohq/clio/discussions',
+              href: 'https://github.com/omnihq/omni/discussions',
             },
             {
               label: 'Main Repository',
-              href: 'https://github.com/cliohq/clio',
+              href: 'https://github.com/omnihq/omni',
             },
           ],
         },
@@ -139,16 +139,16 @@ const config: Config = {
             },
             {
               label: 'GitHub',
-              href: 'https://github.com/cliohq/clio',
+              href: 'https://github.com/omnihq/omni',
             },
             {
               label: 'License',
-              href: 'https://github.com/cliohq/clio/blob/main/LICENSE',
+              href: 'https://github.com/omnihq/omni/blob/main/LICENSE',
             },
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} Clio Contributors. Licensed under Apache 2.0.`,
+      copyright: `Copyright © ${new Date().getFullYear()} Omni Contributors. Licensed under Apache 2.0.`,
     },
     prism: {
       theme: prismThemes.github,

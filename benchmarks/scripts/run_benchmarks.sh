@@ -59,11 +59,11 @@ start_benchmark_services() {
 }
 
 # Function to check if Clio services are running
-check_clio_services() {
+check_omni_services() {
     log_info "Checking Clio services..."
     
     # Check PostgreSQL
-    if ! docker exec clio-postgres pg_isready -h localhost -U clio_dev > /dev/null 2>&1; then
+    if ! docker exec omni-postgres pg_isready -h localhost -U omni_dev > /dev/null 2>&1; then
         log_error "PostgreSQL is not running at localhost:5432"
         log_info "Starting Clio services with benchmark configuration..."
         start_benchmark_services
@@ -71,7 +71,7 @@ check_clio_services() {
     fi
     
     # Check Redis
-    if ! docker exec clio-redis redis-cli ping > /dev/null 2>&1; then
+    if ! docker exec omni-redis redis-cli ping > /dev/null 2>&1; then
         log_error "Redis is not running at localhost:6379"
         log_info "Starting Clio services with benchmark configuration..."
         start_benchmark_services
@@ -107,8 +107,8 @@ check_clio_services() {
 setup_benchmark_database() {
     log_info "Setting up benchmark database..."
     
-    # Create clio_benchmark database if it doesn't exist
-    docker exec clio-postgres psql -U clio_dev -c "CREATE DATABASE clio_benchmark;" 2>/dev/null || true
+    # Create omni_benchmark database if it doesn't exist
+    docker exec omni-postgres psql -U omni_dev -c "CREATE DATABASE omni_benchmark;" 2>/dev/null || true
     
     # Run migrations on benchmark database using Docker container
     cd "$BENCHMARK_ROOT"
@@ -117,7 +117,7 @@ setup_benchmark_database() {
     
     if docker run --rm \
         --network host \
-        -e DATABASE_URL="postgresql://clio_dev:clio_dev_password@localhost:5432/clio_benchmark" \
+        -e DATABASE_URL="postgresql://omni_dev:omni_dev_password@localhost:5432/omni_benchmark" \
         -v "$BENCHMARK_ROOT/services/migrations:/migrations" \
         $(docker build -q -f services/migrations/Dockerfile .); then
         log_success "Benchmark database setup completed"
@@ -244,7 +244,7 @@ main() {
     mkdir -p "$RESULTS_DIR"
     
     # Check prerequisites and setup
-    check_clio_services
+    check_omni_services
     setup_benchmark_database
     build_benchmark
     
@@ -304,7 +304,7 @@ show_help() {
     echo ""
     echo "What this script does:"
     echo "  1. Automatically starts Clio services with benchmark database configuration"
-    echo "  2. Creates a separate 'clio_benchmark' database"
+    echo "  2. Creates a separate 'omni_benchmark' database"
     echo "  3. Downloads and loads benchmark datasets"
     echo "  4. Indexes the dataset documents into Clio"
     echo "  5. Runs search queries and measures performance"

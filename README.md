@@ -1,7 +1,7 @@
 <div align="center">
 
-<img height="100" src="https://github.com/user-attachments/assets/db27a7ed-375b-4715-b43e-e80f52b4a305#gh-light-mode-only" alt="Clio">
-<img height="100" src="https://github.com/user-attachments/assets/1c2e1f84-a6b1-4877-9ba2-3b030f0b2d8e#gh-dark-mode-only" alt="Clio">
+<img height="100" src="https://github.com/user-attachments/assets/db27a7ed-375b-4715-b43e-e80f52b4a305#gh-light-mode-only" alt="Omni">
+<img height="100" src="https://github.com/user-attachments/assets/1c2e1f84-a6b1-4877-9ba2-3b030f0b2d8e#gh-dark-mode-only" alt="Omni">
 
 **The Open-Source Enterprise AI Search Platform**
 
@@ -19,9 +19,9 @@
 
 ---
 
-## What is Clio?
+## What is Omni?
 
-Clio is a search platform that unifies your organization's knowledge across multiple data sources.
+Omni is a search platform that unifies your organization's knowledge across multiple data sources.
 
 - **Privacy-first**: Your data never leaves your infrastructure
 - **Lightning-fast**: Sub-second search across millions of documents
@@ -55,16 +55,16 @@ Clio is a search platform that unifies your organization's knowledge across mult
 
 ## Architecture
 
-Clio uses a simple microservices architecture built for scalability and maintainability:
+Omni uses a simple microservices architecture built for scalability and maintainability:
 
-![clio-arch-6](https://github.com/user-attachments/assets/28d3fdaa-8ec6-4536-97fc-c1ac9d2ffe78)
+![omni-arch-6](https://github.com/user-attachments/assets/28d3fdaa-8ec6-4536-97fc-c1ac9d2ffe78)
 
 ### Core Components
 
-- **clio-search** (Rust): Query processing, result ranking, caching
-- **clio-indexer** (Rust): Document processing, database writes
-- **clio-ai** (Python): Embedding generation, RAG orchestration
-- **clio-web** (SvelteKit + Typescript): Frontend
+- **omni-search** (Rust): Query processing, result ranking, caching
+- **omni-indexer** (Rust): Document processing, database writes
+- **omni-ai** (Python): Embedding generation, RAG orchestration
+- **omni-web** (SvelteKit + Typescript): Frontend
 - **Connectors** (Rust): Independent microservices for each data source
 
 ## Supported Integrations
@@ -93,7 +93,7 @@ Clio uses a simple microservices architecture built for scalability and maintain
 
 ## Contributing
 
-We welcome contributions! Clio is built with modern tools and follows best practices:
+We welcome contributions! Omni is built with modern tools and follows best practices:
 
 - **Monorepo**: Cargo workspace for Rust services
 - **Type Safety**: Full TypeScript + Rust type safety
@@ -104,7 +104,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 
 ## License
 
-Clio is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
+Omni is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
 
 ## Acknowledgments
 
@@ -120,6 +120,6 @@ Built with these amazing open-source projects:
 
 **Ready to take control of your enterprise search?**
 
-[⭐ Star this repo](https://github.com/cliohq/clio) • [Documentation](docs/) • [Discussions](https://github.com/cliohq/clio/discussions)
+[⭐ Star this repo](https://github.com/omnihq/omni) • [Documentation](docs/) • [Discussions](https://github.com/omnihq/omni/discussions)
 
 </div>

@@ -16,7 +16,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Clio Contributors"]
 license = "Apache-2.0"
-repository = "https://github.com/yourusername/clio"
+repository = "https://github.com/yourusername/omni"
 
 [workspace.dependencies]
 tokio = { version = "1.40", features = ["full"] }

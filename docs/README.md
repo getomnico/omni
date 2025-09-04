@@ -1,12 +1,12 @@
-# Clio Documentation
+# Omni Documentation
 
-This directory contains the official documentation for Clio, built using [Docusaurus](https://docusaurus.io/).
+This directory contains the official documentation for Omni, built using [Docusaurus](https://docusaurus.io/).
 
 ## Overview
 
-The documentation is designed primarily for **IT teams** who need to deploy and manage Clio in production environments. It covers:
+The documentation is designed primarily for **IT teams** who need to deploy and manage Omni in production environments. It covers:
 
-- **Quick Start**: Get Clio running in under 10 minutes
+- **Quick Start**: Get Omni running in under 10 minutes
 - **Production Deployment**: Enterprise-ready setup guides
 - **Configuration**: Database, security, and data source setup
 - **Operations**: Monitoring, maintenance, and troubleshooting
@@ -71,7 +71,7 @@ docs/
 
 ### Writing Guidelines
 
-1. **Audience**: Write for IT teams deploying and managing Clio
+1. **Audience**: Write for IT teams deploying and managing Omni
 2. **Structure**: Use clear headings and step-by-step instructions
 3. **Code Examples**: Include practical, copy-paste ready examples
 4. **Screenshots**: Add visual aids for complex procedures
@@ -115,10 +115,10 @@ Build and upload the `build/` directory to any static hosting service:
 
 ### Regular Updates
 
-- **Content Review**: Update procedures when Clio features change
+- **Content Review**: Update procedures when Omni features change
 - **Link Checking**: Verify all internal and external links
 - **Screenshot Updates**: Keep UI screenshots current
-- **Version Alignment**: Ensure docs match current Clio version
+- **Version Alignment**: Ensure docs match current Omni version
 
 ### Monitoring
 
@@ -128,6 +128,6 @@ Build and upload the `build/` directory to any static hosting service:
 
 ## Support
 
-- **Issues**: [Report documentation issues](https://github.com/cliohq/clio/issues)
-- **Discussions**: [Ask questions](https://github.com/cliohq/clio/discussions)
+- **Issues**: [Report documentation issues](https://github.com/omnihq/omni/issues)
+- **Discussions**: [Ask questions](https://github.com/omnihq/omni/discussions)
 - **Contributing**: See main project [CONTRIBUTING.md](../CONTRIBUTING.md)

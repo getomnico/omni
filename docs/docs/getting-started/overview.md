@@ -1,10 +1,10 @@
 # Overview
 
-Clio is an open-source, self-hosted enterprise search platform designed to unify your organization's knowledge across multiple data sources. This overview provides IT teams with the key information needed to evaluate and deploy Clio.
+Omni is an open-source, self-hosted enterprise search platform designed to unify your organization's knowledge across multiple data sources. This overview provides IT teams with the key information needed to evaluate and deploy Omni.
 
-## What is Clio?
+## What is Omni?
 
-Clio aggregates and searches across your organization's data sources:
+Omni aggregates and searches across your organization's data sources:
 
 ### Supported Data Sources
 - **Google Workspace**: Drive, Docs, Sheets, Gmail, Calendar
@@ -20,11 +20,11 @@ Clio aggregates and searches across your organization's data sources:
 - **Semantic Search**: Find relevant content even with different terminology
 - **Access Control**: Respects source permissions and adds RBAC
 
-## Why Choose Clio?
+## Why Choose Omni?
 
 ### For IT Teams
 
-| Requirement | Clio Solution |
+| Requirement | Omni Solution |
 |-------------|---------------|
 | **Data Privacy** | Fully self-hosted, no data leaves your infrastructure |
 | **Compliance** | Built-in audit logging, configurable retention policies |
@@ -35,7 +35,7 @@ Clio aggregates and searches across your organization's data sources:
 
 ### vs. Cloud Solutions (Glean, etc.)
 
-| Feature | Clio | Cloud Solutions |
+| Feature | Omni | Cloud Solutions |
 |---------|------|-----------------|
 | **Data Control** | ✅ Complete control | ❌ Data stored externally |
 | **Privacy** | ✅ No data sharing | ❌ Subject to vendor policies |
@@ -45,7 +45,7 @@ Clio aggregates and searches across your organization's data sources:
 
 ## Architecture Overview
 
-Clio uses a microservices architecture optimized for reliability and performance:
+Omni uses a microservices architecture optimized for reliability and performance:
 
 ```
 ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
@@ -60,7 +60,7 @@ Clio uses a microservices architecture optimized for reliability and performance
          │                       │                       │
          ▼                       ▼                       ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Clio Platform                           │
+│                        Omni Platform                           │
 │                                                                 │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐             │
 │  │    Web      │  │  Searcher   │  │   Indexer   │             │
@@ -83,10 +83,10 @@ Clio uses a microservices architecture optimized for reliability and performance
 
 | Component | Purpose | Technology | Resource Usage |
 |-----------|---------|------------|----------------|
-| **clio-web** | Web interface, authentication, API gateway | SvelteKit/Node.js | 1-2 GB RAM |
-| **clio-searcher** | Query processing, result ranking | Rust | 2-4 GB RAM |
-| **clio-indexer** | Document processing, database writes | Rust | 1-2 GB RAM |
-| **clio-ai** | Embeddings, AI answers, ML operations | Python/FastAPI | 8-16 GB RAM |
+| **omni-web** | Web interface, authentication, API gateway | SvelteKit/Node.js | 1-2 GB RAM |
+| **omni-searcher** | Query processing, result ranking | Rust | 2-4 GB RAM |
+| **omni-indexer** | Document processing, database writes | Rust | 1-2 GB RAM |
+| **omni-ai** | Embeddings, AI answers, ML operations | Python/FastAPI | 8-16 GB RAM |
 | **PostgreSQL** | Primary database, full-text search | PostgreSQL 17+ | 16-32 GB RAM |
 | **Redis** | Caching, message queue | Redis 7+ | 1-2 GB RAM |
 | **Caddy** | Load balancer, SSL termination | Caddy | 256 MB RAM |
@@ -104,8 +104,8 @@ Clio uses a microservices architecture optimized for reliability and performance
 
 **Deployment:**
 ```bash
-git clone https://github.com/cliohq/clio.git
-cd clio
+git clone https://github.com/omnihq/omni.git
+cd omni
 docker compose up -d
 ```
 
@@ -136,7 +136,7 @@ docker compose up -d
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│  Identity       │    │      Clio       │    │  Data Sources   │
+│  Identity       │    │      Omni       │    │  Data Sources   │
 │  Provider       │    │                 │    │                 │
 │                 │    │ ┌─────────────┐ │    │                 │
 │ • Google OAuth  │◄──►│ │    RBAC     │ │◄──►│ • Google Drive  │
@@ -239,7 +239,7 @@ User → Web Interface → Searcher → Database → AI Service → Results
 
 ### vs. Commercial Solutions
 - **Glean**: $25-50/user/month = $12,500-25,000/month (500 users)
-- **Clio**: $270-550/month + setup time
+- **Omni**: $270-550/month + setup time
 - **ROI**: Break-even in 1-2 months for most deployments
 
 ## Support and Maintenance
@@ -257,7 +257,7 @@ User → Web Interface → Searcher → Database → AI Service → Results
 
 ## Next Steps
 
-Ready to deploy Clio? Choose your path:
+Ready to deploy Omni? Choose your path:
 
 **Quick Evaluation:**
 → [Docker Deployment](./docker-deployment) (10 minutes)
@@ -266,4 +266,4 @@ Ready to deploy Clio? Choose your path:
 → [System Requirements](./system-requirements) → [Production Setup](../deployment/production-setup)
 
 **Questions or Issues:**
-→ [GitHub Discussions](https://github.com/cliohq/clio/discussions)
+→ [GitHub Discussions](https://github.com/omnihq/omni/discussions)

@@ -79,7 +79,7 @@ impl Default for BenchmarkConfig {
         Self {
             searcher_url: "http://localhost:3001".to_string(),
             indexer_url: "http://localhost:3002".to_string(),
-            database_url: "postgresql://postgres:password@localhost:5432/clio_benchmark"
+            database_url: "postgresql://postgres:password@localhost:5432/omni_benchmark"
                 .to_string(),
             redis_url: "redis://localhost:6379".to_string(),
             max_results_per_query: 100,

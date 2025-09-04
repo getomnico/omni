@@ -1,17 +1,17 @@
 # Monitoring and Alerting
 
-Effective monitoring is crucial for maintaining Clio in production. This guide covers health checks, metrics collection, alerting, and troubleshooting.
+Effective monitoring is crucial for maintaining Omni in production. This guide covers health checks, metrics collection, alerting, and troubleshooting.
 
 ## Health Check Overview
 
-Clio includes built-in health checks for all services. Monitor these endpoints to ensure system health:
+Omni includes built-in health checks for all services. Monitor these endpoints to ensure system health:
 
 | Service | Health Check URL | Purpose |
 |---------|------------------|---------|
 | **Web Interface** | `https://your-domain.com/api/health` | Overall system status |
-| **Searcher** | `http://clio-searcher:8080/health` | Search service health |
-| **Indexer** | `http://clio-indexer:8081/health` | Indexing service health |
-| **AI Service** | `http://clio-ai:8000/health` | AI/ML service health |
+| **Searcher** | `http://omni-searcher:8080/health` | Search service health |
+| **Indexer** | `http://omni-indexer:8081/health` | Indexing service health |
+| **AI Service** | `http://omni-ai:8000/health` | AI/ML service health |
 | **Database** | PostgreSQL connection check | Database connectivity |
 | **Redis** | Redis ping | Cache/queue health |
 
@@ -26,7 +26,7 @@ All services include Docker health checks. View status:
 docker compose ps
 
 # Monitor specific service
-watch docker compose ps clio-searcher
+watch docker compose ps omni-searcher
 ```
 
 ### 2. Health Check Script
@@ -38,7 +38,7 @@ Create a simple monitoring script:
 # health-check.sh
 
 DOMAIN="https://search.yourcompany.com"
-LOG_FILE="/var/log/clio-health.log"
+LOG_FILE="/var/log/omni-health.log"
 
 check_service() {
     local service=$1
@@ -56,7 +56,7 @@ check_service() {
 # Check main health endpoint
 if ! check_service "Main" "$DOMAIN/api/health"; then
     # Send alert (email, Slack, etc.)
-    echo "Clio health check failed" | mail -s "Clio Alert" admin@yourcompany.com
+    echo "Omni health check failed" | mail -s "Omni Alert" admin@yourcompany.com
 fi
 ```
 
@@ -64,7 +64,7 @@ fi
 
 ```bash
 # Add to crontab for every 5 minutes
-*/5 * * * * /opt/clio/scripts/health-check.sh
+*/5 * * * * /opt/omni/scripts/health-check.sh
 ```
 
 ## Advanced Monitoring with Prometheus
@@ -79,14 +79,14 @@ global:
   evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: 'clio-web'
+  - job_name: 'omni-web'
     static_configs:
-      - targets: ['clio-web:3000']
+      - targets: ['omni-web:3000']
     metrics_path: '/api/metrics'
     
-  - job_name: 'clio-searcher'
+  - job_name: 'omni-searcher'
     static_configs:
-      - targets: ['clio-searcher:8080']
+      - targets: ['omni-searcher:8080']
     metrics_path: '/metrics'
     
   - job_name: 'postgres'
@@ -112,7 +112,7 @@ version: '3.8'
 services:
   prometheus:
     image: prom/prometheus:latest
-    container_name: clio-prometheus
+    container_name: omni-prometheus
     ports:
       - "9090:9090"
     volumes:
@@ -128,7 +128,7 @@ services:
 
   grafana:
     image: grafana/grafana:latest
-    container_name: clio-grafana
+    container_name: omni-grafana
     ports:
       - "3001:3000"
     environment:
@@ -140,15 +140,15 @@ services:
 
   postgres-exporter:
     image: prometheuscommunity/postgres-exporter:latest
-    container_name: clio-postgres-exporter
+    container_name: omni-postgres-exporter
     environment:
-      DATA_SOURCE_NAME: "postgresql://clio_monitor:monitor_password@postgres:5432/clio?sslmode=disable"
+      DATA_SOURCE_NAME: "postgresql://omni_monitor:monitor_password@postgres:5432/omni?sslmode=disable"
     ports:
       - "9187:9187"
 
   redis-exporter:
     image: oliver006/redis_exporter:latest
-    container_name: clio-redis-exporter
+    container_name: omni-redis-exporter
     environment:
       REDIS_ADDR: "redis://redis:6379"
     ports:
@@ -156,7 +156,7 @@ services:
 
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:latest
-    container_name: clio-cadvisor
+    container_name: omni-cadvisor
     ports:
       - "8080:8080"
     volumes:
@@ -177,7 +177,7 @@ volumes:
 ### 3. Start Monitoring Stack
 
 ```bash
-# Start monitoring alongside Clio
+# Start monitoring alongside Omni
 docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
 
 # Access Grafana at http://localhost:3001
@@ -230,7 +230,7 @@ Create `alerts.yml`:
 
 ```yaml
 groups:
-  - name: clio-alerts
+  - name: omni-alerts
     rules:
       - alert: ServiceDown
         expr: up == 0
@@ -266,7 +266,7 @@ groups:
           summary: "High disk usage on {{ $labels.device }}"
 
       - alert: SearchLatencyHigh
-        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="clio-searcher"}[5m])) \> 2
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="omni-searcher"}[5m])) \> 2
         for: 3m
         labels:
           severity: warning
@@ -302,7 +302,7 @@ receivers:
   - name: 'web.hook'
     email_configs:
       - to: 'admin@yourcompany.com'
-        subject: 'Clio Alert: {{ .GroupLabels.alertname }}'
+        subject: 'Omni Alert: {{ .GroupLabels.alertname }}'
         body: |
           {{ range .Alerts }}
           Alert: {{ .Annotations.summary }}
@@ -313,7 +313,7 @@ receivers:
     slack_configs:
       - api_url: 'YOUR_SLACK_WEBHOOK_URL'
         channel: '#alerts'
-        title: 'Clio Alert'
+        title: 'Omni Alert'
         text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}'
 ```
 
@@ -326,12 +326,12 @@ Configure log shipping to centralized systems:
 ```yaml
 # docker-compose.yml additions
 services:
-  clio-web:
+  omni-web:
     logging:
       driver: "fluentd"
       options:
         fluentd-address: "fluentd:24224"
-        tag: "clio.web"
+        tag: "omni.web"
 ```
 
 ### 2. Log Analysis Queries
@@ -340,16 +340,16 @@ Common log analysis patterns:
 
 ```bash
 # Search for errors in the last hour
-docker compose logs --since 1h clio-web | grep -i error
+docker compose logs --since 1h omni-web | grep -i error
 
 # Monitor slow queries
 docker compose logs postgres | grep "duration"
 
 # Check authentication failures
-docker compose logs clio-web | grep "authentication failed"
+docker compose logs omni-web | grep "authentication failed"
 
 # Monitor indexing progress
-docker compose logs clio-indexer | grep "processed"
+docker compose logs omni-indexer | grep "processed"
 ```
 
 ### 3. Log Rotation
@@ -357,7 +357,7 @@ docker compose logs clio-indexer | grep "processed"
 Configure log rotation to prevent disk space issues:
 
 ```bash
-# /etc/logrotate.d/clio
+# /etc/logrotate.d/omni
 /var/lib/docker/containers/*/*-json.log {
     daily
     rotate 7
@@ -413,10 +413,10 @@ Track search performance metrics:
 
 ```bash
 # Average search response time
-docker compose logs clio-searcher | grep "search_duration" | tail -100
+docker compose logs omni-searcher | grep "search_duration" | tail -100
 
 # Search query distribution
-docker compose logs clio-searcher | grep "query:" | cut -d'"' -f4 | sort | uniq -c | sort -nr
+docker compose logs omni-searcher | grep "query:" | cut -d'"' -f4 | sort | uniq -c | sort -nr
 ```
 
 ### 3. AI Service Performance
@@ -425,10 +425,10 @@ Monitor AI service performance:
 
 ```bash
 # Embedding generation time
-docker compose logs clio-ai | grep "embedding_duration"
+docker compose logs omni-ai | grep "embedding_duration"
 
 # Model loading time
-docker compose logs clio-ai | grep "model_load_time"
+docker compose logs omni-ai | grep "model_load_time"
 
 # GPU utilization (if applicable)
 nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits
@@ -446,7 +446,7 @@ docker compose logs \<service-name>
 docker stats
 
 # Verify network connectivity
-docker compose exec clio-web ping clio-searcher
+docker compose exec omni-web ping omni-searcher
 ```
 
 ### 2. Performance Issues
@@ -469,10 +469,10 @@ ss -tuln
 
 ```bash
 # Check indexer status
-docker compose logs clio-indexer | tail -50
+docker compose logs omni-indexer | tail -50
 
 # Verify database connections
-docker compose exec postgres psql -U clio -c "SELECT count(*) FROM documents;"
+docker compose exec postgres psql -U omni -c "SELECT count(*) FROM documents;"
 
 # Test search directly
 curl -X POST http://localhost/api/search -d '{"query": "test"}'

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for the new /prompt endpoint in clio-ai service
+Test script for the new /prompt endpoint in omni-ai service
 """
 import httpx
 import asyncio
@@ -120,13 +120,13 @@ async def test_health_endpoint():
 
 async def main():
     """Main test function"""
-    print("Starting clio-ai service tests...")
+    print("Starting omni-ai service tests...")
 
     # Test health endpoint first
     health_ok = await test_health_endpoint()
     if not health_ok:
         print("⚠️  Health check failed, service may not be running")
-        print("Make sure the clio-ai service is running on port 8001")
+        print("Make sure the omni-ai service is running on port 8001")
         return
 
     print("\n" + "=" * 50)

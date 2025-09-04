@@ -1,6 +1,6 @@
 mod common;
 
-use clio_indexer::QueueProcessor;
+use omni_indexer::QueueProcessor;
 use shared::db::repositories::DocumentRepository;
 use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use shared::queue::EventQueue;

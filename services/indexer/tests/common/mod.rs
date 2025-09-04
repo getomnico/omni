@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clio_indexer::{create_app, AppState};
+use omni_indexer::{create_app, AppState};
 use shared::db::repositories::DocumentRepository;
 use shared::models::Document;
 use shared::test_environment::TestEnvironment;
@@ -63,7 +63,7 @@ pub async fn setup_test_fixture() -> Result<TestFixture> {
 }
 
 pub mod fixtures {
-    use clio_indexer::{CreateDocumentRequest, UpdateDocumentRequest};
+    use omni_indexer::{CreateDocumentRequest, UpdateDocumentRequest};
     use serde_json::json;
 
     #[allow(dead_code)]

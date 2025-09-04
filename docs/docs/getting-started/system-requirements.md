@@ -1,6 +1,6 @@
 # System Requirements
 
-This page outlines the hardware and software requirements for deploying Clio in production environments.
+This page outlines the hardware and software requirements for deploying Omni in production environments.
 
 ## Hardware Requirements
 
@@ -79,8 +79,8 @@ The following ports need to be accessible:
 ## Performance Planning
 
 ### CPU Usage
-- **clio-ai**: Most CPU-intensive (ML operations)
-- **clio-searcher**: Moderate CPU for search processing
+- **omni-ai**: Most CPU-intensive (ML operations)
+- **omni-searcher**: Moderate CPU for search processing
 - **PostgreSQL**: CPU scales with concurrent users
 
 ### Memory Usage
@@ -96,7 +96,7 @@ The following ports need to be accessible:
 ## Scalability Considerations
 
 ### Horizontal Scaling
-Currently, Clio runs on a single node. For larger deployments:
+Currently, Omni runs on a single node. For larger deployments:
 - Use external managed PostgreSQL (AWS RDS, Google Cloud SQL)
 - Use external Redis cluster
 - Run multiple searcher instances behind load balancer

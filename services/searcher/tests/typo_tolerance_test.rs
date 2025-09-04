@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use clio_searcher::models::{SearchResponse, WordCorrection};
+    use omni_searcher::models::{SearchResponse, WordCorrection};
 
     #[test]
     fn test_search_response_with_corrections() {

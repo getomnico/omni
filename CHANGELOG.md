@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the Clio project will be documented in this file.
+All notable changes to the Omni project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -95,7 +95,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added facet support with counts for source_type, content_type, last_updated time buckets, and owner
   - GIN indexes on documents.metadata and permissions fields for efficient facet queries
 - Streaming AI-powered answers with RAG (Retrieval-Augmented Generation)
-  - Real-time streaming from vLLM through clio-ai, clio-searcher, and clio-web to browser
+  - Real-time streaming from vLLM through omni-ai, omni-searcher, and omni-web to browser
   - Hybrid search (FTS + vector) for optimal RAG context extraction with top 5 documents
   - Citation system with [Source: Document Title] format for answer attribution
   - Frontend component with live streaming display and clickable source references

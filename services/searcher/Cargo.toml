@@ -1,16 +1,16 @@
 [package]
-name = "clio-searcher"
+name = "omni-searcher"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [lib]
-name = "clio_searcher"
+name = "omni_searcher"
 path = "src/lib.rs"
 
 [[bin]]
-name = "clio-searcher"
+name = "omni-searcher"
 path = "src/main.rs"
 
 [dependencies]

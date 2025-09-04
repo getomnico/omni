@@ -25,8 +25,8 @@ export class SMTPEmailProvider implements EmailProvider {
     ): Promise<EmailResult> {
         try {
             const subject = isNewUser
-                ? 'Welcome to Clio - Complete your account setup'
-                : 'Your Clio login link'
+                ? 'Welcome to Omni - Complete your account setup'
+                : 'Your Omni login link'
 
             const html = this.generateMagicLinkEmail(magicLinkUrl, email, isNewUser)
             const text = this.generateMagicLinkEmailText(magicLinkUrl, email, isNewUser)
@@ -67,10 +67,10 @@ export class SMTPEmailProvider implements EmailProvider {
         email: string,
         isNewUser: boolean,
     ): string {
-        const title = isNewUser ? 'Welcome to Clio' : 'Sign in to Clio'
+        const title = isNewUser ? 'Welcome to Omni' : 'Sign in to Omni'
         const message = isNewUser
-            ? "Welcome to Clio! Click the link below to complete your account setup and access your company's search platform."
-            : 'Click the link below to sign in to your Clio account.'
+            ? "Welcome to Omni! Click the link below to complete your account setup and access your company's search platform."
+            : 'Click the link below to sign in to your Omni account.'
 
         return `
 <!DOCTYPE html>
@@ -164,7 +164,7 @@ export class SMTPEmailProvider implements EmailProvider {
 <body>
     <div class="container">
         <div class="header">
-            <div class="logo">Clio</div>
+            <div class="logo">Omni</div>
             <h1 class="title">${title}</h1>
         </div>
         
@@ -174,7 +174,7 @@ export class SMTPEmailProvider implements EmailProvider {
         
         <div class="button-container">
             <a href="${magicLinkUrl}" class="button">
-                ${isNewUser ? 'Complete Setup' : 'Sign In to Clio'}
+                ${isNewUser ? 'Complete Setup' : 'Sign In to Omni'}
             </a>
         </div>
         
@@ -190,7 +190,7 @@ export class SMTPEmailProvider implements EmailProvider {
         <div class="footer">
             <p>If you didn't request this email, you can safely ignore it.</p>
             <p>This email was sent to <strong>${email}</strong></p>
-            <p>Powered by Clio - Enterprise Search Platform</p>
+            <p>Powered by Omni - Enterprise Search Platform</p>
         </div>
     </div>
 </body>
@@ -203,10 +203,10 @@ export class SMTPEmailProvider implements EmailProvider {
         email: string,
         isNewUser: boolean,
     ): string {
-        const title = isNewUser ? 'Welcome to Clio' : 'Sign in to Clio'
+        const title = isNewUser ? 'Welcome to Omni' : 'Sign in to Omni'
         const message = isNewUser
-            ? "Welcome to Clio! Click the link below to complete your account setup and access your company's search platform."
-            : 'Click the link below to sign in to your Clio account.'
+            ? "Welcome to Omni! Click the link below to complete your account setup and access your company's search platform."
+            : 'Click the link below to sign in to your Omni account.'
 
         return `
 ${title}
@@ -224,7 +224,7 @@ If you didn't request this email, you can safely ignore it.
 This email was sent to ${email}
 
 ---
-Powered by Clio - Enterprise Search Platform
+Powered by Omni - Enterprise Search Platform
 		`.trim()
     }
 }

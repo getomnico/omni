@@ -1,16 +1,16 @@
 [package]
-name = "clio-google-connector"
+name = "omni-google-connector"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "clio-google-connector"
+name = "omni-google-connector"
 path = "src/main.rs"
 
 [lib]
-name = "clio_google_connector"
+name = "omni_google_connector"
 path = "src/lib.rs"
 
 [dependencies]

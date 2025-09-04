@@ -7,9 +7,9 @@ use crate::evaluator::metrics::{
 };
 use crate::search_client::{create_search_request, with_limit, with_offset, ClioSearchClient};
 use anyhow::Result;
-use clio_searcher::models::SearchMode;
 use futures::stream::{self, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
+use omni_searcher::models::SearchMode;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{info, warn};

@@ -45,7 +45,7 @@ impl BaseTestFixture {
     pub fn database_config(&self) -> crate::config::DatabaseConfig {
         crate::config::DatabaseConfig {
             database_url: format!(
-                "postgresql://clio:clio_password@localhost:5432/{}",
+                "postgresql://clio:omni_password@localhost:5432/{}",
                 &self.db_name
             ),
             max_connections: 5,
@@ -64,7 +64,7 @@ impl BaseTestFixture {
     /// Manually cleanup the test database (automatically called on drop)
     pub async fn cleanup(&self) -> Result<()> {
         let base_url = env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgresql://clio:clio_password@localhost:5432/clio".to_string());
+            .unwrap_or_else(|_| "postgresql://clio:omni_password@localhost:5432/clio".to_string());
         cleanup_test_database_by_name(&base_url, &self.db_name).await
     }
 }
@@ -73,7 +73,7 @@ impl Drop for BaseTestFixture {
     fn drop(&mut self) {
         let db_name = self.db_name.clone();
         let base_url = env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgresql://clio:clio_password@localhost:5432/clio".to_string());
+            .unwrap_or_else(|_| "postgresql://clio:omni_password@localhost:5432/clio".to_string());
 
         // Best effort cleanup - if we're in a panic, skip cleanup
         if std::thread::panicking() {
@@ -114,9 +114,9 @@ async fn setup_test_database_internal() -> Result<(DatabasePool, String)> {
     dotenvy::dotenv().ok();
 
     let base_url = env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgresql://clio:clio_password@localhost:5432/clio".to_string());
+        .unwrap_or_else(|_| "postgresql://clio:omni_password@localhost:5432/clio".to_string());
 
-    let test_db_name = format!("clio_test_{}", Uuid::new_v4().to_string().replace("-", ""));
+    let test_db_name = format!("omni_test_{}", Uuid::new_v4().to_string().replace("-", ""));
 
     let (base_url_without_db, _) = base_url.rsplit_once('/').unwrap();
     let admin_url = format!("{}/postgres", base_url_without_db);
@@ -191,7 +191,7 @@ async fn seed_test_data(pool: &PgPool) -> Result<()> {
 /// Cleanup test database by name - used by Drop impl
 async fn cleanup_test_database_by_name(base_url: &str, db_name: &str) -> Result<()> {
     // Only cleanup test databases
-    if !db_name.starts_with("clio_test_") {
+    if !db_name.starts_with("omni_test_") {
         return Ok(());
     }
 

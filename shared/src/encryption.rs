@@ -51,7 +51,7 @@ impl EncryptionService {
         let prk = salt.extract(master_key.as_bytes());
 
         let okm = prk
-            .expand(&[b"clio-encryption-key"], HKDF_SHA256)
+            .expand(&[b"omni-encryption-key"], HKDF_SHA256)
             .map_err(|_| anyhow!("Failed to derive encryption key"))?;
 
         let mut key = [0u8; 32];
@@ -150,7 +150,7 @@ impl EncryptionService {
         let prk = salt.extract(master_key);
 
         let okm = prk
-            .expand(&[b"clio-operation-key"], HKDF_SHA256)
+            .expand(&[b"omni-operation-key"], HKDF_SHA256)
             .map_err(|_| anyhow!("Failed to derive operation key"))?;
 
         let mut key = [0u8; 32];

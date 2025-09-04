@@ -3,7 +3,7 @@
 # Search service configuration (Docker services)
 searcher_url = "http://localhost:3001"
 indexer_url = "http://localhost:3002" 
-database_url = "postgresql://clio_dev:clio_dev_password@localhost:5432/clio_benchmark"
+database_url = "postgresql://omni_dev:omni_dev_password@localhost:5432/omni_benchmark"
 redis_url = "redis://localhost:6379"
 max_results_per_query = 100
 concurrent_queries = 5

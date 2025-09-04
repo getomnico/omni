@@ -1,12 +1,12 @@
 [package]
-name = "clio-slack-connector"
+name = "omni-slack-connector"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "clio-slack-connector"
+name = "omni-slack-connector"
 path = "src/main.rs"
 
 [dependencies]

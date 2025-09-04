@@ -13,7 +13,7 @@ export function getEmailProvider(): EmailProvider {
     const config: EmailConfig = {
         provider: (env.EMAIL_PROVIDER as 'resend' | 'smtp') || 'resend',
         resendApiKey: env.RESEND_API_KEY || undefined,
-        fromEmail: env.EMAIL_FROM || 'Clio <noreply@yourdomain.com>',
+        fromEmail: env.EMAIL_FROM || 'Omni <noreply@yourdomain.com>',
         smtpHost: env.EMAIL_HOST || undefined,
         smtpPort: env.EMAIL_PORT ? parseInt(env.EMAIL_PORT) : undefined,
         smtpUser: env.EMAIL_USER || undefined,

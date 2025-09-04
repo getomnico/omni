@@ -1,5 +1,5 @@
 [package]
-name = "clio-benchmarks"
+name = "omni-benchmarks"
 version = "0.1.0"
 edition = "2021"
 
@@ -51,7 +51,7 @@ uuid = "1.0"
 
 # Shared Clio types
 shared = { path = "../shared" }
-clio-searcher = { path = "../services/searcher" }
+omni-searcher = { path = "../services/searcher" }
 
 [dev-dependencies]
 tempfile = "3.8"

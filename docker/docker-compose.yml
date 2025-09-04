@@ -3,7 +3,7 @@ services:
   postgres:
     image: pgvector/pgvector:pg17
     shm_size: 4gb
-    container_name: clio-postgres
+    container_name: omni-postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -11,7 +11,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
-      - clio-network
+      - omni-network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
@@ -20,12 +20,12 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: clio-redis
+    container_name: omni-redis
     command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
     networks:
-      - clio-network
+      - omni-network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -37,12 +37,12 @@ services:
     build:
       context: ..
       dockerfile: services/migrations/Dockerfile
-    image: clio-migrator
-    container_name: clio-migrator
+    image: omni-migrator
+    container_name: omni-migrator
     environment:
       - DATABASE_URL=${DATABASE_URL}
     networks:
-      - clio-network
+      - omni-network
     depends_on:
       postgres:
         condition: service_healthy
@@ -53,8 +53,8 @@ services:
     build:
       context: ..
       dockerfile: services/searcher/Dockerfile
-    image: clio-searcher
-    container_name: clio-searcher
+    image: omni-searcher
+    container_name: omni-searcher
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - DB_MAX_CONNECTIONS=${DB_MAX_CONNECTIONS:-10}
@@ -67,7 +67,7 @@ services:
       - TYPO_TOLERANCE_MAX_DISTANCE=${TYPO_TOLERANCE_MAX_DISTANCE:-2}
       - TYPO_TOLERANCE_MIN_WORD_LENGTH=${TYPO_TOLERANCE_MIN_WORD_LENGTH:-4}
     networks:
-      - clio-network
+      - omni-network
     depends_on:
       postgres:
         condition: service_healthy
@@ -81,8 +81,8 @@ services:
     build:
       context: ..
       dockerfile: services/indexer/Dockerfile
-    image: clio-indexer
-    container_name: clio-indexer
+    image: omni-indexer
+    container_name: omni-indexer
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - DB_MAX_CONNECTIONS=${DB_MAX_CONNECTIONS:-10}
@@ -94,7 +94,7 @@ services:
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - ENCRYPTION_SALT=${ENCRYPTION_SALT}
     networks:
-      - clio-network
+      - omni-network
     depends_on:
       postgres:
         condition: service_healthy
@@ -108,8 +108,8 @@ services:
     # build:
     #   context: ../services/ai
     #   dockerfile: Dockerfile.gpu
-    image: ghcr.io/cliohq/clio-ai:latest
-    container_name: clio-ai
+    image: ghcr.io/omnihq/omni-ai:latest
+    container_name: omni-ai
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - DB_MAX_CONNECTIONS=${DB_MAX_CONNECTIONS:-10}
@@ -130,7 +130,7 @@ services:
       - JINA_API_KEY=${JINA_API_KEY}
       - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER}
     networks:
-      - clio-network
+      - omni-network
     volumes:
       - ai_models:/models
     deploy:
@@ -152,7 +152,7 @@ services:
   # vLLM Service for LLM inference (optional - only when using vLLM provider)
   vllm:
     image: vllm/vllm-openai:latest
-    container_name: clio-vllm
+    container_name: omni-vllm
     environment:
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
     command: >
@@ -163,7 +163,7 @@ services:
       --host 0.0.0.0
       --max-model-len ${VLLM_MAX_MODEL_LEN}
     networks:
-      - clio-network
+      - omni-network
     volumes:
       - vllm_models:/root/.cache/huggingface
     deploy:
@@ -187,8 +187,8 @@ services:
     build:
       context: ..
       dockerfile: connectors/google/Dockerfile
-    image: clio-google-connector
-    container_name: clio-google-connector
+    image: omni-google-connector
+    container_name: omni-google-connector
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=${REDIS_URL}
@@ -205,7 +205,7 @@ services:
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - ENCRYPTION_SALT=${ENCRYPTION_SALT}
     networks:
-      - clio-network
+      - omni-network
     depends_on:
       postgres:
         condition: service_healthy
@@ -219,8 +219,8 @@ services:
     build:
       context: ..
       dockerfile: connectors/slack/Dockerfile
-    image: clio-slack-connector
-    container_name: clio-slack-connector
+    image: omni-slack-connector
+    container_name: omni-slack-connector
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - DB_MAX_CONNECTIONS=${DB_MAX_CONNECTIONS:-10}
@@ -230,7 +230,7 @@ services:
       - PORT=${SLACK_CONNECTOR_PORT}
       - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
     networks:
-      - clio-network
+      - omni-network
     depends_on:
       postgres:
         condition: service_healthy
@@ -244,8 +244,8 @@ services:
     build:
       context: ..
       dockerfile: connectors/atlassian/Dockerfile
-    image: clio-atlassian-connector
-    container_name: clio-atlassian-connector
+    image: omni-atlassian-connector
+    container_name: omni-atlassian-connector
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - DB_MAX_CONNECTIONS=${DB_MAX_CONNECTIONS:-10}
@@ -257,7 +257,7 @@ services:
       - ATLASSIAN_USER_EMAIL=${ATLASSIAN_USER_EMAIL}
       - ATLASSIAN_API_TOKEN=${ATLASSIAN_API_TOKEN}
     networks:
-      - clio-network
+      - omni-network
     depends_on:
       postgres:
         condition: service_healthy
@@ -271,8 +271,8 @@ services:
   web:
     build:
       context: ../web
-    image: clio-web
-    container_name: clio-web
+    image: omni-web
+    container_name: omni-web
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - DB_MAX_CONNECTIONS=${DB_MAX_CONNECTIONS:-10}
@@ -299,7 +299,7 @@ services:
       - EMAIL_SECURE=${EMAIL_SECURE}
       - AI_ANSWER_ENABLED=${AI_ANSWER_ENABLED}
     networks:
-      - clio-network
+      - omni-network
     depends_on:
       postgres:
         condition: service_healthy
@@ -318,7 +318,7 @@ services:
   # Load Balancer / Reverse Proxy
   caddy:
     image: caddy:2-alpine
-    container_name: clio-caddy
+    container_name: omni-caddy
     ports:
       - "80:80"
       - "443:443"
@@ -327,25 +327,25 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     networks:
-      - clio-network
+      - omni-network
     depends_on:
       - web
     restart: unless-stopped
 
 networks:
-  clio-network:
+  omni-network:
     driver: bridge
 
 volumes:
   postgres_data:
-    name: clio-postgres-data
+    name: omni-postgres-data
   redis_data:
-    name: clio-redis-data
+    name: omni-redis-data
   ai_models:
-    name: clio-ai-models
+    name: omni-ai-models
   vllm_models:
-    name: clio-vllm-models
+    name: omni-vllm-models
   caddy_data:
-    name: clio-caddy-data
+    name: omni-caddy-data
   caddy_config:
-    name: clio-caddy-config
+    name: omni-caddy-config

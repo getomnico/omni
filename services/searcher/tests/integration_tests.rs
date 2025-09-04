@@ -4,7 +4,7 @@ use axum::{
     http::{Method, Request, StatusCode},
     Router,
 };
-use clio_searcher::{create_app, AppState};
+use omni_searcher::{create_app, AppState};
 use serde_json::{json, Value};
 use shared::test_environment::TestEnvironment;
 use shared::test_utils::create_test_documents_with_embeddings;

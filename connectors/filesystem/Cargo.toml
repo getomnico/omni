@@ -1,16 +1,16 @@
 [package]
-name = "clio-filesystem-connector"
+name = "omni-filesystem-connector"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "clio-filesystem-connector"
+name = "omni-filesystem-connector"
 path = "src/main.rs"
 
 [lib]
-name = "clio_filesystem_connector"
+name = "omni_filesystem_connector"
 path = "src/lib.rs"
 
 [dependencies]

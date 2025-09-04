@@ -1,5 +1,5 @@
-use clio_searcher::models::{SearchMode, SearchRequest};
-use clio_searcher::search::SearchEngine;
+use omni_searcher::models::{SearchMode, SearchRequest};
+use omni_searcher::search::SearchEngine;
 use pgvector::Vector;
 use serde::{Deserialize, Serialize};
 use serde_json::json;

@@ -1,6 +1,6 @@
-# Contributing to Clio
+# Contributing to Omni
 
-Thank you for your interest in contributing to Clio! This document provides guidelines and instructions for contributing to the project.
+Thank you for your interest in contributing to Omni! This document provides guidelines and instructions for contributing to the project.
 
 ## Table of Contents
 
@@ -23,12 +23,12 @@ We are committed to providing a welcoming and inclusive environment. Please be r
 1. **Fork the repository** on GitHub
 2. **Clone your fork** locally:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/clio.git
-   cd clio
+   git clone https://github.com/YOUR_USERNAME/omni.git
+   cd omni
    ```
 3. **Add upstream remote**:
    ```bash
-   git remote add upstream https://github.com/cliohq/clio.git
+   git remote add upstream https://github.com/omnihq/omni.git
    ```
 
 ## Development Setup
@@ -74,7 +74,7 @@ We are committed to providing a welcoming and inclusive environment. Please be r
 Create a `.env` file in the root directory:
 
 ```env
-DATABASE_URL=postgresql://clio:clio@localhost:5432/clio
+DATABASE_URL=postgresql://omni:omni@localhost:5432/omni
 REDIS_URL=redis://localhost:6379
 RUST_LOG=debug
 ```
@@ -82,7 +82,7 @@ RUST_LOG=debug
 ## Project Structure
 
 ```
-clio/
+omni/
 ├── services/          # Core microservices
 │   ├── searcher/      # Search query processing (Rust)
 │   ├── indexer/       # Document indexing (Rust)
@@ -228,15 +228,15 @@ pub async fn search(
 
 ## Getting Help
 
-- **Discord**: Join our [community Discord](https://discord.gg/clio)
+- **Discord**: Join our [community Discord](https://discord.gg/omni)
 - **GitHub Issues**: For bug reports and feature requests
 - **Discussions**: For questions and ideas
 
 ## Recognition
 
 Contributors will be recognized in our:
-- [Contributors list](https://github.com/cliohq/clio/graphs/contributors)
+- [Contributors list](https://github.com/omnihq/omni/graphs/contributors)
 - Release notes
 - Project documentation
 
-Thank you for contributing to Clio! 🎉
+Thank you for contributing to Omni! 🎉

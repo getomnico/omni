@@ -1,6 +1,6 @@
-# Clio Search Relevance Benchmarks
+# Omni Search Relevance Benchmarks
 
-A comprehensive benchmarking system for evaluating the search relevance performance of Clio's hybrid search (FTS + semantic embeddings) against standard information retrieval datasets.
+A comprehensive benchmarking system for evaluating the search relevance performance of Omni's hybrid search (FTS + semantic embeddings) against standard information retrieval datasets.
 
 ## Overview
 
@@ -16,9 +16,9 @@ This benchmarking harness provides:
 
 ### Prerequisites
 
-1. **Start Clio services** with Docker Compose:
+1. **Start Omni services** with Docker Compose:
    ```bash
-   cd /path/to/clio
+   cd /path/to/omni
    docker compose up -d
    ```
 
@@ -55,9 +55,9 @@ cd benchmarks
 
 ## What the Benchmark Does
 
-1. **Database Setup**: Creates a separate `clio_benchmark` database to ensure clean state
+1. **Database Setup**: Creates a separate `omni_benchmark` database to ensure clean state
 2. **Dataset Loading**: Downloads and parses benchmark datasets (BEIR/MS MARCO)
-3. **Document Indexing**: Loads benchmark documents into Clio's database
+3. **Document Indexing**: Loads benchmark documents into Omni's database
 4. **Query Execution**: Runs benchmark queries against different search modes
 5. **Metrics Calculation**: Computes nDCG, MRR, MAP, Precision, Recall
 6. **Report Generation**: Creates detailed HTML and CSV reports
@@ -69,7 +69,7 @@ Edit `config/default.toml` to customize:
 ```toml
 # Service URLs (should match your Docker setup)
 searcher_url = "http://localhost:3001"
-database_url = "postgresql://postgres:password@localhost:5432/clio_benchmark"
+database_url = "postgresql://postgres:password@localhost:5432/omni_benchmark"
 
 # Benchmark settings
 max_results_per_query = 100
@@ -191,7 +191,7 @@ curl http://localhost:3001/health
 pg_isready -h localhost -p 5432 -U postgres
 
 # Check if benchmark DB exists
-psql -h localhost -U postgres -l | grep clio_benchmark
+psql -h localhost -U postgres -l | grep omni_benchmark
 ```
 
 ### Memory Issues
@@ -207,9 +207,9 @@ benchmarks/
 │   ├── config/          # Configuration management
 │   ├── datasets/        # Dataset loaders (BEIR, MS MARCO, custom)
 │   ├── evaluator/       # Metrics calculation and benchmark execution
-│   ├── indexer/         # Document indexing into Clio database
+│   ├── indexer/         # Document indexing into Omni database
 │   ├── reporter/        # Report generation (HTML, CSV, JSON)
-│   └── search_client/   # HTTP client for Clio searcher service
+│   └── search_client/   # HTTP client for Omni searcher service
 ├── config/
 │   └── default.toml     # Default configuration
 ├── scripts/
@@ -228,4 +228,4 @@ To add new datasets or metrics:
 
 ## License
 
-This benchmarking system is part of the Clio project and follows the same license.
+This benchmarking system is part of the Omni project and follows the same license.

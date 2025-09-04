@@ -2,12 +2,12 @@
 # Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
 
 x-dev-db-config: &dev-db-config
-  POSTGRES_DB: clio_dev
-  POSTGRES_USER: clio_dev
-  POSTGRES_PASSWORD: clio_dev_password
+  POSTGRES_DB: omni_dev
+  POSTGRES_USER: omni_dev
+  POSTGRES_PASSWORD: omni_dev_password
 
 x-dev-database-url: &dev-database-url
-  DATABASE_URL: postgresql://clio_dev:clio_dev_password@postgres:5432/clio_dev
+  DATABASE_URL: postgresql://omni_dev:omni_dev_password@postgres:5432/omni_dev
 
 services:
   # Infrastructure only for development

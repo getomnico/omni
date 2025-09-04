@@ -61,7 +61,7 @@ export const load: PageServerLoad = async ({ url, cookies }) => {
         const isDomainApproved = await DomainService.isDomainApproved(domain)
 
         if (!isDomainApproved) {
-            throw error(403, 'Your email domain is not approved for this Clio instance')
+            throw error(403, 'Your email domain is not approved for this Omni instance')
         }
 
         // Auto-register the user

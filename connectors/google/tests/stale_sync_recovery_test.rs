@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clio_google_connector::sync::SyncManager;
+use omni_google_connector::sync::SyncManager;
 use shared::models::{SourceType, SyncRun, SyncStatus, SyncType};
 use shared::test_environment::TestEnvironment;
 use shared::utils::generate_ulid;

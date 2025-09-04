@@ -40,7 +40,7 @@ pub fn create_router(state: ApiState) -> Router {
 async fn health_check() -> Json<Value> {
     Json(json!({
         "status": "healthy",
-        "service": "clio-google-connector"
+        "service": "omni-google-connector"
     }))
 }
 

@@ -2,33 +2,33 @@
 sidebar_position: 1
 ---
 
-# Clio Deployment Guide
+# Omni Deployment Guide
 
 **Enterprise AI Search Platform for IT Teams**
 
-Clio is a self-hosted enterprise search platform that provides unified search across your organization's data sources with AI-powered answers. This documentation is designed to help IT teams deploy, configure, and maintain Clio in production environments.
+Omni is a self-hosted enterprise search platform that provides unified search across your organization's data sources with AI-powered answers. This documentation is designed to help IT teams deploy, configure, and maintain Omni in production environments.
 
-## What is Clio?
+## What is Omni?
 
-Clio consolidates search across multiple enterprise data sources:
+Omni consolidates search across multiple enterprise data sources:
 - **Google Workspace** (Drive, Docs, Gmail)
 - **Slack** (messages, files, channels)  
 - **Confluence** (pages, attachments, spaces)
 - **GitHub** (repositories, issues, pull requests)
 - **Local file systems**
 
-Unlike cloud-based solutions like Glean, Clio runs entirely on your infrastructure, ensuring complete data privacy and control.
+Unlike cloud-based solutions like Glean, Omni runs entirely on your infrastructure, ensuring complete data privacy and control.
 
 ## Deployment Overview
 
-Clio uses a **Docker Compose** architecture with these components:
+Omni uses a **Docker Compose** architecture with these components:
 
 | Service | Purpose | Technology |
 |---------|---------|------------|
-| **clio-web** | Frontend & API Gateway | SvelteKit/Node.js |
-| **clio-searcher** | Search engine | Rust |
-| **clio-indexer** | Document processing | Rust |  
-| **clio-ai** | AI/ML services | Python/FastAPI |
+| **omni-web** | Frontend & API Gateway | SvelteKit/Node.js |
+| **omni-searcher** | Search engine | Rust |
+| **omni-indexer** | Document processing | Rust |  
+| **omni-ai** | AI/ML services | Python/FastAPI |
 | **PostgreSQL** | Primary database | PostgreSQL 17+ |
 | **Redis** | Cache & message queue | Redis 7+ |
 | **Caddy** | Load balancer & SSL | Caddy |
@@ -36,12 +36,12 @@ Clio uses a **Docker Compose** architecture with these components:
 
 ## Quick Deployment
 
-Get Clio running in **under 10 minutes**:
+Get Omni running in **under 10 minutes**:
 
 ```bash
 # Clone the repository
-git clone https://github.com/cliohq/clio.git
-cd clio
+git clone https://github.com/omnihq/omni.git
+cd omni
 
 # Start all services
 docker compose up -d
@@ -53,7 +53,7 @@ docker compose up -d
 
 ## Production Checklist
 
-Before deploying Clio in production:
+Before deploying Omni in production:
 
 - [ ] **System Requirements**: Verify hardware and software requirements
 - [ ] **SSL Certificates**: Configure HTTPS with your certificates  
@@ -67,7 +67,7 @@ Before deploying Clio in production:
 
 ## Architecture for IT Teams
 
-Understanding Clio's architecture helps with:
+Understanding Omni's architecture helps with:
 - **Resource planning** and sizing
 - **Network configuration** and security
 - **Backup and disaster recovery** planning
@@ -86,8 +86,8 @@ Understanding Clio's architecture helps with:
 
 ## Getting Help
 
-- **GitHub Issues**: [Report deployment issues](https://github.com/cliohq/clio/issues)
-- **Discussions**: [Ask questions](https://github.com/cliohq/clio/discussions)
+- **GitHub Issues**: [Report deployment issues](https://github.com/omnihq/omni/issues)
+- **Discussions**: [Ask questions](https://github.com/omnihq/omni/discussions)
 - **Documentation**: Search this documentation for specific topics
 
 ---

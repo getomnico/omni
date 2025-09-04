@@ -50,7 +50,7 @@ jobs:
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_USER: postgres
-          POSTGRES_DB: clio_test
+          POSTGRES_DB: omni_test
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -119,21 +119,21 @@ jobs:
 
       - name: Setup test database
         run: |
-          export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/clio_test
+          export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/omni_test
           cargo run --bin migrator
 
       - name: Start Clio services
         run: |
           # Start services in background
-          export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/clio_test
+          export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/omni_test
           export REDIS_URL=redis://localhost:6379
           
           # Start searcher service
-          cargo run --release --bin clio-searcher &
+          cargo run --release --bin omni-searcher &
           SEARCHER_PID=$!
           
           # Start indexer service  
-          cargo run --release --bin clio-indexer &
+          cargo run --release --bin omni-indexer &
           INDEXER_PID=$!
           
           # Start AI service (if available)

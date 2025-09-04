@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use clio_searcher::models::{SearchMode, SearchRequest};
+    use omni_searcher::models::{SearchMode, SearchRequest};
 
     #[test]
     fn test_search_request_defaults() {
@@ -65,7 +65,7 @@ mod tests {
 
     #[test]
     fn test_suggestions_query_defaults() {
-        use clio_searcher::models::SuggestionsQuery;
+        use omni_searcher::models::SuggestionsQuery;
 
         let query = SuggestionsQuery {
             q: "test".to_string(),
@@ -77,7 +77,7 @@ mod tests {
 
     #[test]
     fn test_suggestions_query_limit_cap() {
-        use clio_searcher::models::SuggestionsQuery;
+        use omni_searcher::models::SuggestionsQuery;
 
         let query = SuggestionsQuery {
             q: "test".to_string(),

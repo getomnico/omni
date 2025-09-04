@@ -1,10 +1,10 @@
 # Architecture Overview
 
-This document provides a detailed technical overview of Clio's architecture, designed to help IT teams understand the system design, plan deployments, and make informed decisions about scaling and integration.
+This document provides a detailed technical overview of Omni's architecture, designed to help IT teams understand the system design, plan deployments, and make informed decisions about scaling and integration.
 
 ## High-Level Architecture
 
-Clio follows a microservices architecture with clear separation of concerns:
+Omni follows a microservices architecture with clear separation of concerns:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -80,7 +80,7 @@ Clio follows a microservices architecture with clear separation of concerns:
 
 ## Core Components
 
-### 1. Web Service (clio-web)
+### 1. Web Service (omni-web)
 
 **Technology**: SvelteKit with TypeScript
 **Purpose**: Frontend interface and API gateway
@@ -104,7 +104,7 @@ Clio follows a microservices architecture with clear separation of concerns:
 - Memory: 1-2 GB
 - Storage: Minimal (app code only)
 
-### 2. Searcher Service (clio-searcher)
+### 2. Searcher Service (omni-searcher)
 
 **Technology**: Rust with Axum framework
 **Purpose**: Search query processing and result ranking
@@ -129,7 +129,7 @@ Clio follows a microservices architecture with clear separation of concerns:
 - Memory: 2-4 GB
 - Storage: Minimal (cache only)
 
-### 3. Indexer Service (clio-indexer)
+### 3. Indexer Service (omni-indexer)
 
 **Technology**: Rust with Tokio async runtime
 **Purpose**: Document processing and database writes
@@ -154,7 +154,7 @@ Clio follows a microservices architecture with clear separation of concerns:
 - Memory: 1-2 GB
 - Storage: Temporary processing space
 
-### 4. AI Service (clio-ai)
+### 4. AI Service (omni-ai)
 
 **Technology**: Python with FastAPI
 **Purpose**: Machine learning and AI operations
@@ -357,7 +357,7 @@ ON connector_events_queue(status, created_at);
 
 ## Message Queue System
 
-Clio uses PostgreSQL as a reliable message queue instead of external systems like Redis Pub/Sub:
+Omni uses PostgreSQL as a reliable message queue instead of external systems like Redis Pub/Sub:
 
 ### Benefits
 - **ACID Compliance**: Guaranteed message delivery
@@ -393,7 +393,7 @@ pub enum ConnectorEvent {
 ### Authentication Flow
 ```
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│    User     │    │    Clio     │    │  Identity   │    │ Data Source │
+│    User     │    │    Omni     │    │  Identity   │    │ Data Source │
 │             │    │     Web     │    │  Provider   │    │             │
 │ 1. Login    │───►│ 2. Redirect │───►│ 3. OAuth    │    │             │
 │   Request   │    │  to OAuth   │    │    Flow     │    │             │
@@ -401,7 +401,7 @@ pub enum ConnectorEvent {
        ▲                   │                   │                   │
        │                   ▼                   ▼                   ▼
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│    User     │    │    Clio     │    │  Identity   │    │ Data Source │
+│    User     │    │    Omni     │    │  Identity   │    │ Data Source │
 │             │    │     Web     │    │  Provider   │    │             │
 │ 6. Access   │◄───│ 5. Session  │◄───│ 4. Return   │    │             │
 │   Granted   │    │   Cookie    │    │   Token     │    │             │
@@ -419,15 +419,15 @@ pub enum ConnectorEvent {
 ### Internal Communications
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         Docker Network (clio_default)                      │
+│                         Docker Network (omni_default)                      │
 │                                                                             │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐  │
-│  │    Caddy    │◄──►│  clio-web   │◄──►│clio-searcher│◄──►│ PostgreSQL  │  │
+│  │    Caddy    │◄──►│  omni-web   │◄──►│omni-searcher│◄──►│ PostgreSQL  │  │
 │  │   :80/443   │    │    :3000    │    │    :8080    │    │   :5432     │  │
 │  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘  │
 │                             │                                               │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐  │
-│  │    Redis    │◄──►│clio-indexer │◄──►│   clio-ai   │◄──►│    vLLM     │  │
+│  │    Redis    │◄──►│omni-indexer │◄──►│   omni-ai   │◄──►│    vLLM     │  │
 │  │   :6379     │    │    :8081    │    │    :8000    │    │   :8080     │  │
 │  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘  │
 └─────────────────────────────────────────────────────────────────────────────┘

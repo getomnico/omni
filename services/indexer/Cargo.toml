@@ -1,16 +1,16 @@
 [package]
-name = "clio-indexer"
+name = "omni-indexer"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [lib]
-name = "clio_indexer"
+name = "omni_indexer"
 path = "src/lib.rs"
 
 [[bin]]
-name = "clio-indexer"
+name = "omni-indexer"
 path = "src/main.rs"
 
 [dependencies]

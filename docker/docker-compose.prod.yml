@@ -4,19 +4,19 @@
 services:
   # Use pre-built images from GitHub Container Registry
   migrator:
-    image: ghcr.io/cliohq/clio/clio-migrator:latest
+    image: ghcr.io/omnihq/omni/omni-migrator:latest
     build: null
 
   searcher:
-    image: ghcr.io/cliohq/clio/clio-searcher:latest
+    image: ghcr.io/omnihq/omni/omni-searcher:latest
     build: null
 
   indexer:
-    image: ghcr.io/cliohq/clio/clio-indexer:latest
+    image: ghcr.io/omnihq/omni/omni-indexer:latest
     build: null
 
   ai:
-    image: ghcr.io/cliohq/clio/clio-ai:latest
+    image: ghcr.io/omnihq/omni/omni-ai:latest
     build: null
     depends_on:
       postgres:
@@ -27,19 +27,19 @@ services:
         condition: service_healthy
 
   google-connector:
-    image: ghcr.io/cliohq/clio/clio-google-connector:latest
+    image: ghcr.io/omnihq/omni/omni-google-connector:latest
     build: null
 
   slack-connector:
-    image: ghcr.io/cliohq/clio/clio-slack-connector:latest
+    image: ghcr.io/omnihq/omni/omni-slack-connector:latest
     build: null
 
   atlassian-connector:
-    image: ghcr.io/cliohq/clio/clio-atlassian-connector:latest
+    image: ghcr.io/omnihq/omni/omni-atlassian-connector:latest
     build: null
 
   web:
-    image: ghcr.io/cliohq/clio/clio-web:latest
+    image: ghcr.io/omnihq/omni/omni-web:latest
     build: null
 
   # Enable vLLM in production

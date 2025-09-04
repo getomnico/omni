@@ -1,6 +1,6 @@
 use anyhow::Result;
-use clio_indexer::embedding_processor::EmbeddingProcessor;
-use clio_indexer::queue_processor::QueueProcessor;
+use omni_indexer::embedding_processor::EmbeddingProcessor;
+use omni_indexer::queue_processor::QueueProcessor;
 use shared::db::repositories::{DocumentRepository, EmbeddingRepository};
 use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use shared::queue::EventQueue;

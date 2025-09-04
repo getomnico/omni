@@ -1,6 +1,6 @@
 # Production Setup
 
-This guide walks through deploying Clio for production use, including security hardening, SSL configuration, and performance optimization.
+This guide walks through deploying Omni for production use, including security hardening, SSL configuration, and performance optimization.
 
 ## Production Checklist
 
@@ -26,7 +26,7 @@ NODE_ENV=production
 RUST_LOG=info
 
 # Database - Use strong passwords
-DATABASE_URL=postgresql://clio:STRONG_PASSWORD_HERE@postgres:5432/clio
+DATABASE_URL=postgresql://omni:STRONG_PASSWORD_HERE@postgres:5432/omni
 
 # Redis
 REDIS_URL=redis://redis:6379
@@ -56,7 +56,7 @@ Update `Caddyfile` for automatic SSL:
 
 ```caddyfile
 search.yourcompany.com {
-    reverse_proxy clio-web:3000
+    reverse_proxy omni-web:3000
     
     # Security headers
     header {
@@ -99,7 +99,7 @@ Update `Caddyfile.prod`:
 ```caddyfile
 search.yourcompany.com {
     tls /etc/ssl/cert.pem /etc/ssl/key.pem
-    reverse_proxy clio-web:3000
+    reverse_proxy omni-web:3000
 }
 ```
 
@@ -139,16 +139,16 @@ log_lock_waits = on
 
 ```sql
 -- Create read-only user for monitoring
-CREATE USER clio_monitor WITH PASSWORD 'monitor_password';
-GRANT CONNECT ON DATABASE clio TO clio_monitor;
-GRANT USAGE ON SCHEMA public TO clio_monitor;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO clio_monitor;
+CREATE USER omni_monitor WITH PASSWORD 'monitor_password';
+GRANT CONNECT ON DATABASE omni TO omni_monitor;
+GRANT USAGE ON SCHEMA public TO omni_monitor;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO omni_monitor;
 
 -- Create backup user
-CREATE USER clio_backup WITH PASSWORD 'backup_password';
-GRANT CONNECT ON DATABASE clio TO clio_backup;
-GRANT USAGE ON SCHEMA public TO clio_backup;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO clio_backup;
+CREATE USER omni_backup WITH PASSWORD 'backup_password';
+GRANT CONNECT ON DATABASE omni TO omni_backup;
+GRANT USAGE ON SCHEMA public TO omni_backup;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO omni_backup;
 ```
 
 ### 4. Resource Limits
@@ -157,7 +157,7 @@ Configure resource limits in `docker-compose.prod.yml`:
 
 ```yaml
 services:
-  clio-web:
+  omni-web:
     deploy:
       resources:
         limits:
@@ -168,7 +168,7 @@ services:
           cpus: '0.5'
     restart: unless-stopped
 
-  clio-searcher:
+  omni-searcher:
     deploy:
       resources:
         limits:
@@ -179,7 +179,7 @@ services:
           cpus: '1.0'
     restart: unless-stopped
 
-  clio-ai:
+  omni-ai:
     deploy:
       resources:
         limits:
@@ -241,7 +241,7 @@ services:
     networks:
       - frontend
       
-  clio-web:
+  omni-web:
     networks:
       - frontend
       - backend
@@ -257,7 +257,7 @@ services:
 
 ```bash
 # Create admin SSH key
-ssh-keygen -t ed25519 -C "clio-admin@yourcompany.com"
+ssh-keygen -t ed25519 -C "omni-admin@yourcompany.com"
 
 # Disable password authentication
 echo "PasswordAuthentication no" >> /etc/ssh/sshd_config
@@ -284,7 +284,7 @@ secrets:
     file: ./secrets/db_password.txt
 
 services:
-  clio-web:
+  omni-web:
     secrets:
       - jwt_secret
     environment:
@@ -307,7 +307,7 @@ Add comprehensive health checks:
 
 ```yaml
 services:
-  clio-web:
+  omni-web:
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 30s
@@ -322,13 +322,13 @@ services:
 
 ```yaml
 services:
-  clio-web:
+  omni-web:
     logging:
       driver: "json-file"
       options:
         max-size: "100m"
         max-file: "10"
-        tag: "clio-web"
+        tag: "omni-web"
 ```
 
 #### Log Shipping
@@ -349,18 +349,18 @@ Consider shipping logs to:
 #!/bin/bash
 # backup-script.sh
 
-BACKUP_DIR="/opt/clio/backups"
+BACKUP_DIR="/opt/omni/backups"
 DATE=$(date +%Y%m%d_%H%M%S)
-BACKUP_FILE="clio_backup_${DATE}.sql"
+BACKUP_FILE="omni_backup_${DATE}.sql"
 
 # Create backup
-docker compose exec -T postgres pg_dump -U clio clio > "${BACKUP_DIR}/${BACKUP_FILE}"
+docker compose exec -T postgres pg_dump -U omni omni > "${BACKUP_DIR}/${BACKUP_FILE}"
 
 # Compress backup
 gzip "${BACKUP_DIR}/${BACKUP_FILE}"
 
 # Keep only last 30 days
-find ${BACKUP_DIR} -name "clio_backup_*.sql.gz" -mtime +30 -delete
+find ${BACKUP_DIR} -name "omni_backup_*.sql.gz" -mtime +30 -delete
 
 # Upload to cloud storage (optional)
 # aws s3 cp "${BACKUP_DIR}/${BACKUP_FILE}.gz" s3://your-backup-bucket/
@@ -370,17 +370,17 @@ find ${BACKUP_DIR} -name "clio_backup_*.sql.gz" -mtime +30 -delete
 
 ```bash
 # Add to crontab
-0 2 * * * /opt/clio/backup-script.sh
+0 2 * * * /opt/omni/backup-script.sh
 ```
 
 ### 2. Configuration Backups
 
 ```bash
 # Backup configuration files
-tar -czf /opt/clio/backups/config_$(date +%Y%m%d).tar.gz \
-  /opt/clio/.env \
-  /opt/clio/Caddyfile \
-  /opt/clio/docker-compose.prod.yml
+tar -czf /opt/omni/backups/config_$(date +%Y%m%d).tar.gz \
+  /opt/omni/.env \
+  /opt/omni/Caddyfile \
+  /opt/omni/docker-compose.prod.yml
 ```
 
 ## Deployment
@@ -389,8 +389,8 @@ tar -czf /opt/clio/backups/config_$(date +%Y%m%d).tar.gz \
 
 ```bash
 # Clone repository
-git clone https://github.com/cliohq/clio.git /opt/clio
-cd /opt/clio
+git clone https://github.com/omnihq/omni.git /opt/omni
+cd /opt/omni
 
 # Copy production configuration
 cp .env.production .env
@@ -410,13 +410,13 @@ curl -f https://search.yourcompany.com/api/health
 #!/bin/bash
 # update-script.sh
 
-cd /opt/clio
+cd /opt/omni
 
 # Pull latest code
 git pull origin main
 
 # Rebuild and restart services one by one
-services=("clio-web" "clio-searcher" "clio-indexer" "clio-ai")
+services=("omni-web" "omni-searcher" "omni-indexer" "omni-ai")
 
 for service in "${services[@]}"; do
     echo "Updating $service..."
@@ -474,7 +474,7 @@ save 60 10000
 For better AI performance:
 
 ```yaml
-clio-ai:
+omni-ai:
   environment:
     - VLLM_MAX_MODEL_LEN=4096
     - VLLM_TENSOR_PARALLEL_SIZE=2  # Use 2 GPUs if available

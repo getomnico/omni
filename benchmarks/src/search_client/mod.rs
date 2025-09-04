@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clio_searcher::models::{SearchMode, SearchRequest, SearchResponse};
+use omni_searcher::models::{SearchMode, SearchRequest, SearchResponse};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use shared::SourceType;
