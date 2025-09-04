@@ -11,7 +11,7 @@ COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY . .
-RUN cargo build --release --bin clio-indexer
+RUN cargo build --release --bin omni-indexer
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y \
@@ -19,7 +19,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /app/target/release/clio-indexer /usr/local/bin/clio-indexer
+COPY --from=builder /app/target/release/omni-indexer /usr/local/bin/omni-indexer
 
 EXPOSE 3002
-CMD ["clio-indexer"]
+CMD ["omni-indexer"]

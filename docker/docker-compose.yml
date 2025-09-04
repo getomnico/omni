@@ -105,9 +105,9 @@ services:
     restart: unless-stopped
 
   ai:
-    # build:
-    #   context: ../services/ai
-    #   dockerfile: Dockerfile.gpu
+    build:
+      context: ../services/ai
+      dockerfile: Dockerfile
     image: ghcr.io/omnihq/omni-ai:latest
     container_name: omni-ai
     environment:

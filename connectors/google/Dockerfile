@@ -21,9 +21,9 @@ COPY . .
 
 # Build binary based on build mode
 RUN if [ "$BUILD_MODE" = "debug" ]; then \
-        cargo build --bin clio-google-connector; \
+        cargo build --bin omni-google-connector; \
     else \
-        cargo build --release --bin clio-google-connector; \
+        cargo build --release --bin omni-google-connector; \
     fi
 
 FROM debian:bookworm-slim AS runtime
@@ -41,7 +41,7 @@ RUN if [ "$BUILD_MODE" = "debug" ]; then \
         echo "Release mode - binary will be copied from target/release/"; \
     fi
 
-COPY --from=builder /app/target/${BUILD_MODE}/clio-google-connector /usr/local/bin/clio-google-connector
+COPY --from=builder /app/target/${BUILD_MODE}/omni-google-connector /usr/local/bin/omni-google-connector
 
 EXPOSE 4001
-CMD ["clio-google-connector"]
+CMD ["omni-google-connector"]
