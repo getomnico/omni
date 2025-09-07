@@ -26,9 +26,11 @@ export const GET: RequestHandler = async ({ url }) => {
             }
 
             // Function to fetch and send status updates
+            let isFetching = false
             const fetchStatus = async () => {
-                if (isClosed) return
+                if (isClosed || isFetching) return
 
+                isFetching = true
                 try {
                     // Get latest 10 sync runs (same as page load)
                     const latestSyncRuns = await db
@@ -85,12 +87,26 @@ export const GET: RequestHandler = async ({ url }) => {
                 } catch (error) {
                     console.error('Error fetching indexing status:', error)
                     if (!isClosed) {
-                        sendData({ error: 'Failed to fetch status' })
+                        sendData({ error: 'Failed to fetch status', timestamp: Date.now() })
                     }
+                } finally {
+                    isFetching = false
                 }
             }
 
-            // Setup PostgreSQL LISTEN/NOTIFY for real-time updates
+            // Setup PostgreSQL LISTEN/NOTIFY for real-time updates with throttling
+            let lastUpdate = 0
+            const MIN_UPDATE_INTERVAL = 1000 // Minimum 1 second between updates
+
+            const throttledFetchStatus = async () => {
+                const now = Date.now()
+                if (now - lastUpdate < MIN_UPDATE_INTERVAL) {
+                    return
+                }
+                lastUpdate = now
+                await fetchStatus()
+            }
+
             const setupNotifications = async () => {
                 try {
                     listenSql = postgres(env.DATABASE_URL)
@@ -98,14 +114,20 @@ export const GET: RequestHandler = async ({ url }) => {
                     // Listen for sync_runs updates
                     await listenSql.listen('sync_run_update', async () => {
                         if (!isClosed) {
-                            // Fetch and send updated status when we receive notification
-                            await fetchStatus()
+                            // Fetch and send updated status when we receive notification (throttled)
+                            await throttledFetchStatus()
                         }
                     })
+
+                    console.log('PostgreSQL LISTEN/NOTIFY setup successful')
                 } catch (error) {
                     console.error('Error setting up PostgreSQL notifications:', error)
-                    // Fall back to polling if LISTEN/NOTIFY fails
-                    const interval = setInterval(fetchStatus, 5000)
+                    // Fall back to polling if LISTEN/NOTIFY fails (every 10 seconds to avoid spam)
+                    const interval = setInterval(() => {
+                        if (!isClosed) {
+                            throttledFetchStatus()
+                        }
+                    }, 10000)
                     return () => clearInterval(interval)
                 }
             }

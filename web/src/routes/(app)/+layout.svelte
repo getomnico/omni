@@ -18,7 +18,9 @@
     <header class="bg-card border-border border-b">
         <div class="flex h-16 items-center justify-between px-6">
             <div class="flex items-center space-x-4">
-                <a href="/" class="text-foreground text-xl font-bold">omni</a>
+                <a href="/" class="flex items-center">
+                    <img src="/src/lib/images/icons/omni-logo.png" alt="Omni" class="h-5 w-auto" />
+                </a>
             </div>
 
             <div class="flex items-center space-x-4">

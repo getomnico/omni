@@ -693,7 +693,7 @@ impl SyncManager {
         sync_run_id: &str,
     ) -> Result<(usize, usize)> {
         let service_creds = self.get_service_credentials(&source.id).await?;
-        let service_auth = Arc::new(self.create_service_auth(&service_creds)?);
+        let service_auth = Arc::new(self.create_service_auth(&service_creds, source.source_type)?);
         let domain = self.get_domain_from_credentials(&service_creds)?;
         let user_email = self.get_user_email_from_source(&source.id).await
             .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source.id, e))?;
@@ -826,7 +826,7 @@ impl SyncManager {
         sync_run_id: &str,
     ) -> Result<(usize, usize)> {
         let service_creds = self.get_service_credentials(&source.id).await?;
-        let service_auth = Arc::new(self.create_service_auth(&service_creds)?);
+        let service_auth = Arc::new(self.create_service_auth(&service_creds, source.source_type)?);
         let domain = self.get_domain_from_credentials(&service_creds)?;
         let user_email = self.get_user_email_from_source(&source.id).await
             .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source.id, e))?;
@@ -976,19 +976,18 @@ impl SyncManager {
         Ok(creds)
     }
 
-    fn create_service_auth(&self, creds: &ServiceCredentials) -> Result<ServiceAccountAuth> {
+    fn create_service_auth(
+        &self,
+        creds: &ServiceCredentials,
+        source_type: SourceType,
+    ) -> Result<ServiceAccountAuth> {
         let service_account_json = creds
             .credentials
             .get("service_account_key")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing service_account_key in credentials"))?;
 
-        let default_scopes = vec![
-            "https://www.googleapis.com/auth/drive.readonly".to_string(),
-            "https://www.googleapis.com/auth/gmail.readonly".to_string(),
-            "https://www.googleapis.com/auth/admin.directory.user.readonly".to_string(),
-        ];
-
+        // Check if custom scopes are provided in config, otherwise use defaults based on source type
         let scopes = creds
             .config
             .get("scopes")
@@ -998,7 +997,7 @@ impl SyncManager {
                     .filter_map(|v| v.as_str().map(String::from))
                     .collect::<Vec<_>>()
             })
-            .unwrap_or(default_scopes);
+            .unwrap_or_else(|| crate::auth::get_scopes_for_source_type(source_type));
 
         ServiceAccountAuth::new(service_account_json, scopes)
     }
@@ -1274,7 +1273,7 @@ impl SyncManager {
         }
 
         let service_creds = self.get_service_credentials(source_id).await?;
-        let service_auth = self.create_service_auth(&service_creds)?;
+        let service_auth = self.create_service_auth(&service_creds, SourceType::GoogleDrive)?;
         let user_email = self.get_user_email_from_source(source_id).await
             .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source_id, e))?;
         let access_token = service_auth.get_access_token(&user_email).await?;
@@ -1327,7 +1326,7 @@ impl SyncManager {
         resource_id: &str,
     ) -> Result<()> {
         let service_creds = self.get_service_credentials(source_id).await?;
-        let service_auth = self.create_service_auth(&service_creds)?;
+        let service_auth = self.create_service_auth(&service_creds, SourceType::GoogleDrive)?;
         let user_email = self.get_user_email_from_source(source_id).await
             .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source_id, e))?;
         let access_token = service_auth.get_access_token(&user_email).await?;
@@ -1355,7 +1354,7 @@ impl SyncManager {
         );
 
         let service_creds = self.get_service_credentials(&source.id).await?;
-        let service_auth = self.create_service_auth(&service_creds)?;
+        let service_auth = self.create_service_auth(&service_creds, source.source_type)?;
         let user_email = self.get_user_email_from_source(&source.id).await
             .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source.id, e))?;
         let access_token = service_auth.get_access_token(&user_email).await?;

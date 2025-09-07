@@ -169,7 +169,7 @@
                 </CardContent>
             </Card>
 
-            <Card>
+            <!-- <Card>
                 <CardHeader>
                     <CardTitle class="text-lg">Recent Searches</CardTitle>
                 </CardHeader>
@@ -177,7 +177,7 @@
                     <div class="text-foreground text-2xl font-bold">0</div>
                     <p class="text-muted-foreground text-sm">Searches performed today</p>
                 </CardContent>
-            </Card>
+            </Card> -->
         </div>
     </div>
 

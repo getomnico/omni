@@ -133,11 +133,8 @@
 
                 credentials = { service_account_key: serviceAccountJson }
                 config = {
-                    scopes: [
-                        'https://www.googleapis.com/auth/drive.readonly',
-                        'https://www.googleapis.com/auth/gmail.readonly',
-                        'https://www.googleapis.com/auth/admin.directory.user.readonly',
-                    ],
+                    // Note: Scopes are now determined dynamically by the connector based on source type
+                    // We don't set scopes here anymore - the connector will determine the appropriate scopes
                     domain: domain || null,
                 }
                 authType = AuthType.JWT
@@ -388,7 +385,7 @@
             </CardHeader>
             <CardContent>
                 <div class="mb-4 text-center">
-                    <div class="text-3xl font-bold text-blue-600">
+                    <div class="text-3xl font-bold">
                         {overallIndexingStats.totalDocumentsIndexed.toLocaleString()}
                     </div>
                     <div class="text-muted-foreground text-sm">Total Documents Indexed</div>

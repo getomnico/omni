@@ -261,10 +261,10 @@ async fn search_users(
 ) -> Result<Json<UserSearchResponse>, StatusCode> {
     info!("Searching users for source: {}", source_id);
 
-    // Get authentication setup for this source
+    // Get authentication setup for this source (admin operations only need directory scope)
     let (auth, domain, principal_email) = match state
         .credentials_service
-        .setup_auth_for_source(&source_id)
+        .setup_admin_auth_for_source(&source_id)
         .await
     {
         Ok(setup) => setup,
