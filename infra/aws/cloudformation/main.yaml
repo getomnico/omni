@@ -1,0 +1,273 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Omni Bootstrap - Minimal setup for Omni deployment'
+
+Parameters:
+  ExternalId:
+    Type: String
+    Description: Unique external ID provided by Omni (contact support@getomni.co)
+    NoEcho: true
+    MinLength: 32
+    
+  OmniAccountId:
+    Type: String
+    Description: Omni's AWS Account ID for cross-account access
+    Default: "YOUR-AWS-ACCOUNT-ID-HERE"  # Replace with your actual AWS account ID
+  
+  CostCenter:
+    Type: String
+    Default: "Omni"
+    Description: Cost center tag for billing and cost tracking
+  
+  Environment:
+    Type: String
+    Default: "Production"
+    Description: Environment tag (Production, Staging, Development)
+    AllowedValues:
+      - Production
+      - Staging
+      - Development
+
+Resources:
+  # S3 Bucket for deployment artifacts
+  OmniDeploymentBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'omni-deployment-${AWS::AccountId}-${AWS::Region}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Application
+          Value: Omni
+        - Key: CostCenter
+          Value: !Ref CostCenter
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: OmniPlatform
+        - Key: Component
+          Value: DeploymentBucket
+
+  # IAM Role that Omni will assume to deploy resources
+  OmniDeploymentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: OmniDeploymentRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${OmniAccountId}:root'
+            Action: 'sts:AssumeRole'
+            Condition:
+              StringEquals:
+                'sts:ExternalId': !Ref ExternalId
+      ManagedPolicyArns:
+        # These are the minimum permissions needed for ECS/Fargate deployment
+        - arn:aws:iam::aws:policy/AmazonECS_FullAccess
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+      Tags:
+        - Key: Application
+          Value: Omni
+        - Key: CostCenter
+          Value: !Ref CostCenter
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: OmniPlatform
+        - Key: Component
+          Value: DeploymentRole
+      Policies:
+        - PolicyName: OmniDeploymentPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # S3 permissions for deployment bucket
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !GetAtt OmniDeploymentBucket.Arn
+                  - !Sub '${OmniDeploymentBucket.Arn}/*'
+              
+              # RDS permissions
+              - Effect: Allow
+                Action:
+                  - 'rds:CreateDBInstance'
+                  - 'rds:CreateDBSubnetGroup'
+                  - 'rds:DescribeDBInstances'
+                  - 'rds:ModifyDBInstance'
+                  - 'rds:DeleteDBInstance'
+                  - 'rds:AddTagsToResource'
+                  - 'rds:DescribeDBSubnetGroups'
+                Resource: '*'
+              
+              # ElastiCache permissions for Redis
+              - Effect: Allow
+                Action:
+                  - 'elasticache:CreateCacheCluster'
+                  - 'elasticache:CreateCacheSubnetGroup'
+                  - 'elasticache:DescribeCacheClusters'
+                  - 'elasticache:ModifyCacheCluster'
+                  - 'elasticache:DeleteCacheCluster'
+                  - 'elasticache:DescribeCacheSubnetGroups'
+                Resource: '*'
+              
+              # VPC and networking permissions
+              - Effect: Allow
+                Action:
+                  - 'ec2:CreateVpc'
+                  - 'ec2:CreateSubnet'
+                  - 'ec2:CreateSecurityGroup'
+                  - 'ec2:CreateInternetGateway'
+                  - 'ec2:CreateRoute'
+                  - 'ec2:CreateRouteTable'
+                  - 'ec2:AttachInternetGateway'
+                  - 'ec2:AssociateRouteTable'
+                  - 'ec2:AuthorizeSecurityGroupIngress'
+                  - 'ec2:AuthorizeSecurityGroupEgress'
+                  - 'ec2:Describe*'
+                  - 'ec2:ModifyVpcAttribute'
+                  - 'ec2:ModifySubnetAttribute'
+                  - 'ec2:CreateTags'
+                Resource: '*'
+              
+              # Load balancer permissions
+              - Effect: Allow
+                Action:
+                  - 'elasticloadbalancing:CreateLoadBalancer'
+                  - 'elasticloadbalancing:CreateTargetGroup'
+                  - 'elasticloadbalancing:CreateListener'
+                  - 'elasticloadbalancing:RegisterTargets'
+                  - 'elasticloadbalancing:Describe*'
+                  - 'elasticloadbalancing:ModifyLoadBalancerAttributes'
+                  - 'elasticloadbalancing:ModifyTargetGroup'
+                  - 'elasticloadbalancing:AddTags'
+                Resource: '*'
+              
+              # IAM permissions for ECS task roles
+              - Effect: Allow
+                Action:
+                  - 'iam:CreateRole'
+                  - 'iam:AttachRolePolicy'
+                  - 'iam:PutRolePolicy'
+                  - 'iam:PassRole'
+                  - 'iam:GetRole'
+                  - 'iam:ListRolePolicies'
+                  - 'iam:ListAttachedRolePolicies'
+                Resource:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/omni-*'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/ecsTaskExecutionRole'
+              
+              # CloudWatch Logs permissions
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                  - 'logs:DescribeLogGroups'
+                Resource: '*'
+              
+              # Secrets Manager permissions
+              - Effect: Allow
+                Action:
+                  - 'secretsmanager:CreateSecret'
+                  - 'secretsmanager:GetSecretValue'
+                  - 'secretsmanager:UpdateSecret'
+                  - 'secretsmanager:TagResource'
+                Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:omni/*'
+              
+              # Tagging permissions for all resources
+              - Effect: Allow
+                Action:
+                  - 'tag:TagResources'
+                  - 'tag:UntagResources'
+                  - 'tag:GetResources'
+                  - 'tag:GetTagKeys'
+                  - 'tag:GetTagValues'
+                Resource: '*'
+              
+              # CloudFormation permissions for stack management
+              - Effect: Allow
+                Action:
+                  - 'cloudformation:CreateStack'
+                  - 'cloudformation:UpdateStack'
+                  - 'cloudformation:DeleteStack'
+                  - 'cloudformation:DescribeStacks'
+                  - 'cloudformation:DescribeStackEvents'
+                  - 'cloudformation:GetTemplate'
+                Resource: !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/omni-*/*'
+
+  # ECS Task Execution Role (needed by Fargate)
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: omni-ecsTaskExecutionRole
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: OmniTaskExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'secretsmanager:GetSecretValue'
+                Resource: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:omni/*'
+      Tags:
+        - Key: Application
+          Value: Omni
+        - Key: CostCenter
+          Value: !Ref CostCenter
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: OmniPlatform
+        - Key: Component
+          Value: ECSTaskExecutionRole
+
+Outputs:
+  DeploymentRoleArn:
+    Description: ARN of the role Omni will use for deployment
+    Value: !GetAtt OmniDeploymentRole.Arn
+    
+  DeploymentBucket:
+    Description: S3 bucket for deployment artifacts
+    Value: !Ref OmniDeploymentBucket
+    
+  AccountId:
+    Description: Your AWS Account ID (share this with Omni support)
+    Value: !Ref AWS::AccountId
+    
+  Region:
+    Description: Deployment region
+    Value: !Ref AWS::Region
+  
+  CostTrackingTags:
+    Description: Tags applied to all Omni resources for cost tracking
+    Value: !Sub 'Application=Omni, CostCenter=${CostCenter}, Environment=${Environment}'
+    
+  NextSteps:
+    Description: What to do next
+    Value: |
+      1. Share the AccountId and Region outputs with Omni support
+      2. Omni will deploy your services within 24 hours
+      3. You'll receive an email with your Omni URL and admin credentials
+      4. Track costs using the CostCenter tag in AWS Cost Explorer
