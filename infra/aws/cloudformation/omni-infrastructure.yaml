@@ -37,12 +37,6 @@ Parameters:
     Default: "your-github-org"
     Description: GitHub organization name for container images
     
-  JinaApiKey:
-    Type: String
-    NoEcho: true
-    Description: JINA AI API key for embedding generation
-    Default: ""
-    
   DeploymentBucket:
     Type: String
     Description: S3 bucket from bootstrap stack for deployment artifacts (optional)
@@ -73,7 +67,6 @@ Parameters:
     Description: PostgreSQL master username
 
 Conditions:
-  HasJinaApiKey: !Not [!Equals [!Ref JinaApiKey, ""]]
   ShouldSkipFinalSnapshot: !Equals [!Ref SkipFinalSnapshot, "true"]
   HasSSLCertificate: !Not [!Equals [!Ref SSLCertificateArn, ""]]
 
@@ -415,14 +408,13 @@ Resources:
         PasswordLength: 32
         ExcludeCharacters: '"@/\'
 
-  # JINA API Key Secret (optional)
+  # JINA API Key Secret (required)
   JinaApiKeySecret:
     Type: AWS::SecretsManager::Secret
-    Condition: HasJinaApiKey
     Properties:
       Name: !Sub omni/${CustomerName}/jina-api-key
-      Description: JINA AI API key for embedding generation
-      SecretString: !Ref JinaApiKey
+      Description: JINA AI API key for embedding generation (populate manually before deployment)
+      SecretString: "PLACEHOLDER_JINA_API_KEY"
 
   # Encryption Key Secret
   EncryptionKey:
@@ -700,7 +692,7 @@ Resources:
                   - secretsmanager:GetSecretValue
                 Resource: 
                   - !Ref DBPassword
-                  - !If [HasJinaApiKey, !Ref JinaApiKeySecret, !Ref "AWS::NoValue"]
+                  - !Ref JinaApiKeySecret
                   - !Ref EncryptionKey
                   - !Ref EncryptionSalt
                   - !Ref SessionSecret
@@ -776,7 +768,7 @@ Resources:
               Value: !GetAtt PostgreSQLDB.Endpoint.Port
             - Name: DATABASE_NAME
               Value: !Ref DatabaseName
-            - Name: DATABASE_USER
+            - Name: DATABASE_USERNAME
               Value: !Ref DatabaseUsername
           Secrets:
             - Name: DATABASE_PASSWORD
@@ -950,7 +942,7 @@ Resources:
               Value: !GetAtt PostgreSQLDB.Endpoint.Port
             - Name: DATABASE_NAME
               Value: !Ref DatabaseName
-            - Name: DATABASE_USER
+            - Name: DATABASE_USERNAME
               Value: !Ref DatabaseUsername
             - Name: REDIS_URL
               Value: !Sub redis://${RedisCluster.RedisEndpoint.Address}:6379
@@ -1022,7 +1014,7 @@ Resources:
               Value: !GetAtt PostgreSQLDB.Endpoint.Port
             - Name: DATABASE_NAME
               Value: !Ref DatabaseName
-            - Name: DATABASE_USER
+            - Name: DATABASE_USERNAME
               Value: !Ref DatabaseUsername
             - Name: REDIS_URL
               Value: !Sub redis://${RedisCluster.RedisEndpoint.Address}:6379
@@ -1077,7 +1069,7 @@ Resources:
               Value: !GetAtt PostgreSQLDB.Endpoint.Port
             - Name: DATABASE_NAME
               Value: !Ref DatabaseName
-            - Name: DATABASE_USER
+            - Name: DATABASE_USERNAME
               Value: !Ref DatabaseUsername
             - Name: REDIS_URL
               Value: !Sub redis://${RedisCluster.RedisEndpoint.Address}:6379
@@ -1130,7 +1122,7 @@ Resources:
               Value: !GetAtt PostgreSQLDB.Endpoint.Port
             - Name: DATABASE_NAME
               Value: !Ref DatabaseName
-            - Name: DATABASE_USER
+            - Name: DATABASE_USERNAME
               Value: !Ref DatabaseUsername
             - Name: REDIS_URL
               Value: !Sub redis://${RedisCluster.RedisEndpoint.Address}:6379
@@ -1162,10 +1154,7 @@ Resources:
             - Name: DATABASE_PASSWORD
               ValueFrom: !Sub '${DBPassword}:password::'
             - Name: JINA_API_KEY
-              ValueFrom: !If 
-                - HasJinaApiKey
-                - !Ref JinaApiKeySecret
-                - !Ref AWS::NoValue
+              ValueFrom: !Ref JinaApiKeySecret
           Essential: true
 
   # Google Connector Service Task Definition
@@ -1203,7 +1192,7 @@ Resources:
               Value: !GetAtt PostgreSQLDB.Endpoint.Port
             - Name: DATABASE_NAME
               Value: !Ref DatabaseName
-            - Name: DATABASE_USER
+            - Name: DATABASE_USERNAME
               Value: !Ref DatabaseUsername
             - Name: REDIS_URL
               Value: !Sub redis://${RedisCluster.RedisEndpoint.Address}:6379
@@ -1224,7 +1213,7 @@ Resources:
             - Name: GOOGLE_MAX_AGE_DAYS
               Value: "730"
             - Name: GOOGLE_WEBHOOK_URL
-              Value: "CONFIGURE_GOOGLE_WEBHOOK_URL"
+              Value: !Sub "https://${ApplicationLoadBalancer.DNSName}/api/integrations/google/webhook"
             - Name: WEBHOOK_RENEWAL_CHECK_INTERVAL_SECONDS
               Value: "3600"
           Secrets:
