@@ -14,5 +14,5 @@ RUN mkdir /migrations
 # Copy migration files
 COPY services/migrations/*.sql ./migrations
 
-# Run migrations and exit (ignore errors)
-CMD ["bash", "-c", "sqlx migrate run || true"]
+# Construct DATABASE_URL from environment variables and run migrations
+CMD ["bash", "-c", "export DATABASE_URL=\"postgresql://${DATABASE_USERNAME}:${DATABASE_PASSWORD}@${DATABASE_HOST}:${DATABASE_PORT}/${DATABASE_NAME}\" && sqlx migrate run"]
