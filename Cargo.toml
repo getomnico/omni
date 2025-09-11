@@ -48,6 +48,7 @@ futures = "0.3"
 nonzero_ext = "0.3"
 rand = "0.8"
 validator = { version = "0.18", features = ["derive"] }
+url = "2.5"
 
 # Test dependencies
 testcontainers = "0.21"

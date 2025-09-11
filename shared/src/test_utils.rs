@@ -50,6 +50,7 @@ impl BaseTestFixture {
             ),
             max_connections: 5,
             acquire_timeout_seconds: 30,
+            require_ssl: false,
         }
     }
 

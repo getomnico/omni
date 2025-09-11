@@ -35,3 +35,4 @@ rand = "0.8"
 ring = "0.17"
 sha2 = "0.10"
 urlencoding = "2.1"
+url = { workspace = true }

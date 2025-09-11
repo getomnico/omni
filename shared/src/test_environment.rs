@@ -104,6 +104,7 @@ impl TestEnvironment {
             database_url: self.db_pool.database_url().to_string(),
             max_connections: 5,
             acquire_timeout_seconds: 30,
+            require_ssl: false,
         }
     }
 
