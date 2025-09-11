@@ -17,6 +17,11 @@
     import { toast } from 'svelte-sonner'
     import { goto } from '$app/navigation'
     import type { PageProps } from './$types'
+    import googleLogo from '$lib/images/icons/google.svg'
+    import slackLogo from '$lib/images/icons/slack.svg'
+    import atlassianLogo from '$lib/images/icons/atlassian.svg'
+    import googleDriveLogo from '$lib/images/icons/google-drive.svg'
+    import gmailLogo from '$lib/images/icons/gmail.svg'
 
     let { data }: PageProps = $props()
 
@@ -422,23 +427,11 @@
                     <CardTitle class="flex items-center justify-between">
                         <div class="flex items-center gap-3">
                             {#if integration.id === 'google'}
-                                <img
-                                    src="/src/lib/images/icons/google.svg"
-                                    alt="Google"
-                                    class="h-6 w-6"
-                                />
+                                <img src={googleLogo} alt="Google" class="h-6 w-6" />
                             {:else if integration.id === 'slack'}
-                                <img
-                                    src="/src/lib/images/icons/slack.svg"
-                                    alt="Slack"
-                                    class="h-6 w-6"
-                                />
+                                <img src={slackLogo} alt="Slack" class="h-6 w-6" />
                             {:else if integration.id === 'atlassian'}
-                                <img
-                                    src="/src/lib/images/icons/atlassian.svg"
-                                    alt="Atlassian"
-                                    class="h-6 w-6"
-                                />
+                                <img src={atlassianLogo} alt="Atlassian" class="h-6 w-6" />
                             {/if}
                             <span>{integration.name}</span>
                         </div>
@@ -531,7 +524,7 @@
                                         >
                                             <div class="flex items-center gap-3">
                                                 <img
-                                                    src="/src/lib/images/icons/google-drive.svg"
+                                                    src={googleDriveLogo}
                                                     alt="Google Drive"
                                                     class="h-5 w-5"
                                                 />
@@ -581,11 +574,7 @@
                                             class="bg-muted/10 flex items-center justify-between rounded-md border p-2.5"
                                         >
                                             <div class="flex items-center gap-3">
-                                                <img
-                                                    src="/src/lib/images/icons/gmail.svg"
-                                                    alt="Gmail"
-                                                    class="h-5 w-5"
-                                                />
+                                                <img src={gmailLogo} alt="Gmail" class="h-5 w-5" />
                                                 <div class="flex items-center gap-2">
                                                     <span class="text-sm font-medium">Gmail</span>
                                                     {#if gmailSource.isActive}

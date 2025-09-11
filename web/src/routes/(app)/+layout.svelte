@@ -2,6 +2,7 @@
     import '../../app.css'
     import { Button } from '$lib/components/ui/button/index.js'
     import type { LayoutData } from './$types.js'
+    import omniLogo from '$lib/images/icons/omni-logo.png'
 
     export let data: LayoutData
 
@@ -19,7 +20,7 @@
         <div class="flex h-16 items-center justify-between px-6">
             <div class="flex items-center space-x-4">
                 <a href="/" class="flex items-center">
-                    <img src="/src/lib/images/icons/omni-logo.png" alt="Omni" class="h-5 w-auto" />
+                    <img src={omniLogo} alt="Omni" class="h-5 w-auto" />
                 </a>
             </div>
 

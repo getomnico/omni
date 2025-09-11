@@ -11,6 +11,8 @@
     import { onMount } from 'svelte'
     import { beforeNavigate } from '$app/navigation'
     import type { PageProps } from './$types'
+    import googleDriveLogo from '$lib/images/icons/google-drive.svg'
+    import gmailLogo from '$lib/images/icons/gmail.svg'
 
     let { data }: PageProps = $props()
 
@@ -317,11 +319,7 @@
                     <div class="flex items-start justify-between">
                         <div>
                             <Card.Title class="flex items-center gap-2">
-                                <img
-                                    src="/src/lib/images/icons/google-drive.svg"
-                                    alt="Google Drive"
-                                    class="h-5 w-5"
-                                />
+                                <img src={googleDriveLogo} alt="Google Drive" class="h-5 w-5" />
                                 Google Drive
                             </Card.Title>
                             <Card.Description class="mt-1">
@@ -483,11 +481,7 @@
                     <div class="flex items-start justify-between">
                         <div>
                             <Card.Title class="flex items-center gap-2">
-                                <img
-                                    src="/src/lib/images/icons/gmail.svg"
-                                    alt="Gmail"
-                                    class="h-5 w-5"
-                                />
+                                <img src={gmailLogo} alt="Gmail" class="h-5 w-5" />
                                 Gmail
                             </Card.Title>
                             <Card.Description class="mt-1">
