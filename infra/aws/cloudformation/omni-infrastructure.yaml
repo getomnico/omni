@@ -787,6 +787,8 @@ Resources:
               Value: !Ref DatabaseName
             - Name: DATABASE_USERNAME
               Value: !Ref DatabaseUsername
+            - Name: DATABASE_SSL
+              Value: "true"
           Secrets:
             - Name: DATABASE_PASSWORD
               ValueFrom: !Sub '${DBPassword}:password::'
@@ -997,6 +999,8 @@ Resources:
               Value: "Omni <noreply@getomni.co>"
             - Name: AI_ANSWER_ENABLED
               Value: "true"
+            - Name: DATABASE_SSL
+              Value: "true"
           Secrets:
             - Name: DATABASE_PASSWORD
               ValueFrom: !Sub '${DBPassword}:password::'
@@ -1053,6 +1057,8 @@ Resources:
               Value: "2"
             - Name: TYPO_TOLERANCE_MIN_WORD_LENGTH
               Value: "4"
+            - Name: DATABASE_SSL
+              Value: "true"
           Secrets:
             - Name: DATABASE_PASSWORD
               ValueFrom: !Sub '${DBPassword}:password::'
@@ -1102,6 +1108,8 @@ Resources:
               Value: "3"
             - Name: RUST_LOG
               Value: "debug"
+            - Name: DATABASE_SSL
+              Value: "true"
           Secrets:
             - Name: DATABASE_PASSWORD
               ValueFrom: !Sub '${DBPassword}:password::'
@@ -1169,6 +1177,8 @@ Resources:
               Value: "4096"
             - Name: AI_WORKERS
               Value: "1"
+            - Name: DATABASE_SSL
+              Value: "true"
           Secrets:
             - Name: DATABASE_PASSWORD
               ValueFrom: !Sub '${DBPassword}:password::'
@@ -1235,6 +1245,8 @@ Resources:
               Value: !Sub "https://${ApplicationLoadBalancer.DNSName}/api/integrations/google/webhook"
             - Name: WEBHOOK_RENEWAL_CHECK_INTERVAL_SECONDS
               Value: "3600"
+            - Name: DATABASE_SSL
+              Value: "true"
           Secrets:
             - Name: DATABASE_PASSWORD
               ValueFrom: !Sub '${DBPassword}:password::'
