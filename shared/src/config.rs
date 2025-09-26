@@ -27,6 +27,7 @@ pub struct SearcherConfig {
     pub hybrid_search_fts_weight: f32,
     pub hybrid_search_semantic_weight: f32,
     pub semantic_search_timeout_ms: u64,
+    pub rag_context_window: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -253,6 +254,14 @@ impl SearcherConfig {
                 process::exit(1);
             });
 
+        let rag_context_window = get_optional_env("RAG_CONTEXT_WINDOW", "2")
+            .parse::<i32>()
+            .unwrap_or_else(|_| {
+                eprintln!("ERROR: Invalid value for RAG_CONTEXT_WINDOW");
+                eprintln!("Must be a positive integer");
+                process::exit(1);
+            });
+
         Self {
             database,
             redis,
@@ -264,6 +273,7 @@ impl SearcherConfig {
             hybrid_search_fts_weight,
             hybrid_search_semantic_weight,
             semantic_search_timeout_ms,
+            rag_context_window,
         }
     }
 }

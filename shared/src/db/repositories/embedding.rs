@@ -5,6 +5,7 @@ use crate::{
 };
 use pgvector::Vector;
 use sqlx::{PgPool, Row};
+use std::collections::HashSet;
 
 pub struct EmbeddingRepository {
     pool: PgPool,
@@ -165,11 +166,12 @@ impl EmbeddingRepository {
 
         let query_str = format!(
             r#"
-            SELECT 
+            SELECT
                 e.document_id,
                 e.embedding <=> $1 as distance,
                 e.chunk_start_offset,
-                e.chunk_end_offset
+                e.chunk_end_offset,
+                e.chunk_index
             FROM embeddings e
             JOIN documents d ON e.document_id = d.id
             {}
@@ -207,11 +209,52 @@ impl EmbeddingRepository {
                     similarity_score: similarity,
                     chunk_start_offset: row.get("chunk_start_offset"),
                     chunk_end_offset: row.get("chunk_end_offset"),
+                    chunk_index: row.get("chunk_index"),
                 }
             })
             .collect();
 
         Ok(chunk_results)
+    }
+
+    /// Find surrounding chunks for multiple center chunks from the same document with context window
+    pub async fn find_surrounding_chunks_for_document(
+        &self,
+        document_id: &str,
+        center_chunk_indices: &[i32],
+        context_window: i32,
+    ) -> Result<Vec<Embedding>, DatabaseError> {
+        if center_chunk_indices.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Build set of all required chunk indices (center chunks + their surrounding context)
+        let mut all_indices = HashSet::new();
+        for &center_index in center_chunk_indices {
+            for offset in -context_window..=context_window {
+                let chunk_index = center_index + offset;
+                if chunk_index >= 0 {
+                    all_indices.insert(chunk_index);
+                }
+            }
+        }
+
+        let indices: Vec<i32> = all_indices.into_iter().collect();
+
+        let embeddings = sqlx::query_as::<_, Embedding>(
+            r#"
+            SELECT id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name, created_at
+            FROM embeddings
+            WHERE document_id = $1 AND chunk_index = ANY($2)
+            ORDER BY chunk_index
+            "#,
+        )
+        .bind(document_id)
+        .bind(&indices)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(embeddings)
     }
 
     pub async fn find_similar_chunks(

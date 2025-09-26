@@ -352,19 +352,8 @@ impl SearchEngine {
                                 chunk.chunk_start_offset,
                                 chunk.chunk_end_offset,
                             );
-                            let trimmed_text = chunk_text.trim();
-
-                            if !trimmed_text.is_empty() {
-                                let highlight_text = if trimmed_text.len() > 240 {
-                                    format!(
-                                        "{}...",
-                                        trimmed_text.get(0..240).unwrap_or(trimmed_text)
-                                    )
-                                } else {
-                                    trimmed_text.to_string()
-                                };
-                                chunk_highlights.push((chunk.similarity_score, highlight_text));
-                            }
+                            chunk_highlights
+                                .push((chunk.similarity_score, chunk_text.trim().to_string()));
                         }
                     }
                 }
@@ -439,6 +428,125 @@ impl SearchEngine {
             }
         }
         Err(anyhow::anyhow!("Failed to generate embedding for query"))
+    }
+
+    /// Get semantic search results enhanced with expanded context for RAG
+    async fn get_enhanced_semantic_results_for_rag(
+        &self,
+        request: &SearchRequest,
+    ) -> Result<Vec<SearchResult>> {
+        let start_time = Instant::now();
+        info!(
+            "Generating enhanced semantic search results for RAG query: '{}'",
+            request.query
+        );
+
+        let query_embedding = self.generate_query_embedding(&request.query).await?;
+        let embedding_repo = EmbeddingRepository::new(self.db_pool.pool());
+        let doc_repo = DocumentRepository::new(self.db_pool.pool());
+
+        let sources = request.source_types.as_deref();
+        let content_types = request.content_types.as_deref();
+
+        // Get chunk results with indices
+        let chunk_results = embedding_repo
+            .find_similar_with_filters(
+                query_embedding,
+                sources,
+                content_types,
+                request.limit(),
+                request.offset(),
+                request.user_email().map(|e| e.as_str()),
+            )
+            .await?;
+
+        // Group chunks by document_id
+        let mut document_chunks: HashMap<String, Vec<&ChunkResult>> = HashMap::new();
+        for chunk_result in &chunk_results {
+            document_chunks
+                .entry(chunk_result.document_id.clone())
+                .or_insert_with(Vec::new)
+                .push(chunk_result);
+        }
+
+        // Get documents
+        let document_ids: Vec<String> = document_chunks.keys().cloned().collect();
+        let documents = doc_repo.find_by_ids(&document_ids).await?;
+        let documents_map: HashMap<String, _> = documents
+            .into_iter()
+            .map(|doc| (doc.id.clone(), doc))
+            .collect();
+
+        let mut results = Vec::new();
+
+        for (document_id, chunks) in document_chunks {
+            if let Some(doc) = documents_map.get(&document_id) {
+                let max_score = chunks
+                    .iter()
+                    .map(|chunk| chunk.similarity_score)
+                    .fold(f32::NEG_INFINITY, f32::max);
+
+                // Extract chunk indices for this document
+                let chunk_indices: Vec<i32> = chunks.iter().map(|c| c.chunk_index).collect();
+
+                // Fetch expanded context using surrounding chunks
+                let expanded_chunks = embedding_repo
+                    .find_surrounding_chunks_for_document(
+                        &document_id,
+                        &chunk_indices,
+                        self.config.rag_context_window,
+                    )
+                    .await?;
+
+                // Combine expanded chunks into continuous text
+                let expanded_context = if let Some(content_id) = &doc.content_id {
+                    if let Ok(content) = self.content_storage.get_text(content_id).await {
+                        let mut chunk_texts = Vec::new();
+                        for chunk in &expanded_chunks {
+                            let chunk_text = self.extract_chunk_from_content(
+                                &content,
+                                chunk.chunk_start_offset,
+                                chunk.chunk_end_offset,
+                            );
+                            if !chunk_text.trim().is_empty() {
+                                chunk_texts.push(chunk_text.trim().to_string());
+                            }
+                        }
+                        chunk_texts.join(" ")
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+
+                let prepared_doc = self.prepare_document_for_response(doc.clone());
+                results.push(SearchResult {
+                    document: prepared_doc,
+                    score: max_score,
+                    highlights: if expanded_context.trim().is_empty() {
+                        vec![]
+                    } else {
+                        vec![expanded_context]
+                    },
+                    match_type: "semantic".to_string(),
+                    content: None,
+                });
+            }
+        }
+
+        // Sort results by score in descending order
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        info!(
+            "Enhanced semantic search for RAG completed in {}ms",
+            start_time.elapsed().as_millis()
+        );
+        Ok(results)
     }
 
     async fn hybrid_search(
@@ -683,7 +791,7 @@ impl SearchEngine {
         Ok(RecentSearchesResponse { searches })
     }
 
-    /// Generate RAG context from search request using chunk-based approach
+    /// Generate RAG context from search request using chunk-based approach with expanded context
     pub async fn get_rag_context(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
         info!("Generating RAG context for query: '{}'", request.query);
 
@@ -691,13 +799,13 @@ impl SearchEngine {
         let repo = DocumentRepository::new(self.db_pool.pool());
         let (fts_results, _) = self.fulltext_search(&repo, request).await?;
 
-        // Get semantic search results and convert them for RAG use
-        let semantic_results = self.semantic_search(request).await?;
+        // Get semantic search results enhanced with expanded context for RAG
+        let semantic_results = self.get_enhanced_semantic_results_for_rag(request).await?;
 
         // Combine semantic and fulltext context
         let mut combined_results = Vec::new();
 
-        // Add semantic search results
+        // Add enhanced semantic search results
         for semantic_result in semantic_results {
             combined_results.push(semantic_result);
         }
@@ -705,14 +813,7 @@ impl SearchEngine {
         // Add context around fulltext matches
         for fts_result in fts_results.into_iter().take(5) {
             // For fulltext matches, we already have highlights generated
-            // Use the prepared document and existing highlights
-            combined_results.push(SearchResult {
-                document: fts_result.document,
-                score: fts_result.score,
-                highlights: fts_result.highlights,
-                match_type: "fulltext".to_string(),
-                content: fts_result.content,
-            });
+            combined_results.push(fts_result);
         }
 
         // Sort by score and take top results
@@ -744,15 +845,12 @@ impl SearchEngine {
     pub fn build_rag_prompt(&self, query: &str, context: &[SearchResult]) -> String {
         let mut prompt = String::new();
 
-        prompt.push_str("You are a helpful AI assistant that answers questions based on the provided context from various documents. ");
+        prompt.push_str("You are Omni - an AI assistant that assists users with their queries. ");
         prompt.push_str(
-            "Please provide a comprehensive answer using the information from the context. ",
+            "Please provide a response to the user's question/instruction using the information from the provided context. ",
         );
         prompt.push_str(
-            "When referencing information, cite it using the format [<Document Title>](<Document URL>). Return your response in markdown format. VERY IMPORTANT: ONLY REFERENCE DOCUMENTS PROVIDED AS CONTEXT BELOW, DO NOT CITE ANYTHING ELSE. ",
-        );
-        prompt.push_str(
-            "If the context doesn't contain enough information to answer the question, say so.\n\n",
+            "When referencing information, cite it using the format [<Document Title>](<Document URL>). Return your response in markdown format. Only reference documents provided as context below, do not cite anything else. ",
         );
 
         prompt.push_str("Context Information:\n");
@@ -779,10 +877,7 @@ impl SearchEngine {
                     }
                 }
                 _ => {
-                    // Fallback: try to get content from LOB storage for other match types
                     if let Some(_content_id) = &result.document.content_id {
-                        // Note: In a real implementation, we would need to fetch from LOB storage
-                        // For now, we'll use the highlights if available
                         if !result.highlights.is_empty() {
                             prompt.push_str(&format!("Content: {}\n", result.highlights[0]));
                         }

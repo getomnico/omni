@@ -300,6 +300,7 @@ pub struct ChunkResult {
     pub similarity_score: f32,
     pub chunk_start_offset: i32,
     pub chunk_end_offset: i32,
+    pub chunk_index: i32,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
