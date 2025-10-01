@@ -1,14 +1,12 @@
 <script lang="ts">
     import { page } from '$app/stores'
-    import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card/index.js'
+    import AIAnswer from '$lib/components/ai-answer.svelte'
     import { Button } from '$lib/components/ui/button/index.js'
     import { Input } from '$lib/components/ui/input/index.js'
-    import { Search, FileText, Calendar, User, FilterIcon, Funnel } from '@lucide/svelte'
-    import type { PageData } from './$types.js'
-    import type { SearchResponse, SearchRequest } from '$lib/types/search.js'
-    import AIAnswer from '$lib/components/AIAnswer.svelte'
-    import { getDocumentIconPath, getSourceTypeFromId, getSourceIconPath } from '$lib/utils/icons'
+    import { getDocumentIconPath, getSourceIconPath } from '$lib/utils/icons'
+    import { FileText, Funnel, Search } from '@lucide/svelte'
     import { marked } from 'marked'
+    import type { PageData } from './$types.js'
 
     let { data }: { data: PageData } = $props()
 

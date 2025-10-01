@@ -1,110 +1,144 @@
 <script lang="ts">
+    import * as Accordion from '$lib/components/ui/accordion'
     import { Button } from '$lib/components/ui/button/index.js'
     import { Input } from '$lib/components/ui/input/index.js'
-    import { Send, Sparkles, Search } from '@lucide/svelte'
-    import { marked } from 'marked'
-    import type { PageProps } from './$types.js'
-    import type { MessageStreamEvent } from '@anthropic-ai/sdk/resources/messages.js'
-    import type { MessageParam } from '@anthropic-ai/sdk/resources/messages.js'
-    import { onMount } from 'svelte'
     import type {
-        TextBlockParam,
+        MessageParam,
+        MessageStreamEvent,
         SearchResultBlockParam,
+        TextBlockParam,
+        ToolUseBlock,
+        TextDelta,
+        InputJSONDelta,
     } from '@anthropic-ai/sdk/resources/messages'
-    import * as Accordion from '$lib/components/ui/accordion'
-
-    type ToolComponentData = {
-        id: number
-        role: 'tool'
-        toolUse: {
-            id: string
-            name: string
-            input: any
-        }
-        toolResult?: {
-            toolUseId: string // Same as toolUse.id
-            content: {
-                title: string
-                source: string
-            }[]
-        }
-    }
-
-    type TextComponentData = {
-        id: number
-        role: 'user' | 'assistant'
-        content: string
-    }
-
-    type MessageComponentData = TextComponentData | ToolComponentData
+    import { Search, Send, Sparkles } from '@lucide/svelte'
+    import { marked } from 'marked'
+    import { onMount } from 'svelte'
+    import type { PageProps } from './$types.js'
+    import type {
+        ProcessedMessage,
+        TextMessageContent,
+        ToolMessageContent,
+        MessageContent,
+    } from '$lib/types/message.js'
+    import ToolMessage from '$lib/components/tool-message.svelte'
+    import { cn } from '$lib/utils.js'
 
     let { data }: PageProps = $props()
 
-    let inputValue = $state('')
+    let userMessage = $state('')
+
     let isLoading = $state(false)
     let answer = $state('')
-    let formattedAnswer = $derived(marked.parse(answer))
     let error = $state<string | null>(null)
 
     let processedMessages = $derived(processMessages(data.messages.map((m) => m.message)))
+    let streamingResponseMessage = $state<ProcessedMessage | null>(null)
 
-    function renderUserMessage(message: MessageParam) {
-        if (typeof message.content === 'string') {
-            return marked.parse(message.content)
-        } else if (Array.isArray(message.content)) {
-            const textContent = message.content
-                .filter((block) => block.type === 'text')
-                .map((block) => block.text)
-                .join('\n\n')
-            return marked.parse(textContent)
+    $inspect(processedMessages).with((t, v) => {
+        console.log('Processed Messages:', v)
+        for (const m of processedMessages) {
+            if (m.role === 'user' && m.content.length > 1) {
+                console.error('User message has more than one content block:', m)
+            }
         }
-        return `<span class="text-red-600">[Something went wrong rendering this message.]</span>`
-    }
+    })
 
-    function processMessages(messages: MessageParam[]): MessageComponentData[] {
-        const components: MessageComponentData[] = []
-        const toolCallMap = new Map<string, ToolComponentData>()
+    function processMessages(messages: MessageParam[]): ProcessedMessage[] {
+        const processedMessages: ProcessedMessage[] = []
+
+        const addMessage = (message: ProcessedMessage) => {
+            const lastMessage = processedMessages[processedMessages.length - 1]
+            let messageToUpdate: ProcessedMessage
+            if (!lastMessage || lastMessage.role !== message.role) {
+                const newMessage = {
+                    id: processedMessages.length,
+                    role: message.role,
+                    content: [] as MessageContent,
+                }
+                processedMessages.push(newMessage)
+                messageToUpdate = newMessage
+            } else {
+                messageToUpdate = lastMessage
+            }
+
+            for (const block of message.content) {
+                const lastBlock = messageToUpdate.content[messageToUpdate.content.length - 1]
+                if (lastBlock && lastBlock.type === 'text' && block.type === 'text') {
+                    // Combine text blocks
+                    lastBlock.text += '\n' + block.text
+                } else {
+                    messageToUpdate.content.push({
+                        ...block,
+                        id: messageToUpdate.content.length,
+                    })
+                }
+            }
+        }
+
+        const updateToolResults = (toolResult: ToolMessageContent['toolResult']) => {
+            if (!toolResult) return
+            for (const message of processedMessages) {
+                if (message.role === 'assistant') {
+                    for (const block of message.content) {
+                        if (block.type === 'tool' && block.toolUse.id === toolResult.toolUseId) {
+                            block.toolResult = toolResult
+                            return
+                        }
+                    }
+                }
+            }
+        }
 
         for (let i = 0; i < messages.length; i++) {
             const message = messages[i]
             if (isUserMessage(message)) {
                 // User messages are expected to contain only text blocks
-                if (typeof message.content === 'string') {
-                    components.push({
-                        id: components.length,
-                        role: 'user',
-                        content: message.content,
-                    })
-                } else if (Array.isArray(message.content)) {
-                    const textBlocks = message.content.filter((block) => block.type === 'text')
-                    for (const block of textBlocks) {
-                        components.push({
-                            id: components.length,
-                            role: 'user',
-                            content: block.text,
-                        })
-                    }
+                const userMessageContent: MessageContent =
+                    typeof message.content === 'string'
+                        ? [{ id: 0, type: 'text', text: message.content }]
+                        : message.content
+                              .filter((b) => b.type === 'text')
+                              .map((b, bi) => ({
+                                  id: bi,
+                                  type: 'text',
+                                  text: b.text,
+                              }))
+
+                const processedUserMessage: ProcessedMessage = {
+                    id: processedMessages.length,
+                    role: 'user',
+                    content: userMessageContent,
                 }
+
+                addMessage(processedUserMessage)
             } else {
                 // Here we handle both assistant messages (with possible tool uses) and also user messages that contain tool results
+                const processedMessage: ProcessedMessage = {
+                    id: processedMessages.length,
+                    role: 'assistant',
+                    content: [],
+                }
+
                 const contentBlocks = Array.isArray(message.content)
                     ? message.content
                     : [{ type: 'text', text: message.content } as TextBlockParam]
 
-                for (const block of contentBlocks) {
+                for (let blockIdx = 0; blockIdx < contentBlocks.length; blockIdx++) {
+                    const block = contentBlocks[blockIdx]
                     if (block.type === 'text') {
-                        components.push({
-                            id: components.length,
-                            role: 'assistant',
-                            content: block.text,
+                        processedMessage.content.push({
+                            id: processedMessage.content.length,
+                            type: 'text',
+                            text: block.text,
                         })
                     } else {
                         // Tool use or result
                         if (block.type === 'tool_use') {
                             // Tool use always comes first, so we create the corresponding output block
-                            const toolComponentData: ToolComponentData = {
-                                id: components.length,
-                                role: 'tool',
+                            const toolComponentData: ToolMessageContent = {
+                                id: 0,
+                                type: 'tool',
                                 toolUse: {
                                     id: block.id,
                                     name: block.name,
@@ -112,46 +146,30 @@
                                 },
                             }
 
-                            components.push(toolComponentData)
-                            toolCallMap.set(block.id, toolComponentData)
+                            processedMessage.content.push(toolComponentData)
                         } else if (block.type === 'tool_result') {
                             const toolUseId = block.tool_use_id
-                            const toolComponentData = toolCallMap.get(toolUseId)
                             const searchResults = Array.isArray(block.content)
                                 ? (block.content.filter(
                                       (b) => b.type === 'search_result',
                                   ) as SearchResultBlockParam[])
                                 : []
-                            toolComponentData!.toolResult = {
+                            updateToolResults({
                                 toolUseId,
                                 content: searchResults.map((r) => ({
                                     title: r.title,
                                     source: r.source,
                                 })),
-                            }
+                            })
                         }
                     }
                 }
+
+                addMessage(processedMessage)
             }
         }
 
-        // Combine consecutive text blocks from the same role
-        const combinedComponents: MessageComponentData[] = []
-
-        for (const component of components) {
-            const last = combinedComponents[combinedComponents.length - 1]
-            if (
-                last &&
-                (last.role === 'user' || last.role === 'assistant') &&
-                last.role === component.role
-            ) {
-                last.content += '\n' + component.content
-            } else {
-                combinedComponents.push(component)
-            }
-        }
-
-        return combinedComponents
+        return processedMessages
     }
 
     function isUserMessage(message: MessageParam) {
@@ -172,10 +190,61 @@
         answer = ''
         error = null
 
+        let currToolUseId: string
+        let currToolUseInputStr: string
+
         const eventSource = new EventSource(`/api/chat/${chatId}/stream`, { withCredentials: true })
 
         let accumulatedText = ''
         let streamCompleted = false
+
+        streamingResponseMessage = {
+            id: processedMessages.length,
+            role: 'assistant',
+            content: [],
+        }
+
+        const updateStreamingResponse = (block: ToolUseBlock | TextDelta | InputJSONDelta) => {
+            if (!streamingResponseMessage) {
+                streamingResponseMessage = {
+                    id: processedMessages.length,
+                    role: 'assistant',
+                    content: [],
+                }
+            }
+
+            const lastBlock =
+                streamingResponseMessage.content[streamingResponseMessage.content.length - 1]
+            if (block.type === 'text_delta') {
+                if (lastBlock && lastBlock.type === 'text') {
+                    // Combine text blocks
+                    lastBlock.text += block.text
+                } else {
+                    streamingResponseMessage.content.push({
+                        id: streamingResponseMessage.content.length,
+                        type: 'text',
+                        text: block.text,
+                    })
+                }
+            } else if (block.type === 'tool_use') {
+                const existingToolUse = streamingResponseMessage.content.find(
+                    (b) => b.type === 'tool' && b.toolUse.id === block.id,
+                )
+                if (existingToolUse) {
+                    ;(existingToolUse as ToolMessageContent).toolUse.input = block.input
+                } else {
+                    streamingResponseMessage.content.push({
+                        id: streamingResponseMessage.content.length,
+                        type: 'tool',
+                        toolUse: {
+                            id: block.id,
+                            name: block.name,
+                            input: block.input,
+                        },
+                    })
+                }
+            }
+        }
 
         eventSource.addEventListener('message', (event) => {
             try {
@@ -187,15 +256,31 @@
                     ) {
                         accumulatedText += '\n\n🔍 Searching documents...\n\n'
                         answer = accumulatedText
+                        updateStreamingResponse(data.content_block)
                         isLoading = false
+                        currToolUseId = data.content_block.id
+                        currToolUseInputStr = ''
                     }
                 } else if (data.type === 'content_block_delta') {
                     if (data.delta.type === 'text_delta' && data.delta.text) {
                         accumulatedText += data.delta.text
                         answer = accumulatedText
+                        updateStreamingResponse(data.delta)
                         isLoading = false
                     } else if (data.delta.type === 'input_json_delta') {
                         // Parse partial JSON to show search query if possible
+                        currToolUseInputStr += data.delta.partial_json
+                        try {
+                            const parsedInput = JSON.parse(currToolUseInputStr)
+                            updateStreamingResponse({
+                                type: 'tool_use',
+                                id: currToolUseId,
+                                name: 'search_documents',
+                                input: parsedInput,
+                            })
+                        } catch (err) {
+                            // Ignore JSON parse errors for partial input
+                        }
                     }
                 }
             } catch (err) {
@@ -217,7 +302,7 @@
     }
 
     function handleSubmit() {
-        if (inputValue.trim()) {
+        if (userMessage.trim()) {
         }
     }
 
@@ -233,17 +318,17 @@
     <title>Omni Chat</title>
 </svelte:head>
 
-<div class="flex h-[calc(100vh-4rem)] flex-col">
+<div class="flex h-full flex-col">
     <!-- Chat Container -->
-    <div class="flex-1 overflow-y-auto px-4 py-6">
-        <div class="mx-auto max-w-4xl">
+    <div class="flex-1 overflow-y-auto px-4 pt-6">
+        <div class="mx-auto mb-20 max-w-4xl">
             <!-- Existing Messages -->
             {#each processedMessages as message (message.id)}
                 {#if message.role === 'user'}
                     <!-- User Message -->
-                    <div class="mb-6 flex justify-end">
-                        <div class="text-foreground max-w-[80%] rounded-2xl bg-gray-100 px-4 py-2">
-                            {@html marked.parse(message.content)}
+                    <div class="mb-6 flex">
+                        <div class="text-foreground max-w-[80%] rounded-2xl bg-gray-100 px-6 py-4">
+                            {@html marked.parse((message.content[0] as TextMessageContent).text)}
                         </div>
                     </div>
                 {:else if message.role === 'assistant'}
@@ -256,44 +341,16 @@
                             </div>
                             <div class="flex-1">
                                 <div class="prose max-w-none">
-                                    {@html marked.parse(message.content)}
+                                    {#each message.content as block (block.id)}
+                                        {#if block.type === 'text'}
+                                            {@html marked.parse(block.text)}
+                                        {:else if block.type === 'tool'}
+                                            <ToolMessage message={block} />
+                                        {/if}
+                                    {/each}
                                 </div>
                             </div>
                         </div>
-                    </div>
-                {:else if message.role === 'tool'}
-                    <!-- Tool Use and Result -->
-                    <div class="mb-6">
-                        <Accordion.Root type="multiple">
-                            <Accordion.Item value={`tool-${message.id}`}>
-                                <Accordion.Trigger
-                                    class="flex cursor-pointer items-center justify-between border border-gray-200 px-4 text-sm hover:no-underline">
-                                    <div class="flex items-center gap-2">
-                                        <Search class="h-4 w-4" />
-                                        <div class="font-normal">{message.toolUse.input.query}</div>
-                                    </div>
-                                </Accordion.Trigger>
-                                {#if message.toolResult && message.toolResult.content.length > 0}
-                                    <Accordion.Content
-                                        class="bg-card max-h-48 overflow-y-auto border border-gray-200">
-                                        <div class="px-4 py-2">
-                                            <div class="flex flex-col gap-2">
-                                                {#each message.toolResult.content as result}
-                                                    <div class="">
-                                                        <a
-                                                            href={result.source}
-                                                            target="_blank"
-                                                            class="hover:underline">
-                                                            {result.title}
-                                                        </a>
-                                                    </div>
-                                                {/each}
-                                            </div>
-                                        </div>
-                                    </Accordion.Content>
-                                {/if}
-                            </Accordion.Item>
-                        </Accordion.Root>
                     </div>
                 {/if}
             {/each}
@@ -313,9 +370,15 @@
                                 <div class="text-red-600">
                                     {error}
                                 </div>
-                            {:else if formattedAnswer}
-                                <div class="prose prose-sm max-w-none">
-                                    {@html formattedAnswer}
+                            {:else if streamingResponseMessage}
+                                <div class="prose max-w-none">
+                                    {#each streamingResponseMessage.content as block (block.id)}
+                                        {#if block.type === 'text'}
+                                            {@html marked.parse(block.text)}
+                                        {:else if block.type === 'tool'}
+                                            <ToolMessage message={block} />
+                                        {/if}
+                                    {/each}
                                 </div>
                             {/if}
                         </div>
@@ -323,25 +386,31 @@
                 </div>
             {/if}
         </div>
-    </div>
 
-    <!-- Input Area -->
-    <div class="border-t bg-white px-4 py-4">
-        <div class="mx-auto max-w-4xl">
-            <div class="flex items-center gap-2">
-                <Input
-                    type="text"
-                    bind:value={inputValue}
-                    placeholder="Ask a question..."
-                    class="flex-1"
-                    onkeypress={handleKeyPress}
-                    disabled={isLoading} />
-                <Button
-                    onclick={handleSubmit}
-                    disabled={isLoading || !inputValue.trim()}
-                    size="icon">
-                    <Send class="h-4 w-4" />
-                </Button>
+        <!-- Input -->
+        <div class="bg-background sticky bottom-0 flex justify-center pb-6">
+            <div
+                class="bg-card flex max-h-96
+                min-h-[1.5rem] w-full max-w-4xl flex-col
+                gap-2 rounded-xl border border-gray-200 p-4 shadow-xl">
+                <div
+                    bind:innerText={userMessage}
+                    class={cn(
+                        'before:text-muted-foreground relative cursor-text overflow-y-auto before:absolute before:inset-0 focus:outline-none',
+                        userMessage
+                            ? "before:content-['']"
+                            : 'before:content-[attr(data-placeholder)]',
+                    )}
+                    contenteditable="true"
+                    role="textbox"
+                    aria-multiline="true"
+                    data-placeholder={'Ask a follow-up...'}>
+                </div>
+                <div class="flex w-full justify-end">
+                    <Button size="icon">
+                        <Send class="h-4 w-4" />
+                    </Button>
+                </div>
             </div>
         </div>
     </div>
