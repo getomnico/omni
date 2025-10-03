@@ -23,7 +23,8 @@
                 <div class="flex items-center gap-2">
                     <Search class="h-4 w-4" />
                     <div class="text-sm font-normal">
-                        searched: {message.toolUse.input.query}
+                        {message.toolResult ? 'searched' : 'searching'}: {message.toolUse.input
+                            .query}
                     </div>
                 </div>
                 <div class="text-muted-foreground text-xs">

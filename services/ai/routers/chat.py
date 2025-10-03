@@ -230,6 +230,25 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
                             )
                         )
 
+                        # Stream tool result to the client as well, with redacted content
+                        redacted_search_results = [
+                            SearchResultBlockParam(
+                                type='search_result',
+                                title=b['title'],
+                                source=b['source'],
+                                content=[],
+                            ) 
+                            for b in tool_result_content_blocks
+                        ]
+                        redacted_tool_result = \
+                            ToolResultBlockParam(
+                                type='tool_result',
+                                tool_use_id=tool_call['id'],
+                                content=redacted_search_results,
+                                is_error=False,
+                            )
+                        yield f"event: message\ndata: {json.dumps(redacted_tool_result)}\n\n"
+
                 tool_result_message = MessageParam(role='user', content=tool_results)
                 conversation_messages.append(tool_result_message)
 

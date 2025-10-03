@@ -23,6 +23,7 @@
     } from '$lib/types/message.js'
     import ToolMessage from '$lib/components/tool-message.svelte'
     import { cn } from '$lib/utils.js'
+    import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources.js'
 
     let { data }: PageProps = $props()
 
@@ -204,7 +205,9 @@
             content: [],
         }
 
-        const updateStreamingResponse = (block: ToolUseBlock | TextDelta | InputJSONDelta) => {
+        const updateStreamingResponse = (
+            block: ToolUseBlock | TextDelta | InputJSONDelta | ToolResultBlockParam,
+        ) => {
             if (!streamingResponseMessage) {
                 streamingResponseMessage = {
                     id: processedMessages.length,
@@ -243,12 +246,25 @@
                         },
                     })
                 }
+            } else if (block.type === 'tool_result') {
+                const existingToolUse = streamingResponseMessage.content.find(
+                    (b) => b.type === 'tool' && b.toolUse.id === block.tool_use_id,
+                )
+                if (existingToolUse) {
+                    ;(existingToolUse as ToolMessageContent).toolResult = {
+                        toolUseId: block.tool_use_id,
+                        content: (block.content as SearchResultBlockParam[]).map((c) => ({
+                            title: c.title,
+                            source: c.source,
+                        })),
+                    }
+                }
             }
         }
 
         eventSource.addEventListener('message', (event) => {
             try {
-                const data: MessageStreamEvent = JSON.parse(event.data)
+                const data: MessageStreamEvent | ToolResultBlockParam = JSON.parse(event.data)
                 if (data.type === 'content_block_start') {
                     if (
                         data.content_block.type === 'tool_use' &&
@@ -282,6 +298,8 @@
                             // Ignore JSON parse errors for partial input
                         }
                     }
+                } else if (data.type == 'tool_result') {
+                    updateStreamingResponse(data)
                 }
             } catch (err) {
                 console.warn('Failed to parse SSE data:', event.data, err)
@@ -320,8 +338,8 @@
 
 <div class="flex h-full flex-col">
     <!-- Chat Container -->
-    <div class="flex-1 overflow-y-auto px-4 pt-6">
-        <div class="mx-auto mb-20 max-w-4xl">
+    <div class="flex w-full flex-1 flex-col overflow-y-auto px-4 pt-6">
+        <div class="mx-auto mb-20 w-full max-w-4xl flex-1">
             <!-- Existing Messages -->
             {#each processedMessages as message (message.id)}
                 {#if message.role === 'user'}
@@ -345,7 +363,9 @@
                                         {#if block.type === 'text'}
                                             {@html marked.parse(block.text)}
                                         {:else if block.type === 'tool'}
-                                            <ToolMessage message={block} />
+                                            <div class="mb-1">
+                                                <ToolMessage message={block} />
+                                            </div>
                                         {/if}
                                     {/each}
                                 </div>
@@ -376,7 +396,9 @@
                                         {#if block.type === 'text'}
                                             {@html marked.parse(block.text)}
                                         {:else if block.type === 'tool'}
-                                            <ToolMessage message={block} />
+                                            <div class="mb-1">
+                                                <ToolMessage message={block} />
+                                            </div>
                                         {/if}
                                     {/each}
                                 </div>
