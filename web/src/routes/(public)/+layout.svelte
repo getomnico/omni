@@ -7,7 +7,7 @@
     <div class="flex min-h-screen items-center justify-center p-4">
         <div class="w-full max-w-md">
             <div class="mb-8 text-center">
-                <p class="text-xl font-semibold">omni</p>
+                <p class="text-2xl font-semibold">omni</p>
                 <p class="text-muted-foreground mt-2">Your AI assistant for work</p>
             </div>
             <slot />

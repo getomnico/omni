@@ -20,7 +20,7 @@
         <div class="flex items-center space-x-4">
             <a href="/" class="flex items-center">
                 <!-- <img src={omniLogo} alt="Omni" class="h-5 w-auto" /> -->
-                <span class="text-xl font-bold">Omni</span>
+                <span class="text-xl font-bold">omni</span>
             </a>
         </div>
 

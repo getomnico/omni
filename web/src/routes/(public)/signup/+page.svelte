@@ -24,7 +24,7 @@
 <Card class="w-full">
     <CardHeader class="text-center">
         {#if data.isFirstUser}
-            <CardTitle class="text-2xl">Welcome to Omni</CardTitle>
+            <CardTitle class="text-xl">Create admin account to get started</CardTitle>
             <CardDescription>Create an admin account to get started.</CardDescription>
         {:else}
             <CardTitle class="text-2xl">Create your account</CardTitle>
