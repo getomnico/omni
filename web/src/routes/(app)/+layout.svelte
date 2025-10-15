@@ -102,7 +102,7 @@
     </Sidebar>
 
     <!-- Main content area -->
-    <div class="flex w-full flex-col">
+    <div class="flex max-h-[100vh] w-full flex-col">
         <header class={cn('bg-background sticky top-0 z-50 transition-shadow')}>
             <div class="flex h-16 items-center justify-end px-6">
                 <div class="flex items-center space-x-4">
@@ -163,7 +163,7 @@
         </header>
 
         <!-- Main content -->
-        <main class="flex-1">
+        <main class="min-h-0 flex-1">
             {@render children()}
         </main>
     </div>

@@ -4,7 +4,7 @@
     import * as Popover from '$lib/components/ui/popover'
     import type { PageProps } from './$types'
     import { Input } from '$lib/components/ui/input'
-    import { Search, Clock, History, Loader2 } from '@lucide/svelte'
+    import { Search, Clock, History, Loader2, Send } from '@lucide/svelte'
     import { goto } from '$app/navigation'
     import { cn } from '$lib/utils'
 
@@ -135,7 +135,7 @@
                     {#if isSearching}
                         <Loader2 class="h-4 w-4 animate-spin" />
                     {:else}
-                        Go
+                        <Send class="h-4 w-4" />
                     {/if}
                 </Button>
             </div>

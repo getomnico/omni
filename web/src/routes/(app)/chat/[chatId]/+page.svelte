@@ -240,6 +240,27 @@
         return message.role === 'user' && !toolResults
     }
 
+    function scrollToBottom() {
+        requestAnimationFrame(() => {
+            if (chatContainerRef) {
+                chatContainerRef.scrollTo({
+                    top: chatContainerRef.scrollHeight,
+                    behavior: 'smooth',
+                })
+            }
+        })
+    }
+
+    function scrollUserMessageToTop() {
+        requestAnimationFrame(() => {
+            if (lastUserMessageRef && chatContainerRef) {
+                // Scroll so the user message appears at the top of the viewport
+                const messageTop = lastUserMessageRef.offsetTop - chatContainerRef.offsetTop
+                chatContainerRef.scrollTo({ top: messageTop, behavior: 'smooth' })
+            }
+        })
+    }
+
     // This will trigger the streaming of AI response when the component is mounted
     // If no response is currently being streamed, nothing happens
     onMount(() => {
@@ -371,6 +392,8 @@
                 } else if (data.type == 'tool_result') {
                     updateStreamingResponse(data)
                 }
+
+                scrollToBottom()
             } catch (err) {
                 console.warn('Failed to parse SSE data:', event.data, err)
             }
@@ -426,13 +449,7 @@
             userMessage = ''
 
             // Scroll to show the new user message at the top
-            requestAnimationFrame(() => {
-                if (lastUserMessageRef && chatContainerRef) {
-                    // Get the message's position relative to the scrollable container
-                    const messageTop = lastUserMessageRef.offsetTop - chatContainerRef.offsetTop
-                    chatContainerRef.scrollTo({ top: messageTop, behavior: 'smooth' })
-                }
-            })
+            scrollUserMessageToTop()
 
             // Start streaming AI response
             streamResponse(data.chat.id)
