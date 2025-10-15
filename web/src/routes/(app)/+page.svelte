@@ -50,7 +50,7 @@
                 return
             }
 
-            const { message_id: messageId } = await msgResponse.json()
+            const { messageId } = await msgResponse.json()
             console.log('Sent message with ID:', messageId)
 
             isSearching = true
@@ -60,6 +60,7 @@
                 goto(`/search?q=${encodeURIComponent(searchQuery.trim())}`)
             } else {
                 goto(`/chat/${chatId}`, {
+                    invalidateAll: true,
                     state: {
                         stream: true,
                     },

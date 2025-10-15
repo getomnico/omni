@@ -63,6 +63,8 @@ services:
       <<: *dev-database-url
       VLLM_URL: http://localhost:8000  # Dummy URL for dev
       LOG_LEVEL: debug
+      BEDROCK_MODEL_ID: us.anthropic.claude-sonnet-4-20250514-v1:0
+
     volumes:
       - ../services/ai:/app
     command: python -m uvicorn main:app --host 0.0.0.0 --port ${AI_SERVICE_PORT} --reload

@@ -1,9 +1,19 @@
 import { json } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
 import type { RequestHandler } from './$types.js'
+import { chatRepository, chatMessageRepository } from '$lib/server/db/chats.js'
 
-async function triggerTitleGeneration(chatId: string, logger: any): Promise<void> {
+async function triggerTitleGeneration(chatId: string, logger: any): Promise<string | null> {
     try {
+        // First check if title already exists
+        const chat = await chatRepository.get(chatId)
+        if (chat?.title) {
+            logger.debug('Chat already has a title, skipping title generation', { chatId })
+            return null
+        }
+
+        logger.info('Triggering title generation', { chatId })
+
         const response = await fetch(`${env.AI_SERVICE_URL}/chat/${chatId}/generate_title`, {
             method: 'POST',
             headers: {
@@ -18,11 +28,14 @@ async function triggerTitleGeneration(chatId: string, logger: any): Promise<void
                 title: result.title,
                 status: result.status,
             })
+            return result.title
         } else {
             logger.warn('Title generation failed', undefined, { chatId, status: response.status })
+            return null
         }
     } catch (error) {
         logger.warn('Error during title generation', error, { chatId })
+        return null
     }
 }
 
@@ -57,12 +70,19 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
         logger.info('Chat stream started successfully', { chatId })
 
-        // Create a transformed stream that triggers title generation after completion
+        // Create a transformed stream that:
+        // 1. Intercepts save_message events for database writes
+        // 2. Filters out save_message events from client
+        // 3. Triggers title generation after completion
         const reader = response.body?.getReader()
 
         if (!reader) {
             throw new Error('Response body is null')
         }
+
+        const decoder = new TextDecoder()
+        const encoder = new TextEncoder()
+        let buffer = ''
 
         const stream = new ReadableStream({
             async start(controller) {
@@ -71,8 +91,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
                         const { done, value } = await reader.read()
 
                         if (done) {
-                            // Stream completed - trigger title generation in background
-                            logger.info('Stream completed, triggering title generation', { chatId })
+                            // Stream completed, trigger title generation
                             triggerTitleGeneration(chatId, logger).catch((err) => {
                                 logger.warn(
                                     `Failed to trigger title generation for chat ${chatId}`,
@@ -83,8 +102,93 @@ export const GET: RequestHandler = async ({ params, locals }) => {
                             break
                         }
 
-                        // Pass through the chunk to the client
-                        controller.enqueue(value)
+                        // Decode chunk and add to buffer
+                        buffer += decoder.decode(value, { stream: true })
+
+                        // Process complete SSE events in buffer
+                        const events = buffer.split('\n\n')
+                        // Keep the last incomplete event in buffer
+                        buffer = events.pop() || ''
+
+                        for (const event of events) {
+                            if (!event.trim()) continue
+
+                            const lines = event.split('\n')
+                            let eventType = 'message' // default event type
+                            let data = ''
+
+                            for (const line of lines) {
+                                if (line.startsWith('event:')) {
+                                    eventType = line.substring(6).trim()
+                                } else if (line.startsWith('data:')) {
+                                    data = line.substring(5).trim()
+                                }
+                            }
+
+                            // If this is a save_message event, save it immediately to database
+                            if (eventType === 'save_message' && data) {
+                                try {
+                                    const message = JSON.parse(data)
+                                    const { id: messageId } = await chatMessageRepository.create(
+                                        chatId,
+                                        message,
+                                    )
+                                    logger.debug('Saved message to database', {
+                                        chatId,
+                                        role: message.role,
+                                        messageId,
+                                    })
+
+                                    // Send message ID to client
+                                    const event = `event: message_id\ndata: ${messageId}\n\n`
+                                    controller.enqueue(encoder.encode(event))
+                                } catch (error) {
+                                    logger.error('Failed to save message to database', error, {
+                                        chatId,
+                                        data,
+                                    })
+                                }
+                                // Don't forward save_message events to client (internal only)
+                                continue
+                            }
+
+                            // Redact tool result content before forwarding to client
+                            if (eventType === 'message' && data) {
+                                try {
+                                    const parsedData = JSON.parse(data)
+                                    // Check if this is a tool_result block
+                                    if (
+                                        parsedData.type === 'tool_result' &&
+                                        Array.isArray(parsedData.content)
+                                    ) {
+                                        // Redact search result content (keep title/source, remove content)
+                                        const redactedContent = parsedData.content
+                                            .filter((item: any) => item.type === 'search_result')
+                                            .map((searchResult: any) => ({
+                                                type: 'search_result',
+                                                title: searchResult.title,
+                                                source: searchResult.source,
+                                                content: [], // Redact the highlights
+                                            }))
+
+                                        const redactedData = {
+                                            ...parsedData,
+                                            content: redactedContent,
+                                        }
+
+                                        const redactedEvent = `event: message\ndata: ${JSON.stringify(redactedData)}\n\n`
+                                        controller.enqueue(encoder.encode(redactedEvent))
+                                        continue
+                                    }
+                                } catch (parseError) {
+                                    // If parsing fails, forward as-is
+                                }
+                            }
+
+                            // Forward all other events to the client as-is
+                            const eventStr = event + '\n\n'
+                            controller.enqueue(encoder.encode(eventStr))
+                        }
                     }
                 } catch (error) {
                     logger.error('Error in stream processing', error, { chatId })

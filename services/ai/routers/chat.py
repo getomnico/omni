@@ -107,7 +107,7 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
     async def stream_generator():
         try:
             conversation_messages = messages.copy()
-            max_iterations = 5  # Prevent infinite loops
+            max_iterations = 7  # Prevent infinite loops
             logger.info(f"[ASK] Starting conversation with {len(conversation_messages)} initial messages")
 
             for iteration in range(max_iterations):
@@ -154,6 +154,8 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
                                     input=''
                                 )
                             )
+                    elif event.type == 'citation':
+                        logger.info(f"[ASK] Citation received: {event.citation}")
                     elif event.type == 'message_stop':
                         logger.info(f"[ASK] Message stop received.")
                         message_stop_received = True
@@ -176,12 +178,8 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
                 assistant_message = MessageParam(role='assistant', content=content_blocks)
                 conversation_messages.append(assistant_message)
 
-                # Store assistant's response to database
-                messages_repo = MessagesRepository()
-                await messages_repo.create(
-                    chat_id=chat_id,
-                    message=assistant_message
-                )
+                # Send complete message to omni-web for database persistence
+                yield f"event: save_message\ndata: {json.dumps(assistant_message)}\n\n"
 
                 # If no tool calls, we're done
                 if not tool_calls:
@@ -229,43 +227,23 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
                                     citations=CitationsConfigParam(enabled=True),
                                 )
                             )
-                        
-                        tool_results.append(
+
+                        tool_result = \
                             ToolResultBlockParam(
                                 type='tool_result',
                                 tool_use_id=tool_call['id'],
                                 content=tool_result_content_blocks,
                                 is_error=False,
                             )
-                        )
+                        tool_results.append(tool_result)
 
-                        # Stream tool result to the client as well, with redacted content
-                        redacted_search_results = [
-                            SearchResultBlockParam(
-                                type='search_result',
-                                title=b['title'],
-                                source=b['source'],
-                                content=[],
-                            ) 
-                            for b in tool_result_content_blocks
-                        ]
-                        redacted_tool_result = \
-                            ToolResultBlockParam(
-                                type='tool_result',
-                                tool_use_id=tool_call['id'],
-                                content=redacted_search_results,
-                                is_error=False,
-                            )
-                        yield f"event: message\ndata: {json.dumps(redacted_tool_result)}\n\n"
+                        yield f"event: message\ndata: {json.dumps(tool_result)}\n\n"
 
                 tool_result_message = MessageParam(role='user', content=tool_results)
                 conversation_messages.append(tool_result_message)
 
-                # Store tool results to database
-                await messages_repo.create(
-                    chat_id=chat_id,
-                    message=tool_result_message
-                )
+                # Send complete tool result message to omni-web for database persistence
+                yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
             
             yield f"event: end_of_stream\ndata: Stream ended\n\n"
 

@@ -13,13 +13,13 @@
         SidebarMenuButton,
         SidebarTrigger,
         SidebarRail,
-        SidebarInset,
     } from '$lib/components/ui/sidebar/index.js'
     import { Tooltip, TooltipContent, TooltipTrigger } from '$lib/components/ui/tooltip/index.js'
     import type { LayoutData } from './$types.js'
     import { MessageCirclePlus } from '@lucide/svelte'
     import type { Snippet } from 'svelte'
     import { cn } from '$lib/utils'
+    import { page } from '$app/state'
 
     interface Props {
         data: LayoutData
@@ -38,7 +38,7 @@
 
 <SidebarProvider>
     <!-- Chat History Sidebar -->
-    <Sidebar collapsible="icon">
+    <Sidebar collapsible="icon" variant="sidebar">
         <SidebarHeader class="h-16">
             <div class="flex flex-1 items-center justify-start gap-2">
                 <Tooltip>
@@ -73,7 +73,11 @@
                         {#if data.recentChats.length > 0}
                             {#each data.recentChats as chat}
                                 <SidebarMenuItem>
-                                    <SidebarMenuButton>
+                                    <SidebarMenuButton
+                                        class={cn(
+                                            page.params.chatId === chat.id &&
+                                                'bg-sidebar-accent text-sidebar-accent-foreground',
+                                        )}>
                                         {#snippet child({ props })}
                                             <a href="/chat/{chat.id}" {...props}>
                                                 <div class="truncate">
@@ -98,8 +102,7 @@
     </Sidebar>
 
     <!-- Main content area -->
-    <SidebarInset>
-        <!-- Header -->
+    <div class="flex w-full flex-col">
         <header class={cn('bg-background sticky top-0 z-50 transition-shadow')}>
             <div class="flex h-16 items-center justify-end px-6">
                 <div class="flex items-center space-x-4">
@@ -163,5 +166,5 @@
         <main class="flex-1">
             {@render children()}
         </main>
-    </SidebarInset>
+    </div>
 </SidebarProvider>

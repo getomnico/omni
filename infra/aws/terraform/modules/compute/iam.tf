@@ -66,20 +66,12 @@ resource "aws_iam_role" "ecs_task" {
           "bedrock:InvokeModelWithResponseStream"
         ]
         Resource = [
-          "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/eu.amazon.nova-pro-v1:0",
-          "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/eu.amazon.nova-micro-v1:0",
-          "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/eu.amazon.nova-lite-v1:0",
-          "arn:aws:bedrock:*::foundation-model/amazon.nova-pro-v1:0",
-          "arn:aws:bedrock:*::foundation-model/amazon.nova-micro-v1:0",
-          "arn:aws:bedrock:*::foundation-model/amazon.nova-lite-v1:0",
-          "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/eu.anthropic.claude-sonnet-4-20250514-v1:0",
-          "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/eu.anthropic.claude-3-7-sonnet-20250219-v1:0",
-          "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/eu.anthropic.claude-3-5-sonnet-20240620-v1:0",
-          "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/eu.anthropic.claude-3-haiku-20240307-v1:0",
-          "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-20250514-v1:0",
-          "arn:aws:bedrock:*::foundation-model/anthropic.claude-3-7-sonnet-20250219-v1:0",
-          "arn:aws:bedrock:*::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0",
-          "arn:aws:bedrock:*::foundation-model/anthropic.claude-3-haiku-20240307-v1:0"
+          "arn:aws:bedrock:*:*:inference-profile/us.anthropic.*",
+          "arn:aws:bedrock:*:*:inference-profile/eu.anthropic.*",
+          "arn:aws:bedrock:*::foundation-model/anthropic.*",
+          "arn:aws:bedrock:*:*:inference-profile/us.amazon.*",
+          "arn:aws:bedrock:*:*:inference-profile/eu.amazon.*",
+          "arn:aws:bedrock:*::foundation-model/amazon.*"
         ]
       }]
     })

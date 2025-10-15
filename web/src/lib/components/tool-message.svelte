@@ -16,7 +16,7 @@
     <Accordion.Item value={message.toolUse.id}>
         <Accordion.Trigger
             class={cn(
-                'flex cursor-pointer items-center justify-between border border-gray-200 px-2 py-2 text-sm hover:no-underline',
+                'flex cursor-pointer items-center justify-between border border-gray-200 px-3 py-3 text-sm hover:no-underline',
                 selectedItem === message.toolUse.id && 'bg-card rounded-b-none border-b-0',
             )}>
             <div class="flex w-full items-center justify-between">

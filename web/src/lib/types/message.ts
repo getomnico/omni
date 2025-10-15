@@ -24,6 +24,9 @@ export type ToolMessageContent = {
 export type MessageContent = Array<TextMessageContent | ToolMessageContent>
 export type ProcessedMessage = {
     id: number
+    // ID of the message in the db.
+    // Multiple messages might be combined into a single ProcessedMessage, in that case, this field will contain the ID of the last message.
+    origMessageId: string
     role: 'user' | 'assistant'
     content: MessageContent
 }

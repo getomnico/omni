@@ -1,4 +1,4 @@
-import { eq, desc } from 'drizzle-orm'
+import { eq, desc, and } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { db } from './index'
 import { chats, chatMessages, user } from './schema'
@@ -112,6 +112,18 @@ export class ChatMessageRepository {
             .returning()
 
         return newMessage
+    }
+
+    async update(chatId: string, messageId: string, message: any): Promise<ChatMessage | null> {
+        const [updatedMessage] = await this.db
+            .update(chatMessages)
+            .set({
+                message,
+            })
+            .where(and(eq(chatMessages.id, messageId), eq(chatMessages.chatId, chatId)))
+            .returning()
+
+        return updatedMessage || null
     }
 
     /**

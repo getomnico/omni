@@ -150,6 +150,19 @@ export const chatMessages = pgTable('chat_messages', {
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
 
+export const responseFeedback = pgTable('response_feedback', {
+    id: text('id').primaryKey(),
+    messageId: text('message_id')
+        .notNull()
+        .references(() => chatMessages.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+        .notNull()
+        .references(() => user.id, { onDelete: 'cascade' }),
+    feedbackType: text('feedback_type').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+})
+
 export type User = typeof user.$inferSelect
 export type Source = typeof sources.$inferSelect
 export type Document = typeof documents.$inferSelect
@@ -161,3 +174,4 @@ export type ApprovedDomain = typeof approvedDomains.$inferSelect
 export type MagicLink = typeof magicLinks.$inferSelect
 export type Chat = typeof chats.$inferSelect
 export type ChatMessage = typeof chatMessages.$inferSelect
+export type ResponseFeedback = typeof responseFeedback.$inferSelect

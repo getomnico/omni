@@ -63,14 +63,16 @@ class AnthropicProvider(LLMProvider):
                 event_count += 1
                 logger.debug(f"[ANTHROPIC] Event {event_count}: {event.type}")
                 if event.type == 'content_block_start':
-                    logger.info(f"[ANTHROPIC] Content block start: {event.content_block.type}")
+                    logger.info(f"[ANTHROPIC] Content block start: type={event.content_block.type}")
                     if event.content_block.type == 'tool_use':
                         logger.info(f"[ANTHROPIC] Tool use started: {event.content_block.name} (id: {event.content_block.id}) (input: {json.dumps(event.content_block.input)})")
                 elif event.type == 'content_block_delta':
                     if event.delta.type == 'text_delta':
-                        logger.debug(f"[ANTHROPIC] Text delta: {event.delta.text}...")
+                        logger.debug(f"[ANTHROPIC] Text delta: '{event.delta.text}'")
                     elif event.delta.type == 'input_json_delta':
                         logger.debug(f"[ANTHROPIC] JSON delta: {event.delta.partial_json}")
+                elif event.type == 'citation':
+                    logger.info(f"[ANTHROPIC] Citation: {event.citation}")
                 elif event.type == 'content_block_stop':
                     logger.info(f"[ANTHROPIC] Content block stop at index {getattr(event, 'index', '<unknown>')}")
                 elif event.type == 'message_delta':

@@ -113,7 +113,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
         return json(
             {
-                message_id: savedMessage.id,
+                messageId: savedMessage.id,
                 status: 'created',
             },
             { status: 200 },
