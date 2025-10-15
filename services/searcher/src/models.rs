@@ -23,6 +23,8 @@ pub struct SearchRequest {
     pub include_facets: Option<bool>,
     pub user_email: Option<String>,
     pub user_id: Option<String>,
+    pub is_generated_query: Option<bool>,
+    pub original_user_query: Option<String>,
 }
 
 impl SearchRequest {

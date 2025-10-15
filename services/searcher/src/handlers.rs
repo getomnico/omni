@@ -133,12 +133,21 @@ pub async fn search(
 
     // Store search history if user_id is provided
     if let Some(user_id) = &request.user_id {
-        if let Err(e) = search_engine
-            .store_search_history(user_id, &request.query)
-            .await
-        {
-            // Log the error but don't fail the search request
-            error!("Failed to store search history: {}", e);
+        let is_generated = request.is_generated_query.unwrap_or(false);
+
+        let query_to_store = if is_generated {
+            // For AI-generated queries, only cache if original_user_query is provided
+            request.original_user_query.as_ref()
+        } else {
+            // For user queries, cache the query itself
+            Some(&request.query)
+        };
+
+        if let Some(query) = query_to_store {
+            if let Err(e) = search_engine.store_search_history(user_id, query).await {
+                // Log the error but don't fail the search request
+                error!("Failed to store search history: {}", e);
+            }
         }
     }
 

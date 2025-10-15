@@ -110,6 +110,22 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
             max_iterations = 7  # Prevent infinite loops
             logger.info(f"[ASK] Starting conversation with {len(conversation_messages)} initial messages")
 
+            # Extract the first user message query for caching purposes
+            # We only cache the initial question, not follow-ups, as follow-ups don't make sense in isolation
+            original_user_query = None
+            for msg in conversation_messages:
+                if msg.get('role') == 'user':
+                    content = msg.get('content', '')
+                    if isinstance(content, str):
+                        original_user_query = content
+                        break
+                    elif isinstance(content, list):
+                        # Extract text from content blocks
+                        text_parts = [block.get('text', '') for block in content if isinstance(block, dict) and block.get('type') == 'text']
+                        if text_parts:
+                            original_user_query = ' '.join(text_parts)
+                            break
+
             for iteration in range(max_iterations):
                 logger.info(f"[ASK] Iteration {iteration + 1}/{max_iterations}")
                 content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
@@ -202,8 +218,9 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
                         logger.info(f"[ASK] Executing search_documents tool with query: {search_query}")
                         search_results = await execute_search_tool(
                             searcher_tool=request.app.state.searcher_tool,
-                            tool_input=tool_call_params, 
-                            user_id=chat.user_id
+                            tool_input=tool_call_params,
+                            user_id=chat.user_id,
+                            original_user_query=original_user_query
                         )
                         documents = [res.document for res in search_results]
                         logger.info(f"[ASK] Search returned {len(documents)} documents")
@@ -259,9 +276,10 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
 
 async def execute_search_tool(
     searcher_tool: SearcherTool,
-    tool_input: SearchToolParams, 
-    user_id: str, 
-    user_email: str | None = None
+    tool_input: SearchToolParams,
+    user_id: str,
+    user_email: str | None = None,
+    original_user_query: str | None = None
 ) -> List[SearchResult]:
     """Execute search_documents tool by calling omni-searcher"""
     logger.info(f"[SEARCH_TOOL] Executing search with query: {tool_input.query}")
@@ -276,6 +294,8 @@ async def execute_search_tool(
         mode="hybrid",
         user_id=user_id,
         user_email=user_email,
+        is_generated_query=True,
+        original_user_query=original_user_query,
     )
     try:
         search_response: SearchResponse = await searcher_tool.handle(search_request)
