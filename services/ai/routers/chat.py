@@ -170,11 +170,24 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
                     logger.debug(f"[ASK] Received event: {event} (index: {event_index})")
                     event_index += 1
 
+                    if event.type == 'message_start':
+                        logger.info(f"[ASK] Message start received.")
+
                     if event.type == 'content_block_delta':
+                        # Amazon models send the first content_block_delta directly without sending the 
+                        # content_block_start event first, so we need to handle that case.
+                        logger.debug(f"[ASK] Content block delta received at index {event.index}: {event.delta}")
                         if event.delta.type == 'text_delta':
+                            if event.index >= len(content_blocks):
+                                logger.warning(f"[ASK] Received text delta for unknown content block index {event.index}, creating new text block")
+                                content_blocks.append(TextBlockParam(type='text', text=''))
                             text_block = cast(TextBlockParam, content_blocks[event.index])
                             text_block['text'] += event.delta.text
                         elif event.delta.type == 'input_json_delta':
+                            if event.index >= len(content_blocks):
+                                # This should never happen in the case of tool calls, but handle it anyway
+                                logger.warning(f"[ASK] Received input JSON delta for unknown content block index {event.index}, creating new tool use block")
+                                content_blocks.append(ToolUseBlockParam(type='tool_use', id='', name='', input=''))
                             tool_use_block = cast(ToolUseBlockParam, content_blocks[event.index])
                             tool_use_block['input'] = cast(str, tool_use_block['input']) + event.delta.partial_json
                     elif event.type == 'content_block_start':
@@ -275,8 +288,8 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
                                     content=[
                                         TextBlockParam(
                                             type='text',
-                                            text='\n'.join(result.highlights),
-                                        )
+                                            text=h,
+                                        ) for h in result.highlights
                                     ],
                                     citations=CitationsConfigParam(enabled=True),
                                 )
