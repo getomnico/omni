@@ -1,7 +1,7 @@
 <script lang="ts">
     import * as Accordion from '$lib/components/ui/accordion'
     import { Search, FileText } from '@lucide/svelte'
-    import type { ToolMessageContent } from '$lib/types/message'
+    import type { ToolMessageContent, ToolName } from '$lib/types/message'
     import { cn } from '$lib/utils'
     import { getIconFromSearchResult } from '$lib/utils/icons'
 
@@ -9,11 +9,36 @@
         message: ToolMessageContent
     }
 
+    const ToolIndicators = {
+        search_documents: {
+            loading: 'searching',
+            loaded: 'searched',
+        },
+        read_document: {
+            loading: 'reading',
+            loaded: 'read',
+        },
+    }
+
+    const ToolInputKey = {
+        search_documents: 'query',
+        read_document: 'name',
+    }
+
     let { message }: Props = $props()
+    const toolName = message.toolUse.name as ToolName
+    const statusIndicator = message.toolResult
+        ? ToolIndicators[toolName]?.loaded
+        : ToolIndicators[toolName]?.loading || 'using'
+    const toolInputKey = ToolInputKey[toolName] || 'query'
+
     let selectedItem = $state<string>()
 </script>
 
-<Accordion.Root type="single" bind:value={selectedItem}>
+<Accordion.Root
+    type="single"
+    bind:value={selectedItem}
+    disabled={!message.toolResult || message.toolResult.content.length === 0}>
     <Accordion.Item value={message.toolUse.id}>
         <Accordion.Trigger
             class={cn(
@@ -23,19 +48,18 @@
             <div class="flex w-full items-center justify-between">
                 <div class="flex items-center gap-2">
                     <Search class="h-4 w-4" />
-                    <div class="text-sm font-normal">
-                        {message.toolResult ? 'searched' : 'searching'}: {message.toolUse.input
-                            .query}
+                    <div class="max-w-screen-md truncate text-sm font-normal">
+                        {statusIndicator}: {message.toolUse.input[toolInputKey]}
                     </div>
                 </div>
-                {#if message.toolResult}
+                {#if toolName === 'search_documents' && message.toolResult}
                     <div class="text-muted-foreground text-xs">
                         {message.toolResult.content.length} results
                     </div>
                 {/if}
             </div>
         </Accordion.Trigger>
-        {#if message.toolResult && message.toolResult.content.length > 0}
+        {#if toolName === 'search_documents' && message.toolResult && message.toolResult.content.length > 0}
             <Accordion.Content
                 class="bg-card max-h-48 overflow-y-auto rounded-b-md border border-t-0 border-gray-200">
                 <div class="px-4 py-2">

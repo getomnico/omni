@@ -132,21 +132,12 @@ class BedrockProvider(LLMProvider):
                                         "text": content_block
                                     })
                                 elif isinstance(content_block, dict) and content_block['type'] == 'search_result':
-                                    # Include the URL in the content, because where else will it go? Poor API design Amazon...
-                                    # The URL is required for the model to invoke the read_document tool
-                                    content_parts = [
-                                        {"text": f"Source: {content_block['source']}"},
-                                    ]
-                                    for b in content_block.get('content', []):
-                                        if 'text' in b:
-                                            content_parts.append({"text": b['text']})
-
                                     search_result_blocks.append({
                                         "document": {
                                             "format": "txt", # TODO: map actual format if available
                                             "name": sanitize_document_name(content_block['title']),
                                             "source": {
-                                                "bytes": '\n'.join(p['text'] for p in content_parts)
+                                                "bytes": '\n'.join(p['text'] for p in content_block['content'] if 'text' in p)
                                             },
                                             "citations": {
                                                 "enabled": False # Citations are not supported on tool result documents on Amazon models yet

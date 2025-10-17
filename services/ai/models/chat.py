@@ -8,6 +8,7 @@ class SearchToolParams(BaseModel):
     limit: Optional[int] = 20
 
 class ReadDocumentParams(BaseModel):
-    url: str
-    query: Optional[str] = None
+    id: str # Document ID
+    name: str # Document Name
+    query: Optional[str] = None # Optional query to retrieve specific relevant sections
 

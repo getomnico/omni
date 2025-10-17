@@ -67,16 +67,20 @@ SEARCH_TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "url": {
+                "id": {
                     "type": "string",
-                    "description": "The URL of the document to read"
+                    "description": "The ID of the document to read"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "The name of the document to read"
                 },
                 "query": {
                     "type": "string",
-                    "description": "Optional: For large documents, specify what you're looking for to get the most relevant sections"
+                    "description": "Optional: specify what you're looking for to get the most relevant sections"
                 }
             },
-            "required": ["url"]
+            "required": ["id", "name"]
         }
     }
 ]
@@ -127,9 +131,6 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
             conversation_messages = messages.copy()
             max_iterations = 7  # Prevent infinite loops
             logger.info(f"[ASK] Starting conversation with {len(conversation_messages)} initial messages")
-
-            # Maintain URL to document ID map for read_document tool
-            url_to_doc_id: dict[str, str] = {}
 
             # Extract the first user message query for caching purposes
             # We only cache the initial question, not follow-ups, as follow-ups don't make sense in isolation
@@ -210,7 +211,7 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
                         logger.info(f"[ASK] Message stop received.")
                         message_stop_received = True
                     
-                    logger.info(f"[ASK] Yielding event to client: {event.to_json(indent=None)}")
+                    logger.debug(f"[ASK] Yielding event to client: {event.to_json(indent=None)}")
                     yield f"event: message\ndata: {event.to_json(indent=None)}\n\n"
 
                     if message_stop_received:
@@ -260,36 +261,33 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
                         logger.info(f"[ASK] Search returned {len(documents)} documents")
                         logger.debug(f"[ASK] Document titles: {[doc.title for doc in documents]}...")
 
-                        # Update url_to_doc_id map with results
-                        for result in search_results:
-                            if result.document.url:
-                                url_to_doc_id[result.document.url] = result.document.id
-                        logger.debug(f"[ASK] Updated url_to_doc_id map, now has {len(url_to_doc_id)} entries")
-
                         # Add each document as a document block for automatic citations
                         tool_result_content_blocks: list[SearchResultBlockParam] = []
                         for result in search_results:
                             doc = result.document
-                            # Append metadata hash to URL for frontend icon resolution
-                            source_url = cast(str, doc.url) if doc.url else ""
-                            if doc.source_type or doc.content_type:
-                                metadata_parts = []
-                                if doc.source_type:
-                                    metadata_parts.append(doc.source_type)
-                                if doc.content_type:
-                                    metadata_parts.append(doc.content_type)
-                                source_url = f"{source_url}#meta={','.join(metadata_parts)}"
-
+                            doc_content_text_blocks = [
+                                TextBlockParam(
+                                    type='text',
+                                    text=h,
+                                ) for h in result.highlights
+                            ]
                             tool_result_content_blocks.append(
                                 SearchResultBlockParam(
                                     type='search_result',
                                     title=doc.title,
-                                    source=source_url,
+                                    source=doc.url or "<unknown>",
                                     content=[
+                                        # Add a separate text block with the document ID, URL
+                                        # This will help the model issue read_document calls later
                                         TextBlockParam(
                                             type='text',
-                                            text=h,
-                                        ) for h in result.highlights
+                                            text=f"[Document ID: {doc.id}]",
+                                        ),
+                                        TextBlockParam(
+                                            type='text',
+                                            text=f"[URL: {doc.url or '<unknown>'}]",
+                                        ),
+                                        *doc_content_text_blocks
                                     ],
                                     citations=CitationsConfigParam(enabled=True),
                                 )
@@ -313,11 +311,10 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
                             logger.error(f"[ASK] Failed to parse read_document tool call input: {tool_call['input']}. Error: {e}")
                             continue
 
-                        logger.info(f"[ASK] Executing read_document tool with URL: {tool_call_params.url}")
+                        logger.info(f"[ASK] Executing read_document tool with URL: {tool_call_params}")
                         read_results = await execute_read_document_tool(
                             searcher_tool=request.app.state.searcher_tool,
                             tool_input=tool_call_params,
-                            url_to_doc_id=url_to_doc_id,
                             user_id=chat.user_id
                         )
                         logger.info(f"[ASK] Read document returned {len(read_results)} chunks/content")
@@ -416,20 +413,13 @@ async def execute_search_tool(
 async def execute_read_document_tool(
     searcher_tool: SearcherTool,
     tool_input: ReadDocumentParams,
-    url_to_doc_id: dict[str, str],
     user_id: str,
     user_email: str | None = None
 ) -> List[SearchResult]:
     """Execute read_document tool by calling omni-searcher with document_id filter"""
-    logger.info(f"[READ_DOC_TOOL] Reading document with URL: {tool_input.url}")
-
-    # Look up document ID from URL
-    document_id = url_to_doc_id.get(tool_input.url)
-    if not document_id:
-        logger.error(f"[READ_DOC_TOOL] Document not found in conversation context: {tool_input.url}")
-        return []
-
-    logger.info(f"[READ_DOC_TOOL] Found document ID: {document_id}")
+    logger.info(f"[READ_DOC_TOOL] Reading document: {tool_input}")
+    document_id = tool_input.id
+    document_name = tool_input.name
 
     # Create search request with document_id filter
     # Use query if provided for semantic search within document, otherwise use empty query

@@ -274,6 +274,7 @@
         error = null
 
         let currToolUseId: string
+        let currToolUseName: string
         let currToolUseInputStr: string
 
         const eventSource = new EventSource(`/api/chat/${chatId}/stream`, { withCredentials: true })
@@ -365,10 +366,12 @@
                 } else if (data.type === 'content_block_start') {
                     if (
                         data.content_block.type === 'tool_use' &&
-                        data.content_block.name === 'search_documents'
+                        (data.content_block.name === 'search_documents' ||
+                            data.content_block.name === 'read_document')
                     ) {
                         updateStreamingResponse(data.content_block)
                         currToolUseId = data.content_block.id
+                        currToolUseName = data.content_block.name
                         currToolUseInputStr = ''
                     }
                 } else if (data.type === 'content_block_delta') {
@@ -382,7 +385,7 @@
                             updateStreamingResponse({
                                 type: 'tool_use',
                                 id: currToolUseId,
-                                name: 'search_documents',
+                                name: currToolUseName,
                                 input: parsedInput,
                             })
                         } catch (err) {

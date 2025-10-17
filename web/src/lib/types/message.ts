@@ -21,6 +21,8 @@ export type ToolMessageContent = {
     }
 }
 
+export type ToolName = 'search_documents' | 'read_document'
+
 export type MessageContent = Array<TextMessageContent | ToolMessageContent>
 export type ProcessedMessage = {
     id: number
