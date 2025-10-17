@@ -262,7 +262,7 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
                         logger.debug(f"[ASK] Document titles: {[doc.title for doc in documents]}...")
 
                         # Add each document as a document block for automatic citations
-                        tool_result_content_blocks: list[SearchResultBlockParam] = []
+                        search_tool_result_content_blocks: list[SearchResultBlockParam] = []
                         for result in search_results:
                             doc = result.document
                             doc_content_text_blocks = [
@@ -271,17 +271,21 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
                                     text=h,
                                 ) for h in result.highlights
                             ]
-                            tool_result_content_blocks.append(
+                            search_tool_result_content_blocks.append(
                                 SearchResultBlockParam(
                                     type='search_result',
                                     title=doc.title,
                                     source=doc.url or "<unknown>",
                                     content=[
-                                        # Add a separate text block with the document ID, URL
+                                        # Add a separate text block with the document ID, title, URL
                                         # This will help the model issue read_document calls later
                                         TextBlockParam(
                                             type='text',
                                             text=f"[Document ID: {doc.id}]",
+                                        ),
+                                        TextBlockParam(
+                                            type='text',
+                                            text=f'[Document Name: {doc.title}]',
                                         ),
                                         TextBlockParam(
                                             type='text',
@@ -297,7 +301,7 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
                             ToolResultBlockParam(
                                 type='tool_result',
                                 tool_use_id=tool_call['id'],
-                                content=tool_result_content_blocks,
+                                content=search_tool_result_content_blocks,
                                 is_error=False,
                             )
                         tool_results.append(tool_result)
@@ -319,32 +323,14 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
                         )
                         logger.info(f"[ASK] Read document returned {len(read_results)} chunks/content")
 
-                        # Add document content as search result blocks for citations
-                        tool_result_content_blocks: list[SearchResultBlockParam] = []
+                        # Add document content as text blocks
+                        read_tool_result_content_blocks: list[TextBlockParam] = []
                         for result in read_results:
                             doc = result.document
-                            # Append metadata hash to URL for frontend icon resolution
-                            source_url = cast(str, doc.url) if doc.url else ""
-                            if doc.source_type or doc.content_type:
-                                metadata_parts = []
-                                if doc.source_type:
-                                    metadata_parts.append(doc.source_type)
-                                if doc.content_type:
-                                    metadata_parts.append(doc.content_type)
-                                source_url = f"{source_url}#meta={','.join(metadata_parts)}"
-
-                            tool_result_content_blocks.append(
-                                SearchResultBlockParam(
-                                    type='search_result',
-                                    title=doc.title,
-                                    source=source_url,
-                                    content=[
-                                        TextBlockParam(
-                                            type='text',
-                                            text='\n'.join(result.highlights),
-                                        )
-                                    ],
-                                    citations=CitationsConfigParam(enabled=True),
+                            read_tool_result_content_blocks.append(
+                                TextBlockParam(
+                                    type='text',
+                                    text='\n'.join(result.highlights),
                                 )
                             )
 
@@ -352,7 +338,7 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
                             ToolResultBlockParam(
                                 type='tool_result',
                                 tool_use_id=tool_call['id'],
-                                content=tool_result_content_blocks,
+                                content=read_tool_result_content_blocks,
                                 is_error=False,
                             )
                         tool_results.append(tool_result)

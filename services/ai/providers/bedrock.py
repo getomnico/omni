@@ -131,19 +131,24 @@ class BedrockProvider(LLMProvider):
                                     search_result_blocks.append({
                                         "text": content_block
                                     })
-                                elif isinstance(content_block, dict) and content_block['type'] == 'search_result':
-                                    search_result_blocks.append({
-                                        "document": {
-                                            "format": "txt", # TODO: map actual format if available
-                                            "name": sanitize_document_name(content_block['title']),
-                                            "source": {
-                                                "bytes": '\n'.join(p['text'] for p in content_block['content'] if 'text' in p)
-                                            },
-                                            "citations": {
-                                                "enabled": False # Citations are not supported on tool result documents on Amazon models yet
+                                elif isinstance(content_block, dict): 
+                                    if content_block['type'] == 'text':
+                                        search_result_blocks.append({
+                                            "text": content_block['text']
+                                        })
+                                    elif content_block['type'] == 'search_result':
+                                        search_result_blocks.append({
+                                            "document": {
+                                                "format": "txt", # TODO: map actual format if available
+                                                "name": sanitize_document_name(content_block['title']),
+                                                "source": {
+                                                    "bytes": '\n'.join(p['text'] for p in content_block['content'] if 'text' in p)
+                                                },
+                                                "citations": {
+                                                    "enabled": False # Citations are not supported on tool result documents on Amazon models yet
+                                                }
                                             }
-                                        }
-                                    })
+                                        })
                             
                             if len(search_result_blocks) == 0:
                                 # We need to let the model know that no results were found
@@ -250,8 +255,6 @@ class BedrockProvider(LLMProvider):
                     limited_content = [{"text": "<Documents removed to meet API limits>"}]
 
                 msg['content'] = limited_content
-                
-
 
     def _adapt_tools_for_amazon_models(self, tools: list[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Adapt tools to the format expected by Amazon Bedrock models."""
@@ -496,7 +499,6 @@ class BedrockProvider(LLMProvider):
 
                 logger.debug(f"[BEDROCK-AMAZON] Adapted messages: {json.dumps(messages, indent=2)}")
                 tools = self._adapt_tools_for_amazon_models(tools) if tools else None
-                logger.debug(f"[BEDROCK-AMAZON] Adapted tools: {json.dumps(tools, indent=2) if tools else 'None'}")
 
                 response = self.client.converse_stream(
                     modelId=self.model_id,

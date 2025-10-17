@@ -100,6 +100,25 @@
         }
     }
 
+    // Assumption: only one thinking tag in the input
+    // AWS Nova Pro returns content <thinking> tags that is just superfluous, so get rid of it
+    function stripThinkingContent(messageStr: string, thinkingTagName: string): string {
+        const startTagIdx = messageStr.indexOf(`<${thinkingTagName}>`)
+        if (startTagIdx === -1) {
+            return messageStr
+        }
+
+        const endTagIdx = messageStr.indexOf(`</${thinkingTagName}>`, startTagIdx)
+        if (endTagIdx === -1) {
+            return messageStr.slice(0, startTagIdx)
+        }
+
+        const res =
+            messageStr.slice(0, startTagIdx) +
+            messageStr.slice(endTagIdx + thinkingTagName.length + 3)
+        return res
+    }
+
     function processMessages(chatMessages: ChatMessage[]): ProcessedMessage[] {
         const processedMessages: ProcessedMessage[] = []
 
@@ -594,7 +613,9 @@
                         <div class="prose max-w-none">
                             {#each message.content as block (block.id)}
                                 {#if block.type === 'text'}
-                                    {@html marked.parse(block.text)}
+                                    {@html marked.parse(
+                                        stripThinkingContent(block.text, 'thinking'),
+                                    )}
                                 {:else if block.type === 'tool'}
                                     <div class="mb-1">
                                         <ToolMessage message={block} />

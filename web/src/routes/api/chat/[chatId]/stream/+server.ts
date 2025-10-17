@@ -152,10 +152,11 @@ export const GET: RequestHandler = async ({ params, locals }) => {
                                 continue
                             }
 
-                            // Redact tool result content before forwarding to client
+                            // Special handling for certain events
                             if (eventType === 'message' && data) {
                                 try {
                                     const parsedData = JSON.parse(data)
+                                    // Redact tool result content before forwarding to client
                                     // Check if this is a tool_result block
                                     if (
                                         parsedData.type === 'tool_result' &&
