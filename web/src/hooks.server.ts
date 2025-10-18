@@ -2,6 +2,10 @@ import type { Handle, HandleServerError } from '@sveltejs/kit'
 import { sequence } from '@sveltejs/kit/hooks'
 import * as auth from '$lib/server/auth.js'
 import { Logger } from '$lib/server/logger.js'
+import { initTelemetry, extractTraceContext, getRequestId } from '$lib/server/telemetry.js'
+
+// Initialize OpenTelemetry on module load
+initTelemetry()
 
 const handleAuth: Handle = async ({ event, resolve }) => {
     const sessionToken = event.cookies.get(auth.sessionCookieName)
@@ -26,7 +30,15 @@ const handleAuth: Handle = async ({ event, resolve }) => {
 }
 
 const handleLogging: Handle = async ({ event, resolve }) => {
-    const requestId = Logger.generateRequestId()
+    // Extract trace context from incoming request headers
+    const headers: Record<string, string | undefined> = {}
+    event.request.headers.forEach((value, key) => {
+        headers[key] = value
+    })
+    extractTraceContext(headers)
+
+    // Use trace ID as request ID if available, otherwise generate new one
+    const requestId = getRequestId() || Logger.generateRequestId()
     const logger = new Logger('request').withRequest(requestId, event.locals.user?.id)
 
     event.locals.requestId = requestId

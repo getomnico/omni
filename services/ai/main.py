@@ -18,6 +18,7 @@ from pdf_extractor import PDFExtractionRequest, PDFExtractionResponse, extract_t
 from logger import setup_logging
 from config import *  # Import all config variables
 from routers.chat import router as chat_router
+from telemetry import init_telemetry
 
 # Configure logging once at startup
 setup_logging()
@@ -26,6 +27,9 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Omni AI Service", version="0.1.0")
+
+# Initialize OpenTelemetry
+init_telemetry(app, "omni-ai")
 
 # Include routers
 app.include_router(chat_router)

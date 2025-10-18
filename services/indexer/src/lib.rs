@@ -18,12 +18,16 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Path, State},
+    middleware,
     response::Json,
     routing::{delete, get, post, put},
 };
 use error::Result as IndexerResult;
 use serde_json::json;
-use shared::IndexerConfig;
+use shared::{
+    telemetry::{self, TelemetryConfig},
+    IndexerConfig,
+};
 use sqlx::types::time::OffsetDateTime;
 use std::net::SocketAddr;
 use tower::ServiceBuilder;
@@ -107,6 +111,7 @@ pub fn create_app(state: AppState) -> Router {
         .route("/service-credentials", post(create_service_credentials))
         .layer(
             ServiceBuilder::new()
+                .layer(middleware::from_fn(telemetry::middleware::trace_layer))
                 .layer(TraceLayer::new_for_http())
                 .layer(CorsLayer::permissive()),
         )
@@ -495,7 +500,8 @@ async fn create_service_credentials(
 pub async fn run_server() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
-    tracing_subscriber::fmt::init();
+    let telemetry_config = TelemetryConfig::from_env("omni-indexer");
+    telemetry::init_telemetry(telemetry_config)?;
 
     info!("Indexer service starting...");
 

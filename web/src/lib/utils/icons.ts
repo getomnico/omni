@@ -33,7 +33,6 @@ const GOOGLE_SLIDES_MIMETYPES = [
 
 // Get icon based on source type and content type
 export function getDocumentIconPath(sourceType: string, contentType: string): string | null {
-    console.log(`Get icon for source ${sourceType}, content type ${contentType}`)
     // For Gmail, always use Gmail icon
     if (sourceType === SourceType.GMAIL) {
         return gmailIcon

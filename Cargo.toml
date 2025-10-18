@@ -50,6 +50,14 @@ rand = "0.8"
 validator = { version = "0.18", features = ["derive"] }
 url = "2.5"
 
+# OpenTelemetry dependencies
+opentelemetry = "0.27"
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["http-proto", "reqwest-client", "trace", "metrics"] }
+opentelemetry-semantic-conventions = "0.27"
+tracing-opentelemetry = "0.28"
+opentelemetry-http = "0.27"
+
 # Test dependencies
 testcontainers = "0.21"
 testcontainers-modules = { version = "0.9", features = ["postgres", "redis"] }

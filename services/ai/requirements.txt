@@ -28,6 +28,13 @@ asyncpg==0.30.0
 # Utilities
 python-ulid==3.1.0
 
+# OpenTelemetry
+opentelemetry-api==1.29.0
+opentelemetry-sdk==1.29.0
+opentelemetry-exporter-otlp==1.29.0
+opentelemetry-instrumentation-fastapi==0.50b0
+opentelemetry-instrumentation-httpx==0.50b0
+
 # Testing
 pytest==8.4.0
 requests==2.32.4  # For test HTTP requests

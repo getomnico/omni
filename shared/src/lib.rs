@@ -11,6 +11,7 @@ pub mod queue;
 pub mod rate_limiter;
 pub mod service_auth;
 pub mod storage;
+pub mod telemetry;
 pub mod traits;
 pub mod utils;
 

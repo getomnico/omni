@@ -1,11 +1,13 @@
 use anyhow::Result;
 use dotenvy::dotenv;
-use shared::{AtlassianConnectorConfig, DatabasePool};
+use shared::{
+    telemetry::{self, TelemetryConfig},
+    AtlassianConnectorConfig, DatabasePool,
+};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
 use tracing::{error, info};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod api;
 mod auth;
@@ -22,13 +24,8 @@ use sync::SyncManager;
 async fn main() -> Result<()> {
     dotenv().ok();
 
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "atlassian_connector=info".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    let telemetry_config = TelemetryConfig::from_env("omni-atlassian-connector");
+    telemetry::init_telemetry(telemetry_config)?;
 
     info!("Starting Atlassian Connector");
 

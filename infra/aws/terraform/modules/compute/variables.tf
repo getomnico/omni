@@ -146,3 +146,15 @@ variable "resend_api_key" {
   default     = "CONFIGURE_RESEND_API_KEY"
   sensitive   = true
 }
+
+variable "otel_endpoint" {
+  description = "OpenTelemetry collector endpoint (leave empty to disable)"
+  type        = string
+  default     = ""
+}
+
+variable "service_version" {
+  description = "Service version for OpenTelemetry"
+  type        = string
+  default     = "0.1.0"
+}

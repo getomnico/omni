@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use tracing::{debug, error};
 
+use crate::telemetry::http_client::RequestBuilderExt;
+
 #[derive(Serialize)]
 pub struct EmbeddingRequest {
     pub texts: Vec<String>,
@@ -96,6 +98,7 @@ impl AIClient {
             .client
             .post(format!("{}/embeddings", self.base_url))
             .json(&request)
+            .with_trace_context()
             .send()
             .await;
 
@@ -169,6 +172,7 @@ impl AIClient {
             .client
             .post(format!("{}/prompt", self.base_url))
             .json(&request)
+            .with_trace_context()
             .send()
             .await?;
 
@@ -243,6 +247,7 @@ impl AIClient {
             .client
             .post(format!("{}/extract_pdf", self.base_url))
             .json(&request)
+            .with_trace_context()
             .send()
             .await?;
 

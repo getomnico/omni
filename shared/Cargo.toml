@@ -39,3 +39,14 @@ url = { workspace = true }
 aws-config = { version = "1.1.7", features = ["behavior-version-latest"] }
 aws-sdk-s3 = "1.108.0"
 bytes = "1.5"
+
+# OpenTelemetry
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry-semantic-conventions = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+opentelemetry-http = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+http = "1.1"

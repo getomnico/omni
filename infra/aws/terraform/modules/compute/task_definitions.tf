@@ -11,7 +11,11 @@ locals {
     { name = "REDIS_URL", value = local.redis_url },
     { name = "DB_MAX_CONNECTIONS", value = "30" },
     { name = "DB_ACQUIRE_TIMEOUT_SECONDS", value = "30" },
-    { name = "RUST_LOG", value = "debug" }
+    { name = "RUST_LOG", value = "debug" },
+    { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = var.otel_endpoint },
+    { name = "OTEL_DEPLOYMENT_ID", value = var.customer_name },
+    { name = "OTEL_DEPLOYMENT_ENVIRONMENT", value = "production" },
+    { name = "SERVICE_VERSION", value = var.service_version }
   ]
 
   common_secrets = [
@@ -239,7 +243,7 @@ resource "aws_ecs_task_definition" "ai" {
       { name = "EMBEDDING_DIMENSIONS", value = "1024" },
       { name = "EMBEDDING_PROVIDER", value = "jina" },
       { name = "LLM_PROVIDER", value = "bedrock" },
-      { name = "BEDROCK_MODEL_ID", value = "us.anthropic.claude-sonnet-4-20250514-v1:0" },
+      { name = "BEDROCK_MODEL_ID", value = "amazon.nova-pro-v1:0" },
       { name = "ANTHROPIC_MAX_TOKENS", value = "4096" },
       { name = "AI_WORKERS", value = "1" }
     ])

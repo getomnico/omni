@@ -1,10 +1,12 @@
 use anyhow::Result;
 use dotenvy::dotenv;
-use shared::{DatabasePool, GoogleConnectorConfig};
+use shared::{
+    telemetry::{self, TelemetryConfig},
+    DatabasePool, GoogleConnectorConfig,
+};
 use std::sync::Arc;
 use tokio::time::{interval, Duration};
 use tracing::{error, info};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod admin;
 mod api;
@@ -25,13 +27,8 @@ use sync::SyncManager;
 async fn main() -> Result<()> {
     dotenv().ok();
 
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "google_connector=info".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    let telemetry_config = TelemetryConfig::from_env("omni-google-connector");
+    telemetry::init_telemetry(telemetry_config)?;
 
     info!("Starting Google Connector");
 

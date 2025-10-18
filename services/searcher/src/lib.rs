@@ -4,11 +4,15 @@ pub mod search;
 
 use anyhow::Result as AnyhowResult;
 use axum::{
+    middleware,
     routing::{get, post},
     Router,
 };
 use redis::Client as RedisClient;
-use shared::{AIClient, DatabasePool, SearcherConfig};
+use shared::{
+    telemetry::{self, TelemetryConfig},
+    AIClient, DatabasePool, SearcherConfig,
+};
 use std::net::SocketAddr;
 use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
@@ -74,6 +78,7 @@ pub fn create_app(state: AppState) -> Router {
         .route("/recent-searches", get(handlers::recent_searches))
         .layer(
             ServiceBuilder::new()
+                .layer(middleware::from_fn(telemetry::middleware::trace_layer))
                 .layer(TraceLayer::new_for_http())
                 .layer(CorsLayer::permissive()),
         )
@@ -83,7 +88,8 @@ pub fn create_app(state: AppState) -> Router {
 pub async fn run_server() -> AnyhowResult<()> {
     dotenvy::dotenv().ok();
 
-    tracing_subscriber::fmt::init();
+    let telemetry_config = TelemetryConfig::from_env("omni-searcher");
+    telemetry::init_telemetry(telemetry_config)?;
 
     info!("Searcher service starting...");
 
