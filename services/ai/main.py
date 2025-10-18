@@ -12,29 +12,12 @@ from dataclasses import dataclass, field
 import time
 
 from providers import create_llm_provider
+from embeddings import create_embedding_provider, DEFAULT_TASK
 from tools import SearcherTool
 from pdf_extractor import PDFExtractionRequest, PDFExtractionResponse, extract_text_from_pdf
 from logger import setup_logging
 from config import *  # Import all config variables
 from routers.chat import router as chat_router
-
-# Import the appropriate embedding module based on provider
-if EMBEDDING_PROVIDER == "jina":
-    from jina_embeddings import (
-        generate_embeddings_sync,
-        DEFAULT_TASK,
-    )
-    if not JINA_API_KEY:
-        print(
-            "ERROR: JINA_API_KEY is required when using JINA embedding provider",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-else:
-    from embeddings_v2 import (
-        generate_embeddings_sync,
-        DEFAULT_TASK,
-    )
 
 # Configure logging once at startup
 setup_logging()
@@ -129,8 +112,28 @@ async def startup_event():
 
     logger.info(f"Initialized with {max_workers} thread pool workers")
 
-    # Initialize LLM provider
+    # Initialize embedding provider
     try:
+        if EMBEDDING_PROVIDER == "jina":
+            app.state.embedding_provider = create_embedding_provider(
+                EMBEDDING_PROVIDER,
+                api_key=JINA_API_KEY,
+                model=JINA_MODEL,
+                api_url=JINA_API_URL
+            )
+        elif EMBEDDING_PROVIDER == "bedrock":
+            region_name = AWS_REGION if AWS_REGION else None
+            app.state.embedding_provider = create_embedding_provider(
+                EMBEDDING_PROVIDER,
+                model_id=BEDROCK_EMBEDDING_MODEL_ID,
+                region_name=region_name
+            )
+        else:
+            raise ValueError(f"Unknown embedding provider: {EMBEDDING_PROVIDER}")
+
+        logger.info(f"Initialized {EMBEDDING_PROVIDER} embedding provider with model: {app.state.embedding_provider.get_model_name()}")
+
+        # Initialize LLM provider
         if LLM_PROVIDER == "vllm":
             if not VLLM_URL:
                 raise ValueError("VLLM_URL is required when using vLLM provider")
@@ -184,25 +187,22 @@ async def process_embedding_queue():
                 )
             
             try:
-                # Process the embedding request
+                # Process the embedding request using the provider
                 chunk_batch = await asyncio.get_event_loop().run_in_executor(
                     _executor,
-                    generate_embeddings_sync,
+                    app.state.embedding_provider.generate_embeddings_sync,
                     request.texts,
                     request.task,
                     request.chunk_size,
                     request.chunking_mode,
                     request.n_sentences,
                 )
-                
-                # Determine which model name to report
-                model_name = JINA_MODEL if EMBEDDING_PROVIDER == "jina" else EMBEDDING_MODEL
-                
+
                 response = EmbeddingResponse(
                     embeddings=[[c.embedding for c in chunks] for chunks in chunk_batch],
                     chunks_count=[len(chunks) for chunks in chunk_batch],
                     chunks=[[c.span for c in chunks] for chunks in chunk_batch],
-                    model_name=model_name,
+                    model_name=app.state.embedding_provider.get_model_name(),
                 )
                 
                 # Set the result on the future
@@ -246,14 +246,14 @@ async def health_check():
         except Exception:
             llm_health = False
 
-    # Determine effective embedding model
-    effective_embedding_model = JINA_MODEL if EMBEDDING_PROVIDER == "jina" else EMBEDDING_MODEL
+    # Get embedding model name from provider
+    embedding_model = app.state.embedding_provider.get_model_name() if hasattr(app.state, 'embedding_provider') else "unknown"
 
     return {
         "status": "healthy",
         "service": "ai",
         "embedding_provider": EMBEDDING_PROVIDER,
-        "embedding_model": effective_embedding_model,
+        "embedding_model": embedding_model,
         "port": PORT,
         "embedding_dimensions": EMBEDDING_DIMENSIONS,
         "llm_provider": LLM_PROVIDER,
@@ -428,12 +428,6 @@ if __name__ == "__main__":
 
     logger.info(f"Starting AI service on port {PORT}")
     logger.info(f"Embedding Provider: {EMBEDDING_PROVIDER}")
-    if EMBEDDING_PROVIDER == "jina":
-        logger.info(f"Using JINA embedding model: {JINA_MODEL}")
-        logger.info(f"JINA API URL: {JINA_API_URL}")
-    else:
-        logger.info(f"Using local embedding model: {EMBEDDING_MODEL}")
-        logger.info(f"Model path: {MODEL_PATH}")
     logger.info(f"Embedding dimensions: {EMBEDDING_DIMENSIONS}")
     logger.info(f"LLM Provider: {LLM_PROVIDER}")
     if LLM_PROVIDER == "vllm":

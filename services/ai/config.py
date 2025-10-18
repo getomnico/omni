@@ -66,10 +66,11 @@ REDIS_URL = get_required_env("REDIS_URL")
 DATABASE_URL = construct_database_url()
 
 # Embedding server configuration
-EMBEDDING_PROVIDER = get_optional_env("EMBEDDING_PROVIDER", "local").lower()
+EMBEDDING_PROVIDER = get_required_env("EMBEDDING_PROVIDER").lower()
 JINA_API_KEY = get_optional_env("JINA_API_KEY", "")
 JINA_MODEL = get_optional_env("JINA_MODEL", "jina-embeddings-v3")
 JINA_API_URL = get_optional_env("JINA_API_URL", "https://api.jina.ai/v1/embeddings")
+BEDROCK_EMBEDDING_MODEL_ID = get_optional_env("BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0")
 EMBEDDING_MODEL = get_required_env("EMBEDDING_MODEL")
 EMBEDDING_DIMENSIONS = validate_embedding_dimensions(
     get_required_env("EMBEDDING_DIMENSIONS")

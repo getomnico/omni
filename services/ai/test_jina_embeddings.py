@@ -12,7 +12,7 @@ from typing import List
 # Add parent directory to path to import modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from jina_embeddings import (
+from services.ai.embeddings.jina import (
     generate_embeddings_with_jina,
     generate_embeddings_sync,
     JINAEmbeddingClient,
