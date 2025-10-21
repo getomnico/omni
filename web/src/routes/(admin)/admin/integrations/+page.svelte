@@ -373,7 +373,7 @@
     <title>Integrations - Omni Admin</title>
 </svelte:head>
 
-<div class="mx-auto max-w-screen-xl space-y-6 pt-8">
+<div class="mx-auto max-w-screen-xl space-y-6 pt-8 pb-24">
     <div>
         <h1 class="text-2xl font-bold tracking-tight">Integrations</h1>
         <p class="text-muted-foreground">

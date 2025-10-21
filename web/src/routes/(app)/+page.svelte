@@ -114,22 +114,19 @@
         <div class="w-full max-w-2xl" bind:this={popoverContainer}>
             <div
                 class={cn(
-                    'flex items-center border border-gray-300 bg-white shadow-lg',
-                    popoverOpen ? 'rounded-t-xl' : 'rounded-full',
+                    'flex items-center border border-gray-200 bg-white shadow-sm',
+                    popoverOpen ? 'rounded-t-xl' : 'rounded-xl',
                 )}>
-                <div class="pr-3 pl-6">
-                    <Search class="h-5 w-5 text-gray-400" />
-                </div>
                 <Input
                     type="text"
                     bind:value={searchQuery}
                     placeholder="Ask anything..."
-                    class="text-md md:text-md flex-1 border-none bg-transparent px-0 shadow-none focus:border-none focus:ring-0 focus:outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
+                    class="text-md md:text-md flex-1 border-none bg-transparent px-4 shadow-none focus:border-none focus:ring-0 focus:outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
                     onkeypress={handleKeyPress}
                     onfocus={handleFocus}
                     onblur={handleBlur} />
                 <Button
-                    class="m-2 cursor-pointer rounded-full px-6 py-2"
+                    class="m-2 cursor-pointer rounded-lg px-6 py-2"
                     onclick={handleSearch}
                     disabled={!searchQuery.trim() || isSearching}>
                     {#if isSearching}

@@ -1,6 +1,6 @@
 <script lang="ts">
     import * as Accordion from '$lib/components/ui/accordion'
-    import { Search, FileText, TextSearch } from '@lucide/svelte'
+    import { Search, FileText, TextSearch, ExternalLink } from '@lucide/svelte'
     import type { ToolMessageContent, ToolName } from '$lib/types/message'
     import { cn } from '$lib/utils'
     import { getIconFromSearchResult } from '$lib/utils/icons'
