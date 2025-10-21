@@ -137,16 +137,6 @@
                                             class="text-foreground hover:bg-muted block px-4 py-2 text-sm">
                                             Integrations
                                         </a>
-                                        <a
-                                            href="/admin/domains"
-                                            class="text-foreground hover:bg-muted block px-4 py-2 text-sm">
-                                            Domain Management
-                                        </a>
-                                        <a
-                                            href="/admin/email-test"
-                                            class="text-foreground hover:bg-muted block px-4 py-2 text-sm">
-                                            Email Testing
-                                        </a>
                                     </div>
                                 </div>
                             </div>
