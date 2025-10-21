@@ -193,17 +193,7 @@ impl DocumentRepository {
                     -- Base FTS ranking with custom weights (D=0.1, C=0.2, B=0.4, A=1.0)
                     ts_rank_cd('{{0.1, 0.2, 0.4, 1.0}}', tsv_content, websearch_to_tsquery('english', $1)) *
                     -- Recency boost: newer documents get slight boost (max 30% boost for very recent)
-                    (1.0 + GREATEST(-1.0, (EXTRACT(EPOCH FROM (NOW() - updated_at)) / 86400.0 / -365.0)) * 0.3) *
-                    -- Document type boost based on actual Google Drive content types
-                    CASE 
-                        WHEN content_type = 'application/vnd.google-apps.document' THEN 1.3
-                        WHEN content_type = 'application/vnd.google-apps.spreadsheet' THEN 1.2
-                        WHEN content_type = 'application/pdf' THEN 1.2
-                        WHEN content_type = 'text/html' THEN 1.1
-                        WHEN content_type = 'text/plain' THEN 1.0
-                        WHEN content_type = 'text/csv' THEN 0.9
-                        ELSE 1.0
-                    END *
+                    (1.0 + GREATEST(-1.0, (EXTRACT(EPOCH FROM (NOW() - (regexp_replace(metadata->>'updated_at', '^\+00', ''))::timestamptz)) / 86400.0 / -365.0)) * 0.3) *
                     -- Title exact match boost
                     CASE 
                         WHEN title ILIKE '%' || $1 || '%' THEN 1.4
@@ -217,7 +207,7 @@ impl DocumentRepository {
                    d.metadata, d.permissions, d.created_at, d.updated_at, d.last_indexed_at,
                    COALESCE(
                        ts_headline('english', convert_from(c.content, 'utf8'), plainto_tsquery('english', $1),
-                                  'StartSel=**, StopSel=**, MaxWords=50, MinWords=20, MaxFragments=3, FragmentDelimiter=...'),
+                                  'StartSel=**, StopSel=**, MaxWords=80, MinWords=20, MaxFragments=3, FragmentDelimiter=...'),
                        ''
                    ) as highlight
             FROM top_results d

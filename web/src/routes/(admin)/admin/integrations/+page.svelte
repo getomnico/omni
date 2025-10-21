@@ -458,7 +458,7 @@
                             {@const gmailSource = data.connectedSources.find(
                                 (source) => source.sourceType === 'gmail',
                             )}
-                            <div class="space-y-4">
+                            <div class="w-full space-y-4">
                                 <!-- Integration Actions -->
                                 <div class="flex gap-2">
                                     <Button

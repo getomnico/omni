@@ -226,9 +226,9 @@ impl DriveClient {
                 let doc: GoogleDocument =
                     serde_json::from_str(&response_text).with_context(|| {
                         format!(
-                        "Failed to parse Google Docs API response for file {}. Raw response: {}",
-                        file_id, response_text
-                    )
+                            "Failed to parse Google Docs API response for file {}. Raw response: {}",
+                            file_id, response_text
+                        )
                     })?;
 
                 Ok(ApiResult::Success(extract_text_from_document(&doc)))
@@ -870,6 +870,24 @@ struct DocumentBody {
 #[derive(Debug, Deserialize)]
 struct StructuralElement {
     paragraph: Option<Paragraph>,
+    table: Option<Table>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Table {
+    #[serde(rename = "tableRows")]
+    table_rows: Vec<TableRow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TableRow {
+    #[serde(rename = "tableCells")]
+    table_cells: Vec<TableCell>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TableCell {
+    content: Vec<StructuralElement>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -888,16 +906,64 @@ struct TextRun {
     content: String,
 }
 
+fn stringify_para(para: &Paragraph) -> String {
+    let mut text = String::new();
+    for elem in &para.elements {
+        if let Some(text_run) = &elem.text_run {
+            text.push_str(&text_run.content);
+        }
+    }
+    text
+}
+
+fn stringify_table(table: &Table) -> String {
+    let mut text = String::new();
+
+    for (row_idx, row) in table.table_rows.iter().enumerate() {
+        let mut cell_texts = Vec::new();
+
+        for cell in &row.table_cells {
+            let mut cell_text = String::new();
+
+            for element in &cell.content {
+                if let Some(para) = &element.paragraph {
+                    cell_text.push_str(&stringify_para(para));
+                } else if let Some(nested_table) = &element.table {
+                    cell_text.push_str(&stringify_table(nested_table));
+                }
+            }
+
+            // Remove newlines within cells and trim
+            let cleaned = cell_text.replace('\n', " ").trim().to_string();
+            cell_texts.push(cleaned);
+        }
+
+        // Format as markdown table row
+        text.push_str("| ");
+        text.push_str(&cell_texts.join(" | "));
+        text.push_str(" |\n");
+
+        // Add separator after first row (header row)
+        if row_idx == 0 {
+            text.push_str("|");
+            for _ in 0..cell_texts.len() {
+                text.push_str(" --- |");
+            }
+            text.push('\n');
+        }
+    }
+
+    text
+}
+
 fn extract_text_from_document(doc: &GoogleDocument) -> String {
     let mut text = String::new();
 
     for element in &doc.body.content {
-        if let Some(paragraph) = &element.paragraph {
-            for elem in &paragraph.elements {
-                if let Some(text_run) = &elem.text_run {
-                    text.push_str(&text_run.content);
-                }
-            }
+        if let Some(para) = &element.paragraph {
+            text.push_str(&stringify_para(para));
+        } else if let Some(table) = &element.table {
+            text.push_str(&stringify_table(table));
         }
     }
 
