@@ -793,44 +793,6 @@ impl SyncManager {
             }
         }
 
-        // for user in filtered_users {
-        //     let user_email = user.primary_email.clone();
-
-        //     // Get access token for this user
-        //     match service_auth.get_access_token(&user_email).await {
-        //         Ok(_token) => {
-        //             info!("Processing user: {}", user_email);
-        //             match self
-        //                 .sync_drive_for_user(
-        //                     &user_email,
-        //                     service_auth.clone(),
-        //                     &source.id,
-        //                     sync_run,
-        //                     &sync_state,
-        //                     current_files.clone(),
-        //                     Some(&drive_cutoff_date),
-        //                 )
-        //                 .await
-        //             {
-        //                 Ok((processed, updated)) => {
-        //                     total_processed += processed;
-        //                     total_updated += updated;
-        //                     info!(
-        //                         "User {} completed: {} processed, {} updated",
-        //                         user_email, processed, updated
-        //                     );
-        //                 }
-        //                 Err(e) => {
-        //                     error!("Failed to process user {}: {}", user_email, e);
-        //                 }
-        //             }
-        //         }
-        //         Err(e) => {
-        //             warn!("Failed to get access token for user {}: {}. This user may not have Drive access.", user_email, e);
-        //         }
-        //     }
-        // }
-
         info!(
             "User processing complete. Total: {} processed, {} updated, {} errors",
             total_processed, total_updated, errors

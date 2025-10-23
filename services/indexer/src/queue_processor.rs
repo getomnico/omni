@@ -625,45 +625,18 @@ impl QueueProcessor {
         let document_ids: Vec<String> = upserted_documents.iter().map(|d| d.id.clone()).collect();
         repo.batch_mark_as_indexed(document_ids.clone()).await?;
 
-        // Batch fetch content for embedding queue operations
+        // Add documents to embedding queue
         let embedding_start = std::time::Instant::now();
-
-        // Collect all content_ids that need content fetching
-        let content_ids: Vec<String> = upserted_documents
-            .iter()
-            .filter_map(|doc| doc.content_id.clone())
-            .collect();
-
-        // Batch fetch all content in a single operation
-        let content_map = if !content_ids.is_empty() {
-            match self.state.content_storage.batch_get_text(content_ids).await {
-                Ok(content_map) => content_map,
-                Err(e) => {
-                    error!("Failed to batch fetch content for embedding queue: {}", e);
-                    std::collections::HashMap::new()
-                }
-            }
-        } else {
-            std::collections::HashMap::new()
-        };
-
-        // Queue embeddings for documents with content
         let mut embedding_tasks = Vec::new();
         for upserted_doc in upserted_documents.iter() {
-            if let Some(content_id) = &upserted_doc.content_id {
-                if let Some(content) = content_map.get(content_id) {
-                    if !content.trim().is_empty() {
-                        let embedding_queue = self.state.embedding_queue.clone();
-                        let doc_id = upserted_doc.id.clone();
+            let embedding_queue = self.state.embedding_queue.clone();
+            let doc_id = upserted_doc.id.clone();
 
-                        embedding_tasks.push(tokio::spawn(async move {
-                            if let Err(e) = embedding_queue.enqueue(doc_id.clone()).await {
-                                error!("Failed to queue embeddings for document {}: {}", doc_id, e);
-                            }
-                        }));
-                    }
+            embedding_tasks.push(tokio::spawn(async move {
+                if let Err(e) = embedding_queue.enqueue(doc_id.clone()).await {
+                    error!("Failed to queue embeddings for document {}: {}", doc_id, e);
                 }
-            }
+            }));
         }
 
         // Wait for all embedding queue operations to complete
@@ -715,45 +688,20 @@ impl QueueProcessor {
         }
 
         if !updated_documents.is_empty() {
-            // Batch fetch content for updated documents
-            let content_ids: Vec<String> = updated_documents
-                .iter()
-                .filter_map(|(_, doc)| doc.content_id.clone())
-                .collect();
-
-            let content_map = if !content_ids.is_empty() {
-                match self.state.content_storage.batch_get_text(content_ids).await {
-                    Ok(content_map) => content_map,
-                    Err(e) => {
-                        error!("Failed to batch fetch content for updated documents: {}", e);
-                        std::collections::HashMap::new()
-                    }
-                }
-            } else {
-                std::collections::HashMap::new()
-            };
-
             // Queue embeddings and mark as indexed
             let mut embedding_tasks = Vec::new();
             for (_event_ids, updated_doc) in updated_documents {
-                // Queue embeddings if there's content
-                if let Some(content_id) = &updated_doc.content_id {
-                    if let Some(content) = content_map.get(content_id) {
-                        if !content.trim().is_empty() {
-                            let embedding_queue = self.state.embedding_queue.clone();
-                            let doc_id = updated_doc.id.clone();
+                let embedding_queue = self.state.embedding_queue.clone();
+                let doc_id = updated_doc.id.clone();
 
-                            embedding_tasks.push(tokio::spawn(async move {
-                                if let Err(e) = embedding_queue.enqueue(doc_id.clone()).await {
-                                    error!(
-                                        "Failed to queue embeddings for updated document {}: {}",
-                                        doc_id, e
-                                    );
-                                }
-                            }));
-                        }
+                embedding_tasks.push(tokio::spawn(async move {
+                    if let Err(e) = embedding_queue.enqueue(doc_id.clone()).await {
+                        error!(
+                            "Failed to queue embeddings for updated document {}: {}",
+                            doc_id, e
+                        );
                     }
-                }
+                }));
 
                 // Mark as indexed
                 if let Err(e) = repo.mark_as_indexed(&updated_doc.id).await {
