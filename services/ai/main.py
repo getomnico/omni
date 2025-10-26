@@ -157,7 +157,7 @@ async def startup_event():
         elif LLM_PROVIDER == "bedrock":
             region_name = AWS_REGION if AWS_REGION else None
             app.state.llm_provider = create_llm_provider(
-                "bedrock", model_id=BEDROCK_MODEL_ID, region_name=region_name
+                "bedrock", model_id=BEDROCK_MODEL_ID, secondary_model_id=TITLE_GENERATION_MODEL_ID, region_name=region_name
             )
             logger.info(f"Initialized AWS Bedrock provider with model: {BEDROCK_MODEL_ID}")
             if region_name:

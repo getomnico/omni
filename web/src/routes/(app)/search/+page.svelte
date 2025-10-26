@@ -142,7 +142,7 @@
 
     function renderHighlight(text: string): string {
         // Parse as inline markdown to avoid wrapping in <p> tags
-        return marked.parseInline(text)
+        return marked.parse(text)
     }
 </script>
 

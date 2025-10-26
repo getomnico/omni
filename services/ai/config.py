@@ -88,6 +88,7 @@ DEFAULT_TOP_P = float(get_optional_env("DEFAULT_TOP_P", "1.0"))
 
 # AWS Bedrock configuration
 BEDROCK_MODEL_ID = get_optional_env("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0")
+TITLE_GENERATION_MODEL_ID = get_optional_env("TITLE_GENERATION_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
 AWS_REGION = get_optional_env("AWS_REGION", "")  # Optional, auto-detected in ECS
 
 # Embedding batch inference configuration

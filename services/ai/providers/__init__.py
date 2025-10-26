@@ -65,7 +65,8 @@ def create_llm_provider(provider_type: str, **kwargs) -> LLMProvider:
     elif provider_type.lower() == "bedrock":
         model_id = kwargs.get("model_id", "us.anthropic.claude-sonnet-4-20250514-v1:0")
         region_name = kwargs.get("region_name")
-        return BedrockProvider(model_id, region_name)
+        secondary_model_id = kwargs.get("secondary_model_id", "us.anthropic.claude-sonnet-4-20250514-v1:0")
+        return BedrockProvider(model_id, secondary_model_id=secondary_model_id, region_name=region_name)
 
     else:
         raise ValueError(f"Unknown provider type: {provider_type}")

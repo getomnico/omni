@@ -32,6 +32,7 @@ from anthropic.types import (
     CitationContentBlockLocation,
 )
 from anthropic.types.message_stream_event import MessageStreamEvent
+from anthropic import AnthropicBedrock
 
 from . import LLMProvider
 
@@ -83,11 +84,16 @@ class BedrockProvider(LLMProvider):
 
     MODEL_FAMILIES = ["anthropic", "amazon"]
 
-    def __init__(self, model_id: str, region_name: Optional[str] = None):
+    def __init__(self, model_id: str, secondary_model_id: str, region_name: Optional[str] = None):
         self.model_id = model_id
+        self.secondary_model_id = secondary_model_id # Smaller, faster model
         self.model_family = self._determine_model_family(model_id)
         self.region_name = region_name
-        self.client = boto3.client('bedrock-runtime', region_name=region_name)
+
+        if self.model_family == "anthropic":
+            self.client = AnthropicBedrock()
+        else:
+            self.client = boto3.client('bedrock-runtime', region_name=region_name)
 
     def _determine_model_family(self, model_id: str) -> str:
         """Determine the model family from the model ID."""
@@ -379,114 +385,58 @@ class BedrockProvider(LLMProvider):
         """Stream response from AWS Bedrock models."""
         try:
             if self.model_family == "anthropic":
-                # Use provided messages or create from prompt
                 msg_list = messages or [{"role": "user", "content": prompt}]
 
                 # Prepare the request body for Claude models
-                body = {
-                    "anthropic_version": "bedrock-2023-05-31",
-                    "max_tokens": max_tokens or 4096,
+                request_params = {
+                    "model": self.model_id,
                     "messages": msg_list,
+                    "max_tokens": max_tokens or 4096,
                     "temperature": temperature or 0.7,
-                    "top_p": top_p or 0.9,
+                    "stream": True,
                 }
 
                 # Add tools if provided
                 if tools:
-                    body["tools"] = tools
+                    request_params["tools"] = tools
                     logger.info(f"[BEDROCK] Sending request with {len(tools)} tools: {[t['name'] for t in tools]}")
                 else:
                     logger.info(f"[BEDROCK] Sending request without tools")
 
-                logger.info(f"[BEDROCK] Model: {self.model_id}, Messages: {len(msg_list)}, Max tokens: {body['max_tokens']}")
-                logger.debug(f"[BEDROCK] Full request body: {json.dumps({k: v for k, v in body.items() if k != 'messages'}, indent=2)}")
+                logger.info(f"[BEDROCK] Model: {self.model_id}, Messages: {len(msg_list)}, Max tokens: {request_params['max_tokens']}")
+                logger.debug(f"[BEDROCK] Full request body: {json.dumps({k: v for k, v in request_params.items() if k != 'messages'}, indent=2)}")
                 logger.debug(f"[BEDROCK] Messages: {json.dumps(msg_list, indent=2)}")
 
                 # Invoke with streaming response
                 logger.info(f"[BEDROCK] Invoking model {self.model_id} with streaming response")
-                response = self.client.invoke_model_with_response_stream(
-                    modelId=self.model_id,
-                    body=json.dumps(body),
-                    contentType="application/json",
-                    accept="application/json",
-                )
 
-                logger.info(f"[BEDROCK] Stream created successfully, processing events")
+                stream = self.client.messages.create(**request_params)
+
+                logger.info(f"[BEDROCK] Stream created successfully, starting to process events")
                 event_count = 0
-                # Process streaming response and convert to Anthropic-compatible events
-                for event in response.get('body'):
+                for event in stream:
                     event_count += 1
-                    chunk = json.loads(event['chunk']['bytes'].decode())
-                    logger.debug(f"[BEDROCK] Event {event_count}: {chunk.get('type', 'unknown')}")
+                    logger.debug(f"[ANTHROPIC] Event {event_count}: {event.type}")
+                    if event.type == 'content_block_start':
+                        logger.info(f"[ANTHROPIC] Content block start: type={event.content_block.type}")
+                        if event.content_block.type == 'tool_use':
+                            logger.info(f"[ANTHROPIC] Tool use started: {event.content_block.name} (id: {event.content_block.id}) (input: {json.dumps(event.content_block.input)})")
+                    elif event.type == 'content_block_delta':
+                        if event.delta.type == 'text_delta':
+                            logger.debug(f"[ANTHROPIC] Text delta: '{event.delta.text}'")
+                        elif event.delta.type == 'input_json_delta':
+                            logger.debug(f"[ANTHROPIC] JSON delta: {event.delta.partial_json}")
+                    elif event.type == 'citation':
+                        logger.info(f"[ANTHROPIC] Citation: {event.citation}")
+                    elif event.type == 'content_block_stop':
+                        logger.info(f"[ANTHROPIC] Content block stop at index {getattr(event, 'index', '<unknown>')}")
+                    elif event.type == 'message_delta':
+                        logger.info(f"[ANTHROPIC] Message delta stop reason: {event.delta.stop_reason}")
+                    elif event.type == 'message_stop':
+                        logger.info(f"[ANTHROPIC] Message completed after {event_count} events")
 
-                    # Convert Bedrock events to Anthropic MessageStreamEvent format
-                    if chunk['type'] == 'content_block_start':
-                        logger.info(f"[BEDROCK] Content block start: {chunk.get('content_block', {}).get('type', 'unknown')}")
-                        if chunk['content_block']['type'] == 'text':
-                            content_block = TextBlock(type="text", text="")
-                        elif chunk['content_block']['type'] == 'tool_use':
-                            tool_id = chunk['content_block']['id']
-                            tool_name = chunk['content_block']['name']
-                            logger.info(f"[BEDROCK] Tool use started: {tool_name} (id: {tool_id})")
-                            content_block = ToolUseBlock(
-                                type="tool_use",
-                                id=tool_id,
-                                name=tool_name,
-                                input={}
-                            )
-                        else:
-                            logger.debug(f"[BEDROCK] Skipping unknown content block type: {chunk['content_block']['type']}")
-                            continue
+                    yield event
 
-                        event_obj = ContentBlockStartEvent(
-                            type="content_block_start",
-                            index=chunk['index'],
-                            content_block=content_block
-                        )
-                        yield event_obj
-
-                    elif chunk['type'] == 'content_block_delta':
-                        if 'text' in chunk['delta']:
-                            # Text delta
-                            text_content = chunk['delta']['text']
-                            logger.debug(f"[BEDROCK] Text delta: {text_content[:50]}...")
-                            delta = TextDelta(type="text_delta", text=text_content)
-                        elif 'partial_json' in chunk['delta']:
-                            # Tool use delta
-                            partial_json = chunk['delta']['partial_json']
-                            logger.debug(f"[BEDROCK] JSON delta: {partial_json}")
-                            delta = InputJSONDelta(type="input_json_delta", partial_json=partial_json)
-                        else:
-                            logger.debug(f"[BEDROCK] Skipping unknown delta type: {list(chunk['delta'].keys())}")
-                            continue
-
-                        event_obj = ContentBlockDeltaEvent(
-                            type="content_block_delta",
-                            index=chunk['index'],
-                            delta=delta
-                        )
-                        yield event_obj
-
-                    elif chunk['type'] == 'content_block_stop':
-                        logger.info(f"[BEDROCK] Content block stop at index {chunk.get('index', 'unknown')}")
-                        event_obj = ContentBlockStopEvent(
-                            type="content_block_stop",
-                            index=chunk['index']
-                        )
-                        yield event_obj
-
-                    elif chunk['type'] == 'message_delta':
-                        if 'stop_reason' in chunk['delta']:
-                            stop_reason = chunk['delta']['stop_reason']
-                            logger.info(f"[BEDROCK] Message delta - stop reason: {stop_reason}")
-                            delta = MessageDelta(stop_reason=stop_reason)
-                            event_obj = MessageDeltaEvent(
-                                type="message_delta",
-                                delta=delta
-                            )
-                            yield event_obj
-                            logger.info(f"[BEDROCK] Stream completed after {event_count} events")
-                            break
             elif self.model_family == "amazon":
                 logger.info(f"[BEDROCK-AMAZON] Using Amazon model family with model: {self.model_id}")
 
@@ -544,23 +494,19 @@ class BedrockProvider(LLMProvider):
         try:
             # Prepare the request body for Claude models
             conversation = [{
-                "role": "user", "content": [{ "text": prompt }]
+                "role": "user", "content": [{ "type": "text", "text": prompt }]
             }]
 
-            inferenceConfig = {
-                "maxTokens": max_tokens or 4096,
+            request_params = {
+                "model": self.secondary_model_id,
+                "messages": conversation,
+                "max_tokens": max_tokens or 4096,
                 "temperature": temperature or 0.7,
-                "topP": top_p or 0.9,
             }
 
             # Invoke the model
-            response = self.client.converse(
-                modelId=self.model_id,
-                messages=conversation,
-                inferenceConfig=inferenceConfig,
-            )
-
-            response_text = response["output"]["message"]["content"][0]["text"]
+            message = self.client.messages.create(**request_params)
+            response_text = message.content[0].text
 
             if not response_text:
                 raise Exception("Empty response from AWS Bedrock service")

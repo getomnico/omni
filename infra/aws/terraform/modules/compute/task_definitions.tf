@@ -148,7 +148,11 @@ resource "aws_ecs_task_definition" "searcher" {
       { name = "AI_SERVICE_URL", value = "http://ai.omni-${var.customer_name}.local:3003" },
       { name = "TYPO_TOLERANCE_ENABLED", value = "true" },
       { name = "TYPO_TOLERANCE_MAX_DISTANCE", value = "2" },
-      { name = "TYPO_TOLERANCE_MIN_WORD_LENGTH", value = "4" }
+      { name = "TYPO_TOLERANCE_MIN_WORD_LENGTH", value = "4" },
+      # Storage configuration
+      { name = "STORAGE_BACKEND", value = "s3" },
+      { name = "S3_BUCKET", value = var.content_bucket_name },
+      { name = "S3_REGION", value = var.region }
     ])
 
     secrets = local.common_secrets
@@ -190,7 +194,11 @@ resource "aws_ecs_task_definition" "indexer" {
 
     environment = concat(local.common_environment, [
       { name = "PORT", value = "3002" },
-      { name = "AI_SERVICE_URL", value = "http://ai.omni-${var.customer_name}.local:3003" }
+      { name = "AI_SERVICE_URL", value = "http://ai.omni-${var.customer_name}.local:3003" },
+      # Storage configuration
+      { name = "STORAGE_BACKEND", value = "s3" },
+      { name = "S3_BUCKET", value = var.content_bucket_name },
+      { name = "S3_REGION", value = var.region }
     ])
 
     secrets = concat(local.common_secrets, [
@@ -244,6 +252,7 @@ resource "aws_ecs_task_definition" "ai" {
       { name = "EMBEDDING_PROVIDER", value = "jina" },
       { name = "LLM_PROVIDER", value = "bedrock" },
       { name = "BEDROCK_MODEL_ID", value = "amazon.nova-pro-v1:0" },
+      { name = "TITLE_GENERATION_MODEL_ID", value = "us.anthropic.claude-haiku-4-5-20251001-v1:0" },
       { name = "ANTHROPIC_MAX_TOKENS", value = "4096" },
       { name = "AI_WORKERS", value = "1" },
       # Storage configuration
@@ -251,7 +260,11 @@ resource "aws_ecs_task_definition" "ai" {
       { name = "S3_BUCKET", value = var.content_bucket_name },
       { name = "S3_REGION", value = var.region },
       # Batch inference configuration
-      { name = "ENABLE_EMBEDDING_BATCH_INFERENCE", value = "false" },
+      # TODO: Batch processing on AWS Bedrock is not enabled by default, it requires creating a support case. We will
+      # therefore avoid using batch processing for now.
+      # The first var is used to enable the batch processor, which will, despite the name, function only as a queue processor
+      # and make calls to the Bedrock endpoint one item at a time.
+      { name = "ENABLE_EMBEDDING_BATCH_INFERENCE", value = "true" },
       { name = "EMBEDDING_BATCH_S3_BUCKET", value = var.batch_bucket_name },
       { name = "EMBEDDING_BATCH_BEDROCK_ROLE_ARN", value = var.bedrock_batch_role_arn },
       { name = "EMBEDDING_BATCH_MIN_DOCUMENTS", value = "100" },
