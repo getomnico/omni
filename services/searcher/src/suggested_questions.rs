@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 const REDIS_CACHE_KEY: &str = "suggested_questions:v1";
-const CACHE_TTL_SECONDS: u64 = 86400 * 7; // 7 days
+const CACHE_TTL_SECONDS: u64 = 86400; // 7 days
 const MAX_RETRIES: usize = 5;
 const QUESTION_PROMPT_TEMPLATE: &str = r#"Given the following document excerpt, generate ONE specific question that someone might ask to find this document. The question should be natural, specific, and answerable by the document content.
 
@@ -50,7 +50,10 @@ impl SuggestedQuestionsGenerator {
     ) -> SearcherResult<SuggestedQuestionsResponse> {
         let mut redis = self.redis_client.get_multiplexed_async_connection().await?;
 
-        if let Ok(cached) = redis.get::<_, String>(REDIS_CACHE_KEY).await {
+        if let Ok(cached) = redis
+            .get::<_, String>(format!("{}:{}", REDIS_CACHE_KEY, user_email))
+            .await
+        {
             info!("Cache hit for suggested questions");
             let response: SuggestedQuestionsResponse =
                 serde_json::from_str(&cached).map_err(|e| SearcherError::Serialization(e))?;
@@ -91,12 +94,16 @@ impl SuggestedQuestionsGenerator {
                     {
                         Ok(count) => {
                             info!("Successfully generated and cached {} suggested questions for user {}", count, user_email);
+                            // Remove the user from the in-flight map to allow future requests to go through
+                            in_flight.remove(&user_email);
                         }
                         Err(e) => {
                             error!(
                                 "Failed to generate suggested questions for user {}: {:?}",
                                 user_email, e
                             );
+                            // Remove the user from the in-flight map to allow future requests to go through
+                            in_flight.remove(&user_email);
                         }
                     }
                 } else {
@@ -121,12 +128,12 @@ impl SuggestedQuestionsGenerator {
         let mut questions = Vec::new();
         let mut attempts = 0;
 
+        let num_questions = 9;
         info!(
-            "Beginning question generation loop (target: 3 questions, max attempts: {})",
-            MAX_RETRIES
+            "Beginning question generation loop (target: {} questions, max attempts: {})",
+            num_questions, MAX_RETRIES
         );
 
-        let num_questions = 3;
         let doc_repo = DocumentRepository::new(&db_pool.pool());
         while questions.len() < num_questions && attempts < MAX_RETRIES {
             attempts += 1;
@@ -138,9 +145,10 @@ impl SuggestedQuestionsGenerator {
 
             match doc_repo.fetch_random_documents(user_email, needed).await {
                 Ok(docs) => {
+                    let num_docs_fetched = docs.len();
                     info!(
                         "Fetched {} random document(s) for question generation",
-                        docs.len()
+                        num_docs_fetched
                     );
 
                     let content_ids: Vec<String> =
@@ -190,6 +198,36 @@ impl SuggestedQuestionsGenerator {
                                     question,
                                     doc.id
                                 );
+
+                                // Cache the questions
+                                debug!("Serializing {} question(s) to JSON", questions.len());
+                                let response = SuggestedQuestionsResponse {
+                                    questions: questions.clone(),
+                                };
+                                let json_str = serde_json::to_string(&response)
+                                    .context("Failed to serialize questions to JSON")?;
+
+                                debug!("Connecting to Redis to cache questions");
+                                let mut redis_conn = redis_client
+                                    .get_multiplexed_async_connection()
+                                    .await
+                                    .context("Failed to connect to Redis")?;
+
+                                let cache_key = format!("{}:{}", REDIS_CACHE_KEY, user_email);
+                                debug!(
+                                    "Caching questions in Redis with key: {}, TTL: {}s",
+                                    cache_key, CACHE_TTL_SECONDS
+                                );
+                                redis_conn
+                                    .set_ex::<_, _, ()>(cache_key, &json_str, CACHE_TTL_SECONDS)
+                                    .await
+                                    .context("Failed to cache questions in Redis")?;
+
+                                info!(
+                                    "Successfully cached {} suggested question(s) in Redis (TTL: {} hours)",
+                                    response.questions.len(),
+                                    CACHE_TTL_SECONDS / 3600
+                                );
                             }
                             Err(e) => {
                                 warn!("Failed to generate question for document {}: {}", doc.id, e);
@@ -203,6 +241,14 @@ impl SuggestedQuestionsGenerator {
                             );
                             break;
                         }
+                    }
+
+                    if num_docs_fetched < needed {
+                        debug!(
+                            "User {} has only {} documents, skipping further attempts",
+                            user_email, num_docs_fetched
+                        );
+                        break;
                     }
                 }
                 Err(e) => {
@@ -231,36 +277,7 @@ impl SuggestedQuestionsGenerator {
             attempts
         );
 
-        // Cache the questions
-        debug!("Serializing {} question(s) to JSON", questions.len());
-        let response = SuggestedQuestionsResponse {
-            questions: questions.clone(),
-        };
-        let json_str =
-            serde_json::to_string(&response).context("Failed to serialize questions to JSON")?;
-
-        debug!("Connecting to Redis to cache questions");
-        let mut redis_conn = redis_client
-            .get_multiplexed_async_connection()
-            .await
-            .context("Failed to connect to Redis")?;
-
-        debug!(
-            "Caching questions in Redis with key: {}, TTL: {}s",
-            REDIS_CACHE_KEY, CACHE_TTL_SECONDS
-        );
-        redis_conn
-            .set_ex::<_, _, ()>(REDIS_CACHE_KEY, &json_str, CACHE_TTL_SECONDS)
-            .await
-            .context("Failed to cache questions in Redis")?;
-
-        info!(
-            "Successfully cached {} suggested question(s) in Redis (TTL: {} hours)",
-            response.questions.len(),
-            CACHE_TTL_SECONDS / 3600
-        );
-
-        Ok(response.questions.len())
+        Ok(questions.len())
     }
 
     async fn generate_question_from_document(

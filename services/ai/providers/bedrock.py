@@ -441,27 +441,32 @@ class BedrockProvider(LLMProvider):
                 logger.info(f"[BEDROCK-AMAZON] Using Amazon model family with model: {self.model_id}")
 
                 # Prepare messages for sending to Bedrock
-                if not messages:
+                if messages:
+                    messages = self._adapt_messages_for_amazon_models(cast(list[MessageParam], messages))
+                    self._dedupe_documents(messages)
+                    self._limit_documents(messages, max_documents=5)
+
+                    logger.debug(f"[BEDROCK-AMAZON] Adapted messages: {json.dumps(messages, indent=2)}")
+                    tools = self._adapt_tools_for_amazon_models(tools) if tools else None
+                else:
                     messages = [{"role": "user", "content": [{"text": prompt}]}]
-                messages = self._adapt_messages_for_amazon_models(cast(list[MessageParam], messages))
-                self._dedupe_documents(messages)
-                self._limit_documents(messages, max_documents=5)
 
-                logger.debug(f"[BEDROCK-AMAZON] Adapted messages: {json.dumps(messages, indent=2)}")
-                tools = self._adapt_tools_for_amazon_models(tools) if tools else None
-
-                response = self.client.converse_stream(
-                    modelId=self.model_id,
-                    messages=messages,
-                    inferenceConfig={
+                request_params = {
+                    "modelId": self.model_id,
+                    "messages": messages,
+                    "inferenceConfig": {
                         "maxTokens": max_tokens or 4096,
                         "temperature": temperature or 0.7,
                         "topP": top_p or 0.9,
-                    },
-                    toolConfig={
+                    }
+                }
+
+                if tools:
+                    request_params["toolConfig"] = {
                         "tools": tools
                     }
-                )
+
+                response = self.client.converse_stream(**request_params)
 
                 logger.info(f"[BEDROCK-AMAZON] Stream created, processing chunks")
                 chunk_count = 0
@@ -492,26 +497,53 @@ class BedrockProvider(LLMProvider):
     ) -> str:
         """Generate non-streaming response from AWS Bedrock Claude models."""
         try:
-            # Prepare the request body for Claude models
-            conversation = [{
-                "role": "user", "content": [{ "type": "text", "text": prompt }]
-            }]
+            logger.info(f"[BEDROCK] Generating non-streaming response using model {self.model_id}")
+            if self.model_family == "anthropic":
+                # Prepare the request body for Claude models
+                conversation = [
+                    { "role": "user", "content": [{ "type": "text", "text": prompt }] }
+                ]
 
-            request_params = {
-                "model": self.secondary_model_id,
-                "messages": conversation,
-                "max_tokens": max_tokens or 4096,
-                "temperature": temperature or 0.7,
-            }
+                request_params = {
+                    "model": self.secondary_model_id,
+                    "messages": conversation,
+                    "max_tokens": max_tokens or 4096,
+                    "temperature": temperature or 0.7,
+                }
 
-            # Invoke the model
-            message = self.client.messages.create(**request_params)
-            response_text = message.content[0].text
+                # Invoke the model
+                message = self.client.messages.create(**request_params)
+                response_text = message.content[0].text
 
-            if not response_text:
-                raise Exception("Empty response from AWS Bedrock service")
+                if not response_text:
+                    raise Exception("Empty response from AWS Bedrock model")
 
-            return response_text
+                return response_text
+            
+            elif self.model_family == "amazon":
+                conversation = [
+                    { 
+                        "role": "user",
+                        "content": [{ "text": prompt }]
+                    }
+                ]
+
+                response = self.client.converse(
+                    modelId=self.model_id,
+                    messages=conversation,
+                    inferenceConfig={
+                        "maxTokens": max_tokens or 512,
+                        "temperature": temperature or 0.7,
+                        "topP": top_p or 0.9,
+                    }
+                )
+                logger.debug(f"generate_response: response from LLM -> {response}")
+
+                response_text = response["output"]["message"]["content"][0]["text"]
+                if not response_text:
+                    raise Exception("Empty response from AWS Bedrock model")
+
+                return response_text
 
         except ClientError as e:
             logger.error(f"AWS Bedrock client error: {str(e)}")

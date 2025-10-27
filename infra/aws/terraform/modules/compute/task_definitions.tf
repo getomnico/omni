@@ -251,8 +251,10 @@ resource "aws_ecs_task_definition" "ai" {
       { name = "EMBEDDING_DIMENSIONS", value = "1024" },
       { name = "EMBEDDING_PROVIDER", value = "jina" },
       { name = "LLM_PROVIDER", value = "bedrock" },
-      { name = "BEDROCK_MODEL_ID", value = "us.anthropic.claude-sonnet-4-5-20250929-v1:0" },
-      { name = "TITLE_GENERATION_MODEL_ID", value = "us.anthropic.claude-haiku-4-5-20251001-v1:0" },
+      # { name = "BEDROCK_MODEL_ID", value = "us.anthropic.claude-sonnet-4-5-20250929-v1:0" },
+      # { name = "TITLE_GENERATION_MODEL_ID", value = "us.anthropic.claude-haiku-4-5-20251001-v1:0" },
+      { name = "BEDROCK_MODEL_ID", value = "amazon.nova-pro-v1:0" },
+      { name = "TITLE_GENERATION_MODEL_ID", value = "amazon.nova-lite-v1:0" },
       { name = "ANTHROPIC_MAX_TOKENS", value = "4096" },
       { name = "AI_WORKERS", value = "1" },
       # Storage configuration

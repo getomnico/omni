@@ -46,9 +46,21 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
                 user_id: locals.user?.id,
             }),
         })
+
         if (suggestedResponse.ok) {
             const data: SuggestedQuestionsResponse = await suggestedResponse.json()
-            suggestedQuestions = data.questions || []
+
+            // Randomly pick 3 out of the available questions
+            const questions: SuggestedQuestion[] = []
+            const taken = new Set()
+            while (questions.length < 3 && questions.length < data.questions.length) {
+                const index = Math.floor(Math.random() * data.questions.length)
+                if (!taken.has(index)) {
+                    taken.add(index)
+                    questions.push(data.questions[index])
+                }
+            }
+            suggestedQuestions = questions
         }
     } catch (error) {
         logger.error('Failed to fetch suggested questions', { error })
