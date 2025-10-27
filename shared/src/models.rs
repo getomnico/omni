@@ -25,6 +25,7 @@ pub enum AuthMethod {
 pub struct User {
     pub id: String,
     pub email: String,
+    #[sqlx(default)]
     pub password_hash: Option<String>,
     pub full_name: Option<String>,
     pub avatar_url: Option<String>,

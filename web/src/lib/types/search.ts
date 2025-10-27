@@ -53,3 +53,12 @@ export interface SuggestionsResponse {
 export interface RecentSearchesResponse {
     searches: string[]
 }
+
+export interface SuggestedQuestion {
+    question: string
+    document_id: string
+}
+
+export interface SuggestedQuestionsResponse {
+    questions: SuggestedQuestion[]
+}

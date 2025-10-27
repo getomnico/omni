@@ -108,3 +108,19 @@ pub struct RecentSearchesRequest {
 pub struct RecentSearchesResponse {
     pub searches: Vec<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuggestedQuestion {
+    pub question: String,
+    pub document_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuggestedQuestionsRequest {
+    pub user_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SuggestedQuestionsResponse {
+    pub questions: Vec<SuggestedQuestion>,
+}

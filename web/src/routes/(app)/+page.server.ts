@@ -4,6 +4,7 @@ import { sources, documents } from '$lib/server/db/schema.js'
 import { eq, sql } from 'drizzle-orm'
 import { env } from '$env/dynamic/private'
 import { logger } from '$lib/server/logger.js'
+import type { SuggestedQuestion, SuggestedQuestionsResponse } from '$lib/types/search.js'
 
 export const load: PageServerLoad = async ({ locals, fetch }) => {
     // Get connected sources count
@@ -33,11 +34,32 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
         }
     }
 
+    // Fetch suggested questions
+    let suggestedQuestions: SuggestedQuestion[] = []
+    try {
+        const suggestedResponse = await fetch(`${env.SEARCHER_URL}/suggested-questions`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                user_id: locals.user?.id,
+            }),
+        })
+        if (suggestedResponse.ok) {
+            const data: SuggestedQuestionsResponse = await suggestedResponse.json()
+            suggestedQuestions = data.questions || []
+        }
+    } catch (error) {
+        logger.error('Failed to fetch suggested questions', { error })
+    }
+
     logger.info('Loaded app page data', {
         userId: locals.user?.id,
         connectedSources: connectedSourcesCount,
         indexedDocuments: totalDocumentsIndexed,
         recentSearchesCount: recentSearches.length,
+        suggestedQuestionsCount: suggestedQuestions.length,
         aiFirstSearchEnabled: env.AI_FIRST_SEARCH_ENABLED === 'true',
     })
 
@@ -48,6 +70,7 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
             indexedDocuments: totalDocumentsIndexed,
         },
         recentSearches,
+        suggestedQuestions,
         aiFirstSearchEnabled: env.AI_FIRST_SEARCH_ENABLED === 'true',
     }
 }

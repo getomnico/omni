@@ -96,6 +96,33 @@ impl DocumentRepository {
         Ok(documents)
     }
 
+    pub async fn fetch_random_documents(
+        &self,
+        user_email: &str,
+        count: usize,
+    ) -> Result<Vec<Document>, DatabaseError> {
+        let permission_filter = &self.generate_permission_filter(user_email);
+
+        let query = format!(
+            r#"
+            SELECT *
+            FROM documents d
+            WHERE d.content_id IS NOT NULL
+                AND {}
+            ORDER BY RANDOM()
+            LIMIT $1
+        "#,
+            permission_filter
+        );
+
+        let documents = sqlx::query_as::<_, Document>(&query)
+            .bind(count as i32)
+            .fetch_all(&self.pool)
+            .await?;
+
+        Ok(documents)
+    }
+
     pub async fn search(&self, query: &str, limit: i64) -> Result<Vec<Document>, DatabaseError> {
         let documents = sqlx::query_as::<_, Document>(
             r#"

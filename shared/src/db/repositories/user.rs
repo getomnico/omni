@@ -60,7 +60,7 @@ impl Repository<User, String> for UserRepository {
     async fn find_by_id(&self, id: String) -> Result<Option<User>, DatabaseError> {
         let user = sqlx::query_as::<_, User>(
             r#"
-            SELECT id, email, password_hash, full_name, avatar_url,
+            SELECT id, email, full_name, avatar_url,
                    role, is_active, created_at, updated_at, last_login_at, auth_method, domain
             FROM users
             WHERE id = $1
@@ -76,7 +76,7 @@ impl Repository<User, String> for UserRepository {
     async fn find_all(&self, limit: i64, offset: i64) -> Result<Vec<User>, DatabaseError> {
         let users = sqlx::query_as::<_, User>(
             r#"
-            SELECT id, email, password_hash, full_name, avatar_url,
+            SELECT id, email, full_name, avatar_url,
                    role, is_active, created_at, updated_at, last_login_at
             FROM users
             ORDER BY created_at DESC
@@ -102,7 +102,7 @@ impl Repository<User, String> for UserRepository {
             r#"
             INSERT INTO users (id, email, password_hash, full_name, avatar_url, role, is_active)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
-            RETURNING id, email, password_hash, full_name, avatar_url,
+            RETURNING id, email, full_name, avatar_url,
                       role, is_active, created_at, updated_at, last_login_at
             "#,
         )

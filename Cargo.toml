@@ -49,6 +49,7 @@ nonzero_ext = "0.3"
 rand = "0.8"
 validator = { version = "0.18", features = ["derive"] }
 url = "2.5"
+dashmap = "6.1.0"
 
 # OpenTelemetry dependencies
 opentelemetry = "0.27"

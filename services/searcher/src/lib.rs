@@ -2,6 +2,7 @@ pub mod handlers;
 pub mod highlighting;
 pub mod models;
 pub mod search;
+pub mod suggested_questions;
 
 use anyhow::Result as AnyhowResult;
 use axum::{
@@ -12,12 +13,15 @@ use axum::{
 use redis::Client as RedisClient;
 use shared::{
     telemetry::{self, TelemetryConfig},
-    AIClient, DatabasePool, SearcherConfig,
+    AIClient, DatabasePool, ObjectStorage, SearcherConfig, StorageFactory,
 };
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::info;
+
+use crate::suggested_questions::SuggestedQuestionsGenerator;
 
 pub type Result<T> = std::result::Result<T, SearcherError>;
 
@@ -31,6 +35,10 @@ pub enum SearcherError {
     Serialization(#[from] serde_json::Error),
     #[error("Internal error: {0}")]
     Internal(#[from] anyhow::Error),
+    #[error("Not found: {0}")]
+    NotFound(String),
+    #[error("Bad request: {0}")]
+    BadRequest(String),
 }
 
 impl axum::response::IntoResponse for SearcherError {
@@ -38,24 +46,26 @@ impl axum::response::IntoResponse for SearcherError {
         let (status, message) = match self {
             SearcherError::Database(_) => (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "Database error",
+                "Database error".to_string(),
             ),
-            SearcherError::Redis(_) => {
-                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Cache error")
-            }
+            SearcherError::Redis(_) => (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Cache error".to_string(),
+            ),
             SearcherError::Serialization(_) => (
                 axum::http::StatusCode::BAD_REQUEST,
-                "Invalid request format",
+                "Invalid request format".to_string(),
             ),
             SearcherError::Internal(_) => (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error",
+                "Internal server error".to_string(),
             ),
+            SearcherError::NotFound(msg) => (axum::http::StatusCode::NOT_FOUND, msg),
+            SearcherError::BadRequest(msg) => (axum::http::StatusCode::BAD_REQUEST, msg),
         };
 
         let body = serde_json::json!({
             "error": message,
-            "details": self.to_string()
         });
 
         (status, axum::Json(body)).into_response()
@@ -68,6 +78,8 @@ pub struct AppState {
     pub redis_client: RedisClient,
     pub ai_client: AIClient,
     pub config: SearcherConfig,
+    pub content_storage: Arc<dyn ObjectStorage>,
+    pub suggested_questions_generator: Arc<SuggestedQuestionsGenerator>,
 }
 
 pub fn create_app(state: AppState) -> Router {
@@ -77,6 +89,7 @@ pub fn create_app(state: AppState) -> Router {
         .route("/search/ai-answer", post(handlers::ai_answer))
         .route("/suggestions", get(handlers::suggestions))
         .route("/recent-searches", get(handlers::recent_searches))
+        .route("/suggested-questions", post(handlers::suggested_questions))
         .layer(
             ServiceBuilder::new()
                 .layer(middleware::from_fn(telemetry::middleware::trace_layer))
@@ -106,11 +119,23 @@ pub async fn run_server() -> AnyhowResult<()> {
     let ai_client = AIClient::new(config.ai_service_url.clone());
     info!("AI client initialized");
 
+    let content_storage = StorageFactory::from_env(db_pool.pool().clone()).await?;
+    info!("Storage initialized");
+
+    let suggested_questions_generator = Arc::new(SuggestedQuestionsGenerator::new(
+        redis_client.clone(),
+        db_pool.clone(),
+        content_storage.clone(),
+        ai_client.clone(),
+    ));
+
     let app_state = AppState {
         db_pool,
         redis_client,
         ai_client,
         config: config.clone(),
+        content_storage,
+        suggested_questions_generator,
     };
 
     let app = create_app(app_state);

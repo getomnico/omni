@@ -38,6 +38,7 @@ reqwest = { version = "0.11", features = ["json"] }
 futures-util = "0.3"
 url = "2.5"
 shared = { path = "../../shared" }
+dashmap = { workspace = true }
 
 [dev-dependencies]
 urlencoding = "2.1"

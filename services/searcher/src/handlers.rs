@@ -1,6 +1,11 @@
-use crate::models::{RecentSearchesRequest, SearchRequest, SuggestionsQuery};
+use crate::models::{
+    RecentSearchesRequest, SearchRequest, SuggestedQuestionsRequest, SuggestedQuestionsResponse,
+    SuggestionsQuery,
+};
 use crate::search::SearchEngine;
+use crate::suggested_questions::{self, SuggestedQuestionsGenerator};
 use crate::{AppState, Result as SearcherResult, SearcherError};
+use anyhow::anyhow;
 use axum::body::Body;
 use axum::{
     extract::{Query, State},
@@ -10,6 +15,7 @@ use axum::{
 use futures_util::Stream;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
+use shared::{Repository, UserRepository};
 use sqlx::types::time::OffsetDateTime;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -266,4 +272,43 @@ pub async fn ai_answer(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(response)
+}
+
+// TODO: Make this a GET request, this should not be POST
+pub async fn suggested_questions(
+    State(state): State<AppState>,
+    Json(request): Json<SuggestedQuestionsRequest>,
+) -> SearcherResult<Json<SuggestedQuestionsResponse>> {
+    info!("Received suggested questions request");
+
+    let user_repo = UserRepository::new(&state.db_pool.pool());
+    let user = match user_repo.find_by_id(request.user_id.clone()).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            error!("User not found for user_id {}", request.user_id);
+            return Err(SearcherError::NotFound(format!(
+                "User not found for user_id {}",
+                request.user_id
+            )));
+        }
+        Err(e) => {
+            error!(
+                "Failed to fetch user for user_id {}: {:?}",
+                request.user_id, e
+            );
+            return Err(anyhow!(
+                "Failed to fetch user for user_id {}: {:?}",
+                request.user_id,
+                e
+            )
+            .into());
+        }
+    };
+
+    let response = state
+        .suggested_questions_generator
+        .get_suggested_questions(&user.email)
+        .await?;
+
+    Ok(Json(response))
 }
