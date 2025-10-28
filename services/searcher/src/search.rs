@@ -135,12 +135,42 @@ impl SearchEngine {
             return Err(anyhow::anyhow!("Search query cannot be empty"));
         }
 
-        let (results, corrected_query) = match request.search_mode() {
-            SearchMode::Fulltext => self.fulltext_search(&repo, &request).await?,
-            SearchMode::Semantic => (self.semantic_search(&request).await?, None),
-            SearchMode::Hybrid => self.hybrid_search(&request).await?,
+        let search_future = async {
+            let start_ts = Instant::now();
+            let res = match request.search_mode() {
+                SearchMode::Fulltext => self.fulltext_search(&repo, &request).await,
+                SearchMode::Semantic => self.semantic_search(&request).await.map(|r| (r, None)),
+                SearchMode::Hybrid => self.hybrid_search(&request).await,
+            };
+
+            debug!("Search future completed in: {:?}", start_ts.elapsed());
+            res
         };
 
+        let facets_future = async {
+            if request.include_facets() {
+                let start_ts = Instant::now();
+                let sources = request.source_types.as_deref();
+                let content_types = request.content_types.as_deref();
+
+                let facets = repo
+                    .get_facet_counts_with_filters(&request.query, sources, content_types)
+                    .await
+                    .unwrap_or_else(|e| {
+                        info!("Failed to get facet counts: {}", e);
+                        vec![]
+                    });
+
+                debug!("Facets fetched in {:?}", start_ts.elapsed());
+                facets
+            } else {
+                debug!("Facets not requested, returning empty array.");
+                vec![]
+            }
+        };
+
+        let (search_result, facets) = tokio::join!(search_future, facets_future);
+        let (results, corrected_query) = search_result?;
         let total_count = results.len() as i64;
         let has_more = results.len() as i64 >= limit;
         let query_time = start_time.elapsed().as_millis() as u64;
@@ -151,27 +181,12 @@ impl SearchEngine {
             results.len()
         );
 
-        // Get facets if requested
-        let facets = if request.include_facets() {
-            let sources = request.source_types.as_deref();
-            let content_types = request.content_types.as_deref();
-
-            repo.get_facet_counts_with_filters(&request.query, sources, content_types)
-                .await
-                .unwrap_or_else(|e| {
-                    info!("Failed to get facet counts: {}", e);
-                    vec![]
-                })
-        } else {
-            vec![]
-        };
-
         let response = SearchResponse {
             results,
             total_count,
             query_time_ms: query_time,
             has_more,
-            query: request.query,
+            query: request.query.clone(),
             corrected_query,
             corrections: None, // TODO: implement word-level corrections tracking
             facets: if facets.is_empty() {

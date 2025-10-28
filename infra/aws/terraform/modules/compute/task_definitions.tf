@@ -149,6 +149,7 @@ resource "aws_ecs_task_definition" "searcher" {
       { name = "TYPO_TOLERANCE_ENABLED", value = "true" },
       { name = "TYPO_TOLERANCE_MAX_DISTANCE", value = "2" },
       { name = "TYPO_TOLERANCE_MIN_WORD_LENGTH", value = "4" },
+      { name = "SEMANTIC_SEARCH_TIMEOUT_MS", value = "1000" },
       # Storage configuration
       { name = "STORAGE_BACKEND", value = "s3" },
       { name = "S3_BUCKET", value = var.content_bucket_name },
