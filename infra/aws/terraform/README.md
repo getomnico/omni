@@ -9,9 +9,11 @@ This Terraform configuration deploys a complete Omni installation in AWS, includ
 - **Networking**: VPC, subnets, security groups, NAT gateway
 - **Database**: RDS PostgreSQL 17 with pgvector
 - **Cache**: ElastiCache Redis
+- **Storage**: S3 buckets for content and batch inference
 - **Compute**: ECS Fargate cluster with 5 services
 - **Load Balancer**: Application Load Balancer with optional HTTPS
-- **Monitoring**: CloudWatch Logs
+- **AI**: AWS Bedrock integration for embeddings and LLM
+- **Monitoring**: CloudWatch Logs with optional OpenTelemetry
 - **Secrets**: AWS Secrets Manager for credentials
 - **Migrations**: Automatic database migrations
 
@@ -45,8 +47,9 @@ This Terraform configuration deploys a complete Omni installation in AWS, includ
 Before deployment, gather:
 
 - **Customer name**: Unique identifier (e.g., `acme-corp`)
-- **GitHub organization**: For container images (e.g., `omni-platform`)
+- **GitHub organization**: For container images (use `getomnico`)
 - **JINA API key**: Get from [jina.ai](https://jina.ai/)
+- **Custom domain**: Domain name for your deployment (e.g., `demo.getomni.co`)
 - **Google OAuth credentials**: For Google Workspace integration (optional)
 - **Resend API key**: For email functionality (optional)
 - **SSL certificate ARN**: For HTTPS (optional)
@@ -86,6 +89,7 @@ Edit `terraform.tfvars` with your values:
 customer_name = "acme-corp"
 github_org    = "omni-platform"
 jina_api_key  = "your-jina-api-key"
+custom_domain = "demo.getomni.co"
 
 # Optional
 region      = "us-east-1"
@@ -137,6 +141,7 @@ terraform/
 │   ├── networking/           # VPC, subnets, security groups
 │   ├── database/             # RDS PostgreSQL
 │   ├── cache/                # ElastiCache Redis
+│   ├── storage/              # S3 buckets (content, batch inference)
 │   ├── monitoring/           # CloudWatch Logs
 │   ├── loadbalancer/         # Application Load Balancer
 │   ├── compute/              # ECS cluster and services
@@ -158,6 +163,7 @@ terraform/
 | `customer_name` | Customer identifier | `acme-corp` |
 | `github_org` | GitHub org for images | `omni-platform` |
 | `jina_api_key` | JINA AI API key | `jina_xxx` |
+| `custom_domain` | Custom domain name | `demo.getomni.co` |
 
 ### Optional Variables
 
@@ -213,19 +219,32 @@ See `variables.tf` for the complete list.
 
 - **Engine**: Redis 7.1
 - **Deployment**: Single node (Multi-AZ optional)
-- **Purpose**: Sessions, caching, message queue
+- **Purpose**: Sessions, caching
+
+### Storage
+
+- **Content Bucket**: S3 bucket for document content storage
+  - Versioning enabled
+  - Server-side encryption (AES256)
+  - Public access blocked
+- **Batch Bucket**: S3 bucket for Bedrock batch inference
+  - Server-side encryption (AES256)
+  - 7-day lifecycle policy for cleanup
+  - IAM role for Bedrock service access
 
 ### Compute
 
-- **ECS Cluster**: Fargate capacity provider
+- **ECS Cluster**: Fargate capacity provider with Container Insights
 - **Services**:
-  - `omni-web`: Frontend and API (port 3000)
-  - `omni-searcher`: Search service (port 3001)
-  - `omni-indexer`: Document processing (port 3002)
-  - `omni-ai`: Embeddings and RAG (port 3003)
-  - `omni-google-connector`: Google integration (port 3004)
-- **Service Discovery**: Cloud Map private DNS
-- **Container Images**: GitHub Container Registry
+  - `omni-web`: SvelteKit frontend and API (port 3000)
+  - `omni-searcher`: Search service with typo tolerance (port 3001)
+  - `omni-indexer`: Document processing and indexing (port 3002)
+  - `omni-ai`: AI service with Bedrock integration (port 3003)
+  - `omni-google-connector`: Google Workspace integration (port 3004)
+- **Service Discovery**: AWS Cloud Map private DNS namespace
+- **Container Images**: GitHub Container Registry (GHCR)
+- **Storage Integration**: All services configured with S3 backend
+- **Observability**: Optional OpenTelemetry integration
 
 ### Load Balancer
 
@@ -240,12 +259,25 @@ See `variables.tf` for the complete list.
 - **Retention**: 30 days (configurable)
 - **Container Insights**: Enabled on ECS cluster
 
+### AI Integration
+
+- **Embedding Provider**: JINA AI (via API)
+- **LLM Provider**: AWS Bedrock
+  - Default model: Amazon Nova Pro (RAG)
+  - Title generation: Amazon Nova Lite
+  - Alternative: Anthropic Claude Sonnet/Haiku (commented in config)
+- **Batch Processing**: Optional Bedrock batch inference
+  - Configurable batch size and timeout
+  - S3-based job management
+  - Currently disabled (requires AWS support case)
+
 ### Secrets
 
 All secrets stored in AWS Secrets Manager:
 - Database password (auto-generated)
 - JINA API key
 - Encryption keys (auto-generated)
+- Encryption salt (auto-generated)
 - Session secret (auto-generated)
 
 ## Post-Deployment
@@ -400,24 +432,6 @@ Enable for production:
 ```hcl
 db_multi_az = true
 ```
-
-## Cost Estimation
-
-Approximate monthly costs (us-east-1, default configuration):
-
-| Component | Configuration | Monthly Cost |
-|-----------|--------------|--------------|
-| RDS (db.t3.micro) | 20 GB storage | ~$15 |
-| ElastiCache (cache.t3.micro) | Single node | ~$12 |
-| ECS Fargate | 5 tasks, 512 CPU, 1024 MB | ~$35 |
-| ALB | Minimal traffic | ~$18 |
-| NAT Gateway | Data transfer | ~$32 |
-| CloudWatch Logs | 5 GB/month | ~$3 |
-| **Total** | | **~$115/month** |
-
-Production configuration (t3.small instances, Multi-AZ): ~$300-400/month
-
-Use [AWS Pricing Calculator](https://calculator.aws/) for detailed estimates.
 
 ## Maintenance
 
