@@ -179,7 +179,7 @@
                 <div class="flex flex-col items-center gap-2">
                     {#each data.suggestedQuestions as suggestion}
                         <button
-                            class="cursor-pointer truncate rounded-full border border-gray-300 bg-white px-4 py-2 text-sm transition-colors hover:border-violet-400 hover:bg-violet-50"
+                            class="max-w-screen-md cursor-pointer truncate rounded-full border border-gray-300 bg-white px-4 py-2 text-sm transition-colors hover:border-violet-400 hover:bg-violet-50"
                             onclick={() => selectRecentSearch(suggestion.question)}>
                             {suggestion.question}
                         </button>
