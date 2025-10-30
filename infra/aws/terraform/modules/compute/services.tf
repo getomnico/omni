@@ -1,7 +1,7 @@
 # Web Service
 resource "aws_ecs_service" "web" {
   name            = "omni-${var.customer_name}-web"
-  cluster         = aws_ecs_cluster.main.id
+  cluster         = var.cluster_arn
   task_definition = aws_ecs_task_definition.web.arn
   launch_type     = "FARGATE"
   desired_count   = var.desired_count
@@ -32,7 +32,7 @@ resource "aws_ecs_service" "web" {
 # Searcher Service
 resource "aws_ecs_service" "searcher" {
   name            = "omni-${var.customer_name}-searcher"
-  cluster         = aws_ecs_cluster.main.id
+  cluster         = var.cluster_arn
   task_definition = aws_ecs_task_definition.searcher.arn
   launch_type     = "FARGATE"
   desired_count   = var.desired_count
@@ -57,7 +57,7 @@ resource "aws_ecs_service" "searcher" {
 # Indexer Service
 resource "aws_ecs_service" "indexer" {
   name            = "omni-${var.customer_name}-indexer"
-  cluster         = aws_ecs_cluster.main.id
+  cluster         = var.cluster_arn
   task_definition = aws_ecs_task_definition.indexer.arn
   launch_type     = "FARGATE"
   desired_count   = var.desired_count
@@ -82,7 +82,7 @@ resource "aws_ecs_service" "indexer" {
 # AI Service
 resource "aws_ecs_service" "ai" {
   name            = "omni-${var.customer_name}-ai"
-  cluster         = aws_ecs_cluster.main.id
+  cluster         = var.cluster_arn
   task_definition = aws_ecs_task_definition.ai.arn
   launch_type     = "FARGATE"
   desired_count   = var.desired_count
@@ -107,7 +107,7 @@ resource "aws_ecs_service" "ai" {
 # Google Connector Service
 resource "aws_ecs_service" "google_connector" {
   name            = "omni-${var.customer_name}-google-connector"
-  cluster         = aws_ecs_cluster.main.id
+  cluster         = var.cluster_arn
   task_definition = aws_ecs_task_definition.google_connector.arn
   launch_type     = "FARGATE"
   desired_count   = var.desired_count

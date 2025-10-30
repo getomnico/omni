@@ -26,24 +26,68 @@ module "monitoring" {
   log_retention_days = var.log_retention_days
 }
 
+# ECS Cluster and Service Discovery (created early for ParadeDB dependency)
+resource "aws_ecs_cluster" "main" {
+  name = "omni-${var.customer_name}-cluster"
+
+  setting {
+    name  = "containerInsights"
+    value = "enabled"
+  }
+
+  tags = {
+    Application = "Omni"
+    Customer    = var.customer_name
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+  }
+}
+
+resource "aws_service_discovery_private_dns_namespace" "main" {
+  name        = "omni-${var.customer_name}.local"
+  description = "Private DNS namespace for Omni services"
+  vpc         = module.networking.vpc_id
+
+  tags = {
+    Application = "Omni"
+    Customer    = var.customer_name
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+  }
+}
+
 module "database" {
   source = "./modules/database"
 
-  customer_name     = var.customer_name
-  environment       = var.environment
-  instance_class    = var.db_instance_class
-  allocated_storage = var.db_allocated_storage
+  customer_name = var.customer_name
+  environment   = var.environment
+  use_rds       = var.use_rds
+
+  # Common database variables
   database_name     = var.database_name
   database_username = var.database_username
   database_password = module.secrets.database_password
-
   subnet_ids        = module.networking.private_subnet_ids
-  security_group_id = module.networking.database_security_group_id
+  region            = var.region
 
+  # RDS-specific variables
+  instance_class          = var.db_instance_class
+  allocated_storage       = var.db_allocated_storage
+  security_group_id       = module.networking.database_security_group_id
   backup_retention_period = var.db_backup_retention_period
   multi_az                = var.db_multi_az
   deletion_protection     = var.db_deletion_protection
   skip_final_snapshot     = var.skip_final_snapshot
+
+  # ParadeDB-specific variables
+  paradedb_instance_type         = var.paradedb_instance_type
+  paradedb_volume_size           = var.paradedb_volume_size
+  paradedb_container_image       = var.paradedb_container_image
+  vpc_id                         = module.networking.vpc_id
+  ecs_security_group_id          = module.networking.ecs_security_group_id
+  database_password_secret_arn   = module.secrets.database_password_arn
+  ecs_cluster_name               = aws_ecs_cluster.main.name
+  service_discovery_namespace_id = aws_service_discovery_private_dns_namespace.main.id
 }
 
 module "cache" {
@@ -91,6 +135,11 @@ module "compute" {
   vpc_id            = module.networking.vpc_id
   subnet_ids        = module.networking.private_subnet_ids
   security_group_id = module.networking.ecs_security_group_id
+
+  # Pass existing cluster and namespace
+  cluster_name                   = aws_ecs_cluster.main.name
+  cluster_arn                    = aws_ecs_cluster.main.arn
+  service_discovery_namespace_id = aws_service_discovery_private_dns_namespace.main.id
 
   alb_target_group_arn = module.loadbalancer.target_group_arn
   alb_dns_name         = module.loadbalancer.dns_name

@@ -11,23 +11,5 @@ locals {
 
 data "aws_caller_identity" "current" {}
 
-resource "aws_ecs_cluster" "main" {
-  name = "omni-${var.customer_name}-cluster"
-
-  setting {
-    name  = "containerInsights"
-    value = "enabled"
-  }
-
-  tags = merge(local.common_tags, {
-    Name = "omni-${var.customer_name}-cluster"
-  })
-}
-
-resource "aws_service_discovery_private_dns_namespace" "main" {
-  name        = "omni-${var.customer_name}.local"
-  description = "Private DNS namespace for Omni services"
-  vpc         = var.vpc_id
-
-  tags = local.common_tags
-}
+# Note: ECS cluster and service discovery namespace are now created in the root module
+# and passed as variables to avoid circular dependency with the database module

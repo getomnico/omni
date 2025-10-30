@@ -29,6 +29,21 @@ variable "security_group_id" {
   type        = string
 }
 
+variable "cluster_name" {
+  description = "ECS cluster name (passed from root)"
+  type        = string
+}
+
+variable "cluster_arn" {
+  description = "ECS cluster ARN (passed from root)"
+  type        = string
+}
+
+variable "service_discovery_namespace_id" {
+  description = "Service discovery namespace ID (passed from root)"
+  type        = string
+}
+
 variable "alb_target_group_arn" {
   description = "ALB target group ARN for web service"
   type        = string

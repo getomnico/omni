@@ -39,6 +39,12 @@ variable "environment" {
 }
 
 # Database Configuration
+variable "use_rds" {
+  description = "Use AWS RDS PostgreSQL instead of self-hosted ParadeDB"
+  type        = bool
+  default     = false
+}
+
 variable "database_name" {
   description = "PostgreSQL database name"
   type        = string
@@ -51,6 +57,7 @@ variable "database_username" {
   default     = "omni"
 }
 
+# RDS-specific variables
 variable "db_instance_class" {
   description = "RDS instance type"
   type        = string
@@ -85,6 +92,25 @@ variable "skip_final_snapshot" {
   description = "Skip final DB snapshot on deletion (true for dev, false for production)"
   type        = bool
   default     = false
+}
+
+# ParadeDB-specific variables
+variable "paradedb_instance_type" {
+  description = "EC2 instance type for ParadeDB"
+  type        = string
+  default     = "t3.small"
+}
+
+variable "paradedb_volume_size" {
+  description = "EBS volume size in GB for ParadeDB data"
+  type        = number
+  default     = 50
+}
+
+variable "paradedb_container_image" {
+  description = "Docker image for ParadeDB"
+  type        = string
+  default     = "paradedb/paradedb:0.18.15-pg17"
 }
 
 # Cache Configuration

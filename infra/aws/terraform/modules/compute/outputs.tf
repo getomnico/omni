@@ -1,11 +1,11 @@
 output "cluster_name" {
   description = "ECS cluster name"
-  value       = aws_ecs_cluster.main.name
+  value       = var.cluster_name
 }
 
 output "cluster_arn" {
   description = "ECS cluster ARN"
-  value       = aws_ecs_cluster.main.arn
+  value       = var.cluster_arn
 }
 
 output "web_service_name" {
@@ -50,5 +50,5 @@ output "task_role_arn" {
 
 output "service_discovery_namespace_id" {
   description = "Service discovery namespace ID"
-  value       = aws_service_discovery_private_dns_namespace.main.id
+  value       = var.service_discovery_namespace_id
 }
