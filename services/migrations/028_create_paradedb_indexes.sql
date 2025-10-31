@@ -28,5 +28,17 @@ WITH (
                 "prefix_only": false
             }
         }
+    }',
+    json_fields = '{
+        "metadata": {
+            "tokenizer": {
+                "type": "keyword"
+            }
+        },
+        "permissions": {
+            "tokenizer": {
+                "type": "keyword"
+            }
+        }
     }'
 );
