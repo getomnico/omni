@@ -57,8 +57,7 @@ Omni is a search platform that unifies your organization's knowledge across mult
 
 Omni uses a simple microservices architecture built for scalability and maintainability:
 
-![omni-arch-6](https://github.com/user-attachments/assets/d2875224-69f7-4f84-9f50-611909e7bd28)
-
+![omni-arch-7](https://github.com/user-attachments/assets/2112c423-aad8-4cd0-9366-29d3d558f83e)
 
 ### Core Components
 
