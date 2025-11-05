@@ -25,7 +25,7 @@ env:
   IMAGE_NAME: omni-indexer
 
 jobs:
-  build-and-push:
+  build-indexer:
     runs-on: ubuntu-latest
     permissions:
       contents: read

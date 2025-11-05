@@ -19,7 +19,7 @@ env:
   IMAGE_NAME: omni-ai
 
 jobs:
-  build-and-push:
+  build-ai:
     runs-on: ubuntu-latest
     permissions:
       contents: read

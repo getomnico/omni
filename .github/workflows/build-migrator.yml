@@ -19,7 +19,7 @@ env:
   IMAGE_NAME: omni-migrator
 
 jobs:
-  build-and-push:
+  build-migrator:
     runs-on: ubuntu-latest
     permissions:
       contents: read

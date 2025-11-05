@@ -25,7 +25,7 @@ env:
   IMAGE_NAME: omni-google-connector
 
 jobs:
-  build-and-push:
+  build-google-connector:
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -25,7 +25,7 @@ env:
   IMAGE_NAME: omni-web-connector
 
 jobs:
-  build-and-push:
+  build-web-connector:
     runs-on: ubuntu-latest
     permissions:
       contents: read

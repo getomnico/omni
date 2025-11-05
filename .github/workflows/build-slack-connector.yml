@@ -25,7 +25,7 @@ env:
   IMAGE_NAME: omni-slack-connector
 
 jobs:
-  build-and-push:
+  build-slack-connector:
     runs-on: ubuntu-latest
     permissions:
       contents: read

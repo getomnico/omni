@@ -25,7 +25,7 @@ env:
   IMAGE_NAME: omni-searcher
 
 jobs:
-  build-and-push:
+  build-searcher:
     runs-on: ubuntu-latest
     permissions:
       contents: read

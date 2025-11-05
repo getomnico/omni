@@ -19,7 +19,7 @@ env:
   IMAGE_NAME: omni-web
 
 jobs:
-  build-and-push:
+  build-web:
     runs-on: ubuntu-latest
     permissions:
       contents: read

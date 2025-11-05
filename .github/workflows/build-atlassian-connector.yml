@@ -25,7 +25,7 @@ env:
   IMAGE_NAME: omni-atlassian-connector
 
 jobs:
-  build-and-push:
+  build-atlassian-connector:
     runs-on: ubuntu-latest
     permissions:
       contents: read
