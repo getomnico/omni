@@ -1,4 +1,4 @@
-# Clio Reverse Proxy Configuration
+# Omni Reverse Proxy Configuration
 
 # Global options
 {
@@ -19,7 +19,7 @@
 }
 
 # Import environment variable for domain (defaults to localhost for development)
-{$CLIO_DOMAIN:localhost} {
+{$OMNI_DOMAIN:localhost} {
     # Logging
     log {
         output stdout
