@@ -84,6 +84,12 @@ pub struct FilesystemConnectorConfig {
     pub database: DatabaseConfig,
 }
 
+#[derive(Debug, Clone)]
+pub struct WebConnectorConfig {
+    pub base: ConnectorConfig,
+    pub database: DatabaseConfig,
+}
+
 fn get_required_env(key: &str) -> String {
     env::var(key).unwrap_or_else(|_| {
         eprintln!("ERROR: Required environment variable '{}' is not set", key);
@@ -446,5 +452,14 @@ impl FilesystemConnectorConfig {
         let database = DatabaseConfig::from_env();
 
         Self { database }
+    }
+}
+
+impl WebConnectorConfig {
+    pub fn from_env() -> Self {
+        let base = ConnectorConfig::from_env();
+        let database = DatabaseConfig::from_env();
+
+        Self { base, database }
     }
 }

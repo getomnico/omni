@@ -337,6 +337,41 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
+  web-connector:
+    build:
+      context: ..
+      dockerfile: connectors/web/Dockerfile
+    image: omni-web-connector
+    container_name: omni-web-connector
+    environment:
+      - DATABASE_HOST=${DATABASE_HOST}
+      - DATABASE_PORT=${DATABASE_PORT}
+      - DATABASE_USERNAME=${DATABASE_USERNAME}
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD}
+      - DATABASE_NAME=${DATABASE_NAME}
+      - DB_MAX_CONNECTIONS=${DB_MAX_CONNECTIONS:-10}
+      - DB_ACQUIRE_TIMEOUT_SECONDS=${DB_ACQUIRE_TIMEOUT_SECONDS:-3}
+      - REDIS_URL=${REDIS_URL}
+      - RUST_LOG=${RUST_LOG}
+      - PORT=${WEB_CONNECTOR_PORT}
+      - WEB_SYNC_INTERVAL_SECONDS=${WEB_SYNC_INTERVAL_SECONDS:-86400}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT}
+      - OTEL_DEPLOYMENT_ID=${OTEL_DEPLOYMENT_ID}
+      - OTEL_DEPLOYMENT_ENVIRONMENT=${OTEL_DEPLOYMENT_ENVIRONMENT:-development}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - STORAGE_BACKEND=${STORAGE_BACKEND}
+      - S3_BUCKET=${S3_BUCKET}
+    networks:
+      - omni-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   # Web Application (SvelteKit frontend + backend)
   web:
     build:

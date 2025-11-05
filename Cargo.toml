@@ -6,6 +6,7 @@ members = [
     "connectors/slack",
     "connectors/atlassian",
     "connectors/filesystem",
+    "connectors/web",
     "shared",
     "benchmarks",
 ]

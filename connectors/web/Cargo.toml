@@ -1,0 +1,39 @@
+[package]
+name = "omni-web-connector"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "omni-web-connector"
+path = "src/main.rs"
+
+[dependencies]
+shared = { path = "../../shared" }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+dotenvy = { workspace = true }
+redis = { workspace = true, features = ["tokio-comp", "connection-manager"] }
+reqwest = { workspace = true, features = ["json", "rustls-tls"], default-features = false }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid"] }
+tokio = { workspace = true, features = ["full"] }
+tower = { workspace = true }
+tower-http = { workspace = true, features = ["cors", "trace"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+uuid = { workspace = true, features = ["v4", "serde"] }
+spider = { version = "2", features = ["sitemap"] }
+scraper = "0.21"
+sha2 = "0.10"
+url = "2.5"
+base64 = "0.21"
+md5 = "0.7"
+
+[dev-dependencies]
+testcontainers = { workspace = true }
+testcontainers-modules = { workspace = true, features = ["postgres", "redis"] }

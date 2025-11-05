@@ -44,6 +44,9 @@ export const POST: RequestHandler = async ({ params, fetch }) => {
             case 'jira':
                 connectorUrl = config.services.atlassianConnectorUrl
                 break
+            case 'web':
+                connectorUrl = config.services.webConnectorUrl
+                break
             default:
                 throw error(400, `Unsupported source type: ${source.sourceType}`)
         }

@@ -22,6 +22,7 @@
     import atlassianLogo from '$lib/images/icons/atlassian.svg'
     import googleDriveLogo from '$lib/images/icons/google-drive.svg'
     import gmailLogo from '$lib/images/icons/gmail.svg'
+    import WebConnectorSetup from '$lib/components/web-connector-setup.svelte'
 
     let { data }: PageProps = $props()
 
@@ -738,12 +739,23 @@
         <Dialog.Header>
             <Dialog.Title>Connect {selectedIntegration?.name}</Dialog.Title>
             <Dialog.Description>
-                Set up your {selectedIntegration?.name} integration using service account credentials.
+                {#if selectedIntegration?.id === 'web'}
+                    Configure your website crawler settings to index web content.
+                {:else}
+                    Set up your {selectedIntegration?.name} integration using service account credentials.
+                {/if}
             </Dialog.Description>
         </Dialog.Header>
 
         <div class="space-y-4">
-            {#if selectedIntegration?.id === 'google'}
+            {#if selectedIntegration?.id === 'web'}
+                <WebConnectorSetup
+                    onSuccess={() => {
+                        showSetupDialog = false
+                        window.location.reload()
+                    }}
+                    onCancel={() => (showSetupDialog = false)} />
+            {:else if selectedIntegration?.id === 'google'}
                 <div class="space-y-2">
                     <Label for="service-account-json">Service Account JSON Key</Label>
                     <Textarea
@@ -827,11 +839,16 @@
             {/if}
         </div>
 
-        <Dialog.Footer>
-            <Button variant="outline" onclick={() => (showSetupDialog = false)}>Cancel</Button>
-            <Button onclick={setupServiceAccount} disabled={isSubmitting} class="cursor-pointer">
-                {isSubmitting ? 'Connecting...' : 'Connect'}
-            </Button>
-        </Dialog.Footer>
+        {#if selectedIntegration?.id !== 'web'}
+            <Dialog.Footer>
+                <Button variant="outline" onclick={() => (showSetupDialog = false)}>Cancel</Button>
+                <Button
+                    onclick={setupServiceAccount}
+                    disabled={isSubmitting}
+                    class="cursor-pointer">
+                    {isSubmitting ? 'Connecting...' : 'Connect'}
+                </Button>
+            </Dialog.Footer>
+        {/if}
     </Dialog.Content>
 </Dialog.Root>

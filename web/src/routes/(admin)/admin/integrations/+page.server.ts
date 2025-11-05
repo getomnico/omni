@@ -58,6 +58,13 @@ export const load: PageServerLoad = async ({ locals }) => {
                 ),
                 authType: 'api_token',
             },
+            {
+                id: 'web',
+                name: 'Web',
+                description: 'Index content from websites and documentation sites',
+                connected: connectedSources.some((source) => source.sourceType === 'web'),
+                authType: 'config_based',
+            },
         ],
     }
 }

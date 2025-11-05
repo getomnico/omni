@@ -6,6 +6,7 @@ export enum SourceType {
     SLACK = 'slack',
     GITHUB = 'github',
     LOCAL_FILES = 'local_files',
+    WEB = 'web',
 }
 
 export enum ServiceProvider {

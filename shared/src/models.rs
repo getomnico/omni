@@ -157,6 +157,7 @@ pub enum SourceType {
     Github,
     LocalFiles,
     Filesystem,
+    Web,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
