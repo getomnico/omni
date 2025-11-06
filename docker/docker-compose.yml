@@ -358,6 +358,9 @@ services:
       - ../Caddyfile:/etc/caddy/Caddyfile
       - caddy_data:/data
       - caddy_config:/config
+    environment:
+      OMNI_DOMAIN: ${OMNI_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
     networks:
       - omni-network
     depends_on:
