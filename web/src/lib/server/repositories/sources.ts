@@ -5,7 +5,7 @@ import type { Source } from '$lib/server/db/schema'
 
 export class SourcesRepository {
     async getAll(): Promise<Source[]> {
-        return await db.select().from(sources)
+        return await db.select().from(sources).where(eq(sources.isActive, true))
     }
 
     async getById(sourceId: string): Promise<Source | null> {

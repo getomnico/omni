@@ -1051,13 +1051,10 @@ impl SyncManager {
     }
 
     async fn update_source_status(&self, source_id: &str, status: &str) -> Result<()> {
-        sqlx::query(
-            "UPDATE sources SET sync_status = $1, last_sync_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $2"
-        )
-        .bind(status)
-        .bind(source_id)
-        .execute(&self.pool)
-        .await?;
+        let now = chrono::Utc::now();
+        self.source_repo
+            .update_sync_status(source_id, status, Some(now), None)
+            .await?;
 
         Ok(())
     }

@@ -10,9 +10,9 @@ use tracing::{error, info, warn};
 use crate::models::FilesystemSource;
 use crate::scanner::FilesystemScanner;
 use crate::watcher::{FilesystemEventProcessor, FilesystemWatcher};
-use shared::models::Source;
+use shared::db::repositories::SyncRunRepository;
+use shared::models::{Source, SyncType};
 use shared::queue::EventQueue;
-use shared::utils::generate_ulid;
 use shared::ObjectStorage;
 
 pub struct FilesystemSyncManager {
@@ -188,72 +188,86 @@ impl FilesystemSyncManager {
         source_id: &str,
         content_storage: &Arc<dyn ObjectStorage>,
     ) -> Result<()> {
-        let sync_run_id = generate_ulid();
+        let sync_run_repo = SyncRunRepository::new(pool);
+        let sync_run = sync_run_repo.create(source_id, SyncType::Full).await?;
 
-        info!("Starting full scan with sync_run_id: {}", sync_run_id);
+        info!("Starting full scan with sync_run_id: {}", sync_run.id);
 
-        // TODO: Create sync run record in database
-        info!("Would create sync run record: {}", sync_run_id);
+        let result: Result<usize> = async {
+            // Scan the filesystem
+            let files = scanner.scan_directory().await?;
+            let mut files_processed = 0;
 
-        // Scan the filesystem
-        let files = scanner.scan_directory().await?;
-        let mut files_processed = 0;
+            info!("Found {} files to process", files.len());
 
-        info!("Found {} files to process", files.len());
+            for file in files {
+                let file_path = file.path.clone();
 
-        for file in files {
-            let file_path = file.path.clone();
+                // Read file content
+                let content = match scanner.read_file_content(&file).await {
+                    Ok(content) => content,
+                    Err(e) => {
+                        warn!("Failed to read content for {}: {}", file_path.display(), e);
+                        continue;
+                    }
+                };
 
-            // Read file content
-            let content = match scanner.read_file_content(&file).await {
-                Ok(content) => content,
-                Err(e) => {
-                    warn!("Failed to read content for {}: {}", file_path.display(), e);
+                // Store content in LOB and get OID
+                let content_id = match content_storage.store_text(&content, None).await {
+                    Ok(oid) => oid,
+                    Err(e) => {
+                        error!(
+                            "Failed to store content in LOB storage for file {}: {}",
+                            file_path.display(),
+                            e
+                        );
+                        continue;
+                    }
+                };
+
+                // Convert to connector event
+                let event =
+                    file.to_connector_event(sync_run.id.clone(), source_id.to_string(), content_id);
+
+                // Queue the event
+                if let Err(e) = event_queue.enqueue(source_id, &event).await {
+                    error!("Failed to queue event for {}: {}", file_path.display(), e);
                     continue;
                 }
-            };
 
-            // Store content in LOB and get OID
-            let content_id = match content_storage.store_text(&content, None).await {
-                Ok(oid) => oid,
-                Err(e) => {
-                    error!(
-                        "Failed to store content in LOB storage for file {}: {}",
-                        file_path.display(),
-                        e
-                    );
-                    continue;
+                files_processed += 1;
+
+                if files_processed % 100 == 0 {
+                    info!("Processed {} files", files_processed);
                 }
-            };
-
-            // Convert to connector event
-            let event =
-                file.to_connector_event(sync_run_id.clone(), source_id.to_string(), content_id);
-
-            // Queue the event
-            if let Err(e) = event_queue.enqueue(source_id, &event).await {
-                error!("Failed to queue event for {}: {}", file_path.display(), e);
-                continue;
             }
 
-            files_processed += 1;
+            info!(
+                "Completed full scan for source_id: {}, processed {} files",
+                source_id, files_processed
+            );
 
-            if files_processed % 100 == 0 {
-                info!("Processed {} files", files_processed);
+            Ok(files_processed)
+        }
+        .await;
+
+        match &result {
+            Ok(files_processed) => {
+                sync_run_repo
+                    .mark_completed(
+                        &sync_run.id,
+                        *files_processed as i32,
+                        *files_processed as i32,
+                    )
+                    .await?;
+            }
+            Err(e) => {
+                sync_run_repo
+                    .mark_failed(&sync_run.id, &e.to_string())
+                    .await?;
             }
         }
 
-        // TODO: Update sync run as completed in database
-        info!(
-            "Would update sync run as completed: {} with {} files processed",
-            sync_run_id, files_processed
-        );
-
-        info!(
-            "Completed full scan for source_id: {}, processed {} files",
-            source_id, files_processed
-        );
-
-        Ok(())
+        result.map(|_| ())
     }
 }

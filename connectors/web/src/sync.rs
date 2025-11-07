@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use redis::{AsyncCommands, Client as RedisClient};
-use shared::models::{Source, SourceType};
+use shared::db::repositories::{SourceRepository, SyncRunRepository};
+use shared::models::{Source, SourceType, SyncType};
 use shared::queue::EventQueue;
-use shared::ObjectStorage;
+use shared::{ObjectStorage, Repository};
 use sqlx::PgPool;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -13,10 +14,11 @@ use crate::config::WebSourceConfig;
 use crate::models::{PageSyncState, WebPage};
 
 pub struct SyncManager {
-    pool: PgPool,
     redis_client: RedisClient,
     event_queue: EventQueue,
     content_storage: Arc<dyn ObjectStorage>,
+    sync_run_repo: SyncRunRepository,
+    source_repo: SourceRepository,
 }
 
 pub struct SyncState {
@@ -109,12 +111,15 @@ impl SyncManager {
     pub async fn new(pool: PgPool, redis_client: RedisClient) -> Result<Self> {
         let event_queue = EventQueue::new(pool.clone());
         let content_storage = shared::StorageFactory::from_env(pool.clone()).await?;
+        let sync_run_repo = SyncRunRepository::new(&pool);
+        let source_repo = SourceRepository::new(&pool);
 
         Ok(Self {
-            pool,
             redis_client,
             event_queue,
             content_storage,
+            sync_run_repo,
+            source_repo,
         })
     }
 
@@ -126,7 +131,6 @@ impl SyncManager {
         for source in sources {
             if let Err(e) = self.sync_source(&source).await {
                 error!("Failed to sync source {}: {}", source.id, e);
-                self.mark_sync_failed(&source.id, &e.to_string()).await?;
             }
         }
 
@@ -139,23 +143,29 @@ impl SyncManager {
     }
 
     async fn get_active_sources(&self) -> Result<Vec<Source>> {
-        let sources = sqlx::query_as::<_, Source>(
-            "SELECT * FROM sources WHERE source_type = $1 AND is_active = true",
-        )
-        .bind(SourceType::Web)
-        .fetch_all(&self.pool)
-        .await?;
+        let sources = self
+            .source_repo
+            .find_active_by_types(vec![SourceType::Web])
+            .await?;
 
         Ok(sources)
     }
 
     async fn get_source_by_id(&self, source_id: &str) -> Result<Source> {
-        let source =
-            sqlx::query_as::<_, Source>("SELECT * FROM sources WHERE id = $1 AND source_type = $2")
-                .bind(source_id)
-                .bind(SourceType::Web)
-                .fetch_one(&self.pool)
-                .await?;
+        let source = self
+            .source_repo
+            .find_by_id(source_id.to_string())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Source not found: {}", source_id))?;
+
+        // Verify it's a web source
+        if source.source_type != SourceType::Web {
+            return Err(anyhow::anyhow!(
+                "Source {} is not a web source (type: {:?})",
+                source_id,
+                source.source_type
+            ));
+        }
 
         Ok(source)
     }
@@ -169,7 +179,11 @@ impl SyncManager {
         let config = WebSourceConfig::from_json(&source.config)
             .context("Failed to parse web source config")?;
 
-        let sync_run_id = self.create_sync_run(&source.id).await?;
+        let sync_run = self
+            .sync_run_repo
+            .create(&source.id, SyncType::Full)
+            .await?;
+        let sync_run_id = &sync_run.id;
 
         let mut website = config.build_spider_website()?;
 
@@ -187,65 +201,82 @@ impl SyncManager {
         let links = website.get_links();
         info!("Crawled {} pages from {}", links.len(), config.root_url);
 
-        for page in website.get_pages().unwrap_or(&vec![]) {
-            let url = page.get_url();
+        let result: Result<()> = async {
+            for page in website.get_pages().unwrap_or(&vec![]) {
+                let url = page.get_url();
 
-            if let Err(e) = self
-                .process_page(
-                    page,
-                    &sync_run_id,
-                    &source.id,
-                    &sync_state,
-                    &current_urls,
-                    &pages_processed,
-                    &pages_updated,
-                )
-                .await
-            {
-                warn!("Failed to process page {}: {}", url, e);
+                if let Err(e) = self
+                    .process_page(
+                        page,
+                        sync_run_id,
+                        &source.id,
+                        &sync_state,
+                        &current_urls,
+                        &pages_processed,
+                        &pages_updated,
+                    )
+                    .await
+                {
+                    warn!("Failed to process page {}: {}", url, e);
+                }
+            }
+
+            let final_processed = *pages_processed.lock().await;
+            let final_updated = *pages_updated.lock().await;
+
+            let current_url_hashes = current_urls.lock().await;
+            let deleted_urls: Vec<String> = previous_urls
+                .difference(&*current_url_hashes)
+                .cloned()
+                .collect();
+
+            info!(
+                "Detected {} deleted pages for source {}",
+                deleted_urls.len(),
+                source.id
+            );
+
+            for url_hash in &deleted_urls {
+                if let Err(e) = self
+                    .publish_deletion_event(sync_run_id, &source.id, url_hash)
+                    .await
+                {
+                    error!("Failed to publish deletion event: {}", e);
+                }
+
+                if let Err(e) = sync_state.remove_url_from_set(&source.id, url_hash).await {
+                    error!("Failed to remove URL from set: {}", e);
+                }
+            }
+
+            info!(
+                "Completed sync for source {}: {} pages processed, {} updated, {} deleted",
+                source.id,
+                final_processed,
+                final_updated,
+                deleted_urls.len()
+            );
+
+            Ok(())
+        }
+        .await;
+
+        match &result {
+            Ok(_) => {
+                let final_processed = *pages_processed.lock().await;
+                let final_updated = *pages_updated.lock().await;
+                self.sync_run_repo
+                    .mark_completed(&sync_run.id, final_processed as i32, final_updated as i32)
+                    .await?;
+            }
+            Err(e) => {
+                self.sync_run_repo
+                    .mark_failed(&sync_run.id, &e.to_string())
+                    .await?;
             }
         }
 
-        let final_processed = *pages_processed.lock().await;
-        let final_updated = *pages_updated.lock().await;
-
-        let current_url_hashes = current_urls.lock().await;
-        let deleted_urls: Vec<String> = previous_urls
-            .difference(&*current_url_hashes)
-            .cloned()
-            .collect();
-
-        info!(
-            "Detected {} deleted pages for source {}",
-            deleted_urls.len(),
-            source.id
-        );
-
-        for url_hash in &deleted_urls {
-            if let Err(e) = self
-                .publish_deletion_event(&sync_run_id, &source.id, url_hash)
-                .await
-            {
-                error!("Failed to publish deletion event: {}", e);
-            }
-
-            if let Err(e) = sync_state.remove_url_from_set(&source.id, url_hash).await {
-                error!("Failed to remove URL from set: {}", e);
-            }
-        }
-
-        self.complete_sync_run(&sync_run_id, final_processed, final_updated)
-            .await?;
-
-        info!(
-            "Completed sync for source {}: {} pages processed, {} updated, {} deleted",
-            source.id,
-            final_processed,
-            final_updated,
-            deleted_urls.len()
-        );
-
-        Ok(())
+        result
     }
 
     async fn process_page(
@@ -334,75 +365,6 @@ impl SyncManager {
         };
 
         self.event_queue.enqueue(source_id, &event).await?;
-        Ok(())
-    }
-
-    async fn create_sync_run(&self, source_id: &str) -> Result<String> {
-        let sync_run_id = uuid::Uuid::new_v4().to_string();
-
-        sqlx::query(
-            "INSERT INTO sync_runs (id, source_id, status, started_at)
-             VALUES ($1, $2, 'running', NOW())",
-        )
-        .bind(&sync_run_id)
-        .bind(source_id)
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query("NOTIFY sync_status_update")
-            .execute(&self.pool)
-            .await?;
-
-        Ok(sync_run_id)
-    }
-
-    async fn complete_sync_run(
-        &self,
-        sync_run_id: &str,
-        pages_processed: usize,
-        pages_updated: usize,
-    ) -> Result<()> {
-        sqlx::query(
-            "UPDATE sync_runs
-             SET status = 'completed',
-                 completed_at = NOW(),
-                 documents_processed = $2,
-                 documents_updated = $3
-             WHERE id = $1",
-        )
-        .bind(sync_run_id)
-        .bind(pages_processed as i32)
-        .bind(pages_updated as i32)
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query("NOTIFY sync_status_update")
-            .execute(&self.pool)
-            .await?;
-
-        Ok(())
-    }
-
-    async fn mark_sync_failed(&self, source_id: &str, error_msg: &str) -> Result<()> {
-        sqlx::query(
-            "UPDATE sync_runs
-             SET status = 'failed',
-                 completed_at = NOW(),
-                 error_message = $2
-             WHERE source_id = $1
-             AND status = 'running'
-             ORDER BY started_at DESC
-             LIMIT 1",
-        )
-        .bind(source_id)
-        .bind(error_msg)
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query("NOTIFY sync_status_update")
-            .execute(&self.pool)
-            .await?;
-
         Ok(())
     }
 }

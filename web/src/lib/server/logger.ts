@@ -16,7 +16,7 @@ const transport = logPretty
               ignore: 'pid,hostname',
               messageFormat: '{msg}',
               errorLikeObjectKeys: ['err', 'error'],
-              singleLine: false,
+              singleLine: true,
           },
       }
     : undefined

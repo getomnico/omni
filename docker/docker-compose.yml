@@ -20,7 +20,9 @@ x-otel-config: &otel-config
 
 x-storage-config: &storage-config
   STORAGE_BACKEND: ${STORAGE_BACKEND}
+  # Only required if STORAGE_BACKEND=s3
   S3_BUCKET: ${S3_BUCKET}
+  S3_REGION: ${S3_REGION}
 
 services:
   postgres:
