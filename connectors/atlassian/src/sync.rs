@@ -364,48 +364,7 @@ impl SyncManager {
             }
         } else {
             info!("Performing incremental sync for source: {}", source.name);
-
-            let since = source
-                .last_sync_at
-                .map(|dt| DateTime::from_timestamp(dt.unix_timestamp(), 0).unwrap_or_default())
-                .unwrap_or_else(|| sync_start - chrono::Duration::days(1));
-
-            if source.source_type == SourceType::Confluence {
-                match self
-                    .confluence_processor
-                    .sync_pages_updated_since(&credentials, &source.id, since)
-                    .await
-                {
-                    Ok(pages_count) => {
-                        total_processed += pages_count;
-                        info!(
-                            "Incremental Confluence sync completed: {} pages",
-                            pages_count
-                        );
-                    }
-                    Err(e) => {
-                        error!("Incremental Confluence sync failed: {}", e);
-                    }
-                }
-            } else if source.source_type == SourceType::Jira {
-                // Incremental sync for JIRA
-                match self
-                    .jira_processor
-                    .sync_issues_updated_since(&credentials, &source.id, since, None)
-                    .await
-                {
-                    Ok(issues_count) => {
-                        total_processed += issues_count;
-                        info!("Incremental JIRA sync completed: {} issues", issues_count);
-                    }
-                    Err(e) => {
-                        error!("Incremental JIRA sync failed: {}", e);
-                    }
-                }
-            } else {
-                error!("Unsupported source type: {:?}", source.source_type);
-                return Err(anyhow!("Unsupported source type: {:?}", source.source_type));
-            }
+            // TODO
         }
 
         // Update source status

@@ -9,7 +9,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::auth::AtlassianCredentials;
 use crate::client::AtlassianClient;
-use crate::models::{JiraIssue, JiraSearchResponse};
+use crate::models::JiraIssue;
 
 pub struct JiraProcessor {
     client: AtlassianClient,
@@ -579,14 +579,5 @@ impl JiraProcessor {
         }
 
         self.sync_issues_by_jql(creds, source_id, &jql, None).await
-    }
-
-    pub fn get_rate_limit_info(&self) -> String {
-        let rate_limit = self.client.get_rate_limit_info();
-        if let Some(remaining) = rate_limit.requests_remaining {
-            format!("Requests remaining: {}", remaining)
-        } else {
-            "Rate limit info not available".to_string()
-        }
     }
 }

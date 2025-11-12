@@ -1,4 +1,4 @@
-# Frontend build for Clio SvelteKit application
+# Frontend build for Omni SvelteKit application
 FROM node:18-alpine AS builder
 
 WORKDIR /app

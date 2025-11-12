@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, Utc};
+use futures::stream::StreamExt;
 use redis::Client as RedisClient;
 use shared::db::repositories::SyncRunRepository;
 use shared::models::{ConnectorEvent, SyncRun, SyncType};
@@ -110,94 +110,6 @@ impl ConfluenceProcessor {
         result
     }
 
-    pub async fn sync_pages_updated_since(
-        &mut self,
-        creds: &AtlassianCredentials,
-        source_id: &str,
-        since: DateTime<Utc>,
-    ) -> Result<u32> {
-        info!(
-            "Starting incremental Confluence sync for source: {} since {}",
-            source_id,
-            since.format("%Y-%m-%d %H:%M:%S")
-        );
-
-        let sync_run = self
-            .sync_run_repo
-            .create(source_id, SyncType::Incremental)
-            .await?;
-        let storage_prefix = Self::get_storage_prefix(&sync_run);
-
-        let result: Result<u32> = async {
-            let since_str = since.format("%Y-%m-%d %H:%M").to_string();
-            let mut total_pages = 0;
-            let mut start = 0;
-            const PAGE_SIZE: u32 = 50;
-
-            loop {
-                let response = self
-                    .client
-                    .get_confluence_pages_updated_since(creds, &since_str, PAGE_SIZE, start)
-                    .await?;
-
-                if response.results.is_empty() {
-                    break;
-                }
-
-                let num_results = response.results.len();
-                let events = self
-                    .process_pages(
-                        response.results,
-                        source_id,
-                        &sync_run.id,
-                        &creds.base_url,
-                        &storage_prefix,
-                    )
-                    .await?;
-                self.queue_events(events).await?;
-
-                total_pages += num_results as u32;
-                start += PAGE_SIZE;
-
-                debug!(
-                    "Processed {} pages, total so far: {}",
-                    num_results, total_pages
-                );
-
-                // Check if we've reached the end
-                if num_results < PAGE_SIZE as usize {
-                    break;
-                }
-            }
-
-            info!(
-                "Completed incremental Confluence sync. Pages processed: {}",
-                total_pages
-            );
-            Ok(total_pages)
-        }
-        .await;
-
-        match &result {
-            Ok(pages_processed) => {
-                self.sync_run_repo
-                    .mark_completed(
-                        &sync_run.id,
-                        *pages_processed as i32,
-                        *pages_processed as i32,
-                    )
-                    .await?;
-            }
-            Err(e) => {
-                self.sync_run_repo
-                    .mark_failed(&sync_run.id, &e.to_string())
-                    .await?;
-            }
-        }
-
-        result
-    }
-
     async fn sync_space_pages(
         &mut self,
         creds: &AtlassianCredentials,
@@ -207,52 +119,49 @@ impl ConfluenceProcessor {
         storage_prefix: &str,
     ) -> Result<u32> {
         let mut total_pages = 0;
-        let mut cursor: Option<String> = None;
-        const PAGE_SIZE: u32 = 250;
+        let mut pages_batch = Vec::with_capacity(100);
 
-        loop {
-            let response = self
-                .client
-                .get_confluence_pages(
-                    creds,
-                    space_id,
-                    PAGE_SIZE,
-                    cursor.as_deref(),
-                    Some("storage"),
-                )
-                .await?;
+        info!("Fetching pages for Confluence space {}", space_id);
+        let mut pages_stream = self.client.get_confluence_pages(creds, space_id);
 
-            if response.results.is_empty() {
-                break;
+        while let Some(page_result) = pages_stream.next().await {
+            let page = page_result?;
+            pages_batch.push(page);
+
+            if pages_batch.len() >= 100 {
+                let events = self
+                    .process_pages(
+                        pages_batch,
+                        source_id,
+                        sync_run_id,
+                        &creds.base_url,
+                        storage_prefix,
+                    )
+                    .await?;
+                total_pages += events.len() as u32;
+                self.queue_events(events).await?;
+                pages_batch = Vec::with_capacity(100);
             }
+        }
 
-            let num_results = response.results.len();
+        if !pages_batch.is_empty() {
             let events = self
                 .process_pages(
-                    response.results,
+                    pages_batch,
                     source_id,
                     sync_run_id,
                     &creds.base_url,
                     storage_prefix,
                 )
                 .await?;
+            total_pages += events.len() as u32;
             self.queue_events(events).await?;
-
-            total_pages += num_results as u32;
-
-            debug!(
-                "Processed {} pages from space {}, total: {}",
-                num_results, space_id, total_pages
-            );
-
-            // Check if there's a next cursor
-            cursor = response.links.as_ref().and_then(|links| links.next.clone());
-
-            if cursor.is_none() {
-                break;
-            }
         }
 
+        info!(
+            "Processed {} pages from Confluence space {}",
+            total_pages, space_id
+        );
         Ok(total_pages)
     }
 
@@ -260,37 +169,12 @@ impl ConfluenceProcessor {
         &mut self,
         creds: &AtlassianCredentials,
     ) -> Result<Vec<ConfluenceSpace>> {
-        let mut all_spaces = Vec::new();
-        let mut start = 0;
-        const PAGE_SIZE: u32 = 50;
-
-        loop {
-            let response = self
-                .client
-                .get_confluence_spaces(creds, PAGE_SIZE, start)
-                .await?;
-
-            let spaces = response.results;
-
-            if spaces.is_empty() {
-                debug!("No spaces found.");
-                break;
-            }
-
-            debug!("Found {} spaces in this batch.", spaces.len());
-
-            all_spaces.extend(spaces.iter().cloned());
-            start += PAGE_SIZE;
-
-            let size = spaces.len();
-
-            if size < PAGE_SIZE as usize {
-                break;
-            }
+        let spaces = self.client.get_confluence_spaces(creds).await?;
+        if spaces.is_empty() {
+            debug!("No spaces found for Confluence instance {}", creds.base_url);
         }
-
-        debug!("Found {} accessible Confluence spaces", all_spaces.len());
-        Ok(all_spaces)
+        debug!("Found {} accessible Confluence spaces", spaces.len());
+        Ok(spaces)
     }
 
     async fn process_pages(
@@ -490,14 +374,5 @@ impl ConfluenceProcessor {
         self.event_queue.enqueue(source_id, &event).await?;
         info!("Successfully queued deletion for page: {}", page_id);
         Ok(())
-    }
-
-    pub fn get_rate_limit_info(&self) -> String {
-        let rate_limit = self.client.get_rate_limit_info();
-        if let Some(remaining) = rate_limit.requests_remaining {
-            format!("Requests remaining: {}", remaining)
-        } else {
-            "Rate limit info not available".to_string()
-        }
     }
 }

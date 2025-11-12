@@ -186,6 +186,6 @@
 }
 
 # Redirect www to non-www (if using a custom domain)
-www.{$CLIO_DOMAIN:localhost} {
-    redir https://{$CLIO_DOMAIN:localhost}{uri} permanent
+www.{$OMNI_DOMAIN:localhost} {
+    redir https://{$OMNI_DOMAIN:localhost}{uri} permanent
 }

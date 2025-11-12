@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Clio Startup Script
-# This script sets up and starts the complete Clio enterprise search platform
+# Omni Startup Script
+# This script sets up and starts the complete Omni enterprise search platform
 
 set -e
 
-echo "🚀 Starting Clio Enterprise Search Platform"
+echo "🚀 Starting Omni Enterprise Search Platform"
 echo "============================================="
 
 # Check if Docker and Docker Compose are installed
@@ -56,7 +56,7 @@ for service in "${services[@]}"; do
 done
 
 echo ""
-echo "🎉 Clio is starting up!"
+echo "🎉 Omni is starting up!"
 echo "========================"
 echo "Frontend:     http://localhost"
 echo "API Gateway:  http://localhost:3000"

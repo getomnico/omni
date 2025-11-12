@@ -1,8 +1,11 @@
 use anyhow::{anyhow, Result};
+use futures::stream::Stream;
 use reqwest::{Client, Response, StatusCode};
 use serde::de::DeserializeOwned;
+use shared::rate_limiter::RateLimiter;
+use std::pin::Pin;
 use std::time::Duration;
-use tokio::time::{sleep, Instant};
+use tokio::time::sleep;
 use tracing::{debug, warn};
 
 use crate::auth::AtlassianCredentials;
@@ -11,167 +14,80 @@ use crate::models::{
     JiraIssue, JiraSearchResponse,
 };
 
-#[derive(Debug, Clone)]
-pub struct RateLimitState {
-    pub requests_remaining: Option<u32>,
-    pub reset_time: Option<Instant>,
-    pub retry_after: Option<Duration>,
-}
-
-impl Default for RateLimitState {
-    fn default() -> Self {
-        Self {
-            requests_remaining: None,
-            reset_time: None,
-            retry_after: None,
-        }
-    }
-}
-
 pub struct AtlassianClient {
     client: Client,
-    rate_limit_state: RateLimitState,
+    rate_limiter: RateLimiter,
 }
 
 impl AtlassianClient {
     pub fn new() -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
-            .user_agent("Clio/1.0 (Atlassian Connector)")
+            .user_agent("Omni/1.0 (Atlassian Connector)")
             .build()
             .expect("Failed to create HTTP client");
 
+        // Atlassian API rate limits: ~10 requests per second for Cloud
         Self {
             client,
-            rate_limit_state: RateLimitState::default(),
+            rate_limiter: RateLimiter::new(10, 5),
         }
     }
 
-    async fn make_request<T>(
-        &mut self,
-        request_fn: impl Fn() -> reqwest::RequestBuilder,
-    ) -> Result<T>
+    async fn make_request<T>(&self, request_fn: impl Fn() -> reqwest::RequestBuilder) -> Result<T>
     where
         T: DeserializeOwned,
     {
-        const MAX_RETRIES: u32 = 5;
-        const BASE_DELAY: Duration = Duration::from_millis(1000);
+        self.rate_limiter
+            .execute_with_retry(|| async {
+                let request = request_fn();
+                let response = request.send().await?;
 
-        for attempt in 0..MAX_RETRIES {
-            // Check rate limit before making request
-            if let Some(retry_after) = self.rate_limit_state.retry_after {
-                warn!("Rate limited, waiting {} seconds", retry_after.as_secs());
-                sleep(retry_after).await;
-                self.rate_limit_state.retry_after = None;
-            }
-
-            let request = request_fn();
-            let response = request.send().await?;
-
-            // Update rate limit state from response headers
-            self.update_rate_limit_state(&response);
-
-            match response.status() {
-                StatusCode::OK => {
-                    let data: T = response.json().await?;
-                    return Ok(data);
-                }
-                StatusCode::TOO_MANY_REQUESTS => {
-                    let retry_after = self.extract_retry_after(&response);
-                    self.rate_limit_state.retry_after = Some(retry_after);
-
-                    warn!(
-                        "Rate limited (429), attempt {}/{}, waiting {} seconds",
-                        attempt + 1,
-                        MAX_RETRIES,
-                        retry_after.as_secs()
-                    );
-
-                    if attempt == MAX_RETRIES - 1 {
+                match response.status() {
+                    StatusCode::OK => {
+                        let data: T = response.json().await?;
+                        Ok(data)
+                    }
+                    StatusCode::TOO_MANY_REQUESTS => {
+                        let retry_after = Self::extract_retry_after(&response);
+                        warn!(
+                            "Rate limited (429), waiting {} seconds",
+                            retry_after.as_secs()
+                        );
+                        sleep(retry_after).await;
+                        Err(anyhow!("Rate limit exceeded"))
+                    }
+                    StatusCode::UNAUTHORIZED => {
                         let error_text = response.text().await.unwrap_or_default();
-                        return Err(anyhow!(
-                            "Rate limit exceeded after {} retries: {}",
-                            MAX_RETRIES,
-                            error_text
-                        ));
+                        Err(anyhow!("Authentication failed: {}", error_text))
                     }
-
-                    sleep(retry_after).await;
-                    continue;
-                }
-                StatusCode::UNAUTHORIZED => {
-                    let error_text = response.text().await.unwrap_or_default();
-                    return Err(anyhow!("Authentication failed: {}", error_text));
-                }
-                StatusCode::FORBIDDEN => {
-                    let error_text = response.text().await.unwrap_or_default();
-                    return Err(anyhow!("Access forbidden: {}", error_text));
-                }
-                StatusCode::NOT_FOUND => {
-                    let error_text = response.text().await.unwrap_or_default();
-                    return Err(anyhow!("Resource not found: {}", error_text));
-                }
-                StatusCode::INTERNAL_SERVER_ERROR
-                | StatusCode::BAD_GATEWAY
-                | StatusCode::SERVICE_UNAVAILABLE
-                | StatusCode::GATEWAY_TIMEOUT => {
-                    let status = response.status();
-                    let error_text = response.text().await.unwrap_or_default();
-
-                    if attempt == MAX_RETRIES - 1 {
-                        return Err(anyhow!(
-                            "Server error after {} retries: HTTP {} - {}",
-                            MAX_RETRIES,
-                            status,
-                            error_text
-                        ));
+                    StatusCode::FORBIDDEN => {
+                        let error_text = response.text().await.unwrap_or_default();
+                        Err(anyhow!("Access forbidden: {}", error_text))
                     }
-
-                    let delay = BASE_DELAY * (2_u32.pow(attempt));
-                    warn!(
-                        "Server error ({}), attempt {}/{}, retrying in {} seconds: {}",
-                        status,
-                        attempt + 1,
-                        MAX_RETRIES,
-                        delay.as_secs(),
-                        error_text
-                    );
-
-                    sleep(delay).await;
-                    continue;
+                    StatusCode::NOT_FOUND => {
+                        let error_text = response.text().await.unwrap_or_default();
+                        Err(anyhow!("Resource not found: {}", error_text))
+                    }
+                    StatusCode::INTERNAL_SERVER_ERROR
+                    | StatusCode::BAD_GATEWAY
+                    | StatusCode::SERVICE_UNAVAILABLE
+                    | StatusCode::GATEWAY_TIMEOUT => {
+                        let status = response.status();
+                        let error_text = response.text().await.unwrap_or_default();
+                        Err(anyhow!("Server error: HTTP {} - {}", status, error_text))
+                    }
+                    _ => {
+                        let status = response.status();
+                        let error_text = response.text().await.unwrap_or_default();
+                        Err(anyhow!("Unexpected HTTP status {}: {}", status, error_text))
+                    }
                 }
-                _ => {
-                    let status = response.status();
-                    let error_text = response.text().await.unwrap_or_default();
-                    return Err(anyhow!("Unexpected HTTP status {}: {}", status, error_text));
-                }
-            }
-        }
-
-        Err(anyhow!("Max retries exceeded"))
+            })
+            .await
     }
 
-    fn update_rate_limit_state(&mut self, response: &Response) {
-        // Atlassian uses X-RateLimit headers
-        if let Some(remaining) = response.headers().get("X-RateLimit-Remaining") {
-            if let Ok(remaining_str) = remaining.to_str() {
-                if let Ok(remaining_val) = remaining_str.parse::<u32>() {
-                    self.rate_limit_state.requests_remaining = Some(remaining_val);
-                }
-            }
-        }
-
-        if let Some(reset) = response.headers().get("X-RateLimit-Reset") {
-            if let Ok(reset_str) = reset.to_str() {
-                if let Ok(reset_timestamp) = reset_str.parse::<u64>() {
-                    let reset_time = Instant::now() + Duration::from_secs(reset_timestamp);
-                    self.rate_limit_state.reset_time = Some(reset_time);
-                }
-            }
-        }
-    }
-
-    fn extract_retry_after(&self, response: &Response) -> Duration {
+    fn extract_retry_after(response: &Response) -> Duration {
         if let Some(retry_after) = response.headers().get("Retry-After") {
             if let Ok(retry_after_str) = retry_after.to_str() {
                 if let Ok(seconds) = retry_after_str.parse::<u64>() {
@@ -179,54 +95,71 @@ impl AtlassianClient {
                 }
             }
         }
-
-        // Default retry delay if header is missing
         Duration::from_secs(60)
     }
 
-    pub async fn get_confluence_pages(
-        &mut self,
-        creds: &AtlassianCredentials,
-        space_id: &str,
-        limit: u32,
-        cursor: Option<&str>,
-        body_format: Option<&str>,
-    ) -> Result<ConfluenceGetPagesResponse> {
-        let auth_header = creds.get_basic_auth_header();
-        let mut url = format!("{}/wiki/api/v2/spaces/{}/pages", creds.base_url, space_id);
+    pub fn get_confluence_pages<'a>(
+        &'a self,
+        creds: &'a AtlassianCredentials,
+        space_id: &'a str,
+    ) -> Pin<Box<dyn Stream<Item = Result<ConfluencePage>> + Send + 'a>> {
+        Box::pin(async_stream::stream! {
+            let auth_header = creds.get_basic_auth_header();
+            let mut url = format!("{}/wiki/api/v2/spaces/{}/pages", creds.base_url, space_id);
+            let page_size = 250;
+            let params = vec![
+                ("limit", page_size.to_string()),
+                ("body-format", "storage".to_string())
+            ];
 
-        let mut params = vec![format!("limit={}", limit)];
+            loop {
+                debug!("Fetching Confluence pages from space {}: {}, params: {:?}", space_id, url, params);
 
-        if let Some(cursor_val) = cursor {
-            params.push(format!("cursor={}", urlencoding::encode(cursor_val)));
-        }
+                let client = self.client.clone();
+                let resp: Result<ConfluenceGetPagesResponse> = self
+                    .make_request(|| {
+                        client
+                            .get(&url)
+                            .query(&params)
+                            .header("Authorization", &auth_header)
+                            .header("Accept", "application/json")
+                    })
+                    .await;
 
-        if let Some(format) = body_format {
-            params.push(format!("body-format={}", format));
-        }
+                let resp = match resp {
+                    Ok(r) => r,
+                    Err(e) => {
+                        yield Err(e);
+                        return;
+                    }
+                };
 
-        if !params.is_empty() {
-            url.push_str(&format!("?{}", params.join("&")));
-        }
+                debug!("Fetched {} pages from Confluence space {}", resp.results.len(), space_id);
 
-        debug!("Fetching Confluence pages from space {}: {}", space_id, url);
+                for page in resp.results {
+                    yield Ok(page);
+                }
 
-        let client = self.client.clone();
-        let resp = self
-            .make_request(move || {
-                client
-                    .get(&url)
-                    .header("Authorization", &auth_header)
-                    .header("Accept", "application/json")
-            })
-            .await;
-
-        debug!("Raw get spaces response: {:?}", resp);
-        resp
+                debug!("Confluence get pages response links: {:?}", resp.links);
+                if let Some(links) = resp.links {
+                    if let Some(next) = links.next {
+                        let base_url = links.base;
+                        debug!("Next page available, base: {}, next: {:?}", base_url, next);
+                        url = format!("{}{}", base_url, next);
+                    } else {
+                        debug!("All pages fetched.");
+                        return;
+                    }
+                } else {
+                    debug!("No links in response.");
+                    return;
+                }
+            }
+        })
     }
 
     pub async fn get_confluence_page_by_id(
-        &mut self,
+        &self,
         creds: &AtlassianCredentials,
         page_id: &str,
         expand: &[&str],
@@ -251,21 +184,13 @@ impl AtlassianClient {
     }
 
     pub async fn get_confluence_pages_updated_since(
-        &mut self,
+        &self,
         creds: &AtlassianCredentials,
+        space_id: &str,
         since: &str,
-        limit: u32,
-        start: u32,
     ) -> Result<ConfluenceGetPagesResponse> {
         let auth_header = creds.get_basic_auth_header();
-        let cql = format!("lastModified >= '{}'", since);
-        let url = format!(
-            "{}/wiki/rest/api/content/search?cql={}&limit={}&start={}&expand=body.storage,space,version,ancestors",
-            creds.base_url,
-            urlencoding::encode(&cql),
-            limit,
-            start
-        );
+        let url = format!("{}/wiki/api/v2/spaces/{}/pages", creds.base_url, space_id);
 
         debug!(
             "Searching Confluence pages updated since {}: {}",
@@ -283,7 +208,7 @@ impl AtlassianClient {
     }
 
     pub async fn get_jira_issues(
-        &mut self,
+        &self,
         creds: &AtlassianCredentials,
         jql: &str,
         max_results: u32,
@@ -316,7 +241,7 @@ impl AtlassianClient {
     }
 
     pub async fn get_jira_issues_updated_since(
-        &mut self,
+        &self,
         creds: &AtlassianCredentials,
         since: &str,
         project_key: Option<&str>,
@@ -351,7 +276,7 @@ impl AtlassianClient {
     }
 
     pub async fn get_jira_issue_by_key(
-        &mut self,
+        &self,
         creds: &AtlassianCredentials,
         issue_key: &str,
         fields: &[&str],
@@ -383,31 +308,56 @@ impl AtlassianClient {
     }
 
     pub async fn get_confluence_spaces(
-        &mut self,
+        &self,
         creds: &AtlassianCredentials,
-        limit: u32,
-        start: u32,
-    ) -> Result<ConfluenceGetSpacesResponse> {
+    ) -> Result<Vec<ConfluenceSpace>> {
         let auth_header = creds.get_basic_auth_header();
-        let url = format!(
-            "{}/wiki/api/v2/spaces?limit={}&start={}",
-            creds.base_url, limit, start
-        );
+        let mut url = format!("{}/wiki/api/v2/spaces", creds.base_url);
+        let page_size = 250;
+        let params = vec![("limit", page_size.to_string())];
 
-        debug!("Fetching Confluence spaces: {}", url);
+        let mut results: Vec<ConfluenceSpace> = vec![];
+        loop {
+            debug!("Fetching Confluence spaces: {}, params: {:?}", url, params);
 
-        let client = self.client.clone();
-        self.make_request(move || {
-            client
-                .get(&url)
-                .header("Authorization", &auth_header)
-                .header("Accept", "application/json")
-        })
-        .await
+            let client = self.client.clone();
+            let resp: ConfluenceGetSpacesResponse = self
+                .make_request(|| {
+                    client
+                        .get(&url)
+                        .query(&params)
+                        .header("Authorization", &auth_header)
+                        .header("Accept", "application/json")
+                })
+                .await?;
+
+            debug!("Fetched {} spaces from Confluence", resp.results.len());
+            for space in resp.results {
+                results.push(space)
+            }
+
+            debug!("Confluence get spaces response links: {:?}", resp.links);
+            if let Some(links) = resp.links {
+                if let Some(next) = links.next {
+                    let base_url = links.base;
+                    debug!(
+                        "Next page of spaces available, base: {}, next: {:?}",
+                        base_url, next
+                    );
+                    url = format!("{}{}", base_url, next)
+                } else {
+                    debug!("All spaces fetched, returning.");
+                    return Ok(results);
+                }
+            } else {
+                debug!("No links in response, returning.");
+                return Ok(results);
+            }
+        }
     }
 
     pub async fn get_jira_projects(
-        &mut self,
+        &self,
         creds: &AtlassianCredentials,
         expand: &[&str],
     ) -> Result<Vec<serde_json::Value>> {
@@ -428,9 +378,5 @@ impl AtlassianClient {
                 .header("Accept", "application/json")
         })
         .await
-    }
-
-    pub fn get_rate_limit_info(&self) -> &RateLimitState {
-        &self.rate_limit_state
     }
 }

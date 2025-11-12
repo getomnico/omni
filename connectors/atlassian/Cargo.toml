@@ -27,3 +27,5 @@ redis = { workspace = true, features = ["tokio-comp"] }
 regex = "1.10"
 base64 = "0.22"
 urlencoding = "2.1"
+async-stream = "0.3"
+futures = { workspace = true }

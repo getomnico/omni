@@ -15,7 +15,7 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["Clio Contributors"]
+authors = ["Omni Contributors"]
 license = "Apache-2.0"
 repository = "https://github.com/yourusername/omni"
 

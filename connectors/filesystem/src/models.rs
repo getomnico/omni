@@ -73,7 +73,7 @@ impl FilesystemFile {
         // In the future, this could be enhanced to map actual filesystem permissions
         let permissions = DocumentPermissions {
             public: false,
-            users: vec![], // TODO: Map filesystem users/groups to Clio users
+            users: vec![], // TODO: Map filesystem users/groups to users
             groups: vec![],
         };
 
