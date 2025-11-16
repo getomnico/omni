@@ -14,12 +14,18 @@
         SidebarTrigger,
         SidebarRail,
     } from '$lib/components/ui/sidebar/index.js'
-    import { Tooltip, TooltipContent, TooltipTrigger } from '$lib/components/ui/tooltip/index.js'
+    import {
+        Tooltip,
+        TooltipProvider,
+        TooltipContent,
+        TooltipTrigger,
+    } from '$lib/components/ui/tooltip/index.js'
     import type { LayoutData } from './$types.js'
-    import { MessageCirclePlus } from '@lucide/svelte'
+    import { LogOut, MessageCirclePlus, Settings } from '@lucide/svelte'
     import type { Snippet } from 'svelte'
     import { cn } from '$lib/utils'
     import { page } from '$app/state'
+    import * as Avatar from '$lib/components/ui/avatar'
 
     interface Props {
         data: LayoutData
@@ -41,21 +47,23 @@
     <Sidebar collapsible="icon" variant="sidebar">
         <SidebarHeader class="h-16">
             <div class="flex flex-1 items-center justify-start gap-2">
-                <Tooltip>
-                    <TooltipTrigger>
-                        <SidebarTrigger class="cursor-pointer" />
-                    </TooltipTrigger>
-                    <TooltipContent>
-                        <p>Toggle sidebar</p>
-                    </TooltipContent>
-                </Tooltip>
+                <TooltipProvider delayDuration={300}>
+                    <Tooltip>
+                        <TooltipTrigger>
+                            <SidebarTrigger class="cursor-pointer" />
+                        </TooltipTrigger>
+                        <TooltipContent>
+                            <p>Toggle sidebar</p>
+                        </TooltipContent>
+                    </Tooltip>
+                </TooltipProvider>
                 <a href="/" class="flex items-center group-data-[collapsible=icon]:hidden">
                     <span class="text-xl font-bold group-data-[collapsible=icon]:hidden">omni</span>
                 </a>
             </div>
         </SidebarHeader>
-        <SidebarContent>
-            <SidebarGroup>
+        <SidebarContent class="flex flex-col">
+            <SidebarGroup class="flex-1">
                 <Button
                     href="/"
                     class="my-2 flex w-full cursor-pointer items-center justify-start has-[>svg]:px-2"
@@ -97,6 +105,51 @@
                     </SidebarMenu>
                 </SidebarGroupContent>
             </SidebarGroup>
+            <SidebarGroup>
+                <div class="flex flex-col gap-1">
+                    {#if data.user.role === 'admin'}
+                        <div class="flex justify-start">
+                            <Button
+                                variant="ghost"
+                                href="/admin/integrations"
+                                class="flex w-full justify-start has-[>svg]:px-2">
+                                <Settings />
+                                <span class="group-data-[collapsible=icon]:hidden">Settings</span>
+                            </Button>
+                        </div>
+                    {/if}
+                    <div class="flex justify-between py-2">
+                        <div class="flex min-w-0 flex-1 items-center gap-1.5">
+                            <Avatar.Root>
+                                <Avatar.Fallback
+                                    >{data.user.email
+                                        .slice(0, 2)
+                                        .toLocaleUpperCase()}</Avatar.Fallback>
+                            </Avatar.Root>
+                            <span
+                                class="text-muted-foreground truncate overflow-hidden text-sm group-data-[collapsible=icon]:hidden">
+                                {data.user.email}
+                            </span>
+                        </div>
+                        <TooltipProvider delayDuration={300}>
+                            <Tooltip>
+                                <TooltipTrigger>
+                                    <Button
+                                        size="icon"
+                                        variant="ghost"
+                                        class="cursor-pointer group-data-[collapsible=icon]:hidden"
+                                        onclick={logout}>
+                                        <LogOut class="h-4 w-4" />
+                                    </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                    <p>Logout</p>
+                                </TooltipContent>
+                            </Tooltip>
+                        </TooltipProvider>
+                    </div>
+                </div>
+            </SidebarGroup>
         </SidebarContent>
         <SidebarRail />
     </Sidebar>
@@ -104,52 +157,7 @@
     <!-- Main content area -->
     <div class="flex max-h-[100vh] w-full flex-col">
         <header class={cn('bg-background sticky top-0 z-50 transition-shadow')}>
-            <div class="flex h-16 items-center justify-end px-6">
-                <div class="flex items-center space-x-4">
-                    <nav class="hidden space-x-4 md:flex">
-                        {#if data.user.role === 'admin'}
-                            <div class="group relative">
-                                <button
-                                    class="text-muted-foreground hover:text-foreground flex items-center space-x-1">
-                                    <span>Admin</span>
-                                    <svg
-                                        class="h-4 w-4"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        viewBox="0 0 24 24">
-                                        <path
-                                            stroke-linecap="round"
-                                            stroke-linejoin="round"
-                                            stroke-width="2"
-                                            d="M19 9l-7 7-7-7"></path>
-                                    </svg>
-                                </button>
-                                <div
-                                    class="bg-card border-border invisible absolute top-full right-0 z-50 mt-1 w-48 rounded-md border opacity-0 shadow-lg transition-all duration-200 group-hover:visible group-hover:opacity-100">
-                                    <div class="py-1">
-                                        <a
-                                            href="/admin/users"
-                                            class="text-foreground hover:bg-muted block px-4 py-2 text-sm">
-                                            User Management
-                                        </a>
-                                        <a
-                                            href="/admin/integrations"
-                                            class="text-foreground hover:bg-muted block px-4 py-2 text-sm">
-                                            Integrations
-                                        </a>
-                                    </div>
-                                </div>
-                            </div>
-                        {/if}
-                    </nav>
-                    <span class="text-muted-foreground text-sm">
-                        {data.user.email}
-                        <span class="text-muted-foreground/80 text-xs">({data.user.role})</span>
-                    </span>
-                    <Button variant="outline" size="sm" onclick={logout} class="cursor-pointer"
-                        >Sign out</Button>
-                </div>
-            </div>
+            <div class="flex h-16 items-center justify-end px-6"></div>
         </header>
 
         <!-- Main content -->
