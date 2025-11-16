@@ -9,7 +9,17 @@
         TextDelta,
         InputJSONDelta,
     } from '@anthropic-ai/sdk/resources/messages'
-    import { Send, Copy, ThumbsUp, ThumbsDown, Share, Check, CircleStop } from '@lucide/svelte'
+    import {
+        Copy,
+        ThumbsUp,
+        ThumbsDown,
+        Share,
+        Check,
+        TriangleAlert,
+        AlertCircleIcon,
+        AlertCircle,
+        CircleAlert,
+    } from '@lucide/svelte'
     import { marked } from 'marked'
     import { onMount } from 'svelte'
     import type { PageProps } from './$types'
@@ -27,6 +37,8 @@
     import { type ChatMessage } from '$lib/server/db/schema'
     import type { ContentBlockParam } from '@anthropic-ai/sdk/resources.js'
     import { afterNavigate } from '$app/navigation'
+    import UserInput from '$lib/components/user-input.svelte'
+    import * as Alert from '$lib/components/ui/alert'
 
     let { data }: PageProps = $props()
     let chatMessages = $state<ChatMessage[]>([...data.messages])
@@ -36,7 +48,6 @@
     })
 
     let userMessage = $state('')
-    let inputRef: HTMLDivElement
     let chatContainerRef: HTMLDivElement
     let lastUserMessageRef: HTMLDivElement | null = $state(null)
 
@@ -299,6 +310,7 @@
         const eventSource = new EventSource(`/api/chat/${chatId}/stream`, { withCredentials: true })
 
         let streamCompleted = false
+        let messageEventsReceived = 0
 
         const updateStreamingResponse = (
             block: ToolUseBlock | TextDelta | InputJSONDelta | ToolResultBlockParam,
@@ -418,6 +430,8 @@
                 scrollToBottom()
             } catch (err) {
                 console.warn('Failed to parse SSE data:', event.data, err)
+            } finally {
+                messageEventsReceived += 1
             }
         })
 
@@ -425,6 +439,10 @@
             streamCompleted = true
             isStreaming = false
             eventSource.close()
+
+            if (messageEventsReceived === 0 && !error) {
+                error = 'Failed to generate response. Please try again.'
+            }
         })
 
         eventSource.addEventListener('error', (event) => {
@@ -475,13 +493,6 @@
 
             // Start streaming AI response
             streamResponse(data.chat.id)
-        }
-    }
-
-    async function handleKeyPress(event: KeyboardEvent) {
-        if (event.key === 'Enter' && !event.shiftKey) {
-            event.preventDefault()
-            await handleSubmit()
         }
     }
 </script>
@@ -634,9 +645,11 @@
             {#if isStreaming || error}
                 <div class="flex px-2">
                     {#if error}
-                        <div class="text-sm text-red-600">
-                            {error}
-                        </div>
+                        <Alert.Root variant="destructive">
+                            <CircleAlert />
+                            <Alert.Title>{error}</Alert.Title>
+                            <!-- <Alert.Description>{error}</Alert.Description> -->
+                        </Alert.Root>
                     {:else if isStreaming}
                         <span class="mt-2 flex items-center gap-1">
                             <span class="thinking-dot"></span>
@@ -647,45 +660,18 @@
         </div>
 
         <!-- Input -->
-        <div class="bg-background sticky bottom-0 flex justify-center pb-2">
-            <div
-                class="bg-card flex max-h-96
-                min-h-[1.5rem] w-full max-w-4xl cursor-text
-                flex-col gap-2 rounded-xl border border-gray-200 p-4 shadow-sm"
-                onclick={() => inputRef.focus()}
-                onkeydown={handleKeyPress}
-                role="button"
-                tabindex="0">
-                <div
-                    bind:this={inputRef}
-                    bind:innerText={userMessage}
-                    class={cn(
-                        'before:text-muted-foreground relative cursor-text overflow-y-auto before:absolute before:inset-0 focus:outline-none',
-                        userMessage.trim()
-                            ? "before:content-['']"
-                            : 'before:content-[attr(data-placeholder)]',
-                    )}
-                    contenteditable="true"
-                    role="textbox"
-                    aria-multiline="true"
-                    data-placeholder="Ask a follow-up...">
-                </div>
-                <div class="flex w-full justify-end">
-                    {#if isStreaming}
-                        <Button size="icon" class="cursor-pointer rounded-full" onclick={() => {}}>
-                            <CircleStop class="h-4 w-4" />
-                        </Button>
-                    {:else}
-                        <Button
-                            size="icon"
-                            class="cursor-pointer"
-                            onclick={handleSubmit}
-                            disabled={!userMessage.trim()}>
-                            <Send class="h-4 w-4" />
-                        </Button>
-                    {/if}
-                </div>
-            </div>
+        <div class="bg-background sticky bottom-0 flex justify-center pb-4">
+            <UserInput
+                bind:value={userMessage}
+                onSubmit={handleSubmit}
+                onInput={(v) => (userMessage = v)}
+                modeSelectorEnabled={false}
+                placeholders={{
+                    chat: 'Ask a follow-up...',
+                    search: 'Search for something else...',
+                }}
+                {isStreaming}
+                maxWidth="max-w-4xl" />
         </div>
     </div>
 </div>

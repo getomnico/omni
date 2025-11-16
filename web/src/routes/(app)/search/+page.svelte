@@ -35,7 +35,8 @@
         jira: 'JIRA',
         slack: 'Slack',
         github: 'GitHub',
-        local_files: 'Local Files',
+        local_files: 'Files',
+        web: 'Web',
     }
 
     let allFacets = $derived(data.searchResults?.facets || [])
@@ -112,7 +113,6 @@
         sourceId: string,
         contentType: string,
     ): { iconPath: string | null; useFileText: boolean } {
-        console.log(`Looking up icon for source id ${sourceId}`)
         const sourceType = sourcesLookup.get(sourceId)
         if (!sourceType) {
             return { iconPath: null, useFileText: true }
@@ -150,7 +150,7 @@
     <title>Search Results - Omni</title>
 </svelte:head>
 
-<div class="mx-auto mt-8 max-w-screen-xl pb-24">
+<div class="mx-auto mt-8 max-w-screen-xl px-8 pb-24">
     <!-- Search Header -->
     <div class="mb-8">
         <div class="mb-4 flex items-center gap-4">
@@ -171,8 +171,8 @@
 
         {#if data.searchResults}
             <div class="px-6 text-sm text-gray-600">
-                Found {data.searchResults.total_count} results in {data.searchResults
-                    .query_time_ms}ms for "{data.searchResults.query}"
+                Found {data.searchResults.total_count} results in
+                {data.searchResults.query_time_ms}ms for "{data.searchResults.query}"
                 {#if getTotalSelectedFilters() > 0}
                     <span class="ml-2"
                         >• {getTotalSelectedFilters()} filter{getTotalSelectedFilters() > 1

@@ -4,6 +4,8 @@
     import type { Snippet } from 'svelte'
     import '../../../app.css'
     import type { LayoutData } from './$types.js'
+    import omniLogoLight from '$lib/images/icons/omni-logo-256.png'
+    import omniLogoDark from '$lib/images/icons/omni-logo-dark-256.png'
 
     interface Props {
         data: LayoutData
@@ -23,9 +25,19 @@
 <div class="flex max-h-[100vh] w-full flex-col">
     <header class={cn('bg-background sticky top-0 z-50 transition-shadow')}>
         <div class="flex h-16 items-center justify-between px-6">
-            <a href="/" class="flex items-center group-data-[collapsible=icon]:hidden">
-                <span class="text-xl font-bold group-data-[collapsible=icon]:hidden">omni</span>
-            </a>
+            <div class="flex items-center gap-2 text-center">
+                <a href="/" class="flex items-center gap-2 group-data-[collapsible=icon]:hidden">
+                    <img
+                        src={omniLogoLight}
+                        alt="Omni logo"
+                        class="h-6 w-6 rounded-sm dark:hidden" />
+                    <img
+                        src={omniLogoDark}
+                        alt="Omni logo"
+                        class="hidden h-6 w-6 rounded-sm dark:block" />
+                    <h1 class="text-foreground text-xl font-bold">omni</h1>
+                </a>
+            </div>
             <div class="flex items-center space-x-4">
                 <nav class="hidden space-x-4 md:flex">
                     {#if data.user.role === 'admin'}

@@ -1,26 +1,26 @@
 <script lang="ts">
-    import { Card, CardContent, CardHeader, CardTitle } from '$lib/components/ui/card'
-    import { Button } from '$lib/components/ui/button'
-    import * as Popover from '$lib/components/ui/popover'
     import type { PageProps } from './$types'
-    import { Input } from '$lib/components/ui/input'
-    import { Search, Clock, History, Loader2, Send } from '@lucide/svelte'
+    import { Search } from '@lucide/svelte'
     import { goto } from '$app/navigation'
-    import { cn } from '$lib/utils'
     import omniLogoLight from '$lib/images/icons/omni-logo-256.png'
     import omniLogoDark from '$lib/images/icons/omni-logo-dark-256.png'
+    import UserInput, { type InputMode } from '$lib/components/user-input.svelte'
 
     let { data }: PageProps = $props()
 
     let searchQuery = $state('')
     let popoverOpen = $state(false)
-    let popoverContainer: HTMLDivElement | undefined = $state()
     let isSearching = $state(false)
 
-    async function handleSearch() {
+    async function handleSearch(inputMode: InputMode) {
         console.log('calling handleSearch', searchQuery)
 
         if (searchQuery.trim() && !isSearching) {
+            if (inputMode === 'search') {
+                goto(`/search?q=${encodeURIComponent(searchQuery.trim())}`)
+                return
+            }
+
             const response = await fetch(`/api/chat`, {
                 method: 'POST',
                 headers: {
@@ -58,44 +58,29 @@
             isSearching = true
             popoverOpen = false
 
-            if (!data.aiFirstSearchEnabled) {
-                goto(`/search?q=${encodeURIComponent(searchQuery.trim())}`)
-            } else {
-                goto(`/chat/${chatId}`, {
-                    invalidateAll: true,
-                    state: {
-                        stream: true,
-                    },
-                })
-            }
-        }
-    }
-
-    function handleKeyPress(event: KeyboardEvent) {
-        console.log('handle key press')
-        if (event.key === 'Enter') {
-            handleSearch()
+            goto(`/chat/${chatId}`, {
+                invalidateAll: true,
+                state: {
+                    stream: true,
+                },
+            })
         }
     }
 
     function selectRecentSearch(query: string) {
-        console.log('select recent search')
         searchQuery = query
         popoverOpen = false
-        handleSearch()
+        handleSearch('search')
     }
 
-    function handleFocus(e: any) {
-        console.log('handle focus')
-        if (data.recentSearches && data.recentSearches.length > 0) {
-            popoverOpen = true
-        }
-    }
-
-    function handleBlur() {
-        console.log('handle blur')
-        popoverOpen = false
-    }
+    // Map recent searches to popover items format
+    const popoverItems = $derived(
+        data.recentSearches?.map((query) => ({
+            label: query,
+            icon: Search,
+            onClick: () => selectRecentSearch(query),
+        })) || [],
+    )
 </script>
 
 <svelte:head>
@@ -105,83 +90,27 @@
 <div class="container mx-auto px-4">
     <!-- Centered Search Section -->
     <div class="flex min-h-[60vh] flex-col items-center justify-center">
-        <div class="mb-8 flex flex-col items-center text-center">
-            <img
-                src={omniLogoLight}
-                alt="Omni logo"
-                class="mb-6 h-12 w-12 rounded-lg dark:hidden" />
-            <img
-                src={omniLogoDark}
-                alt="Omni logo"
-                class="mb-6 hidden h-12 w-12 rounded-lg dark:block" />
-            <h1 class="text-foreground mb-4 text-4xl font-bold">Welcome to Omni</h1>
-            <p class="text-muted-foreground text-lg">
-                Your AI copilot for work. Ask questions, create content, and get things done.
-            </p>
+        <div class="mb-6 flex items-center gap-2 text-center">
+            <img src={omniLogoLight} alt="Omni logo" class="h-8 w-8 rounded-lg dark:hidden" />
+            <img src={omniLogoDark} alt="Omni logo" class="hidden h-8 w-8 rounded-lg dark:block" />
+            <h1 class="text-foreground text-3xl font-bold">omni</h1>
         </div>
 
         <!-- Search Box -->
-        <div class="w-full max-w-2xl" bind:this={popoverContainer}>
-            <div
-                class={cn(
-                    'flex items-center border border-gray-200 bg-white shadow-sm',
-                    popoverOpen ? 'rounded-t-xl' : 'rounded-xl',
-                )}>
-                <Input
-                    type="text"
-                    bind:value={searchQuery}
-                    placeholder="Ask anything..."
-                    class="text-md md:text-md flex-1 border-none bg-transparent px-4 shadow-none focus:border-none focus:ring-0 focus:outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
-                    onkeypress={handleKeyPress}
-                    onfocus={handleFocus}
-                    onblur={handleBlur} />
-                <Button
-                    class="m-2 cursor-pointer rounded-lg px-6 py-2"
-                    onclick={handleSearch}
-                    disabled={!searchQuery.trim() || isSearching}>
-                    {#if isSearching}
-                        <Loader2 class="h-4 w-4 animate-spin" />
-                    {:else}
-                        <Send class="h-4 w-4" />
-                    {/if}
-                </Button>
-            </div>
-            <div class="" bind:this={popoverContainer}></div>
-
-            <Popover.Root open={popoverOpen}>
-                {#if data.recentSearches && data.recentSearches.length > 0}
-                    <Popover.Content
-                        class="w-[42rem] max-w-2xl rounded-b-xl p-0"
-                        align="start"
-                        sideOffset={-1}
-                        trapFocus={false}
-                        customAnchor={popoverContainer}
-                        onOpenAutoFocus={(e) => {
-                            e.preventDefault()
-                        }}
-                        onCloseAutoFocus={(e) => {
-                            e.preventDefault()
-                        }}
-                        onFocusOutside={(e) => e.preventDefault()}>
-                        <div class="w-full border bg-white">
-                            <div class="py-2">
-                                {#each data.recentSearches as recentQuery}
-                                    <button
-                                        class="hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground w-full px-4 py-2.5 text-left text-sm transition-colors focus:outline-none"
-                                        onclick={() => selectRecentSearch(recentQuery)}>
-                                        <div class="flex items-center gap-3">
-                                            <Clock class="text-muted-foreground h-4 w-4" />
-                                            <span class="font-semibold text-violet-500"
-                                                >{recentQuery}</span>
-                                        </div>
-                                    </button>
-                                {/each}
-                            </div>
-                        </div>
-                    </Popover.Content>
-                {/if}
-            </Popover.Root>
-        </div>
+        <UserInput
+            bind:value={searchQuery}
+            onSubmit={handleSearch}
+            onInput={(v) => (searchQuery = v)}
+            modeSelectorEnabled={true}
+            placeholders={{
+                search: 'Search for anything...',
+                chat: 'Ask anything...',
+            }}
+            isLoading={isSearching}
+            {popoverItems}
+            showPopover={popoverOpen}
+            onPopoverChange={(open) => (popoverOpen = open)}
+            maxWidth="max-w-2xl" />
 
         <!-- Suggested Questions -->
         {#if data.suggestedQuestions && data.suggestedQuestions.length > 0}

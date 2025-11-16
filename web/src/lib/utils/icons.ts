@@ -8,6 +8,8 @@ import googleSlidesIcon from '$lib/images/icons/google-slides.svg'
 import gmailIcon from '$lib/images/icons/gmail.svg'
 import slackIcon from '$lib/images/icons/slack.svg'
 import atlassianIcon from '$lib/images/icons/atlassian.svg'
+import confluenceIcon from '$lib/images/icons/confluence.svg'
+import jiraIcon from '$lib/images/icons/jira.svg'
 
 // Google Workspace MIME types
 const GOOGLE_DOCS_MIMETYPES = [
@@ -51,6 +53,10 @@ export function getDocumentIconPath(sourceType: string, contentType: string): st
         }
         // Default to generic Google Drive icon for other file types
         return googleDriveIcon
+    } else if (sourceType === SourceType.CONFLUENCE) {
+        return confluenceIcon
+    } else if (sourceType === SourceType.JIRA) {
+        return jiraIcon
     }
 
     // For other source types, return null (will use fallback icon)
