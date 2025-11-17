@@ -190,7 +190,11 @@
 
     <!-- Actions -->
     <div class="flex justify-end gap-2 pt-4">
-        <Button variant="outline" onclick={() => onCancel?.()} disabled={isSubmitting}>
+        <Button
+            variant="outline"
+            onclick={() => onCancel?.()}
+            disabled={isSubmitting}
+            class="cursor-pointer">
             Cancel
         </Button>
         <Button onclick={handleSubmit} disabled={isSubmitting} class="cursor-pointer">

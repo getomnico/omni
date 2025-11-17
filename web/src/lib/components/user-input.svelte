@@ -234,9 +234,11 @@
                                     {#if item.icon}
                                         <svelte:component
                                             this={item.icon}
-                                            class="text-muted-foreground h-4 w-4" />
+                                            class="text-muted-foreground h-4 w-4 shrink-0" />
                                     {/if}
-                                    <span class="text-muted-foreground text-sm">{item.label}</span>
+                                    <span
+                                        class="text-muted-foreground flex-1 truncate overflow-hidden text-sm"
+                                        >{item.label}</span>
                                 </div>
                             </button>
                         {/each}

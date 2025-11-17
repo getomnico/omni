@@ -22,7 +22,7 @@
     }
 </script>
 
-<div class="flex max-h-[100vh] w-full flex-col">
+<!-- <div class="flex max-h-[100vh] w-full flex-col">
     <header class={cn('bg-background sticky top-0 z-50 transition-shadow')}>
         <div class="flex h-16 items-center justify-between px-6">
             <div class="flex items-center gap-2 text-center">
@@ -85,8 +85,9 @@
         </div>
     </header>
 
-    <!-- Main content -->
     <main class="min-h-0 flex-1">
         {@render children()}
     </main>
-</div>
+</div> -->
+
+{@render children()}

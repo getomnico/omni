@@ -77,7 +77,7 @@
                         class="text-muted-foreground mt-4 p-1.5 text-xs group-data-[collapsible=icon]:hidden">
                         Recent chats
                     </p>
-                    <SidebarMenu class="gap-1.5 group-data-[collapsible=icon]:hidden">
+                    <SidebarMenu class="gap-1 group-data-[collapsible=icon]:hidden">
                         {#if data.recentChats.length > 0}
                             {#each data.recentChats as chat}
                                 <SidebarMenuItem>
@@ -111,7 +111,7 @@
                         <div class="flex justify-start">
                             <Button
                                 variant="ghost"
-                                href="/admin/integrations"
+                                href="/admin/settings"
                                 class="flex w-full justify-start has-[>svg]:px-2">
                                 <Settings />
                                 <span class="group-data-[collapsible=icon]:hidden">Settings</span>
