@@ -20,6 +20,7 @@
     import GoogleWorkspaceSetup from '$lib/components/google-workspace-setup.svelte'
     import AtlassianConnectorSetup from '$lib/components/atlassian-connector-setup.svelte'
     import WebConnectorSetupDialog from '$lib/components/web-connector-setup-dialog.svelte'
+    import { SourceType } from '$lib/types'
 
     let { data }: PageProps = $props()
 
@@ -53,21 +54,21 @@
         window.location.reload()
     }
 
-    function getSourceIcon(sourceType: string) {
+    function getSourceIcon(sourceType: SourceType) {
         switch (sourceType) {
-            case 'google_drive':
+            case SourceType.GOOGLE_DRIVE:
                 return googleDriveLogo
-            case 'gmail':
+            case SourceType.GMAIL:
                 return gmailLogo
-            case 'slack':
+            case SourceType.SLACK:
                 return slackLogo
-            case 'confluence':
+            case SourceType.CONFLUENCE:
                 return confluenceLogo
-            case 'jira':
+            case SourceType.JIRA:
                 return jiraLogo
-            case 'web':
+            case SourceType.WEB:
                 return null
-            case 'local_files':
+            case SourceType.LOCAL_FILES:
                 return null
             default:
                 return null
@@ -97,6 +98,25 @@
             ? 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400'
             : 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300'
     }
+
+    function getConfigureUrl(sourceType: SourceType): string {
+        switch (sourceType) {
+            case SourceType.GOOGLE_DRIVE:
+            case SourceType.GMAIL:
+                return '/admin/settings/integrations/google'
+            case SourceType.CONFLUENCE:
+            case SourceType.JIRA:
+                return '/admin/settings/integrations/atlassian'
+            case SourceType.SLACK:
+                return '/admin/settings/integrations/slack'
+            case SourceType.WEB:
+                return '/admin/settings/integrations/web'
+            case SourceType.LOCAL_FILES:
+                return '/admin/settings/integrations/filesystem'
+            default:
+                return '#'
+        }
+    }
 </script>
 
 <svelte:head>
@@ -123,7 +143,7 @@
                     {#each data.connectedSources as source}
                         <div
                             class="flex max-w-lg items-center justify-between rounded-lg border px-4 py-3">
-                            <div class="flex items-center gap-3">
+                            <div class="flex items-start gap-3">
                                 {#if getSourceIcon(source.sourceType)}
                                     <img
                                         src={getSourceIcon(source.sourceType)}
@@ -144,9 +164,6 @@
                                     </div>
                                     <div
                                         class="text-muted-foreground flex items-center gap-2 text-xs">
-                                        <span class="capitalize"
-                                            >{source.sourceType.replace('_', ' ')}</span>
-                                        <span>•</span>
                                         <span>Last sync: {formatDate(source.lastSyncAt)}</span>
                                     </div>
                                 </div>
@@ -155,7 +172,11 @@
                                 <Button variant="outline" size="sm" class="cursor-pointer">
                                     Sync
                                 </Button>
-                                <Button variant="outline" size="sm" class="cursor-pointer">
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    class="cursor-pointer"
+                                    href={getConfigureUrl(source.sourceType as SourceType)}>
                                     Configure
                                 </Button>
                             </div>

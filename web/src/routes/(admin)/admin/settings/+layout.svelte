@@ -11,10 +11,6 @@
     }
 
     let { children }: Props = $props()
-
-    function goBack() {
-        window.history.back()
-    }
 </script>
 
 <Sidebar.Provider>
@@ -22,7 +18,7 @@
         <Sidebar.Header class="flex justify-start">
             <Button
                 variant="ghost"
-                onclick={goBack}
+                href="/"
                 class="text-muted-foreground flex w-fit cursor-pointer justify-start text-sm">
                 <ArrowLeft class="h-4 w-4" />
                 Back
