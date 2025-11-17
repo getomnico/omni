@@ -454,27 +454,18 @@ async def generate_chat_title(request: Request, chat_id: str = Path(..., descrip
         # Get messages from database
         messages_repo = MessagesRepository()
         chat_messages = await messages_repo.get_by_chat(chat_id)
-        if not chat_messages or len(chat_messages) < 2:
+        if not chat_messages:
             raise HTTPException(status_code=400, detail="Not enough messages to generate title")
 
-        # Build conversation context from first few messages
-        # Take first user message and first assistant response
+        # Use only the user's first message to generate the title
         conversation_text = ""
-        for msg in chat_messages[:3]:
+        for msg in chat_messages:
             role = msg.message.get('role', 'unknown')
-
             if role == 'user':
                 content = msg.message.get('content', '')
                 if isinstance(content, str):
                     conversation_text += f"User: {content}\n"
-            elif role == 'assistant':
-                content = msg.message.get('content', [])
-                if isinstance(content, list):
-                    text_parts = [block.get('text', '') for block in content if block.get('type') == 'text']
-                    if text_parts:
-                        conversation_text += f"Assistant: {' '.join(text_parts)}\n"
-                elif isinstance(content, str):
-                    conversation_text += f"Assistant: {content}\n"
+                    break
 
         if not conversation_text.strip():
             raise HTTPException(status_code=400, detail="Could not extract conversation content")

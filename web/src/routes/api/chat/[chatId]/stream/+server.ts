@@ -48,6 +48,12 @@ export const GET: RequestHandler = async ({ params, locals }) => {
         return json({ error: 'chatId parameter is required' }, { status: 400 })
     }
 
+    const chat = await chatRepository.get(chatId)
+    if (!chat) {
+        logger.error('Chat not found', undefined, { chatId })
+        return json({ error: 'Chat not found' }, { status: 404 })
+    }
+
     logger.debug('Sending GET request to AI service to receive the streaming response', { chatId })
 
     try {
@@ -87,17 +93,23 @@ export const GET: RequestHandler = async ({ params, locals }) => {
         const stream = new ReadableStream({
             async start(controller) {
                 try {
+                    if (!chat.title) {
+                        logger.info('Generating title for chat', { chatId })
+                        triggerTitleGeneration(chatId, logger)
+                            .then((title) => {
+                                logger.info(`Generated title for chat ${chatId}: ${title}`)
+                                const event = `event: title\ndata: ${title}\n\n`
+                                controller.enqueue(encoder.encode(event))
+                            })
+                            .catch((err) =>
+                                logger.error(`Failed to generate title for chat ${chatId}`, err),
+                            )
+                    }
+
                     while (true) {
                         const { done, value } = await reader.read()
 
                         if (done) {
-                            // Stream completed, trigger title generation
-                            triggerTitleGeneration(chatId, logger).catch((err) => {
-                                logger.warn(
-                                    `Failed to trigger title generation for chat ${chatId}`,
-                                    err,
-                                )
-                            })
                             controller.close()
                             break
                         }

@@ -36,7 +36,7 @@
     import * as Tooltip from '$lib/components/ui/tooltip'
     import { type ChatMessage } from '$lib/server/db/schema'
     import type { ContentBlockParam } from '@anthropic-ai/sdk/resources.js'
-    import { afterNavigate } from '$app/navigation'
+    import { afterNavigate, invalidate } from '$app/navigation'
     import UserInput from '$lib/components/user-input.svelte'
     import * as Alert from '$lib/components/ui/alert'
 
@@ -378,6 +378,12 @@
             if (lastMessage && lastMessage.id.toString().startsWith('temp-')) {
                 lastMessage.id = messageId
             }
+        })
+
+        eventSource.addEventListener('title', (event) => {
+            const title = event.data
+            console.log(`Received title: ${title}`)
+            invalidate('app:recent_chats') // This will force a re-fetch of recent chats and update the title in the sidebar
         })
 
         eventSource.addEventListener('message', (event) => {
