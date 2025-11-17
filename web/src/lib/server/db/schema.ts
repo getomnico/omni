@@ -1,5 +1,17 @@
-import { pgTable, text, timestamp, boolean, jsonb, bigint, integer } from 'drizzle-orm/pg-core'
+import {
+    pgTable,
+    text,
+    timestamp,
+    boolean,
+    jsonb,
+    bigint,
+    integer,
+    real,
+    pgEnum,
+    check,
+} from 'drizzle-orm/pg-core'
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages.js'
+import { sql } from 'drizzle-orm'
 
 export const user = pgTable('users', {
     id: text('id').primaryKey(),
@@ -164,6 +176,13 @@ export const responseFeedback = pgTable('response_feedback', {
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
 
+export const configuration = pgTable('configuration', {
+    key: text('key').primaryKey(),
+    value: jsonb('value').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+})
+
 export type User = typeof user.$inferSelect
 export type Source = typeof sources.$inferSelect
 export type Document = typeof documents.$inferSelect
@@ -176,3 +195,4 @@ export type MagicLink = typeof magicLinks.$inferSelect
 export type Chat = typeof chats.$inferSelect
 export type ChatMessage = typeof chatMessages.$inferSelect
 export type ResponseFeedback = typeof responseFeedback.$inferSelect
+export type Configuration = typeof configuration.$inferSelect
