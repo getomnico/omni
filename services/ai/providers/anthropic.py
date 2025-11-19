@@ -32,7 +32,14 @@ class AnthropicProvider(LLMProvider):
         """Stream response from Anthropic Claude API."""
         try:
             # Use provided messages or create from prompt
-            msg_list = messages or [{"role": "user", "content": prompt}]
+            msg_list = messages or [{"role": "user", "content": [ { "type": "text", "text": prompt } ]}]
+
+            # Add prompt caching field
+            last_msg = msg_list[-1]
+            if 'content' in last_msg and isinstance(last_msg['content'], list):
+                last_msg_blocks = last_msg['content']
+                if len(last_msg_blocks) > 0:
+                    last_msg_blocks[-1]['cache_control'] = { 'type': 'ephemeral' }
 
             # Prepare request parameters
             request_params = {
@@ -45,6 +52,11 @@ class AnthropicProvider(LLMProvider):
 
             # Add tools if provided
             if tools:
+                if len(tools) > 0:
+                    last_tool = tools[-1]
+                    last_tool['cache_control'] = {
+                        'type': 'ephemeral'
+                    }
                 request_params["tools"] = tools
                 logger.info(f"[ANTHROPIC] Sending request with {len(tools)} tools: {[t['name'] for t in tools]}")
             else:
