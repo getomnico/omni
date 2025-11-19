@@ -125,7 +125,6 @@ export function parseUrlMetadata(url: string): { sourceType?: string; contentTyp
 
 // Infer source type from URL patterns (fallback)
 export function inferSourceFromUrl(url: string): SourceType | null {
-    console.log('inferring source from url', url)
     if (!url) return null
 
     const urlLower = url.toLowerCase()
@@ -145,12 +144,10 @@ export function inferSourceFromUrl(url: string): SourceType | null {
 
 // Get icon from search result URL (main function for tool-message component)
 export function getIconFromSearchResult(sourceUrl: string): string | null {
-    console.log('get icon from search result', sourceUrl)
     if (!sourceUrl) return null
 
     // First, try to parse metadata from URL hash
     const metadata = parseUrlMetadata(sourceUrl)
-    console.log('metadata', metadata)
 
     // Try to get icon from content_type if available
     if (metadata.contentType) {
@@ -177,7 +174,6 @@ export function getIconFromSearchResult(sourceUrl: string): string | null {
 }
 
 export function getSourceDisplayName(sourceType: SourceType) {
-    console.log('source display name', sourceType)
     const sourceDisplayNames: Record<string, string> = {
         [SourceType.GOOGLE_DRIVE]: 'Google Drive',
         [SourceType.GMAIL]: 'Gmail',

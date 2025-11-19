@@ -22,7 +22,8 @@
 
     interface UserInputProps {
         value: string
-        onSubmit: (inputMode: InputMode) => void | Promise<void>
+        inputMode: InputMode
+        onSubmit: () => void | Promise<void>
         onInput: (value: string) => void
         modeSelectorEnabled: boolean
         placeholders?: Record<InputMode, string>
@@ -45,6 +46,7 @@
 
     let {
         value = $bindable(''),
+        inputMode = $bindable(),
         onSubmit,
         onInput,
         modeSelectorEnabled = true,
@@ -62,7 +64,6 @@
 
     let inputRef: HTMLDivElement
     let popoverContainer: HTMLDivElement | undefined = $state()
-    let inputMode: InputMode = $state('chat')
     let placeholder = $derived(placeholders[inputMode])
 
     function handleKeyPress(event: KeyboardEvent) {
@@ -74,7 +75,7 @@
 
     async function handleSubmitClick() {
         if (value.trim() && !disabled && !isLoading) {
-            await onSubmit(inputMode)
+            await onSubmit()
         }
     }
 

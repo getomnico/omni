@@ -65,7 +65,6 @@
     let error = $state<string | null>(null)
 
     let processedMessages = $derived(processMessages(chatMessages))
-    $inspect(processedMessages)
     let copiedMessageId = $state<number | null>(null)
     let copiedUrl = $state(false)
     let messageFeedback = $state<Record<string, 'upvote' | 'downvote'>>({})
@@ -268,7 +267,7 @@
                             id: processedMessage.content.length,
                             type: 'text',
                             text: block.text,
-                            citations: block.citations || [],
+                            citations: block.citations || undefined,
                         })
                     } else {
                         // Tool use or result
@@ -360,13 +359,14 @@
         let streamCompleted = false
         let messageEventsReceived = 0
 
-        const updateStreamingResponse = (
+        const collectStreamingResponse = (
             block:
                 | ToolUseBlock
                 | TextDelta
                 | InputJSONDelta
                 | ToolResultBlockParam
                 | CitationsDelta,
+            blockIdx?: number, // This should be defined for all block types above except ToolResultBlockParam (since this one doesn't come from the LLM)
         ) => {
             const lastMessage = chatMessages[chatMessages.length - 1]
             if (!lastMessage) {
@@ -376,41 +376,77 @@
             }
 
             const existingBlocks = lastMessage.message.content as ContentBlockParam[]
-            const lastBlock = existingBlocks[existingBlocks.length - 1]
             if (block.type === 'text_delta') {
-                if (lastBlock && lastBlock.type === 'text') {
-                    // Combine text blocks
-                    lastBlock.text += block.text
-                } else {
+                if (blockIdx === undefined) {
+                    throw new Error('blockIdx is required for text_delta')
+                }
+                if (blockIdx >= existingBlocks.length) {
                     existingBlocks.push({
                         type: 'text',
                         text: block.text,
                     })
+                } else {
+                    const existingBlock = existingBlocks[blockIdx]
+                    if (existingBlock.type !== 'text') {
+                        throw new Error(
+                            `Error handling text_delta, existing block at index ${blockIdx} is not a text block`,
+                        )
+                    }
+                    existingBlock.text += block.text
                 }
             } else if (block.type === 'citations_delta') {
-                if (lastBlock && lastBlock.type === 'text') {
-                    lastBlock.citations?.push(block.citation)
-                } else {
+                if (blockIdx === undefined) {
+                    throw new Error('blockIdx is required for citations_delta')
+                }
+                if (blockIdx >= existingBlocks.length) {
                     existingBlocks.push({
                         type: 'text',
                         text: '',
                         citations: [block.citation],
                     })
+                } else {
+                    const existingBlock = existingBlocks[blockIdx]
+                    if (existingBlock.type !== 'text') {
+                        throw new Error(
+                            `Error handling citations_delta, existing block at index ${blockIdx} is not a text block`,
+                        )
+                    }
+                    if (!existingBlock.citations) {
+                        existingBlock.citations = []
+                    }
+                    existingBlock.citations.push(block.citation)
                 }
             } else if (block.type === 'tool_use') {
-                const existingToolUse = existingBlocks.find(
-                    (b) => b.type === 'tool_use' && b.id === block.id,
-                )
-
-                if (existingToolUse) {
-                    ;(existingToolUse as ToolUseBlock).input = block.input
-                } else {
+                if (blockIdx === undefined) {
+                    throw new Error('blockIdx is required for tool_use block')
+                }
+                if (blockIdx >= existingBlocks.length) {
                     existingBlocks.push({
                         type: 'tool_use',
                         id: block.id,
                         name: block.name,
                         input: block.input,
                     })
+                } else {
+                    // We could also use blockIdx, but we use the id instead
+                    const existingToolUse = existingBlocks.find(
+                        (b) => b.type === 'tool_use' && b.id === block.id,
+                    )
+
+                    // TODO: Instead of updating the input JSON in one go, handle input_json_delta in this method instead
+                    // Currently, the caller to this method is accumulating all the input JSON deltas and sending it in a
+                    // single tool_use block
+                    if (existingToolUse) {
+                        ;(existingToolUse as ToolUseBlock).input = block.input
+                    } else {
+                        // TODO: This should never happen, because we add a new block above in the blockIdx check
+                        existingBlocks.push({
+                            type: 'tool_use',
+                            id: block.id,
+                            name: block.name,
+                            input: block.input,
+                        })
+                    }
                 }
             } else if (block.type === 'tool_result') {
                 // Push a new message with the tool result
@@ -444,8 +480,6 @@
         })
 
         eventSource.addEventListener('title', (event) => {
-            const title = event.data
-            console.log(`Received title: ${title}`)
             invalidate('app:recent_chats') // This will force a re-fetch of recent chats and update the title in the sidebar
         })
 
@@ -469,38 +503,41 @@
                         (data.content_block.name === 'search_documents' ||
                             data.content_block.name === 'read_document')
                     ) {
-                        updateStreamingResponse(data.content_block)
+                        collectStreamingResponse(data.content_block, data.index)
                         currToolUseId = data.content_block.id
                         currToolUseName = data.content_block.name
                         currToolUseInputStr = ''
                     }
                 } else if (data.type === 'content_block_delta') {
                     if (data.delta.type === 'text_delta' && data.delta.text) {
-                        updateStreamingResponse(data.delta)
+                        collectStreamingResponse(data.delta, data.index)
                     } else if (data.delta.type === 'citations_delta') {
-                        updateStreamingResponse(data.delta)
+                        collectStreamingResponse(data.delta, data.index)
                     } else if (data.delta.type === 'input_json_delta') {
                         // Parse partial JSON to show search query if possible
                         currToolUseInputStr += data.delta.partial_json
                         try {
                             const parsedInput = JSON.parse(currToolUseInputStr)
-                            updateStreamingResponse({
-                                type: 'tool_use',
-                                id: currToolUseId,
-                                name: currToolUseName,
-                                input: parsedInput,
-                            })
+                            collectStreamingResponse(
+                                {
+                                    type: 'tool_use',
+                                    id: currToolUseId,
+                                    name: currToolUseName,
+                                    input: parsedInput,
+                                },
+                                data.index,
+                            )
                         } catch (err) {
                             // Ignore JSON parse errors for partial input
                         }
                     }
                 } else if (data.type == 'tool_result') {
-                    updateStreamingResponse(data)
+                    collectStreamingResponse(data)
                 }
 
                 scrollToBottom()
             } catch (err) {
-                console.warn('Failed to parse SSE data:', event.data, err)
+                console.error('Failed to parse SSE data:', event.data, err)
             } finally {
                 messageEventsReceived += 1
             }
@@ -567,28 +604,25 @@
         }
     }
 
-    // const attachInlineCitations: Attachment = (container: Element) => {
-    //     console.log('attach citations called on', container)
-    //     const inlineCitations = container.querySelectorAll('.inline-citation')
-    //     console.log('found inline citations', inlineCitations.length)
-    //     let lastChild
-    //     for (const child of container.childNodes) {
-    //         if (child instanceof HTMLElement && !child.classList.contains('inline-citation')) {
-    //             lastChild = child
-    //         }
-    //     }
+    const attachInlineCitations: Attachment = (container: Element) => {
+        const inlineCitations = container.querySelectorAll('.inline-citation')
+        let lastChild
+        for (const child of container.childNodes) {
+            if (child instanceof HTMLElement && !child.classList.contains('inline-citation')) {
+                lastChild = child
+            }
+        }
 
-    //     if (lastChild) {
-    //         console.log('found last child')
-    //         // Add all citations to the last child
-    //         for (const inlineCitation of inlineCitations) {
-    //             container.removeChild(inlineCitation)
-    //             lastChild.appendChild(inlineCitation)
-    //         }
-    //     }
+        if (lastChild) {
+            // Add all citations to the last child
+            for (const inlineCitation of inlineCitations) {
+                container.removeChild(inlineCitation)
+                lastChild.appendChild(inlineCitation)
+            }
+        }
 
-    //     return () => {}
-    // }
+        return () => {}
+    }
 
     // Remove markdown annotations, reduce consecutive whitespace to a single space, truncate to 80 chars
     function sanitizeCitedText(text: string) {
@@ -726,7 +760,7 @@
 
 {#snippet inlineCitations(citations: TextCitationParam[])}
     {#if citations.length > 0}
-        <div class="not-prose inline-citation inline-flex items-start">
+        <span class="not-prose inline-citation ml-1 inline-flex items-start">
             {#each citations as citation}
                 {#if citation.type === 'search_result_location'}
                     <HoverCard.Root>
@@ -770,7 +804,7 @@
                     </HoverCard.Root>
                 {/if}
             {/each}
-        </div>
+        </span>
     {/if}
 {/snippet}
 
@@ -838,14 +872,16 @@
                         <div class="prose prose-p:my-3 max-w-none">
                             {#each message.content as block (block.id)}
                                 {#if block.type === 'text'}
-                                    <div>
-                                        {@html marked.parse(
-                                            stripThinkingContent(block.text, 'thinking'),
-                                        )}
-                                        {#if block.citations}
-                                            {@render inlineCitations(block.citations)}
-                                        {/if}
-                                    </div>
+                                    {#key block.citations}
+                                        <div {@attach attachInlineCitations}>
+                                            {@html marked.parse(
+                                                stripThinkingContent(block.text, 'thinking'),
+                                            )}
+                                            {#if block.citations}
+                                                {@render inlineCitations(block.citations)}
+                                            {/if}
+                                        </div>
+                                    {/key}
                                 {:else if block.type === 'tool'}
                                     <div class="mb-1">
                                         <ToolMessage message={block} />

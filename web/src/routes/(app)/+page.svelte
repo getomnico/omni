@@ -11,10 +11,11 @@
     let searchQuery = $state('')
     let popoverOpen = $state(false)
     let isSearching = $state(false)
+    let inputMode = $state<InputMode>('chat')
 
-    async function handleSearch(inputMode: InputMode) {
-        console.log('calling handleSearch', searchQuery)
+    $inspect(inputMode)
 
+    async function submitQuery() {
         if (searchQuery.trim() && !isSearching) {
             if (inputMode === 'search') {
                 goto(`/search?q=${encodeURIComponent(searchQuery.trim())}`)
@@ -67,10 +68,10 @@
         }
     }
 
-    function selectRecentSearch(query: string) {
+    function selectSuggestion(query: string) {
         searchQuery = query
         popoverOpen = false
-        handleSearch('search')
+        submitQuery()
     }
 
     // Map recent searches to popover items format
@@ -78,7 +79,7 @@
         data.recentSearches?.map((query) => ({
             label: query,
             icon: Search,
-            onClick: () => selectRecentSearch(query),
+            onClick: () => selectSuggestion(query),
         })) || [],
     )
 </script>
@@ -99,7 +100,8 @@
         <!-- Search Box -->
         <UserInput
             bind:value={searchQuery}
-            onSubmit={handleSearch}
+            bind:inputMode
+            onSubmit={submitQuery}
             onInput={(v) => (searchQuery = v)}
             modeSelectorEnabled={true}
             placeholders={{
@@ -119,7 +121,7 @@
                     {#each data.suggestedQuestions as suggestion}
                         <button
                             class="max-w-screen-md cursor-pointer truncate rounded-full border border-gray-300 bg-white px-4 py-2 text-sm transition-colors hover:border-blue-400 hover:bg-blue-50"
-                            onclick={() => selectRecentSearch(suggestion.question)}>
+                            onclick={() => selectSuggestion(suggestion.question)}>
                             {suggestion.question}
                         </button>
                     {/each}
