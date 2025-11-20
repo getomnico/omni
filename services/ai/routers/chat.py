@@ -186,7 +186,7 @@ async def stream_chat(request: Request, chat_id: str = Path(..., description="Ch
     async def stream_generator():
         try:
             conversation_messages = messages.copy()
-            max_iterations = 7  # Prevent infinite loops
+            max_iterations = 10  # Prevent infinite loops
             logger.info(f"[ASK] Starting conversation with {len(conversation_messages)} initial messages")
 
             # Extract the first user message query for caching purposes

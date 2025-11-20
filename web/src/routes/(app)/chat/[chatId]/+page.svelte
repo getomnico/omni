@@ -49,6 +49,7 @@
         inferSourceFromUrl,
     } from '$lib/utils/icons'
     import { SourceType } from '$lib/types'
+    import MarkdownMessage from '$lib/components/markdown-message.svelte'
 
     let { data }: PageProps = $props()
     let chatMessages = $state<ChatMessage[]>([...data.messages])
@@ -65,6 +66,8 @@
     let error = $state<string | null>(null)
 
     let processedMessages = $derived(processMessages(chatMessages))
+    $inspect(processedMessages).with((t, v) => console.log('processedMessages', t, v))
+    $inspect(chatMessages).with((t, v) => console.log('chatMessages', t, v))
     let copiedMessageId = $state<number | null>(null)
     let copiedUrl = $state(false)
     let messageFeedback = $state<Record<string, 'upvote' | 'downvote'>>({})
@@ -181,17 +184,7 @@
 
             for (const block of message.content) {
                 const lastBlock = messageToUpdate.content[messageToUpdate.content.length - 1]
-                const bothTextBlocks =
-                    lastBlock && lastBlock.type === 'text' && block.type === 'text'
-                const citationsPresent =
-                    lastBlock &&
-                    lastBlock.type === 'text' &&
-                    lastBlock.citations &&
-                    lastBlock.citations.length > 0
-                // If the last block has citations, we want to keep it as a separate block and not combine.
-                // This is because we want to display citations in-line with the content. If we combine, all the citations will appear at the end.
-                const shouldCombine = bothTextBlocks && !citationsPresent
-                if (shouldCombine) {
+                if (lastBlock && lastBlock.type === 'text' && block.type === 'text') {
                     // Combine text blocks
                     lastBlock.text += block.text
                     if (block.citations) {
@@ -226,6 +219,7 @@
         const messages = chatMessages.map((m) => m.message)
         for (let i = 0; i < messages.length; i++) {
             const message = messages[i]
+            const messageCitations = [] // All citations in this message
             if (isUserMessage(message)) {
                 // User messages are expected to contain only text blocks
                 const userMessageContent: MessageContent =
@@ -263,11 +257,17 @@
                 for (let blockIdx = 0; blockIdx < contentBlocks.length; blockIdx++) {
                     const block = contentBlocks[blockIdx]
                     if (block.type === 'text') {
+                        let citationTxt = ''
+                        for (const citation of block.citations || []) {
+                            const citationIdx = messageCitations.length
+                            messageCitations.push(citation)
+                            citationTxt += ` [${citationIdx}]`
+                        }
                         processedMessage.content.push({
                             id: processedMessage.content.length,
                             type: 'text',
-                            text: block.text,
-                            citations: block.citations || undefined,
+                            text: citationTxt ? `${block.text} ${citationTxt}` : block.text,
+                            citations: block.citations ? [...block.citations] : undefined,
                         })
                     } else {
                         // Tool use or result
@@ -300,6 +300,27 @@
                             })
                         }
                     }
+                }
+
+                // Add a separate block containing all the citation links
+                // This will append a text block at the end that looks like the following:
+                //      [Marked]: https://github.com/markedjs/marked/
+                //      [Markdown]: http://daringfireball.net/projects/markdown/
+                if (messageCitations.length > 0) {
+                    const citationSourceTxt = messageCitations
+                        .map((c, idx) => {
+                            if (c.type === 'search_result_location') {
+                                return `[${idx}]: ${c.source}`
+                            }
+                        })
+                        .filter((t) => t !== undefined)
+                        .join('\n')
+
+                    processedMessage.content.push({
+                        id: processedMessage.content.length,
+                        type: 'text',
+                        text: `\n\n${citationSourceTxt}\n\n`,
+                    })
                 }
 
                 addMessage(processedMessage)
@@ -810,7 +831,7 @@
 
 {#snippet sourcesSection(citations: TextCitationParam[])}
     {#if citations.length > 0}
-        <div class="mt-4 flex flex-col gap-1.5">
+        <div class="flex flex-col gap-1.5">
             <p class="text-muted-foreground text-xs font-bold uppercase">Sources</p>
             <div class="flex gap-1">
                 {#each citations as citation}
@@ -872,16 +893,9 @@
                         <div class="prose prose-p:my-3 max-w-none">
                             {#each message.content as block (block.id)}
                                 {#if block.type === 'text'}
-                                    {#key block.citations}
-                                        <div {@attach attachInlineCitations}>
-                                            {@html marked.parse(
-                                                stripThinkingContent(block.text, 'thinking'),
-                                            )}
-                                            {#if block.citations}
-                                                {@render inlineCitations(block.citations)}
-                                            {/if}
-                                        </div>
-                                    {/key}
+                                    <MarkdownMessage
+                                        content={stripThinkingContent(block.text, 'thinking')}
+                                        citations={block.citations} />
                                 {:else if block.type === 'tool'}
                                     <div class="mb-1">
                                         <ToolMessage message={block} />
@@ -919,6 +933,7 @@
         <div class="bg-background sticky bottom-0 flex justify-center pb-4">
             <UserInput
                 bind:value={userMessage}
+                inputMode="chat"
                 onSubmit={handleSubmit}
                 onInput={(v) => (userMessage = v)}
                 modeSelectorEnabled={false}
