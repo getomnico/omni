@@ -3,7 +3,9 @@
 <img width="64" height="64" alt="omni-logo-256" src="https://github.com/user-attachments/assets/981ef763-41d5-4ae1-9cf8-a97d2e601c81#gh-light-mode-only" />
 <img width="64" height="64" alt="omni-logo-dark-256" src="https://github.com/user-attachments/assets/5d3fb1c2-ced0-433a-86a1-8b4e6005fb4f#gh-dark-mode-only" />
 
-**Omni is an AI Assistant and Search platform for enterprise.** It connects to workplace apps, and helps employees find information and get work done.
+**Omni is an AI Assistant and Search platform for enterprise.** 
+
+It connects to your workplace apps, and helps employees find information and get work done.
 
 [Features](#features) • [Docs](https://docs.getomni.co) • [Deploy](#deployment) • [Contributing](#contributing)
 
@@ -13,7 +15,7 @@
 
 ## Features
 
-- **Unified Workplace Knowledge**: Connect to all your workplace apps - Google Workspace, Slack, Confluence, and more. Omni brings together scattered context and knowledge from across your organization into a single, intelligent interface.
+- **Unified Workplace Search Engine**: Connect to all your workplace apps - Google Workspace, Slack, Confluence, and more. Omni brings together scattered context and knowledge from across your organization into a single, intelligent interface.
 
 - **Privacy-First Architecture**: Your data never leaves your infrastructure. Self-host Omni in your own cloud environment with complete control over your sensitive information.
 
