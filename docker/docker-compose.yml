@@ -73,6 +73,8 @@ services:
   searcher:
     image: ghcr.io/getomnico/omni/omni-searcher:latest
     container_name: omni-searcher
+    expose:
+      - "${SEARCHER_PORT}"
     environment:
       <<: [*db-config, *db-pool-config, *redis-config, *otel-config, *storage-config]
       RUST_LOG: ${RUST_LOG}
@@ -95,6 +97,8 @@ services:
   indexer:
     image: ghcr.io/getomnico/omni/omni-indexer:latest
     container_name: omni-indexer
+    expose:
+      - "${INDEXER_PORT}"
     environment:
       <<: [*db-config, *db-pool-config, *redis-config, *otel-config, *storage-config]
       RUST_LOG: ${RUST_LOG}
@@ -116,6 +120,8 @@ services:
   ai:
     image: ghcr.io/getomnico/omni/omni-ai:latest
     container_name: omni-ai
+    expose:
+      - "${AI_SERVICE_PORT}"
     environment:
       <<: [*db-config, *db-pool-config, *redis-config, *otel-config, *storage-config]
       PORT: ${AI_SERVICE_PORT}
@@ -158,6 +164,8 @@ services:
   vllm:
     image: vllm/vllm-openai:latest
     container_name: omni-vllm
+    expose:
+      - "${VLLM_PORT}"
     environment:
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
     command: >
@@ -191,6 +199,8 @@ services:
   google-connector:
     image: ghcr.io/getomnico/omni/omni-google-connector:latest
     container_name: omni-google-connector
+    expose:
+      - "${GOOGLE_CONNECTOR_PORT}"
     environment:
       <<: [*db-config, *redis-config, *otel-config, *storage-config]
       RUST_LOG: ${RUST_LOG}
@@ -216,6 +226,8 @@ services:
   slack-connector:
     image: ghcr.io/getomnico/omni/omni-slack-connector:latest
     container_name: omni-slack-connector
+    expose:
+      - "${SLACK_CONNECTOR_PORT}"
     environment:
       <<: [*db-config, *db-pool-config, *redis-config, *otel-config]
       RUST_LOG: ${RUST_LOG}
@@ -235,6 +247,8 @@ services:
   atlassian-connector:
     image: ghcr.io/getomnico/omni/omni-atlassian-connector:latest
     container_name: omni-atlassian-connector
+    expose:
+      - "${ATLASSIAN_CONNECTOR_PORT}"
     environment:
       <<: [*db-config, *db-pool-config, *redis-config, *otel-config, *storage-config]
       RUST_LOG: ${RUST_LOG}
@@ -258,6 +272,8 @@ services:
   web-connector:
     image: ghcr.io/getomnico/omni/omni-web-connector:latest
     container_name: omni-web-connector
+    expose:
+      - "${WEB_CONNECTOR_PORT}"
     environment:
       <<: [*db-config, *db-pool-config, *redis-config, *otel-config, *storage-config]
       RUST_LOG: ${RUST_LOG}
@@ -278,6 +294,8 @@ services:
   web:
     image: ghcr.io/getomnico/omni/omni-web:latest
     container_name: omni-web
+    expose:
+      - "${WEB_PORT}"
     environment:
       <<: [*db-config, *db-pool-config, *redis-config, *otel-config]
       SEARCHER_URL: ${SEARCHER_URL}
@@ -332,6 +350,10 @@ services:
     environment:
       OMNI_DOMAIN: ${OMNI_DOMAIN}
       ACME_EMAIL: ${ACME_EMAIL}
+      WEB_PORT: ${WEB_PORT}
+      GOOGLE_CONNECTOR_PORT: ${GOOGLE_CONNECTOR_PORT}
+      SLACK_CONNECTOR_PORT: ${SLACK_CONNECTOR_PORT}
+      ATLASSIAN_CONNECTOR_PORT: ${ATLASSIAN_CONNECTOR_PORT}
     networks:
       - omni-network
     depends_on:

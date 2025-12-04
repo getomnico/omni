@@ -31,18 +31,18 @@
     handle /google-webhook {
         # Rewrite path to connector's webhook endpoint
         rewrite /google-webhook /webhook
-        
-        reverse_proxy google-connector:4001 {
+
+        reverse_proxy google-connector:{$GOOGLE_CONNECTOR_PORT} {
             # Health check for the connector
             health_uri /health
             health_interval 30s
             health_timeout 5s
-            
+
             # Headers for webhook notifications
             header_up X-Real-IP {remote_host}
             header_up X-Forwarded-Proto {scheme}
             header_up X-Forwarded-Host {host}
-            
+
             # Preserve all webhook headers from Google
             header_up X-Goog-* {>X-Goog-*}
         }
@@ -50,11 +50,11 @@
 
     # Handle Google API endpoints (sync, webhook management)
     handle /google/* {
-        reverse_proxy google-connector:4001 {
+        reverse_proxy google-connector:{$GOOGLE_CONNECTOR_PORT} {
             health_uri /health
             health_interval 30s
             health_timeout 5s
-            
+
             header_up X-Real-IP {remote_host}
             header_up X-Forwarded-Proto {scheme}
         }
@@ -62,12 +62,12 @@
 
     # Handle OAuth callbacks (more specific routes)
     handle /auth/google/* {
-        reverse_proxy google-connector:4001 {
+        reverse_proxy google-connector:{$GOOGLE_CONNECTOR_PORT} {
             # Health check for the connector
             health_uri /health
             health_interval 30s
             health_timeout 5s
-            
+
             # Headers for OAuth flow
             header_up X-Real-IP {remote_host}
             header_up X-Forwarded-Proto {scheme}
@@ -75,22 +75,22 @@
     }
 
     handle /auth/slack/* {
-        reverse_proxy slack-connector:4002 {
+        reverse_proxy slack-connector:{$SLACK_CONNECTOR_PORT} {
             health_uri /health
             health_interval 30s
             health_timeout 5s
-            
+
             header_up X-Real-IP {remote_host}
             header_up X-Forwarded-Proto {scheme}
         }
     }
 
     handle /auth/atlassian/* {
-        reverse_proxy atlassian-connector:4003 {
+        reverse_proxy atlassian-connector:{$ATLASSIAN_CONNECTOR_PORT} {
             health_uri /health
             health_interval 30s
             health_timeout 5s
-            
+
             header_up X-Real-IP {remote_host}
             header_up X-Forwarded-Proto {scheme}
         }
@@ -103,24 +103,24 @@
 
     # All other routes go to the SvelteKit web application
     handle {
-        reverse_proxy web:3000 {
+        reverse_proxy web:{$WEB_PORT} {
             # Load balancing configuration (for future scaling)
             lb_policy round_robin
             lb_try_duration 5s
             lb_try_interval 250ms
-            
+
             # Health checking
             health_uri /health
             health_interval 10s
             health_timeout 3s
             health_status 200
-            
+
             # Headers
             header_up X-Real-IP {remote_host}
             header_up X-Forwarded-For {remote_host}
             header_up X-Forwarded-Proto {scheme}
             header_up X-Forwarded-Host {host}
-            
+
             # Timeouts
             transport http {
                 read_timeout 60s
