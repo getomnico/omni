@@ -145,13 +145,6 @@ services:
       - omni-network
     volumes:
       - ai_models:/models
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     depends_on:
       postgres:
         condition: service_healthy

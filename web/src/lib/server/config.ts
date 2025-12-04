@@ -155,13 +155,6 @@ function loadConfig(): AppConfig {
 
     // Session configuration
     const sessionSecret = getRequiredEnv('SESSION_SECRET')
-    if (sessionSecret === 'your-session-secret-key-change-in-production') {
-        logger.fatal('SESSION_SECRET is using the default value', undefined, {
-            message: 'Please set a secure session secret in production',
-        })
-        process.exit(1)
-    }
-
     const sessionCookieName = getOptionalEnv('SESSION_COOKIE_NAME', 'auth-session')
     const sessionDurationDays = validatePositiveNumber(
         getOptionalEnv('SESSION_DURATION_DAYS', '7'),
