@@ -20,6 +20,9 @@ FROM node:18-alpine AS runtime
 
 WORKDIR /app
 
+# Port argument with default value
+ARG WEB_PORT=3000
+
 # Copy package files for production dependencies
 COPY package*.json ./
 
@@ -30,8 +33,8 @@ RUN npm ci --only=production && npm cache clean --force
 COPY --from=builder /app/build ./build
 COPY --from=builder /app/static ./static
 
-# Expose port
-EXPOSE 5173
+# Expose port (SvelteKit production server)
+EXPOSE ${WEB_PORT}
 
 # Start the application
 CMD ["node", "build"]
