@@ -39,10 +39,6 @@ export const actions: Actions = {
         const jiraEnabled = formData.has('jiraEnabled')
         const confluenceEnabled = formData.has('confluenceEnabled')
 
-        if (!jiraEnabled && !confluenceEnabled) {
-            throw error(400, 'At least one service must be enabled')
-        }
-
         const jiraApiToken = formData.get('jiraApiToken') as string | null
         const jiraSiteUrl = formData.get('jiraSiteUrl') as string | null
         const jiraProjectFilters = formData.getAll('jiraProjectFilters') as string[]

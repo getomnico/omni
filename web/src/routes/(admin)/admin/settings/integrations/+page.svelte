@@ -16,13 +16,36 @@
     import gmailLogo from '$lib/images/icons/gmail.svg'
     import confluenceLogo from '$lib/images/icons/confluence.svg'
     import jiraLogo from '$lib/images/icons/jira.svg'
-    import { Globe, HardDrive } from '@lucide/svelte'
+    import { Globe, HardDrive, Loader2 } from '@lucide/svelte'
     import GoogleWorkspaceSetup from '$lib/components/google-workspace-setup.svelte'
     import AtlassianConnectorSetup from '$lib/components/atlassian-connector-setup.svelte'
     import WebConnectorSetupDialog from '$lib/components/web-connector-setup-dialog.svelte'
     import { SourceType } from '$lib/types'
+    import { invalidate } from '$app/navigation'
+    import { onMount } from 'svelte'
 
     let { data }: PageProps = $props()
+
+    onMount(() => {
+        const interval = setInterval(() => {
+            invalidate('/admin/settings/integrations')
+        }, 30000)
+        return () => clearInterval(interval)
+    })
+
+    async function handleSync(sourceId: string) {
+        try {
+            const response = await fetch(`/api/sources/${sourceId}/sync`, {
+                method: 'POST',
+            })
+            if (!response.ok) {
+                console.error('Failed to trigger sync')
+            }
+            invalidate('/admin/settings/integrations')
+        } catch (error) {
+            console.error('Error triggering sync:', error)
+        }
+    }
 
     let showGoogleSetup = $state(false)
     let showAtlassianSetup = $state(false)
@@ -142,8 +165,8 @@
                 <div class="space-y-2">
                     {#each data.connectedSources as source}
                         <div
-                            class="flex max-w-lg items-center justify-between rounded-lg border px-4 py-3">
-                            <div class="flex items-start gap-3">
+                            class="flex items-center justify-between gap-4 rounded-lg border px-4 py-3">
+                            <div class="flex flex-1 items-start gap-3">
                                 {#if getSourceIcon(source.sourceType)}
                                     <img
                                         src={getSourceIcon(source.sourceType)}
@@ -154,9 +177,10 @@
                                 {:else if source.sourceType === 'local_files'}
                                     <HardDrive class="h-6 w-6" />
                                 {/if}
-                                <div class="flex shrink-1 flex-col gap-0.5">
+                                <div class="flex flex-col gap-0.5">
                                     <div class="flex items-center gap-2">
-                                        <span class="font-medium">{source.name}</span>
+                                        <span class="truncate overflow-hidden font-medium"
+                                            >{source.name}</span>
                                         <span
                                             class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(source.isActive)}`}>
                                             {source.isActive ? 'Active' : 'Inactive'}
@@ -164,12 +188,23 @@
                                     </div>
                                     <div
                                         class="text-muted-foreground flex items-center gap-2 text-xs">
-                                        <span>Last sync: {formatDate(source.lastSyncAt)}</span>
+                                        {#if data.runningSyncs.has(source.id)}
+                                            <span
+                                                >Syncing now... ({data.runningSyncs.get(source.id)
+                                                    ?.documentsProcessed ?? 0} documents processed)</span>
+                                        {:else}
+                                            <span>Last sync: {formatDate(source.lastSyncAt)}</span>
+                                        {/if}
                                     </div>
                                 </div>
                             </div>
                             <div class="flex gap-2">
-                                <Button variant="outline" size="sm" class="cursor-pointer">
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    class="cursor-pointer"
+                                    disabled={data.runningSyncs.has(source.id)}
+                                    onclick={() => handleSync(source.id)}>
                                     Sync
                                 </Button>
                                 <Button

@@ -131,11 +131,6 @@
     function validateForm() {
         formErrors = []
 
-        if (!driveEnabled && !gmailEnabled) {
-            formErrors = [...formErrors, 'At least one service must be enabled']
-            return false
-        }
-
         if (
             driveEnabled &&
             driveUserFilterMode === 'whitelist' &&

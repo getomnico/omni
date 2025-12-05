@@ -44,10 +44,6 @@ export const actions: Actions = {
         const driveEnabled = formData.has('driveEnabled')
         const gmailEnabled = formData.has('gmailEnabled')
 
-        if (!driveEnabled && !gmailEnabled) {
-            throw error(400, 'At least one service must be enabled')
-        }
-
         // Get user filter settings for Drive
         const driveUserFilterMode = (formData.get('driveUserFilterMode') as UserFilterMode) || 'all'
         const driveUserWhitelist =

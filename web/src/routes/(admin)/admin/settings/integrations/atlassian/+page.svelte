@@ -93,11 +93,7 @@
 
     function validateForm() {
         formErrors = []
-
-        if (!jiraEnabled && !confluenceEnabled) {
-            formErrors = [...formErrors, 'At least one service must be enabled']
-            return false
-        }
+        // TODO: Add validations
 
         return true
     }

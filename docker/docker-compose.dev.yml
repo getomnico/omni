@@ -25,6 +25,7 @@ services:
 
   # Override for development with hot reload
   web:
+    image: omni-web:dev
     build:
       context: ../web
       dockerfile: Dockerfile.dev
@@ -41,6 +42,7 @@ services:
   # Update database URLs for all services in dev
 
   migrator:
+    image: omni-migrator:dev
     build:
       context: ..
       dockerfile: services/migrations/Dockerfile
@@ -48,6 +50,7 @@ services:
       <<: *dev-database-url
 
   searcher:
+    image: omni-searcher:dev
     build:
       context: ..
       dockerfile: services/searcher/Dockerfile
@@ -58,6 +61,7 @@ services:
       RUST_BACKTRACE: full
 
   indexer:
+    image: omni-indexer:dev
     build:
       context: ..
       dockerfile: services/indexer/Dockerfile
@@ -68,6 +72,7 @@ services:
       RUST_BACKTRACE: full
 
   ai:
+    image: omni-ai:dev
     build:
       context: ../services/ai
       dockerfile: Dockerfile
@@ -82,6 +87,7 @@ services:
     command: python -m uvicorn main:app --host 0.0.0.0 --port ${AI_SERVICE_PORT} --reload
 
   google-connector:
+    image: omni-google-connector:dev
     build:
       context: ..
       dockerfile: connectors/google/Dockerfile
@@ -92,6 +98,7 @@ services:
       RUST_BACKTRACE: full
 
   slack-connector:
+    image: omni-slack-connector:dev
     build:
       context: ..
       dockerfile: connectors/slack/Dockerfile
@@ -102,6 +109,7 @@ services:
       - production
 
   atlassian-connector:
+    image: omni-atlassian-connector:dev
     build:
       context: ..
       dockerfile: connectors/atlassian/Dockerfile
@@ -110,6 +118,7 @@ services:
       RUST_BACKTRACE: full
 
   web-connector:
+    image: omni-web-connector:dev
     build:
       context: ..
       dockerfile: connectors/web/Dockerfile
