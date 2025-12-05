@@ -154,7 +154,7 @@
                                 {:else if source.sourceType === 'local_files'}
                                     <HardDrive class="h-6 w-6" />
                                 {/if}
-                                <div class="flex flex-col gap-0.5">
+                                <div class="flex shrink-1 flex-col gap-0.5">
                                     <div class="flex items-center gap-2">
                                         <span class="font-medium">{source.name}</span>
                                         <span

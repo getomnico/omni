@@ -121,3 +121,136 @@ export async function getSourceById(sourceId: string): Promise<Source | undefine
 
     return result[0]
 }
+
+export async function getAtlassianSources(): Promise<Source[]> {
+    return await db
+        .select()
+        .from(sources)
+        .where(
+            and(inArray(sources.sourceType, ['confluence', 'jira']), eq(sources.isDeleted, false)),
+        )
+}
+
+export async function getActiveAtlassianSources(): Promise<Source[]> {
+    return await db
+        .select()
+        .from(sources)
+        .where(
+            and(
+                inArray(sources.sourceType, ['confluence', 'jira']),
+                eq(sources.isActive, true),
+                eq(sources.isDeleted, false),
+            ),
+        )
+}
+
+export async function updateAtlassianSources(
+    jiraEnabled: boolean,
+    confluenceEnabled: boolean,
+    jiraSettings: {
+        config?: any
+        projectFilters?: string[]
+    },
+    confluenceSettings: {
+        config?: any
+        spaceFilters?: string[]
+    },
+): Promise<void> {
+    await db.transaction(async (tx) => {
+        const atlassianSources = await tx
+            .select()
+            .from(sources)
+            .where(inArray(sources.sourceType, ['confluence', 'jira']))
+
+        const jiraSource = atlassianSources.find((s) => s.sourceType === 'jira')
+        const confluenceSource = atlassianSources.find((s) => s.sourceType === 'confluence')
+
+        if (jiraSource) {
+            const updatedConfig = jiraSettings.config || jiraSource.config || {}
+            if (jiraSettings.projectFilters !== undefined) {
+                updatedConfig.projectFilters = jiraSettings.projectFilters
+            }
+
+            await tx
+                .update(sources)
+                .set({
+                    isActive: jiraEnabled,
+                    config: updatedConfig,
+                    updatedAt: new Date(),
+                })
+                .where(eq(sources.id, jiraSource.id))
+        }
+
+        if (confluenceSource) {
+            const updatedConfig = confluenceSettings.config || confluenceSource.config || {}
+            if (confluenceSettings.spaceFilters !== undefined) {
+                updatedConfig.spaceFilters = confluenceSettings.spaceFilters
+            }
+
+            await tx
+                .update(sources)
+                .set({
+                    isActive: confluenceEnabled,
+                    config: updatedConfig,
+                    updatedAt: new Date(),
+                })
+                .where(eq(sources.id, confluenceSource.id))
+        }
+    })
+}
+
+export async function getWebSources(): Promise<Source[]> {
+    return await db
+        .select()
+        .from(sources)
+        .where(and(eq(sources.sourceType, 'web'), eq(sources.isDeleted, false)))
+}
+
+export async function updateWebSource(webSettings: {
+    isActive: boolean
+    rootUrl?: string
+    maxDepth?: number
+    maxPages?: number
+    respectRobotsTxt?: boolean
+    includeSubdomains?: boolean
+    blacklistPatterns?: string[]
+    userAgent?: string | null
+}): Promise<void> {
+    const webSources = await db.select().from(sources).where(eq(sources.sourceType, 'web'))
+
+    if (webSources.length > 0) {
+        const webSource = webSources[0]
+        const updatedConfig: any = webSource.config || {}
+
+        if (webSettings.rootUrl !== undefined) {
+            updatedConfig.root_url = webSettings.rootUrl
+        }
+        if (webSettings.maxDepth !== undefined) {
+            updatedConfig.max_depth = webSettings.maxDepth
+        }
+        if (webSettings.maxPages !== undefined) {
+            updatedConfig.max_pages = webSettings.maxPages
+        }
+        if (webSettings.respectRobotsTxt !== undefined) {
+            updatedConfig.respect_robots_txt = webSettings.respectRobotsTxt
+        }
+        if (webSettings.includeSubdomains !== undefined) {
+            updatedConfig.include_subdomains = webSettings.includeSubdomains
+        }
+        if (webSettings.blacklistPatterns !== undefined) {
+            updatedConfig.blacklist_patterns = webSettings.blacklistPatterns
+        }
+        if (webSettings.userAgent !== undefined) {
+            updatedConfig.user_agent = webSettings.userAgent
+        }
+
+        await db
+            .update(sources)
+            .set({
+                isActive: webSettings.isActive,
+                config: updatedConfig,
+                updatedAt: new Date(),
+            })
+            .where(eq(sources.id, webSource.id))
+    }
+}

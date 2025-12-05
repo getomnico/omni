@@ -24,3 +24,13 @@ export enum AuthType {
     BEARER_TOKEN = 'bearer_token',
     BOT_TOKEN = 'bot_token',
 }
+
+export interface WebSourceConfig {
+    root_url: string
+    max_depth: number
+    max_pages: number
+    respect_robots_txt: boolean
+    include_subdomains: boolean
+    blacklist_patterns: string[]
+    user_agent: string | null
+}

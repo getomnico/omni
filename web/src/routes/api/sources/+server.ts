@@ -39,8 +39,6 @@ export const GET: RequestHandler = async ({ locals }) => {
         isConnected: credentialsMap.has(source.id),
     }))
 
-    console.log(`Sources: `, sanitizedSources)
-
     return json(sanitizedSources)
 }
 
