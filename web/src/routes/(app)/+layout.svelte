@@ -155,9 +155,11 @@
     </Sidebar>
 
     <!-- Main content area -->
-    <div class="flex max-h-[100vh] w-full flex-col">
+    <div class="flex max-h-[100vh] w-full min-w-0 flex-1 flex-col">
         <header class={cn('bg-background sticky top-0 z-50 transition-shadow')}>
-            <div class="flex h-16 items-center justify-end px-6"></div>
+            <div class="prose flex h-16 items-center px-6">
+                <h2 class="px-4">{page.url.pathname === '/search' ? 'Search' : 'Chat'}</h2>
+            </div>
         </header>
 
         <!-- Main content -->

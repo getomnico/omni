@@ -150,7 +150,7 @@
     <title>Search Results - Omni</title>
 </svelte:head>
 
-<div class="mx-auto mt-8 max-w-screen-xl px-8 pb-24">
+<div class="mt-4 px-8 pb-24">
     <!-- Search Header -->
     <div class="mb-8">
         <div class="mb-4 flex items-center gap-4">
@@ -250,7 +250,7 @@
 
     <div class="flex gap-6 px-6">
         <!-- Search Results -->
-        <div class="flex-1">
+        <div class="min-w-0 flex-1">
             {#if data.searchResults}
                 {#if data.searchResults.results.length > 0}
                     <div class="space-y-8">
@@ -301,7 +301,7 @@
                                     <!-- Excerpt/Content -->
                                     {#if result.highlights.length > 0}
                                         <div
-                                            class="highlight-content text-sm leading-relaxed text-gray-600">
+                                            class="highlight-content truncate overflow-hidden text-sm leading-relaxed text-gray-600">
                                             {#each result.highlights.slice(0, 2) as highlight}
                                                 <span>{@html renderHighlight(highlight)}</span>
                                                 {#if highlight !== result.highlights[result.highlights.length - 1]}
