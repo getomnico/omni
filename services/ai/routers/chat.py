@@ -62,7 +62,7 @@ SEARCH_TOOLS = [
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum number of results to return (default: 20)"
+                    "description": "Maximum number of results to return (default: 10)"
                 }
             },
             "required": ["query"]
@@ -452,7 +452,7 @@ async def execute_search_tool(
         query=tool_input.query,
         sources=tool_input.sources,
         content_types=tool_input.content_types,
-        limit=tool_input.limit or 20,
+        limit=tool_input.limit or 10,
         offset=0,
         mode="hybrid",
         user_id=user_id,
