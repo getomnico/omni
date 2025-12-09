@@ -315,7 +315,7 @@ impl ConfluencePage {
             serde_json::json!(confluence_metadata),
         );
 
-        let url = format!("{}{}", base_url, self.links.webui.clone());
+        let url = format!("{}/wiki{}", base_url, self.links.webui.clone());
 
         // For now, just use the page name
         let path = self.title.clone();
