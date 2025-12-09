@@ -6,6 +6,7 @@ import {
     updateAtlassianSources,
     getActiveAtlassianSources,
 } from '$lib/server/db/sources'
+import type { ConfluenceSourceConfig, JiraSourceConfig } from '$lib/types'
 
 export const load: PageServerLoad = async ({ params, url, locals }) => {
     requireAdmin(locals)
@@ -48,35 +49,32 @@ export const actions: Actions = {
         const confluenceSpaceFilters = formData.getAll('confluenceSpaceFilters') as string[]
 
         try {
-            const jiraSettings: any = {
-                projectFilters: jiraProjectFilters,
-            }
-
-            if (jiraApiToken && jiraSiteUrl) {
-                jiraSettings.config = {
-                    apiToken: jiraApiToken,
-                    siteUrl: jiraSiteUrl,
-                    projectFilters: jiraProjectFilters,
+            let jiraConfig: JiraSourceConfig | undefined = undefined
+            if (jiraSiteUrl) {
+                jiraConfig = {
+                    base_url: jiraSiteUrl.startsWith('http')
+                        ? jiraSiteUrl
+                        : `https://${jiraSiteUrl}`,
+                    project_filters: jiraProjectFilters.length > 0 ? jiraProjectFilters : undefined,
                 }
             }
 
-            const confluenceSettings: any = {
-                spaceFilters: confluenceSpaceFilters,
-            }
-
-            if (confluenceApiToken && confluenceSiteUrl) {
-                confluenceSettings.config = {
-                    apiToken: confluenceApiToken,
-                    siteUrl: confluenceSiteUrl,
-                    spaceFilters: confluenceSpaceFilters,
+            let confluenceConfig: ConfluenceSourceConfig | undefined = undefined
+            if (confluenceSiteUrl) {
+                confluenceConfig = {
+                    base_url: confluenceSiteUrl.startsWith('http')
+                        ? confluenceSiteUrl
+                        : `https://${confluenceSiteUrl}`,
+                    space_filters:
+                        confluenceSpaceFilters.length > 0 ? confluenceSpaceFilters : undefined,
                 }
             }
 
             await updateAtlassianSources(
                 jiraEnabled,
                 confluenceEnabled,
-                jiraSettings,
-                confluenceSettings,
+                jiraConfig,
+                confluenceConfig,
             )
 
             const atlassianConnectorUrl =

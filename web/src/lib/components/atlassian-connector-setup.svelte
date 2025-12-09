@@ -3,7 +3,7 @@
     import { Button } from '$lib/components/ui/button'
     import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
-    import { AuthType } from '$lib/types'
+    import { AuthType, type ConfluenceSourceConfig, type JiraSourceConfig } from '$lib/types'
     import { toast } from 'svelte-sonner'
 
     interface Props {
@@ -37,21 +37,21 @@
             const credentials = {
                 api_token: apiToken,
             }
-            const config = {
-                base_url: domain.startsWith('http') ? domain : `https://${domain}`,
-                user_email: principalEmail,
-            }
+            const baseUrl = domain.startsWith('http') ? domain : `https://${domain}`
             const authType = AuthType.API_KEY
             const provider = 'atlassian'
 
             // Create Confluence source
+            const confluenceConfig: ConfluenceSourceConfig = {
+                base_url: baseUrl,
+            }
             const confluenceSourceResponse = await fetch('/api/sources', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     name: 'Confluence',
                     sourceType: 'confluence',
-                    config,
+                    config: confluenceConfig,
                 }),
             })
 
@@ -71,7 +71,7 @@
                     authType: authType,
                     principalEmail: principalEmail || null,
                     credentials: credentials,
-                    config,
+                    config: confluenceConfig,
                 }),
             })
 
@@ -80,13 +80,16 @@
             }
 
             // Create JIRA source
+            const jiraConfig: JiraSourceConfig = {
+                base_url: baseUrl,
+            }
             const jiraSourceResponse = await fetch('/api/sources', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     name: 'JIRA',
                     sourceType: 'jira',
-                    config,
+                    config: jiraConfig,
                 }),
             })
 
@@ -106,7 +109,7 @@
                     authType: authType,
                     principalEmail: principalEmail || null,
                     credentials: credentials,
-                    config,
+                    config: jiraConfig,
                 }),
             })
 

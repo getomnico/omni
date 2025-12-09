@@ -202,6 +202,20 @@ pub struct ServiceCredentials {
     pub updated_at: OffsetDateTime,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfluenceSourceConfig {
+    pub base_url: String,
+    #[serde(default)]
+    pub space_filters: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JiraSourceConfig {
+    pub base_url: String,
+    #[serde(default)]
+    pub project_filters: Option<Vec<String>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DocumentMetadata {
     pub title: Option<String>,

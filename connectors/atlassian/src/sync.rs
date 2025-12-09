@@ -310,6 +310,25 @@ impl SyncManager {
             .ensure_valid_credentials(&mut credentials)
             .await?;
 
+        // Extract source-specific config based on source type
+        let (confluence_config, jira_config) = match source.source_type {
+            SourceType::Confluence => {
+                let config: shared::ConfluenceSourceConfig =
+                    serde_json::from_value(source.config.clone()).map_err(|e| {
+                        anyhow::anyhow!("Failed to parse Confluence source config: {}", e)
+                    })?;
+                (Some(config), None)
+            }
+            SourceType::Jira => {
+                let config: shared::JiraSourceConfig =
+                    serde_json::from_value(source.config.clone()).map_err(|e| {
+                        anyhow::anyhow!("Failed to parse JIRA source config: {}", e)
+                    })?;
+                (None, Some(config))
+            }
+            _ => (None, None),
+        };
+
         let sync_start = Utc::now();
         self.update_source_status(&source.id, "syncing", None, None)
             .await?;

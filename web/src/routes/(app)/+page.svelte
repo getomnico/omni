@@ -120,7 +120,7 @@
                 <div class="flex flex-col items-center gap-2">
                     {#each data.suggestedQuestions as suggestion}
                         <button
-                            class="max-w-screen-md cursor-pointer truncate rounded-full border border-gray-300 bg-white px-4 py-2 text-sm transition-colors hover:border-blue-400 hover:bg-blue-50"
+                            class="hover:border-primary/20 hover:bg-muted max-w-screen-md cursor-pointer truncate rounded-full border border-gray-300 bg-white px-4 py-2 text-sm transition-colors"
                             onclick={() => selectSuggestion(suggestion.question)}>
                             {suggestion.question}
                         </button>

@@ -6,51 +6,36 @@
     import * as Card from '$lib/components/ui/card'
     import * as Alert from '$lib/components/ui/alert'
     import { Input } from '$lib/components/ui/input'
-    import { Badge } from '$lib/components/ui/badge'
     import { X, AlertCircle, Loader2 } from '@lucide/svelte'
     import { onMount } from 'svelte'
     import { beforeNavigate } from '$app/navigation'
     import type { PageProps } from './$types'
     import jiraLogo from '$lib/images/icons/jira.svg'
     import confluenceLogo from '$lib/images/icons/confluence.svg'
+    import { type JiraSourceConfig, type ConfluenceSourceConfig } from '$lib/types'
 
     let { data }: PageProps = $props()
 
-    // Helper to parse config
-    const getJiraConfig = () => {
-        if (!data.jiraSource?.config) return {}
-        return typeof data.jiraSource.config === 'string'
-            ? JSON.parse(data.jiraSource.config)
-            : data.jiraSource.config
-    }
-
-    const getConfluenceConfig = () => {
-        if (!data.confluenceSource?.config) return {}
-        return typeof data.confluenceSource.config === 'string'
-            ? JSON.parse(data.confluenceSource.config)
-            : data.confluenceSource.config
-    }
-
-    const jiraConfig = getJiraConfig()
-    const confluenceConfig = getConfluenceConfig()
+    const jiraConfig = data.jiraSource?.config as JiraSourceConfig
+    const confluenceConfig = data.confluenceSource?.config as ConfluenceSourceConfig
 
     let jiraEnabled = $state(data.jiraSource ? data.jiraSource.isActive : false)
     let confluenceEnabled = $state(data.confluenceSource ? data.confluenceSource.isActive : false)
 
     let jiraApiToken = $state('')
-    let jiraSiteUrl = $state(jiraConfig.siteUrl || '')
+    let jiraBaseUrl = $state(jiraConfig.base_url || '')
     let jiraProjectFilters = $state<string[]>(
-        jiraConfig.projectFilters && Array.isArray(jiraConfig.projectFilters)
-            ? jiraConfig.projectFilters
+        jiraConfig.project_filters && Array.isArray(jiraConfig.project_filters)
+            ? jiraConfig.project_filters
             : [],
     )
     let jiraProjectInput = $state('')
 
     let confluenceApiToken = $state('')
-    let confluenceSiteUrl = $state(confluenceConfig.siteUrl || '')
+    let confluenceBaseUrl = $state(confluenceConfig.base_url || '')
     let confluenceSpaceFilters = $state<string[]>(
-        confluenceConfig.spaceFilters && Array.isArray(confluenceConfig.spaceFilters)
-            ? confluenceConfig.spaceFilters
+        confluenceConfig.space_filters && Array.isArray(confluenceConfig.space_filters)
+            ? confluenceConfig.space_filters
             : [],
     )
     let confluenceSpaceInput = $state('')
@@ -223,7 +208,7 @@
                                     id="jiraSiteUrl"
                                     name="jiraSiteUrl"
                                     type="url"
-                                    bind:value={jiraSiteUrl}
+                                    bind:value={jiraBaseUrl}
                                     placeholder="https://your-domain.atlassian.net"
                                     disabled={!jiraEnabled}
                                     class="w-full" />
@@ -330,7 +315,7 @@
                                     id="confluenceSiteUrl"
                                     name="confluenceSiteUrl"
                                     type="url"
-                                    bind:value={confluenceSiteUrl}
+                                    bind:value={confluenceBaseUrl}
                                     placeholder="https://your-domain.atlassian.net"
                                     disabled={!confluenceEnabled}
                                     class="w-full" />

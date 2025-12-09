@@ -1,6 +1,7 @@
 import { eq, inArray, and } from 'drizzle-orm'
 import { db } from './index'
 import { sources, type Source } from './schema'
+import type { ConfluenceSourceConfig, JiraSourceConfig } from '$lib/types'
 
 export type UserFilterMode = 'all' | 'whitelist' | 'blacklist'
 
@@ -147,14 +148,8 @@ export async function getActiveAtlassianSources(): Promise<Source[]> {
 export async function updateAtlassianSources(
     jiraEnabled: boolean,
     confluenceEnabled: boolean,
-    jiraSettings: {
-        config?: any
-        projectFilters?: string[]
-    },
-    confluenceSettings: {
-        config?: any
-        spaceFilters?: string[]
-    },
+    jiraConfig?: JiraSourceConfig,
+    confluenceConfig?: ConfluenceSourceConfig,
 ): Promise<void> {
     await db.transaction(async (tx) => {
         const atlassianSources = await tx
@@ -166,32 +161,22 @@ export async function updateAtlassianSources(
         const confluenceSource = atlassianSources.find((s) => s.sourceType === 'confluence')
 
         if (jiraSource) {
-            const updatedConfig = jiraSettings.config || jiraSource.config || {}
-            if (jiraSettings.projectFilters !== undefined) {
-                updatedConfig.projectFilters = jiraSettings.projectFilters
-            }
-
             await tx
                 .update(sources)
                 .set({
                     isActive: jiraEnabled,
-                    config: updatedConfig,
+                    config: jiraConfig || jiraSource.config,
                     updatedAt: new Date(),
                 })
                 .where(eq(sources.id, jiraSource.id))
         }
 
         if (confluenceSource) {
-            const updatedConfig = confluenceSettings.config || confluenceSource.config || {}
-            if (confluenceSettings.spaceFilters !== undefined) {
-                updatedConfig.spaceFilters = confluenceSettings.spaceFilters
-            }
-
             await tx
                 .update(sources)
                 .set({
                     isActive: confluenceEnabled,
-                    config: updatedConfig,
+                    config: confluenceConfig || confluenceSource.config,
                     updatedAt: new Date(),
                 })
                 .where(eq(sources.id, confluenceSource.id))
