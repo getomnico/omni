@@ -35,6 +35,10 @@ impl SyncRunRepository {
         .execute(&self.pool)
         .await?;
 
+        sqlx::query("NOTIFY sync_run_update")
+            .execute(&self.pool)
+            .await?;
+
         Ok(SyncRun {
             id,
             source_id: source_id.to_string(),

@@ -1,3 +1,7 @@
+<!--
+    DEPRECATED: This page is deprecated and replaced by /admin/settings/integrations
+    This page may be broken and is no longer maintained.
+-->
 <script lang="ts">
     import * as AlertDialog from '$lib/components/ui/alert-dialog'
     import { Button, buttonVariants } from '$lib/components/ui/button'

@@ -44,3 +44,11 @@ export interface JiraSourceConfig {
     base_url: string
     project_filters?: string[]
 }
+
+export interface GoogleDriveSourceConfig {
+    // Future: shared_drive_filters, mime_type_filters, folder_path_filters, etc.
+}
+
+export interface GmailSourceConfig {
+    // Future: label_filters, date_range_filters, etc.
+}

@@ -133,7 +133,7 @@
                 onSuccess()
             } else {
                 // Default behavior: redirect to configure page
-                await goto('/admin/integrations/google/configure')
+                await goto('/admin/settings/integrations/google')
             }
         } catch (error: any) {
             console.error('Error setting up Google Workspace:', error)

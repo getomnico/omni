@@ -1,9 +1,10 @@
 import { db } from '$lib/server/db/index.js'
-import { syncRuns, sources, documents } from '$lib/server/db/schema.js'
-import { sql, eq, desc } from 'drizzle-orm'
+import { syncRuns, sources } from '$lib/server/db/schema.js'
+import { eq, desc } from 'drizzle-orm'
 import type { RequestHandler } from './$types.js'
 import postgres from 'postgres'
 import { constructDatabaseUrl } from '$lib/server/config.js'
+import { logger } from '$lib/server/logger.js'
 
 export const GET: RequestHandler = async ({ url }) => {
     const stream = new ReadableStream({
@@ -20,7 +21,7 @@ export const GET: RequestHandler = async ({ url }) => {
                     const message = `data: ${JSON.stringify(data)}\n\n`
                     controller.enqueue(encoder.encode(message))
                 } catch (error) {
-                    console.error('Error sending SSE data:', error)
+                    logger.error('Error sending SSE data:', error)
                     isClosed = true
                 }
             }
@@ -52,40 +53,16 @@ export const GET: RequestHandler = async ({ url }) => {
                         .orderBy(desc(syncRuns.startedAt))
                         .limit(10)
 
-                    // Get document counts by source
-                    const documentsBySource = await db
-                        .select({
-                            sourceId: documents.sourceId,
-                            count: sql<number>`COUNT(*)::int`,
-                        })
-                        .from(documents)
-                        .groupBy(documents.sourceId)
-                    const totalDocumentsIndexed = documentsBySource
-                        .map((r) => r.count)
-                        .reduce((a, v) => (a += v), 0)
-
-                    const documentCountBySource = documentsBySource.reduce(
-                        (acc, item) => {
-                            acc[item.sourceId] = item.count
-                            return acc
-                        },
-                        {} as Record<string, number>,
-                    )
-
                     const statusData = {
                         timestamp: Date.now(),
                         overall: {
                             latestSyncRuns,
-                            documentStats: {
-                                totalDocumentsIndexed,
-                                documentsBySource: documentCountBySource,
-                            },
                         },
                     }
 
                     sendData(statusData)
                 } catch (error) {
-                    console.error('Error fetching indexing status:', error)
+                    logger.error('Error fetching indexing status:', error)
                     if (!isClosed) {
                         sendData({ error: 'Failed to fetch status', timestamp: Date.now() })
                     }
@@ -119,9 +96,9 @@ export const GET: RequestHandler = async ({ url }) => {
                         }
                     })
 
-                    console.log('PostgreSQL LISTEN/NOTIFY setup successful')
+                    logger.info('PostgreSQL LISTEN/NOTIFY setup successful')
                 } catch (error) {
-                    console.error('Error setting up PostgreSQL notifications:', error)
+                    logger.error('Error setting up PostgreSQL notifications:', error)
                     // Fall back to polling if LISTEN/NOTIFY fails (every 10 seconds to avoid spam)
                     const interval = setInterval(() => {
                         if (!isClosed) {
@@ -142,7 +119,7 @@ export const GET: RequestHandler = async ({ url }) => {
             return () => {
                 isClosed = true
                 if (listenSql) {
-                    listenSql.end().catch(console.error)
+                    listenSql.end().catch(logger.error)
                 }
                 if (cleanupNotifications) {
                     cleanupNotifications()

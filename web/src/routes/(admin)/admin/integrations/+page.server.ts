@@ -1,3 +1,6 @@
+// DEPRECATED: This page is deprecated and replaced by /admin/settings/integrations
+// This page may be broken and is no longer maintained.
+
 import { requireAdmin } from '$lib/server/authHelpers'
 import { sourcesRepository } from '$lib/server/repositories/sources'
 import { syncRunsRepository } from '$lib/server/repositories/sync-runs'

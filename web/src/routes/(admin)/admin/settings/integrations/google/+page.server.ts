@@ -125,6 +125,6 @@ export const actions: Actions = {
         }
 
         // Redirect back to integrations page with success message
-        throw redirect(303, '/admin/integrations?success=google_configured')
+        throw redirect(303, '/admin/settings/integrations')
     },
 }
