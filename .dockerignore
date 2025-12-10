@@ -50,4 +50,5 @@ services/ai/venv/
 *.temp
 *.log
 
+benchmarks/data
 benchmarks/benchmarks

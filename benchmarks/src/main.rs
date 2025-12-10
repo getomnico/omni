@@ -1,20 +1,23 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use futures::StreamExt;
+use omni_searcher::models::SearchMode;
 use tracing::{info, warn};
 
 mod config;
 mod datasets;
 mod evaluator;
 mod indexer;
+mod prepare_nq;
 mod reporter;
 mod search_client;
 
 use config::BenchmarkConfig;
-use datasets::{BeirDataset, DatasetLoader, MsMarcoDataset};
-use evaluator::BenchmarkEvaluator;
+use datasets::{BeirDataset, DatasetLoader, MsMarcoDataset, NaturalQuestionsDataset};
+use evaluator::{BenchmarkEvaluator, LatencyBenchmarkConfig, LatencyBenchmarkEvaluator};
 use indexer::BenchmarkIndexer;
 use reporter::BenchmarkReporter;
-use search_client::ClioSearchClient;
+use search_client::OmniSearchClient;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -52,6 +55,51 @@ enum Commands {
         #[arg(short, long, default_value = "html")]
         format: String,
     },
+    /// Run latency performance benchmark
+    Latency {
+        /// Configuration file path
+        #[arg(short, long, default_value = "benchmarks/config/latency.toml")]
+        config: String,
+        /// Dataset directory (prepared NQ data)
+        #[arg(long, default_value = "benchmarks/data/nq_benchmark")]
+        data_dir: String,
+        /// Number of queries to run
+        #[arg(long, default_value = "1000")]
+        num_queries: usize,
+        /// Concurrent query execution (only used in burst mode)
+        #[arg(long, default_value = "10")]
+        concurrency: usize,
+        /// Warmup queries (not measured)
+        #[arg(long, default_value = "100")]
+        warmup: usize,
+        /// Skip indexing (use existing data)
+        #[arg(long)]
+        skip_indexing: bool,
+        /// Maximum documents to index
+        #[arg(long)]
+        max_documents: Option<usize>,
+        /// Target queries per second (0 = unlimited burst mode)
+        #[arg(long, default_value = "0")]
+        target_qps: f64,
+        /// Clean up benchmark database after run
+        #[arg(long)]
+        cleanup: bool,
+    },
+    /// Prepare Natural Questions dataset (fast Rust implementation)
+    PrepareNq {
+        /// Input directory containing raw NQ JSONL.gz files
+        #[arg(long, default_value = "benchmarks/data/v1.0")]
+        input_dir: String,
+        /// Output directory for prepared data
+        #[arg(long, default_value = "benchmarks/data/nq_benchmark")]
+        output_dir: String,
+        /// Maximum number of documents to extract
+        #[arg(long)]
+        max_documents: Option<usize>,
+        /// Maximum number of queries to extract
+        #[arg(long)]
+        max_queries: Option<usize>,
+    },
 }
 
 #[tokio::main]
@@ -88,6 +136,48 @@ async fn main() -> Result<()> {
                 results_dir, format
             );
             generate_report(results_dir, format).await?;
+        }
+        Commands::Latency {
+            config,
+            data_dir,
+            num_queries,
+            concurrency,
+            warmup,
+            skip_indexing,
+            max_documents,
+            target_qps,
+            cleanup,
+        } => {
+            info!(
+                "Running latency benchmark: queries={}, concurrency={}, warmup={}, target_qps={}",
+                num_queries, concurrency, warmup, target_qps
+            );
+            run_latency_benchmark(
+                config,
+                data_dir,
+                *num_queries,
+                *concurrency,
+                *warmup,
+                *skip_indexing,
+                *max_documents,
+                *target_qps,
+                *cleanup,
+            )
+            .await?;
+        }
+        Commands::PrepareNq {
+            input_dir,
+            output_dir,
+            max_documents,
+            max_queries,
+        } => {
+            info!("Preparing NQ dataset: {:?} -> {:?}", input_dir, output_dir);
+            prepare_nq::prepare_nq_data(
+                std::path::Path::new(input_dir),
+                std::path::Path::new(output_dir),
+                *max_documents,
+                *max_queries,
+            )?;
         }
     }
 
@@ -160,7 +250,7 @@ async fn run_benchmarks(config_path: &str, dataset: &str, search_mode: &str) -> 
 
     // Use streaming for document indexing if required
     let _source_id = if config.index_documents_before_search {
-        info!("Streaming documents to Clio database (memory-efficient mode)");
+        info!("Streaming documents to Omni database (memory-efficient mode)");
         let document_stream = dataset_loader.stream_documents();
         let source_id = indexer
             .index_document_stream(&dataset, document_stream)
@@ -178,7 +268,7 @@ async fn run_benchmarks(config_path: &str, dataset: &str, search_mode: &str) -> 
     };
 
     // Initialize search client and evaluator
-    let search_client = ClioSearchClient::new(&config.searcher_url)?;
+    let search_client = OmniSearchClient::new(&config.searcher_url)?;
     let evaluator = BenchmarkEvaluator::new(search_client);
 
     // Run benchmarks based on search mode
@@ -233,5 +323,136 @@ async fn generate_report(results_dir: &str, format: &str) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+async fn run_latency_benchmark(
+    config_path: &str,
+    data_dir: &str,
+    num_queries: usize,
+    concurrency: usize,
+    warmup: usize,
+    skip_indexing: bool,
+    max_documents: Option<usize>,
+    target_qps: f64,
+    cleanup: bool,
+) -> Result<()> {
+    // Load configuration
+    let config = BenchmarkConfig::from_file(config_path)?;
+
+    info!("=== Omni Perf Benchmark ===");
+    info!("Data directory: {}", data_dir);
+    info!("Searcher URL: {}", config.searcher_url);
+    info!("Database URL: {}", config.database_url);
+    if target_qps > 0.0 {
+        info!("Target QPS: {:.1}", target_qps);
+    } else {
+        info!("Mode: burst (unlimited QPS)");
+    }
+
+    // Create NQ dataset loader
+    let mut dataset = NaturalQuestionsDataset::new(data_dir.to_string());
+    if let Some(max) = max_documents {
+        dataset = dataset.with_max_documents(max);
+    }
+
+    // Verify dataset exists
+    dataset.download().await?;
+
+    // Initialize indexer
+    let indexer = BenchmarkIndexer::new(config.clone()).await?;
+
+    // Index documents if not skipping
+    if !skip_indexing {
+        info!("Setting up benchmark database...");
+        indexer.setup_benchmark_database().await?;
+
+        info!("Indexing documents...");
+        let document_stream = dataset.stream_documents();
+        let (source_id, indexing_stats) = indexer
+            .index_document_stream_with_stats("natural-questions", document_stream)
+            .await?;
+
+        indexing_stats.print_summary();
+
+        let index_stats = indexer.get_index_stats(&source_id).await?;
+        info!(
+            "Index ready: {} documents, {} embeddings",
+            index_stats.total_documents, index_stats.total_embeddings
+        );
+    } else {
+        info!("Skipping indexing, using existing data");
+    }
+
+    // Load queries
+    info!("Loading queries...");
+    let queries: Vec<_> = dataset
+        .stream_queries()
+        .filter_map(|r| async { r.ok() })
+        .take(num_queries + warmup)
+        .collect()
+        .await;
+
+    info!("Loaded {} queries", queries.len());
+
+    if queries.len() < warmup {
+        return Err(anyhow::anyhow!(
+            "Not enough queries. Have {}, need at least {} for warmup",
+            queries.len(),
+            warmup
+        ));
+    }
+
+    // Create search client and latency evaluator
+    let search_client = OmniSearchClient::new(&config.searcher_url)?;
+
+    // Create database pool for system info queries
+    let db_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&config.database_url)
+        .await?;
+
+    let evaluator = LatencyBenchmarkEvaluator::new(search_client, db_pool);
+
+    // Configure benchmark
+    let benchmark_config = LatencyBenchmarkConfig {
+        num_queries,
+        concurrency,
+        warmup_queries: warmup,
+        timeout_ms: 30000,
+        target_qps,
+    };
+
+    // Run benchmark (FTS mode for ParadeDB benchmark)
+    info!("Running latency benchmark (FTS mode)...");
+    let result = evaluator
+        .run_benchmark(
+            queries,
+            &benchmark_config,
+            "natural-questions",
+            SearchMode::Fulltext,
+        )
+        .await?;
+
+    // Print results
+    result.print_summary();
+
+    // Save results
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let results_file = format!(
+        "benchmarks/results/latency/nq_fulltext_{}_results.json",
+        timestamp
+    );
+    result.save_to_file(&results_file)?;
+    info!("Results saved to: {}", results_file);
+
+    // Cleanup if requested
+    if cleanup {
+        info!("Cleaning up benchmark database...");
+        indexer.cleanup_benchmark_data().await?;
+        info!("Cleanup completed");
+    }
+
+    info!("Latency benchmark completed!");
     Ok(())
 }

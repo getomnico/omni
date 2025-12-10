@@ -1,10 +1,12 @@
 pub mod beir;
 pub mod custom;
 pub mod msmarco;
+pub mod natural_questions;
 
 pub use beir::*;
 pub use custom::*;
 pub use msmarco::*;
+pub use natural_questions::*;
 
 use anyhow::Result;
 use async_trait::async_trait;

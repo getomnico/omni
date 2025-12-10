@@ -2,5 +2,6 @@ target/
 **/node_modules/
 .env
 benchmarks/benchmarks
+benchmarks/data
 benchmarks/results
 venv/

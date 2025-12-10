@@ -5,7 +5,7 @@ use crate::evaluator::metrics::{
     AggregatedMetrics, EvaluationMetrics, MetricsCalculator, QueryResult, RelevantDocument,
     RetrievedDocument,
 };
-use crate::search_client::{create_search_request, with_limit, with_offset, ClioSearchClient};
+use crate::search_client::{create_search_request, with_limit, with_offset, OmniSearchClient};
 use anyhow::Result;
 use futures::stream::{self, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -15,11 +15,11 @@ use tokio::time::sleep;
 use tracing::{info, warn};
 
 pub struct BenchmarkEvaluator {
-    search_client: ClioSearchClient,
+    search_client: OmniSearchClient,
 }
 
 impl BenchmarkEvaluator {
-    pub fn new(search_client: ClioSearchClient) -> Self {
+    pub fn new(search_client: OmniSearchClient) -> Self {
         Self { search_client }
     }
 
@@ -126,7 +126,7 @@ impl BenchmarkEvaluator {
 
     async fn process_query(
         &self,
-        search_client: &ClioSearchClient,
+        search_client: &OmniSearchClient,
         query: &crate::datasets::Query,
         search_mode: &str,
         config: &BenchmarkConfig,
@@ -313,7 +313,7 @@ mod tests {
     async fn test_benchmark_evaluator() {
         // This would require a running Clio instance for integration testing
         // For now, we'll test the structure
-        let client = ClioSearchClient::new("http://localhost:3001").unwrap();
+        let client = OmniSearchClient::new("http://localhost:3001").unwrap();
         let evaluator = BenchmarkEvaluator::new(client);
 
         // Test that the evaluator is created successfully

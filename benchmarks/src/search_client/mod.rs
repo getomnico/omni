@@ -6,12 +6,12 @@ use shared::SourceType;
 use std::time::Duration;
 use tracing::{debug, error};
 
-pub struct ClioSearchClient {
+pub struct OmniSearchClient {
     client: Client,
     base_url: String,
 }
 
-impl ClioSearchClient {
+impl OmniSearchClient {
     pub fn new(base_url: &str) -> Result<Self> {
         let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
 
@@ -90,6 +90,13 @@ pub fn create_search_request(query: String, search_mode: SearchMode) -> SearchRe
         content_types: None,
         include_facets: Some(false),
         user_email: None,
+        user_id: None,
+        is_generated_query: None,
+        original_user_query: None,
+        document_id: None,
+        document_content_start_line: None,
+        document_content_end_line: None,
+        ignore_typos: None,
     }
 }
 

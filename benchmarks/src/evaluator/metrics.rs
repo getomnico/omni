@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -341,6 +342,258 @@ impl AggregatedMetrics {
     }
 }
 
+// ============================================================================
+// Latency Metrics
+// ============================================================================
+
+/// A single latency measurement for one query
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LatencyMeasurement {
+    pub query_id: String,
+    pub query_text: String,
+    pub latency_ms: f64,
+    pub result_count: usize,
+    pub timestamp: DateTime<Utc>,
+    pub error: Option<String>,
+}
+
+/// Aggregated latency statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LatencyStats {
+    pub count: usize,
+    pub successful: usize,
+    pub failed: usize,
+    pub min_ms: f64,
+    pub max_ms: f64,
+    pub mean_ms: f64,
+    pub median_ms: f64, // p50
+    pub p95_ms: f64,
+    pub p99_ms: f64,
+    pub std_dev_ms: f64,
+    pub total_duration_secs: f64,
+    pub throughput_qps: f64,
+}
+
+impl Default for LatencyStats {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            successful: 0,
+            failed: 0,
+            min_ms: 0.0,
+            max_ms: 0.0,
+            mean_ms: 0.0,
+            median_ms: 0.0,
+            p95_ms: 0.0,
+            p99_ms: 0.0,
+            std_dev_ms: 0.0,
+            total_duration_secs: 0.0,
+            throughput_qps: 0.0,
+        }
+    }
+}
+
+/// System information for context
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemInfo {
+    pub total_documents: i64,
+    pub total_embeddings: i64,
+    pub index_size_bytes: Option<i64>,
+    pub postgres_version: Option<String>,
+}
+
+/// Complete latency benchmark result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LatencyBenchmarkResult {
+    pub dataset_name: String,
+    pub search_mode: String,
+    pub config: LatencyBenchmarkConfig,
+    pub latency_stats: LatencyStats,
+    pub measurements: Vec<LatencyMeasurement>,
+    pub system_info: SystemInfo,
+    pub run_timestamp: DateTime<Utc>,
+}
+
+/// Configuration for latency benchmark
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LatencyBenchmarkConfig {
+    pub num_queries: usize,
+    pub concurrency: usize,
+    pub warmup_queries: usize,
+    pub timeout_ms: u64,
+    /// Target queries per second. 0 = unlimited (burst mode)
+    pub target_qps: f64,
+}
+
+impl Default for LatencyBenchmarkConfig {
+    fn default() -> Self {
+        Self {
+            num_queries: 1000,
+            concurrency: 10,
+            warmup_queries: 100,
+            timeout_ms: 30000,
+            target_qps: 0.0, // unlimited by default
+        }
+    }
+}
+
+impl LatencyBenchmarkConfig {
+    /// Calculate inter-query delay in milliseconds based on target QPS
+    pub fn inter_query_delay_ms(&self) -> Option<u64> {
+        if self.target_qps <= 0.0 {
+            None
+        } else {
+            Some((1000.0 / self.target_qps) as u64)
+        }
+    }
+}
+
+pub struct LatencyCalculator;
+
+impl LatencyCalculator {
+    /// Calculate latency statistics from measurements
+    pub fn calculate_stats(
+        measurements: &[LatencyMeasurement],
+        total_duration_secs: f64,
+    ) -> LatencyStats {
+        if measurements.is_empty() {
+            return LatencyStats::default();
+        }
+
+        // Collect successful latencies
+        let mut latencies: Vec<f64> = measurements
+            .iter()
+            .filter(|m| m.error.is_none())
+            .map(|m| m.latency_ms)
+            .collect();
+
+        let successful = latencies.len();
+        let failed = measurements.len() - successful;
+
+        if latencies.is_empty() {
+            return LatencyStats {
+                count: measurements.len(),
+                successful: 0,
+                failed,
+                total_duration_secs,
+                throughput_qps: 0.0,
+                ..Default::default()
+            };
+        }
+
+        // Sort for percentile calculations
+        latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+        let min_ms = latencies[0];
+        let max_ms = latencies[latencies.len() - 1];
+        let mean_ms = latencies.iter().sum::<f64>() / latencies.len() as f64;
+        let median_ms = Self::percentile(&latencies, 50.0);
+        let p95_ms = Self::percentile(&latencies, 95.0);
+        let p99_ms = Self::percentile(&latencies, 99.0);
+
+        // Calculate standard deviation
+        let variance =
+            latencies.iter().map(|x| (x - mean_ms).powi(2)).sum::<f64>() / latencies.len() as f64;
+        let std_dev_ms = variance.sqrt();
+
+        // Calculate throughput
+        let throughput_qps = if total_duration_secs > 0.0 {
+            successful as f64 / total_duration_secs
+        } else {
+            0.0
+        };
+
+        LatencyStats {
+            count: measurements.len(),
+            successful,
+            failed,
+            min_ms,
+            max_ms,
+            mean_ms,
+            median_ms,
+            p95_ms,
+            p99_ms,
+            std_dev_ms,
+            total_duration_secs,
+            throughput_qps,
+        }
+    }
+
+    /// Calculate a percentile value from sorted data
+    fn percentile(sorted_data: &[f64], percentile: f64) -> f64 {
+        if sorted_data.is_empty() {
+            return 0.0;
+        }
+        if sorted_data.len() == 1 {
+            return sorted_data[0];
+        }
+
+        let index = (percentile / 100.0) * (sorted_data.len() - 1) as f64;
+        let lower = index.floor() as usize;
+        let upper = index.ceil() as usize;
+
+        if lower == upper {
+            sorted_data[lower]
+        } else {
+            let weight = index - lower as f64;
+            sorted_data[lower] * (1.0 - weight) + sorted_data[upper] * weight
+        }
+    }
+}
+
+impl LatencyBenchmarkResult {
+    pub fn save_to_file(&self, path: &str) -> Result<()> {
+        let json = serde_json::to_string_pretty(self)?;
+        let base_dir = std::path::Path::new(path).parent().unwrap();
+        if !base_dir.exists() {
+            std::fs::create_dir_all(base_dir)?;
+        }
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    pub fn print_summary(&self) {
+        println!("\n=== Latency Benchmark Results ===");
+        println!("Dataset: {}", self.dataset_name);
+        println!("Search Mode: {}", self.search_mode);
+        println!("Timestamp: {}", self.run_timestamp);
+        println!();
+        println!("Configuration:");
+        println!("  Queries: {}", self.config.num_queries);
+        println!("  Concurrency: {}", self.config.concurrency);
+        println!("  Warmup: {}", self.config.warmup_queries);
+        println!();
+        println!("Query Statistics:");
+        println!("  Total: {}", self.latency_stats.count);
+        println!("  Successful: {}", self.latency_stats.successful);
+        println!("  Failed: {}", self.latency_stats.failed);
+        println!();
+        println!("Latency (ms):");
+        println!("  Min:    {:.2}", self.latency_stats.min_ms);
+        println!("  Max:    {:.2}", self.latency_stats.max_ms);
+        println!("  Mean:   {:.2}", self.latency_stats.mean_ms);
+        println!("  Median: {:.2} (p50)", self.latency_stats.median_ms);
+        println!("  p95:    {:.2}", self.latency_stats.p95_ms);
+        println!("  p99:    {:.2}", self.latency_stats.p99_ms);
+        println!("  StdDev: {:.2}", self.latency_stats.std_dev_ms);
+        println!();
+        println!("Throughput:");
+        println!(
+            "  Total Duration: {:.2}s",
+            self.latency_stats.total_duration_secs
+        );
+        println!("  QPS: {:.2}", self.latency_stats.throughput_qps);
+        println!();
+        println!("System Info:");
+        println!("  Documents: {}", self.system_info.total_documents);
+        println!("  Embeddings: {}", self.system_info.total_embeddings);
+        if let Some(size) = self.system_info.index_size_bytes {
+            println!("  Index Size: {:.2} MB", size as f64 / 1024.0 / 1024.0);
+        }
+        println!("=================================\n");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,5 +679,99 @@ mod tests {
 
         let precision = MetricsCalculator::calculate_precision(&retrieved_docs, &relevant_docs, 3);
         assert_eq!(precision, 2.0 / 3.0); // 2 relevant docs out of 3 retrieved
+    }
+
+    #[test]
+    fn test_latency_stats_calculation() {
+        let measurements = vec![
+            LatencyMeasurement {
+                query_id: "q1".to_string(),
+                query_text: "test".to_string(),
+                latency_ms: 10.0,
+                result_count: 5,
+                timestamp: Utc::now(),
+                error: None,
+            },
+            LatencyMeasurement {
+                query_id: "q2".to_string(),
+                query_text: "test2".to_string(),
+                latency_ms: 20.0,
+                result_count: 3,
+                timestamp: Utc::now(),
+                error: None,
+            },
+            LatencyMeasurement {
+                query_id: "q3".to_string(),
+                query_text: "test3".to_string(),
+                latency_ms: 30.0,
+                result_count: 7,
+                timestamp: Utc::now(),
+                error: None,
+            },
+        ];
+
+        let stats = LatencyCalculator::calculate_stats(&measurements, 1.0);
+
+        assert_eq!(stats.count, 3);
+        assert_eq!(stats.successful, 3);
+        assert_eq!(stats.failed, 0);
+        assert_eq!(stats.min_ms, 10.0);
+        assert_eq!(stats.max_ms, 30.0);
+        assert_eq!(stats.mean_ms, 20.0);
+        assert_eq!(stats.median_ms, 20.0);
+        assert_eq!(stats.throughput_qps, 3.0);
+    }
+
+    #[test]
+    fn test_latency_percentiles() {
+        // Create 100 measurements with values 1-100
+        let measurements: Vec<LatencyMeasurement> = (1..=100)
+            .map(|i| LatencyMeasurement {
+                query_id: format!("q{}", i),
+                query_text: format!("test{}", i),
+                latency_ms: i as f64,
+                result_count: 1,
+                timestamp: Utc::now(),
+                error: None,
+            })
+            .collect();
+
+        let stats = LatencyCalculator::calculate_stats(&measurements, 10.0);
+
+        assert_eq!(stats.min_ms, 1.0);
+        assert_eq!(stats.max_ms, 100.0);
+        assert!((stats.median_ms - 50.5).abs() < 0.01);
+        assert!((stats.p95_ms - 95.05).abs() < 0.1);
+        assert!((stats.p99_ms - 99.01).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_latency_with_errors() {
+        let measurements = vec![
+            LatencyMeasurement {
+                query_id: "q1".to_string(),
+                query_text: "test".to_string(),
+                latency_ms: 10.0,
+                result_count: 5,
+                timestamp: Utc::now(),
+                error: None,
+            },
+            LatencyMeasurement {
+                query_id: "q2".to_string(),
+                query_text: "test2".to_string(),
+                latency_ms: 0.0,
+                result_count: 0,
+                timestamp: Utc::now(),
+                error: Some("timeout".to_string()),
+            },
+        ];
+
+        let stats = LatencyCalculator::calculate_stats(&measurements, 1.0);
+
+        assert_eq!(stats.count, 2);
+        assert_eq!(stats.successful, 1);
+        assert_eq!(stats.failed, 1);
+        assert_eq!(stats.min_ms, 10.0);
+        assert_eq!(stats.max_ms, 10.0);
     }
 }

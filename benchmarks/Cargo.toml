@@ -24,6 +24,8 @@ reqwest = { workspace = true, features = ["stream"] }
 csv = "1.3"
 flate2 = "1.0"
 tar = "0.4"
+rayon = "1.10"
+scraper = "0.22"
 
 # Mathematical operations for metrics
 statrs = "0.16"
