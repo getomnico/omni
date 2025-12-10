@@ -166,7 +166,7 @@ impl SyncManager {
             .create(&source.id, SyncType::Full)
             .await?;
 
-        let result: Result<()> = async {
+        let result: Result<(usize, usize, usize)> = async {
             let bot_token = self.get_bot_token(&source.id).await?;
             let mut creds = self.auth_manager.validate_bot_token(&bot_token).await?;
 
@@ -230,14 +230,23 @@ impl SyncManager {
             );
 
             self.update_source_status(&source.id, "completed").await?;
-            Ok(())
+            Ok((
+                processed_channels,
+                total_message_groups + total_files,
+                total_message_groups + total_files,
+            ))
         }
         .await;
 
         match &result {
-            Ok(_) => {
+            Ok((scanned, processed, updated)) => {
                 self.sync_run_repo
-                    .mark_completed(&sync_run.id, 0, 0)
+                    .mark_completed(
+                        &sync_run.id,
+                        *scanned as i32,
+                        *processed as i32,
+                        *updated as i32,
+                    )
                     .await?;
             }
             Err(e) => {
@@ -247,7 +256,7 @@ impl SyncManager {
             }
         }
 
-        result
+        result.map(|_| ())
     }
 
     async fn fetch_all_users(

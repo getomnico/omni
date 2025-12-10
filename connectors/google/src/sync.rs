@@ -426,9 +426,14 @@ impl SyncManager {
 
         // Update sync run based on result
         match &result {
-            Ok((files_processed, files_updated)) => {
+            Ok((files_scanned, files_processed, files_updated)) => {
                 self.sync_run_repo
-                    .mark_completed(&sync_run.id, *files_processed as i32, *files_updated as i32)
+                    .mark_completed(
+                        &sync_run.id,
+                        *files_scanned as i32,
+                        *files_processed as i32,
+                        *files_updated as i32,
+                    )
                     .await?;
             }
             Err(e) => {
@@ -702,7 +707,7 @@ impl SyncManager {
         &self,
         source: &Source,
         sync_run: &SyncRun,
-    ) -> Result<(usize, usize)> {
+    ) -> Result<(usize, usize, usize)> {
         let service_creds = self.get_service_credentials(&source.id).await?;
         let service_auth = Arc::new(self.create_service_auth(&service_creds, source.source_type)?);
         let domain = self.get_domain_from_credentials(&service_creds)?;
@@ -830,10 +835,11 @@ impl SyncManager {
         }
 
         info!(
-            "Sync completed for source {}: {} files discovered, {} processed",
+            "Sync completed for source {}: {} files discovered, {} processed, {} updated",
             source.id,
             current_files_set.len(),
-            total_processed
+            total_processed,
+            total_updated
         );
 
         self.update_source_status(&source.id, "completed").await?;
@@ -842,14 +848,14 @@ impl SyncManager {
         self.folder_cache.clear();
 
         info!("Completed sync for source: {}", source.id);
-        Ok((current_files_set.len(), total_processed))
+        Ok((current_files_set.len(), total_processed, total_updated))
     }
 
     async fn sync_gmail_source_internal(
         &self,
         source: &Source,
         sync_run: &SyncRun,
-    ) -> Result<(usize, usize)> {
+    ) -> Result<(usize, usize, usize)> {
         let service_creds = self.get_service_credentials(&source.id).await?;
         let service_auth = Arc::new(self.create_service_auth(&service_creds, source.source_type)?);
         let domain = self.get_domain_from_credentials(&service_creds)?;
@@ -938,7 +944,7 @@ impl SyncManager {
         self.update_source_status(&source.id, "completed").await?;
 
         info!("Completed Gmail sync for source: {}", source.id);
-        Ok((total_processed, total_updated))
+        Ok((total_processed, total_processed, total_updated))
     }
 
     fn should_index_file(&self, file: &crate::models::GoogleDriveFile) -> bool {
@@ -1446,7 +1452,12 @@ impl SyncManager {
                 }
 
                 self.sync_run_repo
-                    .mark_completed(&sync_run.id, processed_count as i32, updated_count as i32)
+                    .mark_completed(
+                        &sync_run.id,
+                        processed_count as i32,
+                        processed_count as i32,
+                        updated_count as i32,
+                    )
                     .await?;
                 info!(
                     "Incremental sync completed for source {}: {} changes processed, {} updated",
@@ -2152,10 +2163,11 @@ impl SyncManager {
 
                         // Update sync run based on result
                         match result {
-                            Ok((files_processed, files_updated)) => {
+                            Ok((files_scanned, files_processed, files_updated)) => {
                                 self.sync_run_repo
                                     .mark_completed(
                                         &sync_run.id,
+                                        files_scanned as i32,
                                         files_processed as i32,
                                         files_updated as i32,
                                     )

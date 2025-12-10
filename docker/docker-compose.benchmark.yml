@@ -1,32 +1,74 @@
 # Benchmark-specific overrides
-# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.benchmark.yml up
+# Uses a separate postgres volume and database for benchmark isolation
+#
+# Usage: docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml -f docker/docker-compose.benchmark.yml --env-file .env up -d
+#
+# Why dev overlay is needed:
+# - Builds local Docker images (:dev tags)
+# - Exposes ports for local access (searcher, indexer, ai)
+# - Volume mounts for hot reload during development
+# - Excludes vllm/caddy profiles not needed for benchmarks
+#
+# IMPORTANT: This uses a separate volume (postgres_benchmark_data) to isolate
+# benchmark data from development data. The postgres container will be recreated
+# with an empty database.
 
-x-benchmark-database-url: &benchmark-database-url
-  DATABASE_URL: postgresql://omni_dev:omni_dev_password@postgres:5432/omni_benchmark
+x-benchmark-db: &benchmark-db
+  DATABASE_NAME: omni_benchmark
 
 services:
-  # Override database URLs for benchmark services to use omni_benchmark database
+  # Postgres uses a separate volume for benchmark isolation
+  postgres:
+    container_name: omni-postgres-benchmark
+    volumes:
+      - postgres_benchmark_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: omni_benchmark
+
+  # Redis uses a separate volume for benchmark isolation
+  redis:
+    container_name: omni-redis-benchmark
+    volumes:
+      - redis_benchmark_data:/data
+
+  # All services use DATABASE_NAME env var
+  migrator:
+    environment:
+      <<: *benchmark-db
+
   searcher:
     environment:
-      <<: *benchmark-database-url
+      <<: *benchmark-db
 
   indexer:
     environment:
-      <<: *benchmark-database-url
+      <<: *benchmark-db
+      RUST_LOG: info
 
   ai:
     environment:
-      <<: *benchmark-database-url
+      <<: *benchmark-db
 
-  # Connectors also need to use benchmark database
+  web:
+    environment:
+      <<: *benchmark-db
+
   google-connector:
     environment:
-      <<: *benchmark-database-url
+      <<: *benchmark-db
 
   slack-connector:
     environment:
-      <<: *benchmark-database-url
+      <<: *benchmark-db
 
   atlassian-connector:
     environment:
-      <<: *benchmark-database-url
+      <<: *benchmark-db
+
+  web-connector:
+    environment:
+      <<: *benchmark-db
+
+volumes:
+  postgres_benchmark_data:
+  redis_benchmark_data:

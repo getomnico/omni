@@ -32,12 +32,10 @@ pub fn safe_str_slice(content: &str, start: usize, end: usize) -> &str {
     let mut adjusted_start = start.min(content.len());
     let mut adjusted_end = end.min(content.len());
 
-    // Adjust start to the nearest char boundary (move backwards)
     while adjusted_start > 0 && !content.is_char_boundary(adjusted_start) {
         adjusted_start -= 1;
     }
 
-    // Adjust end to the nearest char boundary (move forwards)
     while adjusted_end < content.len() && !content.is_char_boundary(adjusted_end) {
         adjusted_end += 1;
     }

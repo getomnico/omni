@@ -35,10 +35,6 @@ impl SyncRunRepository {
         .execute(&self.pool)
         .await?;
 
-        sqlx::query("NOTIFY sync_run_update")
-            .execute(&self.pool)
-            .await?;
-
         Ok(SyncRun {
             id,
             source_id: source_id.to_string(),
@@ -48,6 +44,7 @@ impl SyncRunRepository {
             updated_at: now,
             started_at: Some(now),
             completed_at: None,
+            documents_scanned: 0,
             documents_processed: 0,
             documents_updated: 0,
             error_message: None,
@@ -58,7 +55,7 @@ impl SyncRunRepository {
         let sync_run = sqlx::query_as::<_, SyncRun>(
             r#"
             SELECT id, source_id, sync_type, started_at, completed_at, status,
-                   documents_processed, documents_updated, error_message,
+                   documents_scanned, documents_processed, documents_updated, error_message,
                    created_at, updated_at
             FROM sync_runs
             WHERE id = $1
@@ -74,26 +71,24 @@ impl SyncRunRepository {
     pub async fn mark_completed(
         &self,
         id: &str,
+        documents_scanned: i32,
         documents_processed: i32,
         documents_updated: i32,
     ) -> Result<(), DatabaseError> {
         sqlx::query(
             "UPDATE sync_runs
              SET status = $1, completed_at = CURRENT_TIMESTAMP,
-                 documents_processed = $2, documents_updated = $3,
+                 documents_scanned = $2, documents_processed = $3, documents_updated = $4,
                  updated_at = CURRENT_TIMESTAMP
-             WHERE id = $4",
+             WHERE id = $5",
         )
         .bind(SyncStatus::Completed)
+        .bind(documents_scanned)
         .bind(documents_processed)
         .bind(documents_updated)
         .bind(id)
         .execute(&self.pool)
         .await?;
-
-        sqlx::query("NOTIFY sync_run_update")
-            .execute(&self.pool)
-            .await?;
 
         Ok(())
     }
@@ -111,9 +106,20 @@ impl SyncRunRepository {
         .execute(&self.pool)
         .await?;
 
-        sqlx::query("NOTIFY sync_run_update")
-            .execute(&self.pool)
-            .await?;
+        Ok(())
+    }
+
+    pub async fn increment_scanned(&self, id: &str, count: i32) -> Result<(), DatabaseError> {
+        sqlx::query(
+            "UPDATE sync_runs
+             SET documents_scanned = documents_scanned + $1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $2",
+        )
+        .bind(count)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
     }
@@ -129,10 +135,6 @@ impl SyncRunRepository {
         .execute(&self.pool)
         .await?;
 
-        sqlx::query("NOTIFY sync_run_update")
-            .execute(&self.pool)
-            .await?;
-
         Ok(())
     }
 
@@ -144,7 +146,7 @@ impl SyncRunRepository {
         let sync_run = sqlx::query_as::<_, SyncRun>(
             r#"
             SELECT id, source_id, sync_type, started_at, completed_at, status,
-                   documents_processed, documents_updated, error_message,
+                   documents_scanned, documents_processed, documents_updated, error_message,
                    created_at, updated_at
             FROM sync_runs
             WHERE source_id = $1 AND sync_type = $2 AND status = $3
@@ -168,7 +170,7 @@ impl SyncRunRepository {
         let sync_run = sqlx::query_as::<_, SyncRun>(
             r#"
             SELECT id, source_id, sync_type, started_at, completed_at, status,
-                   documents_processed, documents_updated, error_message,
+                   documents_scanned, documents_processed, documents_updated, error_message,
                    created_at, updated_at
             FROM sync_runs
             WHERE source_id = $1 AND status = $2
@@ -188,7 +190,7 @@ impl SyncRunRepository {
         let sync_runs = sqlx::query_as::<_, SyncRun>(
             r#"
             SELECT id, source_id, sync_type, started_at, completed_at, status,
-                   documents_processed, documents_updated, error_message,
+                   documents_scanned, documents_processed, documents_updated, error_message,
                    created_at, updated_at
             FROM sync_runs
             WHERE status = $1

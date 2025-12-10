@@ -95,7 +95,7 @@ impl QueueProcessor {
             event_queue,
             embedding_queue,
             sync_run_repo,
-            batch_size: 32,
+            batch_size: 128,
             parallelism,
             semaphore,
             processing_mutex,

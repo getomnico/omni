@@ -373,6 +373,7 @@ pub struct SyncRun {
     #[serde(with = "time::serde::iso8601::option")]
     pub completed_at: Option<OffsetDateTime>,
     pub status: SyncStatus,
+    pub documents_scanned: i32,
     pub documents_processed: i32,
     pub documents_updated: i32,
     pub error_message: Option<String>,
