@@ -31,8 +31,8 @@ It connects to your workplace apps, and helps employees find information and get
 
 Omni can be deployed entirely on your own infra. See our deployment guides below:
 
-- Docker Compose
-- Terraform (AWS/GCP/Azure)
+- [Docker Compose](https://docs.getomni.co/deployment/docker-compose)
+- [Terraform (AWS/GCP/Azure)](https://docs.getomni.co/deployment/aws-terraform)
 
 ## Supported Integrations
 
