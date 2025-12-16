@@ -7,12 +7,29 @@ import { constructDatabaseUrl } from '$lib/server/config.js'
 import { logger } from '$lib/server/logger.js'
 
 export const GET: RequestHandler = async ({ url }) => {
+    const encoder = new TextEncoder()
+    let isClosed = false
+    let listenSql: postgres.Sql | null = null
+    let pollingInterval: ReturnType<typeof setInterval> | null = null
+
+    const cleanup = async () => {
+        isClosed = true
+        if (listenSql) {
+            try {
+                await listenSql.end()
+            } catch (error) {
+                logger.error('Error closing listen connection:', error)
+            }
+            listenSql = null
+        }
+        if (pollingInterval) {
+            clearInterval(pollingInterval)
+            pollingInterval = null
+        }
+    }
+
     const stream = new ReadableStream({
         async start(controller) {
-            const encoder = new TextEncoder()
-            let isClosed = false
-            let listenSql: any = null
-
             // Function to send data to client
             const sendData = (data: any) => {
                 if (isClosed) return
@@ -86,7 +103,10 @@ export const GET: RequestHandler = async ({ url }) => {
 
             const setupNotifications = async () => {
                 try {
-                    listenSql = postgres(constructDatabaseUrl())
+                    listenSql = postgres(constructDatabaseUrl(), {
+                        max: 1,
+                        idle_timeout: 0,
+                    })
 
                     // Listen for sync_runs updates
                     await listenSql.listen('sync_run_update', async () => {
@@ -100,12 +120,11 @@ export const GET: RequestHandler = async ({ url }) => {
                 } catch (error) {
                     logger.error('Error setting up PostgreSQL notifications:', error)
                     // Fall back to polling if LISTEN/NOTIFY fails (every 10 seconds to avoid spam)
-                    const interval = setInterval(() => {
+                    pollingInterval = setInterval(() => {
                         if (!isClosed) {
                             throttledFetchStatus()
                         }
                     }, 10000)
-                    return () => clearInterval(interval)
                 }
             }
 
@@ -113,23 +132,11 @@ export const GET: RequestHandler = async ({ url }) => {
             await fetchStatus()
 
             // Setup real-time notifications
-            const cleanupNotifications = await setupNotifications()
+            await setupNotifications()
+        },
 
-            // Cleanup on connection close
-            return () => {
-                isClosed = true
-                if (listenSql) {
-                    listenSql.end().catch(logger.error)
-                }
-                if (cleanupNotifications) {
-                    cleanupNotifications()
-                }
-                try {
-                    controller.close()
-                } catch (error) {
-                    // Controller might already be closed
-                }
-            }
+        cancel() {
+            cleanup()
         },
     })
 
