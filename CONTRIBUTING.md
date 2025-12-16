@@ -37,45 +37,59 @@ We are committed to providing a welcoming and inclusive environment. Please be r
 
 ### Prerequisites
 
-- **Rust** 1.75+ (install via [rustup](https://rustup.rs/))
-- **Docker** and Docker Compose
+- **Docker** and Docker Compose (primary requirement - all services run in containers)
+- **Rust** 1.75+ (install via [rustup](https://rustup.rs/)) - only needed for local development outside containers
+- **Node.js** 18+ - only needed for local frontend development
+- **Python** 3.12+ - only needed for local AI service development
 
 ### Initial Setup
 
-1. **Install Rust dependencies**:
+1. **Configure environment**:
    ```bash
-   cargo build --workspace
+   cp .env.example .env
+   # Edit .env to add your API keys (ANTHROPIC_API_KEY, JINA_API_KEY, etc.)
    ```
 
-2. **Install frontend dependencies**:
+2. **Start development environment**:
    ```bash
-   cd web
-   npm install
-   cd ..
+   docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml --env-file .env up -d --build
    ```
 
-3. **Install Python dependencies** (for AI service):
-   ```bash
-   cd services/ai
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   pip install -r requirements.txt
-   cd ../..
-   ```
+3. **Access the application**:
+   - Web UI: http://localhost:3000
+   - Searcher API: http://localhost:3001
+   - Indexer API: http://localhost:3002
+   - AI Service: http://localhost:3003
 
-4. **Start development environment**:
-   ```bash
-   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
-   ```
+### Development Workflow
 
-### Environment Configuration
+- **Hot-reload services**: `omni-web` (SvelteKit) and `omni-ai` (Python/FastAPI) automatically reload when you edit their source files
+- **Rust services**: Need to be rebuilt after changes:
+  ```bash
+  docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml --env-file .env up -d --build searcher
+  ```
 
-Create a `.env` file in the root directory:
+### Local Development (Optional)
 
-```env
-DATABASE_URL=postgresql://omni:omni@localhost:5432/omni
-REDIS_URL=redis://localhost:6379
-RUST_LOG=debug
+If you prefer developing outside containers:
+
+**Rust services**:
+```bash
+cargo build --workspace
+```
+
+**Frontend**:
+```bash
+cd web
+npm install
+```
+
+**AI service**:
+```bash
+cd services/ai
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
 ## Project Structure
