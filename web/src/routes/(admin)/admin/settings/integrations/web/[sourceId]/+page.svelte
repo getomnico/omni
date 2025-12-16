@@ -213,7 +213,10 @@
 
             <div class="mt-8 flex justify-between">
                 <Button variant="outline" href="/admin/settings/integrations">Cancel</Button>
-                <Button type="submit" disabled={isSubmitting || !hasUnsavedChanges}>
+                <Button
+                    type="submit"
+                    disabled={isSubmitting || !hasUnsavedChanges}
+                    class="cursor-pointer">
                     {#if isSubmitting}
                         <Loader2 class="mr-2 h-4 w-4 animate-spin" />
                     {/if}

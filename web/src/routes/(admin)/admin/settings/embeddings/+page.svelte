@@ -212,7 +212,7 @@
 
                 <!-- Submit Button -->
                 <div class="flex justify-end">
-                    <Button type="submit" disabled={isSubmitting} class="min-w-32">
+                    <Button type="submit" disabled={isSubmitting} class="min-w-32 cursor-pointer">
                         {#if isSubmitting}
                             <Loader2 class="mr-2 h-4 w-4 animate-spin" />
                             Saving...

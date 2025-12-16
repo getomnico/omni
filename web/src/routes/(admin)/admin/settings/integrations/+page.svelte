@@ -17,16 +17,18 @@
     import confluenceLogo from '$lib/images/icons/confluence.svg'
     import jiraLogo from '$lib/images/icons/jira.svg'
     import { Globe, HardDrive, Loader2 } from '@lucide/svelte'
+    import { toast } from 'svelte-sonner'
     import GoogleWorkspaceSetup from '$lib/components/google-workspace-setup.svelte'
     import AtlassianConnectorSetup from '$lib/components/atlassian-connector-setup.svelte'
     import WebConnectorSetupDialog from '$lib/components/web-connector-setup-dialog.svelte'
     import { SourceType } from '$lib/types'
+    import { invalidateAll } from '$app/navigation'
     import { onMount, onDestroy } from 'svelte'
     import type { SyncRun } from '$lib/server/db/schema'
 
     let { data }: PageProps = $props()
 
-    let runningSyncs = $state<Map<string, SyncRun>>(data.runningSyncs)
+    let runningSyncs = $derived<Map<string, SyncRun>>(data.runningSyncs)
     let eventSource = $state<EventSource | null>(null)
 
     onMount(() => {
@@ -67,11 +69,14 @@
                 method: 'POST',
             })
             if (!response.ok) {
-                console.error('Failed to trigger sync')
+                toast.error('Failed to trigger sync')
+            } else {
+                toast.success('Sync triggered successfully')
+                await invalidateAll()
             }
-            // SSE will handle the real-time update
         } catch (error) {
             console.error('Error triggering sync:', error)
+            toast.error('Failed to trigger sync')
         }
     }
 

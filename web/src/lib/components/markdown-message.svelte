@@ -11,7 +11,6 @@
     }
 
     let { content, citations }: Props = $props()
-    $inspect(citations).with((t, v) => console.log('citations', t, v))
     let containerRef: HTMLElement | undefined = $state()
 
     const renderer: RendererObject = {

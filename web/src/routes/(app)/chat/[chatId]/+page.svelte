@@ -69,8 +69,6 @@
     let error = $state<string | null>(null)
 
     let processedMessages = $derived(processMessages(chatMessages))
-    $inspect(processedMessages).with((t, v) => console.log('processedMessages', t, v))
-    $inspect(chatMessages).with((t, v) => console.log('chatMessages', t, v))
     let copiedMessageId = $state<number | null>(null)
     let copiedUrl = $state(false)
     let messageFeedback = $state<Record<string, 'upvote' | 'downvote'>>({})
