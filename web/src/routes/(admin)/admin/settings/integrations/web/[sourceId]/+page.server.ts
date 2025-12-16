@@ -1,28 +1,41 @@
 import { error, redirect } from '@sveltejs/kit'
 import type { PageServerLoad, Actions } from './$types'
 import { requireAdmin } from '$lib/server/authHelpers'
-import { getWebSources, updateWebSource } from '$lib/server/db/sources'
+import { getSourceById, updateSourceById } from '$lib/server/db/sources'
+import { SourceType, type WebSourceConfig } from '$lib/types'
 
-export const load: PageServerLoad = async ({ params, url, locals }) => {
+export const load: PageServerLoad = async ({ params, locals }) => {
     requireAdmin(locals)
 
-    const webSources = await getWebSources()
+    const source = await getSourceById(params.sourceId)
 
-    if (webSources.length === 0) {
-        throw error(404, 'No Web source found. Please connect Web crawler first.')
+    if (!source) {
+        throw error(404, 'Source not found')
+    }
+
+    if (source.sourceType !== SourceType.WEB) {
+        throw error(400, 'Invalid source type for this page')
     }
 
     return {
-        webSource: webSources[0],
+        source,
     }
 }
 
 export const actions: Actions = {
-    default: async ({ request, locals }) => {
-        const session = locals.session
+    default: async ({ request, params, locals }) => {
         const user = locals.user
         if (!user || user.role !== 'admin') {
             throw error(403, 'Admin access required')
+        }
+
+        const source = await getSourceById(params.sourceId)
+        if (!source) {
+            throw error(404, 'Source not found')
+        }
+
+        if (source.sourceType !== SourceType.WEB) {
+            throw error(400, 'Invalid source type')
         }
 
         const formData = await request.formData()
@@ -41,33 +54,30 @@ export const actions: Actions = {
         }
 
         try {
-            await updateWebSource({
+            const config: WebSourceConfig = {
+                root_url: rootUrl,
+                max_depth: maxDepth,
+                max_pages: maxPages,
+                respect_robots_txt: respectRobotsTxt,
+                include_subdomains: includeSubdomains,
+                blacklist_patterns: blacklistPatterns,
+                user_agent: userAgent,
+            }
+
+            await updateSourceById(source.id, {
                 isActive,
-                rootUrl,
-                maxDepth,
-                maxPages,
-                respectRobotsTxt,
-                includeSubdomains,
-                blacklistPatterns,
-                userAgent,
+                config,
             })
 
             if (isActive) {
                 const webConnectorUrl = process.env.WEB_CONNECTOR_URL || 'http://localhost:3006'
-
-                const webSources = await getWebSources()
-                if (webSources.length > 0) {
-                    const source = webSources[0]
-                    try {
-                        await fetch(`${webConnectorUrl}/sync/${source.id}`, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                            },
-                        })
-                    } catch (err) {
-                        console.error(`Failed to trigger sync for web source ${source.id}:`, err)
-                    }
+                try {
+                    await fetch(`${webConnectorUrl}/sync/${source.id}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                    })
+                } catch (err) {
+                    console.error(`Failed to trigger sync for web source ${source.id}:`, err)
                 }
             }
         } catch (err) {

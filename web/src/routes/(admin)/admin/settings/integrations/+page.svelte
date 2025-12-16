@@ -150,20 +150,22 @@
             : 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300'
     }
 
-    function getConfigureUrl(sourceType: SourceType): string {
+    function getConfigureUrl(sourceType: SourceType, sourceId: string): string {
         switch (sourceType) {
             case SourceType.GOOGLE_DRIVE:
+                return `/admin/settings/integrations/drive/${sourceId}`
             case SourceType.GMAIL:
-                return '/admin/settings/integrations/google'
+                return `/admin/settings/integrations/gmail/${sourceId}`
             case SourceType.CONFLUENCE:
+                return `/admin/settings/integrations/confluence/${sourceId}`
             case SourceType.JIRA:
-                return '/admin/settings/integrations/atlassian'
+                return `/admin/settings/integrations/jira/${sourceId}`
             case SourceType.SLACK:
-                return '/admin/settings/integrations/slack'
+                return `/admin/settings/integrations/slack/${sourceId}`
             case SourceType.WEB:
-                return '/admin/settings/integrations/web'
+                return `/admin/settings/integrations/web/${sourceId}`
             case SourceType.LOCAL_FILES:
-                return '/admin/settings/integrations/filesystem'
+                return `/admin/settings/integrations/filesystem/${sourceId}`
             default:
                 return '#'
         }
@@ -241,7 +243,10 @@
                                     variant="outline"
                                     size="sm"
                                     class="cursor-pointer"
-                                    href={getConfigureUrl(source.sourceType as SourceType)}>
+                                    href={getConfigureUrl(
+                                        source.sourceType as SourceType,
+                                        source.id,
+                                    )}>
                                     Configure
                                 </Button>
                             </div>

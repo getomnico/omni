@@ -1,9 +1,43 @@
-import { eq, inArray, and } from 'drizzle-orm'
+import { eq, inArray, and, desc } from 'drizzle-orm'
 import { db } from './index'
 import { sources, type Source } from './schema'
-import type { ConfluenceSourceConfig, JiraSourceConfig } from '$lib/types'
+import type { ConfluenceSourceConfig, JiraSourceConfig, WebSourceConfig } from '$lib/types'
 
 export type UserFilterMode = 'all' | 'whitelist' | 'blacklist'
+
+// Generic function to get all sources of given type(s)
+export async function getSourcesByType(...sourceTypes: string[]): Promise<Source[]> {
+    return await db
+        .select()
+        .from(sources)
+        .where(and(inArray(sources.sourceType, sourceTypes), eq(sources.isDeleted, false)))
+        .orderBy(desc(sources.createdAt))
+}
+
+// Update a source by ID with any data
+export async function updateSourceById(
+    sourceId: string,
+    data: {
+        isActive?: boolean
+        name?: string
+        config?:
+            | WebSourceConfig
+            | ConfluenceSourceConfig
+            | JiraSourceConfig
+            | Record<string, unknown>
+        userFilterMode?: UserFilterMode
+        userWhitelist?: string[] | null
+        userBlacklist?: string[] | null
+    },
+): Promise<void> {
+    await db
+        .update(sources)
+        .set({
+            ...data,
+            updatedAt: new Date(),
+        })
+        .where(eq(sources.id, sourceId))
+}
 
 export interface SourceUpdateData {
     isActive?: boolean

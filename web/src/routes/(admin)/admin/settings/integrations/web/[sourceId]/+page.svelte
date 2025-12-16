@@ -5,9 +5,6 @@
     import { Switch } from '$lib/components/ui/switch'
     import * as Card from '$lib/components/ui/card'
     import * as Alert from '$lib/components/ui/alert'
-    import { Input } from '$lib/components/ui/input'
-    import { Textarea } from '$lib/components/ui/textarea'
-    import { Checkbox } from '$lib/components/ui/checkbox'
     import { AlertCircle, Loader2, Globe } from '@lucide/svelte'
     import { onMount } from 'svelte'
     import { beforeNavigate } from '$app/navigation'
@@ -18,15 +15,15 @@
     let { data }: PageProps = $props()
 
     const getConfig = (): Partial<WebSourceConfig> => {
-        if (!data.webSource?.config) return {}
-        return typeof data.webSource.config === 'string'
-            ? JSON.parse(data.webSource.config)
-            : data.webSource.config
+        if (!data.source?.config) return {}
+        return typeof data.source.config === 'string'
+            ? JSON.parse(data.source.config)
+            : data.source.config
     }
 
     const config = getConfig()
 
-    let webEnabled = $state(data.webSource ? data.webSource.isActive : false)
+    let webEnabled = $state(data.source ? data.source.isActive : false)
     let rootUrl = $state(config.root_url || '')
     let maxDepth = $state(config.max_depth ?? 10)
     let maxPages = $state(config.max_pages ?? 10000)
@@ -45,7 +42,7 @@
 
     let beforeUnloadHandler: ((e: BeforeUnloadEvent) => void) | null = null
 
-    let originalWebEnabled = data.webSource ? data.webSource.isActive : false
+    let originalWebEnabled = data.source ? data.source.isActive : false
     let originalRootUrl = rootUrl
     let originalMaxDepth = maxDepth
     let originalMaxPages = maxPages
@@ -129,6 +126,10 @@
     })
 </script>
 
+<svelte:head>
+    <title>Configure Web Crawler - {data.source.name}</title>
+</svelte:head>
+
 <div class="h-full overflow-y-auto p-6 py-8 pb-24">
     <div class="mx-auto max-w-screen-lg space-y-8">
         <div>
@@ -180,7 +181,7 @@
                         <div>
                             <Card.Title class="flex items-center gap-2">
                                 <Globe class="h-5 w-5" />
-                                Web Crawler
+                                {data.source.name}
                             </Card.Title>
                             <Card.Description class="mt-1">
                                 Index content from public websites and documentation
@@ -210,7 +211,6 @@
                 </Card.Content>
             </Card.Root>
 
-            <!-- Submit buttons -->
             <div class="mt-8 flex justify-between">
                 <Button variant="outline" href="/admin/settings/integrations">Cancel</Button>
                 <Button type="submit" disabled={isSubmitting || !hasUnsavedChanges}>
