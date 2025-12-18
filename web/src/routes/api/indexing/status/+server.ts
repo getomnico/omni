@@ -1,6 +1,6 @@
 import { db } from '$lib/server/db/index.js'
 import { syncRuns, sources, documents } from '$lib/server/db/schema.js'
-import { eq, desc, count } from 'drizzle-orm'
+import { eq, desc, count, sql } from 'drizzle-orm'
 import type { RequestHandler } from './$types.js'
 import postgres from 'postgres'
 import { constructDatabaseUrl } from '$lib/server/config.js'
@@ -86,26 +86,27 @@ export const GET: RequestHandler = async ({ url }) => {
 
                 isFetching = true
                 try {
-                    // Get latest 10 sync runs (same as page load)
-                    const latestSyncRuns = await db
-                        .select({
-                            id: syncRuns.id,
-                            sourceId: syncRuns.sourceId,
-                            sourceName: sources.name,
-                            sourceType: sources.sourceType,
-                            syncType: syncRuns.syncType,
-                            status: syncRuns.status,
-                            documentsScanned: syncRuns.documentsScanned,
-                            documentsProcessed: syncRuns.documentsProcessed,
-                            documentsUpdated: syncRuns.documentsUpdated,
-                            startedAt: syncRuns.startedAt,
-                            completedAt: syncRuns.completedAt,
-                            errorMessage: syncRuns.errorMessage,
-                        })
-                        .from(syncRuns)
-                        .leftJoin(sources, eq(syncRuns.sourceId, sources.id))
-                        .orderBy(desc(syncRuns.startedAt))
-                        .limit(10)
+                    // Get the latest sync run for each connected source
+                    const result = await db.execute(sql`
+                        SELECT DISTINCT ON (s.id)
+                            sr.id,
+                            s.id AS "sourceId",
+                            s.name AS "sourceName",
+                            s.source_type AS "sourceType",
+                            sr.sync_type AS "syncType",
+                            sr.status,
+                            sr.documents_scanned AS "documentsScanned",
+                            sr.documents_processed AS "documentsProcessed",
+                            sr.documents_updated AS "documentsUpdated",
+                            sr.started_at AS "startedAt",
+                            sr.completed_at AS "completedAt",
+                            sr.error_message AS "errorMessage"
+                        FROM sources s
+                        LEFT JOIN sync_runs sr ON sr.source_id = s.id
+                        WHERE s.is_deleted = false
+                        ORDER BY s.id, sr.started_at DESC NULLS LAST
+                    `)
+                    const latestSyncRuns = [...result]
 
                     // Get cached document counts per source
                     const documentCounts = await getDocumentCounts()
@@ -151,6 +152,7 @@ export const GET: RequestHandler = async ({ url }) => {
 
                     // Listen for sync_runs updates
                     await listenSql.listen('sync_run_update', async () => {
+                        logger.debug('Received sync_run_update notification')
                         if (!isClosed) {
                             // Fetch and send updated status when we receive notification (throttled)
                             await throttledFetchStatus()

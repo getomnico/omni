@@ -160,6 +160,27 @@
             : 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300'
     }
 
+    function getSourceNoun(sourceType: SourceType): string {
+        switch (sourceType) {
+            case SourceType.GOOGLE_DRIVE:
+                return 'documents'
+            case SourceType.GMAIL:
+                return 'threads'
+            case SourceType.SLACK:
+                return 'messages'
+            case SourceType.CONFLUENCE:
+                return 'pages'
+            case SourceType.JIRA:
+                return 'issues'
+            case SourceType.WEB:
+                return 'pages'
+            case SourceType.LOCAL_FILES:
+                return 'files'
+            default:
+                return 'documents'
+        }
+    }
+
     function getConfigureUrl(sourceType: SourceType, sourceId: string): string {
         switch (sourceType) {
             case SourceType.GOOGLE_DRIVE:
@@ -204,6 +225,7 @@
             {#if data.connectedSources.length > 0}
                 <div class="space-y-2">
                     {#each data.connectedSources as source}
+                        {@const noun = getSourceNoun(source.sourceType as SourceType)}
                         <div
                             class="flex items-center justify-between gap-4 rounded-lg border px-4 py-3">
                             <div class="flex flex-1 items-start gap-3">
@@ -227,16 +249,16 @@
                                         </span>
                                     </div>
                                     <div
-                                        class="text-muted-foreground flex items-center gap-2 text-xs">
+                                        class="text-muted-foreground flex items-center gap-1 text-xs">
                                         {#if runningSyncs.has(source.id)}
                                             {@const sync = runningSyncs.get(source.id)}
                                             {#if sync && sync.documentsScanned && sync.documentsScanned > 0}
                                                 <span
                                                     >Syncing... {sync.documentsProcessed ??
-                                                        0}/{sync.documentsScanned} processed ({sync.documentsUpdated ??
-                                                        0} updated)</span>
+                                                        0}/{sync.documentsScanned}
+                                                    {noun} processed ({sync.documentsUpdated ?? 0} updated)</span>
                                             {:else}
-                                                <span>Syncing... scanning documents</span>
+                                                <span>Syncing... scanning {noun}</span>
                                             {/if}
                                         {:else}
                                             <span>Last sync: {formatDate(source.lastSyncAt)}</span>
@@ -244,8 +266,8 @@
                                         {#if documentCounts[source.id]}
                                             <span class="text-muted-foreground">·</span>
                                             <span
-                                                >{documentCounts[source.id].toLocaleString()} documents
-                                                indexed</span>
+                                                >{documentCounts[source.id].toLocaleString()}
+                                                {noun} indexed</span>
                                         {/if}
                                     </div>
                                 </div>
