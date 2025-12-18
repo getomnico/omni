@@ -481,11 +481,10 @@ impl SyncManager {
                     )
                 })?;
 
+            let page_file_count = response.files.len();
             debug!(
                 "Got {} files in this page with page_token: '{:?}' for user {}",
-                response.files.len(),
-                page_token,
-                user_email
+                page_file_count, page_token, user_email
             );
 
             // Process files in this page
@@ -550,6 +549,11 @@ impl SyncManager {
                     }
                 }
             }
+
+            // Update scanned count for this page
+            self.sync_run_repo
+                .increment_scanned(&sync_run.id, page_file_count as i32)
+                .await?;
 
             // Check if there are more pages
             page_token = response.next_page_token;
@@ -1868,15 +1872,20 @@ impl SyncManager {
 
             // Collect thread IDs
             if let Some(threads) = response.threads {
+                let page_thread_count = threads.len();
                 debug!(
                     "Got {} threads in this page for user {}",
-                    threads.len(),
-                    user_email
+                    page_thread_count, user_email
                 );
 
                 for thread_info in threads {
                     user_threads.push(thread_info.id);
                 }
+
+                // Update scanned count for this page
+                self.sync_run_repo
+                    .increment_scanned(&sync_run.id, page_thread_count as i32)
+                    .await?;
             }
 
             // Check if there are more pages

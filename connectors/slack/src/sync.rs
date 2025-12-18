@@ -217,6 +217,10 @@ impl SyncManager {
                             "Synced channel {}: {} message groups, {} files",
                             channel.name, message_groups, files
                         );
+                        // Update scanned count
+                        self.sync_run_repo
+                            .increment_scanned(&sync_run.id, 1)
+                            .await?;
                     }
                     Err(e) => {
                         warn!("Failed to sync channel {}: {}", channel.name, e);

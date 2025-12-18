@@ -254,11 +254,11 @@
                                             {@const sync = runningSyncs.get(source.id)}
                                             {#if sync && sync.documentsScanned && sync.documentsScanned > 0}
                                                 <span
-                                                    >Syncing... {sync.documentsProcessed ??
-                                                        0}/{sync.documentsScanned}
-                                                    {noun} processed ({sync.documentsUpdated ?? 0} updated)</span>
+                                                    >Syncing... {sync.documentsScanned.toLocaleString()}
+                                                    {noun} scanned{#if sync.documentsUpdated && sync.documentsUpdated > 0},
+                                                        {sync.documentsUpdated.toLocaleString()} updated{/if}</span>
                                             {:else}
-                                                <span>Syncing... scanning {noun}</span>
+                                                <span>Syncing...</span>
                                             {/if}
                                         {:else}
                                             <span>Last sync: {formatDate(source.lastSyncAt)}</span>

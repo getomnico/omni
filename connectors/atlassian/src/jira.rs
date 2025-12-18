@@ -88,6 +88,10 @@ impl JiraProcessor {
                         "Synced {} issues from project: {}",
                         issues_count, project_key
                     );
+                    // Update scanned count
+                    self.sync_run_repo
+                        .increment_scanned(&sync_run.id, issues_count as i32)
+                        .await?;
                 }
                 Err(e) => {
                     error!("Failed to sync project {}: {}", project_key, e);

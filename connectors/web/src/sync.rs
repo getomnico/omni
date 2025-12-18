@@ -413,6 +413,11 @@ impl SyncManager {
         let mut count = pages_processed.lock().await;
         *count += 1;
 
+        // Update scanned count
+        self.sync_run_repo
+            .increment_scanned(&sync_run.id, 1)
+            .await?;
+
         Ok(())
     }
 

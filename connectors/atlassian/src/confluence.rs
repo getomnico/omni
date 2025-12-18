@@ -101,6 +101,10 @@ impl ConfluenceProcessor {
                     Ok(pages_count) => {
                         total_pages_processed += pages_count;
                         info!("Synced {} pages from space: {}", pages_count, space.id);
+                        // Update scanned count
+                        self.sync_run_repo
+                            .increment_scanned(&sync_run.id, pages_count as i32)
+                            .await?;
                     }
                     Err(e) => {
                         error!("Failed to sync space {}: {}", space.id, e);

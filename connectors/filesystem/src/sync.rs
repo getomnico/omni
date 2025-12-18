@@ -239,7 +239,17 @@ impl FilesystemSyncManager {
 
                 if files_processed % 100 == 0 {
                     info!("Processed {} files", files_processed);
+                    // Update scanned count in batches
+                    sync_run_repo.increment_scanned(&sync_run.id, 100).await?;
                 }
+            }
+
+            // Update remaining count (files_processed % 100)
+            let remaining = files_processed % 100;
+            if remaining > 0 {
+                sync_run_repo
+                    .increment_scanned(&sync_run.id, remaining as i32)
+                    .await?;
             }
 
             info!(
