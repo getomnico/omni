@@ -53,9 +53,35 @@ impl ConfluenceProcessor {
         creds: &AtlassianCredentials,
         source_id: &str,
     ) -> Result<u32> {
-        info!("Starting Confluence spaces sync for source: {}", source_id);
+        self.sync_spaces_internal(creds, source_id, SyncType::Full)
+            .await
+    }
 
-        let sync_run = self.sync_run_repo.create(source_id, SyncType::Full).await?;
+    pub async fn sync_all_spaces_incremental(
+        &mut self,
+        creds: &AtlassianCredentials,
+        source_id: &str,
+    ) -> Result<u32> {
+        self.sync_spaces_internal(creds, source_id, SyncType::Incremental)
+            .await
+    }
+
+    async fn sync_spaces_internal(
+        &mut self,
+        creds: &AtlassianCredentials,
+        source_id: &str,
+        sync_type: SyncType,
+    ) -> Result<u32> {
+        let sync_type_str = match sync_type {
+            SyncType::Full => "full",
+            SyncType::Incremental => "incremental",
+        };
+        info!(
+            "Starting {} Confluence sync for source: {}",
+            sync_type_str, source_id
+        );
+
+        let sync_run = self.sync_run_repo.create(source_id, sync_type).await?;
         let storage_prefix = Self::get_storage_prefix(&sync_run);
 
         let result: Result<u32> = async {

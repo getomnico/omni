@@ -311,7 +311,7 @@ impl SyncManager {
             .await?;
 
         // Extract source-specific config based on source type
-        let (confluence_config, jira_config) = match source.source_type {
+        let (_confluence_config, _jira_config) = match source.source_type {
             SourceType::Confluence => {
                 let config: shared::ConfluenceSourceConfig =
                     serde_json::from_value(source.config.clone()).map_err(|e| {
@@ -383,7 +383,48 @@ impl SyncManager {
             }
         } else {
             info!("Performing incremental sync for source: {}", source.name);
-            // TODO
+
+            // Get last sync time for incremental sync
+            let last_sync = source
+                .last_sync_at
+                .and_then(|last| DateTime::from_timestamp(last.unix_timestamp(), 0))
+                .unwrap_or_else(|| sync_start - chrono::Duration::hours(24));
+
+            if source.source_type == SourceType::Confluence {
+                // Confluence incremental sync uses same flow as full sync
+                // but version checking in process_pages() skips unchanged pages
+                match self
+                    .confluence_processor
+                    .sync_all_spaces_incremental(&credentials, &source.id)
+                    .await
+                {
+                    Ok(pages_count) => {
+                        total_processed += pages_count;
+                        info!(
+                            "Incremental Confluence sync completed: {} pages",
+                            pages_count
+                        );
+                    }
+                    Err(e) => {
+                        error!("Incremental Confluence sync failed: {}", e);
+                    }
+                }
+            } else if source.source_type == SourceType::Jira {
+                // Jira incremental sync uses JQL to fetch only updated issues
+                match self
+                    .jira_processor
+                    .sync_issues_updated_since(&credentials, &source.id, last_sync, None)
+                    .await
+                {
+                    Ok(issues_count) => {
+                        total_processed += issues_count;
+                        info!("Incremental JIRA sync completed: {} issues", issues_count);
+                    }
+                    Err(e) => {
+                        error!("Incremental JIRA sync failed: {}", e);
+                    }
+                }
+            }
         }
 
         // Update source status
