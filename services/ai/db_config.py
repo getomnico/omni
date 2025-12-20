@@ -5,7 +5,7 @@ with fallback to environment variables.
 """
 
 import time
-from typing import Optional
+from typing import Optional, Union, Literal
 from dataclasses import dataclass
 
 from config import (
@@ -23,23 +23,91 @@ from config import (
     JINA_MODEL,
     JINA_API_URL,
     BEDROCK_EMBEDDING_MODEL_ID,
-    AWS_REGION,
 )
 from db import fetch_llm_config, fetch_embedding_config
 
 
-@dataclass
-class LLMConfig:
-    """LLM configuration data class"""
+# =============================================================================
+# LLM Configuration Types
+# =============================================================================
 
-    provider: str
-    primary_model_id: str
+
+@dataclass
+class VLLMConfig:
+    """vLLM provider configuration"""
+
+    provider: Literal["vllm"]
+    vllm_url: str
+    primary_model_id: Optional[str]
     secondary_model_id: Optional[str]
-    vllm_url: Optional[str]
-    anthropic_api_key: Optional[str]
     max_tokens: Optional[int]
     temperature: Optional[float]
     top_p: Optional[float]
+
+
+@dataclass
+class AnthropicConfig:
+    """Anthropic provider configuration"""
+
+    provider: Literal["anthropic"]
+    anthropic_api_key: str
+    primary_model_id: str
+    secondary_model_id: Optional[str]
+    max_tokens: Optional[int]
+    temperature: Optional[float]
+    top_p: Optional[float]
+
+
+@dataclass
+class BedrockLLMConfig:
+    """AWS Bedrock LLM provider configuration"""
+
+    provider: Literal["bedrock"]
+    primary_model_id: str
+    secondary_model_id: Optional[str]
+    max_tokens: Optional[int]
+    temperature: Optional[float]
+    top_p: Optional[float]
+
+
+LLMConfig = Union[VLLMConfig, AnthropicConfig, BedrockLLMConfig]
+
+
+def parse_llm_config(data: dict) -> LLMConfig:
+    """Parse raw dict to typed LLM config based on provider"""
+    provider = data.get("provider")
+
+    if provider == "vllm":
+        return VLLMConfig(
+            provider="vllm",
+            vllm_url=data.get("vllmUrl", ""),
+            primary_model_id=data.get("primaryModelId"),
+            secondary_model_id=data.get("secondaryModelId"),
+            max_tokens=data.get("maxTokens"),
+            temperature=data.get("temperature"),
+            top_p=data.get("topP"),
+        )
+    elif provider == "anthropic":
+        return AnthropicConfig(
+            provider="anthropic",
+            anthropic_api_key=data.get("anthropicApiKey", ""),
+            primary_model_id=data.get("primaryModelId", ""),
+            secondary_model_id=data.get("secondaryModelId"),
+            max_tokens=data.get("maxTokens"),
+            temperature=data.get("temperature"),
+            top_p=data.get("topP"),
+        )
+    elif provider == "bedrock":
+        return BedrockLLMConfig(
+            provider="bedrock",
+            primary_model_id=data.get("primaryModelId", ""),
+            secondary_model_id=data.get("secondaryModelId"),
+            max_tokens=data.get("maxTokens"),
+            temperature=data.get("temperature"),
+            top_p=data.get("topP"),
+        )
+    else:
+        raise ValueError(f"Unknown LLM provider: {provider}")
 
 
 class LLMConfigCache:
@@ -66,43 +134,42 @@ class LLMConfigCache:
         config_data = await fetch_llm_config()
 
         if config_data:
-            return LLMConfig(
-                provider=config_data.get("provider"),
-                primary_model_id=config_data.get("primaryModelId"),
-                secondary_model_id=config_data.get("secondaryModelId"),
-                vllm_url=config_data.get("vllmUrl"),
-                anthropic_api_key=config_data.get("anthropicApiKey"),
-                max_tokens=config_data.get("maxTokens"),
-                temperature=config_data.get("temperature"),
-                top_p=config_data.get("topP"),
-            )
+            return parse_llm_config(config_data)
         return None
 
     def _get_env_fallback_config(self) -> LLMConfig:
         """Get configuration from environment variables as fallback"""
-        # Determine primary and secondary model IDs based on provider
-        primary_model_id = ""
-        secondary_model_id = None
-
-        if LLM_PROVIDER == "anthropic":
-            primary_model_id = ANTHROPIC_MODEL
+        if LLM_PROVIDER == "vllm":
+            return VLLMConfig(
+                provider="vllm",
+                vllm_url=VLLM_URL or "",
+                primary_model_id=None,
+                secondary_model_id=None,
+                max_tokens=DEFAULT_MAX_TOKENS,
+                temperature=DEFAULT_TEMPERATURE,
+                top_p=DEFAULT_TOP_P,
+            )
+        elif LLM_PROVIDER == "anthropic":
+            return AnthropicConfig(
+                provider="anthropic",
+                anthropic_api_key=ANTHROPIC_API_KEY or "",
+                primary_model_id=ANTHROPIC_MODEL or "",
+                secondary_model_id=None,
+                max_tokens=DEFAULT_MAX_TOKENS,
+                temperature=DEFAULT_TEMPERATURE,
+                top_p=DEFAULT_TOP_P,
+            )
         elif LLM_PROVIDER == "bedrock":
-            primary_model_id = BEDROCK_MODEL_ID
-            secondary_model_id = TITLE_GENERATION_MODEL_ID
-        elif LLM_PROVIDER == "vllm":
-            # For vLLM, there's no default model ID in env
-            primary_model_id = "default"
-
-        return LLMConfig(
-            provider=LLM_PROVIDER,
-            primary_model_id=primary_model_id,
-            secondary_model_id=secondary_model_id,
-            vllm_url=VLLM_URL if VLLM_URL else None,
-            anthropic_api_key=ANTHROPIC_API_KEY if ANTHROPIC_API_KEY else None,
-            max_tokens=DEFAULT_MAX_TOKENS,
-            temperature=DEFAULT_TEMPERATURE,
-            top_p=DEFAULT_TOP_P,
-        )
+            return BedrockLLMConfig(
+                provider="bedrock",
+                primary_model_id=BEDROCK_MODEL_ID or "",
+                secondary_model_id=TITLE_GENERATION_MODEL_ID,
+                max_tokens=DEFAULT_MAX_TOKENS,
+                temperature=DEFAULT_TEMPERATURE,
+                top_p=DEFAULT_TOP_P,
+            )
+        else:
+            raise ValueError(f"Unknown LLM provider from env: {LLM_PROVIDER}")
 
     async def get_config(self) -> LLMConfig:
         """
@@ -148,24 +215,87 @@ def invalidate_llm_config_cache():
     _llm_config_cache.invalidate_cache()
 
 
-@dataclass
-class EmbeddingConfig:
-    """Embedding configuration data class"""
+# =============================================================================
+# Embedding Configuration Types
+# =============================================================================
 
-    provider: str  # "jina", "bedrock", "openai", "local"
-    # Jina fields
+
+@dataclass
+class LocalEmbeddingConfig:
+    """Local (vLLM-based) embedding provider configuration"""
+
+    provider: Literal["local"]
+    local_base_url: str
+    local_model: str
+
+
+@dataclass
+class JinaEmbeddingConfig:
+    """Jina embedding provider configuration"""
+
+    provider: Literal["jina"]
     jina_api_key: Optional[str]
-    jina_model: Optional[str]
+    jina_model: str
     jina_api_url: Optional[str]
-    # Bedrock fields
-    bedrock_model_id: Optional[str]
-    # OpenAI fields
+
+
+@dataclass
+class OpenAIEmbeddingConfig:
+    """OpenAI embedding provider configuration"""
+
+    provider: Literal["openai"]
     openai_api_key: Optional[str]
-    openai_model: Optional[str]
+    openai_model: str
     openai_dimensions: Optional[int]
-    # Local fields (vLLM-based)
-    local_base_url: Optional[str]
-    local_model: Optional[str]
+
+
+@dataclass
+class BedrockEmbeddingConfig:
+    """AWS Bedrock embedding provider configuration"""
+
+    provider: Literal["bedrock"]
+    bedrock_model_id: str
+
+
+EmbeddingConfig = Union[
+    LocalEmbeddingConfig,
+    JinaEmbeddingConfig,
+    OpenAIEmbeddingConfig,
+    BedrockEmbeddingConfig,
+]
+
+
+def parse_embedding_config(data: dict) -> EmbeddingConfig:
+    """Parse raw dict to typed embedding config based on provider"""
+    provider = data.get("provider")
+
+    if provider == "local":
+        return LocalEmbeddingConfig(
+            provider="local",
+            local_base_url=data.get("localBaseUrl", ""),
+            local_model=data.get("localModel", ""),
+        )
+    elif provider == "jina":
+        return JinaEmbeddingConfig(
+            provider="jina",
+            jina_api_key=data.get("jinaApiKey"),
+            jina_model=data.get("jinaModel", ""),
+            jina_api_url=data.get("jinaApiUrl"),
+        )
+    elif provider == "openai":
+        return OpenAIEmbeddingConfig(
+            provider="openai",
+            openai_api_key=data.get("openaiApiKey"),
+            openai_model=data.get("openaiModel", ""),
+            openai_dimensions=data.get("openaiDimensions"),
+        )
+    elif provider == "bedrock":
+        return BedrockEmbeddingConfig(
+            provider="bedrock",
+            bedrock_model_id=data.get("bedrockModelId", ""),
+        )
+    else:
+        raise ValueError(f"Unknown embedding provider: {provider}")
 
 
 class EmbeddingConfigCache:
@@ -192,18 +322,7 @@ class EmbeddingConfigCache:
         config_data = await fetch_embedding_config()
 
         if config_data:
-            return EmbeddingConfig(
-                provider=config_data.get("provider"),
-                jina_api_key=config_data.get("jinaApiKey"),
-                jina_model=config_data.get("jinaModel"),
-                jina_api_url=config_data.get("jinaApiUrl"),
-                bedrock_model_id=config_data.get("bedrockModelId"),
-                openai_api_key=config_data.get("openaiApiKey"),
-                openai_model=config_data.get("openaiModel"),
-                openai_dimensions=config_data.get("openaiDimensions"),
-                local_base_url=config_data.get("localBaseUrl"),
-                local_model=config_data.get("localModel"),
-            )
+            return parse_embedding_config(config_data)
         return None
 
     def _get_env_fallback_config(self) -> EmbeddingConfig:
@@ -216,24 +335,35 @@ class EmbeddingConfigCache:
             LOCAL_EMBEDDINGS_MODEL,
         )
 
-        return EmbeddingConfig(
-            provider=EMBEDDING_PROVIDER,
-            jina_api_key=JINA_API_KEY if JINA_API_KEY else None,
-            jina_model=JINA_MODEL if JINA_MODEL else None,
-            jina_api_url=JINA_API_URL if JINA_API_URL else None,
-            bedrock_model_id=(
-                BEDROCK_EMBEDDING_MODEL_ID if BEDROCK_EMBEDDING_MODEL_ID else None
-            ),
-            openai_api_key=(
-                OPENAI_EMBEDDING_API_KEY if OPENAI_EMBEDDING_API_KEY else None
-            ),
-            openai_model=OPENAI_EMBEDDING_MODEL if OPENAI_EMBEDDING_MODEL else None,
-            openai_dimensions=(
-                OPENAI_EMBEDDING_DIMENSIONS if OPENAI_EMBEDDING_DIMENSIONS else None
-            ),
-            local_base_url=LOCAL_EMBEDDINGS_URL if LOCAL_EMBEDDINGS_URL else None,
-            local_model=LOCAL_EMBEDDINGS_MODEL if LOCAL_EMBEDDINGS_MODEL else None,
-        )
+        if EMBEDDING_PROVIDER == "local":
+            return LocalEmbeddingConfig(
+                provider="local",
+                local_base_url=LOCAL_EMBEDDINGS_URL or "",
+                local_model=LOCAL_EMBEDDINGS_MODEL or "",
+            )
+        elif EMBEDDING_PROVIDER == "jina":
+            return JinaEmbeddingConfig(
+                provider="jina",
+                jina_api_key=JINA_API_KEY,
+                jina_model=JINA_MODEL or "",
+                jina_api_url=JINA_API_URL,
+            )
+        elif EMBEDDING_PROVIDER == "openai":
+            return OpenAIEmbeddingConfig(
+                provider="openai",
+                openai_api_key=OPENAI_EMBEDDING_API_KEY,
+                openai_model=OPENAI_EMBEDDING_MODEL or "",
+                openai_dimensions=OPENAI_EMBEDDING_DIMENSIONS,
+            )
+        elif EMBEDDING_PROVIDER == "bedrock":
+            return BedrockEmbeddingConfig(
+                provider="bedrock",
+                bedrock_model_id=BEDROCK_EMBEDDING_MODEL_ID or "",
+            )
+        else:
+            raise ValueError(
+                f"Unknown embedding provider from env: {EMBEDDING_PROVIDER}"
+            )
 
     async def get_config(self) -> EmbeddingConfig:
         """

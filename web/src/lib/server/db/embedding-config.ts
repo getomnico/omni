@@ -4,39 +4,38 @@ import { configuration } from './schema'
 
 export type EmbeddingProvider = 'local' | 'jina' | 'openai' | 'bedrock'
 
-export interface EmbeddingConfig {
-    provider: EmbeddingProvider
-    // Jina fields
-    jinaApiKey?: string | null
-    jinaModel?: string | null
-    jinaApiUrl?: string | null
-    // Bedrock fields
-    bedrockModelId?: string | null
-    // OpenAI fields
-    openaiApiKey?: string | null
-    openaiModel?: string | null
-    openaiDimensions?: number | null
-    // Local fields
-    localBaseUrl?: string | null
-    localModel?: string | null
+// Provider-specific config types
+export interface LocalEmbeddingConfig {
+    provider: 'local'
+    localBaseUrl: string
+    localModel: string
 }
 
-export interface EmbeddingConfigData {
-    provider: EmbeddingProvider
-    // Jina fields
-    jinaApiKey?: string | null
-    jinaModel?: string | null
-    jinaApiUrl?: string | null
-    // Bedrock fields
-    bedrockModelId?: string | null
-    // OpenAI fields
-    openaiApiKey?: string | null
-    openaiModel?: string | null
-    openaiDimensions?: number | null
-    // Local fields
-    localBaseUrl?: string | null
-    localModel?: string | null
+export interface JinaEmbeddingConfig {
+    provider: 'jina'
+    jinaApiKey: string | null
+    jinaModel: string
+    jinaApiUrl: string | null
 }
+
+export interface OpenAIEmbeddingConfig {
+    provider: 'openai'
+    openaiApiKey: string | null
+    openaiModel: string
+    openaiDimensions: number | null
+}
+
+export interface BedrockEmbeddingConfig {
+    provider: 'bedrock'
+    bedrockModelId: string
+}
+
+// Discriminated union type
+export type EmbeddingConfig =
+    | LocalEmbeddingConfig
+    | JinaEmbeddingConfig
+    | OpenAIEmbeddingConfig
+    | BedrockEmbeddingConfig
 
 const EMBEDDING_CONFIG_KEY = 'embedding_config'
 
@@ -51,41 +50,60 @@ export async function getEmbeddingConfig(): Promise<EmbeddingConfig | null> {
         return null
     }
 
-    return result[0].value as EmbeddingConfig
+    const raw = result[0].value as Record<string, unknown>
+    const provider = raw.provider as EmbeddingProvider
+
+    switch (provider) {
+        case 'local':
+            return {
+                provider: 'local',
+                localBaseUrl: raw.localBaseUrl as string,
+                localModel: raw.localModel as string,
+            }
+        case 'jina':
+            return {
+                provider: 'jina',
+                jinaApiKey: raw.jinaApiKey as string | null,
+                jinaModel: raw.jinaModel as string,
+                jinaApiUrl: raw.jinaApiUrl as string | null,
+            }
+        case 'openai':
+            return {
+                provider: 'openai',
+                openaiApiKey: raw.openaiApiKey as string | null,
+                openaiModel: raw.openaiModel as string,
+                openaiDimensions: raw.openaiDimensions as number | null,
+            }
+        case 'bedrock':
+            return {
+                provider: 'bedrock',
+                bedrockModelId: raw.bedrockModelId as string,
+            }
+        default:
+            console.warn(`Unknown embedding provider: ${provider}`)
+            return null
+    }
 }
 
-export async function upsertEmbeddingConfig(data: EmbeddingConfigData): Promise<void> {
-    const existing = await getEmbeddingConfig()
+export async function upsertEmbeddingConfig(data: EmbeddingConfig): Promise<void> {
+    const existing = await db
+        .select()
+        .from(configuration)
+        .where(eq(configuration.key, EMBEDDING_CONFIG_KEY))
+        .limit(1)
 
-    const configValue: EmbeddingConfig = {
-        provider: data.provider,
-        // Jina fields
-        jinaApiKey: data.jinaApiKey || null,
-        jinaModel: data.jinaModel || null,
-        jinaApiUrl: data.jinaApiUrl || null,
-        // Bedrock fields
-        bedrockModelId: data.bedrockModelId || null,
-        // OpenAI fields
-        openaiApiKey: data.openaiApiKey || null,
-        openaiModel: data.openaiModel || null,
-        openaiDimensions: data.openaiDimensions || null,
-        // Local fields
-        localBaseUrl: data.localBaseUrl || null,
-        localModel: data.localModel || null,
-    }
-
-    if (existing) {
+    if (existing.length > 0) {
         await db
             .update(configuration)
             .set({
-                value: configValue,
+                value: data,
                 updatedAt: new Date(),
             })
             .where(eq(configuration.key, EMBEDDING_CONFIG_KEY))
     } else {
         await db.insert(configuration).values({
             key: EMBEDDING_CONFIG_KEY,
-            value: configValue,
+            value: data,
         })
     }
 }

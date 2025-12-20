@@ -22,7 +22,17 @@ from pdf_extractor import (
 )
 from logger import setup_logging
 from config import *  # Import all config variables
-from db_config import get_llm_config, get_embedding_config
+from db_config import (
+    get_llm_config,
+    get_embedding_config,
+    VLLMConfig,
+    AnthropicConfig,
+    BedrockLLMConfig,
+    LocalEmbeddingConfig,
+    JinaEmbeddingConfig,
+    OpenAIEmbeddingConfig,
+    BedrockEmbeddingConfig,
+)
 from routers.chat import router as chat_router
 from telemetry import init_telemetry
 from embeddings.batch_processor import start_batch_processing
@@ -120,69 +130,73 @@ async def startup_event():
             f"Loaded embedding configuration from database (provider: {embedding_config.provider})"
         )
 
-        if embedding_config.provider == "jina":
-            if not embedding_config.jina_api_key:
-                raise ValueError("JINA_API_KEY is required when using Jina provider")
-            if not embedding_config.jina_model:
-                raise ValueError("JINA_MODEL is required when using Jina provider")
+        match embedding_config:
+            case JinaEmbeddingConfig():
+                if not embedding_config.jina_api_key:
+                    raise ValueError(
+                        "JINA_API_KEY is required when using Jina provider"
+                    )
 
-            logger.info(
-                f"Initializing JINA embedding provider with model: {embedding_config.jina_model}"
-            )
-            app.state.embedding_provider = create_embedding_provider(
-                embedding_config.provider,
-                api_key=embedding_config.jina_api_key,
-                model=embedding_config.jina_model,
-                api_url=embedding_config.jina_api_url,
-                max_model_len=JINA_MAX_MODEL_LEN,
-            )
-        elif embedding_config.provider == "bedrock":
-            if not embedding_config.bedrock_model_id:
-                raise ValueError(
-                    "BEDROCK_EMBEDDING_MODEL_ID is required when using Bedrock provider"
+                logger.info(
+                    f"Initializing JINA embedding provider with model: {embedding_config.jina_model}"
+                )
+                app.state.embedding_provider = create_embedding_provider(
+                    "jina",
+                    api_key=embedding_config.jina_api_key,
+                    model=embedding_config.jina_model,
+                    api_url=embedding_config.jina_api_url,
+                    max_model_len=JINA_MAX_MODEL_LEN,
                 )
 
-            logger.info(
-                f"Initializing Bedrock embedding provider with model: {embedding_config.bedrock_model_id}"
-            )
-            region_name = AWS_REGION if AWS_REGION else None
-            app.state.embedding_provider = create_embedding_provider(
-                embedding_config.provider,
-                model_id=embedding_config.bedrock_model_id,
-                region_name=region_name,
-                max_model_len=BEDROCK_EMBEDDING_MAX_MODEL_LEN,
-            )
-        elif embedding_config.provider == "openai":
-            api_key = embedding_config.openai_api_key or OPENAI_EMBEDDING_API_KEY
-            if not api_key:
-                raise ValueError(
-                    "OPENAI_EMBEDDING_API_KEY is required when using OpenAI provider"
+            case BedrockEmbeddingConfig():
+                logger.info(
+                    f"Initializing Bedrock embedding provider with model: {embedding_config.bedrock_model_id}"
+                )
+                region_name = AWS_REGION if AWS_REGION else None
+                app.state.embedding_provider = create_embedding_provider(
+                    "bedrock",
+                    model_id=embedding_config.bedrock_model_id,
+                    region_name=region_name,
+                    max_model_len=BEDROCK_EMBEDDING_MAX_MODEL_LEN,
                 )
 
-            model = embedding_config.openai_model or OPENAI_EMBEDDING_MODEL
-            dimensions = (
-                embedding_config.openai_dimensions or OPENAI_EMBEDDING_DIMENSIONS
-            )
+            case OpenAIEmbeddingConfig():
+                api_key = embedding_config.openai_api_key or OPENAI_EMBEDDING_API_KEY
+                if not api_key:
+                    raise ValueError(
+                        "OPENAI_EMBEDDING_API_KEY is required when using OpenAI provider"
+                    )
 
-            logger.info(f"Initializing OpenAI embedding provider with model: {model}")
-            app.state.embedding_provider = create_embedding_provider(
-                "openai", api_key=api_key, model=model, dimensions=dimensions
-            )
-        elif embedding_config.provider == "local":
-            base_url = embedding_config.local_base_url or LOCAL_EMBEDDINGS_URL
-            model = embedding_config.local_model or LOCAL_EMBEDDINGS_MODEL
+                model = embedding_config.openai_model
+                dimensions = (
+                    embedding_config.openai_dimensions or OPENAI_EMBEDDING_DIMENSIONS
+                )
 
-            logger.info(
-                f"Initializing local (vLLM) embedding provider with model: {model} at {base_url}"
-            )
-            app.state.embedding_provider = create_embedding_provider(
-                "local",
-                base_url=base_url,
-                model=model,
-                max_model_len=VLLM_EMBEDDINGS_MAX_MODEL_LEN,
-            )
-        else:
-            raise ValueError(f"Unknown embedding provider: {embedding_config.provider}")
+                logger.info(
+                    f"Initializing OpenAI embedding provider with model: {model}"
+                )
+                app.state.embedding_provider = create_embedding_provider(
+                    "openai", api_key=api_key, model=model, dimensions=dimensions
+                )
+
+            case LocalEmbeddingConfig():
+                base_url = embedding_config.local_base_url or LOCAL_EMBEDDINGS_URL
+                model = embedding_config.local_model or LOCAL_EMBEDDINGS_MODEL
+
+                logger.info(
+                    f"Initializing local (vLLM) embedding provider with model: {model} at {base_url}"
+                )
+                app.state.embedding_provider = create_embedding_provider(
+                    "local",
+                    base_url=base_url,
+                    model=model,
+                    max_model_len=VLLM_EMBEDDINGS_MAX_MODEL_LEN,
+                )
+
+            case _:
+                raise ValueError(
+                    f"Unknown embedding provider: {embedding_config.provider}"
+                )
 
         logger.info(
             f"Initialized {embedding_config.provider} embedding provider with model: {app.state.embedding_provider.get_model_name()}"
@@ -194,45 +208,47 @@ async def startup_event():
             f"Loaded LLM configuration from database (provider: {llm_config.provider})"
         )
 
-        if llm_config.provider == "vllm":
-            if not llm_config.vllm_url:
-                raise ValueError("VLLM_URL is required when using vLLM provider")
-            app.state.llm_provider = create_llm_provider(
-                "vllm", vllm_url=llm_config.vllm_url
-            )
-            logger.info(f"Initialized vLLM provider with URL: {llm_config.vllm_url}")
-        elif llm_config.provider == "anthropic":
-            if not llm_config.anthropic_api_key:
-                raise ValueError(
-                    "ANTHROPIC_API_KEY is required when using Anthropic provider"
+        match llm_config:
+            case VLLMConfig():
+                app.state.llm_provider = create_llm_provider(
+                    "vllm", vllm_url=llm_config.vllm_url
                 )
-            app.state.llm_provider = create_llm_provider(
-                "anthropic",
-                api_key=llm_config.anthropic_api_key,
-                model=llm_config.primary_model_id,
-            )
-            logger.info(
-                f"Initialized Anthropic provider with model: {llm_config.primary_model_id}"
-            )
-        elif llm_config.provider == "bedrock":
-            region_name = AWS_REGION if AWS_REGION else None
-            app.state.llm_provider = create_llm_provider(
-                "bedrock",
-                model_id=llm_config.primary_model_id,
-                secondary_model_id=llm_config.secondary_model_id,
-                region_name=region_name,
-            )
-            logger.info(
-                f"Initialized AWS Bedrock provider with model: {llm_config.primary_model_id}"
-            )
-            if llm_config.secondary_model_id:
-                logger.info(f"Using secondary model: {llm_config.secondary_model_id}")
-            if region_name:
-                logger.info(f"Using AWS region: {region_name}")
-            else:
-                logger.info("Using auto-detected AWS region from ECS environment")
-        else:
-            raise ValueError(f"Unknown LLM provider: {llm_config.provider}")
+                logger.info(
+                    f"Initialized vLLM provider with URL: {llm_config.vllm_url}"
+                )
+
+            case AnthropicConfig():
+                app.state.llm_provider = create_llm_provider(
+                    "anthropic",
+                    api_key=llm_config.anthropic_api_key,
+                    model=llm_config.primary_model_id,
+                )
+                logger.info(
+                    f"Initialized Anthropic provider with model: {llm_config.primary_model_id}"
+                )
+
+            case BedrockLLMConfig():
+                region_name = AWS_REGION if AWS_REGION else None
+                app.state.llm_provider = create_llm_provider(
+                    "bedrock",
+                    model_id=llm_config.primary_model_id,
+                    secondary_model_id=llm_config.secondary_model_id,
+                    region_name=region_name,
+                )
+                logger.info(
+                    f"Initialized AWS Bedrock provider with model: {llm_config.primary_model_id}"
+                )
+                if llm_config.secondary_model_id:
+                    logger.info(
+                        f"Using secondary model: {llm_config.secondary_model_id}"
+                    )
+                if region_name:
+                    logger.info(f"Using AWS region: {region_name}")
+                else:
+                    logger.info("Using auto-detected AWS region from ECS environment")
+
+            case _:
+                raise ValueError(f"Unknown LLM provider: {llm_config.provider}")
 
         # Initialize searcher client
         app.state.searcher_tool = SearcherTool()
@@ -346,6 +362,15 @@ async def health_check():
     llm_config = await get_llm_config()
     embedding_config = await get_embedding_config()
 
+    # Get LLM model ID based on config type
+    match llm_config:
+        case VLLMConfig():
+            llm_model = llm_config.primary_model_id or "default"
+        case AnthropicConfig() | BedrockLLMConfig():
+            llm_model = llm_config.primary_model_id
+        case _:
+            llm_model = "unknown"
+
     return {
         "status": "healthy",
         "service": "ai",
@@ -354,7 +379,7 @@ async def health_check():
         "port": PORT,
         "embedding_dimensions": EMBEDDING_DIMENSIONS,
         "llm_provider": llm_config.provider,
-        "llm_model": llm_config.primary_model_id,
+        "llm_model": llm_model,
         "llm_health": llm_health,
     }
 

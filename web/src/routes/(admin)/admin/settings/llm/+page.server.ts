@@ -1,27 +1,64 @@
-import { error, fail } from '@sveltejs/kit'
+import { fail } from '@sveltejs/kit'
 import type { PageServerLoad, Actions } from './$types'
 import { requireAdmin } from '$lib/server/authHelpers'
-import { getLLMConfig, upsertLLMConfig, type LLMProvider } from '$lib/server/db/llm-config'
-import { env } from '$env/dynamic/private'
+import {
+    getLLMConfig,
+    upsertLLMConfig,
+    type LLMProvider,
+    type LLMConfig,
+} from '$lib/server/db/llm-config'
 
 export const load: PageServerLoad = async ({ locals }) => {
     requireAdmin(locals)
 
     const config = await getLLMConfig()
 
-    return {
-        config: config
-            ? {
-                  provider: config.provider,
-                  primaryModelId: config.primaryModelId,
-                  secondaryModelId: config.secondaryModelId,
-                  vllmUrl: config.vllmUrl,
-                  maxTokens: config.maxTokens,
-                  temperature: config.temperature,
-                  topP: config.topP,
-              }
-            : null,
-        hasAnthropicApiKey: config?.anthropicApiKey ? true : false,
+    if (!config) {
+        return {
+            config: null,
+            hasAnthropicApiKey: false,
+        }
+    }
+
+    // Return provider-specific data based on config type
+    switch (config.provider) {
+        case 'vllm':
+            return {
+                config: {
+                    provider: config.provider,
+                    vllmUrl: config.vllmUrl,
+                    primaryModelId: config.primaryModelId,
+                    secondaryModelId: config.secondaryModelId,
+                    maxTokens: config.maxTokens,
+                    temperature: config.temperature,
+                    topP: config.topP,
+                },
+                hasAnthropicApiKey: false,
+            }
+        case 'anthropic':
+            return {
+                config: {
+                    provider: config.provider,
+                    primaryModelId: config.primaryModelId,
+                    secondaryModelId: config.secondaryModelId,
+                    maxTokens: config.maxTokens,
+                    temperature: config.temperature,
+                    topP: config.topP,
+                },
+                hasAnthropicApiKey: !!config.anthropicApiKey,
+            }
+        case 'bedrock':
+            return {
+                config: {
+                    provider: config.provider,
+                    primaryModelId: config.primaryModelId,
+                    secondaryModelId: config.secondaryModelId,
+                    maxTokens: config.maxTokens,
+                    temperature: config.temperature,
+                    topP: config.topP,
+                },
+                hasAnthropicApiKey: false,
+            }
     }
 }
 
@@ -30,22 +67,13 @@ export const actions: Actions = {
         requireAdmin(locals)
 
         const formData = await request.formData()
-
         const provider = formData.get('provider') as LLMProvider
-        const primaryModelId = formData.get('primaryModelId') as string
-        const secondaryModelId = (formData.get('secondaryModelId') as string) || null
-        const vllmUrl = (formData.get('vllmUrl') as string) || null
-        const anthropicApiKey = (formData.get('anthropicApiKey') as string) || null
-        const maxTokensStr = formData.get('maxTokens') as string
-        const temperatureStr = formData.get('temperature') as string
-        const topPStr = formData.get('topP') as string
 
         // Validation
-        if (!provider || !primaryModelId) {
+        if (!provider) {
             return fail(400, {
-                error: 'Provider and primary model ID are required',
+                error: 'Provider is required',
                 provider,
-                primaryModelId,
             })
         }
 
@@ -56,16 +84,11 @@ export const actions: Actions = {
             })
         }
 
-        // Provider-specific validation
-        if (provider === 'vllm' && !vllmUrl) {
-            return fail(400, {
-                error: 'vLLM URL is required for vLLM provider',
-                provider,
-                vllmUrl,
-            })
-        }
-
         // Parse optional numeric fields
+        const maxTokensStr = formData.get('maxTokens') as string
+        const temperatureStr = formData.get('temperature') as string
+        const topPStr = formData.get('topP') as string
+
         const maxTokens = maxTokensStr ? parseInt(maxTokensStr) : null
         const temperature = temperatureStr ? parseFloat(temperatureStr) : null
         const topP = topPStr ? parseFloat(topPStr) : null
@@ -93,19 +116,102 @@ export const actions: Actions = {
         }
 
         try {
-            // Get existing config to preserve fields not being updated
             const existingConfig = await getLLMConfig()
+            let configData: LLMConfig
 
-            await upsertLLMConfig({
-                provider,
-                primaryModelId,
-                secondaryModelId,
-                vllmUrl,
-                anthropicApiKey: anthropicApiKey || existingConfig?.anthropicApiKey || null,
-                maxTokens,
-                temperature,
-                topP,
-            })
+            switch (provider) {
+                case 'vllm': {
+                    const vllmUrl = formData.get('vllmUrl') as string
+                    const primaryModelId = (formData.get('primaryModelId') as string) || null
+                    const secondaryModelId = (formData.get('secondaryModelId') as string) || null
+
+                    if (!vllmUrl) {
+                        return fail(400, {
+                            error: 'vLLM URL is required for vLLM provider',
+                            provider,
+                        })
+                    }
+
+                    configData = {
+                        provider: 'vllm',
+                        vllmUrl,
+                        primaryModelId,
+                        secondaryModelId,
+                        maxTokens,
+                        temperature,
+                        topP,
+                    }
+                    break
+                }
+
+                case 'anthropic': {
+                    const primaryModelId = formData.get('primaryModelId') as string
+                    const secondaryModelId = (formData.get('secondaryModelId') as string) || null
+                    const anthropicApiKey = (formData.get('anthropicApiKey') as string) || null
+
+                    if (!primaryModelId) {
+                        return fail(400, {
+                            error: 'Primary model ID is required for Anthropic provider',
+                            provider,
+                        })
+                    }
+
+                    // Preserve existing API key if not provided
+                    const existingApiKey =
+                        existingConfig?.provider === 'anthropic'
+                            ? existingConfig.anthropicApiKey
+                            : null
+
+                    const finalApiKey = anthropicApiKey || existingApiKey
+                    if (!finalApiKey) {
+                        return fail(400, {
+                            error: 'API key is required for Anthropic provider',
+                            provider,
+                        })
+                    }
+
+                    configData = {
+                        provider: 'anthropic',
+                        anthropicApiKey: finalApiKey,
+                        primaryModelId,
+                        secondaryModelId,
+                        maxTokens,
+                        temperature,
+                        topP,
+                    }
+                    break
+                }
+
+                case 'bedrock': {
+                    const primaryModelId = formData.get('primaryModelId') as string
+                    const secondaryModelId = (formData.get('secondaryModelId') as string) || null
+
+                    if (!primaryModelId) {
+                        return fail(400, {
+                            error: 'Primary model ID is required for Bedrock provider',
+                            provider,
+                        })
+                    }
+
+                    configData = {
+                        provider: 'bedrock',
+                        primaryModelId,
+                        secondaryModelId,
+                        maxTokens,
+                        temperature,
+                        topP,
+                    }
+                    break
+                }
+
+                default:
+                    return fail(400, {
+                        error: 'Invalid provider',
+                        provider,
+                    })
+            }
+
+            await upsertLLMConfig(configData)
 
             return {
                 success: true,
