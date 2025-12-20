@@ -2,7 +2,6 @@ import logging
 import time
 import httpx
 import asyncio
-from typing import List, Optional
 
 from . import EmbeddingProvider, Chunk, chunk_by_sentences, generate_sentence_chunks
 
@@ -19,7 +18,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
     Works with:
     - OpenAI's API (https://api.openai.com/v1)
-    - vLLM server serving local models (http://vllm-embeddings:8001/v1)
+    - vLLM server serving local models
     """
 
     def __init__(
@@ -27,7 +26,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         api_key: str,
         model: str,
         base_url: str = "https://api.openai.com/v1",
-        dimensions: Optional[int] = None,
+        dimensions: int | None = None,
     ):
         self.api_key = api_key
         self.model = model
@@ -47,12 +46,12 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
     async def generate_embeddings(
         self,
-        texts: List[str],
+        texts: list[str],
         task: str,
         chunk_size: int,
         chunking_mode: str,
-        n_sentences: Optional[int] = None,
-    ) -> List[List[Chunk]]:
+        n_sentences: int | None = None,
+    ) -> list[list[Chunk]]:
         """Generate embeddings using OpenAI-compatible API with chunking support."""
         return await self._generate_embeddings(
             texts, task, chunk_size, chunking_mode, n_sentences
@@ -64,12 +63,12 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
     async def _generate_embeddings(
         self,
-        texts: List[str],
+        texts: list[str],
         task: str,
         chunk_size: int = 512,
         chunking_mode: str = "sentence",
-        n_sentences: Optional[int] = None,
-    ) -> List[List[Chunk]]:
+        n_sentences: int | None = None,
+    ) -> list[list[Chunk]]:
         """Generate embeddings with chunking support."""
 
         start_time = time.time()
@@ -154,7 +153,7 @@ class OpenAIEmbeddingClient:
         api_key: str,
         model: str,
         base_url: str,
-        dimensions: Optional[int] = None,
+        dimensions: int | None = None,
     ):
         self.api_key = api_key
         self.model = model
@@ -171,7 +170,7 @@ class OpenAIEmbeddingClient:
         """Close the HTTP client."""
         await self.client.aclose()
 
-    async def _make_request(self, texts: List[str]) -> dict:
+    async def _make_request(self, texts: list[str]) -> dict:
         """Make a request to the embeddings API with retry logic."""
         headers = {
             "Content-Type": "application/json",
@@ -219,11 +218,13 @@ class OpenAIEmbeddingClient:
                     logger.warning(f"Request error: {e}, retrying...")
                     await asyncio.sleep(OPENAI_RETRY_DELAY * (2**attempt))
                 else:
-                    raise Exception(f"Failed to connect to OpenAI API: {e}")
+                    raise Exception(
+                        f"Failed to connect to OpenAI API {self.embeddings_url}: {e}"
+                    )
 
         raise Exception(f"Failed after {OPENAI_MAX_RETRIES} retries")
 
-    async def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
+    async def generate_embeddings(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for a list of texts."""
         if not texts:
             return []

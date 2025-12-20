@@ -5,7 +5,8 @@ AWS Bedrock Provider for Claude models.
 import time
 import json
 import logging
-from typing import AsyncIterator, Optional, List, Dict, Any, cast
+from collections.abc import AsyncIterator
+from typing import Any, cast
 
 import boto3
 from botocore.exceptions import ClientError
@@ -85,7 +86,7 @@ class BedrockProvider(LLMProvider):
     MODEL_FAMILIES = ["anthropic", "amazon"]
 
     def __init__(
-        self, model_id: str, secondary_model_id: str, region_name: Optional[str] = None
+        self, model_id: str, secondary_model_id: str, region_name: str | None = None
     ):
         self.model_id = model_id
         self.secondary_model_id = secondary_model_id  # Smaller, faster model
@@ -106,7 +107,7 @@ class BedrockProvider(LLMProvider):
 
     def _adapt_messages_for_amazon_models(
         self, messages: list[MessageParam]
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Adapt messages to the format expected by Amazon Bedrock models."""
         adapted_messages = []
         for msg in messages:
@@ -283,8 +284,8 @@ class BedrockProvider(LLMProvider):
                 msg["content"] = limited_content
 
     def _adapt_tools_for_amazon_models(
-        self, tools: list[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, tools: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         """Adapt tools to the format expected by Amazon Bedrock models."""
         adapted_tools = []
         for tool in tools:
@@ -299,7 +300,7 @@ class BedrockProvider(LLMProvider):
         return adapted_tools
 
     def _convert_response_to_anthropic_events(
-        self, event: Dict[str, Any]
+        self, event: dict[str, Any]
     ) -> MessageStreamEvent | None:
         """Convert Bedrock streaming response to Anthropic MessageStreamEvent format."""
         if "messageStart" in event:
@@ -417,11 +418,11 @@ class BedrockProvider(LLMProvider):
     async def stream_response(
         self,
         prompt: str,
-        messages: Optional[List[Dict[str, Any]]] = None,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        top_p: Optional[float] = None,
+        messages: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response from AWS Bedrock models."""
         try:
@@ -573,9 +574,9 @@ class BedrockProvider(LLMProvider):
     async def generate_response(
         self,
         prompt: str,
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        top_p: Optional[float] = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
     ) -> str:
         """Generate non-streaming response from AWS Bedrock Claude models."""
         try:

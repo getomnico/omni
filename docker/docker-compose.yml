@@ -160,6 +160,11 @@ services:
       EMBEDDING_BATCH_ACCUMULATION_POLL_INTERVAL: ${EMBEDDING_BATCH_ACCUMULATION_POLL_INTERVAL:-10}
       EMBEDDING_BATCH_MONITOR_POLL_INTERVAL: ${EMBEDDING_BATCH_MONITOR_POLL_INTERVAL:-30}
       TITLE_GENERATION_MODEL_ID: ${TITLE_GENERATION_MODEL_ID}
+      LOCAL_EMBEDDINGS_URL: ${LOCAL_EMBEDDINGS_URL}
+      LOCAL_EMBEDDINGS_MODEL: ${LOCAL_EMBEDDINGS_MODEL}
+      OPENAI_EMBEDDING_API_KEY: ${OPENAI_EMBEDDING_API_KEY}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL}
+      OPENAI_EMBEDDING_DIMENSIONS: ${OPENAI_EMBEDDING_DIMENSIONS}
     networks:
       - omni-network
     volumes:
@@ -206,19 +211,25 @@ services:
 
   # vLLM Embeddings Service (for local embedding models)
   # GPU support: use docker-compose.gpu.yml override for GPU acceleration
-  vllm-embeddings:
+  embeddings:
     image: vllm/vllm-openai:latest
-    container_name: omni-vllm-embeddings
+    container_name: omni-embeddings
     expose:
       - "${VLLM_EMBEDDINGS_PORT}"
     environment:
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}
-    command: >
-      --model ${LOCAL_EMBEDDINGS_MODEL}
-      --dtype ${VLLM_DTYPE}
-      --port ${VLLM_EMBEDDINGS_PORT}
-      --host 0.0.0.0
-      --max-model-len ${VLLM_EMBEDDINGS_MAX_MODEL_LEN}
+    command:
+      - "--model"
+      - "${LOCAL_EMBEDDINGS_MODEL}"
+      - "--dtype"
+      - "${VLLM_DTYPE}"
+      - "--port"
+      - "${VLLM_EMBEDDINGS_PORT}"
+      - "--host"
+      - "0.0.0.0"
+      - "--max-model-len"
+      - "${VLLM_EMBEDDINGS_MAX_MODEL_LEN}"
+      - "--trust-remote-code"
     networks:
       - omni-network
     volumes:

@@ -3,7 +3,7 @@ Embedding Provider abstraction layer for supporting multiple embedding providers
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Optional, Tuple
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 import re
 
@@ -13,7 +13,7 @@ class Chunk:
     """Represents a text chunk with its embedding and position in the original text."""
 
     span: tuple[int, int]  # (start_char, end_char) in original text
-    embedding: List[float]
+    embedding: list[float]
 
 
 class EmbeddingProvider(ABC):
@@ -22,12 +22,12 @@ class EmbeddingProvider(ABC):
     @abstractmethod
     async def generate_embeddings(
         self,
-        texts: List[str],
+        texts: list[str],
         task: str,
         chunk_size: int,
         chunking_mode: str,
-        n_sentences: Optional[int] = None,
-    ) -> List[List[Chunk]]:
+        n_sentences: int | None = None,
+    ) -> list[list[Chunk]]:
         """
         Generate embeddings for input texts with configurable chunking.
 
@@ -54,7 +54,7 @@ class EmbeddingProvider(ABC):
 # Common chunking utilities
 def chunk_by_sentences(
     text: str, chunk_size: int = 512, overlap: int = 50
-) -> List[Tuple[int, int]]:
+) -> list[tuple[int, int]]:
     """
     Simple sentence-based chunking for text.
     Returns list of character spans for each chunk.
@@ -101,7 +101,7 @@ def chunk_by_sentences(
     return chunks
 
 
-def generate_sentence_chunks(text: str, k_sentences: int = 5) -> List[Tuple[int, int]]:
+def generate_sentence_chunks(text: str, k_sentences: int = 5) -> list[tuple[int, int]]:
     """
     Generate overlapping chunks of K consecutive sentences.
     Returns list of character spans for each chunk.
@@ -171,8 +171,8 @@ def create_embedding_provider(provider_type: str, **kwargs) -> EmbeddingProvider
                 - model: OpenAI model name (e.g., 'text-embedding-3-small')
                 - dimensions: Optional embedding dimensions
             For 'local':
-                - base_url: Local embedding server URL (e.g., 'http://vllm-embeddings:8001/v1')
-                - model: Model name (e.g., 'intfloat/e5-large-v2')
+                - base_url: Local embedding server URL (e.g., 'http://embeddings:8001/v1')
+                - model: Model name (e.g., 'nomic-ai/nomic-embed-text-v1.5')
     """
     if provider_type.lower() == "jina":
         api_key = kwargs.get("api_key")
@@ -205,8 +205,10 @@ def create_embedding_provider(provider_type: str, **kwargs) -> EmbeddingProvider
         )
 
     elif provider_type.lower() == "local":
-        base_url = kwargs.get("base_url", "http://vllm-embeddings:8001/v1")
-        model = kwargs.get("model", "intfloat/e5-large-v2")
+        base_url = kwargs.get("base_url")
+        model = kwargs.get("model")
+        if not base_url or not model:
+            raise ValueError("base_url and model are required for local provider")
         return OpenAIEmbeddingProvider(
             api_key="not-needed",
             model=model,

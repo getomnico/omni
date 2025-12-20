@@ -4,7 +4,8 @@ VLLM Provider for OpenAI-compatible API.
 
 import json
 import logging
-from typing import AsyncIterator, Optional, List, Dict, Any
+from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 from anthropic.types.message_stream_event import MessageStreamEvent
@@ -24,11 +25,11 @@ class VLLMProvider(LLMProvider):
     async def stream_response(
         self,
         prompt: str,
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        top_p: Optional[float] = None,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        messages: Optional[List[Dict[str, Any]]] = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        messages: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response from vLLM service."""
         # vLLM doesn't support tools yet, so we ignore the tools parameter
@@ -96,9 +97,9 @@ class VLLMProvider(LLMProvider):
     async def generate_response(
         self,
         prompt: str,
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        top_p: Optional[float] = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
     ) -> str:
         """Generate non-streaming response from vLLM service."""
         payload = {

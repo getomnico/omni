@@ -75,7 +75,7 @@ export const embeddings = pgTable('embeddings', {
         .references(() => documents.id, { onDelete: 'cascade' }),
     chunkIndex: integer('chunk_index').notNull(),
     chunkText: text('chunk_text').notNull(),
-    modelName: text('model_name').notNull().default('intfloat/e5-large-v2'),
+    modelName: text('model_name').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
 

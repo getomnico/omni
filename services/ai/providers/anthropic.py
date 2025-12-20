@@ -4,7 +4,8 @@ Anthropic Claude Provider.
 
 import json
 import logging
-from typing import AsyncIterator, Optional, List, Dict, Any
+from collections.abc import AsyncIterator
+from typing import Any
 
 from anthropic import AsyncAnthropic, AsyncStream, MessageStreamEvent
 
@@ -22,8 +23,8 @@ class AnthropicProvider(LLMProvider):
 
     def add_cache_control(
         self,
-        messages: List[Dict[str, Any]],
-        tools: Optional[List[Dict[str, Any]]] = None,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
     ) -> None:
         """Remove all existing cache control blocks and add them only to the last message and last tool."""
         # Remove cache control from all message content blocks
@@ -54,11 +55,11 @@ class AnthropicProvider(LLMProvider):
     async def stream_response(
         self,
         prompt: str,
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        top_p: Optional[float] = None,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        messages: Optional[List[Dict[str, Any]]] = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        messages: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response from Anthropic Claude API."""
         try:
@@ -147,9 +148,9 @@ class AnthropicProvider(LLMProvider):
     async def generate_response(
         self,
         prompt: str,
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        top_p: Optional[float] = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
     ) -> str:
         """Generate non-streaming response from Anthropic Claude API."""
         try:

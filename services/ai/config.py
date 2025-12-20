@@ -89,10 +89,10 @@ OPENAI_EMBEDDING_DIMENSIONS = int(
 
 # Local embedding configuration (vLLM-based)
 LOCAL_EMBEDDINGS_URL = get_optional_env(
-    "LOCAL_EMBEDDINGS_URL", "http://vllm-embeddings:8001/v1"
+    "LOCAL_EMBEDDINGS_URL", "http://embeddings:8001/v1"
 )
 LOCAL_EMBEDDINGS_MODEL = get_optional_env(
-    "LOCAL_EMBEDDINGS_MODEL", "intfloat/e5-large-v2"
+    "LOCAL_EMBEDDINGS_MODEL", "nomic-ai/nomic-embed-text-v1.5"
 )
 
 # LLM configuration

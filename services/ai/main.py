@@ -1,9 +1,10 @@
 import sys
 import logging
+from typing import Literal
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Optional, Tuple, Literal
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import multiprocessing
@@ -26,6 +27,7 @@ from routers.chat import router as chat_router
 from telemetry import init_telemetry
 from embeddings.batch_processor import start_batch_processing
 from storage import create_content_storage
+from state import AppState
 
 # Configure logging once at startup
 setup_logging()
@@ -34,6 +36,9 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Omni AI Service", version="0.1.0")
+
+# Initialize typed application state
+app.state = AppState()  # type: ignore[assignment]
 
 # Initialize OpenTelemetry
 init_telemetry(app, "omni-ai")
@@ -69,43 +74,29 @@ _queue_processor_task = None
 
 
 class EmbeddingRequest(BaseModel):
-    texts: List[str]
-    task: Optional[str] = DEFAULT_TASK  # Allow different tasks
-    chunk_size: Optional[int] = (
+    texts: list[str]
+    task: str | None = DEFAULT_TASK
+    chunk_size: int | None = (
         512  # Chunk size in tokens for both fixed and sentence modes
     )
-    chunking_mode: Optional[str] = (
-        "sentence"  # "sentence", "fixed", "semantic", or "none"
-    )
-    n_sentences: Optional[int] = (
-        None  # Number of sentences per chunk (sentence mode only, overrides chunk_size)
-    )
-    priority: Optional[Literal["high", "normal", "low"]] = "normal"  # Request priority
+    chunking_mode: str | None = "sentence"  # "sentence", "fixed", "semantic", or "none"
+    n_sentences: int | None = None  # Number of sentences per chunk (sentence mode only)
+    priority: Literal["high", "normal", "low"] | None = "normal"
 
 
 class EmbeddingResponse(BaseModel):
-    embeddings: List[List[List[float]]]
-    chunks_count: List[int]  # Number of chunks per text
-    chunks: List[List[Tuple[int, int]]]  # Character offset spans for each chunk
-    model_name: str  # Name of the model used for embeddings
-
-
-class RAGRequest(BaseModel):
-    query: str
-    documents: List[str]
-
-
-class RAGResponse(BaseModel):
-    answer: str
-    relevant_chunks: List[str]
+    embeddings: list[list[list[float]]]
+    chunks_count: list[int]  # Number of chunks per text
+    chunks: list[list[tuple[int, int]]]  # Character offset spans for each chunk
+    model_name: str
 
 
 class PromptRequest(BaseModel):
     prompt: str
-    max_tokens: Optional[int] = 512
-    temperature: Optional[float] = 0.7
-    top_p: Optional[float] = 0.9
-    stream: Optional[bool] = True
+    max_tokens: int | None = 512
+    temperature: float | None = 0.7
+    top_p: float | None = 0.9
+    stream: bool | None = True
 
 
 class PromptResponse(BaseModel):
@@ -431,19 +422,6 @@ async def generate_embeddings(request: EmbeddingRequest):
     except Exception as e:
         logger.error(f"Failed to generate embeddings: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/rag", response_model=RAGResponse)
-async def rag_inference(request: RAGRequest):
-    """Perform RAG inference with retrieved documents"""
-    # TODO: Implement RAG pipeline with vLLM integration
-    logger.info(f"RAG inference for query: {request.query[:50]}...")
-
-    # Placeholder response
-    return RAGResponse(
-        answer="This is a placeholder RAG response",
-        relevant_chunks=request.documents[:3],  # Return top 3 chunks
-    )
 
 
 @app.post("/prompt")

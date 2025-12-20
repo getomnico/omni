@@ -1,7 +1,8 @@
 import asyncio
 import json
 import logging
-from typing import cast, List
+from typing import cast
+
 from fastapi import APIRouter, HTTPException, Path, Request
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
@@ -325,7 +326,7 @@ async def stream_chat(
                             ):
                                 text_block["citations"] = []
                             citations = cast(
-                                List[TextCitationParam], text_block["citations"]
+                                list[TextCitationParam], text_block["citations"]
                             )
                             citations.append(convert_citation_to_param(event.delta))
                     elif event.type == "content_block_start":
@@ -552,7 +553,7 @@ async def execute_search_tool(
     user_id: str,
     user_email: str | None = None,
     original_user_query: str | None = None,
-) -> List[SearchResult]:
+) -> list[SearchResult]:
     """Execute search_documents tool by calling omni-searcher"""
     logger.info(f"[SEARCH_TOOL] Executing search with query: {tool_input.query}")
     logger.debug(
@@ -590,7 +591,7 @@ async def execute_read_document_tool(
     tool_input: ReadDocumentParams,
     user_id: str,
     user_email: str | None = None,
-) -> List[SearchResult]:
+) -> list[SearchResult]:
     """Execute read_document tool by calling omni-searcher with document_id filter"""
     logger.info(f"[READ_DOC_TOOL] Reading document: {tool_input}")
     document_id = tool_input.id

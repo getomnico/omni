@@ -2,9 +2,7 @@ import logging
 import time
 import httpx
 import asyncio
-from typing import List, Optional
 
-# Import common chunking utilities
 from . import EmbeddingProvider, Chunk, chunk_by_sentences, generate_sentence_chunks
 
 logger = logging.getLogger(__name__)
@@ -35,12 +33,12 @@ class JinaEmbeddingProvider(EmbeddingProvider):
 
     async def generate_embeddings(
         self,
-        texts: List[str],
+        texts: list[str],
         task: str,
         chunk_size: int,
         chunking_mode: str,
-        n_sentences: Optional[int] = None,
-    ) -> List[List[Chunk]]:
+        n_sentences: int | None = None,
+    ) -> list[list[Chunk]]:
         """
         Generate embeddings using JINA API with chunking support.
         """
@@ -54,12 +52,12 @@ class JinaEmbeddingProvider(EmbeddingProvider):
 
     async def _generate_embeddings_with_jina(
         self,
-        texts: List[str],
+        texts: list[str],
         task: str = DEFAULT_TASK,
         chunk_size: int = 512,
         chunking_mode: str = "sentence",
-        n_sentences: Optional[int] = None,
-    ) -> List[List[Chunk]]:
+        n_sentences: int | None = None,
+    ) -> list[list[Chunk]]:
         """
         Generate embeddings using JINA API with chunking support.
         This function matches the interface of generate_embeddings_sync from embeddings_v2.py
@@ -178,7 +176,7 @@ class JINAEmbeddingClient:
         await self.client.aclose()
 
     async def _make_request(
-        self, texts: List[str], task: str, dimensions: Optional[int] = None
+        self, texts: list[str], task: str, dimensions: int | None = None
     ) -> dict:
         """Make a request to JINA API with retry logic"""
         headers = {
@@ -238,10 +236,10 @@ class JINAEmbeddingClient:
 
     async def generate_embeddings(
         self,
-        texts: List[str],
+        texts: list[str],
         task: str = DEFAULT_TASK,
-        dimensions: Optional[int] = None,
-    ) -> List[List[float]]:
+        dimensions: int | None = None,
+    ) -> list[list[float]]:
         """Generate embeddings for a list of texts"""
 
         # Handle empty input

@@ -1,17 +1,16 @@
 from pydantic import BaseModel
-from typing import List, Optional
 
 
 class SearchToolParams(BaseModel):
     query: str
-    sources: Optional[List[str]] = None
-    content_types: Optional[List[str]] = None
-    limit: Optional[int] = 20
+    sources: list[str] | None = None
+    content_types: list[str] | None = None
+    limit: int | None = 20
 
 
 class ReadDocumentParams(BaseModel):
     id: str  # Document ID
     name: str  # Document Name
-    query: Optional[str] = None  # Optional query to retrieve specific relevant sections
-    start_line: Optional[int] = None
-    end_line: Optional[int] = None
+    query: str | None = None  # Optional query to retrieve specific relevant sections
+    start_line: int | None = None
+    end_line: int | None = None

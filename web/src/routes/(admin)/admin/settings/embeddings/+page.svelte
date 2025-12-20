@@ -16,8 +16,8 @@
     // Form state with defaults
     let provider = $state<Provider>(data.config?.provider || 'jina')
     // Local fields
-    let localBaseUrl = $state(data.config?.localBaseUrl || 'http://vllm-embeddings:8001/v1')
-    let localModel = $state(data.config?.localModel || 'intfloat/e5-large-v2')
+    let localBaseUrl = $state(data.config?.localBaseUrl || 'http://embeddings:8001/v1')
+    let localModel = $state(data.config?.localModel || 'nomic-ai/nomic-embed-text-v1.5')
     // Jina fields
     let jinaApiKey = $state('')
     let jinaModel = $state(data.config?.jinaModel || 'jina-embeddings-v3')
@@ -146,7 +146,7 @@
                                     id="localBaseUrl"
                                     name="localBaseUrl"
                                     bind:value={localBaseUrl}
-                                    placeholder="http://vllm-embeddings:8001/v1"
+                                    placeholder="http://embeddings:8001/v1"
                                     required={provider === 'local'} />
                                 <p class="text-muted-foreground text-sm">
                                     URL of your local embedding server (OpenAI-compatible API)
@@ -159,7 +159,7 @@
                                     id="localModel"
                                     name="localModel"
                                     bind:value={localModel}
-                                    placeholder="intfloat/e5-large-v2"
+                                    placeholder="nomic-ai/nomic-embed-text-v1.5"
                                     required={provider === 'local'} />
                                 <p class="text-muted-foreground text-sm">
                                     Model name as configured on your embedding server
