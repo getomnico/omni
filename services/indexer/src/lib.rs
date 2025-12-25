@@ -23,9 +23,10 @@ use axum::{
 use error::Result as IndexerResult;
 use serde_json::json;
 use shared::{
+    db::repositories::OrphanStats,
     storage::gc::{ContentBlobGC, GCConfig, GCResult},
     telemetry::{self, TelemetryConfig},
-    IndexerConfig, OrphanStats,
+    IndexerConfig,
 };
 use sqlx::types::time::OffsetDateTime;
 use std::net::SocketAddr;
