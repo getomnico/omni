@@ -13,7 +13,7 @@ pub enum SearchMode {
     Hybrid,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct SearchRequest {
     pub query: String,
     pub source_types: Option<Vec<SourceType>>,
@@ -40,7 +40,6 @@ pub struct SearchRequest {
     // Both inclusive.
     pub document_content_start_line: Option<u32>,
     pub document_content_end_line: Option<u32>,
-    pub ignore_typos: Option<bool>,
 }
 
 impl SearchRequest {
@@ -73,17 +72,7 @@ pub struct SearchResponse {
     pub has_more: bool,
     pub query: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub corrected_query: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub corrections: Option<Vec<WordCorrection>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub facets: Option<Vec<Facet>>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct WordCorrection {
-    pub original: String,
-    pub corrected: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,4 +127,105 @@ pub struct SuggestedQuestionsRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SuggestedQuestionsResponse {
     pub questions: Vec<SuggestedQuestion>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_search_request_defaults() {
+        let request = SearchRequest {
+            query: "test".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(request.limit(), 20);
+        assert_eq!(request.offset(), 0);
+        assert!(matches!(request.search_mode(), SearchMode::Fulltext));
+    }
+
+    #[test]
+    fn test_search_request_limits() {
+        let request = SearchRequest {
+            query: "test".to_string(),
+            limit: Some(200),
+            offset: Some(-10),
+            ..Default::default()
+        };
+
+        assert_eq!(request.limit(), 100); // Should be capped at 100
+        assert_eq!(request.offset(), 0); // Negative offset should become 0
+    }
+
+    #[test]
+    fn test_search_modes() {
+        let modes = vec![
+            SearchMode::Fulltext,
+            SearchMode::Semantic,
+            SearchMode::Hybrid,
+        ];
+
+        for mode in modes {
+            let request = SearchRequest {
+                query: "test".to_string(),
+                mode: Some(mode.clone()),
+                ..Default::default()
+            };
+
+            match (request.search_mode(), &mode) {
+                (SearchMode::Fulltext, SearchMode::Fulltext) => (),
+                (SearchMode::Semantic, SearchMode::Semantic) => (),
+                (SearchMode::Hybrid, SearchMode::Hybrid) => (),
+                _ => panic!("Search mode mismatch"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_suggestions_query_defaults() {
+        let query = SuggestionsQuery {
+            q: "test".to_string(),
+            limit: None,
+        };
+
+        assert_eq!(query.limit(), 5);
+    }
+
+    #[test]
+    fn test_suggestions_query_limit_cap() {
+        let query = SuggestionsQuery {
+            q: "test".to_string(),
+            limit: Some(50),
+        };
+
+        assert_eq!(query.limit(), 20); // Should be capped at 20
+    }
+
+    #[test]
+    fn test_search_mode_serialization() {
+        let mode = SearchMode::Semantic;
+        let json = serde_json::to_string(&mode).unwrap();
+        assert_eq!(json, "\"semantic\"");
+
+        let mode = SearchMode::Hybrid;
+        let json = serde_json::to_string(&mode).unwrap();
+        assert_eq!(json, "\"hybrid\"");
+
+        let mode = SearchMode::Fulltext;
+        let json = serde_json::to_string(&mode).unwrap();
+        assert_eq!(json, "\"fulltext\"");
+    }
+
+    #[test]
+    fn test_search_mode_deserialization() {
+        let mode: SearchMode = serde_json::from_str("\"semantic\"").unwrap();
+        assert!(matches!(mode, SearchMode::Semantic));
+
+        let mode: SearchMode = serde_json::from_str("\"hybrid\"").unwrap();
+        assert!(matches!(mode, SearchMode::Hybrid));
+
+        let mode: SearchMode = serde_json::from_str("\"fulltext\"").unwrap();
+        assert!(matches!(mode, SearchMode::Fulltext));
+    }
 }

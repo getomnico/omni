@@ -29,8 +29,8 @@ impl TestEnvironment {
     pub async fn new() -> Result<Self> {
         tracing_subscriber::fmt::try_init().ok();
 
-        // Start PostgreSQL with pgvector extension
-        let postgres_image = GenericImage::new("pgvector/pgvector", "pg17")
+        // Start PostgreSQL with pgvector and pg_bm25 extensions (ParadeDB image)
+        let postgres_image = GenericImage::new("paradedb/paradedb", "0.18.15-pg17")
             .with_wait_for(WaitFor::message_on_stderr(
                 "database system is ready to accept connections",
             ))

@@ -141,7 +141,7 @@ impl SearchEngine {
             let start_ts = Instant::now();
             let res = match request.search_mode() {
                 SearchMode::Fulltext => self.fulltext_search(&repo, &request).await,
-                SearchMode::Semantic => self.semantic_search(&request).await.map(|r| (r, None)),
+                SearchMode::Semantic => self.semantic_search(&request).await,
                 SearchMode::Hybrid => self.hybrid_search(&request).await,
             };
 
@@ -172,7 +172,7 @@ impl SearchEngine {
         };
 
         let (search_result, facets) = tokio::join!(search_future, facets_future);
-        let (results, corrected_query) = search_result?;
+        let results = search_result?;
         let total_count = results.len() as i64;
         let has_more = results.len() as i64 >= limit;
         let query_time = start_time.elapsed().as_millis() as u64;
@@ -189,8 +189,6 @@ impl SearchEngine {
             query_time_ms: query_time,
             has_more,
             query: request.query.clone(),
-            corrected_query,
-            corrections: None, // TODO: implement word-level corrections tracking
             facets: if facets.is_empty() {
                 None
             } else {
@@ -212,15 +210,15 @@ impl SearchEngine {
         &self,
         repo: &DocumentRepository,
         request: &SearchRequest,
-    ) -> Result<(Vec<SearchResult>, Option<String>)> {
+    ) -> Result<Vec<SearchResult>> {
         let start_time = Instant::now();
         let sources = request.source_types.as_deref();
         let content_types = request.content_types.as_deref();
         let attribute_filters = request.attribute_filters.as_ref();
 
         debug!("Running fulltext search for {}", &request.query);
-        let (documents_with_scores, corrected_query) = (
-            repo.search_with_filters(
+        let documents_with_scores = repo
+            .search_with_filters(
                 &request.query,
                 sources,
                 content_types,
@@ -230,9 +228,7 @@ impl SearchEngine {
                 request.user_email().map(|e| e.as_str()),
                 request.document_id.as_deref(),
             )
-            .await?,
-            None,
-        );
+            .await?;
 
         let content_ids: Vec<String> = documents_with_scores
             .iter()
@@ -321,7 +317,7 @@ impl SearchEngine {
             "Fulltext search completed in {}ms",
             start_time.elapsed().as_millis()
         );
-        Ok((results, corrected_query))
+        Ok(results)
     }
 
     async fn semantic_search(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
@@ -584,8 +580,6 @@ impl SearchEngine {
             query_time_ms: query_time,
             has_more: false,
             query: request.query.clone(),
-            corrected_query: None,
-            corrections: None,
             facets: None,
         })
     }
@@ -600,8 +594,7 @@ impl SearchEngine {
         let results = if !request.query.trim().is_empty() {
             // Query provided: do hybrid search within document
             info!("Query provided, hybrid search within document");
-            let (results, _) = self.hybrid_search(request).await?;
-            results
+            self.hybrid_search(request).await?
         } else {
             info!(
                 "No query provided, returning first 500 lines from document ID {}",
@@ -784,10 +777,7 @@ impl SearchEngine {
         Ok(results)
     }
 
-    async fn hybrid_search(
-        &self,
-        request: &SearchRequest,
-    ) -> Result<(Vec<SearchResult>, Option<String>)> {
+    async fn hybrid_search(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
         info!("Performing hybrid search for query: '{}'", request.query);
         let start_time = Instant::now();
 
@@ -802,7 +792,7 @@ impl SearchEngine {
         );
 
         let (fts_results, semantic_results) = tokio::join!(fts_future, semantic_future);
-        let (fts_results, corrected_query) = fts_results?;
+        let fts_results = fts_results?;
 
         // Handle semantic search timeout gracefully
         let semantic_results = match semantic_results {
@@ -896,7 +886,7 @@ impl SearchEngine {
             "Hybrid search completed in {}ms",
             start_time.elapsed().as_millis()
         );
-        Ok((final_results, corrected_query))
+        Ok(final_results)
     }
 
     fn normalize_fts_score(&self, score: f32) -> f32 {
@@ -1031,7 +1021,7 @@ impl SearchEngine {
 
         // Get full-text search results to extract context around exact matches
         let repo = DocumentRepository::new(self.db_pool.pool());
-        let (fts_results, _) = self.fulltext_search(&repo, request).await?;
+        let fts_results = self.fulltext_search(&repo, request).await?;
 
         // Get semantic search results enhanced with expanded context for RAG
         let semantic_results = self.get_enhanced_semantic_results_for_rag(request).await?;
