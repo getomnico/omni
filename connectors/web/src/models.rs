@@ -47,11 +47,16 @@ fn get_noop_handler_factory() -> Box<dyn TagHandlerFactory> {
 }
 
 impl WebPage {
+    /// Create a WebPage from a spider Page
     pub fn from_spider_page(page: &Page) -> Result<Self> {
         let url = page.get_url().to_string();
         let html = page.get_html();
+        Self::from_html(url, &html)
+    }
 
-        let document = Html::parse_document(&html);
+    /// Create a WebPage from raw HTML content
+    pub fn from_html(url: String, html: &str) -> Result<Self> {
+        let document = Html::parse_document(html);
         let content = Self::extract_main_content(&document)?;
         let content_hash = Self::compute_content_hash(&content);
         let word_count = content.split_whitespace().count();

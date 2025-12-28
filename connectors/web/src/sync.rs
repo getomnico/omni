@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::db::repositories::{SourceRepository, SyncRunRepository};
@@ -6,25 +7,84 @@ use shared::models::{Source, SourceType, SyncRun, SyncType};
 use shared::queue::EventQueue;
 use shared::{ObjectStorage, Repository};
 use spider::client::StatusCode;
-use spider::page::Page;
 use sqlx::PgPool;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 use time;
-use tokio::sync::Mutex;
-use tracing::{debug, error, info, warn};
+use tokio::sync::{mpsc, Mutex};
+use tracing::{debug, error, info};
 
 use crate::config::WebSourceConfig;
 use crate::models::{PageSyncState, WebPage};
 
-#[derive(Clone)]
-pub struct SyncManager {
-    redis_client: RedisClient,
-    event_queue: EventQueue,
-    content_storage: Arc<dyn ObjectStorage>,
-    sync_run_repo: SyncRunRepository,
-    source_repo: SourceRepository,
+/// Result of a crawl operation
+pub struct CrawlResult {
+    pub pages_crawled: usize,
+}
+
+/// Trait for abstracting web page crawling
+#[async_trait]
+pub trait PageSource: Send + Sync {
+    /// Crawl pages and send them through the provided channel
+    async fn crawl(
+        &self,
+        config: &WebSourceConfig,
+        tx: mpsc::Sender<WebPage>,
+    ) -> Result<CrawlResult>;
+}
+
+/// Real implementation using spider library
+pub struct SpiderPageSource;
+
+#[async_trait]
+impl PageSource for SpiderPageSource {
+    async fn crawl(
+        &self,
+        config: &WebSourceConfig,
+        tx: mpsc::Sender<WebPage>,
+    ) -> Result<CrawlResult> {
+        let mut website = config.build_spider_website()?;
+
+        let mut rx = website.subscribe(32).ok_or(anyhow!(
+            "Failed to subscribe to website crawl events for root url: {}",
+            config.root_url
+        ))?;
+
+        let processor_handle = tokio::spawn(async move {
+            while let Ok(page) = rx.recv().await {
+                if page.status_code != StatusCode::OK {
+                    continue;
+                }
+
+                if let Ok(web_page) = WebPage::from_spider_page(&page) {
+                    if tx.send(web_page).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
+        info!("Starting crawl of {}", config.root_url);
+        let crawl_start = Instant::now();
+        website.crawl().await;
+
+        let crawl_duration = crawl_start.elapsed();
+        website.unsubscribe();
+        processor_handle.await?;
+
+        let links = website.get_links();
+        info!(
+            "Crawled {} pages from {} in {:?}",
+            links.len(),
+            config.root_url,
+            crawl_duration
+        );
+
+        Ok(CrawlResult {
+            pages_crawled: links.len(),
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -104,18 +164,27 @@ impl SyncState {
         let _: () = conn.srem(&key, url_hash).await?;
         Ok(())
     }
+}
 
-    pub async fn delete_page_sync_state(&self, source_id: &str, url: &str) -> Result<()> {
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        let key = self.get_url_sync_key(source_id, url);
-
-        let _: () = conn.del(&key).await?;
-        Ok(())
-    }
+pub struct SyncManager {
+    redis_client: RedisClient,
+    event_queue: EventQueue,
+    content_storage: Arc<dyn ObjectStorage>,
+    sync_run_repo: SyncRunRepository,
+    source_repo: SourceRepository,
+    page_source: Arc<dyn PageSource>,
 }
 
 impl SyncManager {
     pub async fn new(pool: PgPool, redis_client: RedisClient) -> Result<Self> {
+        Self::with_page_source(pool, redis_client, Arc::new(SpiderPageSource)).await
+    }
+
+    pub async fn with_page_source(
+        pool: PgPool,
+        redis_client: RedisClient,
+        page_source: Arc<dyn PageSource>,
+    ) -> Result<Self> {
         let event_queue = EventQueue::new(pool.clone());
         let content_storage = shared::StorageFactory::from_env(pool.clone()).await?;
         let sync_run_repo = SyncRunRepository::new(&pool);
@@ -127,7 +196,27 @@ impl SyncManager {
             content_storage,
             sync_run_repo,
             source_repo,
+            page_source,
         })
+    }
+
+    /// Create a SyncManager for testing with explicit dependencies
+    pub fn new_for_testing(
+        redis_client: RedisClient,
+        event_queue: EventQueue,
+        content_storage: Arc<dyn ObjectStorage>,
+        sync_run_repo: SyncRunRepository,
+        source_repo: SourceRepository,
+        page_source: Arc<dyn PageSource>,
+    ) -> Self {
+        Self {
+            redis_client,
+            event_queue,
+            content_storage,
+            sync_run_repo,
+            source_repo,
+            page_source,
+        }
     }
 
     pub async fn sync_all_sources(&self) -> Result<()> {
@@ -194,8 +283,6 @@ impl SyncManager {
             .create(&source.id, SyncType::Full)
             .await?;
 
-        let mut website = config.build_spider_website()?;
-
         let sync_state = SyncState::new(self.redis_client.clone());
         let previous_urls = sync_state.get_all_synced_urls(&source.id).await?;
         let current_urls: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
@@ -203,72 +290,54 @@ impl SyncManager {
         let pages_processed: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
         let pages_updated: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
 
-        info!("Setting up subscription for url {}", config.root_url);
-        let mut rx = website.subscribe(32).ok_or(anyhow!(
-            "Failed to subscribe to website crawl events for root url: {}",
-            config.root_url
-        ))?;
-        let processor_handle = tokio::spawn({
-            let self_clone = self.clone();
-            let source = source.clone();
+        // Create channel for receiving pages from the crawler
+        let (tx, mut rx) = mpsc::channel::<WebPage>(32);
+
+        // Spawn page processor
+        let processor_handle = {
+            let source_id = source.id.clone();
             let current_urls = current_urls.clone();
             let pages_processed = pages_processed.clone();
             let pages_updated = pages_updated.clone();
             let sync_state = sync_state.clone();
             let sync_run = sync_run.clone();
+            let event_queue = self.event_queue.clone();
+            let content_storage = self.content_storage.clone();
+            let sync_run_repo = self.sync_run_repo.clone();
 
-            async move {
-                while let Ok(page) = rx.recv().await {
-                    let page_title = page.metadata.as_ref().and_then(|m| m.title.clone());
-                    let page_url = page.get_url();
-                    debug!(
-                        "Received crawl event for page {:?} [url={}]",
-                        page_title, page_url
-                    );
+            tokio::spawn(async move {
+                while let Some(web_page) = rx.recv().await {
+                    let page_url = web_page.url.clone();
+                    debug!("Processing page: {}", page_url);
 
-                    if page.status_code != StatusCode::OK {
-                        debug!("Page {:?} [url={}] status code is not 200 OK [status_code={}], skipping", page_title, page_url, page.status_code);
-                        continue;
-                    }
-
-                    if let Err(e) = self_clone
-                        .process_page(
-                            &page,
-                            &sync_run,
-                            &source.id,
-                            &sync_state,
-                            &current_urls,
-                            &pages_processed,
-                            &pages_updated,
-                        )
-                        .await
+                    if let Err(e) = Self::process_web_page(
+                        &web_page,
+                        &sync_run,
+                        &source_id,
+                        &sync_state,
+                        &current_urls,
+                        &pages_processed,
+                        &pages_updated,
+                        &event_queue,
+                        &content_storage,
+                        &sync_run_repo,
+                    )
+                    .await
                     {
-                        error!("Failed to process page {}: {}", page_url, e)
+                        error!("Failed to process page {}: {}", page_url, e);
                     }
-
-                    debug!("Processed page {:?} [url={}]", page_title, page_url);
                 }
-            }
-        });
+            })
+        };
 
-        info!("Starting crawl of {}", config.root_url);
-        let crawl_start = Instant::now();
-        website.crawl().await;
+        // Start crawling
+        info!("Setting up crawl for url {}", config.root_url);
+        self.page_source.crawl(&config, tx).await?;
 
-        info!("Crawl complete, waiting for processing task to complete...");
-        let crawl_duration = crawl_start.elapsed();
-        website.unsubscribe();
+        // Wait for processor to finish
         processor_handle
             .await
-            .with_context(|| format!("Failed while waiting for tasks to complete"))?;
-
-        let links = website.get_links();
-        info!(
-            "Crawled {} pages from {} in {:?}",
-            links.len(),
-            config.root_url,
-            crawl_duration
-        );
+            .with_context(|| "Failed while waiting for page processor to complete")?;
 
         debug!("Collecting final processed and updated document counts");
         let final_processed = *pages_processed.lock().await;
@@ -343,19 +412,18 @@ impl SyncManager {
         Ok(())
     }
 
-    async fn process_page(
-        &self,
-        page: &Page,
+    async fn process_web_page(
+        web_page: &WebPage,
         sync_run: &SyncRun,
         source_id: &str,
         sync_state: &SyncState,
         current_urls: &Arc<Mutex<HashSet<String>>>,
         pages_processed: &Arc<Mutex<usize>>,
         pages_updated: &Arc<Mutex<usize>>,
+        event_queue: &EventQueue,
+        content_storage: &Arc<dyn ObjectStorage>,
+        sync_run_repo: &SyncRunRepository,
     ) -> Result<()> {
-        let web_page =
-            WebPage::from_spider_page(page).context("Failed to extract content from page")?;
-
         let url = &web_page.url;
         let url_hash = format!("{:x}", md5::compute(url));
 
@@ -366,7 +434,7 @@ impl SyncManager {
 
         let should_index = match sync_state.get_page_sync_state(source_id, url).await? {
             Some(old_state) => {
-                if old_state.has_changed(&web_page) {
+                if old_state.has_changed(web_page) {
                     debug!("Page {} has changed, will update", url);
                     true
                 } else {
@@ -382,8 +450,7 @@ impl SyncManager {
 
         if should_index {
             let storage_prefix = Self::get_storage_prefix(sync_run);
-            let content_id = self
-                .content_storage
+            let content_id = content_storage
                 .store_text(&web_page.content, Some(&storage_prefix))
                 .await
                 .context("Failed to store page content")?;
@@ -394,12 +461,12 @@ impl SyncManager {
                 content_id,
             );
 
-            self.event_queue
+            event_queue
                 .enqueue(source_id, &event)
                 .await
                 .context("Failed to enqueue event")?;
 
-            let new_state = PageSyncState::new(&web_page);
+            let new_state = PageSyncState::new(web_page);
             sync_state
                 .set_page_sync_state(source_id, url, &new_state)
                 .await?;
@@ -414,9 +481,7 @@ impl SyncManager {
         *count += 1;
 
         // Update scanned count
-        self.sync_run_repo
-            .increment_scanned(&sync_run.id, 1)
-            .await?;
+        sync_run_repo.increment_scanned(&sync_run.id, 1).await?;
 
         Ok(())
     }
