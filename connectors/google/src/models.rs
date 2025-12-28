@@ -584,3 +584,255 @@ impl GmailThread {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_google_drive_file_to_connector_event() {
+        let file = GoogleDriveFile {
+            id: "file123".to_string(),
+            name: "Test Document.docx".to_string(),
+            mime_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                .to_string(),
+            web_view_link: Some("https://docs.google.com/document/d/file123/view".to_string()),
+            created_time: Some("2023-01-15T10:30:00Z".to_string()),
+            modified_time: Some("2023-06-20T14:45:00Z".to_string()),
+            size: Some("12345".to_string()),
+            parents: Some(vec!["folder456".to_string()]),
+            shared: Some(true),
+            permissions: Some(vec![Permission {
+                id: "perm1".to_string(),
+                permission_type: "user".to_string(),
+                email_address: Some("user@example.com".to_string()),
+                role: "reader".to_string(),
+            }]),
+            owners: None,
+        };
+
+        let event = file.to_connector_event("sync123", "source456", "content789", None);
+
+        match event {
+            ConnectorEvent::DocumentCreated {
+                sync_run_id,
+                source_id,
+                document_id,
+                content_id,
+                metadata,
+                permissions,
+                attributes,
+            } => {
+                assert_eq!(sync_run_id, "sync123");
+                assert_eq!(source_id, "source456");
+                assert_eq!(document_id, "file123");
+                assert_eq!(content_id, "content789");
+                assert_eq!(metadata.title, Some("Test Document.docx".to_string()));
+                assert_eq!(
+                    metadata.mime_type,
+                    Some(
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                            .to_string()
+                    )
+                );
+                assert_eq!(
+                    metadata.url,
+                    Some("https://docs.google.com/document/d/file123/view".to_string())
+                );
+                assert_eq!(metadata.size, Some("12345".to_string()));
+                assert!(metadata.created_at.is_some());
+                assert!(metadata.updated_at.is_some());
+
+                // Check permissions
+                assert!(!permissions.public);
+                assert_eq!(permissions.users, vec!["user@example.com".to_string()]);
+
+                // Check attributes
+                let attrs = attributes.unwrap();
+                assert_eq!(
+                    attrs.get("mime_type").unwrap().as_str().unwrap(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                );
+            }
+            _ => panic!("Expected DocumentCreated event"),
+        }
+    }
+
+    #[test]
+    fn test_google_drive_file_attributes() {
+        let file = GoogleDriveFile {
+            id: "file123".to_string(),
+            name: "test.pdf".to_string(),
+            mime_type: "application/pdf".to_string(),
+            web_view_link: None,
+            created_time: None,
+            modified_time: None,
+            size: None,
+            parents: None,
+            shared: None,
+            permissions: None,
+            owners: None,
+        };
+
+        let attrs = file.to_attributes();
+        assert_eq!(attrs.mime_type, "application/pdf");
+
+        let doc_attrs = attrs.into_attributes();
+        assert_eq!(
+            doc_attrs.get("mime_type").unwrap().as_str().unwrap(),
+            "application/pdf"
+        );
+    }
+
+    #[test]
+    fn test_gmail_thread_attributes() {
+        let attrs = GmailThreadAttributes {
+            sender: Some("sender@example.com".to_string()),
+            labels: vec!["INBOX".to_string(), "IMPORTANT".to_string()],
+            message_count: 5,
+            date: Some("2023-06-15".to_string()),
+        };
+
+        let doc_attrs = attrs.into_attributes();
+
+        assert_eq!(
+            doc_attrs.get("sender").unwrap().as_str().unwrap(),
+            "sender@example.com"
+        );
+        assert!(doc_attrs.get("labels").unwrap().is_array());
+        assert_eq!(doc_attrs.get("message_count").unwrap().as_i64().unwrap(), 5);
+        assert_eq!(
+            doc_attrs.get("date").unwrap().as_str().unwrap(),
+            "2023-06-15"
+        );
+    }
+
+    #[test]
+    fn test_gmail_thread_attributes_minimal() {
+        let attrs = GmailThreadAttributes {
+            sender: None,
+            labels: vec![],
+            message_count: 1,
+            date: None,
+        };
+
+        let doc_attrs = attrs.into_attributes();
+
+        assert!(doc_attrs.get("sender").is_none());
+        assert!(doc_attrs.get("labels").is_none());
+        assert_eq!(doc_attrs.get("message_count").unwrap().as_i64().unwrap(), 1);
+        assert!(doc_attrs.get("date").is_none());
+    }
+
+    #[test]
+    fn test_folder_metadata_from_google_drive_file() {
+        let file = GoogleDriveFile {
+            id: "folder123".to_string(),
+            name: "My Folder".to_string(),
+            mime_type: "application/vnd.google-apps.folder".to_string(),
+            web_view_link: None,
+            created_time: None,
+            modified_time: None,
+            size: None,
+            parents: Some(vec!["parent456".to_string()]),
+            shared: None,
+            permissions: None,
+            owners: None,
+        };
+
+        let folder: FolderMetadata = file.into();
+
+        assert_eq!(folder.id, "folder123");
+        assert_eq!(folder.name, "My Folder");
+        assert_eq!(folder.parents, Some(vec!["parent456".to_string()]));
+    }
+
+    #[test]
+    fn test_webhook_channel_creation() {
+        let channel = WebhookChannel::new(
+            "https://example.com/webhook".to_string(),
+            Some("token123".to_string()),
+        );
+
+        assert!(!channel.id.is_empty()); // UUID generated
+        assert_eq!(channel.channel_type, "web_hook");
+        assert_eq!(channel.address, "https://example.com/webhook");
+        assert_eq!(channel.token, Some("token123".to_string()));
+        assert!(channel.params.is_none());
+        assert!(channel.expiration.is_none());
+    }
+
+    #[test]
+    fn test_gmail_thread_new() {
+        let thread = GmailThread::new("thread123".to_string());
+
+        assert_eq!(thread.thread_id, "thread123");
+        assert!(thread.messages.is_empty());
+        assert!(thread.participants.is_empty());
+        assert!(thread.subject.is_empty());
+        assert!(thread.latest_date.is_empty());
+        assert_eq!(thread.total_messages, 0);
+    }
+
+    #[test]
+    fn test_drive_file_without_permissions() {
+        let file = GoogleDriveFile {
+            id: "file123".to_string(),
+            name: "test.txt".to_string(),
+            mime_type: "text/plain".to_string(),
+            web_view_link: None,
+            created_time: None,
+            modified_time: None,
+            size: None,
+            parents: None,
+            shared: None,
+            permissions: None,
+            owners: None,
+        };
+
+        let event = file.to_connector_event("sync1", "source1", "content1", None);
+
+        match event {
+            ConnectorEvent::DocumentCreated { permissions, .. } => {
+                assert!(permissions.users.is_empty());
+                assert!(permissions.groups.is_empty());
+                assert!(!permissions.public);
+            }
+            _ => panic!("Expected DocumentCreated event"),
+        }
+    }
+
+    #[test]
+    fn test_drive_file_with_path() {
+        let file = GoogleDriveFile {
+            id: "file123".to_string(),
+            name: "report.pdf".to_string(),
+            mime_type: "application/pdf".to_string(),
+            web_view_link: None,
+            created_time: None,
+            modified_time: None,
+            size: None,
+            parents: Some(vec!["folder1".to_string()]),
+            shared: None,
+            permissions: None,
+            owners: None,
+        };
+
+        let event = file.to_connector_event(
+            "sync1",
+            "source1",
+            "content1",
+            Some("/Documents/Reports/report.pdf".to_string()),
+        );
+
+        match event {
+            ConnectorEvent::DocumentCreated { metadata, .. } => {
+                assert_eq!(
+                    metadata.path,
+                    Some("/Documents/Reports/report.pdf".to_string())
+                );
+            }
+            _ => panic!("Expected DocumentCreated event"),
+        }
+    }
+}
