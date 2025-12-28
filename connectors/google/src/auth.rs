@@ -401,3 +401,130 @@ impl GoogleCredentialsService {
         auth.get_access_token(impersonate_user).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_scopes_for_google_drive() {
+        let scopes = get_scopes_for_source_type(SourceType::GoogleDrive);
+
+        assert!(scopes.contains(
+            &"https://www.googleapis.com/auth/admin.directory.user.readonly".to_string()
+        ));
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/drive.readonly".to_string()));
+        assert!(!scopes.contains(&"https://www.googleapis.com/auth/gmail.readonly".to_string()));
+        assert_eq!(scopes.len(), 2);
+    }
+
+    #[test]
+    fn test_get_scopes_for_gmail() {
+        let scopes = get_scopes_for_source_type(SourceType::Gmail);
+
+        assert!(scopes.contains(
+            &"https://www.googleapis.com/auth/admin.directory.user.readonly".to_string()
+        ));
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/gmail.readonly".to_string()));
+        assert!(!scopes.contains(&"https://www.googleapis.com/auth/drive.readonly".to_string()));
+        assert_eq!(scopes.len(), 2);
+    }
+
+    #[test]
+    fn test_get_scopes_for_other_source_types() {
+        let scopes = get_scopes_for_source_type(SourceType::LocalFiles);
+
+        // For other source types, should include both drive and gmail scopes
+        assert!(scopes.contains(
+            &"https://www.googleapis.com/auth/admin.directory.user.readonly".to_string()
+        ));
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/drive.readonly".to_string()));
+        assert!(scopes.contains(&"https://www.googleapis.com/auth/gmail.readonly".to_string()));
+        assert_eq!(scopes.len(), 3);
+    }
+
+    #[test]
+    fn test_is_auth_error() {
+        assert!(is_auth_error(reqwest::StatusCode::UNAUTHORIZED));
+        assert!(!is_auth_error(reqwest::StatusCode::OK));
+        assert!(!is_auth_error(reqwest::StatusCode::FORBIDDEN));
+        assert!(!is_auth_error(reqwest::StatusCode::NOT_FOUND));
+        assert!(!is_auth_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR));
+    }
+
+    #[test]
+    fn test_google_service_account_key_deserialization() {
+        let json = r#"{
+            "type": "service_account",
+            "project_id": "my-project",
+            "private_key_id": "key123",
+            "private_key": "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----\n",
+            "client_email": "service@my-project.iam.gserviceaccount.com",
+            "client_id": "123456789",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/service%40my-project.iam.gserviceaccount.com"
+        }"#;
+
+        let key: GoogleServiceAccountKey = serde_json::from_str(json).unwrap();
+
+        assert_eq!(key.key_type, "service_account");
+        assert_eq!(key.project_id, "my-project");
+        assert_eq!(key.private_key_id, "key123");
+        assert_eq!(
+            key.client_email,
+            "service@my-project.iam.gserviceaccount.com"
+        );
+        assert_eq!(key.client_id, "123456789");
+        assert_eq!(key.token_uri, "https://oauth2.googleapis.com/token");
+    }
+
+    #[test]
+    fn test_service_account_auth_rejects_invalid_key_type() {
+        let json = r#"{
+            "type": "authorized_user",
+            "project_id": "my-project",
+            "private_key_id": "key123",
+            "private_key": "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----\n",
+            "client_email": "user@example.com",
+            "client_id": "123456789",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/user%40example.com"
+        }"#;
+
+        let result = ServiceAccountAuth::new(json, vec!["scope".to_string()]);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("Invalid key type"));
+    }
+
+    #[test]
+    fn test_api_result_success() {
+        let result: ApiResult<String> = ApiResult::Success("test".to_string());
+        match result {
+            ApiResult::Success(value) => assert_eq!(value, "test"),
+            _ => panic!("Expected Success variant"),
+        }
+    }
+
+    #[test]
+    fn test_api_result_auth_error() {
+        let result: ApiResult<String> = ApiResult::AuthError;
+        match result {
+            ApiResult::AuthError => {}
+            _ => panic!("Expected AuthError variant"),
+        }
+    }
+
+    #[test]
+    fn test_api_result_other_error() {
+        let result: ApiResult<String> = ApiResult::OtherError(anyhow!("Test error"));
+        match result {
+            ApiResult::OtherError(e) => assert!(e.to_string().contains("Test error")),
+            _ => panic!("Expected OtherError variant"),
+        }
+    }
+}
