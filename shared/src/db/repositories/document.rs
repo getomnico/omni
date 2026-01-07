@@ -34,9 +34,9 @@ impl DocumentRepository {
     fn generate_permission_filter(&self, user_email: &str) -> String {
         format!(
             r#"(
-                id @@@ paradedb.term('permissions.public', true) OR
-                id @@@ paradedb.term('permissions.users', '{}') OR
-                id @@@ paradedb.term('permissions.groups', '{}') -- TODO: Add group membership lookup here
+                id @@@ pdb.term('permissions.public', true) OR
+                id @@@ pdb.term('permissions.users', '{}') OR
+                id @@@ pdb.term('permissions.groups', '{}') -- TODO: Add group membership lookup here
             )"#,
             user_email, user_email
         )
@@ -126,46 +126,6 @@ impl DocumentRepository {
         Ok(documents)
     }
 
-    pub async fn search(&self, query: &str, limit: i64) -> Result<Vec<Document>, DatabaseError> {
-        let documents = sqlx::query_as::<_, Document>(
-            r#"
-            SELECT id, source_id, external_id, title, content_id, content_type,
-                   file_size, file_extension, url,
-                   metadata, permissions, attributes, created_at, updated_at, last_indexed_at
-            FROM documents
-            WHERE tsv_content @@ websearch_to_tsquery('english', $1)
-            ORDER BY (
-                -- Base FTS ranking with custom weights (D=0.1, C=0.2, B=0.4, A=1.0)
-                ts_rank_cd('{0.1, 0.2, 0.4, 1.0}', tsv_content, websearch_to_tsquery('english', $1)) *
-                -- Recency boost: newer documents get slight boost (max 30% boost for very recent)
-                (1.0 + GREATEST(-1.0, (EXTRACT(EPOCH FROM (NOW() - updated_at)) / 86400.0 / -365.0)) * 0.3) *
-                -- Document type boost based on actual Google Drive content types
-                CASE 
-                    WHEN content_type = 'application/vnd.google-apps.document' THEN 1.3  -- Google Docs highest
-                    WHEN content_type = 'application/vnd.google-apps.spreadsheet' THEN 1.2  -- Google Sheets
-                    WHEN content_type = 'application/pdf' THEN 1.2  -- PDFs are valuable
-                    WHEN content_type = 'text/html' THEN 1.1  -- HTML content
-                    WHEN content_type = 'text/plain' THEN 1.0  -- Plain text baseline
-                    WHEN content_type = 'text/csv' THEN 0.9  -- CSVs less searchable
-                    ELSE 1.0  -- Default for unknown types
-                END *
-                -- Title exact match boost (case-insensitive partial match)
-                CASE 
-                    WHEN title ILIKE '%' || $1 || '%' THEN 1.4
-                    ELSE 1.0
-                END
-            ) DESC
-            LIMIT $2
-            "#,
-        )
-        .bind(query)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(documents)
-    }
-
     pub async fn search_with_filters(
         &self,
         query: &str,
@@ -179,7 +139,7 @@ impl DocumentRepository {
     ) -> Result<Vec<DocumentWithScores>, DatabaseError> {
         let has_content_types = content_types.map_or(false, |ct| !ct.is_empty());
 
-        let mut filters = vec!["(title @@@ $1 OR content @@@ $2)".to_string()];
+        let mut filters = vec!["(title ||| $1 OR content ||| $2)".to_string()];
         let mut param_idx = 3; // Params 1 and 2 are for the query (title query and content query)
 
         let source_filter_query = if let Some(source_types) = source_types {
@@ -223,7 +183,7 @@ impl DocumentRepository {
                         // Use paradedb.term for exact match on JSON field
                         let term_value = json_value_to_term_string(value);
                         filters.push(format!(
-                            "id @@@ paradedb.term('{}', '{}')",
+                            "id @@@ pdb.term('{}', '{}')",
                             field,
                             term_value.replace('\'', "''")
                         ));
@@ -235,7 +195,7 @@ impl DocumentRepository {
                             .map(|v| {
                                 let term_value = json_value_to_term_string(v);
                                 format!(
-                                    "id @@@ paradedb.term('{}', '{}')",
+                                    "id @@@ pdb.term('{}', '{}')",
                                     field,
                                     term_value.replace('\'', "''")
                                 )
@@ -288,7 +248,7 @@ impl DocumentRepository {
             SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
                    metadata, permissions, attributes, created_at, updated_at, last_indexed_at,
-                   paradedb.score(id) as score
+                   pdb.score(id) as score
             FROM documents
             WHERE {}
             ORDER BY score DESC
@@ -298,7 +258,7 @@ impl DocumentRepository {
             param_idx + 1
         );
 
-        let title_query = format!("{}^2", query);
+        let title_query = format!("{}::pdb.boost(2)", query);
         let mut query = sqlx::query_as::<_, DocumentWithScores>(&full_query)
             .bind(title_query)
             .bind(query)
@@ -312,103 +272,6 @@ impl DocumentRepository {
 
         if let Some(doc_id) = document_id {
             query = query.bind(doc_id);
-        }
-
-        query = query.bind(limit).bind(offset);
-
-        let results = query.fetch_all(&self.pool).await?;
-
-        Ok(results)
-    }
-
-    #[deprecated(note = "Use search_with_filters instead")]
-    pub async fn search_with_filters_v0(
-        &self,
-        query: &str,
-        source_types: Option<&[SourceType]>,
-        content_types: Option<&[String]>,
-        limit: i64,
-        offset: i64,
-        user_email: Option<&str>,
-    ) -> Result<Vec<DocumentWithScores>, DatabaseError> {
-        let has_sources = source_types.map_or(false, |s| !s.is_empty());
-        let has_content_types = content_types.map_or(false, |ct| !ct.is_empty());
-        let has_user_filter = user_email.is_some();
-
-        let source_filter = if has_sources {
-            " AND source_id IN (SELECT id FROM sources WHERE source_type = ANY($2))"
-        } else {
-            ""
-        };
-
-        let content_type_filter = if has_content_types {
-            if has_sources {
-                " AND content_type = ANY($3)"
-            } else {
-                " AND content_type = ANY($2)"
-            }
-        } else {
-            ""
-        };
-
-        let permission_filter = if has_user_filter {
-            if let Some(email) = user_email {
-                format!(" AND {}", self.generate_permission_filter(email))
-            } else {
-                "".to_string()
-            }
-        } else {
-            "".to_string()
-        };
-
-        let (limit_param, offset_param) = match (has_sources, has_content_types) {
-            (true, true) => ("$4", "$5"),
-            (true, false) | (false, true) => ("$3", "$4"),
-            (false, false) => ("$2", "$3"),
-        };
-
-        let full_query = format!(
-            r#"
-            WITH candidates AS (
-                SELECT *
-                FROM documents
-                WHERE tsv_content @@ websearch_to_tsquery('english', $1)
-                {}{}{}
-                LIMIT 10000
-            )
-            SELECT id, source_id, external_id, title, content_id, content_type,
-                   file_size, file_extension, url,
-                   metadata, permissions, attributes, created_at, updated_at, last_indexed_at,
-                   ts_rank_cd('{{0.1, 0.2, 0.4, 1.0}}', tsv_content, websearch_to_tsquery('english', $1), 32) as base_rank,
-                   (1.0 + GREATEST(-1.0, (EXTRACT(EPOCH FROM (NOW() - (regexp_replace(metadata->>'updated_at', '^\+00', ''))::timestamptz)) / 86400.0 / -365.0)) * 0.3)::real as recency_boost,
-                   (CASE WHEN title ILIKE '%' || $1 || '%' THEN 1.4 ELSE 1.0 END)::real as title_boost,
-                   -- Base FTS ranking with custom weights (D=0.1, C=0.2, B=0.4, A=1.0)
-                   (ts_rank_cd('{{0.1, 0.2, 0.4, 1.0}}', tsv_content, websearch_to_tsquery('english', $1), 32) *
-                   -- Recency boost: newer documents get slight boost (max 30% boost for very recent)
-                   (1.0 + GREATEST(-1.0, (EXTRACT(EPOCH FROM (NOW() - (regexp_replace(metadata->>'updated_at', '^\+00', ''))::timestamptz)) / 86400.0 / -365.0)) * 0.3) *
-                   -- Title exact match boost
-                   CASE
-                       WHEN title ILIKE '%' || $1 || '%' THEN 1.4
-                       ELSE 1.0
-                   END)::real as score
-            FROM candidates
-            ORDER BY score DESC
-            LIMIT {} OFFSET {}"#,
-            source_filter, content_type_filter, permission_filter, limit_param, offset_param
-        );
-
-        let mut query = sqlx::query_as::<_, DocumentWithScores>(&full_query).bind(query);
-
-        if let Some(src) = source_types {
-            if !src.is_empty() {
-                query = query.bind(src);
-            }
-        }
-
-        if let Some(ct) = content_types {
-            if !ct.is_empty() {
-                query = query.bind(ct);
-            }
         }
 
         query = query.bind(limit).bind(offset);
@@ -524,37 +387,6 @@ impl DocumentRepository {
         Ok(updated_document)
     }
 
-    #[deprecated(note = "Use update instead.")]
-    pub async fn update_v0(
-        &self,
-        id: &str,
-        document: Document,
-        content: &str,
-    ) -> Result<Option<Document>, DatabaseError> {
-        let updated_document = sqlx::query_as::<_, Document>(
-            r#"
-            UPDATE documents
-            SET title = $2, content_id = $3, metadata = $4, permissions = $5, attributes = $6,
-                tsv_content = setweight(to_tsvector('english', $2), 'A') || setweight(to_tsvector('english', $7), 'B')
-            WHERE id = $1
-            RETURNING id, source_id, external_id, title, content_id, content_type,
-                      file_size, file_extension, url,
-                      metadata, permissions, attributes, created_at, updated_at, last_indexed_at
-            "#,
-        )
-        .bind(id)
-        .bind(&document.title)
-        .bind(&document.content_id)
-        .bind(&document.metadata)
-        .bind(&document.permissions)
-        .bind(&document.attributes)
-        .bind(content)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(updated_document)
-    }
-
     pub async fn delete(&self, id: &str) -> Result<bool, DatabaseError> {
         let result = sqlx::query("DELETE FROM documents WHERE id = $1")
             .bind(id)
@@ -562,12 +394,6 @@ impl DocumentRepository {
             .await?;
 
         Ok(result.rows_affected() > 0)
-    }
-
-    pub async fn update_search_vector(&self, _id: &str) -> Result<(), DatabaseError> {
-        // The tsv_content column is automatically generated, so this method is now a no-op
-        // We keep it for compatibility but it doesn't need to do anything
-        Ok(())
     }
 
     pub async fn mark_as_indexed(&self, id: &str) -> Result<(), DatabaseError> {
@@ -579,6 +405,7 @@ impl DocumentRepository {
         Ok(())
     }
 
+    /// Upserts a document with content for BM25 indexing
     pub async fn upsert(
         &self,
         document: Document,
@@ -586,9 +413,8 @@ impl DocumentRepository {
     ) -> Result<Document, DatabaseError> {
         let upserted_document = sqlx::query_as::<_, Document>(
             r#"
-            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, attributes, created_at, updated_at, last_indexed_at, tsv_content)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                    setweight(to_tsvector('english', $4), 'A') || setweight(to_tsvector('english', $16), 'B'))
+            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, attributes, created_at, updated_at, last_indexed_at, content)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             ON CONFLICT (source_id, external_id)
             DO UPDATE SET
                 title = EXCLUDED.title,
@@ -598,7 +424,7 @@ impl DocumentRepository {
                 attributes = EXCLUDED.attributes,
                 updated_at = EXCLUDED.updated_at,
                 last_indexed_at = EXCLUDED.last_indexed_at,
-                tsv_content = setweight(to_tsvector('english', EXCLUDED.title), 'A') || setweight(to_tsvector('english', $16), 'B')
+                content = EXCLUDED.content
             RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
                       metadata, permissions, attributes, created_at, updated_at, last_indexed_at
@@ -626,48 +452,13 @@ impl DocumentRepository {
         Ok(upserted_document)
     }
 
-    pub async fn get_facet_counts(&self, query: &str) -> Result<Vec<Facet>, DatabaseError> {
-        let facet_rows = sqlx::query_as::<_, (String, String, i64)>(
-            r#"
-            SELECT 'source_type' as facet, s.source_type as value, count(*) as count
-            FROM documents d 
-            JOIN sources s ON d.source_id = s.id
-            WHERE d.tsv_content @@ websearch_to_tsquery('english', $1::text)
-            GROUP BY s.source_type 
-            ORDER BY count DESC
-            "#,
-        )
-        .bind(query)
-        .fetch_all(&self.pool)
-        .await?;
-
-        // Group the results by facet name
-        let mut facets_map: std::collections::HashMap<String, Vec<FacetValue>> =
-            std::collections::HashMap::new();
-
-        for (facet_name, value, count) in facet_rows {
-            facets_map
-                .entry(facet_name)
-                .or_insert_with(Vec::new)
-                .push(FacetValue { value, count });
-        }
-
-        // Convert to Vec<Facet>
-        let facets: Vec<Facet> = facets_map
-            .into_iter()
-            .map(|(name, values)| Facet { name, values })
-            .collect();
-
-        Ok(facets)
-    }
-
     pub async fn get_facet_counts_with_filters(
         &self,
         query: &str,
         source_types: Option<&[SourceType]>,
         content_types: Option<&[String]>,
     ) -> Result<Vec<Facet>, DatabaseError> {
-        let mut filters = vec!["(title @@@ $1 OR content @@@ $2)".to_string()];
+        let mut filters = vec!["(title ||| $1 OR content ||| $2)".to_string()];
         let mut bind_index = 3;
 
         if let Some(src) = source_types {
@@ -697,84 +488,10 @@ impl DocumentRepository {
             where_clause
         );
 
-        let title_query = format!("{}^2", query);
+        let title_query = format!("{}::pdb.boost(2)", query);
         let mut query = sqlx::query_as::<_, (String, String, i64)>(&query_str)
             .bind(title_query)
             .bind(query);
-
-        if let Some(src) = source_types {
-            if !src.is_empty() {
-                query = query.bind(src);
-            }
-        }
-
-        if let Some(ct) = content_types {
-            if !ct.is_empty() {
-                query = query.bind(ct);
-            }
-        }
-
-        let facet_rows = query.fetch_all(&self.pool).await?;
-
-        // Group the results by facet name
-        let mut facets_map: std::collections::HashMap<String, Vec<FacetValue>> =
-            std::collections::HashMap::new();
-
-        for (facet_name, value, count) in facet_rows {
-            facets_map
-                .entry(facet_name)
-                .or_insert_with(Vec::new)
-                .push(FacetValue { value, count });
-        }
-
-        // Convert to Vec<Facet>
-        let facets: Vec<Facet> = facets_map
-            .into_iter()
-            .map(|(name, values)| Facet { name, values })
-            .collect();
-
-        Ok(facets)
-    }
-
-    #[deprecated(note = "Use get_facet_counts_with_filters instead")]
-    pub async fn get_facet_counts_with_filters_v0(
-        &self,
-        query: &str,
-        source_types: Option<&[SourceType]>,
-        content_types: Option<&[String]>,
-    ) -> Result<Vec<Facet>, DatabaseError> {
-        let mut where_conditions =
-            vec!["d.tsv_content @@ websearch_to_tsquery('english', $1::text)".to_string()];
-        let mut bind_index = 2;
-
-        if let Some(src) = source_types {
-            if !src.is_empty() {
-                where_conditions.push(format!("s.source_type = ANY(${})", bind_index));
-                bind_index += 1;
-            }
-        }
-
-        if let Some(ct) = content_types {
-            if !ct.is_empty() {
-                where_conditions.push(format!("d.content_type = ANY(${})", bind_index));
-            }
-        }
-
-        let where_clause = where_conditions.join(" AND ");
-
-        let query_str = format!(
-            r#"
-            SELECT 'source_type' as facet, s.source_type as value, count(*) as count
-            FROM documents d 
-            JOIN sources s ON d.source_id = s.id
-            WHERE {}
-            GROUP BY s.source_type 
-            ORDER BY count DESC
-            "#,
-            where_clause
-        );
-
-        let mut query = sqlx::query_as::<_, (String, String, i64)>(&query_str).bind(query);
 
         if let Some(src) = source_types {
             if !src.is_empty() {
@@ -907,19 +624,6 @@ impl DocumentRepository {
         .await?;
 
         Ok(upserted_documents)
-    }
-
-    pub async fn batch_update_search_vectors(
-        &self,
-        document_ids: Vec<String>,
-    ) -> Result<(), DatabaseError> {
-        if document_ids.is_empty() {
-            return Ok(());
-        }
-
-        // The tsv_content column is automatically generated, so this is now a no-op
-        // We keep it for compatibility but it doesn't need to do anything
-        Ok(())
     }
 
     pub async fn batch_mark_as_indexed(

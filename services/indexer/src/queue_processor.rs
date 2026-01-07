@@ -1244,7 +1244,7 @@ impl ProcessorContext {
                 }
             };
 
-            let updated_document = repo.update_v0(&doc_id, document, &content).await?;
+            let updated_document = repo.update(&doc_id, document, &content).await?;
 
             // Queue embeddings for async generation
             if let Some(_updated_doc) = &updated_document {
