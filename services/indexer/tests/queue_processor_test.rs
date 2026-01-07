@@ -27,7 +27,7 @@ async fn test_queue_processor_document_created() {
     let content_id = fixture
         .state
         .content_storage
-        .store_content("This is content from a connector event".as_bytes())
+        .store_content("This is content from a connector event".as_bytes(), None)
         .await
         .unwrap();
 
@@ -52,6 +52,7 @@ async fn test_queue_processor_document_created() {
             users: vec!["user1".to_string(), "user2".to_string()],
             groups: vec!["group1".to_string()],
         },
+        attributes: None,
     };
 
     // Queue the event using PostgreSQL queue
@@ -105,7 +106,7 @@ async fn test_queue_processor_document_updated() {
     let create_content_id = fixture
         .state
         .content_storage
-        .store_content("Initial content".as_bytes())
+        .store_content("Initial content".as_bytes(), None)
         .await
         .unwrap();
 
@@ -130,6 +131,7 @@ async fn test_queue_processor_document_updated() {
             users: vec!["user1".to_string()],
             groups: vec![],
         },
+        attributes: None,
     };
 
     // Queue the create event using PostgreSQL queue
@@ -149,7 +151,7 @@ async fn test_queue_processor_document_updated() {
     let update_content_id = fixture
         .state
         .content_storage
-        .store_content("Updated content with more information".as_bytes())
+        .store_content("Updated content with more information".as_bytes(), None)
         .await
         .unwrap();
 
@@ -178,6 +180,7 @@ async fn test_queue_processor_document_updated() {
             ],
             groups: vec!["admin".to_string()],
         }),
+        attributes: None,
     };
 
     // Queue the update event using PostgreSQL queue
@@ -245,7 +248,7 @@ async fn test_queue_processor_document_deleted() {
     let delete_content_id = fixture
         .state
         .content_storage
-        .store_content("Content to be deleted".as_bytes())
+        .store_content("Content to be deleted".as_bytes(), None)
         .await
         .unwrap();
 
@@ -270,6 +273,7 @@ async fn test_queue_processor_document_deleted() {
             users: vec![],
             groups: vec![],
         },
+        attributes: None,
     };
 
     // Queue the create event using PostgreSQL queue
@@ -321,7 +325,7 @@ async fn test_queue_processor_multiple_events() {
         let multi_content_id = fixture
             .state
             .content_storage
-            .store_content(format!("Content for document {}", i).as_bytes())
+            .store_content(format!("Content for document {}", i).as_bytes(), None)
             .await
             .unwrap();
 
@@ -346,6 +350,7 @@ async fn test_queue_processor_multiple_events() {
                 users: vec![format!("user{}", i)],
                 groups: vec![],
             },
+            attributes: None,
         };
 
         // Queue each event using PostgreSQL queue
@@ -405,7 +410,7 @@ async fn test_queue_processor_batch_processing() {
         let batch_content_id = fixture
             .state
             .content_storage
-            .store_content(format!("Batch content {}", i).as_bytes())
+            .store_content(format!("Batch content {}", i).as_bytes(), None)
             .await
             .unwrap();
 
@@ -430,6 +435,7 @@ async fn test_queue_processor_batch_processing() {
                 users: vec![],
                 groups: vec![],
             },
+            attributes: None,
         };
 
         event_queue.enqueue(&source_id, &event).await.unwrap();
@@ -464,7 +470,7 @@ async fn test_queue_recovery_on_startup() {
     let recovery_content_id = fixture
         .state
         .content_storage
-        .store_content("Recovery test content".as_bytes())
+        .store_content("Recovery test content".as_bytes(), None)
         .await
         .unwrap();
 
@@ -490,6 +496,7 @@ async fn test_queue_recovery_on_startup() {
             users: vec!["user1".to_string()],
             groups: vec![],
         },
+        attributes: None,
     };
 
     // Queue the event normally first
@@ -572,7 +579,7 @@ async fn test_embedding_queue_recovery() {
     let content_id = fixture
         .state
         .content_storage
-        .store_content(content.as_bytes())
+        .store_content(content.as_bytes(), None)
         .await
         .unwrap();
 
@@ -590,6 +597,7 @@ async fn test_embedding_queue_recovery() {
         url: None,
         metadata: serde_json::json!({}),
         permissions: serde_json::json!({"public": true, "users": [], "groups": []}),
+        attributes: serde_json::json!({}),
         created_at: OffsetDateTime::now_utc(),
         updated_at: OffsetDateTime::now_utc(),
         last_indexed_at: OffsetDateTime::now_utc(),

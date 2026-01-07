@@ -2,7 +2,9 @@ use anyhow::Result;
 use omni_indexer::{create_app, AppState};
 use shared::db::repositories::DocumentRepository;
 use shared::models::Document;
+use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
+use std::sync::Arc;
 use tokio::time::{sleep, timeout, Duration};
 
 /// Test fixture that automatically cleans up the test database on drop
@@ -38,7 +40,8 @@ pub async fn setup_test_fixture() -> Result<TestFixture> {
     let embedding_queue =
         shared::embedding_queue::EmbeddingQueue::new(test_env.db_pool.pool().clone());
 
-    let content_storage = shared::ContentStorage::new(test_env.db_pool.pool().clone());
+    let content_storage: Arc<dyn shared::ObjectStorage> =
+        Arc::new(PostgresStorage::new(test_env.db_pool.pool().clone()));
 
     let service_credentials_repo = std::sync::Arc::new(
         shared::ServiceCredentialsRepo::new(test_env.db_pool.pool().clone()).unwrap(),

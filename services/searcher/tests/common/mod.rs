@@ -74,6 +74,17 @@ impl SearcherTestFixture {
         mode: Option<&str>,
         limit: Option<u32>,
     ) -> Result<(StatusCode, Value)> {
+        self.search_with_user(query, mode, limit, None).await
+    }
+
+    /// Helper method to make search requests with user_email for permission filtering
+    pub async fn search_with_user(
+        &self,
+        query: &str,
+        mode: Option<&str>,
+        limit: Option<u32>,
+        user_email: Option<&str>,
+    ) -> Result<(StatusCode, Value)> {
         let mut search_body = json!({
             "query": query
         });
@@ -84,6 +95,10 @@ impl SearcherTestFixture {
 
         if let Some(limit) = limit {
             search_body["limit"] = json!(limit);
+        }
+
+        if let Some(email) = user_email {
+            search_body["user_email"] = json!(email);
         }
 
         let request = Request::builder()

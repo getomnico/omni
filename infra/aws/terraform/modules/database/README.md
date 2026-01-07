@@ -27,7 +27,7 @@ module "database" {
   # ParadeDB configuration
   paradedb_instance_type   = "t3.small"
   paradedb_volume_size     = 50
-  paradedb_container_image = "paradedb/paradedb:0.18.15-pg17"
+  paradedb_container_image = "paradedb/paradedb:0.20.6-pg17"
 
   # Infrastructure dependencies
   vpc_id                         = module.networking.vpc_id
@@ -50,7 +50,7 @@ module "database" {
 | database_username | PostgreSQL master username | string | "omni" | no |
 | paradedb_instance_type | EC2 instance type for ParadeDB | string | "t3.small" | no |
 | paradedb_volume_size | EBS volume size in GB for ParadeDB data | number | 50 | no |
-| paradedb_container_image | Docker image for ParadeDB | string | "paradedb/paradedb:0.18.15-pg17" | no |
+| paradedb_container_image | Docker image for ParadeDB | string | "paradedb/paradedb:0.20.6-pg17" | no |
 | vpc_id | VPC ID for ParadeDB security group | string | - | yes |
 | ecs_security_group_id | ECS security group ID to allow connections to ParadeDB | string | - | yes |
 | ecs_cluster_name | ECS cluster name for ParadeDB service | string | - | yes |

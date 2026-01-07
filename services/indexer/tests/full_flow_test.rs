@@ -26,7 +26,7 @@ async fn test_full_indexing_flow() {
     let create_content_id = fixture
         .state
         .content_storage
-        .store_content("This is a complete flow test document".as_bytes())
+        .store_content("This is a complete flow test document".as_bytes(), None)
         .await
         .unwrap();
 
@@ -54,6 +54,7 @@ async fn test_full_indexing_flow() {
             users: vec!["test_user".to_string()],
             groups: vec!["test_group".to_string()],
         },
+        attributes: None,
     };
 
     // Queue the create event using PostgreSQL queue
@@ -86,8 +87,9 @@ async fn test_full_indexing_flow() {
 
     let metadata = document.metadata.as_object().unwrap();
     assert_eq!(metadata["author"].as_str().unwrap(), "Integration Test");
-    assert_eq!(metadata["category"].as_str().unwrap(), "test");
-    assert_eq!(metadata["priority"].as_str().unwrap(), "high");
+    let extra = metadata["extra"].as_object().unwrap();
+    assert_eq!(extra["category"].as_str().unwrap(), "test");
+    assert_eq!(extra["priority"].as_str().unwrap(), "high");
 
     let permissions = document.permissions.as_object().unwrap();
     assert_eq!(permissions["public"].as_bool().unwrap(), false);
@@ -107,7 +109,7 @@ async fn test_full_indexing_flow() {
     let update_content_id = fixture
         .state
         .content_storage
-        .store_content("This is updated content for the flow test".as_bytes())
+        .store_content("This is updated content for the flow test".as_bytes(), None)
         .await
         .unwrap();
 
@@ -136,6 +138,7 @@ async fn test_full_indexing_flow() {
             users: vec!["test_user".to_string(), "admin_user".to_string()],
             groups: vec!["test_group".to_string(), "admin_group".to_string()],
         }),
+        attributes: None,
     };
 
     // Queue the update event using PostgreSQL queue
@@ -174,8 +177,9 @@ async fn test_full_indexing_flow() {
         updated_metadata["author"].as_str().unwrap(),
         "Integration Test Updated"
     );
-    assert_eq!(updated_metadata["priority"].as_str().unwrap(), "medium");
-    assert_eq!(updated_metadata["status"].as_str().unwrap(), "updated");
+    let updated_extra = updated_metadata["extra"].as_object().unwrap();
+    assert_eq!(updated_extra["priority"].as_str().unwrap(), "medium");
+    assert_eq!(updated_extra["status"].as_str().unwrap(), "updated");
 
     let updated_permissions = updated_document.permissions.as_object().unwrap();
     assert_eq!(updated_permissions["public"].as_bool().unwrap(), true);
@@ -245,7 +249,7 @@ async fn test_concurrent_event_processing() {
         let handle = tokio::spawn(async move {
             // Create content in content storage
             let content_id = content_storage
-                .store_content(format!("Concurrent content {}", i).as_bytes())
+                .store_content(format!("Concurrent content {}", i).as_bytes(), None)
                 .await
                 .unwrap();
 
@@ -270,6 +274,7 @@ async fn test_concurrent_event_processing() {
                     users: vec![],
                     groups: vec![],
                 },
+                attributes: None,
             };
 
             queue.enqueue(&src_id, &event).await.unwrap();

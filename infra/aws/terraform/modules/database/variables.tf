@@ -28,7 +28,7 @@ variable "paradedb_volume_size" {
 variable "paradedb_container_image" {
   description = "Docker image for ParadeDB"
   type        = string
-  default     = "paradedb/paradedb:0.18.15-pg17"
+  default     = "paradedb/paradedb:0.20.6-pg17"
 }
 
 variable "vpc_id" {

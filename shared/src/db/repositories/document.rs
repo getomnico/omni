@@ -34,9 +34,9 @@ impl DocumentRepository {
     fn generate_permission_filter(&self, user_email: &str) -> String {
         format!(
             r#"(
-                id @@@ pdb.term('permissions.public', true) OR
-                id @@@ pdb.term('permissions.users', '{}') OR
-                id @@@ pdb.term('permissions.groups', '{}') -- TODO: Add group membership lookup here
+                permissions @@@ 'public:true' OR
+                permissions @@@ 'users:{}' OR
+                permissions @@@ 'groups:{}'
             )"#,
             user_email, user_email
         )
@@ -177,14 +177,13 @@ impl DocumentRepository {
         // Build attribute filter conditions using ParadeDB's JSON query syntax
         if let Some(attr_filters) = attribute_filters {
             for (key, filter) in attr_filters {
-                let field = format!("attributes.{}", key);
                 match filter {
                     AttributeFilter::Exact(value) => {
-                        // Use paradedb.term for exact match on JSON field
+                        // Query the attributes JSON field with key:value syntax
                         let term_value = json_value_to_term_string(value);
                         filters.push(format!(
-                            "id @@@ pdb.term('{}', '{}')",
-                            field,
+                            "attributes @@@ '{}:{}'",
+                            key.replace('\'', "''"),
                             term_value.replace('\'', "''")
                         ));
                     }
@@ -195,8 +194,8 @@ impl DocumentRepository {
                             .map(|v| {
                                 let term_value = json_value_to_term_string(v);
                                 format!(
-                                    "id @@@ pdb.term('{}', '{}')",
-                                    field,
+                                    "attributes @@@ '{}:{}'",
+                                    key.replace('\'', "''"),
                                     term_value.replace('\'', "''")
                                 )
                             })

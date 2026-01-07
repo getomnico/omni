@@ -33,7 +33,7 @@ x-logging: &default-logging
 
 services:
   postgres:
-    image: paradedb/paradedb:0.18.15-pg17
+    image: paradedb/paradedb:0.20.6-pg17
     shm_size: 4gb
     container_name: omni-postgres
     environment:

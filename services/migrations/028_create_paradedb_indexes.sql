@@ -7,11 +7,11 @@ ALTER TABLE documents ALTER COLUMN content_id TYPE VARCHAR(26);
 CREATE INDEX document_search_idx ON documents
 USING bm25 (
     id,
-    (source_id::pdb.keyword),
-    (external_id::pdb.keyword),
+    (source_id::pdb.literal),
+    (external_id::pdb.literal),
     (title::pdb.ngram(2, 3)),
     (content::pdb.ngram(2, 3)),
-    (content_type::pdb.keyword),
+    (content_type::pdb.literal),
     file_size,
     file_extension,
     metadata,

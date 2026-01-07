@@ -120,7 +120,7 @@ mod tests {
 
         // Test basic operations
         let content = b"test content";
-        let content_id = storage.store_content(content).await.unwrap();
+        let content_id = storage.store_content(content, None).await.unwrap();
         let retrieved = storage.get_content(&content_id).await.unwrap();
         assert_eq!(content, retrieved.as_slice());
 
@@ -161,7 +161,7 @@ mod tests {
 
         // Test basic operations
         let content = b"test content";
-        let content_id = storage.store_content(content).await.unwrap();
+        let content_id = storage.store_content(content, None).await.unwrap();
         let retrieved = storage.get_content(&content_id).await.unwrap();
         assert_eq!(content, retrieved.as_slice());
 

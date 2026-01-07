@@ -431,3 +431,24 @@ async fn test_search_highlighting_extraction() -> Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_search_with_permission_filtering() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let _doc_ids = fixture.seed_search_data().await?;
+
+    // Search with user_email to trigger permission filtering
+    // This tests the ParadeDB permission filter syntax: permissions @@@ 'public:true'
+    let (status, response) = fixture
+        .search_with_user("guide", Some("fulltext"), None, Some("test@example.com"))
+        .await?;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(response["results"].is_array());
+
+    // The search should complete successfully with permission filtering enabled
+    // Results may be empty if no documents match the permission filter, but query should succeed
+    assert!(response["total_count"].is_number());
+
+    Ok(())
+}

@@ -197,7 +197,7 @@ mod tests {
 
         // Test text convenience methods
         let text_content = "This is a text content";
-        let text_content_id = storage.store_text(text_content.to_string()).await.unwrap();
+        let text_content_id = storage.store_text(text_content, None).await.unwrap();
 
         let retrieved_text = storage.get_text(&text_content_id).await.unwrap();
         assert_eq!(text_content, retrieved_text);
@@ -228,9 +228,9 @@ mod tests {
         let content2 = "Second document content";
         let content3 = "Third document content";
 
-        let content_id1 = storage.store_text(content1.to_string()).await.unwrap();
-        let content_id2 = storage.store_text(content2.to_string()).await.unwrap();
-        let content_id3 = storage.store_text(content3.to_string()).await.unwrap();
+        let content_id1 = storage.store_text(content1, None).await.unwrap();
+        let content_id2 = storage.store_text(content2, None).await.unwrap();
+        let content_id3 = storage.store_text(content3, None).await.unwrap();
 
         // Batch fetch all content
         let content_ids = vec![
@@ -267,8 +267,8 @@ mod tests {
 
         // Store the same content twice
         let content = "This is duplicate content";
-        let content_id1 = storage.store_text(content.to_string()).await.unwrap();
-        let content_id2 = storage.store_text(content.to_string()).await.unwrap();
+        let content_id1 = storage.store_text(content, None).await.unwrap();
+        let content_id2 = storage.store_text(content, None).await.unwrap();
 
         // They should have different IDs but same hash
         assert_ne!(content_id1, content_id2);
