@@ -1,20 +1,12 @@
 use anyhow::Result;
 use dashmap::DashSet;
 use dotenvy::dotenv;
-use shared::{
-    telemetry::{self, TelemetryConfig},
-    DatabasePool, WebConnectorConfig,
-};
+use omni_web_connector::api::{create_router, ApiState};
+use omni_web_connector::sdk_client::SdkClient;
+use omni_web_connector::sync::SyncManager;
+use shared::telemetry::{self, TelemetryConfig};
 use std::sync::Arc;
 use tracing::info;
-
-mod api;
-mod config;
-mod models;
-mod sync;
-
-use api::{create_router, ApiState};
-use sync::SyncManager;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -25,13 +17,13 @@ async fn main() -> Result<()> {
 
     info!("Starting Web Connector");
 
-    let config = WebConnectorConfig::from_env();
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
+    let redis_client = redis::Client::open(redis_url)?;
 
-    let redis_client = redis::Client::open(config.base.redis.redis_url)?;
+    let sdk_client = SdkClient::from_env()?;
 
-    let db_pool = DatabasePool::from_config(&config.database).await?;
-
-    let sync_manager = Arc::new(SyncManager::new(db_pool.pool().clone(), redis_client).await?);
+    let sync_manager = Arc::new(SyncManager::new(redis_client, sdk_client));
 
     let api_state = ApiState {
         sync_manager: Arc::clone(&sync_manager),

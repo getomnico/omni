@@ -14,7 +14,7 @@ use axum::{
 use config::ConnectorManagerConfig;
 use shared::{
     telemetry::{self, TelemetryConfig},
-    DatabasePool,
+    DatabasePool, ObjectStorage,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -28,10 +28,12 @@ pub struct AppState {
     pub db_pool: DatabasePool,
     pub config: ConnectorManagerConfig,
     pub sync_manager: Arc<SyncManager>,
+    pub content_storage: Arc<dyn ObjectStorage>,
 }
 
 pub fn create_app(state: AppState) -> Router {
     Router::new()
+        // Health and management endpoints
         .route("/health", get(handlers::health_check))
         .route("/sync", post(handlers::trigger_sync))
         .route("/sync/:id/cancel", post(handlers::cancel_sync))
@@ -40,6 +42,16 @@ pub fn create_app(state: AppState) -> Router {
         .route("/connectors", get(handlers::list_connectors))
         .route("/action", post(handlers::execute_action))
         .route("/actions", get(handlers::list_actions))
+        // SDK endpoints - called by connectors
+        .route("/sdk/events", post(handlers::sdk_emit_event))
+        .route("/sdk/content", post(handlers::sdk_store_content))
+        .route("/sdk/sync/:id/heartbeat", post(handlers::sdk_heartbeat))
+        .route("/sdk/sync/:id/complete", post(handlers::sdk_complete))
+        .route("/sdk/sync/:id/fail", post(handlers::sdk_fail))
+        .route(
+            "/sdk/sync/:id/scanned",
+            post(handlers::sdk_increment_scanned),
+        )
         .layer(
             ServiceBuilder::new()
                 .layer(middleware::from_fn(telemetry::middleware::trace_layer))
@@ -69,12 +81,18 @@ pub async fn run_server() -> AnyhowResult<()> {
         .map_err(|e| anyhow::anyhow!("Failed to create database pool: {}", e))?;
     info!("Database pool initialized");
 
+    let content_storage = shared::StorageFactory::from_env(db_pool.pool().clone())
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create content storage: {}", e))?;
+    info!("Content storage initialized");
+
     let sync_manager = Arc::new(SyncManager::new(&db_pool, config.clone()));
 
     let app_state = AppState {
         db_pool: db_pool.clone(),
         config: config.clone(),
         sync_manager: sync_manager.clone(),
+        content_storage,
     };
 
     // Start scheduler in background

@@ -359,19 +359,17 @@ services:
     expose:
       - "${WEB_CONNECTOR_PORT}"
     environment:
-      <<: [*db-config, *db-pool-config, *redis-config, *otel-config, *storage-config]
+      <<: [*redis-config, *otel-config]
       RUST_LOG: ${RUST_LOG}
       PORT: ${WEB_CONNECTOR_PORT}
-      WEB_SYNC_INTERVAL_SECONDS: ${WEB_SYNC_INTERVAL_SECONDS:-86400}
+      CONNECTOR_MANAGER_URL: http://connector-manager:${CONNECTOR_MANAGER_PORT}
     networks:
       - omni-network
     depends_on:
-      postgres:
-        condition: service_healthy
+      connector-manager:
+        condition: service_started
       redis:
         condition: service_healthy
-      migrator:
-        condition: service_completed_successfully
     restart: unless-stopped
     logging: *default-logging
 

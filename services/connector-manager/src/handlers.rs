@@ -344,3 +344,191 @@ impl IntoResponse for ApiError {
         (status, Json(body)).into_response()
     }
 }
+
+// ============================================================================
+// SDK Handlers - Called by connectors
+// ============================================================================
+
+use crate::models::{
+    SdkCompleteRequest, SdkEmitEventRequest, SdkFailRequest, SdkStatusResponse,
+    SdkStoreContentRequest, SdkStoreContentResponse,
+};
+use shared::db::repositories::SyncRunRepository;
+use shared::queue::EventQueue;
+
+pub async fn sdk_emit_event(
+    State(state): State<AppState>,
+    Json(request): Json<SdkEmitEventRequest>,
+) -> Result<Json<SdkStatusResponse>, ApiError> {
+    debug!(
+        "SDK: Emitting event for sync_run={}, source={}",
+        request.sync_run_id, request.source_id
+    );
+
+    let event_queue = EventQueue::new(state.db_pool.pool().clone());
+
+    // Enqueue the event
+    event_queue
+        .enqueue(&request.source_id, &request.event)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to enqueue event: {}", e)))?;
+
+    // Update heartbeat
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+    sync_run_repo
+        .update_activity(&request.sync_run_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to update activity: {}", e)))?;
+
+    Ok(Json(SdkStatusResponse {
+        status: "ok".to_string(),
+    }))
+}
+
+pub async fn sdk_store_content(
+    State(state): State<AppState>,
+    Json(request): Json<SdkStoreContentRequest>,
+) -> Result<Json<SdkStoreContentResponse>, ApiError> {
+    debug!("SDK: Storing content for sync_run={}", request.sync_run_id);
+
+    let content_storage = state.content_storage.clone();
+
+    // Generate storage prefix from sync_run_id
+    let today = time::OffsetDateTime::now_utc();
+    let prefix = format!(
+        "{:04}-{:02}-{:02}/{}",
+        today.year(),
+        today.month() as u8,
+        today.day(),
+        request.sync_run_id
+    );
+
+    let content_id = content_storage
+        .store_text(&request.content, Some(&prefix))
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to store content: {}", e)))?;
+
+    // Update heartbeat
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+    sync_run_repo
+        .update_activity(&request.sync_run_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to update activity: {}", e)))?;
+
+    Ok(Json(SdkStoreContentResponse { content_id }))
+}
+
+pub async fn sdk_heartbeat(
+    State(state): State<AppState>,
+    Path(sync_run_id): Path<String>,
+) -> Result<Json<SdkStatusResponse>, ApiError> {
+    debug!("SDK: Heartbeat for sync_run={}", sync_run_id);
+
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+    sync_run_repo
+        .update_activity(&sync_run_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to update activity: {}", e)))?;
+
+    Ok(Json(SdkStatusResponse {
+        status: "ok".to_string(),
+    }))
+}
+
+pub async fn sdk_complete(
+    State(state): State<AppState>,
+    Path(sync_run_id): Path<String>,
+    Json(request): Json<SdkCompleteRequest>,
+) -> Result<Json<SdkStatusResponse>, ApiError> {
+    info!("SDK: Completing sync_run={}", sync_run_id);
+
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+
+    // Mark sync as completed
+    sync_run_repo
+        .mark_completed(
+            &sync_run_id,
+            request.documents_scanned.unwrap_or(0),
+            request.documents_updated.unwrap_or(0),
+        )
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to mark completed: {}", e)))?;
+
+    // Update source status
+    if let Ok(Some(sync_run)) = sync_run_repo.find_by_id(&sync_run_id).await {
+        let source_repo = shared::SourceRepository::new(state.db_pool.pool());
+        let _ = source_repo
+            .update_sync_status(
+                &sync_run.source_id,
+                "completed",
+                Some(chrono::Utc::now()),
+                None,
+            )
+            .await;
+
+        // Store connector state if provided
+        if let Some(new_state) = request.new_state {
+            let _ = sqlx::query(
+                "UPDATE sources SET connector_state = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+            )
+            .bind(&new_state)
+            .bind(&sync_run.source_id)
+            .execute(state.db_pool.pool())
+            .await;
+        }
+    }
+
+    Ok(Json(SdkStatusResponse {
+        status: "ok".to_string(),
+    }))
+}
+
+pub async fn sdk_fail(
+    State(state): State<AppState>,
+    Path(sync_run_id): Path<String>,
+    Json(request): Json<SdkFailRequest>,
+) -> Result<Json<SdkStatusResponse>, ApiError> {
+    info!("SDK: Failing sync_run={}: {}", sync_run_id, request.error);
+
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+
+    // Mark sync as failed
+    sync_run_repo
+        .mark_failed(&sync_run_id, &request.error)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to mark failed: {}", e)))?;
+
+    // Update source status
+    if let Ok(Some(sync_run)) = sync_run_repo.find_by_id(&sync_run_id).await {
+        let source_repo = shared::SourceRepository::new(state.db_pool.pool());
+        let _ = source_repo
+            .update_sync_status(
+                &sync_run.source_id,
+                "failed",
+                None,
+                Some(request.error.clone()),
+            )
+            .await;
+    }
+
+    Ok(Json(SdkStatusResponse {
+        status: "ok".to_string(),
+    }))
+}
+
+pub async fn sdk_increment_scanned(
+    State(state): State<AppState>,
+    Path(sync_run_id): Path<String>,
+) -> Result<Json<SdkStatusResponse>, ApiError> {
+    debug!("SDK: Incrementing scanned for sync_run={}", sync_run_id);
+
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+    sync_run_repo
+        .increment_scanned_with_activity(&sync_run_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to increment scanned: {}", e)))?;
+
+    Ok(Json(SdkStatusResponse {
+        status: "ok".to_string(),
+    }))
+}

@@ -1,23 +1,18 @@
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use chrono::Utc;
 use dashmap::DashMap;
 use redis::Client as RedisClient;
-use shared::db::repositories::{SourceRepository, SyncRunRepository};
-use shared::queue::EventQueue;
-use shared::ObjectStorage;
 use spider::client::StatusCode;
-use sqlx::PgPool;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use time::OffsetDateTime;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info};
 
 use crate::config::WebSourceConfig;
 use crate::models::{PageSyncState, SyncRequest, WebPage};
+use crate::sdk_client::SdkClient;
 
 /// Result of a crawl operation
 pub struct CrawlResult {
@@ -177,39 +172,28 @@ struct ActiveSync {
 }
 
 pub struct SyncManager {
-    sync_run_repo: SyncRunRepository,
-    source_repo: SourceRepository,
     redis_client: RedisClient,
-    event_queue: EventQueue,
-    content_storage: Arc<dyn ObjectStorage>,
+    sdk_client: SdkClient,
     page_source: Arc<dyn PageSource>,
     active_syncs: DashMap<String, Arc<ActiveSync>>,
 }
 
 impl SyncManager {
-    pub async fn new(pool: PgPool, redis_client: RedisClient) -> Result<Self> {
-        Self::with_page_source(pool, redis_client, Arc::new(SpiderPageSource)).await
+    pub fn new(redis_client: RedisClient, sdk_client: SdkClient) -> Self {
+        Self::with_page_source(redis_client, sdk_client, Arc::new(SpiderPageSource))
     }
 
-    pub async fn with_page_source(
-        pool: PgPool,
+    pub fn with_page_source(
         redis_client: RedisClient,
+        sdk_client: SdkClient,
         page_source: Arc<dyn PageSource>,
-    ) -> Result<Self> {
-        let event_queue = EventQueue::new(pool.clone());
-        let content_storage = shared::StorageFactory::from_env(pool.clone()).await?;
-        let sync_run_repo = SyncRunRepository::new(&pool);
-        let source_repo = SourceRepository::new(&pool);
-
-        Ok(Self {
-            sync_run_repo,
-            source_repo,
+    ) -> Self {
+        Self {
             redis_client,
-            event_queue,
-            content_storage,
+            sdk_client,
             page_source,
             active_syncs: DashMap::new(),
-        })
+        }
     }
 
     /// Execute a sync based on the request from connector-manager
@@ -251,9 +235,7 @@ impl SyncManager {
             let pages_processed = pages_processed.clone();
             let pages_updated = pages_updated.clone();
             let sync_state = sync_state.clone();
-            let event_queue = self.event_queue.clone();
-            let content_storage = self.content_storage.clone();
-            let sync_run_repo = self.sync_run_repo.clone();
+            let sdk_client = self.sdk_client.clone();
             let active_sync = active_sync.clone();
 
             tokio::spawn(async move {
@@ -275,9 +257,7 @@ impl SyncManager {
                         &current_urls,
                         &pages_processed,
                         &pages_updated,
-                        &event_queue,
-                        &content_storage,
-                        &sync_run_repo,
+                        &sdk_client,
                     )
                     .await
                     {
@@ -298,15 +278,16 @@ impl SyncManager {
 
         // Check if cancelled
         if active_sync.cancelled.load(Ordering::SeqCst) {
-            self.mark_sync_cancelled(sync_run_id).await?;
+            // Manager will handle updating status when cancel was requested
             self.active_syncs.remove(sync_run_id);
             return Ok(());
         }
 
         // Handle crawl errors
         if let Err(e) = crawl_result {
-            self.mark_sync_failed(sync_run_id, source_id, &e.to_string())
-                .await?;
+            if let Err(fail_err) = self.sdk_client.fail(sync_run_id, &e.to_string()).await {
+                error!("Failed to report sync failure: {}", fail_err);
+            }
             self.active_syncs.remove(sync_run_id);
             return Err(e);
         }
@@ -350,13 +331,19 @@ impl SyncManager {
             deleted_urls.len()
         );
 
-        self.mark_sync_completed(
-            sync_run_id,
-            source_id,
-            final_processed as i32,
-            final_updated as i32,
-        )
-        .await?;
+        // Mark sync as completed via SDK
+        if let Err(e) = self
+            .sdk_client
+            .complete(
+                sync_run_id,
+                final_processed as i32,
+                final_updated as i32,
+                None,
+            )
+            .await
+        {
+            error!("Failed to mark sync as completed: {}", e);
+        }
 
         self.active_syncs.remove(sync_run_id);
         Ok(())
@@ -372,10 +359,6 @@ impl SyncManager {
         }
     }
 
-    fn get_storage_prefix(sync_run_id: &str) -> String {
-        format!("{}/{}", OffsetDateTime::now_utc().date(), sync_run_id)
-    }
-
     async fn process_web_page(
         web_page: &WebPage,
         sync_run_id: &str,
@@ -384,9 +367,7 @@ impl SyncManager {
         current_urls: &Arc<Mutex<HashSet<String>>>,
         pages_processed: &Arc<Mutex<usize>>,
         pages_updated: &Arc<Mutex<usize>>,
-        event_queue: &EventQueue,
-        content_storage: &Arc<dyn ObjectStorage>,
-        sync_run_repo: &SyncRunRepository,
+        sdk_client: &SdkClient,
     ) -> Result<()> {
         let url = &web_page.url;
         let url_hash = format!("{:x}", md5::compute(url));
@@ -413,9 +394,9 @@ impl SyncManager {
         };
 
         if should_index {
-            let storage_prefix = Self::get_storage_prefix(sync_run_id);
-            let content_id = content_storage
-                .store_text(&web_page.content, Some(&storage_prefix))
+            // Store content via SDK
+            let content_id = sdk_client
+                .store_content(sync_run_id, &web_page.content)
                 .await
                 .context("Failed to store page content")?;
 
@@ -425,10 +406,11 @@ impl SyncManager {
                 content_id,
             );
 
-            event_queue
-                .enqueue(source_id, &event)
+            // Emit event via SDK
+            sdk_client
+                .emit_event(sync_run_id, source_id, event)
                 .await
-                .context("Failed to enqueue event")?;
+                .context("Failed to emit event")?;
 
             let new_state = PageSyncState::new(web_page);
             sync_state
@@ -444,59 +426,11 @@ impl SyncManager {
         let mut count = pages_processed.lock().await;
         *count += 1;
 
-        // Update activity and scanned count
-        sync_run_repo
-            .increment_scanned_with_activity(sync_run_id)
+        // Update activity and scanned count via SDK
+        sdk_client
+            .increment_scanned(sync_run_id)
             .await
             .context("Failed to update sync activity")?;
-
-        Ok(())
-    }
-
-    async fn mark_sync_completed(
-        &self,
-        sync_run_id: &str,
-        source_id: &str,
-        documents_scanned: i32,
-        documents_updated: i32,
-    ) -> Result<()> {
-        self.sync_run_repo
-            .mark_completed(sync_run_id, documents_scanned, documents_updated)
-            .await
-            .context("Failed to update sync_run status")?;
-
-        self.source_repo
-            .update_sync_status(source_id, "completed", Some(Utc::now()), None)
-            .await
-            .context("Failed to update source status")?;
-
-        Ok(())
-    }
-
-    async fn mark_sync_failed(
-        &self,
-        sync_run_id: &str,
-        source_id: &str,
-        error: &str,
-    ) -> Result<()> {
-        self.sync_run_repo
-            .mark_failed(sync_run_id, error)
-            .await
-            .context("Failed to update sync_run status")?;
-
-        self.source_repo
-            .update_sync_status(source_id, "failed", None, Some(error.to_string()))
-            .await
-            .context("Failed to update source status")?;
-
-        Ok(())
-    }
-
-    async fn mark_sync_cancelled(&self, sync_run_id: &str) -> Result<()> {
-        self.sync_run_repo
-            .mark_cancelled(sync_run_id)
-            .await
-            .context("Failed to update sync_run status")?;
 
         Ok(())
     }
@@ -513,7 +447,9 @@ impl SyncManager {
             document_id: url_hash.to_string(),
         };
 
-        self.event_queue.enqueue(source_id, &event).await?;
+        self.sdk_client
+            .emit_event(sync_run_id, source_id, event)
+            .await?;
         Ok(())
     }
 }

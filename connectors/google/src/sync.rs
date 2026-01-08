@@ -1,9 +1,11 @@
 use anyhow::{anyhow, Context, Result};
+use dashmap::DashMap;
 use futures::stream::{self, StreamExt};
 use redis::{AsyncCommands, Client as RedisClient};
 use sqlx::types::time::OffsetDateTime;
 use sqlx::PgPool;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use time;
 use tracing::{debug, error, info, warn};
@@ -14,7 +16,7 @@ use crate::cache::LruFolderCache;
 use crate::drive::DriveClient;
 use crate::gmail::{GmailClient, MessageFormat};
 use crate::models::{
-    GmailThread, UserFile, WebhookChannel, WebhookChannelResponse, WebhookNotification,
+    GmailThread, SyncRequest, UserFile, WebhookChannel, WebhookChannelResponse, WebhookNotification,
 };
 use shared::db::repositories::{ServiceCredentialsRepo, SyncRunRepository};
 use shared::models::{
@@ -24,6 +26,10 @@ use shared::models::{
 use shared::queue::EventQueue;
 use shared::utils::generate_ulid;
 use shared::{AIClient, ObjectStorage, RateLimiter, Repository, SourceRepository};
+
+struct ActiveSync {
+    cancelled: AtomicBool,
+}
 
 pub struct SyncManager {
     pool: PgPool,
@@ -37,6 +43,7 @@ pub struct SyncManager {
     source_repo: SourceRepository,
     sync_run_repo: SyncRunRepository,
     folder_cache: LruFolderCache,
+    active_syncs: DashMap<String, Arc<ActiveSync>>,
 }
 
 #[derive(Clone)]
@@ -265,7 +272,84 @@ impl SyncManager {
             source_repo,
             sync_run_repo,
             folder_cache: LruFolderCache::new(10_000), // Cache up to 10,000 folder metadata entries
+            active_syncs: DashMap::new(),
         })
+    }
+
+    /// Sync a source from a SyncRequest (called by connector-manager)
+    pub async fn sync_source_from_request(&self, request: SyncRequest) -> Result<()> {
+        let sync_run_id = request.sync_run_id.clone();
+        let source_id = request.source.id.clone();
+
+        info!(
+            "Starting sync for source {} (sync_run_id: {})",
+            source_id, sync_run_id
+        );
+
+        // Register this sync as active for cancellation tracking
+        let active_sync = Arc::new(ActiveSync {
+            cancelled: AtomicBool::new(false),
+        });
+        self.active_syncs
+            .insert(sync_run_id.clone(), active_sync.clone());
+
+        // Get the source from the database
+        let source = self
+            .source_repo
+            .find_by_id(source_id.clone())
+            .await?
+            .ok_or_else(|| anyhow!("Source {} not found", source_id))?;
+
+        // Get or create sync run
+        let sync_run = self
+            .sync_run_repo
+            .find_by_id(&sync_run_id)
+            .await?
+            .ok_or_else(|| anyhow!("Sync run {} not found", sync_run_id))?;
+
+        // Run the sync
+        let result = match source.source_type {
+            SourceType::GoogleDrive => self.sync_drive_source_internal(&source, &sync_run).await,
+            SourceType::Gmail => self.sync_gmail_source_internal(&source, &sync_run).await,
+            _ => Err(anyhow!("Unsupported source type: {:?}", source.source_type)),
+        };
+
+        // Check if cancelled
+        if active_sync.cancelled.load(Ordering::SeqCst) {
+            info!("Sync {} was cancelled", sync_run_id);
+            self.sync_run_repo.mark_cancelled(&sync_run_id).await?;
+            self.active_syncs.remove(&sync_run_id);
+            return Ok(());
+        }
+
+        // Update sync run based on result
+        match &result {
+            Ok((files_scanned, _files_processed, files_updated)) => {
+                self.sync_run_repo
+                    .mark_completed(&sync_run_id, *files_scanned as i32, *files_updated as i32)
+                    .await?;
+                self.update_source_status(&source_id, "completed").await?;
+            }
+            Err(e) => {
+                self.sync_run_repo
+                    .mark_failed(&sync_run_id, &e.to_string())
+                    .await?;
+                self.update_source_status(&source_id, "failed").await?;
+            }
+        }
+
+        self.active_syncs.remove(&sync_run_id);
+        result.map(|_| ())
+    }
+
+    /// Cancel a running sync
+    pub fn cancel_sync(&self, sync_run_id: &str) -> bool {
+        if let Some(active_sync) = self.active_syncs.get(sync_run_id) {
+            active_sync.cancelled.store(true, Ordering::SeqCst);
+            true
+        } else {
+            false
+        }
     }
 
     fn get_cutoff_date(&self) -> Result<(String, String)> {
