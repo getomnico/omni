@@ -2,17 +2,15 @@ use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::db::repositories::SyncRunRepository;
 use shared::models::{Source, SourceType, SyncType};
-use shared::queue::EventQueue;
-use shared::ObjectStorage;
 use shared::{Repository, SourceRepository};
 use sqlx::{PgPool, Row};
 use std::collections::HashSet;
-use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 use crate::auth::AuthManager;
 use crate::client::SlackClient;
 use crate::content::ContentProcessor;
+use crate::sdk_client::SdkClient;
 
 pub struct SyncManager {
     pool: PgPool,
@@ -21,8 +19,7 @@ pub struct SyncManager {
     redis_client: RedisClient,
     auth_manager: AuthManager,
     slack_client: SlackClient,
-    event_queue: EventQueue,
-    content_storage: Arc<dyn ObjectStorage>,
+    sdk_client: SdkClient,
 }
 
 pub struct SyncState {
@@ -100,9 +97,11 @@ impl SyncState {
 }
 
 impl SyncManager {
-    pub async fn new(pool: PgPool, redis_client: RedisClient) -> Result<Self> {
-        let event_queue = EventQueue::new(pool.clone());
-        let content_storage = shared::StorageFactory::from_env(pool.clone()).await?;
+    pub async fn new(
+        pool: PgPool,
+        redis_client: RedisClient,
+        sdk_client: SdkClient,
+    ) -> Result<Self> {
         let source_repo = SourceRepository::new(&pool);
         let sync_run_repo = SyncRunRepository::new(&pool);
 
@@ -113,8 +112,7 @@ impl SyncManager {
             redis_client,
             auth_manager: AuthManager::new(),
             slack_client: SlackClient::new(),
-            event_queue,
-            content_storage,
+            sdk_client,
         })
     }
 
@@ -217,10 +215,10 @@ impl SyncManager {
                             "Synced channel {}: {} message groups, {} files",
                             channel.name, message_groups, files
                         );
-                        // Update scanned count
-                        self.sync_run_repo
-                            .increment_scanned(&sync_run.id, 1)
-                            .await?;
+                        // Update scanned count via SDK
+                        if let Err(e) = self.sdk_client.increment_scanned(&sync_run.id).await {
+                            error!("Failed to increment scanned count: {}", e);
+                        }
                     }
                     Err(e) => {
                         warn!("Failed to sync channel {}: {}", channel.name, e);
@@ -376,16 +374,16 @@ impl SyncManager {
 
         // Publish message groups
         for group in message_groups {
-            // Store content in LOB and get OID
+            // Store content via SDK
             let content_id = match self
-                .content_storage
-                .store_text(&group.to_document_content(), None)
+                .sdk_client
+                .store_content(sync_run_id, &group.to_document_content())
                 .await
             {
-                Ok(oid) => oid,
+                Ok(id) => id,
                 Err(e) => {
                     error!(
-                        "Failed to store content in LOB storage for Slack message group: {}",
+                        "Failed to store content via SDK for Slack message group: {}",
                         e
                     );
                     continue;
@@ -397,10 +395,16 @@ impl SyncManager {
                 source_id.to_string(),
                 content_id,
             );
-            match self.event_queue.enqueue(source_id, &event).await {
-                Ok(_) => published_groups += 1,
-                Err(e) => error!("Failed to queue message group event: {}", e),
+            // Emit event via SDK
+            if let Err(e) = self
+                .sdk_client
+                .emit_event(sync_run_id, source_id, event)
+                .await
+            {
+                error!("Failed to emit message group event: {}", e);
+                continue;
             }
+            published_groups += 1;
         }
 
         // Extract and process files
@@ -408,17 +412,18 @@ impl SyncManager {
         for file in files {
             match self.slack_client.download_file(token, file).await {
                 Ok(content) if !content.is_empty() => {
-                    // Store content in LOB and get OID
-                    let content_id = match self.content_storage.store_text(&content, None).await {
-                        Ok(oid) => oid,
-                        Err(e) => {
-                            error!(
-                                "Failed to store content in LOB storage for Slack file {}: {}",
-                                file.name, e
-                            );
-                            continue;
-                        }
-                    };
+                    // Store content via SDK
+                    let content_id =
+                        match self.sdk_client.store_content(sync_run_id, &content).await {
+                            Ok(id) => id,
+                            Err(e) => {
+                                error!(
+                                    "Failed to store content via SDK for Slack file {}: {}",
+                                    file.name, e
+                                );
+                                continue;
+                            }
+                        };
 
                     let event = file.to_connector_event(
                         sync_run_id.to_string(),
@@ -427,10 +432,16 @@ impl SyncManager {
                         channel.name.clone(),
                         content_id,
                     );
-                    match self.event_queue.enqueue(source_id, &event).await {
-                        Ok(_) => published_files += 1,
-                        Err(e) => error!("Failed to queue file event: {}", e),
+                    // Emit event via SDK
+                    if let Err(e) = self
+                        .sdk_client
+                        .emit_event(sync_run_id, source_id, event)
+                        .await
+                    {
+                        error!("Failed to emit file event: {}", e);
+                        continue;
                     }
+                    published_files += 1;
                 }
                 Ok(_) => debug!("Skipped empty file: {}", file.name),
                 Err(e) => warn!("Failed to download file {}: {}", file.name, e),

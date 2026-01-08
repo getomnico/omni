@@ -13,9 +13,11 @@ mod auth;
 mod client;
 mod content;
 mod models;
+mod sdk_client;
 mod sync;
 
 use api::{create_router, ApiState};
+use sdk_client::SdkClient;
 use sync::SyncManager;
 
 #[tokio::main]
@@ -33,7 +35,10 @@ async fn main() -> Result<()> {
 
     let db_pool = DatabasePool::from_config(&config.database).await?;
 
-    let sync_manager = Arc::new(SyncManager::new(db_pool.pool().clone(), redis_client).await?);
+    let sdk_client = SdkClient::from_env()?;
+
+    let sync_manager =
+        Arc::new(SyncManager::new(db_pool.pool().clone(), redis_client, sdk_client).await?);
 
     // Create API state
     let api_state = ApiState {

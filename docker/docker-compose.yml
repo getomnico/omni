@@ -318,6 +318,7 @@ services:
       RUST_LOG: ${RUST_LOG}
       PORT: ${SLACK_CONNECTOR_PORT}
       SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
+      CONNECTOR_MANAGER_URL: http://connector-manager:${CONNECTOR_MANAGER_PORT}
     networks:
       - omni-network
     depends_on:
@@ -327,6 +328,8 @@ services:
         condition: service_healthy
       migrator:
         condition: service_completed_successfully
+      connector-manager:
+        condition: service_started
     restart: unless-stopped
     logging: *default-logging
 
