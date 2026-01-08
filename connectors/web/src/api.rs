@@ -1,45 +1,36 @@
 use axum::{
-    extract::{Path, State},
+    extract::State,
     http::StatusCode,
-    response::Json,
+    response::{IntoResponse, Json},
     routing::{get, post},
     Router,
 };
-use serde::Serialize;
+use dashmap::DashSet;
+use serde_json::json;
 use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{error, info};
 
+use crate::models::{
+    ActionRequest, ActionResponse, CancelRequest, CancelResponse, ConnectorManifest, SyncRequest,
+    SyncResponse,
+};
 use crate::sync::SyncManager;
 
 #[derive(Clone)]
 pub struct ApiState {
     pub sync_manager: Arc<SyncManager>,
-}
-
-#[derive(Serialize)]
-pub struct HealthResponse {
-    status: String,
-    service: String,
-}
-
-#[derive(Serialize)]
-pub struct SyncResponse {
-    message: String,
-    source_id: String,
-}
-
-#[derive(Serialize)]
-pub struct ErrorResponse {
-    error: String,
+    pub active_syncs: Arc<DashSet<String>>,
 }
 
 pub fn create_router(state: ApiState) -> Router {
     Router::new()
         .route("/health", get(health))
-        .route("/sync", post(sync_all))
-        .route("/sync/:source_id", post(sync_source))
+        .route("/manifest", get(manifest))
+        .route("/sync", post(trigger_sync))
+        .route("/cancel", post(cancel_sync))
+        .route("/action", post(execute_action))
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
@@ -48,55 +39,80 @@ pub fn create_router(state: ApiState) -> Router {
         .with_state(state)
 }
 
-async fn health() -> Json<HealthResponse> {
-    Json(HealthResponse {
-        status: "healthy".to_string(),
-        service: "web-connector".to_string(),
-    })
+async fn health() -> impl IntoResponse {
+    Json(json!({ "status": "healthy", "service": "web-connector" }))
 }
 
-async fn sync_all(State(state): State<ApiState>) -> Result<Json<SyncResponse>, StatusCode> {
-    info!("Manual sync triggered for all sources");
-
-    match state.sync_manager.sync_all_sources().await {
-        Ok(_) => Ok(Json(SyncResponse {
-            message: "Sync completed successfully".to_string(),
-            source_id: "all".to_string(),
-        })),
-        Err(e) => {
-            error!("Manual sync failed: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+async fn manifest() -> impl IntoResponse {
+    let manifest = ConnectorManifest {
+        name: "web".to_string(),
+        version: "1.0.0".to_string(),
+        sync_modes: vec!["full".to_string()],
+        actions: vec![], // Web connector has no actions
+    };
+    Json(manifest)
 }
 
-async fn sync_source(
-    Path(source_id): Path<String>,
+async fn trigger_sync(
     State(state): State<ApiState>,
-) -> Result<Json<SyncResponse>, StatusCode> {
-    info!("Manual sync triggered for source: {}", source_id);
+    Json(request): Json<SyncRequest>,
+) -> Result<Json<SyncResponse>, (StatusCode, Json<SyncResponse>)> {
+    let sync_run_id = request.sync_run_id.clone();
+    let source_id = request.source.id.clone();
 
-    tokio::spawn({
-        let source_id = source_id.clone();
-        async move {
-            match state.sync_manager.sync_source_by_id(&source_id).await {
-                Ok(_) => Ok(Json(SyncResponse {
-                    message: "Sync completed successfully".to_string(),
-                    source_id,
-                })),
-                Err(e) => {
-                    error!("Manual sync failed for source {}: {}", source_id, e);
-                    Err(StatusCode::INTERNAL_SERVER_ERROR)
-                }
-            }
+    info!(
+        "Sync triggered for source {} (sync_run_id: {})",
+        source_id, sync_run_id
+    );
+
+    // Check if already syncing this source
+    if state.active_syncs.contains(&source_id) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(SyncResponse::error(
+                "Sync already in progress for this source",
+            )),
+        ));
+    }
+
+    // Mark as active
+    state.active_syncs.insert(source_id.clone());
+
+    // Spawn sync task
+    let sync_manager = state.sync_manager.clone();
+    let active_syncs = state.active_syncs.clone();
+
+    tokio::spawn(async move {
+        let result = sync_manager.sync_source(request).await;
+
+        // Remove from active syncs when done
+        active_syncs.remove(&source_id);
+
+        if let Err(e) = result {
+            error!("Sync {} failed: {}", sync_run_id, e);
         }
     });
 
-    Ok(Json(SyncResponse {
-        message: format!(
-            "Sync triggered successfully for source: {}. Running in background.",
-            source_id
-        ),
-        source_id: source_id,
-    }))
+    Ok(Json(SyncResponse::started()))
+}
+
+async fn cancel_sync(
+    State(state): State<ApiState>,
+    Json(request): Json<CancelRequest>,
+) -> impl IntoResponse {
+    info!("Cancel requested for sync {}", request.sync_run_id);
+
+    // Signal cancellation
+    let cancelled = state.sync_manager.cancel_sync(&request.sync_run_id);
+
+    Json(CancelResponse {
+        status: if cancelled { "cancelled" } else { "not_found" }.to_string(),
+    })
+}
+
+async fn execute_action(Json(request): Json<ActionRequest>) -> impl IntoResponse {
+    info!("Action requested: {}", request.action);
+
+    // Web connector doesn't support any actions
+    Json(ActionResponse::not_supported(&request.action))
 }

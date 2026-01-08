@@ -15,6 +15,7 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
+dashmap = { workspace = true }
 dotenvy = { workspace = true }
 redis = { workspace = true, features = ["tokio-comp", "connection-manager"] }
 reqwest = { workspace = true, features = ["json", "rustls-tls"], default-features = false }

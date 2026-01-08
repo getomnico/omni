@@ -206,4 +206,47 @@ impl SyncRunRepository {
 
         Ok(sync_runs)
     }
+
+    pub async fn mark_cancelled(&self, id: &str) -> Result<(), DatabaseError> {
+        sqlx::query(
+            "UPDATE sync_runs
+             SET status = $1, completed_at = CURRENT_TIMESTAMP,
+                 error_message = 'Cancelled by user', updated_at = CURRENT_TIMESTAMP
+             WHERE id = $2",
+        )
+        .bind(SyncStatus::Cancelled)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn update_activity(&self, id: &str) -> Result<(), DatabaseError> {
+        sqlx::query(
+            "UPDATE sync_runs
+             SET last_activity_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn increment_scanned_with_activity(&self, id: &str) -> Result<(), DatabaseError> {
+        sqlx::query(
+            "UPDATE sync_runs
+             SET documents_scanned = documents_scanned + 1,
+                 last_activity_at = CURRENT_TIMESTAMP,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
 }

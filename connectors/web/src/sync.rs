@@ -1,22 +1,23 @@
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
-use redis::{AsyncCommands, Client as RedisClient};
+use chrono::Utc;
+use dashmap::DashMap;
+use redis::Client as RedisClient;
 use shared::db::repositories::{SourceRepository, SyncRunRepository};
-use shared::models::{Source, SourceType, SyncRun, SyncType};
 use shared::queue::EventQueue;
-use shared::{ObjectStorage, Repository};
+use shared::ObjectStorage;
 use spider::client::StatusCode;
 use sqlx::PgPool;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use time;
+use time::OffsetDateTime;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info};
 
 use crate::config::WebSourceConfig;
-use crate::models::{PageSyncState, WebPage};
+use crate::models::{PageSyncState, SyncRequest, WebPage};
 
 /// Result of a crawl operation
 pub struct CrawlResult {
@@ -26,7 +27,6 @@ pub struct CrawlResult {
 /// Trait for abstracting web page crawling
 #[async_trait]
 pub trait PageSource: Send + Sync {
-    /// Crawl pages and send them through the provided channel
     async fn crawl(
         &self,
         config: &WebSourceConfig,
@@ -111,6 +111,7 @@ impl SyncState {
         source_id: &str,
         url: &str,
     ) -> Result<Option<PageSyncState>> {
+        use redis::AsyncCommands;
         let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
         let key = self.get_url_sync_key(source_id, url);
 
@@ -131,25 +132,28 @@ impl SyncState {
         url: &str,
         state: &PageSyncState,
     ) -> Result<()> {
+        use redis::AsyncCommands;
         let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
         let key = self.get_url_sync_key(source_id, url);
         let json_str = serde_json::to_string(state)?;
 
-        let _: () = conn.set_ex(&key, json_str, 90 * 24 * 60 * 60).await?; // 90 days expiry
+        let _: () = conn.set_ex(&key, json_str, 90 * 24 * 60 * 60).await?;
         Ok(())
     }
 
     pub async fn add_url_to_set(&self, source_id: &str, url: &str) -> Result<()> {
+        use redis::AsyncCommands;
         let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
         let key = self.get_urls_set_key(source_id);
         let url_hash = format!("{:x}", md5::compute(url));
 
         let _: () = conn.sadd(&key, url_hash).await?;
-        let _: () = conn.expire(&key, 90 * 24 * 60 * 60).await?; // 90 days expiry
+        let _: () = conn.expire(&key, 90 * 24 * 60 * 60).await?;
         Ok(())
     }
 
     pub async fn get_all_synced_urls(&self, source_id: &str) -> Result<HashSet<String>> {
+        use redis::AsyncCommands;
         let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
         let key = self.get_urls_set_key(source_id);
 
@@ -158,6 +162,7 @@ impl SyncState {
     }
 
     pub async fn remove_url_from_set(&self, source_id: &str, url_hash: &str) -> Result<()> {
+        use redis::AsyncCommands;
         let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
         let key = self.get_urls_set_key(source_id);
 
@@ -166,13 +171,19 @@ impl SyncState {
     }
 }
 
+/// Tracks active syncs and their cancellation status
+struct ActiveSync {
+    cancelled: AtomicBool,
+}
+
 pub struct SyncManager {
+    sync_run_repo: SyncRunRepository,
+    source_repo: SourceRepository,
     redis_client: RedisClient,
     event_queue: EventQueue,
     content_storage: Arc<dyn ObjectStorage>,
-    sync_run_repo: SyncRunRepository,
-    source_repo: SourceRepository,
     page_source: Arc<dyn PageSource>,
+    active_syncs: DashMap<String, Arc<ActiveSync>>,
 }
 
 impl SyncManager {
@@ -191,100 +202,39 @@ impl SyncManager {
         let source_repo = SourceRepository::new(&pool);
 
         Ok(Self {
+            sync_run_repo,
+            source_repo,
             redis_client,
             event_queue,
             content_storage,
-            sync_run_repo,
-            source_repo,
             page_source,
+            active_syncs: DashMap::new(),
         })
     }
 
-    /// Create a SyncManager for testing with explicit dependencies
-    pub fn new_for_testing(
-        redis_client: RedisClient,
-        event_queue: EventQueue,
-        content_storage: Arc<dyn ObjectStorage>,
-        sync_run_repo: SyncRunRepository,
-        source_repo: SourceRepository,
-        page_source: Arc<dyn PageSource>,
-    ) -> Self {
-        Self {
-            redis_client,
-            event_queue,
-            content_storage,
-            sync_run_repo,
-            source_repo,
-            page_source,
-        }
-    }
+    /// Execute a sync based on the request from connector-manager
+    pub async fn sync_source(&self, request: SyncRequest) -> Result<()> {
+        let sync_run_id = &request.sync_run_id;
+        let source_id = &request.source.id;
 
-    pub async fn sync_all_sources(&self) -> Result<()> {
-        let sources = self.get_active_sources().await?;
-
-        info!("Found {} active Web sources", sources.len());
-
-        for source in sources {
-            if let Err(e) = self.sync_source(&source).await {
-                error!("Failed to sync source {}: {}", source.id, e);
-                let _ = self
-                    .update_source_status(&source.id, "failed", None, Some(e.to_string()))
-                    .await;
-            }
-        }
-
-        Ok(())
-    }
-
-    pub async fn sync_source_by_id(&self, source_id: &str) -> Result<()> {
-        let source = self.get_source_by_id(source_id).await?;
-        self.sync_source(&source).await
-    }
-
-    async fn get_active_sources(&self) -> Result<Vec<Source>> {
-        let sources = self
-            .source_repo
-            .find_active_by_types(vec![SourceType::Web])
-            .await?;
-
-        Ok(sources)
-    }
-
-    async fn get_source_by_id(&self, source_id: &str) -> Result<Source> {
-        let source = self
-            .source_repo
-            .find_by_id(source_id.to_string())
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Source not found: {}", source_id))?;
-
-        // Verify it's a web source
-        if source.source_type != SourceType::Web {
-            return Err(anyhow::anyhow!(
-                "Source {} is not a web source (type: {:?})",
-                source_id,
-                source.source_type
-            ));
-        }
-
-        Ok(source)
-    }
-
-    async fn sync_source(&self, source: &Source) -> Result<()> {
         info!(
-            "Starting sync for web source: {} ({})",
-            source.name, source.id
+            "Starting sync for source: {} (sync_run_id: {})",
+            source_id, sync_run_id
         );
 
-        let config = WebSourceConfig::from_json(&source.config)
+        // Register this sync for cancellation support
+        let active_sync = Arc::new(ActiveSync {
+            cancelled: AtomicBool::new(false),
+        });
+        self.active_syncs
+            .insert(sync_run_id.clone(), active_sync.clone());
+
+        // Parse config from request
+        let config = WebSourceConfig::from_json(&request.source.config)
             .context("Failed to parse web source config")?;
 
-        let sync_run = self
-            .sync_run_repo
-            .create(&source.id, SyncType::Full)
-            .await?;
-
         let sync_state = SyncState::new(self.redis_client.clone());
-        let previous_urls = sync_state.get_all_synced_urls(&source.id).await?;
+        let previous_urls = sync_state.get_all_synced_urls(source_id).await?;
         let current_urls: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
         let pages_processed: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
@@ -295,24 +245,31 @@ impl SyncManager {
 
         // Spawn page processor
         let processor_handle = {
-            let source_id = source.id.clone();
+            let source_id = source_id.clone();
+            let sync_run_id = sync_run_id.clone();
             let current_urls = current_urls.clone();
             let pages_processed = pages_processed.clone();
             let pages_updated = pages_updated.clone();
             let sync_state = sync_state.clone();
-            let sync_run = sync_run.clone();
             let event_queue = self.event_queue.clone();
             let content_storage = self.content_storage.clone();
             let sync_run_repo = self.sync_run_repo.clone();
+            let active_sync = active_sync.clone();
 
             tokio::spawn(async move {
                 while let Some(web_page) = rx.recv().await {
+                    // Check for cancellation
+                    if active_sync.cancelled.load(Ordering::SeqCst) {
+                        info!("Sync {} cancelled, stopping processor", sync_run_id);
+                        break;
+                    }
+
                     let page_url = web_page.url.clone();
                     debug!("Processing page: {}", page_url);
 
                     if let Err(e) = Self::process_web_page(
                         &web_page,
-                        &sync_run,
+                        &sync_run_id,
                         &source_id,
                         &sync_state,
                         &current_urls,
@@ -332,17 +289,33 @@ impl SyncManager {
 
         // Start crawling
         info!("Setting up crawl for url {}", config.root_url);
-        self.page_source.crawl(&config, tx).await?;
+        let crawl_result = self.page_source.crawl(&config, tx).await;
 
         // Wait for processor to finish
         processor_handle
             .await
             .with_context(|| "Failed while waiting for page processor to complete")?;
 
+        // Check if cancelled
+        if active_sync.cancelled.load(Ordering::SeqCst) {
+            self.mark_sync_cancelled(sync_run_id).await?;
+            self.active_syncs.remove(sync_run_id);
+            return Ok(());
+        }
+
+        // Handle crawl errors
+        if let Err(e) = crawl_result {
+            self.mark_sync_failed(sync_run_id, source_id, &e.to_string())
+                .await?;
+            self.active_syncs.remove(sync_run_id);
+            return Err(e);
+        }
+
         debug!("Collecting final processed and updated document counts");
         let final_processed = *pages_processed.lock().await;
         let final_updated = *pages_updated.lock().await;
 
+        // Handle deleted pages
         debug!("Collecting all URLs");
         let current_url_hashes = current_urls.lock().await;
         let deleted_urls: Vec<String> = previous_urls
@@ -353,68 +326,59 @@ impl SyncManager {
         info!(
             "Detected {} deleted pages for source {}",
             deleted_urls.len(),
-            source.id
+            source_id
         );
 
         for url_hash in &deleted_urls {
             if let Err(e) = self
-                .publish_deletion_event(&sync_run.id, &source.id, url_hash)
+                .publish_deletion_event(sync_run_id, source_id, url_hash)
                 .await
             {
                 error!("Failed to publish deletion event: {}", e);
             }
 
-            if let Err(e) = sync_state.remove_url_from_set(&source.id, url_hash).await {
+            if let Err(e) = sync_state.remove_url_from_set(source_id, url_hash).await {
                 error!("Failed to remove URL from set: {}", e);
             }
         }
 
         info!(
             "Completed sync for source {}: {} pages scanned, {} updated, {} deleted",
-            source.id,
+            source_id,
             final_processed,
             final_updated,
             deleted_urls.len()
         );
 
-        self.sync_run_repo
-            .mark_completed(&sync_run.id, final_processed as i32, final_updated as i32)
-            .await?;
-
-        self.update_source_status(&source.id, "completed", Some(Utc::now()), None)
-            .await?;
-
-        Ok(())
-    }
-
-    fn get_storage_prefix(sync_run: &SyncRun) -> String {
-        format!(
-            "{}/{}",
-            sync_run
-                .created_at
-                .format(&time::format_description::well_known::Iso8601::DATE)
-                .unwrap_or_else(|_| "unknown-date".to_string()),
-            sync_run.id
+        self.mark_sync_completed(
+            sync_run_id,
+            source_id,
+            final_processed as i32,
+            final_updated as i32,
         )
+        .await?;
+
+        self.active_syncs.remove(sync_run_id);
+        Ok(())
     }
 
-    async fn update_source_status(
-        &self,
-        source_id: &str,
-        status: &str,
-        last_sync_at: Option<DateTime<Utc>>,
-        sync_error: Option<String>,
-    ) -> Result<()> {
-        self.source_repo
-            .update_sync_status(source_id, status, last_sync_at, sync_error)
-            .await?;
+    /// Cancel a running sync
+    pub fn cancel_sync(&self, sync_run_id: &str) -> bool {
+        if let Some(active_sync) = self.active_syncs.get(sync_run_id) {
+            active_sync.cancelled.store(true, Ordering::SeqCst);
+            true
+        } else {
+            false
+        }
+    }
 
-        Ok(())
+    fn get_storage_prefix(sync_run_id: &str) -> String {
+        format!("{}/{}", OffsetDateTime::now_utc().date(), sync_run_id)
     }
 
     async fn process_web_page(
         web_page: &WebPage,
-        sync_run: &SyncRun,
+        sync_run_id: &str,
         source_id: &str,
         sync_state: &SyncState,
         current_urls: &Arc<Mutex<HashSet<String>>>,
@@ -449,14 +413,14 @@ impl SyncManager {
         };
 
         if should_index {
-            let storage_prefix = Self::get_storage_prefix(sync_run);
+            let storage_prefix = Self::get_storage_prefix(sync_run_id);
             let content_id = content_storage
                 .store_text(&web_page.content, Some(&storage_prefix))
                 .await
                 .context("Failed to store page content")?;
 
             let event = web_page.to_connector_event(
-                sync_run.id.to_string(),
+                sync_run_id.to_string(),
                 source_id.to_string(),
                 content_id,
             );
@@ -480,8 +444,59 @@ impl SyncManager {
         let mut count = pages_processed.lock().await;
         *count += 1;
 
-        // Update scanned count
-        sync_run_repo.increment_scanned(&sync_run.id, 1).await?;
+        // Update activity and scanned count
+        sync_run_repo
+            .increment_scanned_with_activity(sync_run_id)
+            .await
+            .context("Failed to update sync activity")?;
+
+        Ok(())
+    }
+
+    async fn mark_sync_completed(
+        &self,
+        sync_run_id: &str,
+        source_id: &str,
+        documents_scanned: i32,
+        documents_updated: i32,
+    ) -> Result<()> {
+        self.sync_run_repo
+            .mark_completed(sync_run_id, documents_scanned, documents_updated)
+            .await
+            .context("Failed to update sync_run status")?;
+
+        self.source_repo
+            .update_sync_status(source_id, "completed", Some(Utc::now()), None)
+            .await
+            .context("Failed to update source status")?;
+
+        Ok(())
+    }
+
+    async fn mark_sync_failed(
+        &self,
+        sync_run_id: &str,
+        source_id: &str,
+        error: &str,
+    ) -> Result<()> {
+        self.sync_run_repo
+            .mark_failed(sync_run_id, error)
+            .await
+            .context("Failed to update sync_run status")?;
+
+        self.source_repo
+            .update_sync_status(source_id, "failed", None, Some(error.to_string()))
+            .await
+            .context("Failed to update source status")?;
+
+        Ok(())
+    }
+
+    async fn mark_sync_cancelled(&self, sync_run_id: &str) -> Result<()> {
+        self.sync_run_repo
+            .mark_cancelled(sync_run_id)
+            .await
+            .context("Failed to update sync_run status")?;
 
         Ok(())
     }

@@ -389,6 +389,7 @@ pub enum SyncStatus {
     Running,
     Completed,
     Failed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]

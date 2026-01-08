@@ -1,12 +1,12 @@
 use anyhow::Result;
+use dashmap::DashSet;
 use dotenvy::dotenv;
 use shared::{
     telemetry::{self, TelemetryConfig},
     DatabasePool, WebConnectorConfig,
 };
 use std::sync::Arc;
-use tokio::time::{interval, Duration};
-use tracing::{error, info};
+use tracing::info;
 
 mod api;
 mod config;
@@ -35,6 +35,7 @@ async fn main() -> Result<()> {
 
     let api_state = ApiState {
         sync_manager: Arc::clone(&sync_manager),
+        active_syncs: Arc::new(DashSet::new()),
     };
 
     let app = create_router(api_state);
@@ -44,35 +45,7 @@ async fn main() -> Result<()> {
 
     info!("HTTP server listening on {}", addr);
 
-    let sync_interval_secs = std::env::var("WEB_SYNC_INTERVAL_SECONDS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(86400); // Default to daily
-
-    let http_server = axum::serve(listener, app);
-    let sync_loop = async move {
-        let mut sync_interval = interval(Duration::from_secs(sync_interval_secs));
-        loop {
-            sync_interval.tick().await;
-            info!("Starting scheduled sync cycle");
-
-            let sync_manager_clone = Arc::clone(&sync_manager);
-            tokio::spawn(async move {
-                if let Err(e) = sync_manager_clone.sync_all_sources().await {
-                    error!("Sync cycle failed: {}", e);
-                }
-            });
-        }
-    };
-
-    tokio::select! {
-        result = http_server => {
-            error!("HTTP server stopped: {:?}", result);
-        }
-        _ = sync_loop => {
-            error!("Sync loop stopped unexpectedly");
-        }
-    }
+    axum::serve(listener, app).await?;
 
     Ok(())
 }

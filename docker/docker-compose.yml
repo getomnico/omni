@@ -179,6 +179,38 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
+  # Connector Manager - Orchestrates all connectors
+  connector-manager:
+    image: ghcr.io/getomnico/omni/omni-connector-manager:latest
+    container_name: omni-connector-manager
+    expose:
+      - "${CONNECTOR_MANAGER_PORT}"
+    environment:
+      <<: [*db-config, *db-pool-config, *redis-config, *otel-config]
+      RUST_LOG: ${RUST_LOG}
+      PORT: ${CONNECTOR_MANAGER_PORT}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      ENCRYPTION_SALT: ${ENCRYPTION_SALT}
+      CONNECTOR_GOOGLE_URL: http://google-connector:${GOOGLE_CONNECTOR_PORT}
+      CONNECTOR_SLACK_URL: http://slack-connector:${SLACK_CONNECTOR_PORT}
+      CONNECTOR_ATLASSIAN_URL: http://atlassian-connector:${ATLASSIAN_CONNECTOR_PORT}
+      CONNECTOR_WEB_URL: http://web-connector:${WEB_CONNECTOR_PORT}
+      MAX_CONCURRENT_SYNCS: ${MAX_CONCURRENT_SYNCS:-10}
+      MAX_CONCURRENT_SYNCS_PER_TYPE: ${MAX_CONCURRENT_SYNCS_PER_TYPE:-3}
+      SCHEDULER_POLL_INTERVAL_SECONDS: ${SCHEDULER_POLL_INTERVAL_SECONDS:-60}
+      STALE_SYNC_TIMEOUT_MINUTES: ${STALE_SYNC_TIMEOUT_MINUTES:-10}
+    networks:
+      - omni-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    logging: *default-logging
+
   # vLLM Service for LLM inference (optional - only when using vLLM provider)
   # GPU support: use docker-compose.gpu.yml override for GPU acceleration
   vllm:
@@ -354,6 +386,7 @@ services:
       SEARCHER_URL: ${SEARCHER_URL}
       INDEXER_URL: ${INDEXER_URL}
       AI_SERVICE_URL: ${AI_SERVICE_URL}
+      CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
       GOOGLE_CONNECTOR_URL: ${GOOGLE_CONNECTOR_URL}
       SLACK_CONNECTOR_URL: ${SLACK_CONNECTOR_URL}
       ATLASSIAN_CONNECTOR_URL: ${ATLASSIAN_CONNECTOR_URL}

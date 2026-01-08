@@ -86,6 +86,17 @@ services:
       - ../services/ai:/app
     command: python -m uvicorn main:app --host 0.0.0.0 --port ${AI_SERVICE_PORT} --reload
 
+  connector-manager:
+    image: omni-connector-manager:dev
+    build:
+      context: ..
+      dockerfile: services/connector-manager/Dockerfile
+    ports:
+      - "${CONNECTOR_MANAGER_PORT}:${CONNECTOR_MANAGER_PORT}"
+    environment:
+      <<: *dev-database-url
+      RUST_BACKTRACE: full
+
   google-connector:
     image: omni-google-connector:dev
     build:
