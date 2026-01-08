@@ -3690,6 +3690,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "omni-connector-manager"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "axum",
+ "axum-test",
+ "chrono",
+ "dashmap 6.1.0",
+ "dotenvy",
+ "futures",
+ "redis",
+ "reqwest 0.12.23",
+ "serde",
+ "serde_json",
+ "shared",
+ "sqlx",
+ "testcontainers",
+ "testcontainers-modules",
+ "thiserror 1.0.69",
+ "time",
+ "tokio",
+ "tokio-stream",
+ "tower 0.5.2",
+ "tower-http 0.6.6",
+ "tracing",
+ "tracing-subscriber",
+ "ulid",
+]
+
+[[package]]
 name = "omni-filesystem-connector"
 version = "0.1.0"
 dependencies = [

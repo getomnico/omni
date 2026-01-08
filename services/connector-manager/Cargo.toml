@@ -1,0 +1,44 @@
+[package]
+name = "omni-connector-manager"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "omni_connector_manager"
+path = "src/lib.rs"
+
+[[bin]]
+name = "omni-connector-manager"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+tokio-stream = "0.1"
+sqlx = { workspace = true, features = ["migrate"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+redis = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+dotenvy = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+chrono = { workspace = true }
+ulid = { workspace = true }
+reqwest = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+async-stream = "0.3"
+time = { workspace = true }
+shared = { path = "../../shared" }
+dashmap = { workspace = true }
+
+[dev-dependencies]
+testcontainers = { workspace = true }
+testcontainers-modules = { workspace = true }
+axum-test = { workspace = true }
