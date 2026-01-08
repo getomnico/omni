@@ -2,6 +2,7 @@ import { error, redirect } from '@sveltejs/kit'
 import type { PageServerLoad, Actions } from './$types'
 import { requireAdmin } from '$lib/server/authHelpers'
 import { getSourceById, updateSourceById } from '$lib/server/db/sources'
+import { getConfig } from '$lib/server/config'
 import { SourceType, type ConfluenceSourceConfig } from '$lib/types'
 
 export const load: PageServerLoad = async ({ params, locals }) => {
@@ -61,10 +62,9 @@ export const actions: Actions = {
             })
 
             if (isActive) {
-                const atlassianConnectorUrl =
-                    process.env.ATLASSIAN_CONNECTOR_URL || 'http://localhost:3005'
+                const connectorManagerUrl = getConfig().services.connectorManagerUrl
                 try {
-                    await fetch(`${atlassianConnectorUrl}/sync/${source.id}`, {
+                    await fetch(`${connectorManagerUrl}/sync/${source.id}`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                     })

@@ -2,6 +2,7 @@ import { error, redirect } from '@sveltejs/kit'
 import type { PageServerLoad, Actions } from './$types'
 import { requireAdmin } from '$lib/server/authHelpers'
 import { getSourceById, updateSourceById } from '$lib/server/db/sources'
+import { getConfig } from '$lib/server/config'
 import { SourceType, type WebSourceConfig } from '$lib/types'
 
 export const load: PageServerLoad = async ({ params, locals }) => {
@@ -70,9 +71,9 @@ export const actions: Actions = {
             })
 
             if (isActive) {
-                const webConnectorUrl = process.env.WEB_CONNECTOR_URL || 'http://localhost:3006'
+                const connectorManagerUrl = getConfig().services.connectorManagerUrl
                 try {
-                    await fetch(`${webConnectorUrl}/sync/${source.id}`, {
+                    await fetch(`${connectorManagerUrl}/sync/${source.id}`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                     })
