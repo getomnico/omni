@@ -1,16 +1,19 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    response::Json,
+    response::{IntoResponse, Json},
     routing::{get, post},
     Router,
 };
-use serde::Serialize;
+use serde_json::json;
 use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{error, info};
 
+use crate::models::{
+    ActionRequest, ActionResponse, CancelRequest, CancelResponse, ConnectorManifest, SyncResponse,
+};
 use crate::sync::SyncManager;
 
 #[derive(Clone)]
@@ -18,28 +21,15 @@ pub struct ApiState {
     pub sync_manager: Arc<SyncManager>,
 }
 
-#[derive(Serialize)]
-pub struct HealthResponse {
-    status: String,
-    service: String,
-}
-
-#[derive(Serialize)]
-pub struct SyncResponse {
-    message: String,
-    source_id: String,
-}
-
-#[derive(Serialize)]
-pub struct ErrorResponse {
-    error: String,
-}
-
 pub fn create_router(state: ApiState) -> Router {
     Router::new()
+        // Protocol endpoints
         .route("/health", get(health))
+        .route("/manifest", get(manifest))
         .route("/sync", post(sync_all))
         .route("/sync/:source_id", post(sync_source))
+        .route("/cancel", post(cancel_sync))
+        .route("/action", post(execute_action))
         .layer(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
@@ -48,26 +38,35 @@ pub fn create_router(state: ApiState) -> Router {
         .with_state(state)
 }
 
-async fn health() -> Json<HealthResponse> {
-    Json(HealthResponse {
-        status: "healthy".to_string(),
-        service: "slack-connector".to_string(),
-    })
+async fn health() -> impl IntoResponse {
+    Json(json!({
+        "status": "healthy",
+        "service": "slack-connector"
+    }))
+}
+
+async fn manifest() -> impl IntoResponse {
+    let manifest = ConnectorManifest {
+        name: "slack".to_string(),
+        version: "1.0.0".to_string(),
+        sync_modes: vec!["full".to_string(), "incremental".to_string()],
+        actions: vec![], // Slack connector has no actions yet
+    };
+    Json(manifest)
 }
 
 async fn sync_all(State(state): State<ApiState>) -> Result<Json<SyncResponse>, StatusCode> {
     info!("Manual sync triggered for all sources");
 
-    match state.sync_manager.sync_all_sources().await {
-        Ok(_) => Ok(Json(SyncResponse {
-            message: "Sync completed successfully".to_string(),
-            source_id: "all".to_string(),
-        })),
-        Err(e) => {
+    let sync_manager = state.sync_manager.clone();
+
+    tokio::spawn(async move {
+        if let Err(e) = sync_manager.sync_all_sources().await {
             error!("Manual sync failed: {}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
-    }
+    });
+
+    Ok(Json(SyncResponse::started()))
 }
 
 async fn sync_source(
@@ -76,18 +75,33 @@ async fn sync_source(
 ) -> Result<Json<SyncResponse>, StatusCode> {
     info!("Manual sync triggered for source: {}", source_id);
 
-    match state
-        .sync_manager
-        .sync_source_by_id(source_id.clone())
-        .await
-    {
-        Ok(_) => Ok(Json(SyncResponse {
-            message: "Sync completed successfully".to_string(),
-            source_id,
-        })),
-        Err(e) => {
-            error!("Manual sync failed for source {}: {}", source_id, e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+    let sync_manager = state.sync_manager.clone();
+    let source_id_clone = source_id.clone();
+
+    tokio::spawn(async move {
+        if let Err(e) = sync_manager
+            .sync_source_by_id(source_id_clone.clone())
+            .await
+        {
+            error!("Manual sync failed for source {}: {}", source_id_clone, e);
         }
-    }
+    });
+
+    Ok(Json(SyncResponse::started()))
+}
+
+async fn cancel_sync(Json(request): Json<CancelRequest>) -> impl IntoResponse {
+    info!("Cancel requested for sync {}", request.sync_run_id);
+
+    // Slack connector doesn't support cancellation yet
+    Json(CancelResponse {
+        status: "not_supported".to_string(),
+    })
+}
+
+async fn execute_action(Json(request): Json<ActionRequest>) -> impl IntoResponse {
+    info!("Action requested: {}", request.action);
+
+    // Slack connector doesn't support any actions yet
+    Json(ActionResponse::not_supported(&request.action))
 }

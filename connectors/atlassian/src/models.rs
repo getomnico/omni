@@ -1,9 +1,92 @@
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value as JsonValue};
 use shared::models::{ConnectorEvent, DocumentAttributes, DocumentMetadata, DocumentPermissions};
 use std::collections::HashMap;
 use time::OffsetDateTime;
+
+// ============================================================================
+// Connector Protocol Models
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorManifest {
+    pub name: String,
+    pub version: String,
+    pub sync_modes: Vec<String>,
+    #[serde(default)]
+    pub actions: Vec<ActionDefinition>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionDefinition {
+    pub name: String,
+    pub description: String,
+    pub parameters: JsonValue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncResponse {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl SyncResponse {
+    pub fn started() -> Self {
+        Self {
+            status: "started".to_string(),
+            message: None,
+        }
+    }
+
+    pub fn error(msg: impl Into<String>) -> Self {
+        Self {
+            status: "error".to_string(),
+            message: Some(msg.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CancelRequest {
+    pub sync_run_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CancelResponse {
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionRequest {
+    pub action: String,
+    pub params: JsonValue,
+    pub credentials: JsonValue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionResponse {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<JsonValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl ActionResponse {
+    pub fn not_supported(action: &str) -> Self {
+        Self {
+            status: "error".to_string(),
+            result: None,
+            error: Some(format!("Action not supported: {}", action)),
+        }
+    }
+}
+
+// ============================================================================
+// Atlassian Models
+// ============================================================================
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Hash)]
 #[serde(rename_all = "snake_case")]
