@@ -1,8 +1,7 @@
 use crate::config::ConnectorManagerConfig;
 use crate::connector_client::{ClientError, ConnectorClient};
-use crate::models::{SourceInfo, SyncRequest, TriggerType};
+use crate::models::{SyncRequest, TriggerType};
 use dashmap::DashSet;
-use shared::db::repositories::ServiceCredentialsRepo;
 use shared::{DatabasePool, Repository, SourceRepository};
 use sqlx::PgPool;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -67,18 +66,6 @@ impl SyncManager {
             .ok_or_else(|| SyncError::ConnectorNotConfigured(source_type.clone()))?
             .clone();
 
-        // Get credentials
-        let creds_repo = ServiceCredentialsRepo::new(self.pool.clone())
-            .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
-        let credentials = creds_repo
-            .get_by_source_id(source_id)
-            .await
-            .map_err(|e| SyncError::DatabaseError(e.to_string()))?
-            .ok_or_else(|| SyncError::CredentialsNotFound(source_id.to_string()))?;
-
-        // Get connector state from source
-        let connector_state = self.get_connector_state(source_id).await?;
-
         // Create sync run
         let sync_run_id = shared::utils::generate_ulid();
         let sync_type = sync_mode.as_deref().unwrap_or("incremental");
@@ -90,16 +77,11 @@ impl SyncManager {
         self.running_syncs.insert(source_id.to_string());
         self.active_sync_count.fetch_add(1, Ordering::SeqCst);
 
-        // Build sync request
+        // Build sync request - connectors fetch their own config/credentials from DB
         let sync_request = SyncRequest {
             sync_run_id: sync_run_id.clone(),
-            source: SourceInfo {
-                id: source_id.to_string(),
-                config: source.config,
-            },
-            credentials: credentials.credentials,
+            source_id: source_id.to_string(),
             sync_mode: sync_type.to_string(),
-            state: connector_state,
         };
 
         // Trigger sync (non-blocking call to connector)
@@ -320,20 +302,6 @@ impl SyncManager {
         .map_err(|e| SyncError::DatabaseError(e.to_string()))?
         .ok_or_else(|| SyncError::SyncRunNotFound(sync_run_id.to_string()))
     }
-
-    async fn get_connector_state(
-        &self,
-        source_id: &str,
-    ) -> Result<Option<serde_json::Value>, SyncError> {
-        let result: Option<(Option<serde_json::Value>,)> =
-            sqlx::query_as("SELECT connector_state FROM sources WHERE id = $1")
-                .bind(source_id)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
-
-        Ok(result.and_then(|(state,)| state))
-    }
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -359,9 +327,6 @@ pub enum SyncError {
 
     #[error("Sync is not running: {0}")]
     SyncNotRunning(String),
-
-    #[error("Credentials not found for source: {0}")]
-    CredentialsNotFound(String),
 
     #[error("Connector not configured for type: {0}")]
     ConnectorNotConfigured(String),

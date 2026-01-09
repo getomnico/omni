@@ -4,7 +4,7 @@ use dotenvy::dotenv;
 use omni_web_connector::api::{create_router, ApiState};
 use omni_web_connector::sync::SyncManager;
 use shared::telemetry::{self, TelemetryConfig};
-use shared::SdkClient;
+use shared::{DatabasePool, SdkClient};
 use std::sync::Arc;
 use tracing::info;
 
@@ -17,13 +17,21 @@ async fn main() -> Result<()> {
 
     info!("Starting Web Connector");
 
+    // Connect to database
+    let database_url = std::env::var("DATABASE_URL")?;
+    let db_pool = DatabasePool::new(&database_url).await?;
+
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
     let redis_client = redis::Client::open(redis_url)?;
 
     let sdk_client = SdkClient::from_env()?;
 
-    let sync_manager = Arc::new(SyncManager::new(redis_client, sdk_client));
+    let sync_manager = Arc::new(SyncManager::new(
+        db_pool.pool().clone(),
+        redis_client,
+        sdk_client,
+    ));
 
     let api_state = ApiState {
         sync_manager: Arc::clone(&sync_manager),

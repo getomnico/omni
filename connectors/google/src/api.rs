@@ -17,7 +17,7 @@ use crate::admin::AdminClient;
 use crate::auth::GoogleCredentialsService;
 use crate::models::{
     ActionRequest, ActionResponse, CancelRequest, CancelResponse, ConnectorManifest, SyncRequest,
-    SyncResponse, WebhookNotification,
+    SyncResponse, SyncResponseExt, WebhookNotification,
 };
 use crate::sync::SyncManager;
 
@@ -73,7 +73,7 @@ async fn trigger_sync(
     Json(request): Json<SyncRequest>,
 ) -> Result<Json<SyncResponse>, (StatusCode, Json<SyncResponse>)> {
     let sync_run_id = request.sync_run_id.clone();
-    let source_id = request.source.id.clone();
+    let source_id = request.source_id.clone();
 
     info!(
         "Sync triggered for source {} (sync_run_id: {})",

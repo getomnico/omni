@@ -2,7 +2,9 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use redis::Client as RedisClient;
+use shared::{Repository, SourceRepository};
 use spider::client::StatusCode;
+use sqlx::PgPool;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -172,6 +174,7 @@ struct ActiveSync {
 }
 
 pub struct SyncManager {
+    db_pool: PgPool,
     redis_client: RedisClient,
     sdk_client: SdkClient,
     page_source: Arc<dyn PageSource>,
@@ -179,16 +182,23 @@ pub struct SyncManager {
 }
 
 impl SyncManager {
-    pub fn new(redis_client: RedisClient, sdk_client: SdkClient) -> Self {
-        Self::with_page_source(redis_client, sdk_client, Arc::new(SpiderPageSource))
+    pub fn new(db_pool: PgPool, redis_client: RedisClient, sdk_client: SdkClient) -> Self {
+        Self::with_page_source(
+            db_pool,
+            redis_client,
+            sdk_client,
+            Arc::new(SpiderPageSource),
+        )
     }
 
     pub fn with_page_source(
+        db_pool: PgPool,
         redis_client: RedisClient,
         sdk_client: SdkClient,
         page_source: Arc<dyn PageSource>,
     ) -> Self {
         Self {
+            db_pool,
             redis_client,
             sdk_client,
             page_source,
@@ -199,12 +209,20 @@ impl SyncManager {
     /// Execute a sync based on the request from connector-manager
     pub async fn sync_source(&self, request: SyncRequest) -> Result<()> {
         let sync_run_id = &request.sync_run_id;
-        let source_id = &request.source.id;
+        let source_id = &request.source_id;
 
         info!(
             "Starting sync for source: {} (sync_run_id: {})",
             source_id, sync_run_id
         );
+
+        // Fetch source from database
+        let source_repo = SourceRepository::new(&self.db_pool);
+        let source = source_repo
+            .find_by_id(source_id.to_string())
+            .await
+            .context("Failed to query source")?
+            .ok_or_else(|| anyhow!("Source not found: {}", source_id))?;
 
         // Register this sync for cancellation support
         let active_sync = Arc::new(ActiveSync {
@@ -213,8 +231,8 @@ impl SyncManager {
         self.active_syncs
             .insert(sync_run_id.clone(), active_sync.clone());
 
-        // Parse config from request
-        let config = WebSourceConfig::from_json(&request.source.config)
+        // Parse config from source
+        let config = WebSourceConfig::from_json(&source.config)
             .context("Failed to parse web source config")?;
 
         let sync_state = SyncState::new(self.redis_client.clone());

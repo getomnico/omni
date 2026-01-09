@@ -276,7 +276,7 @@ impl SyncManager {
     /// Sync a source from a SyncRequest (called by connector-manager)
     pub async fn sync_source_from_request(&self, request: SyncRequest) -> Result<()> {
         let sync_run_id = request.sync_run_id.clone();
-        let source_id = request.source.id.clone();
+        let source_id = request.source_id.clone();
 
         info!(
             "Starting sync for source {} (sync_run_id: {})",

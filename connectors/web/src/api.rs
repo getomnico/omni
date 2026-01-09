@@ -14,7 +14,7 @@ use tracing::{error, info};
 
 use crate::models::{
     ActionRequest, ActionResponse, CancelRequest, CancelResponse, ConnectorManifest, SyncRequest,
-    SyncResponse,
+    SyncResponse, SyncResponseExt,
 };
 use crate::sync::SyncManager;
 
@@ -58,7 +58,7 @@ async fn trigger_sync(
     Json(request): Json<SyncRequest>,
 ) -> Result<Json<SyncResponse>, (StatusCode, Json<SyncResponse>)> {
     let sync_run_id = request.sync_run_id.clone();
-    let source_id = request.source.id.clone();
+    let source_id = request.source_id.clone();
 
     info!(
         "Sync triggered for source {} (sync_run_id: {})",

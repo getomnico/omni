@@ -17,28 +17,8 @@ pub struct ActionDefinition {
     pub parameters: JsonValue,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SourceInfo {
-    pub id: String,
-    pub config: JsonValue,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncRequest {
-    pub sync_run_id: String,
-    pub source: SourceInfo,
-    pub credentials: JsonValue,
-    pub sync_mode: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub state: Option<JsonValue>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncResponse {
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
+// SyncRequest and SyncResponse are imported from shared crate
+pub use shared::models::{SyncRequest, SyncResponse};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionRequest {

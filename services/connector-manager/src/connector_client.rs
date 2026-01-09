@@ -56,7 +56,7 @@ impl ConnectorClient {
         let url = format!("{}/sync", connector_url);
         debug!(
             "Triggering sync at {} for source {}",
-            url, request.source.id
+            url, request.source_id
         );
 
         let response = self

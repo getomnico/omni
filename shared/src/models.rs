@@ -412,6 +412,23 @@ pub struct SyncRun {
     pub updated_at: OffsetDateTime,
 }
 
+/// Request sent from connector-manager to connectors to trigger a sync.
+/// Connectors fetch their own source config and credentials from the database.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncRequest {
+    pub sync_run_id: String,
+    pub source_id: String,
+    pub sync_mode: String,
+}
+
+/// Response from connector after receiving a sync request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncResponse {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct WebhookChannel {
     pub id: String,

@@ -328,9 +328,6 @@ impl From<SyncError> for ApiError {
             SyncError::SyncRunNotFound(id) => {
                 ApiError::NotFound(format!("Sync run not found: {}", id))
             }
-            SyncError::CredentialsNotFound(id) => {
-                ApiError::NotFound(format!("Credentials not found for source: {}", id))
-            }
             SyncError::ConnectorNotConfigured(t) => {
                 ApiError::NotFound(format!("Connector not configured for type: {}", t))
             }

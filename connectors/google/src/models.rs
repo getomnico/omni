@@ -857,39 +857,25 @@ pub struct ActionDefinition {
     pub parameters: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SourceInfo {
-    pub id: String,
-    pub config: serde_json::Value,
+// Import SyncRequest and SyncResponse from shared crate
+pub use shared::models::{SyncRequest, SyncResponse};
+
+/// Extension trait for SyncResponse helper methods
+pub trait SyncResponseExt {
+    fn started() -> SyncResponse;
+    fn error(msg: impl Into<String>) -> SyncResponse;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncRequest {
-    pub sync_run_id: String,
-    pub source: SourceInfo,
-    pub credentials: serde_json::Value,
-    pub sync_mode: String,
-    #[serde(default)]
-    pub state: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncResponse {
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-impl SyncResponse {
-    pub fn started() -> Self {
-        Self {
+impl SyncResponseExt for SyncResponse {
+    fn started() -> SyncResponse {
+        SyncResponse {
             status: "started".to_string(),
             message: None,
         }
     }
 
-    pub fn error(msg: impl Into<String>) -> Self {
-        Self {
+    fn error(msg: impl Into<String>) -> SyncResponse {
+        SyncResponse {
             status: "error".to_string(),
             message: Some(msg.into()),
         }
