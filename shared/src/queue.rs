@@ -216,7 +216,7 @@ impl EventQueue {
     pub async fn get_queue_stats(&self) -> Result<QueueStats> {
         let rows = sqlx::query(
             r#"
-            SELECT 
+            SELECT
                 status,
                 COUNT(*) as count
             FROM connector_events_queue
@@ -254,6 +254,14 @@ impl EventQueue {
             failed,
             dead_letter,
         })
+    }
+
+    pub async fn get_pending_count(&self) -> Result<i64> {
+        let row: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM connector_events_queue WHERE status = 'pending'")
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(row.0)
     }
 
     pub async fn cleanup_old_events(&self, retention_days: i32) -> Result<CleanupResult> {

@@ -12,8 +12,13 @@ use shared::storage::gc::{ContentBlobGC, GCConfig};
 use sqlx::postgres::PgListener;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
-use tokio::time::{interval, Duration};
+use tokio::time::{interval, Duration, Instant};
 use tracing::{debug, error, info, warn};
+
+// Adaptive batch accumulation constants
+const IDLE_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_ACCUMULATION_WAIT: Duration = Duration::from_secs(300); // 5 minutes
+const BATCH_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 
 // Batch processing types
 #[derive(Debug)]
@@ -91,6 +96,9 @@ pub struct QueueProcessor {
     pub parallelism: usize,
     semaphore: Arc<Semaphore>,
     processing_mutex: Arc<Mutex<()>>,
+    idle_timeout: Duration,
+    max_accumulation_wait: Duration,
+    batch_check_interval: Duration,
 }
 
 impl QueueProcessor {
@@ -110,12 +118,32 @@ impl QueueProcessor {
             parallelism,
             semaphore,
             processing_mutex,
+            idle_timeout: IDLE_TIMEOUT,
+            max_accumulation_wait: MAX_ACCUMULATION_WAIT,
+            batch_check_interval: BATCH_CHECK_INTERVAL,
         }
     }
 
     pub fn with_parallelism(mut self, parallelism: usize) -> Self {
         self.parallelism = parallelism;
         self.semaphore = Arc::new(Semaphore::new(parallelism));
+        self
+    }
+
+    pub fn with_batch_size(mut self, batch_size: i32) -> Self {
+        self.batch_size = batch_size;
+        self
+    }
+
+    pub fn with_accumulation_config(
+        mut self,
+        idle_timeout: Duration,
+        max_accumulation_wait: Duration,
+        batch_check_interval: Duration,
+    ) -> Self {
+        self.idle_timeout = idle_timeout;
+        self.max_accumulation_wait = max_accumulation_wait;
+        self.batch_check_interval = batch_check_interval;
         self
     }
 
@@ -168,6 +196,11 @@ impl QueueProcessor {
         let mut cleanup_interval = interval(Duration::from_secs(3600)); // 1 hour
         let mut recovery_interval = interval(Duration::from_secs(300)); // 5 minutes
         let mut gc_interval = interval(Duration::from_secs(3600 * 6)); // 6 hours
+        let mut check_interval = interval(self.batch_check_interval);
+
+        // Batch accumulation state
+        let mut accumulation_start: Option<Instant> = None;
+        let mut last_notification: Option<Instant> = None;
 
         // Process any existing events first
         if let Err(e) = self.process_batch_safe().await {
@@ -179,9 +212,16 @@ impl QueueProcessor {
                 notification = listener.recv() => {
                     match notification {
                         Ok(_) => {
-                            if let Err(e) = self.process_batch_safe().await {
-                                error!("Failed to process batch after notification: {}", e);
+                            let now = Instant::now();
+
+                            // Enter accumulation mode on first notification
+                            if accumulation_start.is_none() {
+                                accumulation_start = Some(now);
+                                debug!("Entered accumulation mode");
                             }
+
+                            // Track last notification time for idle detection
+                            last_notification = Some(now);
                         }
                         Err(e) => {
                             error!("Failed to receive notification: {}", e);
@@ -195,10 +235,63 @@ impl QueueProcessor {
                         }
                     }
                 }
+                _ = check_interval.tick() => {
+                    if let Some(start) = accumulation_start {
+                        let now = Instant::now();
+                        let accumulation_elapsed = start.elapsed();
+                        let idle_elapsed = last_notification
+                            .map(|t| now.duration_since(t))
+                            .unwrap_or(Duration::ZERO);
+
+                        // Check if idle timeout reached (incremental sync detected)
+                        let idle_triggered = idle_elapsed >= self.idle_timeout;
+
+                        // Check if max timeout reached (safety net)
+                        let max_timeout_triggered = accumulation_elapsed >= self.max_accumulation_wait;
+
+                        // Check if threshold reached (full batch ready)
+                        let threshold_triggered = if !idle_triggered && !max_timeout_triggered {
+                            match self.event_queue.get_pending_count().await {
+                                Ok(count) => count >= self.batch_size as i64,
+                                Err(e) => {
+                                    error!("Failed to get pending count: {}", e);
+                                    false
+                                }
+                            }
+                        } else {
+                            false
+                        };
+
+                        if idle_triggered || max_timeout_triggered || threshold_triggered {
+                            let reason = if idle_triggered {
+                                "idle timeout (incremental sync)"
+                            } else if threshold_triggered {
+                                "threshold reached (bulk sync)"
+                            } else {
+                                "max timeout"
+                            };
+
+                            debug!(
+                                "Processing batch: reason={}, accumulated={:?}, idle={:?}",
+                                reason, accumulation_elapsed, idle_elapsed
+                            );
+
+                            // Reset accumulation state
+                            accumulation_start = None;
+                            last_notification = None;
+
+                            if let Err(e) = self.process_batch_safe().await {
+                                error!("Failed to process batch: {}", e);
+                            }
+                        }
+                    }
+                }
                 _ = poll_interval.tick() => {
-                    // Backup polling mechanism
-                    if let Err(e) = self.process_batch_safe().await {
-                        error!("Failed to process batch during backup poll: {}", e);
+                    // Backup polling - only if not in accumulation mode
+                    if accumulation_start.is_none() {
+                        if let Err(e) = self.process_batch_safe().await {
+                            error!("Failed to process batch during backup poll: {}", e);
+                        }
                     }
                 }
                 _ = heartbeat_interval.tick() => {

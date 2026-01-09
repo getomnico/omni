@@ -42,3 +42,4 @@ axum-test = { workspace = true }
 futures = "0.3"
 testcontainers = { workspace = true }
 testcontainers-modules = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
