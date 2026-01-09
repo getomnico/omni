@@ -7,7 +7,7 @@ use tracing::{debug, error, info, warn};
 use crate::auth::AtlassianCredentials;
 use crate::client::AtlassianClient;
 use crate::models::JiraIssue;
-use crate::sdk_client::SdkClient;
+use shared::SdkClient;
 
 pub struct JiraProcessor {
     client: AtlassianClient,

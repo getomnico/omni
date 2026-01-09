@@ -11,7 +11,7 @@ use tracing::{debug, error, info};
 use crate::auth::{AtlassianCredentials, AuthManager};
 use crate::confluence::ConfluenceProcessor;
 use crate::jira::JiraProcessor;
-use crate::sdk_client::SdkClient;
+use shared::SdkClient;
 
 pub struct SyncManager {
     source_repo: SourceRepository,

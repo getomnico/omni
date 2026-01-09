@@ -18,13 +18,13 @@ use crate::gmail::{GmailClient, MessageFormat};
 use crate::models::{
     GmailThread, SyncRequest, UserFile, WebhookChannel, WebhookChannelResponse, WebhookNotification,
 };
-use crate::sdk_client::SdkClient;
 use shared::db::repositories::{ServiceCredentialsRepo, SyncRunRepository};
 use shared::models::{
     ConnectorEvent, ServiceCredentials, ServiceProvider, Source, SourceType, SyncRun, SyncStatus,
     SyncType, WebhookChannel as DatabaseWebhookChannel,
 };
 use shared::utils::generate_ulid;
+use shared::SdkClient;
 use shared::{AIClient, RateLimiter, Repository, SourceRepository};
 
 struct ActiveSync {

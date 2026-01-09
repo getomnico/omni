@@ -13,11 +13,10 @@ mod auth;
 mod client;
 mod content;
 mod models;
-mod sdk_client;
 mod sync;
 
 use api::{create_router, ApiState};
-use sdk_client::SdkClient;
+use shared::SdkClient;
 use sync::SyncManager;
 
 #[tokio::main]

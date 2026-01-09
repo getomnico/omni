@@ -8,8 +8,8 @@ use tracing::{debug, error, info, warn};
 use crate::auth::AtlassianCredentials;
 use crate::client::AtlassianClient;
 use crate::models::{ConfluencePage, ConfluencePageStatus, ConfluenceSpace};
-use crate::sdk_client::SdkClient;
 use crate::sync::SyncState;
+use shared::SdkClient;
 
 pub struct ConfluenceProcessor {
     client: AtlassianClient,

@@ -9,6 +9,7 @@ pub mod encryption;
 pub mod models;
 pub mod queue;
 pub mod rate_limiter;
+pub mod sdk_client;
 pub mod service_auth;
 pub mod storage;
 pub mod telemetry;
@@ -33,6 +34,7 @@ pub use encryption::{EncryptedData, EncryptionService};
 pub use models::*;
 pub use queue::{EventQueue, QueueStats};
 pub use rate_limiter::RateLimiter;
+pub use sdk_client::SdkClient;
 pub use service_auth::{create_service_auth, ServiceAuth};
 pub use storage::{
     factory::{StorageBackend, StorageFactory},

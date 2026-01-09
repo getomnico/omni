@@ -1,9 +1,13 @@
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use shared::models::ConnectorEvent;
 use tracing::debug;
 
+use crate::models::ConnectorEvent;
+
+/// HTTP client for communicating with connector-manager SDK endpoints.
+/// This is the standard way for connectors to interact with the connector-manager
+/// for emitting events, storing content, and reporting sync status.
 #[derive(Clone)]
 pub struct SdkClient {
     client: Client,
@@ -39,11 +43,6 @@ struct CompleteRequest {
 #[derive(Debug, Serialize)]
 struct FailRequest {
     error: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct StatusResponse {
-    status: String,
 }
 
 impl SdkClient {

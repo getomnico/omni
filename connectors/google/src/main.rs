@@ -15,10 +15,9 @@ mod cache;
 mod drive;
 mod gmail;
 mod models;
-mod sdk_client;
 mod sync;
 
-use sdk_client::SdkClient;
+use shared::SdkClient;
 
 use admin::AdminClient;
 use api::{create_router, ApiState};

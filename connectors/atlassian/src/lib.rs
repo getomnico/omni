@@ -5,7 +5,6 @@ pub mod config;
 pub mod confluence;
 pub mod jira;
 pub mod models;
-pub mod sdk_client;
 pub mod sync;
 
 pub use auth::{AtlassianCredentials, AuthManager};

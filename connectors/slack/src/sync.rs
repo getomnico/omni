@@ -10,7 +10,7 @@ use tracing::{debug, error, info, warn};
 use crate::auth::AuthManager;
 use crate::client::SlackClient;
 use crate::content::ContentProcessor;
-use crate::sdk_client::SdkClient;
+use shared::SdkClient;
 
 pub struct SyncManager {
     pool: PgPool,

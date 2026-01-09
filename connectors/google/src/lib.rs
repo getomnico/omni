@@ -5,5 +5,4 @@ pub mod cache;
 pub mod drive;
 pub mod gmail;
 pub mod models;
-pub mod sdk_client;
 pub mod sync;

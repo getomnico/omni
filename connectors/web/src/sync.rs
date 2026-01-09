@@ -12,7 +12,7 @@ use tracing::{debug, error, info};
 
 use crate::config::WebSourceConfig;
 use crate::models::{PageSyncState, SyncRequest, WebPage};
-use crate::sdk_client::SdkClient;
+use shared::SdkClient;
 
 /// Result of a crawl operation
 pub struct CrawlResult {

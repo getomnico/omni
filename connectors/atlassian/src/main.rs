@@ -16,11 +16,10 @@ mod config;
 mod confluence;
 mod jira;
 mod models;
-mod sdk_client;
 mod sync;
 
 use config::AtlassianConnectorConfig;
-use sdk_client::SdkClient;
+use shared::SdkClient;
 
 use api::{create_router, ApiState};
 use sync::SyncManager;

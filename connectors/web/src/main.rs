@@ -2,9 +2,9 @@ use anyhow::Result;
 use dashmap::DashSet;
 use dotenvy::dotenv;
 use omni_web_connector::api::{create_router, ApiState};
-use omni_web_connector::sdk_client::SdkClient;
 use omni_web_connector::sync::SyncManager;
 use shared::telemetry::{self, TelemetryConfig};
+use shared::SdkClient;
 use std::sync::Arc;
 use tracing::info;
 
