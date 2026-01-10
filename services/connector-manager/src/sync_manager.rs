@@ -59,11 +59,10 @@ impl SyncManager {
         }
 
         // Get connector URL
-        let source_type = format!("{:?}", source.source_type).to_lowercase();
         let connector_url = self
             .config
-            .get_connector_url(&source_type)
-            .ok_or_else(|| SyncError::ConnectorNotConfigured(source_type.clone()))?
+            .get_connector_url(source.source_type)
+            .ok_or_else(|| SyncError::ConnectorNotConfigured(format!("{:?}", source.source_type)))?
             .clone();
 
         // Create sync run
@@ -122,11 +121,10 @@ impl SyncManager {
             .map_err(|e| SyncError::DatabaseError(e.to_string()))?
             .ok_or_else(|| SyncError::SourceNotFound(sync_run.source_id.clone()))?;
 
-        let source_type = format!("{:?}", source.source_type).to_lowercase();
         let connector_url = self
             .config
-            .get_connector_url(&source_type)
-            .ok_or_else(|| SyncError::ConnectorNotConfigured(source_type))?
+            .get_connector_url(source.source_type)
+            .ok_or_else(|| SyncError::ConnectorNotConfigured(format!("{:?}", source.source_type)))?
             .clone();
 
         // Send cancel request to connector

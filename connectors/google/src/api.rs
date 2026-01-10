@@ -14,17 +14,17 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{debug, error, info, warn};
 
 use crate::admin::AdminClient;
-use crate::auth::GoogleCredentialsService;
+use crate::auth::ServiceAccountAuth;
 use crate::models::{
     ActionRequest, ActionResponse, CancelRequest, CancelResponse, ConnectorManifest, SyncRequest,
     SyncResponse, SyncResponseExt, WebhookNotification,
 };
 use crate::sync::SyncManager;
+use shared::models::{ServiceProvider, SourceType};
 
 #[derive(Clone)]
 pub struct ApiState {
     pub sync_manager: Arc<SyncManager>,
-    pub credentials_service: Arc<GoogleCredentialsService>,
     pub admin_client: Arc<AdminClient>,
     pub active_syncs: Arc<DashSet<String>>,
 }
@@ -282,16 +282,77 @@ async fn search_users(
 ) -> Result<Json<UserSearchResponse>, StatusCode> {
     info!("Searching users for source: {}", source_id);
 
-    // Get authentication setup for this source (admin operations only need directory scope)
-    let (auth, domain, principal_email) = match state
-        .credentials_service
-        .setup_admin_auth_for_source(&source_id)
+    // Get credentials via SDK
+    let creds = match state
+        .sync_manager
+        .sdk_client
+        .get_credentials(&source_id)
         .await
     {
-        Ok(setup) => setup,
+        Ok(creds) => creds,
         Err(e) => {
-            error!("Failed to setup auth for source {}: {}", source_id, e);
+            error!("Failed to get credentials for source {}: {}", source_id, e);
             return Err(StatusCode::UNAUTHORIZED);
+        }
+    };
+
+    // Verify it's a Google credential
+    if creds.provider != ServiceProvider::Google {
+        error!(
+            "Expected Google credentials for source {}, found {:?}",
+            source_id, creds.provider
+        );
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // Get the service account key and domain
+    let service_account_key = match creds
+        .credentials
+        .get("service_account_key")
+        .and_then(|v| v.as_str())
+    {
+        Some(key) => key,
+        None => {
+            error!(
+                "Missing service_account_key in credentials for source {}",
+                source_id
+            );
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    };
+
+    let domain = match creds.config.get("domain").and_then(|v| v.as_str()) {
+        Some(d) => d.to_string(),
+        None => {
+            error!(
+                "Missing domain in credentials config for source {}",
+                source_id
+            );
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    };
+
+    // Get user email via SDK
+    let principal_email = match state
+        .sync_manager
+        .sdk_client
+        .get_user_email_for_source(&source_id)
+        .await
+    {
+        Ok(email) => email,
+        Err(e) => {
+            error!("Failed to get user email for source {}: {}", source_id, e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    // Create auth with admin directory scopes
+    let admin_scopes = crate::auth::get_scopes_for_source_type(SourceType::GoogleDrive);
+    let auth = match ServiceAccountAuth::new(service_account_key, admin_scopes) {
+        Ok(auth) => auth,
+        Err(e) => {
+            error!("Failed to create auth for source {}: {}", source_id, e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
 

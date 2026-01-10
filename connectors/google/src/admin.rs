@@ -50,6 +50,8 @@ impl AdminClient {
             .pool_max_idle_per_host(5) // Reuse connections for admin API requests
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Duration::from_secs(60))
+            .timeout(Duration::from_secs(60))
+            .connect_timeout(Duration::from_secs(10))
             .build()
             .expect("Failed to build HTTP client");
 
@@ -64,6 +66,8 @@ impl AdminClient {
             .pool_max_idle_per_host(5) // Reuse connections for admin API requests
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Duration::from_secs(60))
+            .timeout(Duration::from_secs(60))
+            .connect_timeout(Duration::from_secs(10))
             .build()
             .expect("Failed to build HTTP client");
 

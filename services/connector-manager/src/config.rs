@@ -1,3 +1,4 @@
+use shared::models::SourceType;
 use shared::{DatabaseConfig, RedisConfig};
 use std::collections::HashMap;
 use std::env;
@@ -8,7 +9,7 @@ pub struct ConnectorManagerConfig {
     pub database: DatabaseConfig,
     pub redis: RedisConfig,
     pub port: u16,
-    pub connector_urls: HashMap<String, String>,
+    pub connector_urls: HashMap<SourceType, String>,
     pub max_concurrent_syncs: usize,
     pub max_concurrent_syncs_per_type: usize,
     pub scheduler_interval_seconds: u64,
@@ -29,17 +30,18 @@ impl ConnectorManagerConfig {
         let mut connector_urls = HashMap::new();
 
         if let Ok(url) = env::var("CONNECTOR_GOOGLE_URL") {
-            connector_urls.insert("google_drive".to_string(), url);
+            connector_urls.insert(SourceType::GoogleDrive, url.clone());
+            connector_urls.insert(SourceType::Gmail, url);
         }
         if let Ok(url) = env::var("CONNECTOR_SLACK_URL") {
-            connector_urls.insert("slack".to_string(), url);
+            connector_urls.insert(SourceType::Slack, url);
         }
         if let Ok(url) = env::var("CONNECTOR_ATLASSIAN_URL") {
-            connector_urls.insert("confluence".to_string(), url.clone());
-            connector_urls.insert("jira".to_string(), url);
+            connector_urls.insert(SourceType::Confluence, url.clone());
+            connector_urls.insert(SourceType::Jira, url);
         }
         if let Ok(url) = env::var("CONNECTOR_WEB_URL") {
-            connector_urls.insert("web".to_string(), url);
+            connector_urls.insert(SourceType::Web, url);
         }
 
         let max_concurrent_syncs = env::var("MAX_CONCURRENT_SYNCS")
@@ -74,7 +76,7 @@ impl ConnectorManagerConfig {
         }
     }
 
-    pub fn get_connector_url(&self, source_type: &str) -> Option<&String> {
-        self.connector_urls.get(source_type)
+    pub fn get_connector_url(&self, source_type: SourceType) -> Option<&String> {
+        self.connector_urls.get(&source_type)
     }
 }

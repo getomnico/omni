@@ -59,7 +59,11 @@ impl JiraProcessor {
                         issues_count, project_key
                     );
                     // Update scanned count via SDK
-                    if let Err(e) = self.sdk_client.increment_scanned(sync_run_id).await {
+                    if let Err(e) = self
+                        .sdk_client
+                        .increment_scanned(sync_run_id, issues_count as i32)
+                        .await
+                    {
                         error!("Failed to increment scanned count: {}", e);
                     }
                 }

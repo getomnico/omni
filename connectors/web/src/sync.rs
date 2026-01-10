@@ -444,7 +444,7 @@ impl SyncManager {
 
         // Update activity and scanned count via SDK
         sdk_client
-            .increment_scanned(sync_run_id)
+            .increment_scanned(sync_run_id, 1)
             .await
             .context("Failed to update sync activity")?;
 

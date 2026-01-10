@@ -147,7 +147,7 @@ pub struct Embedding {
     pub created_at: OffsetDateTime,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq, Eq, Hash)]
 #[sqlx(type_name = "varchar", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum SourceType {

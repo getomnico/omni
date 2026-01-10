@@ -2,12 +2,10 @@ use anyhow::{anyhow, Context, Result};
 use dashmap::DashMap;
 use futures::stream::{self, StreamExt};
 use redis::{AsyncCommands, Client as RedisClient};
-use sqlx::types::time::OffsetDateTime;
-use sqlx::PgPool;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use time;
+use time::{self, OffsetDateTime};
 use tracing::{debug, error, info, warn};
 
 use crate::admin::AdminClient;
@@ -18,29 +16,22 @@ use crate::gmail::{GmailClient, MessageFormat};
 use crate::models::{
     GmailThread, SyncRequest, UserFile, WebhookChannel, WebhookChannelResponse, WebhookNotification,
 };
-use shared::db::repositories::{ServiceCredentialsRepo, SyncRunRepository};
 use shared::models::{
-    ConnectorEvent, ServiceCredentials, ServiceProvider, Source, SourceType, SyncRun, SyncStatus,
-    SyncType, WebhookChannel as DatabaseWebhookChannel,
+    ConnectorEvent, ServiceCredentials, ServiceProvider, Source, SourceType, SyncType,
 };
-use shared::utils::generate_ulid;
 use shared::SdkClient;
-use shared::{AIClient, RateLimiter, Repository, SourceRepository};
+use shared::{AIClient, RateLimiter};
 
 struct ActiveSync {
     cancelled: AtomicBool,
 }
 
 pub struct SyncManager {
-    pool: PgPool,
     redis_client: RedisClient,
     drive_client: DriveClient,
     gmail_client: GmailClient,
     admin_client: Arc<AdminClient>,
-    sdk_client: SdkClient,
-    service_credentials_repo: ServiceCredentialsRepo,
-    source_repo: SourceRepository,
-    sync_run_repo: SyncRunRepository,
+    pub sdk_client: SdkClient,
     folder_cache: LruFolderCache,
     active_syncs: DashMap<String, Arc<ActiveSync>>,
 }
@@ -226,15 +217,12 @@ impl SyncState {
 }
 
 impl SyncManager {
-    pub async fn new(
-        pool: PgPool,
+    pub fn new(
         redis_client: RedisClient,
         ai_service_url: String,
         admin_client: Arc<AdminClient>,
         sdk_client: SdkClient,
-    ) -> Result<Self> {
-        let service_credentials_repo = ServiceCredentialsRepo::new(pool.clone())?;
-
+    ) -> Self {
         // Google API Rate limits:
         //   - Drive API (list files, etc.): 12,000 req/min
         //   - Docs API (get content, etc.): 3,000 req/min/project, 300 req/min/user
@@ -255,28 +243,22 @@ impl SyncManager {
         let drive_client = DriveClient::with_rate_limiter(rate_limiter.clone(), ai_client.clone());
         let gmail_client = GmailClient::with_rate_limiter(rate_limiter);
 
-        let source_repo = SourceRepository::new(&pool);
-        let sync_run_repo = SyncRunRepository::new(&pool);
-
-        Ok(Self {
-            pool,
+        Self {
             redis_client,
             drive_client,
             gmail_client,
             admin_client,
             sdk_client,
-            service_credentials_repo,
-            source_repo,
-            sync_run_repo,
             folder_cache: LruFolderCache::new(10_000), // Cache up to 10,000 folder metadata entries
             active_syncs: DashMap::new(),
-        })
+        }
     }
 
     /// Sync a source from a SyncRequest (called by connector-manager)
     pub async fn sync_source_from_request(&self, request: SyncRequest) -> Result<()> {
         let sync_run_id = request.sync_run_id.clone();
         let source_id = request.source_id.clone();
+        let sync_mode = request.sync_mode.clone();
 
         info!(
             "Starting sync for source {} (sync_run_id: {})",
@@ -297,41 +279,47 @@ impl SyncManager {
             .await
             .context("Failed to fetch source via SDK")?;
 
-        // Get or create sync run
-        let sync_run = self
-            .sync_run_repo
-            .find_by_id(&sync_run_id)
-            .await?
-            .ok_or_else(|| anyhow!("Sync run {} not found", sync_run_id))?;
+        // Determine sync type from mode
+        let sync_type = match sync_mode.as_str() {
+            "incremental" => SyncType::Incremental,
+            _ => SyncType::Full,
+        };
 
         // Run the sync
         let result = match source.source_type {
-            SourceType::GoogleDrive => self.sync_drive_source_internal(&source, &sync_run).await,
-            SourceType::Gmail => self.sync_gmail_source_internal(&source, &sync_run).await,
+            SourceType::GoogleDrive => {
+                self.sync_drive_source_internal(&source, &sync_run_id, sync_type)
+                    .await
+            }
+            SourceType::Gmail => {
+                self.sync_gmail_source_internal(&source, &sync_run_id, sync_type)
+                    .await
+            }
             _ => Err(anyhow!("Unsupported source type: {:?}", source.source_type)),
         };
 
         // Check if cancelled
         if active_sync.cancelled.load(Ordering::SeqCst) {
             info!("Sync {} was cancelled", sync_run_id);
-            self.sync_run_repo.mark_cancelled(&sync_run_id).await?;
+            let _ = self.sdk_client.cancel(&sync_run_id).await;
             self.active_syncs.remove(&sync_run_id);
             return Ok(());
         }
 
-        // Update sync run based on result
+        // Update sync run based on result via SDK
         match &result {
             Ok((files_scanned, _files_processed, files_updated)) => {
-                self.sync_run_repo
-                    .mark_completed(&sync_run_id, *files_scanned as i32, *files_updated as i32)
+                self.sdk_client
+                    .complete(
+                        &sync_run_id,
+                        *files_scanned as i32,
+                        *files_updated as i32,
+                        None,
+                    )
                     .await?;
-                self.update_source_status(&source_id, "completed").await?;
             }
             Err(e) => {
-                self.sync_run_repo
-                    .mark_failed(&sync_run_id, &e.to_string())
-                    .await?;
-                self.update_source_status(&source_id, "failed").await?;
+                self.sdk_client.fail(&sync_run_id, &e.to_string()).await?;
             }
         }
 
@@ -377,146 +365,12 @@ impl SyncManager {
         Ok((drive_format, gmail_format))
     }
 
-    pub async fn sync_all_sources(&self) -> Result<()> {
-        let sources = self.get_active_sources().await?;
-
-        info!(
-            "Found {} active Google sources (Drive & Gmail)",
-            sources.len()
-        );
-
-        for source in sources {
-            // Check if this source already has a running sync
-            match self.get_running_sync_for_source(&source.id).await {
-                Ok(Some(running_sync)) => {
-                    info!(
-                        "Source {} already has a running sync (id: {}), skipping scheduled sync",
-                        source.id, running_sync.id
-                    );
-                    continue;
-                }
-                Ok(None) => {
-                    // No running sync, proceed with checking if we should run a full sync
-                }
-                Err(e) => {
-                    error!(
-                        "Failed to check for running sync for source {}: {}",
-                        source.id, e
-                    );
-                    continue;
-                }
-            }
-
-            // Check if we should run a full sync for this source
-            match self.should_run_full_sync(&source.id).await {
-                Ok(should_sync) => {
-                    if should_sync {
-                        if let Err(e) = self.sync_source(&source).await {
-                            error!("Failed to sync source {}: {}", source.id, e);
-                            self.update_source_status(&source.id, "failed").await?;
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!(
-                        "Failed to check sync status for source {}: {}",
-                        source.id, e
-                    );
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn get_active_sources(&self) -> Result<Vec<Source>> {
-        let sources = self
-            .source_repo
-            .find_active_by_types(vec![SourceType::GoogleDrive, SourceType::Gmail])
-            .await?;
-
-        // Filter to only sources that have Google service credentials
-        let mut sources_with_creds = Vec::new();
-        for source in sources {
-            if let Ok(Some(creds)) = self
-                .service_credentials_repo
-                .get_by_source_id(&source.id)
-                .await
-            {
-                // Verify it's a Google credential
-                if creds.provider == ServiceProvider::Google {
-                    sources_with_creds.push(source);
-                }
-            }
-        }
-
-        Ok(sources_with_creds)
-    }
-
-    async fn sync_source(&self, source: &Source) -> Result<()> {
-        info!("Syncing source: {} ({})", source.name, source.id);
-
-        // Double-check for running sync to prevent race conditions
-        if let Some(running_sync) = self.get_running_sync_for_source(&source.id).await? {
-            warn!(
-                "Found running sync for source {} (id: {}) just before creating new sync, aborting",
-                source.id, running_sync.id
-            );
-            return Ok(());
-        }
-
-        // Check if this source type should be synced
-        if !matches!(
-            source.source_type,
-            SourceType::GoogleDrive | SourceType::Gmail
-        ) {
-            info!(
-                "Skipping sync for source {} ({}) - source type {:?} is not a Google service",
-                source.name, source.id, source.source_type
-            );
-            return Ok(());
-        }
-
-        // Create a sync run record
-        let sync_run = self
-            .sync_run_repo
-            .create(&source.id, SyncType::Full)
-            .await?;
-
-        let result = match source.source_type {
-            SourceType::GoogleDrive => self.sync_drive_source_internal(source, &sync_run).await,
-            SourceType::Gmail => self.sync_gmail_source_internal(source, &sync_run).await,
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "Unsupported source type: {:?}",
-                    source.source_type
-                ))
-            }
-        };
-
-        // Update sync run based on result
-        match &result {
-            Ok((files_scanned, _files_processed, files_updated)) => {
-                self.sync_run_repo
-                    .mark_completed(&sync_run.id, *files_scanned as i32, *files_updated as i32)
-                    .await?;
-            }
-            Err(e) => {
-                self.sync_run_repo
-                    .mark_failed(&sync_run.id, &e.to_string())
-                    .await?;
-            }
-        }
-
-        result.map(|_| ())
-    }
-
     async fn sync_drive_for_user(
         &self,
         user_email: &str,
         service_auth: Arc<ServiceAccountAuth>,
         source_id: &str,
-        sync_run: &SyncRun,
+        sync_run_id: &str,
         sync_state: &SyncState,
         current_files: Arc<std::sync::Mutex<HashSet<String>>>,
         created_after: Option<&str>,
@@ -606,7 +460,7 @@ impl SyncManager {
                                 .process_file_batch(
                                     file_batch.clone(),
                                     source_id,
-                                    sync_run,
+                                    sync_run_id,
                                     sync_state,
                                     service_auth.clone(),
                                 )
@@ -620,9 +474,9 @@ impl SyncManager {
                 }
             }
 
-            // Update scanned count for this page
-            self.sync_run_repo
-                .increment_scanned(&sync_run.id, page_file_count as i32)
+            // Update scanned count for this page via SDK
+            self.sdk_client
+                .increment_scanned(sync_run_id, page_file_count as i32)
                 .await?;
 
             // Check if there are more pages
@@ -638,7 +492,7 @@ impl SyncManager {
                 .process_file_batch(
                     file_batch,
                     source_id,
-                    sync_run,
+                    sync_run_id,
                     sync_state,
                     service_auth.clone(),
                 )
@@ -659,7 +513,7 @@ impl SyncManager {
         &self,
         files: Vec<UserFile>,
         source_id: &str,
-        sync_run: &SyncRun,
+        sync_run_id: &str,
         sync_state: &SyncState,
         service_auth: Arc<ServiceAccountAuth>,
     ) -> Result<(usize, usize)> {
@@ -669,10 +523,11 @@ impl SyncManager {
         let mut updated = 0;
 
         // Process files concurrently within the batch
+        let sync_run_id_owned = sync_run_id.to_string();
         let tasks = files.into_iter().map(|user_file| {
             let service_auth = service_auth.clone();
             let source_id = source_id.to_string();
-            let sync_run_id = sync_run.id.clone();
+            let sync_run_id = sync_run_id_owned.clone();
             let sync_state = sync_state.clone();
             let drive_client = self.drive_client.clone();
             let sdk_client = self.sdk_client.clone();
@@ -770,7 +625,8 @@ impl SyncManager {
     async fn sync_drive_source_internal(
         &self,
         source: &Source,
-        sync_run: &SyncRun,
+        sync_run_id: &str,
+        _sync_type: SyncType,
     ) -> Result<(usize, usize, usize)> {
         let service_creds = self.get_service_credentials(&source.id).await?;
         let service_auth = Arc::new(self.create_service_auth(&service_creds, source.source_type)?);
@@ -835,7 +691,7 @@ impl SyncManager {
                             &user.primary_email,
                             service_auth.clone(),
                             &source.id,
-                            sync_run,
+                            sync_run_id,
                             &sync_state,
                             current_files.clone(),
                             Some(&drive_cutoff_date),
@@ -891,7 +747,7 @@ impl SyncManager {
                 "File {} was deleted, publishing deletion event",
                 deleted_file_id
             );
-            self.publish_deletion_event(&sync_run.id, &source.id, deleted_file_id)
+            self.publish_deletion_event(sync_run_id, &source.id, deleted_file_id)
                 .await?;
             sync_state
                 .delete_file_sync_state(&source.id, deleted_file_id)
@@ -906,8 +762,6 @@ impl SyncManager {
             total_updated
         );
 
-        self.update_source_status(&source.id, "completed").await?;
-
         // Clear folder cache to free memory after sync
         self.folder_cache.clear();
 
@@ -918,7 +772,8 @@ impl SyncManager {
     async fn sync_gmail_source_internal(
         &self,
         source: &Source,
-        sync_run: &SyncRun,
+        sync_run_id: &str,
+        _sync_type: SyncType,
     ) -> Result<(usize, usize, usize)> {
         let service_creds = self.get_service_credentials(&source.id).await?;
         let service_auth = Arc::new(self.create_service_auth(&service_creds, source.source_type)?);
@@ -975,7 +830,7 @@ impl SyncManager {
                             &user_email,
                             service_auth.clone(),
                             &source.id,
-                            sync_run,
+                            sync_run_id,
                             processed_threads.clone(),
                             Some(&gmail_cutoff_date),
                         )
@@ -1004,8 +859,6 @@ impl SyncManager {
             "Gmail sync completed for source {}: {} total processed, {} total updated",
             source.id, total_processed, total_updated
         );
-
-        self.update_source_status(&source.id, "completed").await?;
 
         info!("Completed Gmail sync for source: {}", source.id);
         Ok((total_processed, total_processed, total_updated))
@@ -1102,99 +955,10 @@ impl SyncManager {
     }
 
     async fn get_user_email_from_source(&self, source_id: &str) -> Result<String> {
-        let user_email = sqlx::query_scalar::<_, String>(
-            "SELECT u.email FROM sources s
-             JOIN users u ON s.created_by = u.id
-             WHERE s.id = $1",
-        )
-        .bind(source_id)
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(user_email)
-    }
-
-    async fn update_source_status(&self, source_id: &str, status: &str) -> Result<()> {
-        let now = chrono::Utc::now();
-        self.source_repo
-            .update_sync_status(source_id, status, Some(now), None)
-            .await?;
-
-        Ok(())
-    }
-
-    pub async fn sync_source_by_id(&self, source_id: String) -> Result<()> {
-        info!("Manually triggered sync for source: {}", source_id);
-
-        let source = self
-            .source_repo
-            .find_by_id(source_id.clone())
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Source {} not found", source_id))?;
-
-        // Verify it's a Google source type
-        if source.source_type != SourceType::GoogleDrive && source.source_type != SourceType::Gmail
-        {
-            return Err(anyhow::anyhow!(
-                "Source {} is not a Google Drive or Gmail source",
-                source_id
-            ));
-        }
-
-        if !source.is_active {
-            return Err(anyhow::anyhow!("Source {} is not active", source_id));
-        }
-
-        // Manual sync always runs regardless of last sync time
-        self.sync_source(&source).await
-    }
-
-    async fn get_last_completed_full_sync(&self, source_id: &str) -> Result<Option<SyncRun>> {
-        Ok(self
-            .sync_run_repo
-            .get_last_completed_for_source(source_id, SyncType::Full)
-            .await?)
-    }
-
-    pub async fn should_run_full_sync(&self, source_id: &str) -> Result<bool> {
-        let last_sync = self.get_last_completed_full_sync(source_id).await?;
-
-        match last_sync {
-            Some(sync_run) => {
-                let sync_interval_seconds = std::env::var("GOOGLE_SYNC_INTERVAL_SECONDS")
-                    .unwrap_or_else(|_| "86400".to_string())
-                    .parse::<i64>()
-                    .expect("GOOGLE_SYNC_INTERVAL_SECONDS must be a valid number");
-
-                if let Some(completed_at) = sync_run.completed_at {
-                    let now = OffsetDateTime::now_utc();
-                    let elapsed = now - completed_at;
-                    let should_sync = elapsed.whole_seconds() >= sync_interval_seconds;
-
-                    if !should_sync {
-                        info!(
-                            "Skipping full sync for source {}. Last sync was {} seconds ago, interval is {} seconds",
-                            source_id,
-                            elapsed.whole_seconds(),
-                            sync_interval_seconds
-                        );
-                    }
-
-                    Ok(should_sync)
-                } else {
-                    // If completed_at is None, the sync didn't complete properly
-                    Ok(true)
-                }
-            }
-            None => {
-                // No previous sync found, should run
-                info!(
-                    "No previous full sync found for source {}, will run full sync",
-                    source_id
-                );
-                Ok(true)
-            }
-        }
+        self.sdk_client
+            .get_user_email_for_source(source_id)
+            .await
+            .context("Failed to get user email via SDK")
     }
 
     pub async fn handle_webhook_notification(
@@ -1206,16 +970,17 @@ impl SyncManager {
             notification.channel_id, notification.resource_state
         );
 
-        // Find the source associated with this webhook channel
+        // Find the source associated with this webhook channel via SDK
         let webhook_channel = match self
-            .get_webhook_channel_by_channel_id(&notification.channel_id)
-            .await?
+            .sdk_client
+            .get_webhook_channel(&notification.channel_id)
+            .await
         {
-            Some(channel) => channel,
-            None => {
+            Ok(channel) => channel,
+            Err(e) => {
                 warn!(
-                    "Received webhook notification for unknown channel: {}",
-                    notification.channel_id
+                    "Received webhook notification for unknown channel {}: {}",
+                    notification.channel_id, e
                 );
                 return Ok(());
             }
@@ -1229,29 +994,29 @@ impl SyncManager {
                 );
             }
             "add" | "update" | "remove" | "trash" | "untrash" => {
-                // Trigger incremental sync for the specific source
+                // Notify connector-manager via SDK - it will create a sync run and call back
                 info!(
-                    "Triggering incremental sync for source {} due to resource state: {}",
+                    "Notifying connector-manager of webhook event for source {} (state: {})",
                     webhook_channel.source_id, notification.resource_state
                 );
 
-                // Get the source
-                if let Some(source) = self
-                    .source_repo
-                    .find_by_id(webhook_channel.source_id.clone())
-                    .await?
+                match self
+                    .sdk_client
+                    .notify_webhook(&webhook_channel.source_id, &notification.resource_state)
+                    .await
                 {
-                    if let Err(e) = self.sync_source_incremental(&source).await {
-                        error!(
-                            "Failed to run incremental sync for source {}: {}",
-                            source.id, e
+                    Ok(sync_run_id) => {
+                        info!(
+                            "Connector-manager created sync run {} for webhook event",
+                            sync_run_id
                         );
                     }
-                } else {
-                    warn!(
-                        "Source {} not found for webhook channel",
-                        webhook_channel.source_id
-                    );
+                    Err(e) => {
+                        error!(
+                            "Failed to notify connector-manager of webhook event for source {}: {}",
+                            webhook_channel.source_id, e
+                        );
+                    }
                 }
             }
             _ => {
@@ -1270,8 +1035,12 @@ impl SyncManager {
         source_id: &str,
         webhook_url: String,
     ) -> Result<WebhookChannelResponse> {
-        // Check if there's already an active webhook for this source
-        if let Some(existing_channel) = self.get_webhook_channel_by_source_id(source_id).await? {
+        // Check if there's already an active webhook for this source via SDK
+        if let Ok(Some(existing_channel)) = self
+            .sdk_client
+            .get_webhook_channel_by_source(source_id)
+            .await
+        {
             info!(
                 "Found existing webhook channel for source {}, stopping it first",
                 source_id
@@ -1309,23 +1078,23 @@ impl SyncManager {
             .register_changes_webhook(&access_token, &webhook_channel, &start_page_token)
             .await?;
 
-        // Parse expiration timestamp from Google response
-        let expires_at = webhook_response.expiration.as_ref().and_then(|exp| {
-            exp.parse::<i64>().ok().and_then(|millis| {
-                sqlx::types::time::OffsetDateTime::from_unix_timestamp(millis / 1000).ok()
-            })
-        });
+        // Parse expiration timestamp from Google response (milliseconds to seconds)
+        let expires_at = webhook_response
+            .expiration
+            .as_ref()
+            .and_then(|exp| exp.parse::<i64>().ok().map(|millis| millis / 1000));
 
-        // Store webhook channel in database
-        self.save_webhook_channel(
-            source_id,
-            &webhook_response.id,
-            &webhook_response.resource_id,
-            Some(&webhook_response.resource_uri),
-            &webhook_url,
-            expires_at,
-        )
-        .await?;
+        // Store webhook channel via SDK
+        self.sdk_client
+            .save_webhook_channel(
+                source_id,
+                &webhook_response.id,
+                &webhook_response.resource_id,
+                Some(&webhook_response.resource_uri),
+                &webhook_url,
+                expires_at,
+            )
+            .await?;
 
         info!(
             "Successfully registered and saved webhook for source {}: channel_id={}, resource_id={}",
@@ -1352,403 +1121,13 @@ impl SyncManager {
             .stop_webhook_channel(&access_token, channel_id, resource_id)
             .await?;
 
-        // Remove from database
-        self.delete_webhook_channel_by_channel_id(channel_id)
-            .await?;
+        // Remove from database via SDK
+        self.sdk_client.delete_webhook_channel(channel_id).await?;
 
         info!(
             "Successfully stopped and removed webhook for source {}: channel_id={}",
             source_id, channel_id
         );
-        Ok(())
-    }
-
-    async fn sync_source_incremental(&self, source: &Source) -> Result<()> {
-        info!(
-            "Running incremental sync for source: {} ({})",
-            source.name, source.id
-        );
-
-        let service_creds = self.get_service_credentials(&source.id).await?;
-        let service_auth = self.create_service_auth(&service_creds, source.source_type)?;
-        let user_email = self.get_user_email_from_source(&source.id).await
-            .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source.id, e))?;
-        let access_token = service_auth.get_access_token(&user_email).await?;
-
-        // For incremental sync, we would ideally use the changes API with a stored page token
-        // For now, we'll just get the latest changes using the current start page token
-        let start_page_token = self
-            .drive_client
-            .get_start_page_token(&access_token)
-            .await?;
-
-        // Create a sync run record for incremental sync
-        let sync_run = self
-            .sync_run_repo
-            .create(&source.id, SyncType::Incremental)
-            .await?;
-
-        // List recent changes
-        match self
-            .drive_client
-            .list_changes(&access_token, &start_page_token)
-            .await
-        {
-            Ok(changes_response) => {
-                let mut processed_count = 0;
-                let mut updated_count = 0;
-
-                for change in changes_response.changes {
-                    processed_count += 1;
-
-                    match change.removed {
-                        Some(true) => {
-                            // File was removed
-                            if let Some(file_id) = &change.file_id {
-                                info!("Processing deletion for file_id: {}", file_id);
-                                self.publish_deletion_event(&sync_run.id, &source.id, file_id)
-                                    .await?;
-
-                                let sync_state = SyncState::new(self.redis_client.clone());
-                                sync_state
-                                    .delete_file_sync_state(&source.id, file_id)
-                                    .await?;
-                                updated_count += 1;
-                            }
-                        }
-                        _ => {
-                            // File was added or updated
-                            if let Some(file) = change.file {
-                                if self.should_index_file(&file) {
-                                    match self
-                                        .drive_client
-                                        .get_file_content(&service_auth, &user_email, &file)
-                                        .await
-                                    {
-                                        Ok(content) => {
-                                            if !content.is_empty() {
-                                                // Resolve the full path for this file
-                                                let file_path = match self
-                                                    .resolve_file_path(
-                                                        &service_auth,
-                                                        &user_email,
-                                                        &file,
-                                                    )
-                                                    .await
-                                                {
-                                                    Ok(path) => Some(path),
-                                                    Err(e) => {
-                                                        warn!("Failed to resolve path for file {}: {}", file.name, e);
-                                                        None
-                                                    }
-                                                };
-
-                                                // Store content via SDK and get content_id
-                                                let content_id = match self
-                                                    .sdk_client
-                                                    .store_content(&sync_run.id, &content)
-                                                    .await
-                                                {
-                                                    Ok(id) => id,
-                                                    Err(e) => {
-                                                        error!("Failed to store content via SDK for file {}: {}", file.name, e);
-                                                        continue;
-                                                    }
-                                                };
-
-                                                let event = file.to_connector_event(
-                                                    &sync_run.id,
-                                                    &source.id,
-                                                    &content_id,
-                                                    file_path,
-                                                );
-
-                                                match self
-                                                    .sdk_client
-                                                    .emit_event(&sync_run.id, &source.id, event)
-                                                    .await
-                                                {
-                                                    Ok(_) => {
-                                                        updated_count += 1;
-                                                        if let Some(modified_time) =
-                                                            &file.modified_time
-                                                        {
-                                                            let sync_state = SyncState::new(
-                                                                self.redis_client.clone(),
-                                                            );
-                                                            sync_state
-                                                                .set_file_sync_state(
-                                                                    &source.id,
-                                                                    &file.id,
-                                                                    modified_time,
-                                                                )
-                                                                .await?;
-                                                        }
-                                                    }
-                                                    Err(e) => {
-                                                        error!(
-                                                            "Failed to queue event for file {}: {}",
-                                                            file.name, e
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            warn!(
-                                                "Failed to get content for file {}: {}",
-                                                file.name, e
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                self.sync_run_repo
-                    .mark_completed(&sync_run.id, processed_count as i32, updated_count as i32)
-                    .await?;
-                info!(
-                    "Incremental sync completed for source {}: {} changes processed, {} updated",
-                    source.id, processed_count, updated_count
-                );
-            }
-            Err(e) => {
-                error!("Failed to list changes for source {}: {}", source.id, e);
-                self.sync_run_repo
-                    .mark_failed(&sync_run.id, &e.to_string())
-                    .await?;
-            }
-        }
-
-        Ok(())
-    }
-
-    // Database operations for webhook channels
-    async fn save_webhook_channel(
-        &self,
-        source_id: &str,
-        channel_id: &str,
-        resource_id: &str,
-        resource_uri: Option<&str>,
-        webhook_url: &str,
-        expires_at: Option<sqlx::types::time::OffsetDateTime>,
-    ) -> Result<()> {
-        let id = generate_ulid();
-
-        sqlx::query(
-            "INSERT INTO webhook_channels (id, source_id, channel_id, resource_id, resource_uri, webhook_url, expires_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
-        )
-        .bind(&id)
-        .bind(source_id)
-        .bind(channel_id)
-        .bind(resource_id)
-        .bind(resource_uri)
-        .bind(webhook_url)
-        .bind(expires_at)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
-    }
-
-    async fn get_webhook_channel_by_channel_id(
-        &self,
-        channel_id: &str,
-    ) -> Result<Option<DatabaseWebhookChannel>> {
-        let webhook_channel = sqlx::query_as::<_, DatabaseWebhookChannel>(
-            "SELECT * FROM webhook_channels WHERE channel_id = $1",
-        )
-        .bind(channel_id)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(webhook_channel)
-    }
-
-    async fn get_webhook_channel_by_source_id(
-        &self,
-        source_id: &str,
-    ) -> Result<Option<DatabaseWebhookChannel>> {
-        let webhook_channel = sqlx::query_as::<_, DatabaseWebhookChannel>(
-            "SELECT * FROM webhook_channels WHERE source_id = $1",
-        )
-        .bind(source_id)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(webhook_channel)
-    }
-
-    async fn delete_webhook_channel_by_channel_id(&self, channel_id: &str) -> Result<()> {
-        sqlx::query("DELETE FROM webhook_channels WHERE channel_id = $1")
-            .bind(channel_id)
-            .execute(&self.pool)
-            .await?;
-
-        Ok(())
-    }
-
-    pub async fn get_expiring_webhook_channels(
-        &self,
-        hours_ahead: i64,
-    ) -> Result<Vec<DatabaseWebhookChannel>> {
-        let threshold =
-            sqlx::types::time::OffsetDateTime::now_utc() + time::Duration::hours(hours_ahead);
-
-        let channels = sqlx::query_as::<_, DatabaseWebhookChannel>(
-            "SELECT * FROM webhook_channels WHERE expires_at IS NOT NULL AND expires_at <= $1",
-        )
-        .bind(threshold)
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(channels)
-    }
-
-    pub async fn renew_webhook_channel(
-        &self,
-        webhook_channel: &DatabaseWebhookChannel,
-    ) -> Result<()> {
-        info!(
-            "Renewing webhook channel {} for source {}",
-            webhook_channel.channel_id, webhook_channel.source_id
-        );
-
-        // Stop the old webhook
-        if let Err(e) = self
-            .stop_webhook_for_source(
-                &webhook_channel.source_id,
-                &webhook_channel.channel_id,
-                &webhook_channel.resource_id,
-            )
-            .await
-        {
-            warn!("Failed to stop expiring webhook channel: {}", e);
-        }
-
-        // Register a new webhook
-        match self
-            .register_webhook_for_source(
-                &webhook_channel.source_id,
-                webhook_channel.webhook_url.clone(),
-            )
-            .await
-        {
-            Ok(new_response) => {
-                info!(
-                    "Successfully renewed webhook for source {}: old_channel={}, new_channel={}",
-                    webhook_channel.source_id, webhook_channel.channel_id, new_response.id
-                );
-            }
-            Err(e) => {
-                error!(
-                    "Failed to renew webhook for source {}: {}",
-                    webhook_channel.source_id, e
-                );
-                return Err(e);
-            }
-        }
-
-        Ok(())
-    }
-
-    pub async fn auto_register_webhooks(&self) -> Result<()> {
-        info!("Starting automatic webhook registration for all sources");
-
-        let webhook_url = match std::env::var("GOOGLE_WEBHOOK_URL") {
-            Ok(url) if !url.is_empty() => url,
-            _ => {
-                info!("GOOGLE_WEBHOOK_URL not set, skipping automatic webhook registration");
-                return Ok(());
-            }
-        };
-
-        let sources = self.get_active_sources().await?;
-        info!(
-            "Found {} active Google sources (Drive & Gmail) for webhook registration",
-            sources.len()
-        );
-
-        for source in sources {
-            match self.get_webhook_channel_by_source_id(&source.id).await? {
-                Some(_existing_channel) => {
-                    info!(
-                        "Webhook already exists for source {}, skipping registration",
-                        source.id
-                    );
-                }
-                None => {
-                    info!(
-                        "No webhook found for source {}, registering new webhook",
-                        source.id
-                    );
-                    match self
-                        .register_webhook_for_source(&source.id, webhook_url.clone())
-                        .await
-                    {
-                        Ok(response) => {
-                            info!(
-                                "Successfully registered webhook for source {}: channel_id={}",
-                                source.id, response.id
-                            );
-                        }
-                        Err(e) => {
-                            error!("Failed to register webhook for source {}: {}", source.id, e);
-                            // Continue with other sources even if one fails
-                        }
-                    }
-                }
-            }
-        }
-
-        info!("Completed automatic webhook registration");
-        Ok(())
-    }
-
-    pub async fn get_running_sync_for_source(&self, source_id: &str) -> Result<Option<SyncRun>> {
-        Ok(self.sync_run_repo.get_running_for_source(source_id).await?)
-    }
-
-    pub async fn recover_interrupted_syncs(&self) -> Result<()> {
-        info!("Checking for interrupted running syncs from previous connector instance");
-
-        let running_syncs = self.sync_run_repo.find_all_running().await?;
-
-        if running_syncs.is_empty() {
-            info!("No interrupted running syncs found");
-            return Ok(());
-        }
-
-        info!(
-            "Found {} interrupted running syncs, marking as failed",
-            running_syncs.len()
-        );
-
-        for sync_run in running_syncs {
-            info!(
-                "Marking interrupted sync as failed: id={}, source_id={}, started_at={:?}",
-                sync_run.id, sync_run.source_id, sync_run.started_at
-            );
-
-            let error_message = "Sync interrupted by connector restart";
-
-            if let Err(e) = self
-                .sync_run_repo
-                .mark_failed(&sync_run.id, error_message)
-                .await
-            {
-                error!(
-                    "Failed to mark interrupted sync {} as failed: {}",
-                    sync_run.id, e
-                );
-            }
-        }
-
-        info!("Completed interrupted sync recovery");
         Ok(())
     }
 
@@ -1885,7 +1264,7 @@ impl SyncManager {
         user_email: &str,
         service_auth: Arc<ServiceAccountAuth>,
         source_id: &str,
-        sync_run: &SyncRun,
+        sync_run_id: &str,
         processed_threads: Arc<std::sync::Mutex<HashSet<String>>>,
         created_after: Option<&str>,
     ) -> Result<(usize, usize)> {
@@ -1936,9 +1315,9 @@ impl SyncManager {
                     user_threads.push(thread_info.id);
                 }
 
-                // Update scanned count for this page
-                self.sync_run_repo
-                    .increment_scanned(&sync_run.id, page_thread_count as i32)
+                // Update scanned count for this page via SDK
+                self.sdk_client
+                    .increment_scanned(sync_run_id, page_thread_count as i32)
                     .await?;
             }
 
@@ -1955,7 +1334,7 @@ impl SyncManager {
             user_email
         );
 
-        // Step 2: Process threads in batches of 100
+        // Step 2: Process threads in batches of 50
         let sync_state = SyncState::new(self.redis_client.clone());
         const THREAD_BATCH_SIZE: usize = 50;
 
@@ -2082,11 +1461,11 @@ impl SyncManager {
                         Ok(content) => {
                             if !content.trim().is_empty() {
                                 // Store content via SDK
-                                match self.sdk_client.store_content(&sync_run.id, &content).await {
+                                match self.sdk_client.store_content(sync_run_id, &content).await {
                                     Ok(content_id) => {
                                         // Create connector event
                                         match gmail_thread.to_connector_event(
-                                            &sync_run.id,
+                                            sync_run_id,
                                             source_id,
                                             &content_id,
                                             &self.gmail_client,
@@ -2094,7 +1473,7 @@ impl SyncManager {
                                             Ok(event) => {
                                                 match self
                                                     .sdk_client
-                                                    .emit_event(&sync_run.id, source_id, event)
+                                                    .emit_event(sync_run_id, source_id, event)
                                                     .await
                                                 {
                                                     Ok(_) => {
@@ -2162,132 +1541,5 @@ impl SyncManager {
         );
 
         Ok((total_processed, total_updated))
-    }
-
-    pub async fn startup_sync_check(&self) -> Result<()> {
-        info!(
-            "Running startup sync check: recovering interrupted syncs and checking sync schedule"
-        );
-
-        // First, check for interrupted running syncs
-        let running_syncs = sqlx::query_as::<_, SyncRun>(
-            "SELECT * FROM sync_runs WHERE status = $1 ORDER BY started_at ASC",
-        )
-        .bind(SyncStatus::Running)
-        .fetch_all(&self.pool)
-        .await?;
-
-        if !running_syncs.is_empty() {
-            info!(
-                "Found {} interrupted running syncs, continuing them",
-                running_syncs.len()
-            );
-
-            for sync_run in running_syncs {
-                info!(
-                    "Continuing interrupted sync: id={}, source_id={}, started_at={:?}",
-                    sync_run.id, sync_run.source_id, sync_run.started_at
-                );
-
-                // Get the source for this sync run
-                if let Some(source) = self
-                    .source_repo
-                    .find_by_id(sync_run.source_id.clone())
-                    .await?
-                {
-                    if source.is_active {
-                        // Continue the sync using the existing sync run ID
-                        let result = match source.source_type {
-                            SourceType::GoogleDrive => {
-                                self.sync_drive_source_internal(&source, &sync_run).await
-                            }
-                            SourceType::Gmail => {
-                                self.sync_gmail_source_internal(&source, &sync_run).await
-                            }
-                            _ => Err(anyhow::anyhow!(
-                                "Unsupported source type: {:?}",
-                                source.source_type
-                            )),
-                        };
-
-                        // Update sync run based on result
-                        match result {
-                            Ok((files_scanned, _files_processed, files_updated)) => {
-                                self.sync_run_repo
-                                    .mark_completed(
-                                        &sync_run.id,
-                                        files_scanned as i32,
-                                        files_updated as i32,
-                                    )
-                                    .await?;
-                                info!("Successfully continued and completed sync {}", sync_run.id);
-                            }
-                            Err(e) => {
-                                error!("Failed to continue sync {}: {}", sync_run.id, e);
-                                self.sync_run_repo
-                                    .mark_failed(&sync_run.id, &e.to_string())
-                                    .await?;
-                                self.update_source_status(&source.id, "failed").await?;
-                            }
-                        }
-                    } else {
-                        info!("Source {} is not active, marking sync as failed", source.id);
-                        self.sync_run_repo
-                            .mark_failed(&sync_run.id, "Source is not active")
-                            .await?;
-                    }
-                } else {
-                    warn!(
-                        "Source {} not found for sync run {}, marking as failed",
-                        sync_run.source_id, sync_run.id
-                    );
-                    self.sync_run_repo
-                        .mark_failed(&sync_run.id, "Source not found")
-                        .await?;
-                }
-            }
-
-            info!("Interrupted sync recovery completed");
-        } else {
-            info!("No interrupted running syncs found");
-        }
-
-        // Now check for scheduled syncs for sources without running syncs
-        let sources = self.get_active_sources().await?;
-        info!(
-            "Found {} active Google sources (Drive & Gmail)",
-            sources.len()
-        );
-
-        for source in sources {
-            // Check if this source already has a running sync (from recovery above)
-            if let Some(_running_sync) = self.get_running_sync_for_source(&source.id).await? {
-                info!(
-                    "Source {} already has a running sync, skipping scheduled check",
-                    source.id
-                );
-                continue;
-            }
-
-            match self.should_run_full_sync(&source.id).await {
-                Ok(should_sync) => {
-                    if should_sync {
-                        if let Err(e) = self.sync_source(&source).await {
-                            error!("Failed to sync source {}: {}", source.id, e);
-                            self.update_source_status(&source.id, "failed").await?;
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!(
-                        "Failed to check sync status for source {}: {}",
-                        source.id, e
-                    );
-                }
-            }
-        }
-
-        info!("Startup sync check completed");
-        Ok(())
     }
 }

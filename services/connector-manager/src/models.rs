@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use shared::models::SourceType;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectorManifest {
@@ -85,7 +86,7 @@ pub struct ScheduleInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectorInfo {
-    pub source_type: String,
+    pub source_type: SourceType,
     pub url: String,
     pub healthy: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -152,6 +153,16 @@ pub struct SdkFailRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdkIncrementScannedRequest {
+    #[serde(default = "default_count")]
+    pub count: i32,
+}
+
+fn default_count() -> i32 {
+    1
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SdkStatusResponse {
     pub status: String,
 }
@@ -165,4 +176,76 @@ pub struct SdkCreateSyncRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SdkCreateSyncResponse {
     pub sync_run_id: String,
+}
+
+// ============================================================================
+// SDK Cancel Sync
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdkCancelSyncRequest {
+    pub sync_run_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdkCancelSyncResponse {
+    pub success: bool,
+}
+
+// ============================================================================
+// SDK User Email
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdkUserEmailResponse {
+    pub email: String,
+}
+
+// ============================================================================
+// SDK Webhook Notification
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdkWebhookNotification {
+    pub source_id: String,
+    pub event_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdkWebhookResponse {
+    pub sync_run_id: String,
+}
+
+// ============================================================================
+// SDK Webhook Channel Management
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdkSaveWebhookChannelRequest {
+    pub source_id: String,
+    pub channel_id: String,
+    pub resource_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_uri: Option<String>,
+    pub webhook_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdkWebhookChannel {
+    pub id: String,
+    pub source_id: String,
+    pub channel_id: String,
+    pub resource_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_uri: Option<String>,
+    pub webhook_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdkExpiringWebhookChannelsRequest {
+    pub hours_ahead: i64,
 }

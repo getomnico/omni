@@ -59,6 +59,35 @@ pub fn create_app(state: AppState) -> Router {
             get(handlers::sdk_get_credentials),
         )
         .route("/sdk/sync/create", post(handlers::sdk_create_sync))
+        .route("/sdk/sync/cancel", post(handlers::sdk_cancel_sync))
+        // User email endpoint
+        .route(
+            "/sdk/source/:source_id/user-email",
+            get(handlers::sdk_get_user_email),
+        )
+        // Webhook notification endpoint
+        .route("/sdk/webhook/notify", post(handlers::sdk_notify_webhook))
+        // Webhook channel management
+        .route(
+            "/sdk/webhook/channel",
+            post(handlers::sdk_save_webhook_channel),
+        )
+        .route(
+            "/sdk/webhook/channel/:channel_id",
+            get(handlers::sdk_get_webhook_channel_by_id),
+        )
+        .route(
+            "/sdk/webhook/channel/:channel_id",
+            axum::routing::delete(handlers::sdk_delete_webhook_channel),
+        )
+        .route(
+            "/sdk/webhook/channel/by-source/:source_id",
+            get(handlers::sdk_get_webhook_channel_by_source),
+        )
+        .route(
+            "/sdk/webhook/channels/expiring",
+            post(handlers::sdk_get_expiring_webhook_channels),
+        )
         .layer(
             ServiceBuilder::new()
                 .layer(middleware::from_fn(telemetry::middleware::trace_layer))
