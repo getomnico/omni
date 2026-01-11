@@ -283,7 +283,7 @@ services:
     expose:
       - "${GOOGLE_CONNECTOR_PORT}"
     environment:
-      <<: [*db-config, *redis-config, *otel-config]
+      <<: [*redis-config, *otel-config]
       RUST_LOG: ${RUST_LOG}
       PORT: ${GOOGLE_CONNECTOR_PORT}
       AI_SERVICE_URL: ${AI_SERVICE_URL}
@@ -297,12 +297,8 @@ services:
     networks:
       - omni-network
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
-      migrator:
-        condition: service_completed_successfully
       connector-manager:
         condition: service_started
     restart: unless-stopped
@@ -314,7 +310,7 @@ services:
     expose:
       - "${SLACK_CONNECTOR_PORT}"
     environment:
-      <<: [*db-config, *db-pool-config, *redis-config, *otel-config]
+      <<: [*redis-config, *otel-config]
       RUST_LOG: ${RUST_LOG}
       PORT: ${SLACK_CONNECTOR_PORT}
       SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
@@ -322,12 +318,8 @@ services:
     networks:
       - omni-network
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
-      migrator:
-        condition: service_completed_successfully
       connector-manager:
         condition: service_started
     restart: unless-stopped
@@ -339,7 +331,7 @@ services:
     expose:
       - "${ATLASSIAN_CONNECTOR_PORT}"
     environment:
-      <<: [*db-config, *db-pool-config, *redis-config, *otel-config]
+      <<: [*redis-config, *otel-config]
       RUST_LOG: ${RUST_LOG}
       PORT: ${ATLASSIAN_CONNECTOR_PORT}
       CONNECTOR_MANAGER_URL: http://connector-manager:${CONNECTOR_MANAGER_PORT}
@@ -351,12 +343,8 @@ services:
     networks:
       - omni-network
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
-      migrator:
-        condition: service_completed_successfully
       connector-manager:
         condition: service_started
     restart: unless-stopped

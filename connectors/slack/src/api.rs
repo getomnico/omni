@@ -1,12 +1,15 @@
 use axum::{
-    extract::{Path, State},
+    extract::State,
     http::StatusCode,
     response::{IntoResponse, Json},
     routing::{get, post},
     Router,
 };
+use dashmap::DashSet;
 use serde_json::json;
+use shared::models::SyncRequest;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{error, info};
@@ -18,7 +21,8 @@ use crate::sync::SyncManager;
 
 #[derive(Clone)]
 pub struct ApiState {
-    pub sync_manager: Arc<SyncManager>,
+    pub sync_manager: Arc<Mutex<SyncManager>>,
+    pub active_syncs: Arc<DashSet<String>>,
 }
 
 pub fn create_router(state: ApiState) -> Router {
@@ -26,8 +30,7 @@ pub fn create_router(state: ApiState) -> Router {
         // Protocol endpoints
         .route("/health", get(health))
         .route("/manifest", get(manifest))
-        .route("/sync", post(sync_all))
-        .route("/sync/:source_id", post(sync_source))
+        .route("/sync", post(trigger_sync))
         .route("/cancel", post(cancel_sync))
         .route("/action", post(execute_action))
         .layer(
@@ -55,47 +58,61 @@ async fn manifest() -> impl IntoResponse {
     Json(manifest)
 }
 
-async fn sync_all(State(state): State<ApiState>) -> Result<Json<SyncResponse>, StatusCode> {
-    info!("Manual sync triggered for all sources");
-
-    let sync_manager = state.sync_manager.clone();
-
-    tokio::spawn(async move {
-        if let Err(e) = sync_manager.sync_all_sources().await {
-            error!("Manual sync failed: {}", e);
-        }
-    });
-
-    Ok(Json(SyncResponse::started()))
-}
-
-async fn sync_source(
-    Path(source_id): Path<String>,
+async fn trigger_sync(
     State(state): State<ApiState>,
-) -> Result<Json<SyncResponse>, StatusCode> {
-    info!("Manual sync triggered for source: {}", source_id);
+    Json(request): Json<SyncRequest>,
+) -> Result<Json<SyncResponse>, (StatusCode, Json<SyncResponse>)> {
+    let sync_run_id = request.sync_run_id.clone();
+    let source_id = request.source_id.clone();
 
+    info!(
+        "Sync triggered for source {} (sync_run_id: {})",
+        source_id, sync_run_id
+    );
+
+    // Check if already syncing this source
+    if state.active_syncs.contains(&source_id) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(SyncResponse::error(
+                "Sync already in progress for this source",
+            )),
+        ));
+    }
+
+    // Mark as active
+    state.active_syncs.insert(source_id.clone());
+
+    // Spawn sync task
     let sync_manager = state.sync_manager.clone();
-    let source_id_clone = source_id.clone();
+    let active_syncs = state.active_syncs.clone();
 
     tokio::spawn(async move {
-        if let Err(e) = sync_manager
-            .sync_source_by_id(source_id_clone.clone())
-            .await
-        {
-            error!("Manual sync failed for source {}: {}", source_id_clone, e);
+        let manager = sync_manager.lock().await;
+        let result = manager.sync_source_from_request(request).await;
+
+        // Remove from active syncs when done
+        active_syncs.remove(&source_id);
+
+        if let Err(e) = result {
+            error!("Sync {} failed: {}", sync_run_id, e);
         }
     });
 
     Ok(Json(SyncResponse::started()))
 }
 
-async fn cancel_sync(Json(request): Json<CancelRequest>) -> impl IntoResponse {
+async fn cancel_sync(
+    State(state): State<ApiState>,
+    Json(request): Json<CancelRequest>,
+) -> impl IntoResponse {
     info!("Cancel requested for sync {}", request.sync_run_id);
 
-    // Slack connector doesn't support cancellation yet
+    let manager = state.sync_manager.lock().await;
+    let cancelled = manager.cancel_sync(&request.sync_run_id);
+
     Json(CancelResponse {
-        status: "not_supported".to_string(),
+        status: if cancelled { "cancelled" } else { "not_found" }.to_string(),
     })
 }
 

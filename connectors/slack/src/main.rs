@@ -1,12 +1,10 @@
 use anyhow::Result;
+use dashmap::DashSet;
 use dotenvy::dotenv;
-use shared::{
-    telemetry::{self, TelemetryConfig},
-    DatabasePool, SlackConnectorConfig,
-};
+use shared::telemetry::{self, TelemetryConfig};
 use std::sync::Arc;
-use tokio::time::{interval, Duration};
-use tracing::{error, info};
+use tokio::sync::Mutex;
+use tracing::info;
 
 mod api;
 mod auth;
@@ -28,20 +26,17 @@ async fn main() -> Result<()> {
 
     info!("Starting Slack Connector");
 
-    let config = SlackConnectorConfig::from_env();
-
-    let redis_client = redis::Client::open(config.base.redis.redis_url)?;
-
-    let db_pool = DatabasePool::from_config(&config.database).await?;
+    let redis_url = std::env::var("REDIS_URL")?;
+    let redis_client = redis::Client::open(redis_url)?;
 
     let sdk_client = SdkClient::from_env()?;
 
-    let sync_manager =
-        Arc::new(SyncManager::new(db_pool.pool().clone(), redis_client, sdk_client).await?);
+    let sync_manager = Arc::new(Mutex::new(SyncManager::new(redis_client, sdk_client)));
 
     // Create API state
     let api_state = ApiState {
-        sync_manager: Arc::clone(&sync_manager),
+        sync_manager,
+        active_syncs: Arc::new(DashSet::new()),
     };
 
     // Create HTTP server
@@ -52,32 +47,8 @@ async fn main() -> Result<()> {
 
     info!("HTTP server listening on {}", addr);
 
-    // Run HTTP server and sync loop concurrently
-    let http_server = axum::serve(listener, app);
-    let sync_loop = async {
-        let mut sync_interval = interval(Duration::from_secs(300));
-        loop {
-            sync_interval.tick().await;
-            info!("Starting sync cycle");
-
-            let sync_manager_clone = Arc::clone(&sync_manager);
-            tokio::spawn(async move {
-                if let Err(e) = sync_manager_clone.sync_all_sources().await {
-                    error!("Sync cycle failed: {}", e);
-                }
-            });
-        }
-    };
-
-    // Run both tasks concurrently
-    tokio::select! {
-        result = http_server => {
-            error!("HTTP server stopped: {:?}", result);
-        }
-        _ = sync_loop => {
-            error!("Sync loop stopped unexpectedly");
-        }
-    }
+    // Run HTTP server
+    axum::serve(listener, app).await?;
 
     Ok(())
 }

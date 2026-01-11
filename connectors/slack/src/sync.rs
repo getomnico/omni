@@ -1,10 +1,10 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
+use dashmap::DashMap;
 use redis::{AsyncCommands, Client as RedisClient};
-use shared::db::repositories::SyncRunRepository;
-use shared::models::{Source, SourceType, SyncType};
-use shared::SourceRepository;
-use sqlx::{PgPool, Row};
+use shared::models::{ServiceProvider, SourceType, SyncRequest};
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 use crate::auth::AuthManager;
@@ -12,14 +12,16 @@ use crate::client::SlackClient;
 use crate::content::ContentProcessor;
 use shared::SdkClient;
 
+struct ActiveSync {
+    cancelled: AtomicBool,
+}
+
 pub struct SyncManager {
-    pool: PgPool,
-    source_repo: SourceRepository,
-    sync_run_repo: SyncRunRepository,
     redis_client: RedisClient,
     auth_manager: AuthManager,
     slack_client: SlackClient,
     sdk_client: SdkClient,
+    active_syncs: DashMap<String, Arc<ActiveSync>>,
 }
 
 pub struct SyncState {
@@ -97,75 +99,77 @@ impl SyncState {
 }
 
 impl SyncManager {
-    pub async fn new(
-        pool: PgPool,
-        redis_client: RedisClient,
-        sdk_client: SdkClient,
-    ) -> Result<Self> {
-        let source_repo = SourceRepository::new(&pool);
-        let sync_run_repo = SyncRunRepository::new(&pool);
-
-        Ok(Self {
-            pool,
-            source_repo,
-            sync_run_repo,
+    pub fn new(redis_client: RedisClient, sdk_client: SdkClient) -> Self {
+        Self {
             redis_client,
             auth_manager: AuthManager::new(),
             slack_client: SlackClient::new(),
             sdk_client,
-        })
+            active_syncs: DashMap::new(),
+        }
     }
 
-    pub async fn sync_all_sources(&self) -> Result<()> {
-        let sources = self.get_active_sources().await?;
+    /// Cancel a running sync
+    pub fn cancel_sync(&self, sync_run_id: &str) -> bool {
+        if let Some(active_sync) = self.active_syncs.get(sync_run_id) {
+            active_sync.cancelled.store(true, Ordering::SeqCst);
+            true
+        } else {
+            false
+        }
+    }
 
-        info!("Found {} active Slack sources", sources.len());
+    /// Check if a sync has been cancelled
+    fn is_cancelled(&self, sync_run_id: &str) -> bool {
+        self.active_syncs
+            .get(sync_run_id)
+            .map(|s| s.cancelled.load(Ordering::SeqCst))
+            .unwrap_or(false)
+    }
 
-        for source in sources {
-            if let Err(e) = self.sync_source(&source).await {
-                error!("Failed to sync source {}: {}", source.id, e);
-                self.update_source_status(&source.id, "failed").await?;
-            }
+    /// Execute a sync based on the request from connector-manager
+    pub async fn sync_source_from_request(&self, request: SyncRequest) -> Result<()> {
+        let sync_run_id = &request.sync_run_id;
+        let source_id = &request.source_id;
+
+        info!(
+            "Starting sync for source: {} (sync_run_id: {})",
+            source_id, sync_run_id
+        );
+
+        // Register this sync for cancellation tracking
+        let active_sync = Arc::new(ActiveSync {
+            cancelled: AtomicBool::new(false),
+        });
+        self.active_syncs
+            .insert(sync_run_id.to_string(), active_sync.clone());
+
+        // Fetch source via SDK
+        let source = self
+            .sdk_client
+            .get_source(source_id)
+            .await
+            .context("Failed to fetch source via SDK")?;
+
+        if !source.is_active {
+            let err_msg = format!("Source is not active: {}", source_id);
+            self.sdk_client.fail(sync_run_id, &err_msg).await?;
+            self.active_syncs.remove(sync_run_id);
+            return Err(anyhow!(err_msg));
         }
 
-        Ok(())
-    }
-
-    async fn get_active_sources(&self) -> Result<Vec<Source>> {
-        let sources = self
-            .source_repo
-            .find_active_by_types(vec![SourceType::Slack])
-            .await?;
-
-        // Filter to only sources that have Slack OAuth credentials
-        let mut sources_with_creds = Vec::new();
-        for source in sources {
-            // Check if OAuth credentials exist for this source
-            let has_creds = sqlx::query_scalar::<_, bool>(
-                "SELECT EXISTS(SELECT 1 FROM oauth_credentials WHERE source_id = $1 AND provider = 'slack')"
-            )
-            .bind(&source.id)
-            .fetch_one(&self.pool)
-            .await?;
-
-            if has_creds {
-                sources_with_creds.push(source);
-            }
+        if source.source_type != SourceType::Slack {
+            let err_msg = format!(
+                "Invalid source type for Slack connector: {:?}",
+                source.source_type
+            );
+            self.sdk_client.fail(sync_run_id, &err_msg).await?;
+            self.active_syncs.remove(sync_run_id);
+            return Err(anyhow!(err_msg));
         }
-
-        Ok(sources_with_creds)
-    }
-
-    async fn sync_source(&self, source: &Source) -> Result<()> {
-        info!("Syncing source: {} ({})", source.name, source.id);
-
-        let sync_run = self
-            .sync_run_repo
-            .create(&source.id, SyncType::Full)
-            .await?;
 
         let result: Result<(usize, usize, usize)> = async {
-            let bot_token = self.get_bot_token(&source.id).await?;
+            let bot_token = self.get_bot_token(source_id).await?;
             let mut creds = self.auth_manager.validate_bot_token(&bot_token).await?;
 
             self.auth_manager
@@ -181,8 +185,6 @@ impl SyncManager {
 
             // Get all accessible channels
             let channels = self.fetch_all_channels(&creds.bot_token).await?;
-            let _current_channels: HashSet<String> =
-                channels.iter().map(|c| c.id.clone()).collect();
 
             // Track sync progress
             let mut processed_channels = 0;
@@ -190,6 +192,15 @@ impl SyncManager {
             let mut total_files = 0;
 
             for channel in channels {
+                // Check for cancellation before processing each channel
+                if self.is_cancelled(sync_run_id) {
+                    info!(
+                        "Slack sync {} cancelled, stopping early after {} channels",
+                        sync_run_id, processed_channels
+                    );
+                    break;
+                }
+
                 // Only sync channels where the bot is a member
                 if !channel.is_member {
                     debug!("Skipping channel {} - bot is not a member", channel.name);
@@ -198,8 +209,8 @@ impl SyncManager {
 
                 match self
                     .sync_channel(
-                        &source.id,
-                        &sync_run.id,
+                        source_id,
+                        sync_run_id,
                         &channel,
                         &creds.bot_token,
                         &sync_state,
@@ -216,7 +227,7 @@ impl SyncManager {
                             channel.name, message_groups, files
                         );
                         // Update scanned count via SDK
-                        if let Err(e) = self.sdk_client.increment_scanned(&sync_run.id).await {
+                        if let Err(e) = self.sdk_client.increment_scanned(sync_run_id, 1).await {
                             error!("Failed to increment scanned count: {}", e);
                         }
                     }
@@ -228,10 +239,9 @@ impl SyncManager {
 
             info!(
                 "Sync completed for source {}: {} channels processed, {} message groups, {} files",
-                source.id, processed_channels, total_message_groups, total_files
+                source_id, processed_channels, total_message_groups, total_files
             );
 
-            self.update_source_status(&source.id, "completed").await?;
             Ok((
                 processed_channels,
                 total_message_groups + total_files,
@@ -240,20 +250,34 @@ impl SyncManager {
         }
         .await;
 
-        match &result {
-            Ok((scanned, _processed, updated)) => {
-                self.sync_run_repo
-                    .mark_completed(&sync_run.id, *scanned as i32, *updated as i32)
-                    .await?;
-            }
-            Err(e) => {
-                self.sync_run_repo
-                    .mark_failed(&sync_run.id, &e.to_string())
-                    .await?;
-            }
+        // Check if cancelled
+        if self.is_cancelled(sync_run_id) {
+            info!("Sync {} was cancelled", sync_run_id);
+            let _ = self.sdk_client.cancel(sync_run_id).await;
+            self.active_syncs.remove(sync_run_id);
+            return Ok(());
         }
 
-        result.map(|_| ())
+        // Unregister sync and report result
+        self.active_syncs.remove(sync_run_id);
+
+        match result {
+            Ok((scanned, _processed, updated)) => {
+                info!(
+                    "Sync completed for source {}: {} documents processed",
+                    source.name, updated
+                );
+                self.sdk_client
+                    .complete(sync_run_id, scanned as i32, updated as i32, None)
+                    .await?;
+                Ok(())
+            }
+            Err(e) => {
+                error!("Sync failed for source {}: {}", source.name, e);
+                self.sdk_client.fail(sync_run_id, &e.to_string()).await?;
+                Err(e)
+            }
+        }
     }
 
     async fn fetch_all_users(
@@ -459,46 +483,26 @@ impl SyncManager {
     }
 
     async fn get_bot_token(&self, source_id: &str) -> Result<String> {
-        let row = sqlx::query(
-            "SELECT access_token FROM oauth_credentials 
-             WHERE source_id = $1 AND provider = 'slack'",
-        )
-        .bind(source_id)
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(row.get("access_token"))
-    }
-
-    async fn update_source_status(&self, source_id: &str, status: &str) -> Result<()> {
-        let now = chrono::Utc::now();
-        self.source_repo
-            .update_sync_status(source_id, status, Some(now), None)
-            .await?;
-
-        Ok(())
-    }
-
-    pub async fn sync_source_by_id(&self, source_id: String) -> Result<()> {
-        info!("Manually triggered sync for source: {}", source_id);
-
-        let source = self
+        let creds = self
             .sdk_client
-            .get_source(&source_id)
+            .get_credentials(source_id)
             .await
-            .context("Failed to fetch source via SDK")?;
+            .context("Failed to fetch credentials via SDK")?;
 
-        if source.source_type != SourceType::Slack {
-            return Err(anyhow::anyhow!(
-                "Source {} is not a Slack source",
-                source_id
+        if creds.provider != ServiceProvider::Slack {
+            return Err(anyhow!(
+                "Expected Slack credentials for source {}, found {:?}",
+                source_id,
+                creds.provider
             ));
         }
 
-        if !source.is_active {
-            return Err(anyhow::anyhow!("Source {} is not active", source_id));
-        }
-
-        self.sync_source(&source).await
+        // Get access_token from credentials map
+        creds
+            .credentials
+            .get("access_token")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow!("Missing access_token in Slack credentials"))
     }
 }

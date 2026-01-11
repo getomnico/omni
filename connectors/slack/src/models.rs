@@ -2,8 +2,8 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use shared::models::{ConnectorEvent, DocumentAttributes, DocumentMetadata, DocumentPermissions};
-use sqlx::types::time::OffsetDateTime;
 use std::collections::HashMap;
+use time::OffsetDateTime;
 
 // ============================================================================
 // Connector Protocol Models
