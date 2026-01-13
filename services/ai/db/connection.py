@@ -4,6 +4,8 @@ from typing import Optional
 import os
 from urllib.parse import quote_plus
 
+from pgvector.asyncpg import register_vector
+
 _db_pool: Optional[Pool] = None
 
 
@@ -16,6 +18,11 @@ def construct_database_url() -> str:
     database_port = os.environ.get("DATABASE_PORT", "5432")
 
     return f"postgresql://{quote_plus(database_username)}:{quote_plus(database_password)}@{database_host}:{database_port}/{database_name}"
+
+
+async def _init_connection(conn):
+    """Initialize connection with pgvector codec."""
+    await register_vector(conn)
 
 
 async def get_db_pool() -> Pool:
@@ -31,6 +38,7 @@ async def get_db_pool() -> Pool:
             max_queries=50000,
             max_inactive_connection_lifetime=300.0,
             command_timeout=60.0,
+            init=_init_connection,
         )
 
     return _db_pool

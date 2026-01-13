@@ -65,7 +65,6 @@ export function getDocumentIconPath(sourceType: string, contentType: string): st
 
 // Map source types to icon file paths (legacy function, kept for backward compatibility)
 export function getSourceIconPath(sourceType: string): string | null {
-    console.log('fetching source icon for', sourceType)
     switch (sourceType) {
         case SourceType.GOOGLE_DRIVE:
             return googleDriveIcon

@@ -6,7 +6,7 @@ import asyncio
 from transformers import AutoTokenizer
 
 from . import EmbeddingProvider, Chunk
-from chunking import Chunker
+from processing import Chunker
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +104,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
                         raise ValueError(
                             "Sentence chunking requires max_model_len to be set for tokenizer initialization"
                         )
-                    _, char_spans = self.chunker.chunk_by_sentences(
+                    _, char_spans = await self.chunker.chunk_by_sentences_async(
                         text, effective_chunk_size, self.tokenizer
                     )
 
@@ -125,7 +125,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
                         raise ValueError(
                             "Fixed chunking requires max_model_len to be set for tokenizer initialization"
                         )
-                    _, char_spans = self.chunker.chunk_by_tokens(
+                    _, char_spans = await self.chunker.chunk_by_tokens_async(
                         text, effective_chunk_size, self.tokenizer
                     )
 

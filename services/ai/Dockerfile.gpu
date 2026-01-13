@@ -1,11 +1,12 @@
 # Build stage - use full CUDA image for compilation
 FROM nvidia/cuda:12.1.0-devel-ubuntu22.04 AS builder
 
-# Set timezone and prevent interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV UV_COMPILE_BYTECODE=1
+ENV UV_LINK_MODE=copy
 
 # Install Python 3.12 and build dependencies
 RUN apt-get update && apt-get install -y \
@@ -14,45 +15,41 @@ RUN apt-get update && apt-get install -y \
     && add-apt-repository ppa:deadsnakes/ppa \
     && apt-get update && apt-get install -y \
     python3.12 \
-    python3.12-venv \
     python3.12-dev \
+    python3.12-venv \
     gcc \
     g++ \
     ninja-build \
-    curl \
     git \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -s /usr/bin/python3.12 /usr/bin/python
 
-# Create symlinks for python
-RUN ln -s /usr/bin/python3.12 /usr/bin/python
-
-# Install pip
-RUN python -m ensurepip --upgrade
-RUN python -m pip install --upgrade pip setuptools wheel
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
-# Copy requirements and install Python dependencies
-COPY requirements.txt .
+# Copy dependency files
+COPY pyproject.toml uv.lock ./
 
-# Install PyTorch first with pre-built wheels
-RUN python -m pip install torch --index-url https://download.pytorch.org/whl/cu126 --no-cache-dir
-RUN python -m pip install numpy
+# Create relocatable venv and install dependencies (cached layer)
+RUN uv venv --relocatable --python python3.12 && uv sync --locked --no-dev --no-install-project
 
-# Install flash-attn with memory constraints
-# RUN MAX_JOBS=1 python -m pip install --no-build-isolation flash-attn==2.7.0.post2 --no-cache-dir
+# Override torch with CUDA version
+RUN uv pip install torch --index-url https://download.pytorch.org/whl/cu126
 
-# Install remaining dependencies
-RUN python -m pip install --no-cache-dir -r requirements.txt
+# Copy source and install project
+COPY . .
+RUN uv sync --locked --no-dev --no-editable
 
-# Runtime stage - use smaller runtime image but include build tools for Triton
+# Runtime stage
 FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV PATH="/opt/venv/bin:$PATH"
+ENV PATH="/app/.venv/bin:$PATH"
 
 # Install Python 3.12 and essential build tools needed by Triton
 RUN apt-get update && apt-get install -y \
@@ -60,24 +57,17 @@ RUN apt-get update && apt-get install -y \
     && add-apt-repository ppa:deadsnakes/ppa \
     && apt-get update && apt-get install -y \
     python3.12 \
-    python3.12-venv \
     gcc \
     g++ \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/python3.12 /usr/bin/python
 
-# Create virtual environment
-RUN python -m venv /opt/venv
-
-# Copy installed packages from builder
-COPY --from=builder /usr/local/lib/python3.12/dist-packages /opt/venv/lib/python3.12/site-packages
-COPY --from=builder /usr/local/bin /opt/venv/bin
-
 WORKDIR /app
+
+# Copy venv from builder
+COPY --from=builder /app/.venv /app/.venv
 
 # Copy application code
 COPY . .
 
-# Run the application
-# Use AI_WORKERS environment variable for number of workers (defaults to 1)
-CMD sh -c "python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers ${AI_WORKERS:-1}"
+CMD ["sh", "-c", "/app/.venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers ${AI_WORKERS:-1}"]

@@ -78,9 +78,7 @@ npm install
 **AI service**:
 ```bash
 cd services/ai
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install -r requirements.txt
+uv sync
 ```
 
 ## Project Structure

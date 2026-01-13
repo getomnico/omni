@@ -1,10 +1,11 @@
+import asyncio
 import logging
 import time
 import boto3
 import json
 
 from . import EmbeddingProvider, Chunk
-from chunking import chunk_by_sentences_chars, chunk_by_chars
+from processing import chunk_by_sentences_chars, chunk_by_chars
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +38,17 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
     ) -> list[list[Chunk]]:
         """
         Generate embeddings using AWS Bedrock with chunking support.
+        Runs in executor to avoid blocking the event loop with synchronous boto3 calls.
         """
-        result = self._generate_embeddings_with_bedrock(
-            texts, task, chunk_size, chunking_mode
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,  # Use default executor
+            self._generate_embeddings_with_bedrock,
+            texts,
+            task,
+            chunk_size,
+            chunking_mode,
         )
-        return result
 
     def get_model_name(self) -> str:
         """Get the name of the Bedrock model being used."""

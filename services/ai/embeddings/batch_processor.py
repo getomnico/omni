@@ -26,9 +26,11 @@ from config import (
     EMBEDDING_BATCH_MONITOR_POLL_INTERVAL,
     BEDROCK_EMBEDDING_MODEL_ID,
     AWS_REGION,
+    EMBEDDING_MAX_DOCUMENT_SIZE,
 )
 
-from embeddings import chunk_by_sentences
+from processing.chunking import chunk_by_sentences_chars, chunk_by_chars
+from . import Chunk
 from db import (
     get_db_pool,
     DocumentsRepository,
@@ -59,8 +61,11 @@ logger = logging.getLogger(__name__)
 
 
 # Configuration for online processing
-ONLINE_BATCH_SIZE = 50  # Number of queue items to process at once
+ONLINE_BATCH_SIZE = (
+    10  # Reduced from 50 - process fewer items per batch to yield more frequently
+)
 ONLINE_POLL_INTERVAL = 5  # Seconds to wait when queue is empty
+ONLINE_BATCH_DELAY = 0.1  # Seconds to yield between batches when queue has items
 
 
 # ============================================================================
@@ -270,6 +275,9 @@ class EmbeddingBatchProcessor:
             "last_change_time": time.time(),
         }
 
+        # Limit concurrent embedding operations to yield more frequently to higher-priority tasks
+        self._embedding_semaphore = asyncio.Semaphore(1)
+
     def _create_storage_client(self) -> StorageClient:
         """Factory for storage client (Bedrock only)"""
         if EMBEDDING_BATCH_S3_BUCKET:
@@ -312,19 +320,27 @@ class EmbeddingBatchProcessor:
 
         while True:
             try:
-                await self._process_online_batch()
+                processed_any = await self._process_online_batch()
+                # Yield between batches - longer delay when actively processing
+                # to allow higher-priority tasks (stream requests) to run
+                if processed_any:
+                    await asyncio.sleep(ONLINE_BATCH_DELAY)
             except Exception as e:
                 logger.error(f"Online processing loop error: {e}", exc_info=True)
                 await asyncio.sleep(10)
 
-    async def _process_online_batch(self):
-        """Process a batch of queue items using online embedding API"""
+    async def _process_online_batch(self) -> bool:
+        """Process a batch of queue items using online embedding API.
+
+        Returns:
+            True if any items were processed, False if queue was empty.
+        """
         # Get pending items
         items = await self.queue_repo.get_pending_items(limit=ONLINE_BATCH_SIZE)
 
         if not items:
             await asyncio.sleep(ONLINE_POLL_INTERVAL)
-            return
+            return False
 
         logger.info(f"Processing {len(items)} documents via online embedding API")
 
@@ -336,81 +352,146 @@ class EmbeddingBatchProcessor:
                     f"Failed to process document {item.document_id}: {e}", exc_info=True
                 )
                 await self.queue_repo.mark_failed([item.id], str(e))
+            finally:
+                # Yield to allow higher-priority tasks (stream requests) to run
+                await asyncio.sleep(0)
+
+        return True
 
     async def _process_single_document(self, item: EmbeddingQueueItem):
         """Process a single document using the embedding provider"""
-        # Fetch document
-        doc = await self.documents_repo.get_by_id(item.document_id)
+        # Use semaphore to limit concurrent embedding operations and yield more frequently
+        async with self._embedding_semaphore:
+            # Fetch document
+            doc = await self.documents_repo.get_by_id(item.document_id)
 
-        if not doc or not doc.content_id:
-            logger.warning(f"Document {item.document_id} has no content_id, skipping")
-            await self.queue_repo.mark_failed([item.id], "Document has no content_id")
-            return
-
-        content_text = await self.content_storage.get_text(doc.content_id)
-
-        if not content_text or not content_text.strip():
-            logger.warning(f"Document {item.document_id} has empty content, skipping")
-            await self.queue_repo.mark_failed([item.id], "Document has empty content")
-            return
-
-        # Generate embeddings using the configured provider
-        try:
-            chunk_results = await self.embedding_provider.generate_embeddings(
-                texts=[content_text],
-                task="retrieval.passage",
-                chunk_size=512,
-                chunking_mode="sentence",
-            )
-
-            if not chunk_results or not chunk_results[0]:
+            if not doc or not doc.content_id:
                 logger.warning(
-                    f"No embeddings generated for document {item.document_id}"
+                    f"Document {item.document_id} has no content_id, skipping"
                 )
-                await self.queue_repo.mark_failed([item.id], "No embeddings generated")
+                await self.queue_repo.mark_failed(
+                    [item.id], "Document has no content_id"
+                )
                 return
 
-            chunks = chunk_results[0]  # First text's chunks
+            content_text = await self.content_storage.get_text(doc.content_id)
 
-            # Delete existing embeddings for this document
-            await self.embeddings_repo.delete_for_documents([item.document_id])
+            if not content_text or not content_text.strip():
+                logger.warning(
+                    f"Document {item.document_id} has empty content, skipping"
+                )
+                await self.queue_repo.mark_failed(
+                    [item.id], "Document has empty content"
+                )
+                return
 
-            # Prepare embeddings for bulk insert
-            embeddings_to_insert = []
-            for chunk_idx, chunk in enumerate(chunks):
-                embeddings_to_insert.append(
-                    {
-                        "id": str(ulid.ULID()),
-                        "document_id": item.document_id,
-                        "chunk_index": chunk_idx,
-                        "chunk_start_offset": chunk.span[0],
-                        "chunk_end_offset": chunk.span[1],
-                        "embedding": chunk.embedding,
-                        "model_name": self.embedding_provider.get_model_name(),
-                    }
+            # Check document size and handle large documents with character-based chunking
+            content_size = len(content_text.encode("utf-8"))
+
+            # Generate embeddings using the configured provider
+            try:
+                if content_size > EMBEDDING_MAX_DOCUMENT_SIZE:
+                    # Large document: split by characters to avoid slow tokenization
+                    # Use a chunk size that keeps pieces under the limit
+                    logger.info(
+                        f"Document {item.document_id} exceeds size limit "
+                        f"({content_size} > {EMBEDDING_MAX_DOCUMENT_SIZE} bytes), "
+                        "using character-based chunking"
+                    )
+                    char_chunk_size = EMBEDDING_MAX_DOCUMENT_SIZE // 2  # ~5MB chunks
+                    char_spans = chunk_by_chars(content_text, char_chunk_size)
+
+                    all_chunks = []
+                    for char_start, char_end in char_spans:
+                        piece = content_text[char_start:char_end]
+                        chunk_results = (
+                            await self.embedding_provider.generate_embeddings(
+                                texts=[piece],
+                                task="retrieval.passage",
+                                chunk_size=512,
+                                chunking_mode="sentence",
+                            )
+                        )
+
+                        if chunk_results and chunk_results[0]:
+                            # Adjust spans to be relative to original document
+                            for chunk in chunk_results[0]:
+                                adjusted_span = (
+                                    char_start + chunk.span[0],
+                                    char_start + chunk.span[1],
+                                )
+                                all_chunks.append(Chunk(adjusted_span, chunk.embedding))
+
+                    chunks = all_chunks
+                else:
+                    # Normal path: use standard chunking
+                    chunk_results = await self.embedding_provider.generate_embeddings(
+                        texts=[content_text],
+                        task="retrieval.passage",
+                        chunk_size=512,
+                        chunking_mode="sentence",
+                    )
+
+                    if not chunk_results or not chunk_results[0]:
+                        logger.warning(
+                            f"No embeddings generated for document {item.document_id}"
+                        )
+                        await self.queue_repo.mark_failed(
+                            [item.id], "No embeddings generated"
+                        )
+                        return
+
+                    chunks = chunk_results[0]  # First text's chunks
+
+                # Handle empty chunks (can happen for both paths)
+                if not chunks:
+                    logger.warning(
+                        f"No embeddings generated for document {item.document_id}"
+                    )
+                    await self.queue_repo.mark_failed(
+                        [item.id], "No embeddings generated"
+                    )
+                    return
+
+                # Delete existing embeddings for this document
+                await self.embeddings_repo.delete_for_documents([item.document_id])
+
+                # Prepare embeddings for bulk insert
+                embeddings_to_insert = []
+                for chunk_idx, chunk in enumerate(chunks):
+                    embeddings_to_insert.append(
+                        {
+                            "id": str(ulid.ULID()),
+                            "document_id": item.document_id,
+                            "chunk_index": chunk_idx,
+                            "chunk_start_offset": chunk.span[0],
+                            "chunk_end_offset": chunk.span[1],
+                            "embedding": chunk.embedding,
+                            "model_name": self.embedding_provider.get_model_name(),
+                        }
+                    )
+
+                # Bulk insert embeddings
+                await self.embeddings_repo.bulk_insert(embeddings_to_insert)
+
+                # Mark queue item completed
+                await self.queue_repo.mark_completed([item.id])
+
+                # Update document embedding status
+                await self.documents_repo.update_embedding_status(
+                    [item.document_id], "completed"
                 )
 
-            # Bulk insert embeddings
-            await self.embeddings_repo.bulk_insert(embeddings_to_insert)
+                logger.info(
+                    f"Processed document {item.document_id}: {len(chunks)} chunks embedded"
+                )
 
-            # Mark queue item completed
-            await self.queue_repo.mark_completed([item.id])
-
-            # Update document embedding status
-            await self.documents_repo.update_embedding_status(
-                [item.document_id], "completed"
-            )
-
-            logger.info(
-                f"Processed document {item.document_id}: {len(chunks)} chunks embedded"
-            )
-
-        except Exception as e:
-            logger.error(
-                f"Embedding generation failed for {item.document_id}: {e}",
-                exc_info=True,
-            )
-            await self.queue_repo.mark_failed([item.id], str(e))
+            except Exception as e:
+                logger.error(
+                    f"Embedding generation failed for {item.document_id}: {e}",
+                    exc_info=True,
+                )
+                await self.queue_repo.mark_failed([item.id], str(e))
 
     # ------------------------------------------------------------------------
     # Accumulation Loop (Bedrock only)
@@ -574,7 +655,7 @@ class EmbeddingBatchProcessor:
                 return chunks
 
             # Chunk the content
-            chunk_spans = chunk_by_sentences(content_text, chunk_size=4096)
+            chunk_spans = chunk_by_sentences_chars(content_text, max_chars=4096)
 
             for chunk_idx, (start_char, end_char) in enumerate(chunk_spans):
                 chunk_text = content_text[start_char:end_char]

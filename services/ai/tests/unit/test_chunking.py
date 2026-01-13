@@ -4,9 +4,10 @@ Unit tests for the chunking functions.
 """
 import pytest
 from transformers import AutoTokenizer
-from chunking import Chunker, chunk_by_sentences_chars, chunk_by_chars
+from processing import Chunker, chunk_by_sentences_chars, chunk_by_chars
 
 
+@pytest.mark.unit
 class TestChunkerSentenceMode:
     """Test cases for the Chunker class in sentence mode."""
 
@@ -130,6 +131,7 @@ class TestChunkerSentenceMode:
         assert "And this?" in chunks[0]
 
 
+@pytest.mark.unit
 class TestChunkerFixedMode:
     """Test cases for the Chunker class in fixed token mode."""
 
@@ -165,6 +167,7 @@ class TestChunkerFixedMode:
         assert reconstructed == text
 
 
+@pytest.mark.unit
 class TestCharacterBasedChunking:
     """Test cases for character-based chunking functions."""
 

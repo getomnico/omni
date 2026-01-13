@@ -90,23 +90,15 @@ OPENAI_EMBEDDING_DIMENSIONS = int(
     get_optional_env("OPENAI_EMBEDDING_DIMENSIONS", "1024")
 )
 
+# Generic embedding model max token length (applies to all providers)
+EMBEDDING_MAX_MODEL_LEN = int(get_optional_env("EMBEDDING_MAX_MODEL_LEN", "8192"))
+
 # Local embedding configuration (vLLM-based)
 LOCAL_EMBEDDINGS_URL = get_optional_env(
     "LOCAL_EMBEDDINGS_URL", "http://embeddings:8001/v1"
 )
 LOCAL_EMBEDDINGS_MODEL = get_optional_env(
     "LOCAL_EMBEDDINGS_MODEL", "nomic-ai/nomic-embed-text-v1.5"
-)
-VLLM_EMBEDDINGS_MAX_MODEL_LEN = int(
-    get_optional_env("VLLM_EMBEDDINGS_MAX_MODEL_LEN", "0")
-)
-
-# JINA embedding configuration
-JINA_MAX_MODEL_LEN = int(get_optional_env("JINA_MAX_MODEL_LEN", "8192"))
-
-# Bedrock embedding configuration
-BEDROCK_EMBEDDING_MAX_MODEL_LEN = int(
-    get_optional_env("BEDROCK_EMBEDDING_MAX_MODEL_LEN", "8192")
 )
 
 # LLM configuration
@@ -155,3 +147,8 @@ EMBEDDING_BATCH_ACCUMULATION_POLL_INTERVAL = int(
 EMBEDDING_BATCH_MONITOR_POLL_INTERVAL = int(
     get_optional_env("EMBEDDING_BATCH_MONITOR_POLL_INTERVAL", "30")
 )  # 30 seconds
+
+# Document size limit for embedding (defense in depth against very large documents)
+EMBEDDING_MAX_DOCUMENT_SIZE = int(
+    get_optional_env("EMBEDDING_MAX_DOCUMENT_SIZE", str(10 * 1024 * 1024))
+)  # 10MB default

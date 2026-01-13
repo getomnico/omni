@@ -6,7 +6,7 @@ import asyncio
 from transformers import AutoTokenizer
 
 from . import EmbeddingProvider, Chunk
-from chunking import Chunker
+from processing import Chunker
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ class JinaEmbeddingProvider(EmbeddingProvider):
                     chunks = [Chunk((0, len(text)), embeddings[0])]
 
                 elif chunking_mode == "sentence":
-                    _, char_spans = self.chunker.chunk_by_sentences(
+                    _, char_spans = await self.chunker.chunk_by_sentences_async(
                         text, effective_chunk_size, self.tokenizer
                     )
 
@@ -104,7 +104,7 @@ class JinaEmbeddingProvider(EmbeddingProvider):
                         chunks = [Chunk((0, len(text)), embeddings[0])]
 
                 elif chunking_mode == "fixed":
-                    _, char_spans = self.chunker.chunk_by_tokens(
+                    _, char_spans = await self.chunker.chunk_by_tokens_async(
                         text, effective_chunk_size, self.tokenizer
                     )
 

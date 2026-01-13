@@ -73,8 +73,6 @@ export const load = async ({ url, fetch, locals }) => {
             )
         }
 
-        // console.log('Search Results:', JSON.stringify(searchResults, null, 2))
-        console.log('Sources Results:', JSON.stringify(sources, null, 2))
         return {
             searchResults,
             sources,

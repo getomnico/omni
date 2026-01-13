@@ -19,9 +19,11 @@ def setup_logging(
     if level is None:
         level = os.getenv("LOG_LEVEL", "INFO")
 
-    # Default format includes timestamp, level, module name, and message
+    # Default format includes timestamp, level, module name, function name, and message
     if format_string is None:
-        format_string = "[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
+        format_string = (
+            "[%(asctime)s] [%(levelname)s] [%(name)s:%(funcName)s] %(message)s"
+        )
 
     # Configure root logger - this only needs to be done once at startup
     logging.basicConfig(

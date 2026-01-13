@@ -186,7 +186,7 @@ async def stream_chat(
     last_message = chat_messages[-1]
     if last_message.message.get("role") != "user":
         logger.info(
-            f"[ASK] Last message is not from user, no processing needed. Chat ID: {chat_id}"
+            f"Last message is not from user, no processing needed. Chat ID: {chat_id}"
         )
 
         async def empty_generator():
@@ -209,7 +209,7 @@ async def stream_chat(
             conversation_messages = messages.copy()
             max_iterations = 10  # Prevent infinite loops
             logger.info(
-                f"[ASK] Starting conversation with {len(conversation_messages)} initial messages"
+                f"Starting conversation with {len(conversation_messages)} initial messages"
             )
 
             # Extract the first user message query for caching purposes
@@ -236,19 +236,19 @@ async def stream_chat(
                 # Check if client disconnected before starting expensive operations
                 if await request.is_disconnected():
                     logger.info(
-                        f"[ASK] Client disconnected, stopping stream for chat {chat_id}"
+                        f"Client disconnected, stopping stream for chat {chat_id}"
                     )
                     break
 
-                logger.info(f"[ASK] Iteration {iteration + 1}/{max_iterations}")
+                logger.info(f"Iteration {iteration + 1}/{max_iterations}")
                 content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
 
-                logger.info(f"[ASK] Sending request to LLM provider ({LLM_PROVIDER})")
+                logger.info(f"Sending request to LLM provider ({LLM_PROVIDER})")
                 logger.debug(
-                    f"[ASK] Messages being sent: {json.dumps(conversation_messages, indent=2)}"
+                    f"Messages being sent: {json.dumps(conversation_messages, indent=2)}"
                 )
                 logger.debug(
-                    f"[ASK] Tools available: {[tool['name'] for tool in SEARCH_TOOLS]}"
+                    f"Tools available: {[tool['name'] for tool in SEARCH_TOOLS]}"
                 )
 
                 stream: AsyncStream[MessageStreamEvent] = (
@@ -265,24 +265,22 @@ async def stream_chat(
                 event_index = 0
                 message_stop_received = False
                 async for event in stream:
-                    logger.debug(
-                        f"[ASK] Received event: {event} (index: {event_index})"
-                    )
+                    logger.debug(f"Received event: {event} (index: {event_index})")
                     event_index += 1
 
                     if event.type == "message_start":
-                        logger.info(f"[ASK] Message start received.")
+                        logger.info(f"Message start received.")
 
                     if event.type == "content_block_delta":
                         # Amazon models send the first content_block_delta directly without sending the
                         # content_block_start event first, so we need to handle that case.
                         logger.debug(
-                            f"[ASK] Content block delta received at index {event.index}: {event.delta}"
+                            f"Content block delta received at index {event.index}: {event.delta}"
                         )
                         if event.delta.type == "text_delta":
                             if event.index >= len(content_blocks):
                                 logger.warning(
-                                    f"[ASK] Received text delta for unknown content block index {event.index}, creating new text block"
+                                    f"Received text delta for unknown content block index {event.index}, creating new text block"
                                 )
                                 content_blocks.append(
                                     TextBlockParam(type="text", text="")
@@ -295,7 +293,7 @@ async def stream_chat(
                             if event.index >= len(content_blocks):
                                 # This should never happen in the case of tool calls, because the start event will add a new entry in content blocks, but we handle it anyway
                                 logger.warning(
-                                    f"[ASK] Received input JSON delta for unknown content block index {event.index}, creating new tool use block"
+                                    f"Received input JSON delta for unknown content block index {event.index}, creating new tool use block"
                                 )
                                 content_blocks.append(
                                     ToolUseBlockParam(
@@ -312,7 +310,7 @@ async def stream_chat(
                         elif event.delta.type == "citations_delta":
                             if event.index >= len(content_blocks):
                                 logger.warning(
-                                    f"[ASK] Received citations delta for unknown content block index {event.index}, creating new citations block"
+                                    f"Received citations delta for unknown content block index {event.index}, creating new citations block"
                                 )
                                 content_blocks.append(
                                     TextBlockParam(type="text", text="", citations=[])
@@ -331,9 +329,7 @@ async def stream_chat(
                             citations.append(convert_citation_to_param(event.delta))
                     elif event.type == "content_block_start":
                         if event.content_block.type == "text":
-                            logger.info(
-                                f"[ASK] Text block start: {event.content_block.text}"
-                            )
+                            logger.info(f"Text block start: {event.content_block.text}")
                             content_blocks.append(
                                 TextBlockParam(
                                     type="text", text=event.content_block.text
@@ -341,7 +337,7 @@ async def stream_chat(
                             )
                         elif event.content_block.type == "tool_use":
                             logger.info(
-                                f"[ASK] Tool use block start: {event.content_block.name} (id: {event.content_block.id})"
+                                f"Tool use block start: {event.content_block.name} (id: {event.content_block.id})"
                             )
                             content_blocks.append(
                                 ToolUseBlockParam(
@@ -352,13 +348,13 @@ async def stream_chat(
                                 )
                             )
                     elif event.type == "citation":
-                        logger.info(f"[ASK] Citation received: {event.citation}")
+                        logger.info(f"Citation received: {event.citation}")
                     elif event.type == "message_stop":
-                        logger.info(f"[ASK] Message stop received.")
+                        logger.info(f"Message stop received.")
                         message_stop_received = True
 
                     logger.debug(
-                        f"[ASK] Yielding event to client: {event.to_json(indent=None)}"
+                        f"Yielding event to client: {event.to_json(indent=None)}"
                     )
                     yield f"event: message\ndata: {event.to_json(indent=None)}\n\n"
 
@@ -372,7 +368,7 @@ async def stream_chat(
                         tool_call["input"] = json.loads(cast(str, tool_call["input"]))
                     except json.JSONDecodeError as e:
                         logger.error(
-                            f"[ASK] Failed to parse tool call input as JSON: {tool_call['input']}. Error: {e}"
+                            f"Failed to parse tool call input as JSON: {tool_call['input']}. Error: {e}"
                         )
                         tool_call["input"] = {}
 
@@ -387,16 +383,16 @@ async def stream_chat(
                 # If no tool calls, we're done
                 if not tool_calls:
                     logger.info(
-                        f"[ASK] No tool calls in iteration {iteration + 1}, completing response"
+                        f"No tool calls in iteration {iteration + 1}, completing response"
                     )
                     break
 
-                logger.info(f"[ASK] Processing {len(tool_calls)} tool calls")
+                logger.info(f"Processing {len(tool_calls)} tool calls")
 
                 # Check for disconnection before expensive tool execution
                 if await request.is_disconnected():
                     logger.info(
-                        f"[ASK] Client disconnected before tool execution, stopping stream for chat {chat_id}"
+                        f"Client disconnected before tool execution, stopping stream for chat {chat_id}"
                     )
                     break
 
@@ -410,13 +406,13 @@ async def stream_chat(
                             )
                         except ValidationError as e:
                             logger.error(
-                                f"[ASK] Failed to parse search_documents tool call input: {tool_call['input']}. Error: {e}"
+                                f"Failed to parse search_documents tool call input: {tool_call['input']}. Error: {e}"
                             )
                             continue
 
                         search_query = tool_call_params.query
                         logger.info(
-                            f"[ASK] Executing search_documents tool with query: {search_query}"
+                            f"Executing search_documents tool with query: {search_query}"
                         )
                         search_results = await execute_search_tool(
                             searcher_tool=request.app.state.searcher_tool,
@@ -425,9 +421,9 @@ async def stream_chat(
                             original_user_query=original_user_query,
                         )
                         documents = [res.document for res in search_results]
-                        logger.info(f"[ASK] Search returned {len(documents)} documents")
+                        logger.info(f"Search returned {len(documents)} documents")
                         logger.debug(
-                            f"[ASK] Document titles: {[doc.title for doc in documents]}..."
+                            f"Document titles: {[doc.title for doc in documents]}..."
                         )
 
                         # Add each document as a document block for automatic citations
@@ -486,12 +482,12 @@ async def stream_chat(
                             )
                         except ValidationError as e:
                             logger.error(
-                                f"[ASK] Failed to parse read_document tool call input: {tool_call['input']}. Error: {e}"
+                                f"Failed to parse read_document tool call input: {tool_call['input']}. Error: {e}"
                             )
                             continue
 
                         logger.info(
-                            f"[ASK] Executing read_document tool with URL: {tool_call_params}"
+                            f"Executing read_document tool with params: {tool_call_params}"
                         )
                         read_results = await execute_read_document_tool(
                             searcher_tool=request.app.state.searcher_tool,
@@ -499,7 +495,7 @@ async def stream_chat(
                             user_id=chat.user_id,
                         )
                         logger.info(
-                            f"[ASK] Read document returned {len(read_results)} chunks/content"
+                            f"Read document returned {len(read_results)} chunks/content"
                         )
 
                         # Add document content as text blocks
@@ -532,11 +528,11 @@ async def stream_chat(
             yield f"event: end_of_stream\ndata: Stream ended\n\n"
 
         except asyncio.CancelledError:
-            logger.info(f"[ASK] Stream cancelled for chat {chat_id}")
+            logger.info(f"Stream cancelled for chat {chat_id}")
             raise  # Re-raise to let FastAPI handle cleanup
         except Exception as e:
             logger.error(
-                f"[ASK] Failed to generate AI response with tools: {e}", exc_info=True
+                f"Failed to generate AI response with tools: {e}", exc_info=True
             )
             yield f"event: error\ndata: Something went wrong, please try again later.\n\n"
 
@@ -555,9 +551,9 @@ async def execute_search_tool(
     original_user_query: str | None = None,
 ) -> list[SearchResult]:
     """Execute search_documents tool by calling omni-searcher"""
-    logger.info(f"[SEARCH_TOOL] Executing search with query: {tool_input.query}")
+    logger.info(f"Executing search with query: {tool_input.query}")
     logger.debug(
-        f"[SEARCH_TOOL] Full search parameters: query={tool_input.query}, sources={tool_input.sources}, content_types={tool_input.content_types}, limit={tool_input.limit}"
+        f"Full search parameters: query={tool_input.query}, sources={tool_input.sources}, content_types={tool_input.content_types}, limit={tool_input.limit}"
     )
 
     search_request = SearchRequest(
@@ -577,12 +573,10 @@ async def execute_search_tool(
     try:
         search_response: SearchResponse = await searcher_tool.handle(search_request)
     except Exception as e:
-        logger.error(f"[SEARCH_TOOL] Search failed: {e}")
+        logger.error(f"Search failed: {e}")
         return []
 
-    logger.info(
-        f"[SEARCH_TOOL] Search successful, processing {len(search_response.results)} results"
-    )
+    logger.info(f"Search successful, processing {len(search_response.results)} results")
     return search_response.results
 
 
@@ -593,7 +587,7 @@ async def execute_read_document_tool(
     user_email: str | None = None,
 ) -> list[SearchResult]:
     """Execute read_document tool by calling omni-searcher with document_id filter"""
-    logger.info(f"[READ_DOC_TOOL] Reading document: {tool_input}")
+    logger.info(f"Reading document: {tool_input}")
     document_id = tool_input.id
     document_content_start_line = tool_input.start_line
     document_content_end_line = tool_input.end_line
@@ -615,12 +609,10 @@ async def execute_read_document_tool(
     try:
         search_response: SearchResponse = await searcher_tool.handle(search_request)
     except Exception as e:
-        logger.error(f"[READ_DOC_TOOL] Read document failed: {e}")
+        logger.error(f"Read document failed: {e}")
         return []
 
-    logger.info(
-        f"[READ_DOC_TOOL] Read successful, retrieved {len(search_response.results)} chunks"
-    )
+    logger.info(f"Read successful, retrieved {len(search_response.results)} chunks")
     return search_response.results
 
 
@@ -635,7 +627,7 @@ async def generate_chat_title(
     ):
         raise HTTPException(status_code=500, detail="LLM provider not initialized")
 
-    logger.info(f"[TITLE_GEN] Generating title for chat: {chat_id}")
+    logger.info(f"Generating title for chat: {chat_id}")
 
     try:
         # Get chat from database
@@ -646,7 +638,7 @@ async def generate_chat_title(
 
         # Check if title already exists
         if chat.title:
-            logger.info(f"[TITLE_GEN] Chat already has a title: {chat.title}")
+            logger.info(f"Chat already has a title: {chat.title}")
             return {"title": chat.title, "status": "existing"}
 
         # Get messages from database
@@ -672,10 +664,8 @@ async def generate_chat_title(
                 status_code=400, detail="Could not extract conversation content"
             )
 
-        logger.info(
-            f"[TITLE_GEN] Extracted conversation text ({len(conversation_text)} chars)"
-        )
-        logger.debug(f"[TITLE_GEN] Conversation text: {conversation_text[:200]}...")
+        logger.info(f"Extracted conversation text ({len(conversation_text)} chars)")
+        logger.debug(f"Conversation text: {conversation_text[:200]}...")
 
         # Generate title using LLM
         prompt = f"{TITLE_GENERATION_SYSTEM_PROMPT}\n\nConversation:\n{conversation_text}\n\nTitle:"
@@ -694,7 +684,7 @@ async def generate_chat_title(
         if len(title) > 100:
             title = title[:97] + "..."
 
-        logger.info(f"[TITLE_GEN] Generated title: {title}")
+        logger.info(f"Generated title: {title}")
 
         # Update chat with the new title
         updated_chat = await chats_repo.update_title(chat_id, title)
@@ -707,7 +697,7 @@ async def generate_chat_title(
         raise
     except Exception as e:
         logger.error(
-            f"[TITLE_GEN] Failed to generate title for chat {chat_id}: {e}",
+            f"Failed to generate title for chat {chat_id}: {e}",
             exc_info=True,
         )
         raise HTTPException(
