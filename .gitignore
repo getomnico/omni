@@ -5,3 +5,5 @@ benchmarks/benchmarks
 benchmarks/data
 benchmarks/results
 venv/
+.venv/
+__pycache__/
