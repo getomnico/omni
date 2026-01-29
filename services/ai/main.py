@@ -23,19 +23,13 @@ from config import (
     AWS_REGION,
 )
 
-# Configure logging once at startup
 setup_logging()
-
-# Get logger for this module
 logger = logging.getLogger(__name__)
 
-# Create FastAPI application
 app = FastAPI(title="Omni AI Service", version="0.1.0")
 
-# Initialize typed application state
 app.state = AppState()  # type: ignore[assignment]
 
-# Initialize OpenTelemetry
 init_telemetry(app, "omni-ai")
 
 # Include routers
@@ -49,11 +43,8 @@ app.include_router(chat_router)
 async def startup_event():
     """Initialize services on startup."""
     try:
-        # Initialize embedding queue service
         app.state.embedding_queue = EmbeddingQueueService(app.state)
         await app.state.embedding_queue.start()
-
-        # Initialize providers (embedding, LLM, searcher, storage) and start batch processing
         await initialize_providers(app.state)
     except Exception as e:
         logger.error(f"Failed to initialize services: {e}")

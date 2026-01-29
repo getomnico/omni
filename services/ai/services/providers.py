@@ -46,7 +46,6 @@ async def initialize_providers(app_state: AppState) -> None:
     Raises:
         Exception: If initialization fails
     """
-    # Initialize embedding provider using database configuration (with env fallback)
     embedding_config = await get_embedding_config()
     logger.info(
         f"Loaded embedding configuration from database (provider: {embedding_config.provider})"

@@ -47,12 +47,11 @@ class EmbeddingProvider(ABC):
         pass
 
 
-# Import all providers after base class definition
 from .jina import JinaEmbeddingProvider
 from .bedrock import BedrockEmbeddingProvider
 from .openai import OpenAIEmbeddingProvider
 
-# Constants for task types
+# These task types are only used by Jina embeddings
 QUERY_TASK = "retrieval.query"
 PASSAGE_TASK = "retrieval.passage"
 DEFAULT_TASK = PASSAGE_TASK

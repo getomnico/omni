@@ -46,6 +46,17 @@ venv/
 services/ai/venv/
 services/ai/.venv/
 
+# Python build artifacts (prevents ai service artifacts from triggering Rust rebuilds)
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.egg-info/
+**/.pytest_cache/
+**/.coverage
+**/htmlcov/
+**/.mypy_cache/
+**/.ruff_cache/
+
 # Temporary files
 *.tmp
 *.temp
