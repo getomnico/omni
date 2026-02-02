@@ -1,6 +1,48 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use shared::{DatabaseConfig, RedisConfig};
 use spider::website::Website;
+use std::env;
+use std::process;
+use tracing::error;
+
+fn get_required_env(key: &str) -> String {
+    env::var(key).unwrap_or_else(|_| {
+        error!("Required environment variable '{}' is not set", key);
+        process::exit(1);
+    })
+}
+
+fn parse_port(port_str: &str, var_name: &str) -> u16 {
+    port_str.parse::<u16>().unwrap_or_else(|_| {
+        error!("Invalid port number in '{}': '{}'", var_name, port_str);
+        process::exit(1)
+    })
+}
+
+#[derive(Debug, Clone)]
+pub struct WebConnectorConfig {
+    pub redis: RedisConfig,
+    pub port: u16,
+    pub database: DatabaseConfig,
+}
+
+impl WebConnectorConfig {
+    pub fn from_env() -> Self {
+        let redis = RedisConfig::from_env();
+
+        let port_str = get_required_env("PORT");
+        let port = parse_port(&port_str, "PORT");
+
+        let database = DatabaseConfig::from_env();
+
+        Self {
+            redis,
+            port,
+            database,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSourceConfig {

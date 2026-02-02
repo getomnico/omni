@@ -1,9 +1,6 @@
 use anyhow::Result;
 use dotenvy::dotenv;
-use shared::{
-    telemetry::{self, TelemetryConfig},
-    GoogleConnectorConfig,
-};
+use shared::telemetry::{self, TelemetryConfig};
 use std::sync::Arc;
 use tracing::{error, info};
 
@@ -11,10 +8,13 @@ mod admin;
 mod api;
 mod auth;
 mod cache;
+mod config;
 mod drive;
 mod gmail;
 mod models;
 mod sync;
+
+use config::GoogleConnectorConfig;
 
 use shared::SdkClient;
 
@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
 
     let config = GoogleConnectorConfig::from_env();
 
-    let redis_client = redis::Client::open(config.base.redis.redis_url)?;
+    let redis_client = redis::Client::open(config.redis.redis_url)?;
 
     // Create shared AdminClient with rate limiter
     let api_rate_limit = std::env::var("GOOGLE_API_RATE_LIMIT")

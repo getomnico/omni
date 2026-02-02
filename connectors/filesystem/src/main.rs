@@ -1,13 +1,16 @@
 use anyhow::Result;
 use dotenvy::dotenv;
-use shared::{DatabasePool, FileSystemConnectorConfig};
+use shared::DatabasePool;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod config;
 mod models;
 mod scanner;
 mod sync;
 mod watcher;
+
+use config::FileSystemConnectorConfig;
 
 use shared::queue::EventQueue;
 use sync::FileSystemSyncManager;

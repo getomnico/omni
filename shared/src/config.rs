@@ -52,31 +52,6 @@ pub struct ConnectorConfig {
     pub port: u16,
 }
 
-#[derive(Debug, Clone)]
-pub struct GoogleConnectorConfig {
-    pub base: ConnectorConfig,
-    pub webhook_url: Option<String>,
-    pub ai_service_url: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct SlackConnectorConfig {
-    pub base: ConnectorConfig,
-    pub database: DatabaseConfig,
-    pub bot_token: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct FileSystemConnectorConfig {
-    pub database: DatabaseConfig,
-}
-
-#[derive(Debug, Clone)]
-pub struct WebConnectorConfig {
-    pub base: ConnectorConfig,
-    pub database: DatabaseConfig,
-}
-
 fn get_required_env(key: &str) -> String {
     env::var(key).unwrap_or_else(|_| {
         eprintln!("ERROR: Required environment variable '{}' is not set", key);
@@ -320,70 +295,5 @@ impl ConnectorConfig {
         let port = parse_port(&port_str, "PORT");
 
         Self { redis, port }
-    }
-}
-
-impl GoogleConnectorConfig {
-    pub fn from_env() -> Self {
-        let base = ConnectorConfig::from_env();
-
-        let webhook_url = env::var("GOOGLE_WEBHOOK_URL").ok();
-        if let Some(ref url) = webhook_url {
-            if !url.trim().is_empty() {
-                validate_url(url, "GOOGLE_WEBHOOK_URL");
-                if !url.starts_with("https://") {
-                    eprintln!("ERROR: GOOGLE_WEBHOOK_URL must use HTTPS for Google webhooks");
-                    eprintln!("Google requires HTTPS endpoints for webhook notifications");
-                    process::exit(1);
-                }
-            }
-        }
-
-        let ai_service_url = get_required_env("AI_SERVICE_URL");
-        let ai_service_url = validate_url(&ai_service_url, "AI_SERVICE_URL");
-
-        Self {
-            base,
-            webhook_url,
-            ai_service_url,
-        }
-    }
-}
-
-impl SlackConnectorConfig {
-    pub fn from_env() -> Self {
-        let base = ConnectorConfig::from_env();
-        let database = DatabaseConfig::from_env();
-
-        let bot_token = get_required_env("SLACK_BOT_TOKEN");
-        if bot_token.trim().is_empty() || !bot_token.starts_with("xoxb-") {
-            eprintln!("ERROR: SLACK_BOT_TOKEN must be set to a valid Slack bot token");
-            eprintln!("Bot tokens should start with 'xoxb-'");
-            eprintln!("Please install your Slack app and obtain the bot token");
-            process::exit(1);
-        }
-
-        Self {
-            base,
-            database,
-            bot_token,
-        }
-    }
-}
-
-impl FileSystemConnectorConfig {
-    pub fn from_env() -> Self {
-        let database = DatabaseConfig::from_env();
-
-        Self { database }
-    }
-}
-
-impl WebConnectorConfig {
-    pub fn from_env() -> Self {
-        let base = ConnectorConfig::from_env();
-        let database = DatabaseConfig::from_env();
-
-        Self { base, database }
     }
 }
