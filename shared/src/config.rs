@@ -55,7 +55,6 @@ pub struct ConnectorConfig {
 #[derive(Debug, Clone)]
 pub struct GoogleConnectorConfig {
     pub base: ConnectorConfig,
-    pub database: DatabaseConfig,
     pub webhook_url: Option<String>,
     pub ai_service_url: String,
 }
@@ -327,7 +326,6 @@ impl ConnectorConfig {
 impl GoogleConnectorConfig {
     pub fn from_env() -> Self {
         let base = ConnectorConfig::from_env();
-        let database = DatabaseConfig::from_env();
 
         let webhook_url = env::var("GOOGLE_WEBHOOK_URL").ok();
         if let Some(ref url) = webhook_url {
@@ -346,7 +344,6 @@ impl GoogleConnectorConfig {
 
         Self {
             base,
-            database,
             webhook_url,
             ai_service_url,
         }

@@ -180,40 +180,6 @@ impl SyncState {
         let _: () = conn.set_ex(&key, latest_date, expiry_seconds).await?;
         Ok(())
     }
-
-    pub async fn delete_thread_sync_state(&self, source_id: &str, thread_id: &str) -> Result<()> {
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        let key = if cfg!(test) {
-            self.get_test_thread_sync_key(source_id, thread_id)
-        } else {
-            self.get_thread_sync_key(source_id, thread_id)
-        };
-
-        let _: () = conn.del(&key).await?;
-        Ok(())
-    }
-
-    pub async fn get_all_synced_thread_ids(&self, source_id: &str) -> Result<HashSet<String>> {
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        let pattern = if cfg!(test) {
-            format!("google:gmail:sync:test:{}:*", source_id)
-        } else {
-            format!("google:gmail:sync:{}:*", source_id)
-        };
-
-        let keys: Vec<String> = conn.keys(&pattern).await?;
-        let prefix = if cfg!(test) {
-            format!("google:gmail:sync:test:{}:", source_id)
-        } else {
-            format!("google:gmail:sync:{}:", source_id)
-        };
-        let thread_ids: HashSet<String> = keys
-            .into_iter()
-            .filter_map(|key| key.strip_prefix(&prefix).map(|s| s.to_string()))
-            .collect();
-
-        Ok(thread_ids)
-    }
 }
 
 impl SyncManager {
