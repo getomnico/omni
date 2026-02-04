@@ -858,10 +858,6 @@ impl QueueProcessor {
             upsert_start.elapsed()
         );
 
-        // Batch mark as indexed
-        let document_ids: Vec<String> = upserted_documents.iter().map(|d| d.id.clone()).collect();
-        repo.batch_mark_as_indexed(document_ids.clone()).await?;
-
         // Batch add documents to embedding queue
         let embedding_start = std::time::Instant::now();
         let doc_ids_for_embedding: Vec<String> =
@@ -968,13 +964,6 @@ impl QueueProcessor {
                     doc_ids.len(),
                     e
                 );
-            }
-
-            // Mark all as indexed
-            for doc_id in &doc_ids {
-                if let Err(e) = repo.mark_as_indexed(doc_id).await {
-                    error!("Failed to mark document {} as indexed: {}", doc_id, e);
-                }
             }
         }
 
@@ -1285,10 +1274,6 @@ impl ProcessorContext {
             }
         }
 
-        let mark_indexed_start = std::time::Instant::now();
-        repo.mark_as_indexed(&upserted.id).await?;
-        debug!("Mark as indexed took: {:?}", mark_indexed_start.elapsed());
-
         info!("Document upserted successfully: {}", document_id);
         Ok(())
     }
@@ -1350,8 +1335,6 @@ impl ProcessorContext {
                     }
                 }
             }
-
-            repo.mark_as_indexed(&doc_id).await?;
 
             info!("Document updated successfully: {}", document_id);
         } else {

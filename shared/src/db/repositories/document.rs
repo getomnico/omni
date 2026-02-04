@@ -395,15 +395,6 @@ impl DocumentRepository {
         Ok(result.rows_affected() > 0)
     }
 
-    pub async fn mark_as_indexed(&self, id: &str) -> Result<(), DatabaseError> {
-        sqlx::query("UPDATE documents SET last_indexed_at = CURRENT_TIMESTAMP WHERE id = $1")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
-
-        Ok(())
-    }
-
     /// Upserts a document with content for BM25 indexing
     pub async fn upsert(
         &self,
@@ -422,7 +413,7 @@ impl DocumentRepository {
                 permissions = EXCLUDED.permissions,
                 attributes = EXCLUDED.attributes,
                 updated_at = EXCLUDED.updated_at,
-                last_indexed_at = EXCLUDED.last_indexed_at,
+                last_indexed_at = CURRENT_TIMESTAMP,
                 content = EXCLUDED.content
             RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
@@ -596,7 +587,7 @@ impl DocumentRepository {
                 permissions = EXCLUDED.permissions,
                 attributes = EXCLUDED.attributes,
                 updated_at = EXCLUDED.updated_at,
-                last_indexed_at = EXCLUDED.last_indexed_at,
+                last_indexed_at = CURRENT_TIMESTAMP,
                 content = EXCLUDED.content
             RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
@@ -623,26 +614,6 @@ impl DocumentRepository {
         .await?;
 
         Ok(upserted_documents)
-    }
-
-    pub async fn batch_mark_as_indexed(
-        &self,
-        document_ids: Vec<String>,
-    ) -> Result<(), DatabaseError> {
-        if document_ids.is_empty() {
-            return Ok(());
-        }
-
-        sqlx::query(
-            "UPDATE documents 
-             SET last_indexed_at = CURRENT_TIMESTAMP 
-             WHERE id = ANY($1)",
-        )
-        .bind(&document_ids)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
     }
 
     pub async fn batch_delete(&self, document_ids: Vec<String>) -> Result<i64, DatabaseError> {
