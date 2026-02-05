@@ -250,7 +250,7 @@ services:
     expose:
       - "${VLLM_EMBEDDINGS_PORT}"
     environment:
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}
+      - CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
     command:
       - "--model"
       - "${LOCAL_EMBEDDINGS_MODEL}"
@@ -263,6 +263,10 @@ services:
       - "--max-model-len"
       - "${VLLM_EMBEDDINGS_MAX_MODEL_LEN}"
       - "--trust-remote-code"
+      # The following override is included to support the default embedding model (nomic-embed-text-v1.5).
+      # For other models, this might not be required.
+      - "--hf-overrides"
+      - "{\"rope_theta\": 1000, \"rope_scaling\": {\"rope_type\": \"yarn\", \"factor\": 4.0, \"original_max_position_embeddings\": 2048}, \"model_max_length\": 8192}"
     networks:
       - omni-network
     volumes:
