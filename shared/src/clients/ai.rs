@@ -70,7 +70,7 @@ impl AIClient {
     pub async fn generate_embeddings(&self, texts: Vec<String>) -> Result<Vec<TextEmbedding>> {
         self.generate_embeddings_with_options(
             texts,
-            Some("retrieval.query".to_string()),
+            Some("query".to_string()),
             None,
             Some("none".to_string()),
             None, // Default priority

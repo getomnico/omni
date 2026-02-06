@@ -10,46 +10,49 @@ from processing import Chunker
 
 logger = logging.getLogger(__name__)
 
+COHERE_MAX_BATCH_SIZE = 96
+COHERE_MAX_RETRIES = 3
+COHERE_RETRY_DELAY = 1.0
 
-class JinaEmbeddingProvider(EmbeddingProvider):
-    """Provider for JINA AI Embeddings API."""
 
-    TASK_MAP = {"query": "retrieval.query", "passage": "retrieval.passage"}
-    DEFAULT_TASK = "passage"
+class CohereEmbeddingProvider(EmbeddingProvider):
+    """Provider for Cohere Embeddings API."""
 
-    # JINA API Configuration
-    JINA_ORG = "jinaai"
-    JINA_MAX_BATCH_SIZE = 2048
-    JINA_MAX_RETRIES = 3
-    JINA_RETRY_DELAY = 1.0
+    TASK_MAP = {"query": "search_query", "passage": "search_document"}
+    DEFAULT_TASK = "search_document"
 
-    def __init__(self, api_key: str, model: str, api_url: str, max_model_len: int):
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        api_url: str,
+        max_model_len: int,
+        dimensions: int | None = None,
+    ):
         self.api_key = api_key
         self.model = model
         self.api_url = api_url
         self.max_model_len = max_model_len
+        self.dimensions = dimensions
 
         if not self.api_key:
-            raise ValueError("api_key is required for JINA provider")
+            raise ValueError("api_key is required for Cohere provider")
 
-        self.client = JINAEmbeddingClient(self.api_key, self.model, self.api_url)
+        self.client = CohereEmbeddingClient(
+            self.api_key, self.model, self.api_url, self.dimensions
+        )
 
-        hf_model_id = (
-            model
-            if model.startswith(f"{self.JINA_ORG}/")
-            else f"{self.JINA_ORG}/{model}"
-        )
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            hf_model_id, trust_remote_code=True
-        )
+        self.tokenizer = AutoTokenizer.from_pretrained("gpt2")
         self.chunker = Chunker()
 
         logger.info(
-            f"Initialized JINA embedding provider - model: {model}, max_model_len: {max_model_len}"
+            f"Initialized Cohere embedding provider - model: {model}, max_model_len: {max_model_len}"
         )
 
+    def _map_task(self, task: str) -> str:
+        return self.TASK_MAP.get(task, task)
+
     def get_model_name(self) -> str:
-        """Get the name of the JINA model being used."""
         return self.model
 
     async def generate_embeddings(
@@ -59,17 +62,14 @@ class JinaEmbeddingProvider(EmbeddingProvider):
         chunk_size: int,
         chunking_mode: str,
     ) -> list[Chunk]:
-        """Generate embeddings using JINA API with chunking support."""
-
         start_time = time.time()
-        api_task = self.TASK_MAP.get(task, task)
 
-        # Cap chunk_size at max_model_len
         effective_chunk_size = min(chunk_size, self.max_model_len)
+        cohere_task = self._map_task(task)
 
         try:
             if chunking_mode == "none":
-                embeddings = await self.client.generate_embeddings([text], api_task)
+                embeddings = await self.client.generate_embeddings([text], cohere_task)
                 chunks = [Chunk((0, len(text)), embeddings[0])]
 
             elif chunking_mode == "sentence":
@@ -81,14 +81,16 @@ class JinaEmbeddingProvider(EmbeddingProvider):
 
                 if chunk_texts:
                     embeddings = await self.client.generate_embeddings(
-                        chunk_texts, api_task
+                        chunk_texts, cohere_task
                     )
                     chunks = [
                         Chunk(span, embedding)
                         for span, embedding in zip(char_spans, embeddings)
                     ]
                 else:
-                    embeddings = await self.client.generate_embeddings([text], api_task)
+                    embeddings = await self.client.generate_embeddings(
+                        [text], cohere_task
+                    )
                     chunks = [Chunk((0, len(text)), embeddings[0])]
 
             elif chunking_mode == "fixed":
@@ -99,7 +101,7 @@ class JinaEmbeddingProvider(EmbeddingProvider):
                 chunk_texts = [text[start:end] for start, end in char_spans]
 
                 embeddings = await self.client.generate_embeddings(
-                    chunk_texts, api_task
+                    chunk_texts, cohere_task
                 )
                 chunks = [
                     Chunk(span, embedding)
@@ -110,67 +112,67 @@ class JinaEmbeddingProvider(EmbeddingProvider):
                 logger.warning(
                     f"Unsupported chunking mode: {chunking_mode}, using no chunking"
                 )
-                embeddings = await self.client.generate_embeddings([text], api_task)
+                embeddings = await self.client.generate_embeddings([text], cohere_task)
                 chunks = [Chunk((0, len(text)), embeddings[0])]
 
             end_time = time.time()
             total_time = end_time - start_time
             logger.info(
-                f"JINA embedding generation complete - total_time: {total_time:.2f}s, "
+                f"Cohere embedding generation complete - total_time: {total_time:.2f}s, "
                 f"total_chunks: {len(chunks)}"
             )
 
             return chunks
 
         except Exception as e:
-            logger.error(f"Error generating embeddings with JINA: {str(e)}")
-            raise Exception(f"JINA embedding generation failed: {str(e)}")
+            logger.error(f"Error generating embeddings with Cohere: {str(e)}")
+            raise Exception(f"Cohere embedding generation failed: {str(e)}")
 
 
-class JINAEmbeddingClient:
-    """Client for JINA AI Embedding API"""
+class CohereEmbeddingClient:
+    """Client for Cohere Embedding API"""
 
-    def __init__(self, api_key: str, model: str, api_url: str):
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        api_url: str,
+        dimensions: int | None = None,
+    ):
         self.api_url = api_url
         self.api_key = api_key
         self.model = model
+        self.dimensions = dimensions
 
         if not self.api_key:
-            raise ValueError("JINA API key is required")
+            raise ValueError("Cohere API key is required")
 
-        # Create async HTTP client with timeout settings
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, connect=5.0),
             limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
         )
 
     async def close(self):
-        """Close the HTTP client"""
         await self.client.aclose()
 
-    async def _make_request(
-        self, texts: list[str], task: str, dimensions: int | None = None
-    ) -> dict:
-        """Make a request to JINA API with retry logic"""
+    async def _make_request(self, texts: list[str], input_type: str) -> dict:
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
         }
 
-        # Prepare request payload
         payload = {
             "model": self.model,
-            "task": task,
-            "input": texts,
-            "late_chunking": True,
+            "texts": texts,
+            "input_type": input_type,
+            "embedding_types": ["float"],
+            "truncate": "NONE",
         }
 
-        # Add dimensions if specified (for Matryoshka representation)
-        if dimensions:
-            payload["dimensions"] = dimensions
+        if self.dimensions:
+            payload["output_dimension"] = self.dimensions
 
-        # Retry logic with exponential backoff
-        for attempt in range(JINA_MAX_RETRIES):
+        for attempt in range(COHERE_MAX_RETRIES):
             try:
                 response = await self.client.post(
                     self.api_url, headers=headers, json=payload
@@ -178,10 +180,10 @@ class JINAEmbeddingClient:
 
                 if response.status_code == 200:
                     return response.json()
-                elif response.status_code == 429:  # Rate limit
+                elif response.status_code == 429:
                     retry_after = float(
                         response.headers.get(
-                            "Retry-After", JINA_RETRY_DELAY * (2**attempt)
+                            "Retry-After", COHERE_RETRY_DELAY * (2**attempt)
                         )
                     )
                     logger.warning(
@@ -190,49 +192,43 @@ class JINAEmbeddingClient:
                     await asyncio.sleep(retry_after)
                 else:
                     error_msg = (
-                        f"JINA API error: {response.status_code} - {response.text}"
+                        f"Cohere API error: {response.status_code} - {response.text}"
                     )
-                    if attempt < JINA_MAX_RETRIES - 1:
+                    if attempt < COHERE_MAX_RETRIES - 1:
                         logger.warning(f"{error_msg}, retrying...")
-                        await asyncio.sleep(JINA_RETRY_DELAY * (2**attempt))
+                        await asyncio.sleep(COHERE_RETRY_DELAY * (2**attempt))
                     else:
                         raise Exception(error_msg)
 
             except httpx.RequestError as e:
-                if attempt < JINA_MAX_RETRIES - 1:
+                if attempt < COHERE_MAX_RETRIES - 1:
                     logger.warning(f"Request error: {e}, retrying...")
-                    await asyncio.sleep(JINA_RETRY_DELAY * (2**attempt))
+                    await asyncio.sleep(COHERE_RETRY_DELAY * (2**attempt))
                 else:
-                    raise Exception(f"Failed to connect to JINA API: {e}")
+                    raise Exception(f"Failed to connect to Cohere API: {e}")
 
-        raise Exception(f"Failed after {JINA_MAX_RETRIES} retries")
+        raise Exception(f"Failed after {COHERE_MAX_RETRIES} retries")
 
     async def generate_embeddings(
         self,
         texts: list[str],
-        task: str = JinaEmbeddingProvider.DEFAULT_TASK,
-        dimensions: int | None = None,
+        input_type: str = CohereEmbeddingProvider.DEFAULT_TASK,
     ) -> list[list[float]]:
-        """Generate embeddings for a list of texts"""
-
-        # Handle empty input
         if not texts:
             return []
 
-        # Process in batches if necessary
         all_embeddings = []
 
-        for i in range(0, len(texts), JINA_MAX_BATCH_SIZE):
-            batch = texts[i : i + JINA_MAX_BATCH_SIZE]
+        for i in range(0, len(texts), COHERE_MAX_BATCH_SIZE):
+            batch = texts[i : i + COHERE_MAX_BATCH_SIZE]
 
             logger.info(
-                f"Generating embeddings for batch {i//JINA_MAX_BATCH_SIZE + 1} ({len(batch)} texts)"
+                f"Generating embeddings for batch {i // COHERE_MAX_BATCH_SIZE + 1} ({len(batch)} texts)"
             )
 
-            response = await self._make_request(batch, task, dimensions)
+            response = await self._make_request(batch, input_type)
 
-            # Extract embeddings from response
-            embeddings = [item["embedding"] for item in response["data"]]
+            embeddings = response["embeddings"]["float"]
             all_embeddings.extend(embeddings)
 
         return all_embeddings

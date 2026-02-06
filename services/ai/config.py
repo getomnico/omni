@@ -90,6 +90,14 @@ OPENAI_EMBEDDING_DIMENSIONS = int(
     get_optional_env("OPENAI_EMBEDDING_DIMENSIONS", "1024")
 )
 
+# Cohere embedding configuration
+COHERE_EMBEDDING_API_KEY = get_optional_env("COHERE_EMBEDDING_API_KEY", "")
+COHERE_EMBEDDING_MODEL = get_optional_env("COHERE_EMBEDDING_MODEL", "embed-v4.0")
+COHERE_EMBEDDING_API_URL = get_optional_env(
+    "COHERE_EMBEDDING_API_URL", "https://api.cohere.com/v2/embed"
+)
+COHERE_EMBEDDING_DIMENSIONS = int(get_optional_env("COHERE_EMBEDDING_DIMENSIONS", "0"))
+
 # Generic embedding model max token length (applies to all providers)
 EMBEDDING_MAX_MODEL_LEN = int(get_optional_env("EMBEDDING_MAX_MODEL_LEN", "8192"))
 

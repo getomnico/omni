@@ -250,6 +250,17 @@ class OpenAIEmbeddingConfig:
 
 
 @dataclass
+class CohereEmbeddingConfig:
+    """Cohere embedding provider configuration"""
+
+    provider: Literal["cohere"]
+    cohere_api_key: Optional[str]
+    cohere_model: str
+    cohere_api_url: Optional[str]
+    cohere_dimensions: Optional[int]
+
+
+@dataclass
 class BedrockEmbeddingConfig:
     """AWS Bedrock embedding provider configuration"""
 
@@ -261,6 +272,7 @@ EmbeddingConfig = Union[
     LocalEmbeddingConfig,
     JinaEmbeddingConfig,
     OpenAIEmbeddingConfig,
+    CohereEmbeddingConfig,
     BedrockEmbeddingConfig,
 ]
 
@@ -288,6 +300,14 @@ def parse_embedding_config(data: dict) -> EmbeddingConfig:
             openai_api_key=data.get("openaiApiKey"),
             openai_model=data.get("openaiModel", ""),
             openai_dimensions=data.get("openaiDimensions"),
+        )
+    elif provider == "cohere":
+        return CohereEmbeddingConfig(
+            provider="cohere",
+            cohere_api_key=data.get("cohereApiKey"),
+            cohere_model=data.get("cohereModel", ""),
+            cohere_api_url=data.get("cohereApiUrl"),
+            cohere_dimensions=data.get("cohereDimensions"),
         )
     elif provider == "bedrock":
         return BedrockEmbeddingConfig(
@@ -331,6 +351,10 @@ class EmbeddingConfigCache:
             OPENAI_EMBEDDING_API_KEY,
             OPENAI_EMBEDDING_MODEL,
             OPENAI_EMBEDDING_DIMENSIONS,
+            COHERE_EMBEDDING_API_KEY,
+            COHERE_EMBEDDING_MODEL,
+            COHERE_EMBEDDING_API_URL,
+            COHERE_EMBEDDING_DIMENSIONS,
             LOCAL_EMBEDDINGS_URL,
             LOCAL_EMBEDDINGS_MODEL,
         )
@@ -354,6 +378,14 @@ class EmbeddingConfigCache:
                 openai_api_key=OPENAI_EMBEDDING_API_KEY,
                 openai_model=OPENAI_EMBEDDING_MODEL or "",
                 openai_dimensions=OPENAI_EMBEDDING_DIMENSIONS,
+            )
+        elif EMBEDDING_PROVIDER == "cohere":
+            return CohereEmbeddingConfig(
+                provider="cohere",
+                cohere_api_key=COHERE_EMBEDDING_API_KEY,
+                cohere_model=COHERE_EMBEDDING_MODEL or "",
+                cohere_api_url=COHERE_EMBEDDING_API_URL,
+                cohere_dimensions=COHERE_EMBEDDING_DIMENSIONS or None,
             )
         elif EMBEDDING_PROVIDER == "bedrock":
             return BedrockEmbeddingConfig(

@@ -14,14 +14,10 @@ export const load: PageServerLoad = async ({ locals }) => {
     const config = await getEmbeddingConfig()
 
     if (!config) {
-        return {
-            config: null,
-            hasJinaApiKey: false,
-            hasOpenaiApiKey: false,
-        }
+        return { config: null, hasApiKey: false }
     }
 
-    // Return provider-specific data based on config type
+    // Strip secrets, return provider-specific data
     switch (config.provider) {
         case 'local':
             return {
@@ -30,8 +26,7 @@ export const load: PageServerLoad = async ({ locals }) => {
                     localBaseUrl: config.localBaseUrl,
                     localModel: config.localModel,
                 },
-                hasJinaApiKey: false,
-                hasOpenaiApiKey: false,
+                hasApiKey: false,
             }
         case 'jina':
             return {
@@ -40,8 +35,7 @@ export const load: PageServerLoad = async ({ locals }) => {
                     jinaModel: config.jinaModel,
                     jinaApiUrl: config.jinaApiUrl,
                 },
-                hasJinaApiKey: !!config.jinaApiKey,
-                hasOpenaiApiKey: false,
+                hasApiKey: !!config.jinaApiKey,
             }
         case 'openai':
             return {
@@ -50,8 +44,17 @@ export const load: PageServerLoad = async ({ locals }) => {
                     openaiModel: config.openaiModel,
                     openaiDimensions: config.openaiDimensions,
                 },
-                hasJinaApiKey: false,
-                hasOpenaiApiKey: !!config.openaiApiKey,
+                hasApiKey: !!config.openaiApiKey,
+            }
+        case 'cohere':
+            return {
+                config: {
+                    provider: config.provider,
+                    cohereModel: config.cohereModel,
+                    cohereApiUrl: config.cohereApiUrl,
+                    cohereDimensions: config.cohereDimensions,
+                },
+                hasApiKey: !!config.cohereApiKey,
             }
         case 'bedrock':
             return {
@@ -59,8 +62,7 @@ export const load: PageServerLoad = async ({ locals }) => {
                     provider: config.provider,
                     bedrockModelId: config.bedrockModelId,
                 },
-                hasJinaApiKey: false,
-                hasOpenaiApiKey: false,
+                hasApiKey: false,
             }
     }
 }
@@ -80,7 +82,7 @@ export const actions: Actions = {
             })
         }
 
-        if (!['local', 'jina', 'openai', 'bedrock'].includes(provider)) {
+        if (!['local', 'jina', 'openai', 'cohere', 'bedrock'].includes(provider)) {
             return fail(400, {
                 error: 'Invalid provider',
                 provider,
@@ -166,6 +168,35 @@ export const actions: Actions = {
                         openaiModel,
                         openaiApiKey: openaiApiKey || existingApiKey,
                         openaiDimensions,
+                    }
+                    break
+                }
+
+                case 'cohere': {
+                    const cohereModel = formData.get('cohereModel') as string
+                    const cohereApiKey = (formData.get('cohereApiKey') as string) || null
+                    const cohereApiUrl = (formData.get('cohereApiUrl') as string) || null
+                    const cohereDimensionsStr = formData.get('cohereDimensions') as string
+                    const cohereDimensions = cohereDimensionsStr
+                        ? parseInt(cohereDimensionsStr, 10)
+                        : null
+
+                    if (!cohereModel) {
+                        return fail(400, {
+                            error: 'Model is required for Cohere provider',
+                            provider,
+                        })
+                    }
+
+                    const existingCohereKey =
+                        existingConfig?.provider === 'cohere' ? existingConfig.cohereApiKey : null
+
+                    configData = {
+                        provider: 'cohere',
+                        cohereModel,
+                        cohereApiKey: cohereApiKey || existingCohereKey,
+                        cohereApiUrl,
+                        cohereDimensions,
                     }
                     break
                 }

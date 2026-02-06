@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm'
 import { db } from './index'
 import { configuration } from './schema'
 
-export type EmbeddingProvider = 'local' | 'jina' | 'openai' | 'bedrock'
+export type EmbeddingProvider = 'local' | 'jina' | 'openai' | 'cohere' | 'bedrock'
 
 // Provider-specific config types
 export interface LocalEmbeddingConfig {
@@ -25,6 +25,14 @@ export interface OpenAIEmbeddingConfig {
     openaiDimensions: number | null
 }
 
+export interface CohereEmbeddingConfig {
+    provider: 'cohere'
+    cohereApiKey: string | null
+    cohereModel: string
+    cohereApiUrl: string | null
+    cohereDimensions: number | null
+}
+
 export interface BedrockEmbeddingConfig {
     provider: 'bedrock'
     bedrockModelId: string
@@ -35,6 +43,7 @@ export type EmbeddingConfig =
     | LocalEmbeddingConfig
     | JinaEmbeddingConfig
     | OpenAIEmbeddingConfig
+    | CohereEmbeddingConfig
     | BedrockEmbeddingConfig
 
 const EMBEDDING_CONFIG_KEY = 'embedding_config'
@@ -73,6 +82,14 @@ export async function getEmbeddingConfig(): Promise<EmbeddingConfig | null> {
                 openaiApiKey: raw.openaiApiKey as string | null,
                 openaiModel: raw.openaiModel as string,
                 openaiDimensions: raw.openaiDimensions as number | null,
+            }
+        case 'cohere':
+            return {
+                provider: 'cohere',
+                cohereApiKey: raw.cohereApiKey as string | null,
+                cohereModel: raw.cohereModel as string,
+                cohereApiUrl: raw.cohereApiUrl as string | null,
+                cohereDimensions: raw.cohereDimensions as number | null,
             }
         case 'bedrock':
             return {

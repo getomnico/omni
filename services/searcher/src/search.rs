@@ -643,7 +643,7 @@ impl SearchEngine {
             .ai_client
             .generate_embeddings_with_options(
                 vec![query.to_string()],
-                Some("retrieval.query".to_string()),
+                Some("query".to_string()),
                 None,
                 Some("none".to_string()),
                 Some("high".to_string()), // High priority for search queries

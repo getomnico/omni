@@ -11,7 +11,7 @@
 
     let { data, form }: { data: PageData; form: ActionData } = $props()
 
-    type Provider = 'local' | 'jina' | 'openai' | 'bedrock'
+    type Provider = 'local' | 'jina' | 'openai' | 'cohere' | 'bedrock'
 
     // Form state with defaults
     let provider = $state<Provider>(data.config?.provider || 'jina')
@@ -26,6 +26,11 @@
     let openaiApiKey = $state('')
     let openaiModel = $state(data.config?.openaiModel || 'text-embedding-3-small')
     let openaiDimensions = $state(data.config?.openaiDimensions || 1536)
+    // Cohere fields
+    let cohereApiKey = $state('')
+    let cohereModel = $state(data.config?.cohereModel || 'embed-v4.0')
+    let cohereApiUrl = $state(data.config?.cohereApiUrl || 'https://api.cohere.com/v2/embed')
+    let cohereDimensions = $state(data.config?.cohereDimensions || '')
     // Bedrock fields
     let bedrockModelId = $state(data.config?.bedrockModelId || 'amazon.titan-embed-text-v2:0')
     // Form state
@@ -40,6 +45,7 @@
         ],
         jina: ['jina-embeddings-v3', 'jina-embeddings-v2-base-en'],
         openai: ['text-embedding-3-small', 'text-embedding-3-large', 'text-embedding-ada-002'],
+        cohere: ['embed-v4.0', 'embed-v3.0', 'embed-multilingual-v3.0'],
         bedrock: [
             'amazon.titan-embed-text-v2:0',
             'amazon.titan-embed-text-v1',
@@ -122,6 +128,10 @@
                                 <Label for="openai" class="font-normal">OpenAI</Label>
                             </div>
                             <div class="flex items-center space-x-2">
+                                <RadioGroup.Item value="cohere" id="cohere" />
+                                <Label for="cohere" class="font-normal">Cohere</Label>
+                            </div>
+                            <div class="flex items-center space-x-2">
                                 <RadioGroup.Item value="bedrock" id="bedrock" />
                                 <Label for="bedrock" class="font-normal">AWS Bedrock</Label>
                             </div>
@@ -188,19 +198,18 @@
                         </Card.Header>
                         <Card.Content class="space-y-4">
                             <div class="space-y-2">
-                                <Label for="jinaApiKey"
-                                    >API Key {data.hasJinaApiKey ? '' : '*'}</Label>
+                                <Label for="jinaApiKey">API Key {data.hasApiKey ? '' : '*'}</Label>
                                 <Input
                                     id="jinaApiKey"
                                     name="jinaApiKey"
                                     type="password"
                                     bind:value={jinaApiKey}
-                                    placeholder={data.hasJinaApiKey
+                                    placeholder={data.hasApiKey
                                         ? 'Leave empty to keep current key'
                                         : 'jina_...'}
-                                    required={provider === 'jina' && !data.hasJinaApiKey} />
+                                    required={provider === 'jina' && !data.hasApiKey} />
                                 <p class="text-muted-foreground text-sm">
-                                    {data.hasJinaApiKey
+                                    {data.hasApiKey
                                         ? 'Leave empty to keep current key, or enter new key to update'
                                         : 'Your Jina AI API key'}
                                 </p>
@@ -255,18 +264,18 @@
                         <Card.Content class="space-y-4">
                             <div class="space-y-2">
                                 <Label for="openaiApiKey"
-                                    >API Key {data.hasOpenaiApiKey ? '' : '*'}</Label>
+                                    >API Key {data.hasApiKey ? '' : '*'}</Label>
                                 <Input
                                     id="openaiApiKey"
                                     name="openaiApiKey"
                                     type="password"
                                     bind:value={openaiApiKey}
-                                    placeholder={data.hasOpenaiApiKey
+                                    placeholder={data.hasApiKey
                                         ? 'Leave empty to keep current key'
                                         : 'sk-...'}
-                                    required={provider === 'openai' && !data.hasOpenaiApiKey} />
+                                    required={provider === 'openai' && !data.hasApiKey} />
                                 <p class="text-muted-foreground text-sm">
-                                    {data.hasOpenaiApiKey
+                                    {data.hasApiKey
                                         ? 'Leave empty to keep current key, or enter new key to update'
                                         : 'Your OpenAI API key'}
                                 </p>
@@ -306,6 +315,87 @@
                                 <p class="text-muted-foreground text-sm">
                                     Embedding dimensions (text-embedding-3-* supports 256-3072,
                                     ada-002 is fixed at 1536)
+                                </p>
+                            </div>
+                        </Card.Content>
+                    </Card.Root>
+                {/if}
+
+                <!-- Cohere Configuration -->
+                {#if provider === 'cohere'}
+                    <Card.Root>
+                        <Card.Header>
+                            <Card.Title>Cohere Configuration</Card.Title>
+                            <Card.Description>
+                                Configure connection to Cohere embedding API
+                            </Card.Description>
+                        </Card.Header>
+                        <Card.Content class="space-y-4">
+                            <div class="space-y-2">
+                                <Label for="cohereApiKey"
+                                    >API Key {data.hasApiKey ? '' : '*'}</Label>
+                                <Input
+                                    id="cohereApiKey"
+                                    name="cohereApiKey"
+                                    type="password"
+                                    bind:value={cohereApiKey}
+                                    placeholder={data.hasApiKey
+                                        ? 'Leave empty to keep current key'
+                                        : 'Enter Cohere API key'}
+                                    required={provider === 'cohere' && !data.hasApiKey} />
+                                <p class="text-muted-foreground text-sm">
+                                    {data.hasApiKey
+                                        ? 'Leave empty to keep current key, or enter new key to update'
+                                        : 'Your Cohere API key'}
+                                </p>
+                            </div>
+
+                            <div class="space-y-2">
+                                <Label for="cohereModel">Model *</Label>
+                                <Input
+                                    id="cohereModel"
+                                    name="cohereModel"
+                                    bind:value={cohereModel}
+                                    placeholder="embed-v4.0"
+                                    required={provider === 'cohere'} />
+                                <p class="text-muted-foreground text-sm">
+                                    Cohere embedding model to use
+                                </p>
+                                <div class="text-muted-foreground text-xs">
+                                    <p class="mb-1 font-medium">Available models:</p>
+                                    <ul class="list-inside list-disc space-y-0.5">
+                                        {#each modelSuggestions.cohere as suggestion}
+                                            <li>{suggestion}</li>
+                                        {/each}
+                                    </ul>
+                                </div>
+                            </div>
+
+                            <div class="space-y-2">
+                                <Label for="cohereApiUrl">API URL</Label>
+                                <Input
+                                    id="cohereApiUrl"
+                                    name="cohereApiUrl"
+                                    bind:value={cohereApiUrl}
+                                    placeholder="https://api.cohere.com/v2/embed" />
+                                <p class="text-muted-foreground text-sm">
+                                    Cohere API endpoint (leave default unless using custom endpoint)
+                                </p>
+                            </div>
+
+                            <div class="space-y-2">
+                                <Label for="cohereDimensions">Dimensions</Label>
+                                <Input
+                                    id="cohereDimensions"
+                                    name="cohereDimensions"
+                                    type="number"
+                                    bind:value={cohereDimensions}
+                                    placeholder="Leave empty for model default"
+                                    min="1"
+                                    max="4096" />
+                                <p class="text-muted-foreground text-sm">
+                                    Output embedding dimensions (embed-v4.0 supports 256, 512, 1024,
+                                    1536)
                                 </p>
                             </div>
                         </Card.Content>

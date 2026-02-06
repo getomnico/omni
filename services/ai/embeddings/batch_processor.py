@@ -395,7 +395,7 @@ class EmbeddingBatchProcessor:
                     piece = content_text[offset : offset + window_size]
                     chunk_results = await self.embedding_provider.generate_embeddings(
                         text=piece,
-                        task="retrieval.passage",
+                        task="passage",
                         chunk_size=512,
                         chunking_mode="sentence",
                     )

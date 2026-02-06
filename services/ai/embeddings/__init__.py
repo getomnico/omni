@@ -30,7 +30,7 @@ class EmbeddingProvider(ABC):
 
         Args:
             text: Input text to embed
-            task: Task type (e.g., 'retrieval.query', 'retrieval.passage')
+            task: Task type ('query' or 'passage')
             chunk_size: Number of tokens per chunk
             chunking_mode: One of 'none', 'fixed', 'sentence'
 
@@ -50,6 +50,7 @@ class EmbeddingProvider(ABC):
 from .jina import JinaEmbeddingProvider
 from .bedrock import BedrockEmbeddingProvider
 from .openai import OpenAIEmbeddingProvider
+from .cohere import CohereEmbeddingProvider
 
 
 # Factory function to create embedding providers
@@ -58,7 +59,7 @@ def create_embedding_provider(provider_type: str, **kwargs) -> EmbeddingProvider
     Factory function to create embedding provider based on type.
 
     Args:
-        provider_type: Type of provider ('jina', 'bedrock', 'openai', 'local')
+        provider_type: Type of provider ('jina', 'bedrock', 'openai', 'local', 'cohere')
         **kwargs: Provider-specific configuration
             For 'jina':
                 - api_key: JINA API key
@@ -75,6 +76,12 @@ def create_embedding_provider(provider_type: str, **kwargs) -> EmbeddingProvider
                 - base_url: Local embedding server URL (e.g., 'http://embeddings:8001/v1')
                 - model: Model name (e.g., 'nomic-ai/nomic-embed-text-v1.5')
                 - max_model_len: Maximum model context length in tokens
+            For 'cohere':
+                - api_key: Cohere API key
+                - model: Cohere model name (e.g., 'embed-v4.0')
+                - api_url: Cohere API URL
+                - max_model_len: Maximum model context length in tokens
+                - dimensions: Optional output dimensions
     """
     if provider_type.lower() == "jina":
         api_key = kwargs.get("api_key")
@@ -112,6 +119,24 @@ def create_embedding_provider(provider_type: str, **kwargs) -> EmbeddingProvider
             dimensions=dimensions,
         )
 
+    elif provider_type.lower() == "cohere":
+        api_key = kwargs.get("api_key")
+        if not api_key:
+            raise ValueError("api_key is required for Cohere provider")
+        max_model_len = kwargs.get("max_model_len")
+        if not max_model_len:
+            raise ValueError("max_model_len is required for Cohere provider")
+        model = kwargs.get("model", "embed-v4.0")
+        api_url = kwargs.get("api_url", "https://api.cohere.com/v2/embed")
+        dimensions = kwargs.get("dimensions")
+        return CohereEmbeddingProvider(
+            api_key=api_key,
+            model=model,
+            api_url=api_url,
+            max_model_len=max_model_len,
+            dimensions=dimensions,
+        )
+
     elif provider_type.lower() == "local":
         base_url = kwargs.get("base_url")
         model = kwargs.get("model")
@@ -138,5 +163,6 @@ __all__ = [
     "JinaEmbeddingProvider",
     "BedrockEmbeddingProvider",
     "OpenAIEmbeddingProvider",
+    "CohereEmbeddingProvider",
     "create_embedding_provider",
 ]

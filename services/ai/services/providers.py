@@ -23,6 +23,7 @@ from db_config import (
     LocalEmbeddingConfig,
     JinaEmbeddingConfig,
     OpenAIEmbeddingConfig,
+    CohereEmbeddingConfig,
     BedrockEmbeddingConfig,
 )
 from providers import create_llm_provider
@@ -98,6 +99,24 @@ async def initialize_providers(app_state: AppState) -> None:
                 model=model,
                 dimensions=dimensions,
                 max_model_len=EMBEDDING_MAX_MODEL_LEN,
+            )
+
+        case CohereEmbeddingConfig():
+            if not embedding_config.cohere_api_key:
+                raise ValueError(
+                    "COHERE_EMBEDDING_API_KEY is required when using Cohere provider"
+                )
+
+            logger.info(
+                f"Initializing Cohere embedding provider with model: {embedding_config.cohere_model}"
+            )
+            app_state.embedding_provider = create_embedding_provider(
+                "cohere",
+                api_key=embedding_config.cohere_api_key,
+                model=embedding_config.cohere_model,
+                api_url=embedding_config.cohere_api_url,
+                max_model_len=EMBEDDING_MAX_MODEL_LEN,
+                dimensions=embedding_config.cohere_dimensions,
             )
 
         case LocalEmbeddingConfig():

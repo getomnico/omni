@@ -32,7 +32,7 @@ class EmbeddingRequest(BaseModel):
     """Request to generate embeddings for texts."""
 
     texts: list[str]
-    task: str | None = "retrieval.passage"
+    task: str | None = "passage"
     chunk_size: int | None = 512  # Chunk size in tokens
     chunking_mode: str | None = "sentence"  # "sentence", "fixed", or "none"
     priority: Literal["high", "normal", "low"] | None = "normal"
