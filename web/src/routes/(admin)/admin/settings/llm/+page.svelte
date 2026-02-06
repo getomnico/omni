@@ -11,19 +11,25 @@
 
     let { data, form }: { data: PageData; form: ActionData } = $props()
 
+    type Provider = 'vllm' | 'anthropic' | 'bedrock'
+
     // Form state with defaults
-    let provider = $state<'vllm' | 'anthropic' | 'bedrock'>(data.config?.provider || 'anthropic')
-    let primaryModelId = $state(data.config?.primaryModelId || '')
-    let secondaryModelId = $state(data.config?.secondaryModelId || '')
-    let vllmUrl = $state(data.config?.vllmUrl || 'http://vllm:8000')
-    let anthropicApiKey = $state('')
+    let provider = $state<Provider>(data.config?.provider || 'anthropic')
+    let model = $state(data.config?.model || '')
+    let apiKey = $state('')
+    let apiUrl = $state(data.config?.apiUrl || '')
+    let secondaryModel = $state(data.config?.secondaryModel || '')
     let maxTokens = $state<string>(data.config?.maxTokens?.toString() || '')
     let temperature = $state<string>(data.config?.temperature?.toString() || '')
     let topP = $state<string>(data.config?.topP?.toString() || '')
     let isSubmitting = $state(false)
 
+    // Which fields to show per provider
+    const showApiKey = (p: Provider) => p === 'anthropic'
+    const showApiUrl = (p: Provider) => p === 'vllm'
+
     // Common model suggestions based on provider
-    const modelSuggestions = {
+    const modelSuggestions: Record<Provider, string[]> = {
         vllm: ['meta-llama/Llama-3.1-8B-Instruct', 'mistralai/Mistral-7B-Instruct-v0.3'],
         anthropic: [
             'claude-sonnet-4-20250514',
@@ -115,73 +121,68 @@
                 </Card.Root>
 
                 <!-- Provider-specific Configuration -->
-                {#if provider === 'vllm'}
-                    <Card.Root>
-                        <Card.Header>
-                            <Card.Title>vLLM Configuration</Card.Title>
-                            <Card.Description>
+                <Card.Root>
+                    <Card.Header>
+                        <Card.Title>
+                            {#if provider === 'vllm'}
+                                vLLM Configuration
+                            {:else if provider === 'anthropic'}
+                                Anthropic Configuration
+                            {:else}
+                                AWS Bedrock Configuration
+                            {/if}
+                        </Card.Title>
+                        <Card.Description>
+                            {#if provider === 'vllm'}
                                 Configure connection to your self-hosted vLLM instance
-                            </Card.Description>
-                        </Card.Header>
-                        <Card.Content class="space-y-4">
+                            {:else if provider === 'anthropic'}
+                                Configure API access to Anthropic Claude
+                            {:else}
+                                AWS Bedrock uses IAM roles for authentication. Region is
+                                auto-detected from environment.
+                            {/if}
+                        </Card.Description>
+                    </Card.Header>
+                    <Card.Content class="space-y-4">
+                        <!-- API Key (anthropic only) -->
+                        {#if showApiKey(provider)}
                             <div class="space-y-2">
-                                <Label for="vllmUrl">vLLM URL *</Label>
+                                <Label for="apiKey">API Key {data.hasApiKey ? '' : '*'}</Label>
                                 <Input
-                                    id="vllmUrl"
-                                    name="vllmUrl"
-                                    bind:value={vllmUrl}
+                                    id="apiKey"
+                                    name="apiKey"
+                                    type="password"
+                                    bind:value={apiKey}
+                                    placeholder={data.hasApiKey
+                                        ? 'Leave empty to keep current key'
+                                        : 'sk-ant-...'}
+                                    required={provider === 'anthropic' && !data.hasApiKey} />
+                                <p class="text-muted-foreground text-sm">
+                                    {data.hasApiKey
+                                        ? 'Leave empty to keep current key, or enter new key to update'
+                                        : 'Your Anthropic API key (starts with sk-ant-)'}
+                                </p>
+                            </div>
+                        {/if}
+
+                        <!-- API URL (vllm only) -->
+                        {#if showApiUrl(provider)}
+                            <div class="space-y-2">
+                                <Label for="apiUrl">API URL *</Label>
+                                <Input
+                                    id="apiUrl"
+                                    name="apiUrl"
+                                    bind:value={apiUrl}
                                     placeholder="http://vllm:8000"
                                     required={provider === 'vllm'} />
                                 <p class="text-muted-foreground text-sm">
                                     The URL of your vLLM service (OpenAI-compatible API)
                                 </p>
                             </div>
-                        </Card.Content>
-                    </Card.Root>
-                {/if}
+                        {/if}
 
-                {#if provider === 'anthropic'}
-                    <Card.Root>
-                        <Card.Header>
-                            <Card.Title>Anthropic Configuration</Card.Title>
-                            <Card.Description>
-                                Configure API access to Anthropic Claude
-                            </Card.Description>
-                        </Card.Header>
-                        <Card.Content class="space-y-4">
-                            <div class="space-y-2">
-                                <Label for="anthropicApiKey"
-                                    >API Key {data.hasAnthropicApiKey ? '' : '*'}</Label>
-                                <Input
-                                    id="anthropicApiKey"
-                                    name="anthropicApiKey"
-                                    type="password"
-                                    bind:value={anthropicApiKey}
-                                    placeholder={data.hasAnthropicApiKey
-                                        ? 'Leave empty to keep current key'
-                                        : 'sk-ant-...'}
-                                    required={provider === 'anthropic' &&
-                                        !data.hasAnthropicApiKey} />
-                                <p class="text-muted-foreground text-sm">
-                                    {data.hasAnthropicApiKey
-                                        ? 'Leave empty to keep current key, or enter new key to update'
-                                        : 'Your Anthropic API key (starts with sk-ant-)'}
-                                </p>
-                            </div>
-                        </Card.Content>
-                    </Card.Root>
-                {/if}
-
-                {#if provider === 'bedrock'}
-                    <Card.Root>
-                        <Card.Header>
-                            <Card.Title>AWS Bedrock Configuration</Card.Title>
-                            <Card.Description>
-                                AWS Bedrock uses IAM roles for authentication. Region is
-                                auto-detected from environment.
-                            </Card.Description>
-                        </Card.Header>
-                        <Card.Content>
+                        <!-- Bedrock IAM notice -->
+                        {#if provider === 'bedrock'}
                             <Alert.Root>
                                 <Info class="h-4 w-4" />
                                 <Alert.Description>
@@ -189,9 +190,9 @@
                                     invoke Bedrock models
                                 </Alert.Description>
                             </Alert.Root>
-                        </Card.Content>
-                    </Card.Root>
-                {/if}
+                        {/if}
+                    </Card.Content>
+                </Card.Root>
 
                 <!-- Model Configuration -->
                 <Card.Root>
@@ -203,13 +204,14 @@
                     </Card.Header>
                     <Card.Content class="space-y-4">
                         <div class="space-y-2">
-                            <Label for="primaryModelId">Primary Model *</Label>
+                            <Label for="model"
+                                >Primary Model {provider !== 'vllm' ? '*' : ''}</Label>
                             <Input
-                                id="primaryModelId"
-                                name="primaryModelId"
-                                bind:value={primaryModelId}
+                                id="model"
+                                name="model"
+                                bind:value={model}
                                 placeholder={modelSuggestions[provider][0]}
-                                required />
+                                required={provider !== 'vllm'} />
                             <p class="text-muted-foreground text-sm">
                                 Used for main AI tasks (chat, search answers, etc.)
                             </p>
@@ -224,11 +226,11 @@
                         </div>
 
                         <div class="space-y-2">
-                            <Label for="secondaryModelId">Secondary Model (Optional)</Label>
+                            <Label for="secondaryModel">Secondary Model (Optional)</Label>
                             <Input
-                                id="secondaryModelId"
-                                name="secondaryModelId"
-                                bind:value={secondaryModelId}
+                                id="secondaryModel"
+                                name="secondaryModel"
+                                bind:value={secondaryModel}
                                 placeholder="e.g., {modelSuggestions[provider][1] ||
                                     'Faster model for simple tasks'}" />
                             <p class="text-muted-foreground text-sm">

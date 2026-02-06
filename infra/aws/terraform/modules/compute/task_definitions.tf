@@ -248,15 +248,12 @@ resource "aws_ecs_task_definition" "ai" {
       { name = "PORT", value = "3003" },
       { name = "SEARCHER_URL", value = "http://searcher.omni-${var.customer_name}.local:3001" },
       { name = "MODEL_PATH", value = "/models" },
-      { name = "EMBEDDING_MODEL", value = "intfloat/e5-large-v2" },
-      { name = "EMBEDDING_DIMENSIONS", value = "1024" },
       { name = "EMBEDDING_PROVIDER", value = "jina" },
+      { name = "EMBEDDING_MODEL", value = "jina-embeddings-v3" },
+      { name = "EMBEDDING_DIMENSIONS", value = "1024" },
       { name = "LLM_PROVIDER", value = "bedrock" },
-      # { name = "BEDROCK_MODEL_ID", value = "us.anthropic.claude-sonnet-4-5-20250929-v1:0" },
-      # { name = "TITLE_GENERATION_MODEL_ID", value = "us.anthropic.claude-haiku-4-5-20251001-v1:0" },
-      { name = "BEDROCK_MODEL_ID", value = "amazon.nova-pro-v1:0" },
-      { name = "TITLE_GENERATION_MODEL_ID", value = "amazon.nova-lite-v1:0" },
-      { name = "ANTHROPIC_MAX_TOKENS", value = "4096" },
+      { name = "LLM_MODEL", value = "amazon.nova-pro-v1:0" },
+      { name = "LLM_SECONDARY_MODEL", value = "amazon.nova-lite-v1:0" },
       { name = "AI_WORKERS", value = "1" },
       # Storage configuration
       { name = "STORAGE_BACKEND", value = "s3" },
@@ -275,7 +272,7 @@ resource "aws_ecs_task_definition" "ai" {
     ])
 
     secrets = concat(local.common_secrets, [
-      { name = "JINA_API_KEY", valueFrom = var.jina_api_key_arn }
+      { name = "EMBEDDING_API_KEY", valueFrom = var.jina_api_key_arn }
     ])
   }])
 

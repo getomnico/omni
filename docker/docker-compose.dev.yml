@@ -82,7 +82,7 @@ services:
       - "${AI_SERVICE_PORT}:${AI_SERVICE_PORT}"
     environment:
       <<: *dev-database-url
-      VLLM_URL: http://localhost:8000  # Dummy URL for dev
+      LLM_API_URL: http://localhost:8000  # Dummy URL for dev
       LOG_LEVEL: debug
     volumes:
       - ../services/ai:/app

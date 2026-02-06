@@ -15,29 +15,37 @@
 
     // Form state with defaults
     let provider = $state<Provider>(data.config?.provider || 'jina')
-    // Local fields
-    let localBaseUrl = $state(data.config?.localBaseUrl || 'http://embeddings:8001/v1')
-    let localModel = $state(data.config?.localModel || 'nomic-ai/nomic-embed-text-v1.5')
-    // Jina fields
-    let jinaApiKey = $state('')
-    let jinaModel = $state(data.config?.jinaModel || 'jina-embeddings-v3')
-    let jinaApiUrl = $state(data.config?.jinaApiUrl || 'https://api.jina.ai/v1/embeddings')
-    // OpenAI fields
-    let openaiApiKey = $state('')
-    let openaiModel = $state(data.config?.openaiModel || 'text-embedding-3-small')
-    let openaiDimensions = $state(data.config?.openaiDimensions || 1536)
-    // Cohere fields
-    let cohereApiKey = $state('')
-    let cohereModel = $state(data.config?.cohereModel || 'embed-v4.0')
-    let cohereApiUrl = $state(data.config?.cohereApiUrl || 'https://api.cohere.com/v2/embed')
-    let cohereDimensions = $state(data.config?.cohereDimensions || '')
-    // Bedrock fields
-    let bedrockModelId = $state(data.config?.bedrockModelId || 'amazon.titan-embed-text-v2:0')
-    // Form state
+    let model = $state(data.config?.model || '')
+    let apiKey = $state('')
+    let apiUrl = $state(data.config?.apiUrl || '')
+    let dimensions = $state<number | string>(data.config?.dimensions || '')
     let isSubmitting = $state(false)
 
+    // Provider-specific defaults for model and apiUrl
+    const providerDefaults: Record<Provider, { model: string; apiUrl: string }> = {
+        local: { model: 'nomic-ai/nomic-embed-text-v1.5', apiUrl: 'http://embeddings:8001/v1' },
+        jina: { model: 'jina-embeddings-v3', apiUrl: 'https://api.jina.ai/v1/embeddings' },
+        openai: { model: 'text-embedding-3-small', apiUrl: '' },
+        cohere: { model: 'embed-v4.0', apiUrl: 'https://api.cohere.com/v2/embed' },
+        bedrock: { model: 'amazon.titan-embed-text-v2:0', apiUrl: '' },
+    }
+
+    // Set defaults when provider changes (only if no saved config for this provider)
+    $effect(() => {
+        if (data.config?.provider !== provider) {
+            const defaults = providerDefaults[provider]
+            model = defaults.model
+            apiUrl = defaults.apiUrl
+        }
+    })
+
+    // Which fields to show per provider
+    const showApiKey = (p: Provider) => ['jina', 'openai', 'cohere'].includes(p)
+    const showApiUrl = (p: Provider) => ['local', 'jina', 'cohere'].includes(p)
+    const showDimensions = (p: Provider) => ['openai', 'cohere'].includes(p)
+
     // Model suggestions based on provider
-    const modelSuggestions = {
+    const modelSuggestions: Record<Provider, string[]> = {
         local: [
             'intfloat/e5-large-v2',
             'BAAI/bge-large-en-v1.5',
@@ -139,301 +147,105 @@
                     </Card.Content>
                 </Card.Root>
 
-                <!-- Local Configuration -->
-                {#if provider === 'local'}
-                    <Card.Root>
-                        <Card.Header>
-                            <Card.Title>Local Embedding Server Configuration</Card.Title>
-                            <Card.Description>
+                <!-- Provider Configuration -->
+                <Card.Root>
+                    <Card.Header>
+                        <Card.Title>Configuration</Card.Title>
+                        <Card.Description>
+                            {#if provider === 'local'}
                                 Configure connection to a self-hosted embedding server (e.g., vLLM
                                 serving embedding models)
-                            </Card.Description>
-                        </Card.Header>
-                        <Card.Content class="space-y-4">
+                            {:else if provider === 'bedrock'}
+                                AWS Bedrock uses IAM roles for authentication. Region is
+                                auto-detected from environment.
+                            {:else}
+                                Configure connection to the {provider} embedding API
+                            {/if}
+                        </Card.Description>
+                    </Card.Header>
+                    <Card.Content class="space-y-4">
+                        <!-- API Key (jina, openai, cohere) -->
+                        {#if showApiKey(provider)}
                             <div class="space-y-2">
-                                <Label for="localBaseUrl">Base URL *</Label>
+                                <Label for="apiKey">API Key {data.hasApiKey ? '' : '*'}</Label>
                                 <Input
-                                    id="localBaseUrl"
-                                    name="localBaseUrl"
-                                    bind:value={localBaseUrl}
-                                    placeholder="http://embeddings:8001/v1"
+                                    id="apiKey"
+                                    name="apiKey"
+                                    type="password"
+                                    bind:value={apiKey}
+                                    placeholder={data.hasApiKey
+                                        ? 'Leave empty to keep current key'
+                                        : 'Enter API key'}
+                                    required={showApiKey(provider) && !data.hasApiKey} />
+                                <p class="text-muted-foreground text-sm">
+                                    {data.hasApiKey
+                                        ? 'Leave empty to keep current key, or enter new key to update'
+                                        : `Your ${provider} API key`}
+                                </p>
+                            </div>
+                        {/if}
+
+                        <!-- Model (always shown) -->
+                        <div class="space-y-2">
+                            <Label for="model">Model *</Label>
+                            <Input
+                                id="model"
+                                name="model"
+                                bind:value={model}
+                                placeholder={providerDefaults[provider].model}
+                                required />
+                            <p class="text-muted-foreground text-sm">Embedding model to use</p>
+                            <div class="text-muted-foreground text-xs">
+                                <p class="mb-1 font-medium">Common models:</p>
+                                <ul class="list-inside list-disc space-y-0.5">
+                                    {#each modelSuggestions[provider] as suggestion}
+                                        <li>{suggestion}</li>
+                                    {/each}
+                                </ul>
+                            </div>
+                        </div>
+
+                        <!-- API URL (local, jina, cohere) -->
+                        {#if showApiUrl(provider)}
+                            <div class="space-y-2">
+                                <Label for="apiUrl"
+                                    >API URL {provider === 'local' ? '*' : ''}</Label>
+                                <Input
+                                    id="apiUrl"
+                                    name="apiUrl"
+                                    bind:value={apiUrl}
+                                    placeholder={providerDefaults[provider].apiUrl}
                                     required={provider === 'local'} />
                                 <p class="text-muted-foreground text-sm">
-                                    URL of your local embedding server (OpenAI-compatible API)
+                                    {#if provider === 'local'}
+                                        URL of your local embedding server (OpenAI-compatible API)
+                                    {:else}
+                                        API endpoint (leave default unless using custom endpoint)
+                                    {/if}
                                 </p>
                             </div>
+                        {/if}
 
+                        <!-- Dimensions (openai, cohere) -->
+                        {#if showDimensions(provider)}
                             <div class="space-y-2">
-                                <Label for="localModel">Model *</Label>
+                                <Label for="dimensions">Dimensions</Label>
                                 <Input
-                                    id="localModel"
-                                    name="localModel"
-                                    bind:value={localModel}
-                                    placeholder="nomic-ai/nomic-embed-text-v1.5"
-                                    required={provider === 'local'} />
-                                <p class="text-muted-foreground text-sm">
-                                    Model name as configured on your embedding server
-                                </p>
-                                <div class="text-muted-foreground text-xs">
-                                    <p class="mb-1 font-medium">Common models:</p>
-                                    <ul class="list-inside list-disc space-y-0.5">
-                                        {#each modelSuggestions.local as suggestion}
-                                            <li>{suggestion}</li>
-                                        {/each}
-                                    </ul>
-                                </div>
-                            </div>
-                        </Card.Content>
-                    </Card.Root>
-                {/if}
-
-                <!-- Jina Configuration -->
-                {#if provider === 'jina'}
-                    <Card.Root>
-                        <Card.Header>
-                            <Card.Title>Jina AI Configuration</Card.Title>
-                            <Card.Description>
-                                Configure connection to Jina AI embedding API
-                            </Card.Description>
-                        </Card.Header>
-                        <Card.Content class="space-y-4">
-                            <div class="space-y-2">
-                                <Label for="jinaApiKey">API Key {data.hasApiKey ? '' : '*'}</Label>
-                                <Input
-                                    id="jinaApiKey"
-                                    name="jinaApiKey"
-                                    type="password"
-                                    bind:value={jinaApiKey}
-                                    placeholder={data.hasApiKey
-                                        ? 'Leave empty to keep current key'
-                                        : 'jina_...'}
-                                    required={provider === 'jina' && !data.hasApiKey} />
-                                <p class="text-muted-foreground text-sm">
-                                    {data.hasApiKey
-                                        ? 'Leave empty to keep current key, or enter new key to update'
-                                        : 'Your Jina AI API key'}
-                                </p>
-                            </div>
-
-                            <div class="space-y-2">
-                                <Label for="jinaModel">Model *</Label>
-                                <Input
-                                    id="jinaModel"
-                                    name="jinaModel"
-                                    bind:value={jinaModel}
-                                    placeholder="jina-embeddings-v3"
-                                    required={provider === 'jina'} />
-                                <p class="text-muted-foreground text-sm">
-                                    Jina embedding model to use
-                                </p>
-                                <div class="text-muted-foreground text-xs">
-                                    <p class="mb-1 font-medium">Available models:</p>
-                                    <ul class="list-inside list-disc space-y-0.5">
-                                        {#each modelSuggestions.jina as suggestion}
-                                            <li>{suggestion}</li>
-                                        {/each}
-                                    </ul>
-                                </div>
-                            </div>
-
-                            <div class="space-y-2">
-                                <Label for="jinaApiUrl">API URL</Label>
-                                <Input
-                                    id="jinaApiUrl"
-                                    name="jinaApiUrl"
-                                    bind:value={jinaApiUrl}
-                                    placeholder="https://api.jina.ai/v1/embeddings" />
-                                <p class="text-muted-foreground text-sm">
-                                    Jina AI API endpoint (leave default unless using custom
-                                    endpoint)
-                                </p>
-                            </div>
-                        </Card.Content>
-                    </Card.Root>
-                {/if}
-
-                <!-- OpenAI Configuration -->
-                {#if provider === 'openai'}
-                    <Card.Root>
-                        <Card.Header>
-                            <Card.Title>OpenAI Configuration</Card.Title>
-                            <Card.Description>
-                                Configure connection to OpenAI embedding API
-                            </Card.Description>
-                        </Card.Header>
-                        <Card.Content class="space-y-4">
-                            <div class="space-y-2">
-                                <Label for="openaiApiKey"
-                                    >API Key {data.hasApiKey ? '' : '*'}</Label>
-                                <Input
-                                    id="openaiApiKey"
-                                    name="openaiApiKey"
-                                    type="password"
-                                    bind:value={openaiApiKey}
-                                    placeholder={data.hasApiKey
-                                        ? 'Leave empty to keep current key'
-                                        : 'sk-...'}
-                                    required={provider === 'openai' && !data.hasApiKey} />
-                                <p class="text-muted-foreground text-sm">
-                                    {data.hasApiKey
-                                        ? 'Leave empty to keep current key, or enter new key to update'
-                                        : 'Your OpenAI API key'}
-                                </p>
-                            </div>
-
-                            <div class="space-y-2">
-                                <Label for="openaiModel">Model *</Label>
-                                <Input
-                                    id="openaiModel"
-                                    name="openaiModel"
-                                    bind:value={openaiModel}
-                                    placeholder="text-embedding-3-small"
-                                    required={provider === 'openai'} />
-                                <p class="text-muted-foreground text-sm">
-                                    OpenAI embedding model to use
-                                </p>
-                                <div class="text-muted-foreground text-xs">
-                                    <p class="mb-1 font-medium">Available models:</p>
-                                    <ul class="list-inside list-disc space-y-0.5">
-                                        {#each modelSuggestions.openai as suggestion}
-                                            <li>{suggestion}</li>
-                                        {/each}
-                                    </ul>
-                                </div>
-                            </div>
-
-                            <div class="space-y-2">
-                                <Label for="openaiDimensions">Dimensions</Label>
-                                <Input
-                                    id="openaiDimensions"
-                                    name="openaiDimensions"
+                                    id="dimensions"
+                                    name="dimensions"
                                     type="number"
-                                    bind:value={openaiDimensions}
-                                    placeholder="1536"
-                                    min="1"
-                                    max="3072" />
-                                <p class="text-muted-foreground text-sm">
-                                    Embedding dimensions (text-embedding-3-* supports 256-3072,
-                                    ada-002 is fixed at 1536)
-                                </p>
-                            </div>
-                        </Card.Content>
-                    </Card.Root>
-                {/if}
-
-                <!-- Cohere Configuration -->
-                {#if provider === 'cohere'}
-                    <Card.Root>
-                        <Card.Header>
-                            <Card.Title>Cohere Configuration</Card.Title>
-                            <Card.Description>
-                                Configure connection to Cohere embedding API
-                            </Card.Description>
-                        </Card.Header>
-                        <Card.Content class="space-y-4">
-                            <div class="space-y-2">
-                                <Label for="cohereApiKey"
-                                    >API Key {data.hasApiKey ? '' : '*'}</Label>
-                                <Input
-                                    id="cohereApiKey"
-                                    name="cohereApiKey"
-                                    type="password"
-                                    bind:value={cohereApiKey}
-                                    placeholder={data.hasApiKey
-                                        ? 'Leave empty to keep current key'
-                                        : 'Enter Cohere API key'}
-                                    required={provider === 'cohere' && !data.hasApiKey} />
-                                <p class="text-muted-foreground text-sm">
-                                    {data.hasApiKey
-                                        ? 'Leave empty to keep current key, or enter new key to update'
-                                        : 'Your Cohere API key'}
-                                </p>
-                            </div>
-
-                            <div class="space-y-2">
-                                <Label for="cohereModel">Model *</Label>
-                                <Input
-                                    id="cohereModel"
-                                    name="cohereModel"
-                                    bind:value={cohereModel}
-                                    placeholder="embed-v4.0"
-                                    required={provider === 'cohere'} />
-                                <p class="text-muted-foreground text-sm">
-                                    Cohere embedding model to use
-                                </p>
-                                <div class="text-muted-foreground text-xs">
-                                    <p class="mb-1 font-medium">Available models:</p>
-                                    <ul class="list-inside list-disc space-y-0.5">
-                                        {#each modelSuggestions.cohere as suggestion}
-                                            <li>{suggestion}</li>
-                                        {/each}
-                                    </ul>
-                                </div>
-                            </div>
-
-                            <div class="space-y-2">
-                                <Label for="cohereApiUrl">API URL</Label>
-                                <Input
-                                    id="cohereApiUrl"
-                                    name="cohereApiUrl"
-                                    bind:value={cohereApiUrl}
-                                    placeholder="https://api.cohere.com/v2/embed" />
-                                <p class="text-muted-foreground text-sm">
-                                    Cohere API endpoint (leave default unless using custom endpoint)
-                                </p>
-                            </div>
-
-                            <div class="space-y-2">
-                                <Label for="cohereDimensions">Dimensions</Label>
-                                <Input
-                                    id="cohereDimensions"
-                                    name="cohereDimensions"
-                                    type="number"
-                                    bind:value={cohereDimensions}
+                                    bind:value={dimensions}
                                     placeholder="Leave empty for model default"
                                     min="1"
                                     max="4096" />
                                 <p class="text-muted-foreground text-sm">
-                                    Output embedding dimensions (embed-v4.0 supports 256, 512, 1024,
-                                    1536)
+                                    Output embedding dimensions
                                 </p>
                             </div>
-                        </Card.Content>
-                    </Card.Root>
-                {/if}
+                        {/if}
 
-                <!-- Bedrock Configuration -->
-                {#if provider === 'bedrock'}
-                    <Card.Root>
-                        <Card.Header>
-                            <Card.Title>AWS Bedrock Configuration</Card.Title>
-                            <Card.Description>
-                                AWS Bedrock uses IAM roles for authentication. Region is
-                                auto-detected from environment.
-                            </Card.Description>
-                        </Card.Header>
-                        <Card.Content class="space-y-4">
-                            <div class="space-y-2">
-                                <Label for="bedrockModelId">Model ID *</Label>
-                                <Input
-                                    id="bedrockModelId"
-                                    name="bedrockModelId"
-                                    bind:value={bedrockModelId}
-                                    placeholder="amazon.titan-embed-text-v2:0"
-                                    required={provider === 'bedrock'} />
-                                <p class="text-muted-foreground text-sm">
-                                    Bedrock embedding model identifier
-                                </p>
-                                <div class="text-muted-foreground text-xs">
-                                    <p class="mb-1 font-medium">Common models:</p>
-                                    <ul class="list-inside list-disc space-y-0.5">
-                                        {#each modelSuggestions.bedrock as suggestion}
-                                            <li>{suggestion}</li>
-                                        {/each}
-                                    </ul>
-                                </div>
-                            </div>
-
+                        <!-- Bedrock IAM notice -->
+                        {#if provider === 'bedrock'}
                             <Alert.Root>
                                 <Info class="h-4 w-4" />
                                 <Alert.Description>
@@ -441,9 +253,9 @@
                                     invoke Bedrock embedding models
                                 </Alert.Description>
                             </Alert.Root>
-                        </Card.Content>
-                    </Card.Root>
-                {/if}
+                        {/if}
+                    </Card.Content>
+                </Card.Root>
 
                 <!-- Submit Button -->
                 <div class="flex justify-end">

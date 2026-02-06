@@ -68,64 +68,27 @@ MODEL_PATH = get_required_env("MODEL_PATH")
 REDIS_URL = get_required_env("REDIS_URL")
 DATABASE_URL = construct_database_url()
 
-# Embedding server configuration
+# Embedding provider configuration
 EMBEDDING_PROVIDER = get_required_env("EMBEDDING_PROVIDER").lower()
-JINA_API_KEY = get_optional_env("JINA_API_KEY", "")
-JINA_MODEL = get_optional_env("JINA_MODEL", "jina-embeddings-v3")
-JINA_API_URL = get_optional_env("JINA_API_URL", "https://api.jina.ai/v1/embeddings")
-BEDROCK_EMBEDDING_MODEL_ID = get_optional_env(
-    "BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0"
-)
 EMBEDDING_MODEL = get_required_env("EMBEDDING_MODEL")
 EMBEDDING_DIMENSIONS = validate_embedding_dimensions(
     get_required_env("EMBEDDING_DIMENSIONS")
 )
-
-# OpenAI embedding configuration
-OPENAI_EMBEDDING_API_KEY = get_optional_env("OPENAI_EMBEDDING_API_KEY", "")
-OPENAI_EMBEDDING_MODEL = get_optional_env(
-    "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"
-)
-OPENAI_EMBEDDING_DIMENSIONS = int(
-    get_optional_env("OPENAI_EMBEDDING_DIMENSIONS", "1024")
-)
-
-# Cohere embedding configuration
-COHERE_EMBEDDING_API_KEY = get_optional_env("COHERE_EMBEDDING_API_KEY", "")
-COHERE_EMBEDDING_MODEL = get_optional_env("COHERE_EMBEDDING_MODEL", "embed-v4.0")
-COHERE_EMBEDDING_API_URL = get_optional_env(
-    "COHERE_EMBEDDING_API_URL", "https://api.cohere.com/v2/embed"
-)
-COHERE_EMBEDDING_DIMENSIONS = int(get_optional_env("COHERE_EMBEDDING_DIMENSIONS", "0"))
-
-# Generic embedding model max token length (applies to all providers)
+EMBEDDING_API_KEY = get_optional_env("EMBEDDING_API_KEY", "")
+EMBEDDING_API_URL = get_optional_env("EMBEDDING_API_URL", "")
 EMBEDDING_MAX_MODEL_LEN = int(get_optional_env("EMBEDDING_MAX_MODEL_LEN", "8192"))
 
-# Local embedding configuration (vLLM-based)
-LOCAL_EMBEDDINGS_URL = get_optional_env(
-    "LOCAL_EMBEDDINGS_URL", "http://embeddings:8001/v1"
-)
-LOCAL_EMBEDDINGS_MODEL = get_optional_env(
-    "LOCAL_EMBEDDINGS_MODEL", "nomic-ai/nomic-embed-text-v1.5"
-)
-
-# LLM configuration
+# LLM provider configuration
 LLM_PROVIDER = get_optional_env("LLM_PROVIDER", "vllm").lower()
-VLLM_URL = get_optional_env("VLLM_URL", "http://vllm:8000")  # Make optional
-ANTHROPIC_API_KEY = get_optional_env("ANTHROPIC_API_KEY", "")
-ANTHROPIC_MODEL = get_optional_env("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
-ANTHROPIC_MAX_TOKENS = int(get_optional_env("ANTHROPIC_MAX_TOKENS", "4096"))
+LLM_API_KEY = get_optional_env("LLM_API_KEY", "")
+LLM_MODEL = get_optional_env("LLM_MODEL", "")
+LLM_API_URL = get_optional_env("LLM_API_URL", "")
+LLM_SECONDARY_MODEL = get_optional_env("LLM_SECONDARY_MODEL", "")
 DEFAULT_MAX_TOKENS = int(get_optional_env("DEFAULT_MAX_TOKENS", "8192"))
 DEFAULT_TEMPERATURE = float(get_optional_env("DEFAULT_TEMPERATURE", "0.0"))
 DEFAULT_TOP_P = float(get_optional_env("DEFAULT_TOP_P", "1.0"))
 
-# AWS Bedrock configuration
-BEDROCK_MODEL_ID = get_optional_env(
-    "BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-20250514-v1:0"
-)
-TITLE_GENERATION_MODEL_ID = get_optional_env(
-    "TITLE_GENERATION_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-)
+# AWS configuration
 AWS_REGION = get_optional_env("AWS_REGION", "")  # Optional, auto-detected in ECS
 
 # Embedding batch inference configuration

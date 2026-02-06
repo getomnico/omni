@@ -5,13 +5,7 @@ import logging
 from fastapi import APIRouter, Request
 
 from config import PORT, EMBEDDING_DIMENSIONS
-from db_config import (
-    get_llm_config,
-    get_embedding_config,
-    VLLMConfig,
-    AnthropicConfig,
-    BedrockLLMConfig,
-)
+from db_config import get_llm_config, get_embedding_config
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["health"])
@@ -39,15 +33,6 @@ async def health_check(request: Request):
     llm_config = await get_llm_config()
     embedding_config = await get_embedding_config()
 
-    # Get LLM model ID based on config type
-    match llm_config:
-        case VLLMConfig():
-            llm_model = llm_config.primary_model_id or "default"
-        case AnthropicConfig() | BedrockLLMConfig():
-            llm_model = llm_config.primary_model_id
-        case _:
-            llm_model = "unknown"
-
     return {
         "status": "healthy",
         "service": "ai",
@@ -56,6 +41,6 @@ async def health_check(request: Request):
         "port": PORT,
         "embedding_dimensions": EMBEDDING_DIMENSIONS,
         "llm_provider": llm_config.provider,
-        "llm_model": llm_model,
+        "llm_model": llm_config.model or "default",
         "llm_health": llm_health,
     }

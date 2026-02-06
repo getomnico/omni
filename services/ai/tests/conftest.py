@@ -22,10 +22,10 @@ os.environ.setdefault("DATABASE_NAME", "test")
 os.environ.setdefault("EMBEDDING_PROVIDER", "jina")
 os.environ.setdefault("EMBEDDING_MODEL", "jina-embeddings-v3")
 os.environ.setdefault("EMBEDDING_DIMENSIONS", "1024")
+os.environ.setdefault("EMBEDDING_API_KEY", "test-api-key")
 # Bedrock batch processing config (for batch processor tests)
 os.environ.setdefault("EMBEDDING_BATCH_S3_BUCKET", "test-embedding-bucket")
 os.environ.setdefault("AWS_REGION", "us-east-1")
-os.environ.setdefault("BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0")
 os.environ.setdefault(
     "EMBEDDING_BATCH_BEDROCK_ROLE_ARN", "arn:aws:iam::123456789012:role/test-role"
 )

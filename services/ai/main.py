@@ -19,12 +19,11 @@ from routers import chat_router, health_router, embeddings_router, prompts_route
 from config import (
     PORT,
     EMBEDDING_PROVIDER,
+    EMBEDDING_MODEL,
     EMBEDDING_DIMENSIONS,
     LLM_PROVIDER,
-    VLLM_URL,
-    ANTHROPIC_MODEL,
-    ANTHROPIC_MAX_TOKENS,
-    BEDROCK_MODEL_ID,
+    LLM_MODEL,
+    LLM_API_URL,
     AWS_REGION,
 )
 
@@ -67,17 +66,13 @@ async def shutdown_event():
 
 if __name__ == "__main__":
     logger.info(f"Starting AI service on port {PORT}")
-    logger.info(f"Embedding Provider: {EMBEDDING_PROVIDER}")
+    logger.info(f"Embedding provider: {EMBEDDING_PROVIDER}, model: {EMBEDDING_MODEL}")
     logger.info(f"Embedding dimensions: {EMBEDDING_DIMENSIONS}")
-    logger.info(f"LLM Provider: {LLM_PROVIDER}")
+    logger.info(f"LLM provider: {LLM_PROVIDER}, model: {LLM_MODEL or 'default'}")
 
     if LLM_PROVIDER == "vllm":
-        logger.info(f"vLLM URL: {VLLM_URL}")
-    elif LLM_PROVIDER == "anthropic":
-        logger.info(f"Anthropic Model: {ANTHROPIC_MODEL}")
-        logger.info(f"Anthropic Max Tokens: {ANTHROPIC_MAX_TOKENS}")
+        logger.info(f"vLLM URL: {LLM_API_URL}")
     elif LLM_PROVIDER == "bedrock":
-        logger.info(f"Bedrock Model ID: {BEDROCK_MODEL_ID}")
         logger.info(f"AWS Region: {AWS_REGION if AWS_REGION else 'Auto-detected'}")
 
     uvicorn.run(app, host="0.0.0.0", port=PORT)

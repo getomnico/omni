@@ -36,17 +36,6 @@ pub struct IndexerConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct AIServiceConfig {
-    pub database: DatabaseConfig,
-    pub redis: RedisConfig,
-    pub port: u16,
-    pub model_path: String,
-    pub embedding_model: String,
-    pub embedding_dimensions: u32,
-    pub vllm_url: String,
-}
-
-#[derive(Debug, Clone)]
 pub struct ConnectorConfig {
     pub redis: RedisConfig,
     pub port: u16,
@@ -238,51 +227,6 @@ impl IndexerConfig {
             redis,
             port,
             ai_service_url,
-        }
-    }
-}
-
-impl AIServiceConfig {
-    pub fn from_env() -> Self {
-        let database = DatabaseConfig::from_env();
-        let redis = RedisConfig::from_env();
-
-        let port_str = get_required_env("PORT");
-        let port = parse_port(&port_str, "PORT");
-
-        let model_path = get_required_env("MODEL_PATH");
-        if model_path.is_empty() {
-            eprintln!("ERROR: MODEL_PATH cannot be empty");
-            process::exit(1);
-        }
-
-        let embedding_model = get_required_env("EMBEDDING_MODEL");
-        if embedding_model.is_empty() {
-            eprintln!("ERROR: EMBEDDING_MODEL cannot be empty");
-            process::exit(1);
-        }
-
-        let embedding_dimensions_str = get_required_env("EMBEDDING_DIMENSIONS");
-        let embedding_dimensions = embedding_dimensions_str.parse::<u32>().unwrap_or_else(|_| {
-            eprintln!(
-                "ERROR: Invalid embedding dimensions in 'EMBEDDING_DIMENSIONS': '{}'",
-                embedding_dimensions_str
-            );
-            eprintln!("Must be a positive number");
-            process::exit(1);
-        });
-
-        let vllm_url = get_required_env("VLLM_URL");
-        let vllm_url = validate_url(&vllm_url, "VLLM_URL");
-
-        Self {
-            database,
-            redis,
-            port,
-            model_path,
-            embedding_model,
-            embedding_dimensions,
-            vllm_url,
         }
     }
 }

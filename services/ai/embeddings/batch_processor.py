@@ -24,7 +24,7 @@ from config import (
     EMBEDDING_BATCH_ACCUMULATION_TIMEOUT_SECONDS,
     EMBEDDING_BATCH_ACCUMULATION_POLL_INTERVAL,
     EMBEDDING_BATCH_MONITOR_POLL_INTERVAL,
-    BEDROCK_EMBEDDING_MODEL_ID,
+    EMBEDDING_MODEL,
     AWS_REGION,
     EMBEDDING_MAX_DOCUMENT_SIZE,
 )
@@ -286,13 +286,13 @@ class EmbeddingBatchProcessor:
 
     def _create_batch_provider(self) -> BatchInferenceProvider:
         """Factory for batch provider (Bedrock only)"""
-        if not BEDROCK_EMBEDDING_MODEL_ID or not EMBEDDING_BATCH_BEDROCK_ROLE_ARN:
+        if not EMBEDDING_MODEL or not EMBEDDING_BATCH_BEDROCK_ROLE_ARN:
             raise ValueError(
-                "BEDROCK_EMBEDDING_MODEL_ID and EMBEDDING_BATCH_BEDROCK_ROLE_ARN must be configured for Bedrock provider"
+                "EMBEDDING_MODEL and EMBEDDING_BATCH_BEDROCK_ROLE_ARN must be configured for Bedrock provider"
             )
 
         return BedrockBatchProvider(
-            BEDROCK_EMBEDDING_MODEL_ID, EMBEDDING_BATCH_BEDROCK_ROLE_ARN, AWS_REGION
+            EMBEDDING_MODEL, EMBEDDING_BATCH_BEDROCK_ROLE_ARN, AWS_REGION
         )
 
     # ------------------------------------------------------------------------
@@ -830,7 +830,7 @@ class EmbeddingBatchProcessor:
                         "chunk_start_offset": chunk["start"],
                         "chunk_end_offset": chunk["end"],
                         "embedding": chunk["embedding"],
-                        "model_name": BEDROCK_EMBEDDING_MODEL_ID,
+                        "model_name": EMBEDDING_MODEL,
                     }
                 )
 
