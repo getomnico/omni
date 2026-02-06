@@ -8,7 +8,12 @@ from fastapi import FastAPI
 from logger import setup_logging
 from telemetry import init_telemetry
 from state import AppState
-from services import EmbeddingQueueService, initialize_providers, shutdown_providers
+from services import (
+    EmbeddingQueueService,
+    initialize_providers,
+    shutdown_providers,
+    start_batch_processor,
+)
 from routers import chat_router, health_router, embeddings_router, prompts_router
 
 from config import (
@@ -46,6 +51,7 @@ async def startup_event():
         app.state.embedding_queue = EmbeddingQueueService(app.state)
         await app.state.embedding_queue.start()
         await initialize_providers(app.state)
+        await start_batch_processor(app.state)
     except Exception as e:
         logger.error(f"Failed to initialize services: {e}")
         raise e

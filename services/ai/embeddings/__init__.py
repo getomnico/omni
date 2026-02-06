@@ -20,22 +20,22 @@ class EmbeddingProvider(ABC):
     @abstractmethod
     async def generate_embeddings(
         self,
-        texts: list[str],
+        text: str,
         task: str,
         chunk_size: int,
         chunking_mode: str,
-    ) -> list[list[Chunk]]:
+    ) -> list[Chunk]:
         """
-        Generate embeddings for input texts with configurable chunking.
+        Generate embeddings for a single input text with configurable chunking.
 
         Args:
-            texts: List of input texts to embed
+            text: Input text to embed
             task: Task type (e.g., 'retrieval.query', 'retrieval.passage')
             chunk_size: Number of tokens per chunk
             chunking_mode: One of 'none', 'fixed', 'sentence'
 
         Returns:
-            List of chunk lists, one per input text. Each chunk contains:
+            List of chunks. Each chunk contains:
             - span: (start_char, end_char) position in original text
             - embedding: The embedding vector as a list of floats
         """
@@ -50,11 +50,6 @@ class EmbeddingProvider(ABC):
 from .jina import JinaEmbeddingProvider
 from .bedrock import BedrockEmbeddingProvider
 from .openai import OpenAIEmbeddingProvider
-
-# These task types are only used by Jina embeddings
-QUERY_TASK = "retrieval.query"
-PASSAGE_TASK = "retrieval.passage"
-DEFAULT_TASK = PASSAGE_TASK
 
 
 # Factory function to create embedding providers
@@ -144,7 +139,4 @@ __all__ = [
     "BedrockEmbeddingProvider",
     "OpenAIEmbeddingProvider",
     "create_embedding_provider",
-    "QUERY_TASK",
-    "PASSAGE_TASK",
-    "DEFAULT_TASK",
 ]

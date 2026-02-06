@@ -29,7 +29,7 @@ from config import (
     EMBEDDING_MAX_DOCUMENT_SIZE,
 )
 
-from processing.chunking import chunk_by_sentences_chars, chunk_by_chars
+from processing.chunking import Chunker
 from . import Chunk
 from db import (
     get_db_pool,
@@ -61,9 +61,7 @@ logger = logging.getLogger(__name__)
 
 
 # Configuration for online processing
-ONLINE_BATCH_SIZE = (
-    10  # Reduced from 50 - process fewer items per batch to yield more frequently
-)
+ONLINE_BATCH_SIZE = 10
 ONLINE_POLL_INTERVAL = 5  # Seconds to wait when queue is empty
 ONLINE_BATCH_DELAY = 0.1  # Seconds to yield between batches when queue has items
 
@@ -399,23 +397,23 @@ class EmbeddingBatchProcessor:
                         "using character-based chunking"
                     )
                     char_chunk_size = EMBEDDING_MAX_DOCUMENT_SIZE // 2  # ~5MB chunks
-                    char_spans = chunk_by_chars(content_text, char_chunk_size)
+                    char_spans = Chunker.chunk_by_chars(content_text, char_chunk_size)
 
                     all_chunks = []
                     for char_start, char_end in char_spans:
                         piece = content_text[char_start:char_end]
                         chunk_results = (
                             await self.embedding_provider.generate_embeddings(
-                                texts=[piece],
+                                text=piece,
                                 task="retrieval.passage",
                                 chunk_size=512,
                                 chunking_mode="sentence",
                             )
                         )
 
-                        if chunk_results and chunk_results[0]:
+                        if chunk_results:
                             # Adjust spans to be relative to original document
-                            for chunk in chunk_results[0]:
+                            for chunk in chunk_results:
                                 adjusted_span = (
                                     char_start + chunk.span[0],
                                     char_start + chunk.span[1],
@@ -425,14 +423,14 @@ class EmbeddingBatchProcessor:
                     chunks = all_chunks
                 else:
                     # Normal path: use standard chunking
-                    chunk_results = await self.embedding_provider.generate_embeddings(
-                        texts=[content_text],
+                    chunks = await self.embedding_provider.generate_embeddings(
+                        text=content_text,
                         task="retrieval.passage",
                         chunk_size=512,
                         chunking_mode="sentence",
                     )
 
-                    if not chunk_results or not chunk_results[0]:
+                    if not chunks:
                         logger.warning(
                             f"No embeddings generated for document {item.document_id}"
                         )
@@ -440,8 +438,6 @@ class EmbeddingBatchProcessor:
                             [item.id], "No embeddings generated"
                         )
                         return
-
-                    chunks = chunk_results[0]  # First text's chunks
 
                 # Handle empty chunks (can happen for both paths)
                 if not chunks:
@@ -655,7 +651,7 @@ class EmbeddingBatchProcessor:
                 return chunks
 
             # Chunk the content
-            chunk_spans = chunk_by_sentences_chars(content_text, max_chars=4096)
+            chunk_spans = Chunker.chunk_sentences_by_chars(content_text, max_chars=4096)
 
             for chunk_idx, (start_char, end_char) in enumerate(chunk_spans):
                 chunk_text = content_text[start_char:end_char]

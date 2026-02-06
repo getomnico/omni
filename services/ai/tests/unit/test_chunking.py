@@ -4,7 +4,7 @@ Unit tests for the chunking functions.
 """
 import pytest
 from transformers import AutoTokenizer
-from processing import Chunker, chunk_by_sentences_chars, chunk_by_chars
+from processing import Chunker
 
 
 @pytest.mark.unit
@@ -171,20 +171,20 @@ class TestChunkerFixedMode:
 class TestCharacterBasedChunking:
     """Test cases for character-based chunking functions."""
 
-    def test_chunk_by_sentences_chars_basic(self):
+    def test_chunk_sentences_by_chars_basic(self):
         """Test basic character-based sentence chunking."""
         text = "First sentence. Second sentence. Third sentence."
-        spans = chunk_by_sentences_chars(text, 100)
+        spans = Chunker.chunk_sentences_by_chars(text, 100)
 
         chunks = [text[start:end] for start, end in spans]
 
         # All should fit in one chunk with high limit
         assert len(chunks) == 1
 
-    def test_chunk_by_sentences_chars_splits(self):
+    def test_chunk_sentences_by_chars_splits(self):
         """Test character-based sentence chunking with small limit."""
         text = "First sentence. Second sentence. Third sentence."
-        spans = chunk_by_sentences_chars(text, 20)
+        spans = Chunker.chunk_sentences_by_chars(text, 20)
 
         chunks = [text[start:end] for start, end in spans]
 
@@ -194,7 +194,7 @@ class TestCharacterBasedChunking:
     def test_chunk_by_chars_basic(self):
         """Test basic character-based fixed chunking."""
         text = "This is a test string for chunking."
-        spans = chunk_by_chars(text, 10)
+        spans = Chunker.chunk_by_chars(text, 10)
 
         chunks = [text[start:end] for start, end in spans]
 
@@ -207,7 +207,7 @@ class TestCharacterBasedChunking:
 
     def test_chunk_by_chars_empty(self):
         """Test character-based chunking with empty text."""
-        spans = chunk_by_chars("", 10)
+        spans = Chunker.chunk_by_chars("", 10)
         assert len(spans) == 0
 
 

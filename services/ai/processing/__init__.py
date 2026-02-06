@@ -1,8 +1,6 @@
 from .chunking import (
     Chunker,
     CHUNKING_STRATEGIES,
-    chunk_by_sentences_chars,
-    chunk_by_chars,
 )
 from .pdf import (
     PDFExtractionRequest,
@@ -13,8 +11,6 @@ from .pdf import (
 __all__ = [
     "Chunker",
     "CHUNKING_STRATEGIES",
-    "chunk_by_sentences_chars",
-    "chunk_by_chars",
     "PDFExtractionRequest",
     "PDFExtractionResponse",
     "extract_text_from_pdf",

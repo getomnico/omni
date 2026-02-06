@@ -84,15 +84,18 @@ class EmbeddingQueueService:
                     )
 
                 try:
-                    # Process the embedding request using the provider
-                    chunk_batch = (
-                        await self.app_state.embedding_provider.generate_embeddings(
-                            request.texts,
-                            request.task,
-                            request.chunk_size,
-                            request.chunking_mode,
+                    # Process each text individually through the provider
+                    chunk_batch = []
+                    for text in request.texts:
+                        chunks = (
+                            await self.app_state.embedding_provider.generate_embeddings(
+                                text,
+                                request.task,
+                                request.chunk_size,
+                                request.chunking_mode,
+                            )
                         )
-                    )
+                        chunk_batch.append(chunks)
 
                     response = EmbeddingResponse(
                         embeddings=[

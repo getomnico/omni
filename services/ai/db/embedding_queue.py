@@ -49,16 +49,25 @@ class EmbeddingQueueRepository:
         return int(res)
 
     async def get_pending_items(self, limit: int) -> List[EmbeddingQueueItem]:
-        """Fetch pending items not assigned to any batch"""
+        """Atomically fetch and claim pending items not assigned to any batch.
+
+        Uses FOR UPDATE SKIP LOCKED so each item is only claimed by one worker.
+        """
         pool = await self._get_pool()
 
         rows = await pool.fetch(
             """
-            SELECT id, document_id, status, batch_job_id, created_at
-            FROM embedding_queue
-            WHERE status = 'pending' AND batch_job_id IS NULL AND retry_count < 5
-            ORDER BY created_at ASC
-            LIMIT $1
+            UPDATE embedding_queue
+            SET status = 'processing'
+            WHERE id IN (
+                SELECT id
+                FROM embedding_queue
+                WHERE status = 'pending' AND batch_job_id IS NULL AND retry_count < 5
+                ORDER BY created_at ASC
+                LIMIT $1
+                FOR UPDATE SKIP LOCKED
+            )
+            RETURNING id, document_id, status, batch_job_id, created_at
             """,
             limit,
         )
@@ -89,7 +98,7 @@ class EmbeddingQueueRepository:
         await pool.execute(
             """
             UPDATE embedding_queue
-            SET batch_job_id = $1, status = 'pending'
+            SET batch_job_id = $1
             WHERE id = ANY($2)
             """,
             batch_id,

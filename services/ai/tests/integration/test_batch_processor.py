@@ -321,15 +321,12 @@ async def online_processor_with_char_chunking(
     provider = AsyncMock()
     provider.get_model_name = MagicMock(return_value="test-embedding-model")
 
-    async def generate_with_spans(texts, **kwargs):
+    async def generate_with_spans(text, **kwargs):
         """Generate embeddings with spans matching the input text."""
-        results = []
-        for text in texts:
-            mock_chunk = MagicMock()
-            mock_chunk.span = (0, len(text))
-            mock_chunk.embedding = [0.1] * 1024
-            results.append([mock_chunk])
-        return results
+        mock_chunk = MagicMock()
+        mock_chunk.span = (0, len(text))
+        mock_chunk.embedding = [0.1] * 1024
+        return [mock_chunk]
 
     provider.generate_embeddings.side_effect = generate_with_spans
 

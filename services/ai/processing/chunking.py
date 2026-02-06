@@ -4,7 +4,7 @@ import logging
 import multiprocessing
 import re
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Optional, Tuple, Union
+from typing import List, Optional, Tuple
 
 from llama_index.core.node_parser import SemanticSplitterNodeParser
 from llama_index.core.schema import Document
@@ -14,7 +14,6 @@ from transformers import AutoTokenizer
 # Shared executor for CPU-bound chunking operations
 # HuggingFace tokenizers release the GIL during Rust tokenization,
 # so ThreadPoolExecutor is more efficient than ProcessPoolExecutor
-# (no serialization overhead, shared memory for tokenizer models)
 _chunking_max_workers = max(2, min(multiprocessing.cpu_count() - 1, 4))
 _chunking_executor = ThreadPoolExecutor(
     max_workers=_chunking_max_workers, thread_name_prefix="chunker"
@@ -24,56 +23,6 @@ _chunking_executor = ThreadPoolExecutor(
 logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
 
 CHUNKING_STRATEGIES = ["semantic", "fixed", "sentence"]
-
-
-def chunk_by_sentences_chars(text: str, max_chars: int) -> list[tuple[int, int]]:
-    """Chunk text by sentences, keeping chunks under max_chars (character-based)."""
-    sentence_pattern = r"[.!?]+[\s]+"
-    sentences = []
-    last_end = 0
-
-    for match in re.finditer(sentence_pattern, text):
-        sentence_end = match.end()
-        if last_end < sentence_end:
-            sentences.append((last_end, sentence_end))
-        last_end = sentence_end
-
-    if last_end < len(text):
-        sentences.append((last_end, len(text)))
-
-    if not sentences:
-        return [(0, len(text))]
-
-    chunks = []
-    chunk_start = 0
-    last_sentence_end = 0
-
-    for sent_start, sent_end in sentences:
-        current_chunk_len = sent_end - chunk_start
-
-        if current_chunk_len > max_chars and last_sentence_end > chunk_start:
-            chunks.append((chunk_start, last_sentence_end))
-            chunk_start = last_sentence_end
-
-        last_sentence_end = sent_end
-
-    if chunk_start < len(text):
-        chunks.append((chunk_start, len(text)))
-
-    return chunks if chunks else [(0, len(text))]
-
-
-def chunk_by_chars(text: str, max_chars: int) -> list[tuple[int, int]]:
-    """Chunk text by fixed character count."""
-    if not text or max_chars < 1:
-        return []
-
-    chunks = []
-    for i in range(0, len(text), max_chars):
-        chunk_end = min(i + max_chars, len(text))
-        chunks.append((i, chunk_end))
-
-    return chunks if chunks else [(0, len(text))]
 
 
 class Chunker:
@@ -86,6 +35,56 @@ class Chunker:
         self.chunking_strategy = chunking_strategy
         self.embed_model = None
         self.embedding_model_name = None
+
+    @staticmethod
+    def chunk_sentences_by_chars(text: str, max_chars: int) -> list[tuple[int, int]]:
+        """Chunk text by sentences, keeping chunks under max_chars (character-based)."""
+        sentence_pattern = r"[.!?]+[\s]+"
+        sentences = []
+        last_end = 0
+
+        for match in re.finditer(sentence_pattern, text):
+            sentence_end = match.end()
+            if last_end < sentence_end:
+                sentences.append((last_end, sentence_end))
+            last_end = sentence_end
+
+        if last_end < len(text):
+            sentences.append((last_end, len(text)))
+
+        if not sentences:
+            return [(0, len(text))]
+
+        chunks = []
+        chunk_start = 0
+        last_sentence_end = 0
+
+        for sent_start, sent_end in sentences:
+            current_chunk_len = sent_end - chunk_start
+
+            if current_chunk_len > max_chars and last_sentence_end > chunk_start:
+                chunks.append((chunk_start, last_sentence_end))
+                chunk_start = last_sentence_end
+
+            last_sentence_end = sent_end
+
+        if chunk_start < len(text):
+            chunks.append((chunk_start, len(text)))
+
+        return chunks if chunks else [(0, len(text))]
+
+    @staticmethod
+    def chunk_by_chars(text: str, max_chars: int) -> list[tuple[int, int]]:
+        """Chunk text by fixed character count."""
+        if not text or max_chars < 1:
+            return []
+
+        chunks = []
+        for i in range(0, len(text), max_chars):
+            chunk_end = min(i + max_chars, len(text))
+            chunks.append((i, chunk_end))
+
+        return chunks if chunks else [(0, len(text))]
 
     def _setup_semantic_chunking(self, embedding_model_name):
         if embedding_model_name:
@@ -159,7 +158,7 @@ class Chunker:
         self,
         text: str,
         chunk_size: int,
-        tokenizer: "AutoTokenizer",
+        tokenizer: AutoTokenizer,
     ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
         if not text or chunk_size < 1:
             return [], []
@@ -203,7 +202,7 @@ class Chunker:
         self,
         text: str,
         chunk_size: int,
-        tokenizer: "AutoTokenizer",
+        tokenizer: AutoTokenizer,
         max_chars: int,
     ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
         """Handle large texts by pre-splitting before tokenization.
@@ -211,7 +210,7 @@ class Chunker:
         This avoids tokenizer warnings/errors when processing texts with millions of tokens.
         """
         # Split text into manageable pieces by characters
-        char_pieces = chunk_by_chars(text, max_chars)
+        char_pieces = self.chunk_by_chars(text, max_chars)
 
         all_token_spans = []
         all_char_spans = []
@@ -260,7 +259,7 @@ class Chunker:
         self,
         text: str,
         chunk_size: int,
-        tokenizer: "AutoTokenizer",
+        tokenizer: AutoTokenizer,
     ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
         """Chunk text by sentences, keeping chunks under chunk_size tokens"""
         if not text or chunk_size < 1:
@@ -345,7 +344,7 @@ class Chunker:
         self,
         text: str,
         chunk_size: int,
-        tokenizer: "AutoTokenizer",
+        tokenizer: AutoTokenizer,
         max_chars: int,
     ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
         """Handle large texts by pre-splitting on sentence boundaries before tokenization.
@@ -353,7 +352,7 @@ class Chunker:
         This avoids tokenizer warnings/errors when processing texts with millions of tokens.
         """
         # Split text into manageable pieces on sentence boundaries
-        char_pieces = chunk_by_sentences_chars(text, max_chars)
+        char_pieces = self.chunk_sentences_by_chars(text, max_chars)
 
         all_token_spans = []
         all_char_spans = []
@@ -451,7 +450,7 @@ class Chunker:
     def chunk(
         self,
         text: str,
-        tokenizer: "AutoTokenizer",
+        tokenizer: AutoTokenizer,
         chunking_strategy: str = None,
         chunk_size: Optional[int] = None,
         embedding_model_name: Optional[str] = None,
@@ -481,7 +480,7 @@ class Chunker:
         self,
         text: str,
         chunk_size: int,
-        tokenizer: "AutoTokenizer",
+        tokenizer: AutoTokenizer,
     ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
         """Async version of chunk_by_sentences - runs in thread pool."""
         loop = asyncio.get_event_loop()
@@ -493,7 +492,7 @@ class Chunker:
         self,
         text: str,
         chunk_size: int,
-        tokenizer: "AutoTokenizer",
+        tokenizer: AutoTokenizer,
     ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
         """Async version of chunk_by_tokens - runs in thread pool."""
         loop = asyncio.get_event_loop()
@@ -504,7 +503,7 @@ class Chunker:
     async def chunk_semantically_async(
         self,
         text: str,
-        tokenizer: "AutoTokenizer",
+        tokenizer: AutoTokenizer,
         embedding_model_name: Optional[str] = None,
     ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
         """Async version of chunk_semantically - runs in thread pool."""
@@ -520,7 +519,7 @@ class Chunker:
     async def chunk_async(
         self,
         text: str,
-        tokenizer: "AutoTokenizer",
+        tokenizer: AutoTokenizer,
         chunking_strategy: str = None,
         chunk_size: Optional[int] = None,
         embedding_model_name: Optional[str] = None,

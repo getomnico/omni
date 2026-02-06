@@ -8,8 +8,6 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from embeddings import DEFAULT_TASK
-
 
 class Priority(IntEnum):
     """Priority levels for embedding requests."""
@@ -34,7 +32,7 @@ class EmbeddingRequest(BaseModel):
     """Request to generate embeddings for texts."""
 
     texts: list[str]
-    task: str | None = DEFAULT_TASK
+    task: str | None = "retrieval.passage"
     chunk_size: int | None = 512  # Chunk size in tokens
     chunking_mode: str | None = "sentence"  # "sentence", "fixed", or "none"
     priority: Literal["high", "normal", "low"] | None = "normal"

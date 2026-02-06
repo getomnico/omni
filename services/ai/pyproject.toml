@@ -7,7 +7,7 @@ name = "omni-ai"
 version = "0.1.0"
 description = "Omni AI Service - LLM and Embedding Provider Gateway"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = {text = "MIT"}
 
 dependencies = [
@@ -74,7 +74,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = ["E501"]  # Line length handled separately
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true

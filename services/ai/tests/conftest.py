@@ -241,7 +241,7 @@ def mock_embedding_provider():
     mock_chunk.span = (0, 100)
     mock_chunk.embedding = [0.1] * 1024
 
-    provider.generate_embeddings.return_value = [[mock_chunk]]
+    provider.generate_embeddings.return_value = [mock_chunk]
     return provider
 
 

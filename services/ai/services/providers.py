@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 async def initialize_providers(app_state: AppState) -> None:
     """
-    Initialize all providers (embedding, LLM, tools, storage) and start batch processing.
+    Initialize all providers (embedding, LLM, tools, storage).
 
     Args:
         app_state: The FastAPI application state to populate
@@ -177,7 +177,10 @@ async def initialize_providers(app_state: AppState) -> None:
     app_state.content_storage = create_content_storage()
     logger.info("Initialized content storage for batch processing")
 
-    # Start batch processing in background
+
+async def start_batch_processor(app_state: AppState) -> None:
+    """Start the embedding batch processor in the background."""
+    embedding_config = await get_embedding_config()
     asyncio.create_task(
         start_batch_processing(
             app_state.content_storage,

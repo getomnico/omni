@@ -10,19 +10,20 @@ from processing import Chunker
 
 logger = logging.getLogger(__name__)
 
-# JINA API Configuration
-JINA_MAX_BATCH_SIZE = 2048  # JINA API supports up to 2048 texts per request
-JINA_MAX_RETRIES = 3
-JINA_RETRY_DELAY = 1.0  # Initial retry delay in seconds
-
-# Task mappings for JINA API
-QUERY_TASK = "retrieval.query"
-PASSAGE_TASK = "retrieval.passage"
-DEFAULT_TASK = PASSAGE_TASK
-
 
 class JinaEmbeddingProvider(EmbeddingProvider):
     """Provider for JINA AI Embeddings API."""
+
+    # Task mappings for JINA API
+    QUERY_TASK = "retrieval.query"
+    PASSAGE_TASK = "retrieval.passage"
+    DEFAULT_TASK = PASSAGE_TASK
+
+    # JINA API Configuration
+    JINA_ORG = "jinaai"
+    JINA_MAX_BATCH_SIZE = 2048
+    JINA_MAX_RETRIES = 3
+    JINA_RETRY_DELAY = 1.0
 
     def __init__(self, api_key: str, model: str, api_url: str, max_model_len: int):
         self.api_key = api_key
@@ -35,38 +36,31 @@ class JinaEmbeddingProvider(EmbeddingProvider):
 
         self.client = JINAEmbeddingClient(self.api_key, self.model, self.api_url)
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
+        hf_model_id = (
+            model
+            if model.startswith(f"{self.JINA_ORG}/")
+            else f"{self.JINA_ORG}/{model}"
+        )
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            hf_model_id, trust_remote_code=True
+        )
         self.chunker = Chunker("sentence")
 
         logger.info(
             f"Initialized JINA embedding provider - model: {model}, max_model_len: {max_model_len}"
         )
 
-    async def generate_embeddings(
-        self,
-        texts: list[str],
-        task: str,
-        chunk_size: int,
-        chunking_mode: str,
-    ) -> list[list[Chunk]]:
-        """
-        Generate embeddings using JINA API with chunking support.
-        """
-        return await self._generate_embeddings_with_jina(
-            texts, task, chunk_size, chunking_mode
-        )
-
     def get_model_name(self) -> str:
         """Get the name of the JINA model being used."""
         return self.model
 
-    async def _generate_embeddings_with_jina(
+    async def generate_embeddings(
         self,
-        texts: list[str],
+        text: str,
         task: str,
         chunk_size: int,
         chunking_mode: str,
-    ) -> list[list[Chunk]]:
+    ) -> list[Chunk]:
         """Generate embeddings using JINA API with chunking support."""
 
         start_time = time.time()
@@ -75,41 +69,18 @@ class JinaEmbeddingProvider(EmbeddingProvider):
         effective_chunk_size = min(chunk_size, self.max_model_len)
 
         try:
-            logger.info(f"Starting JINA embedding generation for {len(texts)} texts")
+            if chunking_mode == "none":
+                embeddings = await self.client.generate_embeddings([text], task)
+                chunks = [Chunk((0, len(text)), embeddings[0])]
 
-            all_chunks = []
+            elif chunking_mode == "sentence":
+                _, char_spans = await self.chunker.chunk_by_sentences_async(
+                    text, effective_chunk_size, self.tokenizer
+                )
 
-            for text in texts:
-                if chunking_mode == "none":
-                    embeddings = await self.client.generate_embeddings([text], task)
-                    chunks = [Chunk((0, len(text)), embeddings[0])]
+                chunk_texts = [text[start:end] for start, end in char_spans]
 
-                elif chunking_mode == "sentence":
-                    _, char_spans = await self.chunker.chunk_by_sentences_async(
-                        text, effective_chunk_size, self.tokenizer
-                    )
-
-                    chunk_texts = [text[start:end] for start, end in char_spans]
-
-                    if chunk_texts:
-                        embeddings = await self.client.generate_embeddings(
-                            chunk_texts, task
-                        )
-                        chunks = [
-                            Chunk(span, embedding)
-                            for span, embedding in zip(char_spans, embeddings)
-                        ]
-                    else:
-                        embeddings = await self.client.generate_embeddings([text], task)
-                        chunks = [Chunk((0, len(text)), embeddings[0])]
-
-                elif chunking_mode == "fixed":
-                    _, char_spans = await self.chunker.chunk_by_tokens_async(
-                        text, effective_chunk_size, self.tokenizer
-                    )
-
-                    chunk_texts = [text[start:end] for start, end in char_spans]
-
+                if chunk_texts:
                     embeddings = await self.client.generate_embeddings(
                         chunk_texts, task
                     )
@@ -117,25 +88,38 @@ class JinaEmbeddingProvider(EmbeddingProvider):
                         Chunk(span, embedding)
                         for span, embedding in zip(char_spans, embeddings)
                     ]
-
                 else:
-                    logger.warning(
-                        f"Unsupported chunking mode: {chunking_mode}, using no chunking"
-                    )
                     embeddings = await self.client.generate_embeddings([text], task)
                     chunks = [Chunk((0, len(text)), embeddings[0])]
 
-                all_chunks.append(chunks)
+            elif chunking_mode == "fixed":
+                _, char_spans = await self.chunker.chunk_by_tokens_async(
+                    text, effective_chunk_size, self.tokenizer
+                )
+
+                chunk_texts = [text[start:end] for start, end in char_spans]
+
+                embeddings = await self.client.generate_embeddings(chunk_texts, task)
+                chunks = [
+                    Chunk(span, embedding)
+                    for span, embedding in zip(char_spans, embeddings)
+                ]
+
+            else:
+                logger.warning(
+                    f"Unsupported chunking mode: {chunking_mode}, using no chunking"
+                )
+                embeddings = await self.client.generate_embeddings([text], task)
+                chunks = [Chunk((0, len(text)), embeddings[0])]
 
             end_time = time.time()
             total_time = end_time - start_time
-            total_chunks = sum(len(chunks_list) for chunks_list in all_chunks)
             logger.info(
                 f"JINA embedding generation complete - total_time: {total_time:.2f}s, "
-                f"total_chunks: {total_chunks}, chunks_per_text: {[len(c) for c in all_chunks]}"
+                f"total_chunks: {len(chunks)}"
             )
 
-            return all_chunks
+            return chunks
 
         except Exception as e:
             logger.error(f"Error generating embeddings with JINA: {str(e)}")
@@ -225,7 +209,7 @@ class JINAEmbeddingClient:
     async def generate_embeddings(
         self,
         texts: list[str],
-        task: str = DEFAULT_TASK,
+        task: str = JinaEmbeddingProvider.DEFAULT_TASK,
         dimensions: int | None = None,
     ) -> list[list[float]]:
         """Generate embeddings for a list of texts"""

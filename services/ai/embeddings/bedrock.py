@@ -5,7 +5,7 @@ import boto3
 import json
 
 from . import EmbeddingProvider, Chunk
-from processing import chunk_by_sentences_chars, chunk_by_chars
+from processing import Chunker
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +31,11 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
 
     async def generate_embeddings(
         self,
-        texts: list[str],
+        text: str,
         task: str,
         chunk_size: int,
         chunking_mode: str,
-    ) -> list[list[Chunk]]:
+    ) -> list[Chunk]:
         """
         Generate embeddings using AWS Bedrock with chunking support.
         Runs in executor to avoid blocking the event loop with synchronous boto3 calls.
@@ -44,7 +44,7 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
         return await loop.run_in_executor(
             None,  # Use default executor
             self._generate_embeddings_with_bedrock,
-            texts,
+            text,
             task,
             chunk_size,
             chunking_mode,
@@ -56,11 +56,11 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
 
     def _generate_embeddings_with_bedrock(
         self,
-        texts: list[str],
+        text: str,
         task: str,
         chunk_size: int,
         chunking_mode: str,
-    ) -> list[list[Chunk]]:
+    ) -> list[Chunk]:
         """Generate embeddings using AWS Bedrock with chunking support."""
 
         start_time = time.time()
@@ -70,59 +70,51 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
         max_chars = effective_chunk_size * self.CHARS_PER_TOKEN
 
         try:
-            logger.info(f"Starting Bedrock embedding generation for {len(texts)} texts")
+            if chunking_mode == "none":
+                embeddings = self.client.generate_embeddings([text])
+                chunks = [Chunk((0, len(text)), embeddings[0])]
 
-            all_chunks = []
+            elif chunking_mode == "sentence":
+                char_spans = Chunker.chunk_sentences_by_chars(text, max_chars)
 
-            for text in texts:
-                if chunking_mode == "none":
-                    embeddings = self.client.generate_embeddings([text])
-                    chunks = [Chunk((0, len(text)), embeddings[0])]
+                chunk_texts = [text[start:end] for start, end in char_spans]
 
-                elif chunking_mode == "sentence":
-                    char_spans = chunk_by_sentences_chars(text, max_chars)
-
-                    chunk_texts = [text[start:end] for start, end in char_spans]
-
-                    if chunk_texts:
-                        embeddings = self.client.generate_embeddings(chunk_texts)
-                        chunks = [
-                            Chunk(span, embedding)
-                            for span, embedding in zip(char_spans, embeddings)
-                        ]
-                    else:
-                        embeddings = self.client.generate_embeddings([text])
-                        chunks = [Chunk((0, len(text)), embeddings[0])]
-
-                elif chunking_mode == "fixed":
-                    char_spans = chunk_by_chars(text, max_chars)
-
-                    chunk_texts = [text[start:end] for start, end in char_spans]
-
+                if chunk_texts:
                     embeddings = self.client.generate_embeddings(chunk_texts)
                     chunks = [
                         Chunk(span, embedding)
                         for span, embedding in zip(char_spans, embeddings)
                     ]
-
                 else:
-                    logger.warning(
-                        f"Unsupported chunking mode: {chunking_mode}, using no chunking"
-                    )
                     embeddings = self.client.generate_embeddings([text])
                     chunks = [Chunk((0, len(text)), embeddings[0])]
 
-                all_chunks.append(chunks)
+            elif chunking_mode == "fixed":
+                char_spans = Chunker.chunk_by_chars(text, max_chars)
+
+                chunk_texts = [text[start:end] for start, end in char_spans]
+
+                embeddings = self.client.generate_embeddings(chunk_texts)
+                chunks = [
+                    Chunk(span, embedding)
+                    for span, embedding in zip(char_spans, embeddings)
+                ]
+
+            else:
+                logger.warning(
+                    f"Unsupported chunking mode: {chunking_mode}, using no chunking"
+                )
+                embeddings = self.client.generate_embeddings([text])
+                chunks = [Chunk((0, len(text)), embeddings[0])]
 
             end_time = time.time()
             total_time = end_time - start_time
-            total_chunks = sum(len(chunks_list) for chunks_list in all_chunks)
             logger.info(
                 f"Bedrock embedding generation complete - total_time: {total_time:.2f}s, "
-                f"total_chunks: {total_chunks}, chunks_per_text: {[len(c) for c in all_chunks]}"
+                f"total_chunks: {len(chunks)}"
             )
 
-            return all_chunks
+            return chunks
 
         except Exception as e:
             logger.error(f"Error generating embeddings with Bedrock: {str(e)}")
