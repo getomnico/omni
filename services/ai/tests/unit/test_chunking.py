@@ -189,7 +189,7 @@ class TestCharacterBasedChunking:
         chunks = [text[start:end] for start, end in spans]
 
         # Should create multiple chunks
-        assert len(chunks) >= 2
+        assert len(chunks) == 3
 
     def test_chunk_by_chars_basic(self):
         """Test basic character-based fixed chunking."""
@@ -199,7 +199,7 @@ class TestCharacterBasedChunking:
         chunks = [text[start:end] for start, end in spans]
 
         # Should create multiple chunks with small limit
-        assert len(chunks) >= 3
+        assert len(chunks) == 4
 
         # Reconstruct should match original
         reconstructed = "".join(chunks)

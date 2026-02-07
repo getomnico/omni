@@ -290,7 +290,7 @@ services:
       RUST_LOG: ${RUST_LOG}
       PORT: ${GOOGLE_CONNECTOR_PORT}
       AI_SERVICE_URL: ${AI_SERVICE_URL}
-      CONNECTOR_MANAGER_URL: http://connector-manager:${CONNECTOR_MANAGER_PORT}
+      CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
       GOOGLE_SYNC_INTERVAL_SECONDS: ${GOOGLE_SYNC_INTERVAL_SECONDS}
       GOOGLE_MAX_AGE_DAYS: ${GOOGLE_MAX_AGE_DAYS:-730}
       GOOGLE_WEBHOOK_URL: ${GOOGLE_WEBHOOK_URL}
@@ -317,7 +317,7 @@ services:
       RUST_LOG: ${RUST_LOG}
       PORT: ${SLACK_CONNECTOR_PORT}
       SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
-      CONNECTOR_MANAGER_URL: http://connector-manager:${CONNECTOR_MANAGER_PORT}
+      CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
     networks:
       - omni-network
     depends_on:
@@ -337,7 +337,7 @@ services:
       <<: [*redis-config, *otel-config]
       RUST_LOG: ${RUST_LOG}
       PORT: ${ATLASSIAN_CONNECTOR_PORT}
-      CONNECTOR_MANAGER_URL: http://connector-manager:${CONNECTOR_MANAGER_PORT}
+      CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
       ATLASSIAN_BASE_URL: ${ATLASSIAN_BASE_URL}
       ATLASSIAN_USER_EMAIL: ${ATLASSIAN_USER_EMAIL}
       ATLASSIAN_API_TOKEN: ${ATLASSIAN_API_TOKEN}
@@ -362,7 +362,7 @@ services:
       <<: [*redis-config, *otel-config]
       RUST_LOG: ${RUST_LOG}
       PORT: ${WEB_CONNECTOR_PORT}
-      CONNECTOR_MANAGER_URL: http://connector-manager:${CONNECTOR_MANAGER_PORT}
+      CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
     networks:
       - omni-network
     depends_on:

@@ -127,7 +127,7 @@ def create_embedding_provider(provider_type: str, **kwargs) -> EmbeddingProvider
         if not max_model_len:
             raise ValueError("max_model_len is required for Cohere provider")
         model = kwargs.get("model", "embed-v4.0")
-        api_url = kwargs.get("api_url", "https://api.cohere.com/v2/embed")
+        api_url = kwargs.get("api_url")
         dimensions = kwargs.get("dimensions")
         return CohereEmbeddingProvider(
             api_key=api_key,

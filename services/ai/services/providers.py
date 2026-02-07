@@ -33,6 +33,8 @@ async def initialize_providers(app_state: AppState) -> None:
     provider = embedding_config.provider
     logger.info(f"Loaded embedding configuration (provider: {provider})")
 
+    max_model_len = embedding_config.max_model_len or EMBEDDING_MAX_MODEL_LEN
+
     if provider == "jina":
         if not embedding_config.api_key:
             raise ValueError("Embedding API key is required when using Jina provider")
@@ -41,7 +43,7 @@ async def initialize_providers(app_state: AppState) -> None:
             api_key=embedding_config.api_key,
             model=embedding_config.model,
             api_url=embedding_config.api_url,
-            max_model_len=EMBEDDING_MAX_MODEL_LEN,
+            max_model_len=max_model_len,
         )
 
     elif provider == "bedrock":
@@ -50,7 +52,7 @@ async def initialize_providers(app_state: AppState) -> None:
             "bedrock",
             model_id=embedding_config.model,
             region_name=region_name,
-            max_model_len=EMBEDDING_MAX_MODEL_LEN,
+            max_model_len=max_model_len,
         )
 
     elif provider == "openai":
@@ -61,7 +63,7 @@ async def initialize_providers(app_state: AppState) -> None:
             api_key=embedding_config.api_key,
             model=embedding_config.model,
             dimensions=embedding_config.dimensions,
-            max_model_len=EMBEDDING_MAX_MODEL_LEN,
+            max_model_len=max_model_len,
         )
 
     elif provider == "cohere":
@@ -72,7 +74,7 @@ async def initialize_providers(app_state: AppState) -> None:
             api_key=embedding_config.api_key,
             model=embedding_config.model,
             api_url=embedding_config.api_url,
-            max_model_len=EMBEDDING_MAX_MODEL_LEN,
+            max_model_len=max_model_len,
             dimensions=embedding_config.dimensions,
         )
 
@@ -81,7 +83,7 @@ async def initialize_providers(app_state: AppState) -> None:
             "local",
             base_url=embedding_config.api_url or "",
             model=embedding_config.model,
-            max_model_len=EMBEDDING_MAX_MODEL_LEN,
+            max_model_len=max_model_len,
         )
 
     else:

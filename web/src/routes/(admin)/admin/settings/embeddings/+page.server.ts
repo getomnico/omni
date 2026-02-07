@@ -23,6 +23,7 @@ export const load: PageServerLoad = async ({ locals }) => {
             model: config.model,
             apiUrl: config.apiUrl,
             dimensions: config.dimensions,
+            maxModelLen: config.maxModelLen,
         },
         hasApiKey: !!config.apiKey,
     }
@@ -51,6 +52,8 @@ export const actions: Actions = {
             const apiUrl = (formData.get('apiUrl') as string) || null
             const dimensionsStr = formData.get('dimensions') as string
             const dimensions = dimensionsStr ? parseInt(dimensionsStr, 10) : null
+            const maxModelLenStr = formData.get('maxModelLen') as string
+            const maxModelLen = maxModelLenStr ? parseInt(maxModelLenStr, 10) : null
 
             if (!model) {
                 return fail(400, { error: 'Model is required', provider })
@@ -81,6 +84,7 @@ export const actions: Actions = {
                 apiKey: finalApiKey,
                 apiUrl,
                 dimensions,
+                maxModelLen,
             }
 
             await upsertEmbeddingConfig(configData)

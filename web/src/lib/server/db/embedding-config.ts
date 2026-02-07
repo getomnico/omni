@@ -10,6 +10,7 @@ export interface EmbeddingConfig {
     model: string
     apiUrl: string | null
     dimensions: number | null
+    maxModelLen: number | null
 }
 
 const EMBEDDING_CONFIG_KEY = 'embedding_config'
@@ -39,6 +40,7 @@ export async function getEmbeddingConfig(): Promise<EmbeddingConfig | null> {
         model: (raw.model as string) ?? '',
         apiUrl: (raw.apiUrl as string) ?? null,
         dimensions: (raw.dimensions as number) ?? null,
+        maxModelLen: (raw.maxModelLen as number) ?? null,
     }
 }
 

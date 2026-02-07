@@ -22,6 +22,7 @@ from config import (
     EMBEDDING_MODEL,
     EMBEDDING_API_URL,
     EMBEDDING_DIMENSIONS,
+    EMBEDDING_MAX_MODEL_LEN,
 )
 from db import fetch_llm_config, fetch_embedding_config
 
@@ -137,6 +138,7 @@ class EmbeddingConfig:
     model: str = ""
     api_url: Optional[str] = None
     dimensions: Optional[int] = None
+    max_model_len: Optional[int] = None
 
 
 def parse_embedding_config(data: dict) -> EmbeddingConfig:
@@ -150,6 +152,7 @@ def parse_embedding_config(data: dict) -> EmbeddingConfig:
         model=data.get("model", ""),
         api_url=data.get("apiUrl"),
         dimensions=data.get("dimensions"),
+        max_model_len=data.get("maxModelLen"),
     )
 
 
@@ -181,6 +184,7 @@ class EmbeddingConfigCache:
             model=EMBEDDING_MODEL or "",
             api_url=EMBEDDING_API_URL or None,
             dimensions=EMBEDDING_DIMENSIONS,
+            max_model_len=EMBEDDING_MAX_MODEL_LEN,
         )
 
     async def get_config(self) -> EmbeddingConfig:

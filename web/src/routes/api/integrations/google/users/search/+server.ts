@@ -40,8 +40,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             throw error(400, 'sourceId parameter is required')
         }
 
-        // Get the Google connector service URL from environment
-        const googleConnectorUrl = process.env.GOOGLE_CONNECTOR_URL || 'http://localhost:3003'
+        const googleConnectorUrl = process.env.GOOGLE_CONNECTOR_URL
 
         // Build the search URL for the Google connector
         const searchParams = new URLSearchParams()

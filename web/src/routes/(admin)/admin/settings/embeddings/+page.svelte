@@ -19,6 +19,7 @@
     let apiKey = $state('')
     let apiUrl = $state(data.config?.apiUrl || '')
     let dimensions = $state<number | string>(data.config?.dimensions || '')
+    let maxModelLen = $state<number | string>(data.config?.maxModelLen || '')
     let isSubmitting = $state(false)
 
     // Provider-specific defaults for model and apiUrl
@@ -243,6 +244,21 @@
                                 </p>
                             </div>
                         {/if}
+
+                        <!-- Max Model Length (always shown) -->
+                        <div class="space-y-2">
+                            <Label for="maxModelLen">Max Model Length</Label>
+                            <Input
+                                id="maxModelLen"
+                                name="maxModelLen"
+                                type="number"
+                                bind:value={maxModelLen}
+                                placeholder="Default: 8192"
+                                min="1" />
+                            <p class="text-muted-foreground text-sm">
+                                Maximum token length for text chunks sent to the embedding model
+                            </p>
+                        </div>
 
                         <!-- Bedrock IAM notice -->
                         {#if provider === 'bedrock'}
