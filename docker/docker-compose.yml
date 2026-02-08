@@ -220,12 +220,12 @@ services:
     environment:
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
     command: >
-      --model ${VLLM_MODEL}
+      --model ${LLM_MODEL}
       --dtype ${VLLM_DTYPE:-auto}
-      --api-key ${VLLM_API_KEY}
+      --api-key ${LLM_API_KEY}
       --port ${VLLM_PORT}
       --host 0.0.0.0
-      --max-model-len ${VLLM_MAX_MODEL_LEN}
+      --max-model-len ${LLM_MAX_MODEL_LEN}
     networks:
       - omni-network
     volumes:
@@ -248,21 +248,21 @@ services:
     expose:
       - "${VLLM_EMBEDDINGS_PORT}"
     environment:
-      - CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
     command:
       - "--model"
-      - "${LOCAL_EMBEDDINGS_MODEL}"
+      - "${EMBEDDING_MODEL}"
       - "--dtype"
-      - "${VLLM_DTYPE}"
+      - "${VLLM_DTYPE:-auto}"
       - "--port"
       - "${VLLM_EMBEDDINGS_PORT}"
       - "--host"
       - "0.0.0.0"
       - "--max-model-len"
-      - "${VLLM_EMBEDDINGS_MAX_MODEL_LEN}"
+      - "${EMBEDDING_MAX_MODEL_LEN}"
       - "--trust-remote-code"
       # The following override is included to support the default embedding model (nomic-embed-text-v1.5).
-      # For other models, this might not be required.
+      # For other models, this may or may not be required.
       - "--hf-overrides"
       - "{\"rope_theta\": 1000, \"rope_scaling\": {\"rope_type\": \"yarn\", \"factor\": 4.0, \"original_max_position_embeddings\": 2048}, \"model_max_length\": 8192}"
     networks:

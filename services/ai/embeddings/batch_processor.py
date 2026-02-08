@@ -25,8 +25,8 @@ from config import (
     EMBEDDING_BATCH_ACCUMULATION_POLL_INTERVAL,
     EMBEDDING_BATCH_MONITOR_POLL_INTERVAL,
     EMBEDDING_MODEL,
+    EMBEDDING_MAX_MODEL_LEN,
     AWS_REGION,
-    EMBEDDING_MAX_DOCUMENT_SIZE,
 )
 
 from processing.chunking import Chunker
@@ -385,7 +385,9 @@ class EmbeddingBatchProcessor:
 
             # Generate embeddings using sliding window over the document
             try:
-                window_size = EMBEDDING_MAX_DOCUMENT_SIZE
+                window_size = (
+                    EMBEDDING_MAX_MODEL_LEN * 3
+                )  # TODO: address 3 chars per token assumption here
                 overlap = window_size // 4
                 stride = window_size - overlap
 

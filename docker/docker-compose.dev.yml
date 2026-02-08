@@ -143,6 +143,10 @@ services:
   vllm:
     profiles:
       - production
+  
+  embeddings:
+    ports:
+      - "${VLLM_EMBEDDINGS_PORT}:${VLLM_EMBEDDINGS_PORT}"
 
   caddy:
     profiles:
