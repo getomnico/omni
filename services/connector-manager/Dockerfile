@@ -17,7 +17,9 @@ RUN if [ "$BUILD_MODE" = "debug" ]; then \
         cargo chef cook --release --recipe-path recipe.json; \
     fi
 
-COPY . .
+COPY Cargo.toml Cargo.lock ./
+COPY shared/ shared/
+COPY services/connector-manager/ services/connector-manager/
 
 # Build binary based on build mode
 RUN if [ "$BUILD_MODE" = "debug" ]; then \

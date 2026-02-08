@@ -17,7 +17,9 @@ RUN if [ "$BUILD_MODE" = "debug" ]; then \
         cargo chef cook --release --recipe-path recipe.json; \
     fi
 
-COPY . .
+COPY Cargo.toml Cargo.lock ./
+COPY shared/ shared/
+COPY connectors/google/ connectors/google/
 
 # Build binary based on build mode
 RUN if [ "$BUILD_MODE" = "debug" ]; then \
@@ -43,5 +45,4 @@ RUN if [ "$BUILD_MODE" = "debug" ]; then \
 
 COPY --from=builder /app/target/${BUILD_MODE}/omni-google-connector /usr/local/bin/omni-google-connector
 
-EXPOSE 4001
 CMD ["omni-google-connector"]

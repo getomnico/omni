@@ -1,7 +1,6 @@
 # Rust
 target/
 **/*.rs.bk
-Cargo.lock
 
 # IDE
 .vscode/
@@ -46,7 +45,7 @@ venv/
 services/ai/venv/
 services/ai/.venv/
 
-# Python build artifacts (prevents ai service artifacts from triggering Rust rebuilds)
+# Python build artifacts
 **/__pycache__/
 **/*.pyc
 **/*.pyo

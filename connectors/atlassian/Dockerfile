@@ -10,7 +10,9 @@ FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
-COPY . .
+COPY Cargo.toml Cargo.lock ./
+COPY shared/ shared/
+COPY connectors/atlassian/ connectors/atlassian/
 RUN cargo build --release --bin omni-atlassian-connector
 
 FROM debian:bookworm-slim AS runtime
@@ -21,5 +23,4 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 COPY --from=builder /app/target/release/omni-atlassian-connector /usr/local/bin/omni-atlassian-connector
 
-EXPOSE 4003
 CMD ["omni-atlassian-connector"]

@@ -10,7 +10,9 @@ FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
-COPY . .
+COPY Cargo.toml Cargo.lock ./
+COPY shared/ shared/
+COPY connectors/web/ connectors/web/
 RUN cargo build --release --bin omni-web-connector
 
 FROM debian:bookworm-slim AS runtime

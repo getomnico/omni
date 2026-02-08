@@ -10,7 +10,9 @@ FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
-COPY . .
+COPY Cargo.toml Cargo.lock ./
+COPY shared/ shared/
+COPY services/indexer/ services/indexer/
 RUN cargo build --release --bin omni-indexer
 
 FROM debian:bookworm-slim AS runtime
@@ -21,5 +23,4 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 COPY --from=builder /app/target/release/omni-indexer /usr/local/bin/omni-indexer
 
-EXPOSE 3002
 CMD ["omni-indexer"]

@@ -32,11 +32,7 @@ RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels
 # Copy entry point
 COPY connectors/hubspot/main.py /app/
 
-# Environment variables
-ENV PORT=8000
 ENV PYTHONUNBUFFERED=1
-
-EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

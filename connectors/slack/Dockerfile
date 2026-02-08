@@ -10,7 +10,9 @@ FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
-COPY . .
+COPY Cargo.toml Cargo.lock ./
+COPY shared/ shared/
+COPY connectors/slack/ connectors/slack/
 RUN cargo build --release --bin omni-slack-connector
 
 FROM debian:bookworm-slim AS runtime
@@ -21,5 +23,4 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 COPY --from=builder /app/target/release/omni-slack-connector /usr/local/bin/omni-slack-connector
 
-EXPOSE 4002
 CMD ["omni-slack-connector"]
