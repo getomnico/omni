@@ -67,7 +67,7 @@ services:
     logging: *default-logging
 
   migrator:
-    image: ghcr.io/getomnico/omni/omni-migrator:latest
+    image: ghcr.io/getomnico/omni/omni-migrator:${OMNI_VERSION:-latest}
     container_name: omni-migrator
     environment:
       <<: *db-config
@@ -81,7 +81,7 @@ services:
 
   # Core Services
   searcher:
-    image: ghcr.io/getomnico/omni/omni-searcher:latest
+    image: ghcr.io/getomnico/omni/omni-searcher:${OMNI_VERSION:-latest}
     container_name: omni-searcher
     expose:
       - "${SEARCHER_PORT}"
@@ -107,7 +107,7 @@ services:
     logging: *default-logging
 
   indexer:
-    image: ghcr.io/getomnico/omni/omni-indexer:latest
+    image: ghcr.io/getomnico/omni/omni-indexer:${OMNI_VERSION:-latest}
     container_name: omni-indexer
     expose:
       - "${INDEXER_PORT}"
@@ -131,7 +131,7 @@ services:
     logging: *default-logging
 
   ai:
-    image: ghcr.io/getomnico/omni/omni-ai:latest
+    image: ghcr.io/getomnico/omni/omni-ai:${OMNI_VERSION:-latest}
     container_name: omni-ai
     expose:
       - "${AI_SERVICE_PORT}"
@@ -180,7 +180,7 @@ services:
 
   # Connector Manager - Orchestrates all connectors
   connector-manager:
-    image: ghcr.io/getomnico/omni/omni-connector-manager:latest
+    image: ghcr.io/getomnico/omni/omni-connector-manager:${OMNI_VERSION:-latest}
     container_name: omni-connector-manager
     expose:
       - "${CONNECTOR_MANAGER_PORT}"
@@ -268,7 +268,7 @@ services:
 
   # Connector Services
   google-connector:
-    image: ghcr.io/getomnico/omni/omni-google-connector:latest
+    image: ghcr.io/getomnico/omni/omni-google-connector:${OMNI_VERSION:-latest}
     container_name: omni-google-connector
     expose:
       - "${GOOGLE_CONNECTOR_PORT}"
@@ -295,7 +295,7 @@ services:
     logging: *default-logging
 
   slack-connector:
-    image: ghcr.io/getomnico/omni/omni-slack-connector:latest
+    image: ghcr.io/getomnico/omni/omni-slack-connector:${OMNI_VERSION:-latest}
     container_name: omni-slack-connector
     expose:
       - "${SLACK_CONNECTOR_PORT}"
@@ -316,7 +316,7 @@ services:
     logging: *default-logging
 
   atlassian-connector:
-    image: ghcr.io/getomnico/omni/omni-atlassian-connector:latest
+    image: ghcr.io/getomnico/omni/omni-atlassian-connector:${OMNI_VERSION:-latest}
     container_name: omni-atlassian-connector
     expose:
       - "${ATLASSIAN_CONNECTOR_PORT}"
@@ -341,7 +341,7 @@ services:
     logging: *default-logging
 
   web-connector:
-    image: ghcr.io/getomnico/omni/omni-web-connector:latest
+    image: ghcr.io/getomnico/omni/omni-web-connector:${OMNI_VERSION:-latest}
     container_name: omni-web-connector
     expose:
       - "${WEB_CONNECTOR_PORT}"
@@ -362,7 +362,7 @@ services:
 
   # Web Application (SvelteKit frontend + backend)
   web:
-    image: ghcr.io/getomnico/omni/omni-web:latest
+    image: ghcr.io/getomnico/omni/omni-web:${OMNI_VERSION:-latest}
     container_name: omni-web
     expose:
       - "${WEB_PORT}"
