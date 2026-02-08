@@ -1,7 +1,7 @@
-# GPU support override for vLLM services
+# GPU support override for local inference services (vLLM, TEI)
 # Usage: docker compose -f docker/docker-compose.yml -f docker/docker-compose.gpu.yml --profile local-embeddings up
 #
-# This file adds NVIDIA GPU support to vLLM services.
+# This file adds NVIDIA GPU support to local inference services.
 # Only include this file when running on a machine with an NVIDIA GPU.
 
 services:

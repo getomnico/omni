@@ -146,7 +146,7 @@ services:
   
   embeddings:
     ports:
-      - "${VLLM_EMBEDDINGS_PORT}:${VLLM_EMBEDDINGS_PORT}"
+      - "${LOCAL_EMBEDDINGS_PORT}:${LOCAL_EMBEDDINGS_PORT}"
 
   caddy:
     profiles:

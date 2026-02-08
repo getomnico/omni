@@ -240,38 +240,25 @@ services:
       - vllm  # Only start when vllm profile is active
     logging: *default-logging
 
-  # vLLM Embeddings Service (for local embedding models)
+  # HuggingFace TEI Embeddings Service (for local embedding models)
   # GPU support: use docker-compose.gpu.yml override for GPU acceleration
   embeddings:
-    image: vllm/vllm-openai:latest
+    image: ghcr.io/huggingface/text-embeddings-inference:1.8
     container_name: omni-embeddings
     expose:
-      - "${VLLM_EMBEDDINGS_PORT}"
-    environment:
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - "${LOCAL_EMBEDDINGS_PORT}"
     command:
-      - "--model"
+      - "--model-id"
       - "${EMBEDDING_MODEL}"
-      - "--dtype"
-      - "${VLLM_DTYPE:-auto}"
       - "--port"
-      - "${VLLM_EMBEDDINGS_PORT}"
-      - "--host"
-      - "0.0.0.0"
-      - "--max-model-len"
-      - "${EMBEDDING_MAX_MODEL_LEN}"
-      - "--trust-remote-code"
-      # The following override is included to support the default embedding model (nomic-embed-text-v1.5).
-      # For other models, this may or may not be required.
-      - "--hf-overrides"
-      - "{\"rope_theta\": 1000, \"rope_scaling\": {\"rope_type\": \"yarn\", \"factor\": 4.0, \"original_max_position_embeddings\": 2048}, \"model_max_length\": 8192}"
+      - "${LOCAL_EMBEDDINGS_PORT}"
     networks:
       - omni-network
     volumes:
-      - vllm_models:/root/.cache/huggingface
+      - tei_models:/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:${VLLM_EMBEDDINGS_PORT}/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:${LOCAL_EMBEDDINGS_PORT}/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -459,6 +446,8 @@ volumes:
     name: omni-ai-models
   vllm_models:
     name: omni-vllm-models
+  tei_models:
+    name: omni-tei-models
   caddy_data:
     name: omni-caddy-data
   caddy_config:
