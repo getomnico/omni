@@ -140,6 +140,14 @@ services:
     environment:
       RUST_BACKTRACE: full
 
+  microsoft-connector:
+    image: omni-microsoft-connector:dev
+    build:
+      context: ..
+      dockerfile: connectors/microsoft/Dockerfile
+    environment:
+      <<: *dev-database-url
+
   vllm:
     profiles:
       - production

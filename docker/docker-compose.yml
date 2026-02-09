@@ -194,6 +194,7 @@ services:
       CONNECTOR_SLACK_URL: http://slack-connector:${SLACK_CONNECTOR_PORT}
       CONNECTOR_ATLASSIAN_URL: http://atlassian-connector:${ATLASSIAN_CONNECTOR_PORT}
       CONNECTOR_WEB_URL: http://web-connector:${WEB_CONNECTOR_PORT}
+      CONNECTOR_MICROSOFT_URL: http://microsoft-connector:${MICROSOFT_CONNECTOR_PORT}
       MAX_CONCURRENT_SYNCS: ${MAX_CONCURRENT_SYNCS:-10}
       MAX_CONCURRENT_SYNCS_PER_TYPE: ${MAX_CONCURRENT_SYNCS_PER_TYPE:-3}
       SCHEDULER_POLL_INTERVAL_SECONDS: ${SCHEDULER_POLL_INTERVAL_SECONDS:-60}
@@ -357,6 +358,27 @@ services:
         condition: service_started
       redis:
         condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+
+  microsoft-connector:
+    image: ghcr.io/getomnico/omni/omni-microsoft-connector:${OMNI_VERSION:-latest}
+    container_name: omni-microsoft-connector
+    expose:
+      - "${MICROSOFT_CONNECTOR_PORT}"
+    environment:
+      PORT: ${MICROSOFT_CONNECTOR_PORT}
+      CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      DATABASE_HOST: ${DATABASE_HOST}
+      DATABASE_PORT: ${DATABASE_PORT}
+      DATABASE_USERNAME: ${DATABASE_USERNAME}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
+      DATABASE_NAME: ${DATABASE_NAME}
+    networks:
+      - omni-network
+    depends_on:
+      connector-manager:
+        condition: service_started
     restart: unless-stopped
     logging: *default-logging
 
