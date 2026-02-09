@@ -210,7 +210,7 @@ async fn test_search_with_limit() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_search_with_filters() -> Result<()> {
+async fn test_search() -> Result<()> {
     let fixture = SearcherTestFixture::new().await?;
     let _doc_ids = fixture.seed_search_data().await?;
 

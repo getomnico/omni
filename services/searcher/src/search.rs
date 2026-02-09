@@ -137,10 +137,14 @@ impl SearchEngine {
             return Err(anyhow::anyhow!("Search query cannot be empty"));
         }
 
+        let source_ids = repo
+            .fetch_active_source_ids(request.source_types.as_deref())
+            .await?;
+
         let search_future = async {
             let start_ts = Instant::now();
             let res = match request.search_mode() {
-                SearchMode::Fulltext => self.fulltext_search(&repo, &request).await,
+                SearchMode::Fulltext => self.fulltext_search(&repo, &request, &source_ids).await,
                 SearchMode::Semantic => self.semantic_search(&request).await,
                 SearchMode::Hybrid => self.hybrid_search(&request).await,
             };
@@ -152,11 +156,16 @@ impl SearchEngine {
         let facets_future = async {
             if request.include_facets() {
                 let start_ts = Instant::now();
-                let sources = request.source_types.as_deref();
                 let content_types = request.content_types.as_deref();
-
+                let attribute_filters = request.attribute_filters.as_ref();
                 let facets = repo
-                    .get_facet_counts_with_filters(&request.query, sources, content_types)
+                    .get_facet_counts(
+                        &request.query,
+                        &source_ids,
+                        content_types,
+                        attribute_filters,
+                        request.user_email().map(|e| e.as_str()),
+                    )
                     .await
                     .unwrap_or_else(|e| {
                         info!("Failed to get facet counts: {}", e);
@@ -210,17 +219,17 @@ impl SearchEngine {
         &self,
         repo: &DocumentRepository,
         request: &SearchRequest,
+        source_ids: &[String],
     ) -> Result<Vec<SearchResult>> {
         let start_time = Instant::now();
-        let sources = request.source_types.as_deref();
         let content_types = request.content_types.as_deref();
         let attribute_filters = request.attribute_filters.as_ref();
 
         debug!("Running fulltext search for {}", &request.query);
         let documents_with_scores = repo
-            .search_with_filters(
+            .search(
                 &request.query,
-                sources,
+                source_ids,
                 content_types,
                 attribute_filters,
                 request.limit(),
@@ -781,9 +790,11 @@ impl SearchEngine {
         info!("Performing hybrid search for query: '{}'", request.query);
         let start_time = Instant::now();
 
-        // Get results from both FTS and semantic search in parallel
         let repo = DocumentRepository::new(self.db_pool.pool());
-        let fts_future = self.fulltext_search(&repo, request);
+        let source_ids = repo
+            .fetch_active_source_ids(request.source_types.as_deref())
+            .await?;
+        let fts_future = self.fulltext_search(&repo, request, &source_ids);
 
         // Apply timeout to semantic search
         let semantic_future = tokio::time::timeout(
@@ -1019,9 +1030,11 @@ impl SearchEngine {
     pub async fn get_rag_context(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
         info!("Generating RAG context for query: '{}'", request.query);
 
-        // Get full-text search results to extract context around exact matches
         let repo = DocumentRepository::new(self.db_pool.pool());
-        let fts_results = self.fulltext_search(&repo, request).await?;
+        let source_ids = repo
+            .fetch_active_source_ids(request.source_types.as_deref())
+            .await?;
+        let fts_results = self.fulltext_search(&repo, request, &source_ids).await?;
 
         // Get semantic search results enhanced with expanded context for RAG
         let semantic_results = self.get_enhanced_semantic_results_for_rag(request).await?;

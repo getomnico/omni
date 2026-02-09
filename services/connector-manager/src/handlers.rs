@@ -59,7 +59,7 @@ pub async fn trigger_sync_by_id(
 
     let sync_run_id = state
         .sync_manager
-        .trigger_sync(&source_id, SyncType::Incremental, TriggerType::Manual)
+        .trigger_sync(&source_id, SyncType::Full, TriggerType::Manual)
         .await
         .map_err(|e| {
             error!("Failed to trigger sync for source {}: {:?}", source_id, e);

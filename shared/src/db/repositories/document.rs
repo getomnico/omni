@@ -6,7 +6,6 @@ use crate::{
 use serde_json::Value as JsonValue;
 use sqlx::{FromRow, PgPool};
 use std::collections::HashMap;
-use tracing::debug;
 
 #[derive(FromRow)]
 pub struct DocumentWithScores {
@@ -126,60 +125,50 @@ impl DocumentRepository {
         Ok(documents)
     }
 
-    pub async fn search_with_filters(
+    pub async fn fetch_active_source_ids(
         &self,
-        query: &str,
         source_types: Option<&[SourceType]>,
-        content_types: Option<&[String]>,
-        attribute_filters: Option<&HashMap<String, AttributeFilter>>,
-        limit: i64,
-        offset: i64,
-        user_email: Option<&str>,
-        document_id: Option<&str>,
-    ) -> Result<Vec<DocumentWithScores>, DatabaseError> {
-        let has_content_types = content_types.map_or(false, |ct| !ct.is_empty());
-
-        let mut filters = vec!["(title ||| $1 OR content ||| $2)".to_string()];
-        let mut param_idx = 3; // Params 1 and 2 are for the query (title query and content query)
-
-        let source_filter_query = if let Some(source_types) = source_types {
-            // We could use a sub-query here, source_id IN (SELECT id FROM sources WHERE ...)
-            // But ParadeDB doesn't return a score for each document when using a sub-query.
-            // So we simply query the sources table, collect all the source IDs, and use an IN condition on source_id instead
-            let source_filter_query =
-                r#"SELECT id FROM sources WHERE source_type = ANY($1) AND NOT is_deleted"#;
-            sqlx::query_scalar(source_filter_query).bind(source_types)
+    ) -> Result<Vec<String>, DatabaseError> {
+        let source_ids: Vec<String> = if let Some(source_types) = source_types {
+            sqlx::query_scalar(
+                r#"SELECT id FROM sources WHERE source_type = ANY($1) AND NOT is_deleted"#,
+            )
+            .bind(source_types)
+            .fetch_all(&self.pool)
+            .await?
         } else {
-            // Filter down to all active sources
-            let source_filter_query = r#"SELECT id FROM sources WHERE NOT is_deleted"#;
-            sqlx::query_scalar(source_filter_query)
+            sqlx::query_scalar(r#"SELECT id FROM sources WHERE NOT is_deleted"#)
+                .fetch_all(&self.pool)
+                .await?
         };
 
-        // TODO: Cache active sources to avoid querying each time
-        let source_ids: Vec<String> = source_filter_query.fetch_all(&self.pool).await?;
+        Ok(source_ids)
+    }
+
+    fn build_common_filters(
+        &self,
+        filters: &mut Vec<String>,
+        param_idx: &mut usize,
+        source_ids: &[String],
+        content_types: Option<&[String]>,
+        attribute_filters: Option<&HashMap<String, AttributeFilter>>,
+        user_email: Option<&str>,
+    ) {
         if !source_ids.is_empty() {
-            debug!("Applying filter for source IDs: {:?}", source_ids);
             filters.push(format!("source_id = ANY(${})", param_idx));
-            param_idx += 1;
-        } else {
-            debug!(
-                "No active sources found. Source type filter: {:?}",
-                source_types
-            );
-            return Ok(vec![]);
+            *param_idx += 1;
         }
 
+        let has_content_types = content_types.is_some_and(|ct| !ct.is_empty());
         if has_content_types {
             filters.push(format!("content_type = ANY(${})", param_idx));
-            param_idx += 1;
+            *param_idx += 1;
         }
 
-        // Build attribute filter conditions using ParadeDB's JSON query syntax
         if let Some(attr_filters) = attribute_filters {
             for (key, filter) in attr_filters {
                 match filter {
                     AttributeFilter::Exact(value) => {
-                        // Query the attributes JSON field with key:value syntax
                         let term_value = json_value_to_term_string(value);
                         filters.push(format!(
                             "attributes @@@ '{}:{}'",
@@ -188,7 +177,6 @@ impl DocumentRepository {
                         ));
                     }
                     AttributeFilter::AnyOf(values) => {
-                        // OR multiple term queries for array membership
                         let conditions: Vec<String> = values
                             .iter()
                             .map(|v| {
@@ -205,8 +193,6 @@ impl DocumentRepository {
                         }
                     }
                     AttributeFilter::Range { gte, lte } => {
-                        // For range queries on dates/numbers, use string comparison
-                        // ParadeDB range queries require fast fields, falling back to JSONB ops
                         if let Some(gte_val) = gte {
                             let gte_str = json_value_to_term_string(gte_val);
                             filters.push(format!(
@@ -231,6 +217,34 @@ impl DocumentRepository {
         if let Some(email) = user_email {
             filters.push(self.generate_permission_filter(email));
         }
+    }
+
+    pub async fn search(
+        &self,
+        query: &str,
+        source_ids: &[String],
+        content_types: Option<&[String]>,
+        attribute_filters: Option<&HashMap<String, AttributeFilter>>,
+        limit: i64,
+        offset: i64,
+        user_email: Option<&str>,
+        document_id: Option<&str>,
+    ) -> Result<Vec<DocumentWithScores>, DatabaseError> {
+        if source_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut filters = vec!["(title ||| $1 OR content ||| $2)".to_string()];
+        let mut param_idx = 3;
+
+        self.build_common_filters(
+            &mut filters,
+            &mut param_idx,
+            source_ids,
+            content_types,
+            attribute_filters,
+            user_email,
+        );
 
         // Document ID will be set when running a search query within a single document.
         // Seems silly to use this function to search through the contents of a single doc, but
@@ -442,37 +456,39 @@ impl DocumentRepository {
         Ok(upserted_document)
     }
 
-    pub async fn get_facet_counts_with_filters(
+    pub async fn get_facet_counts(
         &self,
         query: &str,
-        source_types: Option<&[SourceType]>,
+        source_ids: &[String],
         content_types: Option<&[String]>,
+        attribute_filters: Option<&HashMap<String, AttributeFilter>>,
+        user_email: Option<&str>,
     ) -> Result<Vec<Facet>, DatabaseError> {
+        if source_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
         let mut filters = vec!["(title ||| $1 OR content ||| $2)".to_string()];
-        let mut bind_index = 3;
+        let mut param_idx = 3;
 
-        if let Some(src) = source_types {
-            if !src.is_empty() {
-                filters.push(format!("s.source_type = ANY(${})", bind_index));
-                bind_index += 1;
-            }
-        }
-
-        if let Some(ct) = content_types {
-            if !ct.is_empty() {
-                filters.push(format!("d.content_type = ANY(${})", bind_index));
-            }
-        }
+        self.build_common_filters(
+            &mut filters,
+            &mut param_idx,
+            source_ids,
+            content_types,
+            attribute_filters,
+            user_email,
+        );
 
         let where_clause = filters.join(" AND ");
 
         let query_str = format!(
             r#"
             SELECT 'source_type' as facet, s.source_type as value, count(*) as count
-            FROM documents d 
+            FROM documents d
             JOIN sources s ON d.source_id = s.id
             WHERE {}
-            GROUP BY s.source_type 
+            GROUP BY s.source_type
             ORDER BY count DESC
             "#,
             where_clause
@@ -481,13 +497,8 @@ impl DocumentRepository {
         let title_query = format!("{}::pdb.boost(2)", query);
         let mut query = sqlx::query_as::<_, (String, String, i64)>(&query_str)
             .bind(title_query)
-            .bind(query);
-
-        if let Some(src) = source_types {
-            if !src.is_empty() {
-                query = query.bind(src);
-            }
-        }
+            .bind(query)
+            .bind(source_ids);
 
         if let Some(ct) = content_types {
             if !ct.is_empty() {
@@ -497,7 +508,6 @@ impl DocumentRepository {
 
         let facet_rows = query.fetch_all(&self.pool).await?;
 
-        // Group the results by facet name
         let mut facets_map: std::collections::HashMap<String, Vec<FacetValue>> =
             std::collections::HashMap::new();
 
@@ -508,7 +518,6 @@ impl DocumentRepository {
                 .push(FacetValue { value, count });
         }
 
-        // Convert to Vec<Facet>
         let facets: Vec<Facet> = facets_map
             .into_iter()
             .map(|(name, values)| Facet { name, values })
