@@ -17,6 +17,7 @@ use axum::{
 use futures::stream::Stream;
 use serde_json::json;
 use shared::models::SourceType;
+use shared::models::SyncType;
 use std::convert::Infallible;
 use std::time::Duration;
 use tracing::{debug, error, info};
@@ -33,7 +34,15 @@ pub async fn trigger_sync(
 
     let sync_run_id = state
         .sync_manager
-        .trigger_sync(&request.source_id, request.sync_mode, TriggerType::Manual)
+        .trigger_sync(
+            &request.source_id,
+            match request.sync_mode.as_deref() {
+                // TODO: Use SyncType in TriggerSyncRequest
+                Some("full") => SyncType::Full,
+                _ => SyncType::Incremental,
+            },
+            TriggerType::Manual,
+        )
         .await?;
 
     Ok(Json(TriggerSyncResponse {
@@ -50,7 +59,7 @@ pub async fn trigger_sync_by_id(
 
     let sync_run_id = state
         .sync_manager
-        .trigger_sync(&source_id, None, TriggerType::Manual)
+        .trigger_sync(&source_id, SyncType::Incremental, TriggerType::Manual)
         .await
         .map_err(|e| {
             error!("Failed to trigger sync for source {}: {:?}", source_id, e);
@@ -605,7 +614,7 @@ pub async fn sdk_create_sync(
 
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
     let sync_run = sync_run_repo
-        .create(&request.source_id, request.sync_type)
+        .create(&request.source_id, request.sync_type, "manual")
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to create sync run: {}", e)))?;
 
@@ -660,7 +669,7 @@ pub async fn sdk_notify_webhook(
         .sync_manager
         .trigger_sync(
             &request.source_id,
-            Some("incremental".to_string()),
+            SyncType::Incremental,
             TriggerType::Webhook,
         )
         .await

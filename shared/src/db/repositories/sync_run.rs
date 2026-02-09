@@ -20,18 +20,21 @@ impl SyncRunRepository {
         &self,
         source_id: &str,
         sync_type: SyncType,
+        trigger_type: &str,
     ) -> Result<SyncRun, DatabaseError> {
         let id = generate_ulid();
         let now = OffsetDateTime::now_utc();
 
         sqlx::query(
-            "INSERT INTO sync_runs (id, source_id, sync_type, status)
-             VALUES ($1, $2, $3, $4)",
+            "INSERT INTO sync_runs (id, source_id, sync_type, status, trigger_type, queued_at, started_at, last_activity_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $6, $6)",
         )
         .bind(&id)
         .bind(source_id)
         .bind(sync_type)
         .bind(SyncStatus::Running)
+        .bind(trigger_type)
+        .bind(now)
         .execute(&self.pool)
         .await?;
 

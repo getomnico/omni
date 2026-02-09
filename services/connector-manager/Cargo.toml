@@ -36,7 +36,6 @@ async-trait = { workspace = true }
 async-stream = "0.3"
 time = { workspace = true }
 shared = { path = "../../shared" }
-dashmap = { workspace = true }
 
 [dev-dependencies]
 testcontainers = { workspace = true }

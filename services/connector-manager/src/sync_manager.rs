@@ -1,21 +1,19 @@
 use crate::config::ConnectorManagerConfig;
 use crate::connector_client::{ClientError, ConnectorClient};
 use crate::models::{SyncRequest, TriggerType};
-use dashmap::DashSet;
+use shared::db::repositories::SyncRunRepository;
+use shared::models::{SyncStatus, SyncType};
 use shared::{DatabasePool, Repository, SourceRepository};
 use sqlx::PgPool;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 use time::OffsetDateTime;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 #[derive(Clone)]
 pub struct SyncManager {
     pool: PgPool,
     config: ConnectorManagerConfig,
     connector_client: ConnectorClient,
-    running_syncs: Arc<DashSet<String>>,
-    active_sync_count: Arc<AtomicUsize>,
+    sync_run_repo: SyncRunRepository,
 }
 
 impl SyncManager {
@@ -24,25 +22,21 @@ impl SyncManager {
             pool: db_pool.pool().clone(),
             config,
             connector_client: ConnectorClient::new(),
-            running_syncs: Arc::new(DashSet::new()),
-            active_sync_count: Arc::new(AtomicUsize::new(0)),
+            sync_run_repo: SyncRunRepository::new(db_pool.pool()),
         }
     }
 
     pub async fn trigger_sync(
         &self,
         source_id: &str,
-        sync_mode: Option<String>,
+        sync_type: SyncType,
         trigger_type: TriggerType,
     ) -> Result<String, SyncError> {
-        // Check if sync is already running for this source
-        if self.running_syncs.contains(source_id) {
+        if self.is_sync_running(source_id).await? {
             return Err(SyncError::SyncAlreadyRunning(source_id.to_string()));
         }
 
-        // Check global concurrency limit
-        let current_count = self.active_sync_count.load(Ordering::SeqCst);
-        if current_count >= self.config.max_concurrent_syncs {
+        if self.active_sync_count().await? >= self.config.max_concurrent_syncs {
             return Err(SyncError::ConcurrencyLimitReached);
         }
 
@@ -65,22 +59,23 @@ impl SyncManager {
             .ok_or_else(|| SyncError::ConnectorNotConfigured(format!("{:?}", source.source_type)))?
             .clone();
 
-        // Create sync run
-        let sync_run_id = shared::utils::generate_ulid();
-        let sync_type = sync_mode.as_deref().unwrap_or("incremental");
+        let sync_run = self
+            .sync_run_repo
+            .create(source_id, sync_type, &trigger_type.to_string())
+            .await
+            .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
 
-        self.create_sync_run(&sync_run_id, source_id, sync_type, trigger_type)
-            .await?;
+        self.update_source_sync_status(source_id, "syncing").await?;
 
-        // Mark source as syncing
-        self.running_syncs.insert(source_id.to_string());
-        self.active_sync_count.fetch_add(1, Ordering::SeqCst);
-
-        // Build sync request - connectors fetch their own config/credentials from DB
         let sync_request = SyncRequest {
-            sync_run_id: sync_run_id.clone(),
+            sync_run_id: sync_run.id.clone(),
             source_id: source_id.to_string(),
-            sync_mode: sync_type.to_string(),
+            // TODO: Change type of sync_mode to SyncType
+            sync_mode: match sync_type {
+                SyncType::Full => "full",
+                SyncType::Incremental => "incremental",
+            }
+            .to_string(),
         };
 
         // Trigger sync (non-blocking call to connector)
@@ -94,27 +89,27 @@ impl SyncManager {
                     "Sync triggered for source {}: {:?}",
                     source_id, response.status
                 );
-                Ok(sync_run_id)
+                Ok(sync_run.id)
             }
             Err(e) => {
-                // Clean up on failure
-                self.running_syncs.remove(source_id);
-                self.active_sync_count.fetch_sub(1, Ordering::SeqCst);
-                self.mark_sync_failed(&sync_run_id, &e.to_string()).await?;
+                self.mark_sync_failed(&sync_run.id, &e.to_string()).await?;
                 Err(SyncError::ConnectorError(e))
             }
         }
     }
 
     pub async fn cancel_sync(&self, sync_run_id: &str) -> Result<(), SyncError> {
-        // Get sync run details
-        let sync_run = self.get_sync_run(sync_run_id).await?;
+        let sync_run = self
+            .sync_run_repo
+            .find_by_id(sync_run_id)
+            .await
+            .map_err(|e| SyncError::DatabaseError(e.to_string()))?
+            .ok_or_else(|| SyncError::SyncRunNotFound(sync_run_id.to_string()))?;
 
-        if sync_run.status != "running" {
+        if sync_run.status != SyncStatus::Running {
             return Err(SyncError::SyncNotRunning(sync_run_id.to_string()));
         }
 
-        // Get connector URL
         let source_repo = SourceRepository::new(&self.pool);
         let source = Repository::find_by_id(&source_repo, sync_run.source_id.clone())
             .await
@@ -127,7 +122,6 @@ impl SyncManager {
             .ok_or_else(|| SyncError::ConnectorNotConfigured(format!("{:?}", source.source_type)))?
             .clone();
 
-        // Send cancel request to connector
         if let Err(e) = self
             .connector_client
             .cancel_sync(&connector_url, sync_run_id)
@@ -136,29 +130,31 @@ impl SyncManager {
             warn!("Failed to send cancel request to connector: {}", e);
         }
 
-        // Mark sync as cancelled
-        self.mark_sync_cancelled(sync_run_id).await?;
-
-        // Clean up tracking
-        self.running_syncs.remove(&sync_run.source_id);
-        self.active_sync_count.fetch_sub(1, Ordering::SeqCst);
+        self.sync_run_repo
+            .mark_cancelled(sync_run_id)
+            .await
+            .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
+        self.update_source_sync_status(&sync_run.source_id, "pending")
+            .await?;
 
         info!("Sync {} cancelled", sync_run_id);
         Ok(())
     }
 
-    pub fn is_sync_running(&self, source_id: &str) -> bool {
-        self.running_syncs.contains(source_id)
+    pub async fn is_sync_running(&self, source_id: &str) -> Result<bool, SyncError> {
+        self.sync_run_repo
+            .get_running_for_source(source_id)
+            .await
+            .map(|r| r.is_some())
+            .map_err(|e| SyncError::DatabaseError(e.to_string()))
     }
 
-    pub fn active_sync_count(&self) -> usize {
-        self.active_sync_count.load(Ordering::SeqCst)
-    }
-
-    pub async fn handle_sync_completed(&self, source_id: &str, sync_run_id: &str) {
-        debug!("Sync {} completed for source {}", sync_run_id, source_id);
-        self.running_syncs.remove(source_id);
-        self.active_sync_count.fetch_sub(1, Ordering::SeqCst);
+    pub async fn active_sync_count(&self) -> Result<usize, SyncError> {
+        self.sync_run_repo
+            .find_all_running()
+            .await
+            .map(|r| r.len())
+            .map_err(|e| SyncError::DatabaseError(e.to_string()))
     }
 
     pub async fn detect_stale_syncs(&self) -> Result<Vec<String>, SyncError> {
@@ -192,67 +188,25 @@ impl SyncManager {
                 continue;
             }
 
-            self.running_syncs.remove(&source_id);
-            self.active_sync_count.fetch_sub(1, Ordering::SeqCst);
             marked_stale.push(sync_run_id);
         }
 
         Ok(marked_stale)
     }
 
-    async fn create_sync_run(
-        &self,
-        id: &str,
-        source_id: &str,
-        sync_type: &str,
-        trigger_type: TriggerType,
-    ) -> Result<(), SyncError> {
-        let now = OffsetDateTime::now_utc();
-
-        sqlx::query(
-            r#"
-            INSERT INTO sync_runs (id, source_id, sync_type, status, trigger_type, queued_at, started_at, last_activity_at)
-            VALUES ($1, $2, $3, 'running', $4, $5, $5, $5)
-            "#,
-        )
-        .bind(id)
-        .bind(source_id)
-        .bind(sync_type)
-        .bind(trigger_type.to_string())
-        .bind(now)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
-
-        // Update source sync_status
-        sqlx::query("UPDATE sources SET sync_status = 'syncing' WHERE id = $1")
-            .bind(source_id)
-            .execute(&self.pool)
+    async fn mark_sync_failed(&self, sync_run_id: &str, error: &str) -> Result<(), SyncError> {
+        self.sync_run_repo
+            .mark_failed(sync_run_id, error)
             .await
             .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
 
-        Ok(())
-    }
+        let sync_run = self
+            .sync_run_repo
+            .find_by_id(sync_run_id)
+            .await
+            .map_err(|e| SyncError::DatabaseError(e.to_string()))?
+            .ok_or_else(|| SyncError::SyncRunNotFound(sync_run_id.to_string()))?;
 
-    async fn mark_sync_failed(&self, sync_run_id: &str, error: &str) -> Result<(), SyncError> {
-        let now = OffsetDateTime::now_utc();
-
-        sqlx::query(
-            r#"
-            UPDATE sync_runs
-            SET status = 'failed', completed_at = $1, error_message = $2, updated_at = $1
-            WHERE id = $3
-            "#,
-        )
-        .bind(now)
-        .bind(error)
-        .bind(sync_run_id)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
-
-        // Update source status
-        let sync_run = self.get_sync_run(sync_run_id).await?;
         sqlx::query("UPDATE sources SET sync_status = 'failed', sync_error = $1 WHERE id = $2")
             .bind(error)
             .bind(&sync_run.source_id)
@@ -263,50 +217,19 @@ impl SyncManager {
         Ok(())
     }
 
-    async fn mark_sync_cancelled(&self, sync_run_id: &str) -> Result<(), SyncError> {
-        let now = OffsetDateTime::now_utc();
-
-        sqlx::query(
-            r#"
-            UPDATE sync_runs
-            SET status = 'cancelled', completed_at = $1, error_message = 'Cancelled by user', updated_at = $1
-            WHERE id = $2
-            "#,
-        )
-        .bind(now)
-        .bind(sync_run_id)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
-
-        // Update source status
-        let sync_run = self.get_sync_run(sync_run_id).await?;
-        sqlx::query("UPDATE sources SET sync_status = 'pending' WHERE id = $1")
-            .bind(&sync_run.source_id)
+    async fn update_source_sync_status(
+        &self,
+        source_id: &str,
+        status: &str,
+    ) -> Result<(), SyncError> {
+        sqlx::query("UPDATE sources SET sync_status = $1 WHERE id = $2")
+            .bind(status)
+            .bind(source_id)
             .execute(&self.pool)
             .await
             .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
-
         Ok(())
     }
-
-    async fn get_sync_run(&self, sync_run_id: &str) -> Result<SyncRunInfo, SyncError> {
-        sqlx::query_as::<_, SyncRunInfo>(
-            "SELECT id, source_id, status FROM sync_runs WHERE id = $1",
-        )
-        .bind(sync_run_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| SyncError::DatabaseError(e.to_string()))?
-        .ok_or_else(|| SyncError::SyncRunNotFound(sync_run_id.to_string()))
-    }
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct SyncRunInfo {
-    id: String,
-    source_id: String,
-    status: String,
 }
 
 #[derive(Debug, thiserror::Error)]

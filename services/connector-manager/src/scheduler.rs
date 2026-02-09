@@ -1,6 +1,7 @@
 use crate::config::ConnectorManagerConfig;
 use crate::models::TriggerType;
 use crate::sync_manager::{SyncError, SyncManager};
+use shared::models::SyncType;
 use sqlx::PgPool;
 use std::sync::Arc;
 use time::OffsetDateTime;
@@ -91,20 +92,19 @@ impl Scheduler {
         info!("Found {} sources due for sync", due_sources.len());
 
         for source in due_sources {
-            // Skip if already syncing
-            if self.sync_manager.is_sync_running(&source.id) {
+            if self
+                .sync_manager
+                .is_sync_running(&source.id)
+                .await
+                .unwrap_or(false)
+            {
                 debug!("Source {} is already syncing, skipping", source.id);
                 continue;
             }
 
-            // Try to trigger sync
             match self
                 .sync_manager
-                .trigger_sync(
-                    &source.id,
-                    Some("incremental".to_string()),
-                    TriggerType::Scheduled,
-                )
+                .trigger_sync(&source.id, SyncType::Incremental, TriggerType::Scheduled)
                 .await
             {
                 Ok(sync_run_id) => {

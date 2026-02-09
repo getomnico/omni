@@ -206,7 +206,9 @@ impl FileSystemSyncManager {
         content_storage: &Arc<dyn ObjectStorage>,
     ) -> Result<()> {
         let sync_run_repo = SyncRunRepository::new(pool);
-        let sync_run = sync_run_repo.create(source_id, SyncType::Full).await?;
+        let sync_run = sync_run_repo
+            .create(source_id, SyncType::Full, "manual")
+            .await?;
 
         info!("Starting full scan with sync_run_id: {}", sync_run.id);
 
