@@ -24,9 +24,6 @@ COPY pyproject.toml uv.lock ./
 # Install dependencies directly to system Python (cached layer)
 RUN uv sync --locked --no-dev --no-install-project
 
-# Override torch with CPU-only version
-RUN uv pip install --system torch==2.7.1 torchvision --index-url https://download.pytorch.org/whl/cpu
-
 # Copy source and install project
 COPY . .
 RUN uv sync --locked --no-dev --no-editable

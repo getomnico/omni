@@ -35,9 +35,6 @@ COPY pyproject.toml uv.lock ./
 # Create relocatable venv and install dependencies (cached layer)
 RUN uv venv --relocatable --python python3.12 && uv sync --locked --no-dev --no-install-project
 
-# Override torch with CUDA version
-RUN uv pip install torch --index-url https://download.pytorch.org/whl/cu126
-
 # Copy source and install project
 COPY . .
 RUN uv sync --locked --no-dev --no-editable

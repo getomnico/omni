@@ -35,3 +35,6 @@ venv.bak/
 
 # Model cache
 .cache/
+
+# Local test scripts
+scripts/test_local_model.py

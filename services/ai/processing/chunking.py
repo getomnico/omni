@@ -1,14 +1,9 @@
 import asyncio
-import bisect
-import logging
 import multiprocessing
 import re
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
-from llama_index.core.node_parser import SemanticSplitterNodeParser
-from llama_index.core.schema import Document
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from transformers import AutoTokenizer
 
 # Shared executor for CPU-bound chunking operations
@@ -19,14 +14,8 @@ _chunking_executor = ThreadPoolExecutor(
     max_workers=_chunking_max_workers, thread_name_prefix="chunker"
 )
 
-# Set the logging level to WARNING to suppress INFO and DEBUG messages
-logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
-
 
 class Chunker:
-    def __init__(self):
-        self.embed_model = None
-        self.embedding_model_name = None
 
     @staticmethod
     def chunk_sentences_by_chars(text: str, max_chars: int) -> list[tuple[int, int]]:
@@ -89,74 +78,6 @@ class Chunker:
                     f"Text length ({len(text)} chars) exceeds estimated max for "
                     f"model sequence length of {max_len} tokens (~{max_chars} chars)"
                 )
-
-    def _setup_semantic_chunking(self, embedding_model_name):
-        if embedding_model_name:
-            self.embedding_model_name = embedding_model_name
-
-        self.embed_model = HuggingFaceEmbedding(
-            model_name=self.embedding_model_name,
-            trust_remote_code=True,
-            embed_batch_size=1,
-        )
-        self.splitter = SemanticSplitterNodeParser(
-            embed_model=self.embed_model,
-            show_progress=False,
-        )
-
-    def chunk_semantically(
-        self,
-        text: str,
-        tokenizer: AutoTokenizer,
-        embedding_model_name: Optional[str] = None,
-    ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
-        if self.embed_model is None:
-            self._setup_semantic_chunking(embedding_model_name)
-
-        # Get semantic nodes
-        nodes = [
-            (node.start_char_idx, node.end_char_idx)
-            for node in self.splitter.get_nodes_from_documents(
-                [Document(text=text)], show_progress=False
-            )
-        ]
-
-        # Tokenize the entire text
-        tokens = tokenizer.encode_plus(
-            text,
-            return_offsets_mapping=True,
-            add_special_tokens=False,
-            padding=True,
-            truncation=True,
-        )
-        token_offsets = tokens.offset_mapping
-
-        token_spans = []
-        char_spans = []
-
-        for char_start, char_end in nodes:
-            # Validate character bounds
-            if char_start >= char_end or char_start < 0 or char_end > len(text):
-                continue
-
-            # Convert char indices to token indices
-            start_chunk_index = bisect.bisect_left(
-                [offset[0] for offset in token_offsets], char_start
-            )
-            end_chunk_index = bisect.bisect_right(
-                [offset[1] for offset in token_offsets], char_end
-            )
-
-            # Validate token bounds and ensure start < end
-            if (
-                start_chunk_index < len(token_offsets)
-                and end_chunk_index <= len(token_offsets)
-                and start_chunk_index < end_chunk_index
-            ):
-                token_spans.append((start_chunk_index, end_chunk_index))
-                char_spans.append((char_start, char_end))
-
-        return token_spans, char_spans
 
     def chunk_by_tokens(
         self,
@@ -298,20 +219,4 @@ class Chunker:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
             _chunking_executor, self.chunk_by_tokens, text, chunk_size, tokenizer
-        )
-
-    async def chunk_semantically_async(
-        self,
-        text: str,
-        tokenizer: AutoTokenizer,
-        embedding_model_name: Optional[str] = None,
-    ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
-        """Async version of chunk_semantically - runs in thread pool."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            _chunking_executor,
-            self.chunk_semantically,
-            text,
-            tokenizer,
-            embedding_model_name,
         )

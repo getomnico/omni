@@ -79,8 +79,8 @@ class TestChunkerSentenceMode:
         token_spans, char_spans = chunker.chunk_by_sentences(text, 512, tokenizer)
 
         # Tokenize the input to verify span validity
-        inputs = tokenizer(text, return_tensors="pt")
-        token_count = inputs["input_ids"].shape[1]
+        inputs = tokenizer(text)
+        token_count = len(inputs["input_ids"])
 
         for start_idx, end_idx in token_spans:
             assert 0 <= start_idx <= token_count
