@@ -11,7 +11,7 @@ use tracing::{debug, warn};
 use crate::auth::AtlassianCredentials;
 use crate::models::{
     ConfluenceGetPagesResponse, ConfluenceGetSpacesResponse, ConfluencePage, ConfluenceSpace,
-    JiraIssue, JiraSearchResponse,
+    JiraField, JiraIssue, JiraSearchResponse,
 };
 
 pub struct AtlassianClient {
@@ -212,19 +212,22 @@ impl AtlassianClient {
         creds: &AtlassianCredentials,
         jql: &str,
         max_results: u32,
-        start_at: u32,
-        fields: &[&str],
+        next_page_token: Option<&str>,
+        fields: &[String],
     ) -> Result<JiraSearchResponse> {
         let auth_header = creds.get_basic_auth_header();
-        let url = format!("{}/rest/api/3/search", creds.base_url);
+        let url = format!("{}/rest/api/3/search/jql", creds.base_url);
 
-        let request_body = serde_json::json!({
+        let mut request_body = serde_json::json!({
             "jql": jql,
-            "startAt": start_at,
             "maxResults": max_results,
             "fields": fields,
             "expand": ["renderedFields"]
         });
+
+        if let Some(token) = next_page_token {
+            request_body["nextPageToken"] = serde_json::json!(token);
+        }
 
         debug!("Searching JIRA issues with JQL: {}", jql);
 
@@ -240,46 +243,11 @@ impl AtlassianClient {
         .await
     }
 
-    pub async fn get_jira_issues_updated_since(
-        &self,
-        creds: &AtlassianCredentials,
-        since: &str,
-        project_key: Option<&str>,
-        max_results: u32,
-        start_at: u32,
-    ) -> Result<JiraSearchResponse> {
-        let mut jql = format!("updated >= '{}'", since);
-
-        if let Some(project) = project_key {
-            jql = format!("project = {} AND {}", project, jql);
-        }
-
-        let fields = vec![
-            "summary",
-            "description",
-            "issuetype",
-            "status",
-            "priority",
-            "assignee",
-            "reporter",
-            "creator",
-            "project",
-            "created",
-            "updated",
-            "labels",
-            "comment",
-            "components",
-        ];
-
-        self.get_jira_issues(creds, &jql, max_results, start_at, &fields)
-            .await
-    }
-
     pub async fn get_jira_issue_by_key(
         &self,
         creds: &AtlassianCredentials,
         issue_key: &str,
-        fields: &[&str],
+        fields: &[String],
     ) -> Result<JiraIssue> {
         let auth_header = creds.get_basic_auth_header();
         let fields_param = if fields.is_empty() {
@@ -296,6 +264,22 @@ impl AtlassianClient {
         );
 
         debug!("Fetching JIRA issue: {}", url);
+
+        let client = self.client.clone();
+        self.make_request(move || {
+            client
+                .get(&url)
+                .header("Authorization", &auth_header)
+                .header("Accept", "application/json")
+        })
+        .await
+    }
+
+    pub async fn get_jira_fields(&self, creds: &AtlassianCredentials) -> Result<Vec<JiraField>> {
+        let auth_header = creds.get_basic_auth_header();
+        let url = format!("{}/rest/api/3/field", creds.base_url);
+
+        debug!("Fetching JIRA fields: {}", url);
 
         let client = self.client.clone();
         self.make_request(move || {

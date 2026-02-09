@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use shared::models::{ConnectorEvent, SyncType};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{debug, error, info, warn};
@@ -9,16 +9,71 @@ use crate::client::AtlassianClient;
 use crate::models::JiraIssue;
 use shared::SdkClient;
 
+const DEFAULT_JIRA_FIELDS: &[&str] = &[
+    "summary",
+    "description",
+    "issuetype",
+    "status",
+    "priority",
+    "assignee",
+    "reporter",
+    "creator",
+    "project",
+    "created",
+    "updated",
+    "labels",
+    "comment",
+    "components",
+];
+
+fn build_fields(custom_fields: Option<&[String]>) -> Vec<String> {
+    let mut fields: Vec<String> = DEFAULT_JIRA_FIELDS.iter().map(|s| s.to_string()).collect();
+    if let Some(cf) = custom_fields {
+        let new_fields: Vec<String> = cf.iter().filter(|f| !fields.contains(f)).cloned().collect();
+        fields.extend(new_fields);
+    }
+    fields
+}
+
 pub struct JiraProcessor {
     client: AtlassianClient,
     sdk_client: SdkClient,
+    cached_custom_fields: Option<(Vec<String>, DateTime<Utc>)>,
 }
+
+const CUSTOM_FIELDS_CACHE_TTL_DAYS: i64 = 1;
 
 impl JiraProcessor {
     pub fn new(sdk_client: SdkClient) -> Self {
         Self {
             client: AtlassianClient::new(),
             sdk_client,
+            cached_custom_fields: None,
+        }
+    }
+
+    async fn get_custom_field_ids(&mut self, creds: &AtlassianCredentials) -> Vec<String> {
+        if let Some((ref ids, fetched_at)) = self.cached_custom_fields {
+            if Utc::now() - fetched_at < Duration::days(CUSTOM_FIELDS_CACHE_TTL_DAYS) {
+                return ids.clone();
+            }
+        }
+
+        match self.client.get_jira_fields(creds).await {
+            Ok(fields) => {
+                let custom: Vec<String> = fields
+                    .into_iter()
+                    .filter(|f| f.custom)
+                    .map(|f| f.id)
+                    .collect();
+                debug!("Discovered {} custom fields", custom.len());
+                self.cached_custom_fields = Some((custom.clone(), Utc::now()));
+                custom
+            }
+            Err(e) => {
+                warn!("Failed to fetch custom fields, using defaults only: {}", e);
+                vec![]
+            }
         }
     }
 
@@ -34,11 +89,11 @@ impl JiraProcessor {
             source_id, sync_run_id
         );
 
+        let custom_field_ids = self.get_custom_field_ids(creds).await;
         let projects = self.get_accessible_projects(creds).await?;
         let mut total_issues_processed = 0;
 
         for project in projects {
-            // Check for cancellation before processing each project
             if cancelled.load(Ordering::SeqCst) {
                 info!(
                     "JIRA sync {} cancelled, stopping early after {} issues",
@@ -60,7 +115,14 @@ impl JiraProcessor {
             info!("Syncing JIRA project: {} ({})", project_name, project_key);
 
             match self
-                .sync_project_issues(creds, source_id, project_key, sync_run_id, cancelled)
+                .sync_project_issues(
+                    creds,
+                    source_id,
+                    project_key,
+                    sync_run_id,
+                    cancelled,
+                    Some(&custom_field_ids),
+                )
                 .await
             {
                 Ok(issues_count) => {
@@ -108,13 +170,20 @@ impl JiraProcessor {
             sync_run_id
         );
 
+        let custom_field_ids = self.get_custom_field_ids(creds).await;
+
         let since_str = since.format("%Y-%m-%d %H:%M").to_string();
+        let mut jql = format!("updated >= '{}'", since_str);
+        if let Some(project) = project_key {
+            jql = format!("project = {} AND {}", project, jql);
+        }
+
+        let fields = build_fields(Some(&custom_field_ids));
         let mut total_issues = 0;
-        let mut start_at = 0;
+        let mut next_page_token: Option<String> = None;
         const PAGE_SIZE: u32 = 50;
 
         loop {
-            // Check for cancellation before fetching next page
             if cancelled.load(Ordering::SeqCst) {
                 info!(
                     "JIRA incremental sync {} cancelled, stopping after {} issues",
@@ -125,7 +194,7 @@ impl JiraProcessor {
 
             let response = self
                 .client
-                .get_jira_issues_updated_since(creds, &since_str, project_key, PAGE_SIZE, start_at)
+                .get_jira_issues(creds, &jql, PAGE_SIZE, next_page_token.as_deref(), &fields)
                 .await?;
 
             if response.issues.is_empty() {
@@ -138,16 +207,16 @@ impl JiraProcessor {
                 .await?;
 
             total_issues += count;
-            start_at += PAGE_SIZE;
 
             debug!(
                 "Processed {} issues, total so far: {}",
                 issues_count, total_issues
             );
 
-            if issues_count < PAGE_SIZE as usize {
+            if response.is_last || response.next_page_token.is_none() {
                 break;
             }
+            next_page_token = response.next_page_token;
         }
 
         info!(
@@ -164,31 +233,16 @@ impl JiraProcessor {
         project_key: &str,
         sync_run_id: &str,
         cancelled: &AtomicBool,
+        custom_fields: Option<&[String]>,
     ) -> Result<u32> {
         let mut total_issues = 0;
-        let mut start_at = 0;
+        let mut next_page_token: Option<String> = None;
         const PAGE_SIZE: u32 = 50;
 
         let jql = format!("project = {}", project_key);
-        let fields = vec![
-            "summary",
-            "description",
-            "issuetype",
-            "status",
-            "priority",
-            "assignee",
-            "reporter",
-            "creator",
-            "project",
-            "created",
-            "updated",
-            "labels",
-            "comment",
-            "components",
-        ];
+        let fields = build_fields(custom_fields);
 
         loop {
-            // Check for cancellation before fetching next page
             if cancelled.load(Ordering::SeqCst) {
                 info!(
                     "JIRA project {} sync cancelled, stopping after {} issues",
@@ -199,7 +253,7 @@ impl JiraProcessor {
 
             let response = self
                 .client
-                .get_jira_issues(creds, &jql, PAGE_SIZE, start_at, &fields)
+                .get_jira_issues(creds, &jql, PAGE_SIZE, next_page_token.as_deref(), &fields)
                 .await?;
 
             if response.issues.is_empty() {
@@ -212,16 +266,16 @@ impl JiraProcessor {
                 .await?;
 
             total_issues += count;
-            start_at += PAGE_SIZE;
 
             debug!(
                 "Processed {} issues from project {}, total: {}",
                 issues_count, project_key, total_issues
             );
 
-            if issues_count < PAGE_SIZE as usize {
+            if response.is_last || response.next_page_token.is_none() {
                 break;
             }
+            next_page_token = response.next_page_token;
         }
 
         Ok(total_issues)
@@ -304,6 +358,8 @@ impl JiraProcessor {
     ) -> Result<()> {
         info!("Syncing single JIRA issue: {}", issue_key);
 
+        let custom_field_ids = self.get_custom_field_ids(creds).await;
+
         // Create sync run via SDK
         let sync_run_id = self
             .sdk_client
@@ -311,22 +367,7 @@ impl JiraProcessor {
             .await
             .map_err(|e| anyhow!("Failed to create sync run via SDK: {}", e))?;
 
-        let fields = vec![
-            "summary",
-            "description",
-            "issuetype",
-            "status",
-            "priority",
-            "assignee",
-            "reporter",
-            "creator",
-            "project",
-            "created",
-            "updated",
-            "labels",
-            "comment",
-            "components",
-        ];
+        let fields = build_fields(Some(&custom_field_ids));
 
         let result: Result<()> = async {
             let issue = self
@@ -412,6 +453,8 @@ impl JiraProcessor {
     ) -> Result<u32> {
         info!("Syncing JIRA issues by JQL: {}", jql);
 
+        let custom_field_ids = self.get_custom_field_ids(creds).await;
+
         // Create sync run via SDK
         let sync_run_id = self
             .sdk_client
@@ -420,26 +463,11 @@ impl JiraProcessor {
             .map_err(|e| anyhow!("Failed to create sync run via SDK: {}", e))?;
 
         let mut total_issues = 0;
-        let mut start_at = 0;
+        let mut next_page_token: Option<String> = None;
         const PAGE_SIZE: u32 = 50;
         let max_results = max_results.unwrap_or(u32::MAX);
 
-        let fields = vec![
-            "summary",
-            "description",
-            "issuetype",
-            "status",
-            "priority",
-            "assignee",
-            "reporter",
-            "creator",
-            "project",
-            "created",
-            "updated",
-            "labels",
-            "comment",
-            "components",
-        ];
+        let fields = build_fields(Some(&custom_field_ids));
 
         let result: Result<u32> = async {
             loop {
@@ -450,7 +478,7 @@ impl JiraProcessor {
                 let page_size = std::cmp::min(PAGE_SIZE, max_results - total_issues);
                 let response = self
                     .client
-                    .get_jira_issues(creds, jql, page_size, start_at, &fields)
+                    .get_jira_issues(creds, jql, page_size, next_page_token.as_deref(), &fields)
                     .await?;
 
                 if response.issues.is_empty() {
@@ -463,16 +491,16 @@ impl JiraProcessor {
                     .await?;
 
                 total_issues += count;
-                start_at += page_size;
 
                 debug!(
                     "Processed {} issues from JQL query, total: {}",
                     issues_count, total_issues
                 );
 
-                if issues_count < page_size as usize {
+                if response.is_last || response.next_page_token.is_none() {
                     break;
                 }
+                next_page_token = response.next_page_token;
             }
 
             info!(

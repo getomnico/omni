@@ -246,6 +246,9 @@ pub struct JiraFields {
     pub labels: Option<Vec<String>>,
     pub comment: Option<JiraComments>,
     pub components: Option<Vec<JiraComponent>>,
+    /// Captures custom fields (customfield_XXXXX) and any other unknown fields
+    #[serde(flatten)]
+    pub extra_fields: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -355,6 +358,8 @@ pub struct JiraIssueAttributes {
     pub reporter_email: Option<String>,
     pub labels: Vec<String>,
     pub components: Vec<String>,
+    #[serde(flatten)]
+    pub custom_fields: HashMap<String, serde_json::Value>,
 }
 
 impl JiraIssueAttributes {
@@ -387,6 +392,11 @@ impl JiraIssueAttributes {
         if !self.components.is_empty() {
             attrs.insert("components".into(), json!(self.components));
         }
+        for (key, value) in self.custom_fields {
+            if !value.is_null() {
+                attrs.insert(key, value);
+            }
+        }
         attrs
     }
 }
@@ -407,14 +417,20 @@ impl ConfluencePageAttributes {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JiraField {
+    pub id: String,
+    pub name: String,
+    pub custom: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JiraSearchResponse {
     pub issues: Vec<JiraIssue>,
-    pub total: i32,
-    #[serde(rename = "startAt")]
-    pub start_at: i32,
-    #[serde(rename = "maxResults")]
-    pub max_results: i32,
+    #[serde(rename = "isLast", default)]
+    pub is_last: bool,
+    #[serde(rename = "nextPageToken")]
+    pub next_page_token: Option<String>,
 }
 
 impl ConfluencePage {
@@ -608,6 +624,13 @@ impl JiraIssue {
                 .as_ref()
                 .map(|c| c.iter().map(|comp| comp.name.clone()).collect())
                 .unwrap_or_default(),
+            custom_fields: self
+                .fields
+                .extra_fields
+                .iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
         }
     }
 
