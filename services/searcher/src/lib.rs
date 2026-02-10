@@ -1,5 +1,4 @@
 pub mod handlers;
-pub mod highlighting;
 pub mod models;
 pub mod search;
 pub mod suggested_questions;

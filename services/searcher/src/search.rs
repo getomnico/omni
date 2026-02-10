@@ -1,4 +1,3 @@
-use crate::highlighting::HighlightConfig;
 use crate::models::{
     RecentSearchesResponse, SearchMode, SearchRequest, SearchResponse, SearchResult,
     SuggestionsResponse,
@@ -226,7 +225,7 @@ impl SearchEngine {
         let attribute_filters = request.attribute_filters.as_ref();
 
         debug!("Running fulltext search for {}", &request.query);
-        let documents_with_scores = repo
+        let search_hits = repo
             .search(
                 &request.query,
                 source_ids,
@@ -239,83 +238,26 @@ impl SearchEngine {
             )
             .await?;
 
-        let content_ids: Vec<String> = documents_with_scores
-            .iter()
-            .filter_map(|doc| doc.document.content_id.clone())
-            .collect();
-
-        let content_fetch_start = Instant::now();
-        let content_map = if !content_ids.is_empty() {
-            self.content_storage
-                .batch_get_text(content_ids)
-                .await
-                .unwrap_or_default()
-        } else {
-            HashMap::new()
-        };
-        info!("Content fetch took {:?}", content_fetch_start.elapsed());
-
-        let highlight_config = if request.document_id.is_some() {
-            // When searching through a single document, we can fetch more context
-            // around matches and show line numbers
-            HighlightConfig {
-                start_sel: "**".to_string(),
-                stop_sel: "**".to_string(),
-                max_words: 500,
-                min_words: 50,
-                max_fragments: 10,
-                fragment_delimiter: "...".to_string(),
-                include_line_numbers: true,
-            }
-        } else {
-            HighlightConfig::default()
-        };
         let mut results = Vec::new();
 
-        for doc_with_score in documents_with_scores {
-            let doc = doc_with_score.document;
+        for search_hit in search_hits {
+            let doc = search_hit.document;
             debug!(
-                "[FTS] Document {} [id={}] score={}, base_rank={}, recency_boost={}, title_boost={}", 
-                doc.title,
-                doc.id,
-                doc_with_score.score,
-                doc_with_score.base_rank,
-                doc_with_score.recency_boost,
-                doc_with_score.title_boost,
+                "[FTS] Document {} [id={}] score={}",
+                doc.title, doc.id, search_hit.score,
             );
-            let prepared_doc = self.prepare_document_for_response(doc.clone());
+            let prepared_doc = self.prepare_document_for_response(doc);
 
-            let highlights = if let Some(content_id) = &doc.content_id {
-                if let Some(content) = content_map.get(content_id) {
-                    let highlight_text = crate::highlighting::generate_highlights(
-                        content,
-                        &request.query,
-                        &highlight_config,
-                    );
-                    if highlight_text.is_empty() {
-                        debug!("generate_highlights returned empty highlight text");
-                        vec![]
-                    } else {
-                        vec![highlight_text]
-                    }
-                } else {
-                    debug!(
-                        "Could not fetch content for doc {} [id={}], returning empty highlights.",
-                        doc.title, doc.id
-                    );
-                    vec![]
-                }
-            } else {
-                debug!(
-                    "Doc {} [id={}] has not content ID, returning empty highlights.",
-                    doc.title, doc.id
-                );
-                vec![]
-            };
+            let highlights = search_hit
+                .content_snippets
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<String>>();
 
             results.push(SearchResult {
                 document: prepared_doc,
-                score: doc_with_score.score as f32,
+                score: search_hit.score as f32,
                 highlights,
                 match_type: "fulltext".to_string(),
                 content: None,

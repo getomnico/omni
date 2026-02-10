@@ -9,16 +9,12 @@ use std::collections::HashMap;
 use tracing::debug;
 
 #[derive(FromRow)]
-pub struct DocumentWithScores {
+pub struct SearchHit {
     #[sqlx(flatten)]
     pub document: Document,
     pub score: f32,
     #[sqlx(default)]
-    pub base_rank: f32,
-    #[sqlx(default)]
-    pub recency_boost: f32,
-    #[sqlx(default)]
-    pub title_boost: f32,
+    pub content_snippets: Option<Vec<String>>,
 }
 
 pub struct DocumentRepository {
@@ -230,7 +226,7 @@ impl DocumentRepository {
         offset: i64,
         user_email: Option<&str>,
         document_id: Option<&str>,
-    ) -> Result<Vec<DocumentWithScores>, DatabaseError> {
+    ) -> Result<Vec<SearchHit>, DatabaseError> {
         if source_ids.is_empty() {
             return Ok(vec![]);
         }
@@ -262,7 +258,8 @@ impl DocumentRepository {
             SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
                    metadata, permissions, attributes, created_at, updated_at, last_indexed_at,
-                   pdb.score(id) as score
+                   pdb.score(id) as score,
+                   pdb.snippets(content, start_tag => '**', end_tag => '**', max_num_chars => 200, "limit" => 3, sort_by => 'score') as content_snippets
             FROM documents
             WHERE {}
             ORDER BY score DESC
@@ -274,7 +271,7 @@ impl DocumentRepository {
         debug!("Full search query: {}", full_query);
 
         let title_query = format!("{}::pdb.boost(2)", query);
-        let mut query = sqlx::query_as::<_, DocumentWithScores>(&full_query)
+        let mut query = sqlx::query_as::<_, SearchHit>(&full_query)
             .bind(title_query)
             .bind(query)
             .bind(source_ids);
