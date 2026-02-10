@@ -361,27 +361,6 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
-  microsoft-connector:
-    image: ghcr.io/getomnico/omni/omni-microsoft-connector:${OMNI_VERSION:-latest}
-    container_name: omni-microsoft-connector
-    expose:
-      - "${MICROSOFT_CONNECTOR_PORT}"
-    environment:
-      PORT: ${MICROSOFT_CONNECTOR_PORT}
-      CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
-      DATABASE_HOST: ${DATABASE_HOST}
-      DATABASE_PORT: ${DATABASE_PORT}
-      DATABASE_USERNAME: ${DATABASE_USERNAME}
-      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
-      DATABASE_NAME: ${DATABASE_NAME}
-    networks:
-      - omni-network
-    depends_on:
-      connector-manager:
-        condition: service_started
-    restart: unless-stopped
-    logging: *default-logging
-
   # Web Application (SvelteKit frontend + backend)
   web:
     image: ghcr.io/getomnico/omni/omni-web:${OMNI_VERSION:-latest}
