@@ -5,6 +5,29 @@ from typing import Optional, Dict, Any
 from enum import Enum
 
 
+@dataclass
+class User:
+    id: str
+    email: str
+    full_name: Optional[str]
+    role: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_row(cls, row: dict) -> "User":
+        return cls(
+            id=row["id"],
+            email=row["email"],
+            full_name=row.get("full_name"),
+            role=row["role"],
+            is_active=row["is_active"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+
 class ChatRole(str, Enum):
     USER = "user"
     ASSISTANT = "assistant"
