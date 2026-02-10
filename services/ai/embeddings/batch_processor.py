@@ -66,6 +66,7 @@ ONLINE_BATCH_SIZE = 10
 ONLINE_POLL_INTERVAL = 5  # Seconds to wait when queue is empty
 ONLINE_BATCH_DELAY = 0.1  # Seconds to yield between batches when queue has items
 PROGRESS_LOG_INTERVAL = 30  # Seconds between progress log lines
+MAX_EMBEDDING_RETRIES = 5
 
 
 # ============================================================================
@@ -360,7 +361,9 @@ class EmbeddingBatchProcessor:
             True if any items were processed, False if queue was empty.
         """
         # Get pending items
-        items = await self.queue_repo.get_pending_items(limit=ONLINE_BATCH_SIZE)
+        items = await self.queue_repo.get_pending_items(
+            limit=ONLINE_BATCH_SIZE, max_retries=MAX_EMBEDDING_RETRIES
+        )
 
         if not items:
             await asyncio.sleep(ONLINE_POLL_INTERVAL)
@@ -386,6 +389,11 @@ class EmbeddingBatchProcessor:
 
     async def _process_single_document(self, item: EmbeddingQueueItem):
         """Process a single document using the embedding provider"""
+        if item.retry_count > 0:
+            logger.debug(
+                f"Retrying document {item.document_id} (attempt {item.retry_count + 1})"
+            )
+
         # Use semaphore to limit concurrent embedding operations and yield more frequently
         async with self._embedding_semaphore:
             # Fetch document
@@ -517,7 +525,9 @@ class EmbeddingBatchProcessor:
             return
 
         self._last_progress_log_time = now
-        pending = await self.queue_repo.get_pending_count()
+        pending = await self.queue_repo.get_pending_count(
+            max_retries=MAX_EMBEDDING_RETRIES
+        )
         total_completed = self._baseline_completed + self._docs_completed
         total_failed = self._baseline_failed + self._docs_failed
 
@@ -559,7 +569,9 @@ class EmbeddingBatchProcessor:
 
     async def _check_and_create_batch(self):
         """Check thresholds and create batch if conditions met"""
-        current_count = await self.queue_repo.get_pending_count()
+        current_count = await self.queue_repo.get_pending_count(
+            max_retries=MAX_EMBEDDING_RETRIES
+        )
         logger.debug(f"Current pending items: {current_count}")
         if current_count == 0:
             return
@@ -610,7 +622,7 @@ class EmbeddingBatchProcessor:
             async def record_generator():
                 num_records_in_batch = 0
                 items = await self.queue_repo.get_pending_items(
-                    EMBEDDING_BATCH_MAX_DOCUMENTS
+                    EMBEDDING_BATCH_MAX_DOCUMENTS, max_retries=MAX_EMBEDDING_RETRIES
                 )
                 for item in items:
                     jsonl_records = await self._fetch_and_chunk_document_for_bedrock(

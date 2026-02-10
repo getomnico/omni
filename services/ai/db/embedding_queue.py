@@ -29,6 +29,7 @@ class EmbeddingQueueItem:
     status: str
     batch_job_id: Optional[str]
     error_message: Optional[str]
+    retry_count: int
     created_at: datetime
 
 
@@ -50,7 +51,7 @@ class EmbeddingQueueRepository:
 
         row = await pool.fetchrow(
             """
-            SELECT id, document_id, status, batch_job_id, error_message, created_at
+            SELECT id, document_id, status, batch_job_id, error_message, retry_count, created_at
             FROM embedding_queue
             WHERE id = $1
             """,
@@ -69,7 +70,7 @@ class EmbeddingQueueRepository:
         )
         return {row["status"]: int(row["count"]) for row in rows}
 
-    async def get_pending_count(self) -> int:
+    async def get_pending_count(self, max_retries: int) -> int:
         """Get number of pending queue items."""
         pool = await self._get_pool()
 
@@ -77,13 +78,18 @@ class EmbeddingQueueRepository:
             """
             SELECT COUNT(*)
             FROM embedding_queue
-            WHERE status = 'pending' AND batch_job_id IS NULL AND retry_count < 5
-            """
+            WHERE batch_job_id IS NULL
+              AND retry_count < $1
+              AND status IN ('pending', 'failed')
+            """,
+            max_retries,
         )
 
         return int(res)
 
-    async def get_pending_items(self, limit: int) -> List[EmbeddingQueueItem]:
+    async def get_pending_items(
+        self, limit: int, max_retries: int
+    ) -> List[EmbeddingQueueItem]:
         """Atomically fetch and claim pending items not assigned to any batch.
 
         Uses FOR UPDATE SKIP LOCKED so each item is only claimed by one worker.
@@ -97,13 +103,16 @@ class EmbeddingQueueRepository:
             WHERE id IN (
                 SELECT id
                 FROM embedding_queue
-                WHERE status = 'pending' AND batch_job_id IS NULL AND retry_count < 5
+                WHERE batch_job_id IS NULL
+                  AND retry_count < $1
+                  AND status IN ('pending', 'failed')
                 ORDER BY created_at ASC
-                LIMIT $1
+                LIMIT $2
                 FOR UPDATE SKIP LOCKED
             )
-            RETURNING id, document_id, status, batch_job_id, error_message, created_at
+            RETURNING id, document_id, status, batch_job_id, error_message, retry_count, created_at
             """,
+            max_retries,
             limit,
         )
         return [EmbeddingQueueItem(**dict(row)) for row in rows]
@@ -114,7 +123,7 @@ class EmbeddingQueueRepository:
 
         rows = await pool.fetch(
             """
-            SELECT id, document_id, status, batch_job_id, error_message, created_at
+            SELECT id, document_id, status, batch_job_id, error_message, retry_count, created_at
             FROM embedding_queue
             WHERE batch_job_id = $1
             ORDER BY created_at ASC
@@ -198,7 +207,8 @@ class EmbeddingQueueRepository:
         await pool.execute(
             """
             UPDATE embedding_queue
-            SET status = 'failed', error_message = $2, processed_at = CURRENT_TIMESTAMP
+            SET status = 'failed', error_message = $2, processed_at = CURRENT_TIMESTAMP,
+                retry_count = retry_count + 1, updated_at = CURRENT_TIMESTAMP
             WHERE id = ANY($1)
             """,
             item_ids,

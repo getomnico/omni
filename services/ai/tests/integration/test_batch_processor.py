@@ -374,3 +374,89 @@ async def test_online_processes_large_document_with_sliding_window(
 
     doc = await documents_repo.get_by_id(doc_id)
     assert doc.embedding_status == "completed"
+
+
+# =============================================================================
+# Retry Behavior Tests
+# =============================================================================
+
+
+@pytest.mark.integration
+async def test_failed_items_are_retried(
+    db_pool,
+    online_processor,
+    queue_repo,
+    embeddings_repo,
+    mock_embedding_provider,
+    monkeypatch,
+):
+    """Failed items are immediately eligible for retry on next poll."""
+    import embeddings.batch_processor as bp
+
+    monkeypatch.setattr(bp, "ONLINE_POLL_INTERVAL", 0)
+
+    user_id = await create_test_user(db_pool)
+    source_id = await create_test_source(db_pool, user_id)
+    doc_id = await create_test_document(
+        db_pool, source_id, "Content that will fail then succeed."
+    )
+    queue_id = await enqueue_document(db_pool, doc_id)
+
+    mock_chunk = MagicMock()
+    mock_chunk.span = (0, 100)
+    mock_chunk.embedding = [0.1] * 1024
+
+    mock_embedding_provider.generate_embeddings.side_effect = [
+        RuntimeError("Transient API error"),
+        [mock_chunk],
+    ]
+
+    # 1) First processing attempt — should fail
+    await online_processor._process_online_batch()
+
+    item = await queue_repo.get_by_id(queue_id)
+    assert item.status == "failed"
+    assert item.retry_count == 1
+
+    # 2) Immediate retry — should succeed now
+    await online_processor._process_online_batch()
+
+    item = await queue_repo.get_by_id(queue_id)
+    assert item.status == "completed"
+
+    embeddings = await embeddings_repo.get_for_document(doc_id)
+    assert len(embeddings) >= 1
+
+
+@pytest.mark.integration
+async def test_max_retries_exhausted_items_are_not_retried(
+    db_pool,
+    online_processor,
+    queue_repo,
+    monkeypatch,
+):
+    """Items that have exhausted all retries (retry_count >= 5) are never picked up."""
+    import embeddings.batch_processor as bp
+
+    monkeypatch.setattr(bp, "ONLINE_POLL_INTERVAL", 0)
+
+    user_id = await create_test_user(db_pool)
+    source_id = await create_test_source(db_pool, user_id)
+    doc_id = await create_test_document(
+        db_pool, source_id, "Content with exhausted retries."
+    )
+
+    queue_id = str(ulid.ULID())
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO embedding_queue (id, document_id, status, retry_count)
+               VALUES ($1, $2, 'failed', 5)""",
+            queue_id,
+            doc_id,
+        )
+
+    await online_processor._process_online_batch()
+
+    item = await queue_repo.get_by_id(queue_id)
+    assert item.status == "failed"
+    assert item.retry_count == 5
