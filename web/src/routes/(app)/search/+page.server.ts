@@ -1,5 +1,6 @@
 import { env } from '$env/dynamic/private'
 import type { SearchResponse, SearchRequest } from '$lib/types/search.js'
+import { logger } from '$lib/server/logger'
 
 export const load = async ({ url, fetch, locals }) => {
     const query = url.searchParams.get('q')
@@ -45,12 +46,13 @@ export const load = async ({ url, fetch, locals }) => {
             }),
         ])
 
+        logger.debug('Search response', { searchResponse, sourcesResponse })
+
         if (!searchResponse.ok) {
-            console.error(
-                'Search request failed:',
-                searchResponse.status,
-                searchResponse.statusText,
-            )
+            logger.error('Search request failed', {
+                status: searchResponse.status,
+                statusText: searchResponse.statusText,
+            })
             return {
                 searchResults: null,
                 sources: null,
@@ -66,11 +68,10 @@ export const load = async ({ url, fetch, locals }) => {
         if (sourcesResponse.ok) {
             sources = await sourcesResponse.json()
         } else {
-            console.warn(
-                'Sources request failed:',
-                sourcesResponse.status,
-                sourcesResponse.statusText,
-            )
+            logger.warn('Sources request failed', {
+                status: sourcesResponse.status,
+                statusText: sourcesResponse.statusText,
+            })
         }
 
         return {

@@ -243,7 +243,7 @@
                 Found {data.searchResults.total_count} results in
                 {data.searchResults.query_time_ms}ms for "{data.searchResults.query}"
                 {#if getTotalSelectedFilters() > 0}
-                    <span class="ml-2"
+                    <span
                         >• {getTotalSelectedFilters()} filter{getTotalSelectedFilters() > 1
                             ? 's'
                             : ''} applied</span>
@@ -465,7 +465,7 @@
                                 variant="ghost"
                                 class="flex cursor-pointer justify-between rounded-full {isSelected
                                     ? 'bg-blue-50 hover:bg-blue-100'
-                                    : 'hover:bg-gray-50'}"
+                                    : 'hover:bg-gray-200'}"
                                 onclick={() => toggleFilter('source_type', facetValue.value)}>
                                 <div class="flex items-center gap-2">
                                     {#if sourceIcon}

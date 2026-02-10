@@ -4,6 +4,7 @@ import { db } from '$lib/server/db'
 import { sources, serviceCredentials, syncRuns } from '$lib/server/db/schema'
 import { eq, inArray, desc, sql } from 'drizzle-orm'
 import { ulid } from 'ulid'
+import { logger } from '$lib/server/logger'
 
 export const GET: RequestHandler = async ({ locals }) => {
     if (!locals.user) {
@@ -11,7 +12,7 @@ export const GET: RequestHandler = async ({ locals }) => {
     }
 
     const allSources = await db.query.sources.findMany()
-    console.log(`/api/sources: found ${allSources.length} sources.`)
+    logger.debug(`/api/sources: found ${allSources.length} sources.`)
 
     // Get service credentials for all sources
     const sourceIds = allSources.map((s) => s.id)
@@ -32,11 +33,12 @@ export const GET: RequestHandler = async ({ locals }) => {
                       sql`${syncRuns.id} IN (
                           SELECT DISTINCT ON (source_id) id
                           FROM sync_runs
-                          WHERE source_id = ANY(${sourceIds})
+                          WHERE source_id IN ${sourceIds}
                           ORDER BY source_id, started_at DESC
                       )`,
                   )
             : []
+    logger.debug(`/api/sources: found ${latestSyncRuns.length} latest sync runs.`)
 
     const syncRunMap = new Map(latestSyncRuns.map((r) => [r.sourceId, r]))
 
