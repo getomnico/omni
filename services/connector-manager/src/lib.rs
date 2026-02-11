@@ -58,6 +58,10 @@ pub fn create_app(state: AppState) -> Router {
             "/sdk/credentials/:source_id",
             get(handlers::sdk_get_credentials),
         )
+        .route(
+            "/sdk/source/:source_id/sync-config",
+            get(handlers::sdk_get_source_sync_config),
+        )
         .route("/sdk/sync/create", post(handlers::sdk_create_sync))
         .route("/sdk/sync/cancel", post(handlers::sdk_cancel_sync))
         // User email endpoint

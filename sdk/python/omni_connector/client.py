@@ -31,6 +31,20 @@ class SdkClient:
             self._client = httpx.AsyncClient(timeout=self._timeout)
         return self._client
 
+    async def fetch_source_config(self, source_id: str) -> dict[str, Any]:
+        """Fetch source config, credentials, and state from connector-manager."""
+        client = await self._get_client()
+        response = await client.get(
+            f"{self.base_url}/sdk/source/{source_id}/sync-config"
+        )
+
+        if not response.is_success:
+            raise SdkClientError(
+                f"Failed to fetch source config: {response.status_code} - {response.text}"
+            )
+
+        return response.json()
+
     async def emit_event(
         self,
         sync_run_id: str,

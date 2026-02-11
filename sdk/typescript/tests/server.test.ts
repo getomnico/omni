@@ -28,6 +28,13 @@ class MockConnector extends Connector {
 }
 
 const mockServer = setupServer(
+  http.get(`${MANAGER_URL}/sdk/source/:sourceId/sync-config`, () =>
+    HttpResponse.json({
+      config: { folder_id: 'test-folder' },
+      credentials: { access_token: 'test-token' },
+      connector_state: { cursor: 'test-cursor' },
+    })
+  ),
   http.post(`${MANAGER_URL}/sdk/events`, () => HttpResponse.json({ success: true })),
   http.post(`${MANAGER_URL}/sdk/content`, () => HttpResponse.json({ content_id: 'content-123' })),
   http.post(`${MANAGER_URL}/sdk/sync/:id/heartbeat`, () => HttpResponse.json({ success: true })),
@@ -38,7 +45,6 @@ const mockServer = setupServer(
 
 beforeAll(() => {
   vi.stubEnv('CONNECTOR_MANAGER_URL', MANAGER_URL);
-  vi.stubEnv('DATABASE_URL', 'postgresql://test:test@localhost:5432/test');
   mockServer.listen({ onUnhandledRequest: 'bypass' });
 });
 
@@ -91,6 +97,22 @@ describe('Connector Server', () => {
 
       expect(response.status).toBe(400);
       expect(response.body.status).toBe('error');
+    });
+
+    it('fetches config from API and returns started', async () => {
+      const connector = new MockConnector();
+      const app = createServer(connector);
+
+      const response = await request(app)
+        .post('/sync')
+        .send({
+          sync_run_id: 'sync-123',
+          source_id: 'source-456',
+          sync_mode: 'full',
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.status).toBe('started');
     });
   });
 

@@ -121,6 +121,34 @@ export class SdkClient {
     }
   }
 
+  async fetchSourceConfig(sourceId: string): Promise<{
+    config: Record<string, unknown>;
+    credentials: Record<string, unknown>;
+    connector_state: Record<string, unknown> | null;
+  }> {
+    const response = await this.get(`/sdk/source/${sourceId}/sync-config`);
+    if (!response.ok) {
+      const text = await response.text();
+      throw new SdkClientError(
+        `Failed to fetch source config: ${response.status} - ${text}`,
+        response.status
+      );
+    }
+    return response.json() as Promise<{
+      config: Record<string, unknown>;
+      credentials: Record<string, unknown>;
+      connector_state: Record<string, unknown> | null;
+    }>;
+  }
+
+  private async get(path: string): Promise<Response> {
+    const url = `${this.baseUrl}${path}`;
+    return fetch(url, {
+      method: 'GET',
+      signal: AbortSignal.timeout(this.timeout),
+    });
+  }
+
   private async post(path: string, body?: unknown): Promise<Response> {
     const url = `${this.baseUrl}${path}`;
     const options: RequestInit = {

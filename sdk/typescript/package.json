@@ -26,13 +26,11 @@
   },
   "dependencies": {
     "express": "^4.21.0",
-    "pg": "^8.13.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
-    "@types/pg": "^8.11.0",
     "msw": "^2.6.0",
     "supertest": "^7.0.0",
     "@types/supertest": "^6.0.0",

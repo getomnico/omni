@@ -72,7 +72,6 @@ if __name__ == "__main__":
 ## Environment Variables
 
 - `CONNECTOR_MANAGER_URL` - Required. URL of the connector-manager service
-- `DATABASE_URL` - PostgreSQL connection string for fetching source config
 - `PORT` - HTTP server port (default: 8000)
 
 ## SyncContext API

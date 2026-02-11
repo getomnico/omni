@@ -113,6 +113,13 @@ pub struct ExecuteActionRequest {
     pub params: JsonValue,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdkSourceSyncConfigResponse {
+    pub config: JsonValue,
+    pub credentials: JsonValue,
+    pub connector_state: Option<JsonValue>,
+}
+
 // ============================================================================
 // SDK Models - Used by connectors to communicate with connector-manager
 // ============================================================================

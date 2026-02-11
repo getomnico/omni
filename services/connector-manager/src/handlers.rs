@@ -396,9 +396,9 @@ impl IntoResponse for ApiError {
 use crate::models::{
     SdkCancelSyncRequest, SdkCancelSyncResponse, SdkCompleteRequest, SdkCreateSyncRequest,
     SdkCreateSyncResponse, SdkEmitEventRequest, SdkExpiringWebhookChannelsRequest, SdkFailRequest,
-    SdkIncrementScannedRequest, SdkSaveWebhookChannelRequest, SdkStatusResponse,
-    SdkStoreContentRequest, SdkStoreContentResponse, SdkUserEmailResponse, SdkWebhookChannel,
-    SdkWebhookNotification, SdkWebhookResponse,
+    SdkIncrementScannedRequest, SdkSaveWebhookChannelRequest, SdkSourceSyncConfigResponse,
+    SdkStatusResponse, SdkStoreContentRequest, SdkStoreContentResponse, SdkUserEmailResponse,
+    SdkWebhookChannel, SdkWebhookNotification, SdkWebhookResponse,
 };
 
 pub async fn sdk_emit_event(
@@ -590,6 +590,39 @@ pub async fn sdk_get_credentials(
         })?;
 
     Ok(Json(creds))
+}
+
+pub async fn sdk_get_source_sync_config(
+    State(state): State<AppState>,
+    Path(source_id): Path<String>,
+) -> Result<Json<SdkSourceSyncConfigResponse>, ApiError> {
+    debug!(
+        "SDK: Getting source sync config for source_id={}",
+        source_id
+    );
+
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let source = source_repo
+        .find_by_id(source_id.clone())
+        .await
+        .map_err(|e| ApiError::Internal(format!("Database error: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
+
+    let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
+        .map_err(|e| ApiError::Internal(format!("Failed to create credentials repo: {}", e)))?;
+
+    let credentials = creds_repo
+        .get_by_source_id(&source_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Database error: {}", e)))?
+        .map(|c| c.credentials)
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    Ok(Json(SdkSourceSyncConfigResponse {
+        config: source.config,
+        credentials,
+        connector_state: source.connector_state,
+    }))
 }
 
 pub async fn sdk_create_sync(

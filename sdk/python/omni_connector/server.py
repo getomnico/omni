@@ -1,14 +1,13 @@
 import asyncio
-import json
 import logging
-import os
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, status
 from fastapi.responses import JSONResponse
 
 from .client import SdkClient
 from .context import SyncContext
+from .exceptions import SdkClientError
 from .models import (
     ActionRequest,
     ActionResponse,
@@ -37,53 +36,6 @@ class ConnectorServer:
         if self._sdk_client is None:
             self._sdk_client = SdkClient.from_env()
         return self._sdk_client
-
-
-async def _fetch_source_data(
-    source_id: str,
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
-    """
-    Fetch source config, credentials, and state from database.
-    """
-    import asyncpg
-
-    database_url = os.environ.get("DATABASE_URL")
-    if not database_url:
-        host = os.environ.get("DATABASE_HOST", "localhost")
-        username = os.environ.get("DATABASE_USERNAME", "postgres")
-        password = os.environ.get("DATABASE_PASSWORD", "postgres")
-        dbname = os.environ.get("DATABASE_NAME", "omni")
-        port = os.environ.get("DATABASE_PORT", "5432")
-        database_url = f"postgresql://{username}:{password}@{host}:{port}/{dbname}"
-
-    conn = await asyncpg.connect(database_url)
-    try:
-        source = await conn.fetchrow(
-            "SELECT config, connector_state FROM sources WHERE id = $1",
-            source_id,
-        )
-        if not source:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Source not found: {source_id}",
-            )
-
-        creds = await conn.fetchrow(
-            "SELECT credentials FROM service_credentials WHERE source_id = $1",
-            source_id,
-        )
-
-        source_config = json.loads(source["config"]) if source["config"] else {}
-        state = (
-            json.loads(source["connector_state"]) if source["connector_state"] else None
-        )
-        credentials = (
-            json.loads(creds["credentials"]) if creds and creds["credentials"] else {}
-        )
-
-        return source_config, credentials, state
-    finally:
-        await conn.close()
 
 
 def create_app(connector: "Connector") -> FastAPI:
@@ -123,11 +75,25 @@ def create_app(connector: "Connector") -> FastAPI:
             )
 
         try:
-            source_config, credentials, state = await _fetch_source_data(source_id)
-        except HTTPException as e:
+            data = await server.sdk_client.fetch_source_config(source_id)
+            source_config = data["config"]
+            credentials = data["credentials"]
+            state = data.get("connector_state")
+        except SdkClientError as e:
+            error_msg = str(e)
+            if "404" in error_msg:
+                return JSONResponse(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    content=SyncResponse.error(
+                        f"Source not found: {source_id}"
+                    ).model_dump(),
+                )
+            logger.error("Failed to fetch source data: %s", e)
             return JSONResponse(
-                status_code=e.status_code,
-                content=SyncResponse.error(e.detail).model_dump(),
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content=SyncResponse.error(
+                    f"Failed to fetch source data: {e}"
+                ).model_dump(),
             )
         except Exception as e:
             logger.error("Failed to fetch source data: %s", e)

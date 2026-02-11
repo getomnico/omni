@@ -58,7 +58,6 @@ new MyConnector().serve({ port: 8000 });
 ## Environment Variables
 
 - `CONNECTOR_MANAGER_URL` - Required. URL of the connector-manager service
-- `DATABASE_URL` - PostgreSQL connection string for fetching source config
 - `PORT` - HTTP server port (default: 8000)
 
 ## API Reference

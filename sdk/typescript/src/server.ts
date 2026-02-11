@@ -1,5 +1,4 @@
 import express, { type Express, type Request, type Response } from 'express';
-import pg from 'pg';
 
 import { SdkClient } from './client.js';
 import type { Connector } from './connector.js';
@@ -12,58 +11,6 @@ import {
   createSyncResponseError,
   createActionResponseFailure,
 } from './models.js';
-
-const { Pool } = pg;
-
-interface SourceData {
-  config: Record<string, unknown>;
-  credentials: Record<string, unknown>;
-  state: Record<string, unknown> | null;
-}
-
-async function fetchSourceData(sourceId: string): Promise<SourceData> {
-  let connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    const host = process.env.DATABASE_HOST ?? 'localhost';
-    const username = process.env.DATABASE_USERNAME ?? 'postgres';
-    const password = process.env.DATABASE_PASSWORD ?? 'postgres';
-    const dbname = process.env.DATABASE_NAME ?? 'omni';
-    const port = process.env.DATABASE_PORT ?? '5432';
-    connectionString = `postgresql://${username}:${password}@${host}:${port}/${dbname}`;
-  }
-
-  const pool = new Pool({ connectionString });
-  try {
-    const sourceResult = await pool.query(
-      'SELECT config, connector_state FROM sources WHERE id = $1',
-      [sourceId]
-    );
-
-    if (sourceResult.rows.length === 0) {
-      throw new Error(`Source not found: ${sourceId}`);
-    }
-
-    const source = sourceResult.rows[0];
-
-    const credsResult = await pool.query(
-      'SELECT credentials FROM service_credentials WHERE source_id = $1',
-      [sourceId]
-    );
-
-    const config = source.config ? JSON.parse(source.config) : {};
-    const state = source.connector_state
-      ? JSON.parse(source.connector_state)
-      : null;
-    const credentials =
-      credsResult.rows.length > 0 && credsResult.rows[0].credentials
-        ? JSON.parse(credsResult.rows[0].credentials)
-        : {};
-
-    return { config, credentials, state };
-  } finally {
-    await pool.end();
-  }
-}
 
 export function createServer(connector: Connector): Express {
   const app = express();
@@ -105,13 +52,22 @@ export function createServer(connector: Connector): Express {
       return;
     }
 
-    let sourceData: SourceData;
+    let sourceData: {
+      config: Record<string, unknown>;
+      credentials: Record<string, unknown>;
+      state: Record<string, unknown> | null;
+    };
     try {
-      sourceData = await fetchSourceData(sourceId);
+      const data = await getSdkClient().fetchSourceConfig(sourceId);
+      sourceData = {
+        config: data.config,
+        credentials: data.credentials,
+        state: data.connector_state,
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.includes('not found')) {
-        res.status(404).json(createSyncResponseError(message));
+      if (message.includes('404')) {
+        res.status(404).json(createSyncResponseError(`Source not found: ${sourceId}`));
       } else {
         console.error('Failed to fetch source data:', error);
         res.status(500).json(

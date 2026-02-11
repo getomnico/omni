@@ -212,6 +212,54 @@ async def test_store_content_raises_on_error(mock_connector_manager, monkeypatch
     assert "413" in str(exc_info.value)
 
 
+@pytest.mark.asyncio
+async def test_fetch_source_config_sends_correct_request(
+    sdk_client, mock_connector_manager
+):
+    """Verify fetch_source_config calls the right endpoint and parses response."""
+    mock_connector_manager.get("/sdk/source/source-123/sync-config").mock(
+        return_value=Response(
+            200,
+            json={
+                "config": {"folder_id": "abc"},
+                "credentials": {"access_token": "token"},
+                "connector_state": {"cursor": "xyz"},
+            },
+        )
+    )
+
+    result = await sdk_client.fetch_source_config("source-123")
+
+    assert result["config"] == {"folder_id": "abc"}
+    assert result["credentials"] == {"access_token": "token"}
+    assert result["connector_state"] == {"cursor": "xyz"}
+
+    call = mock_connector_manager.calls[-1]
+    assert (
+        str(call.request.url)
+        == "http://localhost:9000/sdk/source/source-123/sync-config"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_source_config_raises_on_404(mock_connector_manager, monkeypatch):
+    """Verify proper error handling when source is not found."""
+    monkeypatch.setenv("CONNECTOR_MANAGER_URL", "http://localhost:9000")
+
+    mock_connector_manager.get(path__regex=r"/sdk/source/.*/sync-config").mock(
+        return_value=Response(404, text="Source not found")
+    )
+
+    from omni_connector import SdkClient
+
+    client = SdkClient.from_env()
+
+    with pytest.raises(SdkClientError) as exc_info:
+        await client.fetch_source_config("nonexistent-source")
+
+    assert "404" in str(exc_info.value)
+
+
 def test_client_requires_url(monkeypatch):
     """Verify client fails fast without CONNECTOR_MANAGER_URL."""
     monkeypatch.delenv("CONNECTOR_MANAGER_URL", raising=False)

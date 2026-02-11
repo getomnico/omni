@@ -184,18 +184,18 @@ class TestActionEndpoint:
 
 
 class TestSyncEndpoint:
-    @patch("omni_connector.server._fetch_source_data")
+    @patch("omni_connector.client.SdkClient.fetch_source_config")
     def test_sync_returns_started(
         self, mock_fetch, client, mock_connector, monkeypatch
     ):
         """Verify sync endpoint returns immediately with 'started' status."""
         monkeypatch.setenv("CONNECTOR_MANAGER_URL", "http://localhost:9000")
 
-        mock_fetch.return_value = (
-            {"folder_id": "123"},  # source_config
-            {"access_token": "token"},  # credentials
-            {"cursor": "abc"},  # state
-        )
+        mock_fetch.return_value = {
+            "config": {"folder_id": "123"},
+            "credentials": {"access_token": "token"},
+            "connector_state": {"cursor": "abc"},
+        }
 
         response = client.post(
             "/sync",
@@ -210,7 +210,7 @@ class TestSyncEndpoint:
         data = response.json()
         assert data["status"] == "started"
 
-    @patch("omni_connector.server._fetch_source_data")
+    @patch("omni_connector.client.SdkClient.fetch_source_config")
     def test_sync_conflict_when_already_running(self, mock_fetch, monkeypatch):
         """Verify 409 when sync is already in progress for source."""
         import asyncio
@@ -218,7 +218,6 @@ class TestSyncEndpoint:
 
         monkeypatch.setenv("CONNECTOR_MANAGER_URL", "http://localhost:9000")
 
-        # Create a connector that blocks until we signal it
         sync_started = threading.Event()
         sync_can_finish = threading.Event()
 
@@ -232,19 +231,20 @@ class TestSyncEndpoint:
                 return "1.0.0"
 
             async def sync(self, source_config, credentials, state, ctx):
-                sync_started.set()  # Signal that sync has started
-                # Wait until test signals to finish
+                sync_started.set()
                 while not sync_can_finish.is_set():
                     await asyncio.sleep(0.01)
                 await ctx.complete()
 
-        mock_fetch.return_value = ({}, {}, None)
+        mock_fetch.return_value = {
+            "config": {},
+            "credentials": {},
+            "connector_state": None,
+        }
 
         app = create_app(BlockingConnector())
 
-        # Use a real async test client to properly handle background tasks
         with TestClient(app) as client:
-            # First sync - this will start the sync in background
             response1 = client.post(
                 "/sync",
                 json={
@@ -255,10 +255,8 @@ class TestSyncEndpoint:
             )
             assert response1.status_code == 200
 
-            # Wait for the sync to actually start (enter the sync method)
             sync_started.wait(timeout=2.0)
 
-            # Second sync for same source should conflict
             response2 = client.post(
                 "/sync",
                 json={
@@ -270,19 +268,17 @@ class TestSyncEndpoint:
             assert response2.status_code == 409
             assert "already in progress" in response2.json()["message"]
 
-            # Let the first sync finish
             sync_can_finish.set()
 
-    @patch("omni_connector.server._fetch_source_data")
+    @patch("omni_connector.client.SdkClient.fetch_source_config")
     def test_sync_error_when_source_not_found(self, mock_fetch, client, monkeypatch):
         """Verify error when source doesn't exist."""
-        from fastapi import HTTPException
+        from omni_connector.exceptions import SdkClientError
 
         monkeypatch.setenv("CONNECTOR_MANAGER_URL", "http://localhost:9000")
 
-        mock_fetch.side_effect = HTTPException(
-            status_code=404,
-            detail="Source not found: bad-source",
+        mock_fetch.side_effect = SdkClientError(
+            "Failed to fetch source config: 404 - Source not found: bad-source"
         )
 
         response = client.post(

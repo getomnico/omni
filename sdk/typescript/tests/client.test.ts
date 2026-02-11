@@ -216,6 +216,43 @@ describe('SdkClient', () => {
     });
   });
 
+  describe('fetchSourceConfig', () => {
+    it('sends correct request and parses response', async () => {
+      const mockData = {
+        config: { folder_id: 'abc' },
+        credentials: { access_token: 'token' },
+        connector_state: { cursor: 'xyz' },
+      };
+
+      server.use(
+        http.get(`${BASE_URL}/sdk/source/:sourceId/sync-config`, () => {
+          return HttpResponse.json(mockData);
+        })
+      );
+
+      const client = new SdkClient(BASE_URL);
+      const result = await client.fetchSourceConfig('source-123');
+
+      expect(result).toEqual(mockData);
+    });
+
+    it('throws SdkClientError on 404', async () => {
+      server.use(
+        http.get(`${BASE_URL}/sdk/source/:sourceId/sync-config`, () => {
+          return HttpResponse.json(
+            { error: 'Source not found' },
+            { status: 404 }
+          );
+        })
+      );
+
+      const client = new SdkClient(BASE_URL);
+      await expect(
+        client.fetchSourceConfig('nonexistent')
+      ).rejects.toThrow('Failed to fetch source config: 404');
+    });
+  });
+
   describe('error handling', () => {
     it('throws SdkClientError on non-2xx response', async () => {
       server.use(
