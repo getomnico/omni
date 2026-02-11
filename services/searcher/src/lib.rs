@@ -2,6 +2,7 @@ pub mod handlers;
 pub mod models;
 pub mod search;
 pub mod suggested_questions;
+pub mod typeahead;
 
 use anyhow::Result as AnyhowResult;
 use axum::{
@@ -18,9 +19,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tracing::info;
+use tracing::{error, info};
 
 use crate::suggested_questions::SuggestedQuestionsGenerator;
+use crate::typeahead::TitleIndex;
 
 pub type Result<T> = std::result::Result<T, SearcherError>;
 
@@ -79,6 +81,7 @@ pub struct AppState {
     pub config: SearcherConfig,
     pub content_storage: Arc<dyn ObjectStorage>,
     pub suggested_questions_generator: Arc<SuggestedQuestionsGenerator>,
+    pub title_index: Arc<TitleIndex>,
 }
 
 pub fn create_app(state: AppState) -> Router {
@@ -88,6 +91,7 @@ pub fn create_app(state: AppState) -> Router {
         .route("/search/ai-answer", post(handlers::ai_answer))
         .route("/suggestions", get(handlers::suggestions))
         .route("/recent-searches", get(handlers::recent_searches))
+        .route("/typeahead", get(handlers::typeahead))
         .route("/suggested-questions", post(handlers::suggested_questions))
         .layer(
             ServiceBuilder::new()
@@ -128,6 +132,13 @@ pub async fn run_server() -> AnyhowResult<()> {
         ai_client.clone(),
     ));
 
+    let title_index = Arc::new(TitleIndex::new(db_pool.clone()));
+    if let Err(e) = title_index.refresh().await {
+        error!("Failed initial typeahead index load: {}", e);
+    }
+    title_index.start_background_refresh(300);
+    info!("Typeahead index initialized");
+
     let app_state = AppState {
         db_pool,
         redis_client,
@@ -135,6 +146,7 @@ pub async fn run_server() -> AnyhowResult<()> {
         config: config.clone(),
         content_storage,
         suggested_questions_generator,
+        title_index,
     };
 
     let app = create_app(app_state);

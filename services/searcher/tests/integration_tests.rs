@@ -536,6 +536,92 @@ async fn test_suggestions_with_limit() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_typeahead_subsequence_match() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let _doc_ids = fixture.seed_search_data().await?;
+
+    // "q4 planning" should match "Q4 Planning Meeting" via normalized subsequence
+    let (status, response) = fixture.typeahead("q4 planning", None).await?;
+    assert_eq!(status, StatusCode::OK);
+    let results = response["results"].as_array().unwrap();
+    assert!(
+        results
+            .iter()
+            .any(|r| r["title"].as_str().unwrap() == "Q4 Planning Meeting"),
+        "Expected 'Q4 Planning Meeting' in typeahead results, got: {:?}",
+        results
+    );
+
+    // Mid-title match: "planning" should also match "Q4 Planning Meeting"
+    let (status, response) = fixture.typeahead("planning", None).await?;
+    assert_eq!(status, StatusCode::OK);
+    let results = response["results"].as_array().unwrap();
+    assert!(
+        results
+            .iter()
+            .any(|r| r["title"].as_str().unwrap() == "Q4 Planning Meeting"),
+        "Expected 'Q4 Planning Meeting' for mid-title query 'planning', got: {:?}",
+        results
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_typeahead_special_chars_normalized() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let _doc_ids = fixture.seed_search_data().await?;
+
+    // "rest api" should match "REST API Endpoints"
+    let (status, response) = fixture.typeahead("rest api", None).await?;
+    assert_eq!(status, StatusCode::OK);
+    let results = response["results"].as_array().unwrap();
+    assert!(
+        results
+            .iter()
+            .any(|r| r["title"].as_str().unwrap() == "REST API Endpoints"),
+        "Expected 'REST API Endpoints' in typeahead results, got: {:?}",
+        results
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_typeahead_empty_query() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let _doc_ids = fixture.seed_search_data().await?;
+
+    let (status, response) = fixture.typeahead("", None).await?;
+    assert_eq!(status, StatusCode::OK);
+    let results = response["results"].as_array().unwrap();
+    assert!(
+        results.is_empty(),
+        "Empty query should return empty results"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_typeahead_limit_respected() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let _doc_ids = fixture.seed_search_data().await?;
+
+    // "guide" matches multiple docs; limit=1 should return at most 1
+    let (status, response) = fixture.typeahead("guide", Some(1)).await?;
+    assert_eq!(status, StatusCode::OK);
+    let results = response["results"].as_array().unwrap();
+    assert!(
+        results.len() <= 1,
+        "Expected at most 1 result with limit=1, got {}",
+        results.len()
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_invalid_search_mode() -> Result<()> {
     let fixture = SearcherTestFixture::new().await?;
 

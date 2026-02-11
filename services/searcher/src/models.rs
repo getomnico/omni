@@ -129,6 +129,32 @@ pub struct SuggestedQuestionsResponse {
     pub questions: Vec<SuggestedQuestion>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct TypeaheadQuery {
+    pub q: String,
+    pub limit: Option<usize>,
+}
+
+impl TypeaheadQuery {
+    pub fn limit(&self) -> usize {
+        self.limit.unwrap_or(5).min(20)
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct TypeaheadResponse {
+    pub results: Vec<TypeaheadResult>,
+    pub query: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TypeaheadResult {
+    pub document_id: String,
+    pub title: String,
+    pub url: Option<String>,
+    pub source_id: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

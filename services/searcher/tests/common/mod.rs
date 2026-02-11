@@ -4,7 +4,9 @@ use axum::{
     http::{Method, Request, StatusCode},
     Router,
 };
-use omni_searcher::{create_app, suggested_questions::SuggestedQuestionsGenerator, AppState};
+use omni_searcher::{
+    create_app, suggested_questions::SuggestedQuestionsGenerator, typeahead::TitleIndex, AppState,
+};
 use serde_json::{json, Value};
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
@@ -17,6 +19,7 @@ use tower::ServiceExt;
 pub struct SearcherTestFixture {
     pub test_env: TestEnvironment,
     pub app: Router,
+    pub title_index: Arc<TitleIndex>,
 }
 
 impl SearcherTestFixture {
@@ -48,6 +51,8 @@ impl SearcherTestFixture {
             ai_client.clone(),
         ));
 
+        let title_index = Arc::new(TitleIndex::new(test_env.db_pool.clone()));
+
         let app_state = AppState {
             db_pool: test_env.db_pool.clone(),
             redis_client: test_env.redis_client.clone(),
@@ -55,16 +60,23 @@ impl SearcherTestFixture {
             config,
             content_storage,
             suggested_questions_generator,
+            title_index: title_index.clone(),
         };
 
         let app = create_app(app_state);
 
-        Ok(Self { test_env, app })
+        Ok(Self {
+            test_env,
+            app,
+            title_index,
+        })
     }
 
     /// Populate the database with test data including embeddings
     pub async fn seed_search_data(&self) -> Result<Vec<String>> {
-        create_test_documents_with_embeddings(self.test_env.db_pool.pool()).await
+        let ids = create_test_documents_with_embeddings(self.test_env.db_pool.pool()).await?;
+        self.title_index.refresh().await?;
+        Ok(ids)
     }
 
     /// Helper method to make search requests
@@ -152,6 +164,43 @@ impl SearcherTestFixture {
         let request = Request::builder()
             .method(Method::GET)
             .uri(&format!("/suggestions?q={}", urlencoding::encode(query)))
+            .body(Body::empty())?;
+
+        let response = self.app.clone().oneshot(request).await?;
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+        let body_str = String::from_utf8_lossy(&body);
+
+        let json: Value = serde_json::from_slice(&body).map_err(|e| {
+            eprintln!(
+                "Failed to parse JSON response. Status: {}, Body: '{}'",
+                status, body_str
+            );
+            e
+        })?;
+
+        Ok((status, json))
+    }
+
+    /// Helper method to make typeahead requests
+    pub async fn typeahead(
+        &self,
+        query: &str,
+        limit: Option<usize>,
+    ) -> Result<(StatusCode, Value)> {
+        let uri = if let Some(limit) = limit {
+            format!(
+                "/typeahead?q={}&limit={}",
+                urlencoding::encode(query),
+                limit
+            )
+        } else {
+            format!("/typeahead?q={}", urlencoding::encode(query))
+        };
+
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(&uri)
             .body(Body::empty())?;
 
         let response = self.app.clone().oneshot(request).await?;

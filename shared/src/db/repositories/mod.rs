@@ -7,7 +7,7 @@ pub mod sync_run;
 pub mod user;
 
 pub use content_blob::{ContentBlobRepository, OrphanStats};
-pub use document::DocumentRepository;
+pub use document::{DocumentRepository, TitleEntry};
 pub use embedding::EmbeddingRepository;
 pub use service_credentials::ServiceCredentialsRepo;
 pub use source::SourceRepository;

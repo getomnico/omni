@@ -25,7 +25,7 @@ pub use config::*;
 pub use content_chunker::ContentChunker;
 pub use content_storage::{ContentStorage, ContentStorageError};
 pub use db::repositories::{
-    DocumentRepository, EmbeddingRepository, ServiceCredentialsRepo, SourceRepository,
+    DocumentRepository, EmbeddingRepository, ServiceCredentialsRepo, SourceRepository, TitleEntry,
     UserRepository,
 };
 pub use db::{DatabaseError, DatabasePool};

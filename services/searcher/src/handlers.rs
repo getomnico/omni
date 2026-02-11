@@ -1,6 +1,6 @@
 use crate::models::{
     RecentSearchesRequest, SearchRequest, SuggestedQuestionsRequest, SuggestedQuestionsResponse,
-    SuggestionsQuery,
+    SuggestionsQuery, TypeaheadQuery, TypeaheadResponse,
 };
 use crate::search::SearchEngine;
 use crate::suggested_questions::{self, SuggestedQuestionsGenerator};
@@ -272,6 +272,18 @@ pub async fn ai_answer(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(response)
+}
+
+pub async fn typeahead(
+    State(state): State<AppState>,
+    Query(query): Query<TypeaheadQuery>,
+) -> SearcherResult<Json<Value>> {
+    let results = state.title_index.search(&query.q, query.limit()).await;
+    let response = TypeaheadResponse {
+        results,
+        query: query.q,
+    };
+    Ok(Json(serde_json::to_value(response)?))
 }
 
 // TODO: Make this a GET request, this should not be POST

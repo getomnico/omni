@@ -39,6 +39,7 @@ futures-util = "0.3"
 url = "2.5"
 shared = { path = "../../shared" }
 dashmap = { workspace = true }
+fst = "0.4"
 
 [dev-dependencies]
 urlencoding = "2.1"
