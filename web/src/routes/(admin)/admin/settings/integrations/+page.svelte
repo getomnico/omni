@@ -20,6 +20,7 @@
     import { toast } from 'svelte-sonner'
     import GoogleWorkspaceSetup from '$lib/components/google-workspace-setup.svelte'
     import AtlassianConnectorSetup from '$lib/components/atlassian-connector-setup.svelte'
+    import SlackConnectorSetup from '$lib/components/slack-connector-setup.svelte'
     import WebConnectorSetupDialog from '$lib/components/web-connector-setup-dialog.svelte'
     import FilesystemConnectorSetupDialog from '$lib/components/filesystem-connector-setup-dialog.svelte'
     import { SourceType } from '$lib/types'
@@ -89,6 +90,7 @@
 
     let showGoogleSetup = $state(false)
     let showAtlassianSetup = $state(false)
+    let showSlackSetup = $state(false)
     let showWebSetup = $state(false)
     let showFilesystemSetup = $state(false)
 
@@ -97,6 +99,8 @@
             showGoogleSetup = true
         } else if (integrationId === 'atlassian') {
             showAtlassianSetup = true
+        } else if (integrationId === 'slack') {
+            showSlackSetup = true
         } else if (integrationId === 'web') {
             showWebSetup = true
         } else if (integrationId === 'filesystem') {
@@ -111,6 +115,11 @@
 
     function handleAtlassianSetupSuccess() {
         showAtlassianSetup = false
+        window.location.reload()
+    }
+
+    function handleSlackSetupSuccess() {
+        showSlackSetup = false
         window.location.reload()
     }
 
@@ -349,16 +358,12 @@
                         </CardHeader>
                         <CardContent class="flex-1" />
                         <CardFooter>
-                            {#if integration.id === 'slack'}
-                                <Button size="sm" disabled>Coming Soon</Button>
-                            {:else}
-                                <Button
-                                    size="sm"
-                                    class="cursor-pointer"
-                                    onclick={() => handleConnect(integration.id)}>
-                                    Connect
-                                </Button>
-                            {/if}
+                            <Button
+                                size="sm"
+                                class="cursor-pointer"
+                                onclick={() => handleConnect(integration.id)}>
+                                Connect
+                            </Button>
                         </CardFooter>
                     </Card>
                 {/each}
@@ -376,6 +381,11 @@
     bind:open={showAtlassianSetup}
     onSuccess={handleAtlassianSetupSuccess}
     onCancel={() => (showAtlassianSetup = false)} />
+
+<SlackConnectorSetup
+    bind:open={showSlackSetup}
+    onSuccess={handleSlackSetupSuccess}
+    onCancel={() => (showSlackSetup = false)} />
 
 <WebConnectorSetupDialog
     bind:open={showWebSetup}

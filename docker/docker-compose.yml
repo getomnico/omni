@@ -304,7 +304,6 @@ services:
       <<: [*redis-config, *otel-config]
       RUST_LOG: ${RUST_LOG}
       PORT: ${SLACK_CONNECTOR_PORT}
-      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
     networks:
       - omni-network

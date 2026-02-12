@@ -497,12 +497,11 @@ impl SyncManager {
             ));
         }
 
-        // Get access_token from credentials map
         creds
             .credentials
-            .get("access_token")
+            .get("bot_token")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .ok_or_else(|| anyhow!("Missing access_token in Slack credentials"))
+            .ok_or_else(|| anyhow!("Missing bot_token in Slack credentials"))
     }
 }
