@@ -412,6 +412,23 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
+  microsoft-connector:
+    image: ghcr.io/getomnico/omni/omni-microsoft-connector:${OMNI_VERSION:-latest}
+    container_name: omni-microsoft-connector
+    expose:
+      - "${MICROSOFT_CONNECTOR_PORT}"
+    environment:
+      <<: *otel-config
+      PORT: ${MICROSOFT_CONNECTOR_PORT}
+      CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+    networks:
+      - omni-network
+    depends_on:
+      connector-manager:
+        condition: service_started
+    restart: unless-stopped
+    logging: *default-logging
+
   # Web Application (SvelteKit frontend + backend)
   web:
     image: ghcr.io/getomnico/omni/omni-web:${OMNI_VERSION:-latest}
