@@ -16,6 +16,7 @@
     import gmailLogo from '$lib/images/icons/gmail.svg'
     import confluenceLogo from '$lib/images/icons/confluence.svg'
     import jiraLogo from '$lib/images/icons/jira.svg'
+    import hubspotLogo from '$lib/images/icons/hubspot.svg'
     import { Globe, HardDrive, Loader2 } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import GoogleWorkspaceSetup from '$lib/components/google-workspace-setup.svelte'
@@ -162,6 +163,8 @@
                 return slackLogo
             case 'atlassian':
                 return atlassianLogo
+            case 'hubspot':
+                return hubspotLogo
             default:
                 return null
         }
@@ -358,12 +361,17 @@
                         </CardHeader>
                         <CardContent class="flex-1" />
                         <CardFooter>
-                            <Button
-                                size="sm"
-                                class="cursor-pointer"
-                                onclick={() => handleConnect(integration.id)}>
-                                Connect
-                            </Button>
+                            {#if integration.comingSoon}
+                                <span class="text-muted-foreground text-sm font-medium"
+                                    >Coming Soon</span>
+                            {:else}
+                                <Button
+                                    size="sm"
+                                    class="cursor-pointer"
+                                    onclick={() => handleConnect(integration.id)}>
+                                    Connect
+                                </Button>
+                            {/if}
                         </CardFooter>
                     </Card>
                 {/each}

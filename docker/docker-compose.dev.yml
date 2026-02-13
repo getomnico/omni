@@ -159,12 +159,6 @@ services:
       context: ..
       dockerfile: connectors/microsoft/Dockerfile
 
-  github-connector:
-    image: omni-github-connector:dev
-    build:
-      context: ..
-      dockerfile: connectors/github/Dockerfile
-
   vllm:
     profiles:
       - production

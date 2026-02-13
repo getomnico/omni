@@ -55,6 +55,14 @@ export const load: PageServerLoad = async ({ locals }) => {
                 connected: connectedSources.some((source) => source.sourceType === 'local_files'),
                 authType: 'config_based',
             },
+            {
+                id: 'hubspot',
+                name: 'HubSpot',
+                description: 'Connect to HubSpot CRM contacts, companies, deals, and more',
+                connected: false,
+                authType: 'access_token',
+                comingSoon: true,
+            },
         ],
     }
 }
