@@ -21,11 +21,14 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "omni-connector @ file:../../sdk/python",
+    "omni-connector",
     "hubspot-api-client>=12.0.0",
 ]
 
-[project.optional-dependencies]
+[tool.uv.sources]
+omni-connector = { path = "../../sdk/python" }
+
+[dependency-groups]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.23.0",
@@ -41,7 +44,7 @@ packages = ["hubspot_connector"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-pythonpath = [".", "../../sdk/python"]
+pythonpath = ["."]
 
 [tool.mypy]
 python_version = "3.11"
