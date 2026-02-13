@@ -1,6 +1,7 @@
 use axum::{
     extract::State,
     http::StatusCode,
+    middleware,
     response::{IntoResponse, Json},
     routing::{get, post},
     Router,
@@ -8,10 +9,11 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use shared::models::SyncRequest;
+use shared::telemetry;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tower::ServiceBuilder;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::cors::CorsLayer;
 use tracing::{error, info};
 
 use crate::models::{
@@ -63,7 +65,7 @@ pub fn create_router(state: ApiState) -> Router {
         .route("/test-connection", post(test_connection))
         .layer(
             ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
+                .layer(middleware::from_fn(telemetry::middleware::trace_layer))
                 .layer(CorsLayer::permissive()),
         )
         .with_state(state)

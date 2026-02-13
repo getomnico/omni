@@ -46,12 +46,9 @@ pub fn init_telemetry(config: TelemetryConfig) -> Result<()> {
         SCHEMA_URL,
     );
 
-    let tracer_provider = if let Some(endpoint) = config.otlp_endpoint {
-        tracing::info!(
-            "Initializing OpenTelemetry with OTLP endpoint: {}",
-            endpoint
-        );
+    let otlp_endpoint_for_log = config.otlp_endpoint.clone();
 
+    let tracer_provider = if let Some(endpoint) = config.otlp_endpoint {
         let exporter = opentelemetry_otlp::SpanExporter::builder()
             .with_http()
             .with_endpoint(&endpoint)
@@ -65,8 +62,6 @@ pub fn init_telemetry(config: TelemetryConfig) -> Result<()> {
             .with_id_generator(RandomIdGenerator::default())
             .build()
     } else {
-        tracing::info!("No OTLP endpoint configured, telemetry will be collected locally only");
-
         TracerProvider::builder()
             .with_resource(resource)
             .with_sampler(Sampler::AlwaysOn)
@@ -103,6 +98,7 @@ pub fn init_telemetry(config: TelemetryConfig) -> Result<()> {
         service_name = %config.service_name,
         deployment_id = %config.deployment_id,
         environment = %config.environment,
+        otlp_endpoint = ?otlp_endpoint_for_log,
         "Telemetry initialized"
     );
 
@@ -122,7 +118,7 @@ pub mod middleware {
         Context,
     };
     use opentelemetry_http::{HeaderExtractor, HeaderInjector};
-    use tracing::Span;
+    use tracing::{Instrument, Span};
     use tracing_opentelemetry::OpenTelemetrySpanExt;
 
     pub async fn trace_layer(mut request: Request, next: Next) -> Response {
@@ -155,15 +151,15 @@ pub mod middleware {
 
         request.extensions_mut().insert(request_id.clone());
 
-        let _guard = tracing_span.enter();
+        let response = next.run(request).instrument(tracing_span.clone()).await;
 
-        let response = next.run(request).await;
-
-        tracing::info!(
-            status = response.status().as_u16(),
-            request_id = %request_id,
-            "Request completed"
-        );
+        tracing_span.in_scope(|| {
+            tracing::info!(
+                status = response.status().as_u16(),
+                request_id = %request_id,
+                "Request completed"
+            );
+        });
 
         response
     }

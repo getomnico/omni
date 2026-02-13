@@ -1,6 +1,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
+    middleware,
     response::{IntoResponse, Json},
     routing::{get, post},
     Json as JsonExtractor, Router,
@@ -8,9 +9,10 @@ use axum::{
 use dashmap::DashSet;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use shared::telemetry;
 use std::sync::Arc;
 use tower::ServiceBuilder;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::cors::CorsLayer;
 use tracing::{debug, error, info, warn};
 
 use crate::admin::AdminClient;
@@ -45,7 +47,7 @@ pub fn create_router(state: ApiState) -> Router {
         .route("/users/search/:source_id", get(search_users))
         .layer(
             ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
+                .layer(middleware::from_fn(telemetry::middleware::trace_layer))
                 .layer(CorsLayer::permissive()),
         )
         .with_state(state)

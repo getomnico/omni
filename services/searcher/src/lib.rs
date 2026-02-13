@@ -18,7 +18,7 @@ use shared::{
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower::ServiceBuilder;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::cors::CorsLayer;
 use tracing::{error, info};
 
 use crate::suggested_questions::SuggestedQuestionsGenerator;
@@ -95,7 +95,6 @@ pub fn create_app(state: AppState) -> Router {
         .layer(
             ServiceBuilder::new()
                 .layer(middleware::from_fn(telemetry::middleware::trace_layer))
-                .layer(TraceLayer::new_for_http())
                 .layer(CorsLayer::permissive()),
         )
         .with_state(state)
