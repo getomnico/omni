@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use reqwest::Client;
+use shared::rate_limiter::{RateLimiter, RetryableError};
 use std::time::Duration;
-use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
 use crate::models::{
@@ -9,17 +9,29 @@ use crate::models::{
 };
 
 const SLACK_API_BASE: &str = "https://slack.com/api";
-const RATE_LIMIT_DELAY_MS: u64 = 1000; // 1 second between requests
 
 pub struct SlackClient {
     client: Client,
+    rate_limiter: RateLimiter,
 }
 
 impl SlackClient {
     pub fn new() -> Self {
         Self {
             client: Client::new(),
+            // Slack Tier 3 allows ~50 req/min; 1 req/sec keeps us safely under.
+            rate_limiter: RateLimiter::new(1, 5),
         }
+    }
+
+    fn extract_retry_after(response: &reqwest::Response) -> Duration {
+        response
+            .headers()
+            .get("retry-after")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+            .map(Duration::from_secs)
+            .unwrap_or(Duration::from_secs(1))
     }
 
     async fn make_request<T>(&self, url: &str, token: &str) -> Result<T>
@@ -28,29 +40,43 @@ impl SlackClient {
     {
         debug!("Making request to: {}", url);
 
-        // Rate limiting - sleep before each request
-        sleep(Duration::from_millis(RATE_LIMIT_DELAY_MS)).await;
+        self.rate_limiter
+            .execute_with_retry(|| async {
+                let response = self
+                    .client
+                    .get(url)
+                    .header("Authorization", format!("Bearer {}", token))
+                    .header("Content-Type", "application/json")
+                    .send()
+                    .await
+                    .map_err(|e| RetryableError::Transient(e.into()))?;
 
-        let response = self
-            .client
-            .get(url)
-            .header("Authorization", format!("Bearer {}", token))
-            .header("Content-Type", "application/json")
-            .send()
-            .await?;
+                if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    return Err(RetryableError::RateLimited {
+                        retry_after: Self::extract_retry_after(&response),
+                        message: format!("Slack API rate limited: {}", url),
+                    });
+                }
 
-        if !response.status().is_success() {
-            let error_text = response.text().await?;
-            return Err(anyhow!("API request failed: {}", error_text));
-        }
+                if !response.status().is_success() {
+                    let error_text = response.text().await.unwrap_or_default();
+                    return Err(RetryableError::Permanent(anyhow!(
+                        "API request failed: {}",
+                        error_text
+                    )));
+                }
 
-        let response_text = response.text().await?;
-        debug!("Response: {}", response_text);
+                let response_text = response
+                    .text()
+                    .await
+                    .map_err(|e| RetryableError::Transient(e.into()))?;
+                debug!("Response: {}", response_text);
 
-        let parsed: T = serde_json::from_str(&response_text)
-            .map_err(|e| anyhow!("Failed to parse response: {}", e))?;
-
-        Ok(parsed)
+                serde_json::from_str(&response_text).map_err(|e| {
+                    RetryableError::Permanent(anyhow!("Failed to parse response: {}", e))
+                })
+            })
+            .await
     }
 
     pub async fn list_conversations(
@@ -154,24 +180,43 @@ impl SlackClient {
     }
 
     pub async fn join_conversation(&self, token: &str, channel_id: &str) -> Result<()> {
-        sleep(Duration::from_millis(RATE_LIMIT_DELAY_MS)).await;
+        let url = format!("{}/conversations.join", SLACK_API_BASE);
+        let payload = serde_json::json!({ "channel": channel_id });
 
-        let response = self
-            .client
-            .post(format!("{}/conversations.join", SLACK_API_BASE))
-            .header("Authorization", format!("Bearer {}", token))
-            .header("Content-Type", "application/json")
-            .json(&serde_json::json!({ "channel": channel_id }))
-            .send()
-            .await?;
+        self.rate_limiter
+            .execute_with_retry(|| async {
+                let response = self
+                    .client
+                    .post(&url)
+                    .header("Authorization", format!("Bearer {}", token))
+                    .header("Content-Type", "application/json")
+                    .json(&payload)
+                    .send()
+                    .await
+                    .map_err(|e| RetryableError::Transient(e.into()))?;
 
-        let body: serde_json::Value = response.json().await?;
-        if body.get("ok") == Some(&serde_json::Value::Bool(true)) {
-            Ok(())
-        } else {
-            let err = body["error"].as_str().unwrap_or("Unknown error");
-            Err(anyhow!("conversations.join failed: {}", err))
-        }
+                if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    return Err(RetryableError::RateLimited {
+                        retry_after: Self::extract_retry_after(&response),
+                        message: "Slack API rate limited: conversations.join".to_string(),
+                    });
+                }
+
+                let body: serde_json::Value = response
+                    .json()
+                    .await
+                    .map_err(|e| RetryableError::Transient(e.into()))?;
+                if body.get("ok") == Some(&serde_json::Value::Bool(true)) {
+                    Ok(())
+                } else {
+                    let err = body["error"].as_str().unwrap_or("Unknown error");
+                    Err(RetryableError::Permanent(anyhow!(
+                        "conversations.join failed: {}",
+                        err
+                    )))
+                }
+            })
+            .await
     }
 
     pub async fn list_users(&self, token: &str, cursor: Option<&str>) -> Result<UsersListResponse> {
@@ -198,39 +243,55 @@ impl SlackClient {
         if let Some(download_url) = &file.url_private_download {
             debug!("Downloading file: {} ({})", file.name, file.id);
 
-            // Rate limiting
-            sleep(Duration::from_millis(RATE_LIMIT_DELAY_MS)).await;
+            return self
+                .rate_limiter
+                .execute_with_retry(|| async {
+                    let response = self
+                        .client
+                        .get(download_url)
+                        .header("Authorization", format!("Bearer {}", token))
+                        .send()
+                        .await
+                        .map_err(|e| RetryableError::Transient(e.into()))?;
 
-            let response = self
-                .client
-                .get(download_url)
-                .header("Authorization", format!("Bearer {}", token))
-                .send()
-                .await?;
+                    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                        return Err(RetryableError::RateLimited {
+                            retry_after: Self::extract_retry_after(&response),
+                            message: format!(
+                                "Slack API rate limited downloading file: {}",
+                                file.name
+                            ),
+                        });
+                    }
 
-            if !response.status().is_success() {
-                warn!(
-                    "Failed to download file {}: HTTP {}",
-                    file.name,
-                    response.status()
-                );
-                return Ok(String::new());
-            }
+                    if !response.status().is_success() {
+                        warn!(
+                            "Failed to download file {}: HTTP {}",
+                            file.name,
+                            response.status()
+                        );
+                        return Ok(String::new());
+                    }
 
-            let content_type = response
-                .headers()
-                .get("content-type")
-                .and_then(|ct| ct.to_str().ok())
-                .unwrap_or("");
+                    let content_type = response
+                        .headers()
+                        .get("content-type")
+                        .and_then(|ct| ct.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
 
-            // Only process text files for now
-            if content_type.starts_with("text/") {
-                let content = response.text().await?;
-                return Ok(content);
-            } else {
-                debug!("Skipping non-text file: {} ({})", file.name, content_type);
-                return Ok(String::new());
-            }
+                    if content_type.starts_with("text/") {
+                        let content = response
+                            .text()
+                            .await
+                            .map_err(|e| RetryableError::Transient(e.into()))?;
+                        Ok(content)
+                    } else {
+                        debug!("Skipping non-text file: {} ({})", file.name, content_type);
+                        Ok(String::new())
+                    }
+                })
+                .await;
         }
 
         Ok(String::new())

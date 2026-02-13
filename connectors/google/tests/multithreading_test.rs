@@ -26,7 +26,7 @@ async fn test_concurrent_processing_with_rate_limiting() {
                 rate_limiter
                     .execute_with_retry(|| async {
                         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                        Ok(format!("processed_file_{}", file_id))
+                        Ok::<_, shared::RetryableError>(format!("processed_file_{}", file_id))
                     })
                     .await
             }
@@ -68,7 +68,9 @@ async fn test_rate_limiter_handles_errors() {
             let count = attempt_count.fetch_add(1, Ordering::SeqCst);
             async move {
                 if count < 1 {
-                    Err(anyhow::anyhow!("403: User rate limit exceeded"))
+                    Err(shared::RetryableError::Transient(anyhow::anyhow!(
+                        "403: User rate limit exceeded"
+                    )))
                 } else {
                     Ok("success")
                 }

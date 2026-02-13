@@ -33,7 +33,7 @@ pub use embedding_queue::{EmbeddingQueue, EmbeddingQueueItem};
 pub use encryption::{EncryptedData, EncryptionService};
 pub use models::*;
 pub use queue::{EventQueue, QueueStats};
-pub use rate_limiter::RateLimiter;
+pub use rate_limiter::{RateLimiter, RetryableError};
 pub use sdk_client::SdkClient;
 pub use service_auth::{create_service_auth, ServiceAuth};
 pub use storage::{

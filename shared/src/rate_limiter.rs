@@ -9,6 +9,45 @@ use std::time::Instant;
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
+/// Error type for operations executed via `execute_with_retry`.
+#[derive(Debug)]
+pub enum RetryableError {
+    /// Upstream rate limit (e.g. HTTP 429) with a server-specified wait duration.
+    RateLimited {
+        retry_after: Duration,
+        message: String,
+    },
+    /// Transient error — retried with exponential backoff.
+    Transient(anyhow::Error),
+    /// Permanent error — not retried.
+    Permanent(anyhow::Error),
+}
+
+impl std::fmt::Display for RetryableError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RateLimited {
+                retry_after,
+                message,
+            } => write!(
+                f,
+                "Rate limited: {} (retry after {:?})",
+                message, retry_after
+            ),
+            Self::Transient(e) => write!(f, "{}", e),
+            Self::Permanent(e) => write!(f, "{}", e),
+        }
+    }
+}
+
+impl std::error::Error for RetryableError {}
+
+impl From<anyhow::Error> for RetryableError {
+    fn from(e: anyhow::Error) -> Self {
+        Self::Transient(e)
+    }
+}
+
 #[derive(Clone)]
 pub struct RateLimiter {
     limiter: Arc<
@@ -77,7 +116,7 @@ impl RateLimiter {
     pub async fn execute_with_retry<T, F, Fut>(&self, operation: F) -> Result<T>
     where
         F: Fn() -> Fut,
-        Fut: std::future::Future<Output = Result<T>>,
+        Fut: std::future::Future<Output = std::result::Result<T, RetryableError>>,
     {
         let mut retries = 0;
         let mut delay = Duration::from_secs(1);
@@ -87,28 +126,40 @@ impl RateLimiter {
 
             match operation().await {
                 Ok(result) => return Ok(result),
-                Err(e) => {
-                    if retries >= self.max_retries {
-                        return Err(e);
+                Err(e) => match e {
+                    RetryableError::Permanent(e) => return Err(e),
+                    RetryableError::RateLimited {
+                        retry_after,
+                        ref message,
+                    } => {
+                        if retries >= self.max_retries {
+                            return Err(anyhow::anyhow!("{}", e));
+                        }
+                        retries += 1;
+                        warn!(
+                            "Rate limited: {}, retry {} of {}, waiting {:?}",
+                            message, retries, self.max_retries, retry_after
+                        );
+                        sleep(retry_after).await;
                     }
-
-                    retries += 1;
-
-                    let jitter = thread_rng().gen_range(0..1000);
-                    let wait_time = delay + Duration::from_millis(jitter);
-
-                    warn!(
-                        "Rate limit hit, retry {} of {}, waiting {:?}",
-                        retries, self.max_retries, wait_time
-                    );
-
-                    sleep(wait_time).await;
-
-                    delay = delay.saturating_mul(2);
-                    if delay > Self::MAX_BACKOFF {
-                        delay = Self::MAX_BACKOFF;
+                    RetryableError::Transient(e) => {
+                        if retries >= self.max_retries {
+                            return Err(e);
+                        }
+                        retries += 1;
+                        let jitter = thread_rng().gen_range(0..1000);
+                        let wait_time = delay + Duration::from_millis(jitter);
+                        warn!(
+                            "Transient error: {}, retry {} of {}, waiting {:?}",
+                            e, retries, self.max_retries, wait_time
+                        );
+                        sleep(wait_time).await;
+                        delay = delay.saturating_mul(2);
+                        if delay > Self::MAX_BACKOFF {
+                            delay = Self::MAX_BACKOFF;
+                        }
                     }
-                }
+                },
             }
         }
     }
@@ -153,7 +204,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_retry_succeeds_after_failures() {
+    async fn test_retry_succeeds_after_transient_failures() {
         let limiter = RateLimiter::new(100, 3);
         let attempts = Arc::new(AtomicU32::new(0));
         let attempts_clone = Arc::clone(&attempts);
@@ -164,7 +215,9 @@ mod tests {
                 async move {
                     let count = attempts.fetch_add(1, Ordering::SeqCst);
                     if count < 2 {
-                        Err(anyhow!("403: User rate limit exceeded"))
+                        Err(RetryableError::Transient(anyhow!(
+                            "403: User rate limit exceeded"
+                        )))
                     } else {
                         Ok("success")
                     }
@@ -187,7 +240,7 @@ mod tests {
                 let attempts = Arc::clone(&attempts_clone);
                 async move {
                     attempts.fetch_add(1, Ordering::SeqCst);
-                    Err::<(), _>(anyhow!("persistent failure"))
+                    Err::<(), _>(RetryableError::Transient(anyhow!("persistent failure")))
                 }
             })
             .await;
@@ -199,5 +252,54 @@ mod tests {
             .contains("persistent failure"));
         // 1 initial attempt + 2 retries = 3 total attempts
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_permanent_error_not_retried() {
+        let limiter = RateLimiter::new(100, 3);
+        let attempts = Arc::new(AtomicU32::new(0));
+        let attempts_clone = Arc::clone(&attempts);
+
+        let result = limiter
+            .execute_with_retry(|| {
+                let attempts = Arc::clone(&attempts_clone);
+                async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    Err::<(), _>(RetryableError::Permanent(anyhow!("404 not found")))
+                }
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limited_uses_retry_after() {
+        let limiter = RateLimiter::new(100, 3);
+        let attempts = Arc::new(AtomicU32::new(0));
+        let attempts_clone = Arc::clone(&attempts);
+
+        let start = Instant::now();
+        let result = limiter
+            .execute_with_retry(|| {
+                let attempts = Arc::clone(&attempts_clone);
+                async move {
+                    let count = attempts.fetch_add(1, Ordering::SeqCst);
+                    if count == 0 {
+                        Err(RetryableError::RateLimited {
+                            retry_after: Duration::from_millis(100),
+                            message: "429 too many requests".to_string(),
+                        })
+                    } else {
+                        Ok("success")
+                    }
+                }
+            })
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert!(start.elapsed() >= Duration::from_millis(100));
     }
 }

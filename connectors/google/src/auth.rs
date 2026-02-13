@@ -251,7 +251,7 @@ where
 
     for attempt in 0..2 {
         let api_result = rate_limiter
-            .execute_with_retry(|| operation(token.clone()))
+            .execute_with_retry(|| async { operation(token.clone()).await.map_err(Into::into) })
             .await?;
 
         match api_result {

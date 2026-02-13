@@ -132,7 +132,11 @@ impl AdminClient {
         };
 
         match &self.rate_limiter {
-            Some(limiter) => limiter.execute_with_retry(search_users_impl).await,
+            Some(limiter) => {
+                limiter
+                    .execute_with_retry(|| async { search_users_impl().await.map_err(Into::into) })
+                    .await
+            }
             None => search_users_impl().await,
         }
     }
@@ -213,7 +217,11 @@ impl AdminClient {
         };
 
         match &self.rate_limiter {
-            Some(limiter) => limiter.execute_with_retry(list_users_impl).await,
+            Some(limiter) => {
+                limiter
+                    .execute_with_retry(|| async { list_users_impl().await.map_err(Into::into) })
+                    .await
+            }
             None => list_users_impl().await,
         }
     }

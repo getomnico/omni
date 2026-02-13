@@ -2,10 +2,9 @@ use anyhow::{anyhow, Result};
 use futures::stream::Stream;
 use reqwest::{Client, Response, StatusCode};
 use serde::de::DeserializeOwned;
-use shared::rate_limiter::RateLimiter;
+use shared::rate_limiter::{RateLimiter, RetryableError};
 use std::pin::Pin;
 use std::time::Duration;
-use tokio::time::sleep;
 use tracing::{debug, warn};
 
 use crate::auth::AtlassianCredentials;
@@ -41,33 +40,46 @@ impl AtlassianClient {
         self.rate_limiter
             .execute_with_retry(|| async {
                 let request = request_fn();
-                let response = request.send().await?;
+                let response = request
+                    .send()
+                    .await
+                    .map_err(|e| RetryableError::Transient(e.into()))?;
 
                 match response.status() {
                     StatusCode::OK => {
-                        let data: T = response.json().await?;
+                        let data: T = response
+                            .json()
+                            .await
+                            .map_err(|e| RetryableError::Permanent(e.into()))?;
                         Ok(data)
                     }
                     StatusCode::TOO_MANY_REQUESTS => {
                         let retry_after = Self::extract_retry_after(&response);
-                        warn!(
-                            "Rate limited (429), waiting {} seconds",
-                            retry_after.as_secs()
-                        );
-                        sleep(retry_after).await;
-                        Err(anyhow!("Rate limit exceeded"))
+                        Err(RetryableError::RateLimited {
+                            retry_after,
+                            message: "Atlassian API rate limit exceeded".to_string(),
+                        })
                     }
                     StatusCode::UNAUTHORIZED => {
                         let error_text = response.text().await.unwrap_or_default();
-                        Err(anyhow!("Authentication failed: {}", error_text))
+                        Err(RetryableError::Permanent(anyhow!(
+                            "Authentication failed: {}",
+                            error_text
+                        )))
                     }
                     StatusCode::FORBIDDEN => {
                         let error_text = response.text().await.unwrap_or_default();
-                        Err(anyhow!("Access forbidden: {}", error_text))
+                        Err(RetryableError::Permanent(anyhow!(
+                            "Access forbidden: {}",
+                            error_text
+                        )))
                     }
                     StatusCode::NOT_FOUND => {
                         let error_text = response.text().await.unwrap_or_default();
-                        Err(anyhow!("Resource not found: {}", error_text))
+                        Err(RetryableError::Permanent(anyhow!(
+                            "Resource not found: {}",
+                            error_text
+                        )))
                     }
                     StatusCode::INTERNAL_SERVER_ERROR
                     | StatusCode::BAD_GATEWAY
@@ -75,12 +87,20 @@ impl AtlassianClient {
                     | StatusCode::GATEWAY_TIMEOUT => {
                         let status = response.status();
                         let error_text = response.text().await.unwrap_or_default();
-                        Err(anyhow!("Server error: HTTP {} - {}", status, error_text))
+                        Err(RetryableError::Transient(anyhow!(
+                            "Server error: HTTP {} - {}",
+                            status,
+                            error_text
+                        )))
                     }
                     _ => {
                         let status = response.status();
                         let error_text = response.text().await.unwrap_or_default();
-                        Err(anyhow!("Unexpected HTTP status {}: {}", status, error_text))
+                        Err(RetryableError::Permanent(anyhow!(
+                            "Unexpected HTTP status {}: {}",
+                            status,
+                            error_text
+                        )))
                     }
                 }
             })
