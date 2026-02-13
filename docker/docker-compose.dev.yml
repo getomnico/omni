@@ -135,6 +135,12 @@ services:
     environment:
       RUST_BACKTRACE: full
 
+  github-connector:
+    image: omni-github-connector:dev
+    build:
+      context: ..
+      dockerfile: connectors/github/Dockerfile
+
   microsoft-connector:
     image: omni-microsoft-connector:dev
     build:

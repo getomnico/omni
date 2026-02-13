@@ -36,6 +36,14 @@ dev = [
     "mypy>=1.8.0",
     "ruff>=0.1.0",
 ]
+testing = [
+    "testcontainers>=4.0.0",
+    "asyncpg>=0.29.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "docker>=7.0.0",
+    "python-ulid>=3.0.0",
+]
 examples = [
     "feedparser>=6.0.0",
 ]

@@ -195,6 +195,7 @@ services:
       CONNECTOR_ATLASSIAN_URL: http://atlassian-connector:${ATLASSIAN_CONNECTOR_PORT}
       CONNECTOR_WEB_URL: http://web-connector:${WEB_CONNECTOR_PORT}
       CONNECTOR_MICROSOFT_URL: http://microsoft-connector:${MICROSOFT_CONNECTOR_PORT}
+      CONNECTOR_GITHUB_URL: http://github-connector:${GITHUB_CONNECTOR_PORT:-8010}
       MAX_CONCURRENT_SYNCS: ${MAX_CONCURRENT_SYNCS:-10}
       MAX_CONCURRENT_SYNCS_PER_TYPE: ${MAX_CONCURRENT_SYNCS_PER_TYPE:-3}
       SCHEDULER_POLL_INTERVAL_SECONDS: ${SCHEDULER_POLL_INTERVAL_SECONDS:-60}
@@ -355,6 +356,23 @@ services:
         condition: service_started
       redis:
         condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+
+  github-connector:
+    image: ghcr.io/getomnico/omni/omni-github-connector:${OMNI_VERSION:-latest}
+    container_name: omni-github-connector
+    expose:
+      - "${GITHUB_CONNECTOR_PORT:-8010}"
+    environment:
+      <<: *otel-config
+      PORT: ${GITHUB_CONNECTOR_PORT:-8010}
+      CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+    networks:
+      - omni-network
+    depends_on:
+      connector-manager:
+        condition: service_started
     restart: unless-stopped
     logging: *default-logging
 

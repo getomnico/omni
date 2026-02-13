@@ -118,7 +118,10 @@ class SdkClient:
         logger.debug("SDK: Incrementing scanned for sync_run=%s", sync_run_id)
 
         client = await self._get_client()
-        response = await client.post(f"{self.base_url}/sdk/sync/{sync_run_id}/scanned")
+        response = await client.post(
+            f"{self.base_url}/sdk/sync/{sync_run_id}/scanned",
+            json={"count": 1},
+        )
 
         if not response.is_success:
             raise SdkClientError(

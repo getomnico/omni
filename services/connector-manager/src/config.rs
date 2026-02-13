@@ -43,6 +43,9 @@ impl ConnectorManagerConfig {
         if let Ok(url) = env::var("CONNECTOR_WEB_URL") {
             connector_urls.insert(SourceType::Web, url);
         }
+        if let Ok(url) = env::var("CONNECTOR_GITHUB_URL") {
+            connector_urls.insert(SourceType::Github, url);
+        }
 
         let max_concurrent_syncs = env::var("MAX_CONCURRENT_SYNCS")
             .unwrap_or_else(|_| "10".to_string())
