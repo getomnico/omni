@@ -52,6 +52,9 @@ impl ConnectorManagerConfig {
         if let Ok(url) = env::var("CONNECTOR_HUBSPOT_URL") {
             connector_urls.insert(SourceType::Hubspot, url);
         }
+        if let Ok(url) = env::var("CONNECTOR_MICROSOFT_URL") {
+            connector_urls.insert(SourceType::Microsoft, url);
+        }
 
         let max_concurrent_syncs = env::var("MAX_CONCURRENT_SYNCS")
             .unwrap_or_else(|_| "10".to_string())

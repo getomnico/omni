@@ -23,9 +23,16 @@ class MSGraphAuth:
             client_id=client_id,
             client_secret=client_secret,
         )
+        self._static_token: str | None = None
 
     @classmethod
     def from_credentials(cls, credentials: dict[str, Any]) -> "MSGraphAuth":
+        if "token" in credentials:
+            auth = object.__new__(cls)
+            auth._credential = None
+            auth._static_token = credentials["token"]
+            return auth
+
         tenant_id = credentials.get("tenant_id")
         client_id = credentials.get("client_id")
         client_secret = credentials.get("client_secret")
@@ -46,5 +53,7 @@ class MSGraphAuth:
 
         azure-identity handles caching and refresh internally.
         """
+        if self._static_token:
+            return self._static_token
         token = self._credential.get_token(GRAPH_SCOPE)
         return token.token

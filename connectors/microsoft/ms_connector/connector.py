@@ -49,7 +49,12 @@ class MicrosoftConnector(Connector):
             await ctx.fail(str(e))
             return
 
-        client = GraphClient(auth)
+        graph_base_url = source_config.get("graph_base_url")
+        client = (
+            GraphClient(auth, base_url=graph_base_url)
+            if graph_base_url
+            else GraphClient(auth)
+        )
 
         try:
             await client.test_connection()

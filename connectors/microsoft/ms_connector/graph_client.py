@@ -107,10 +107,15 @@ def with_retry(max_retries: int = 3, base_delay: float = 1.0):
 class GraphClient:
     """Async client for Microsoft Graph API v1.0."""
 
-    def __init__(self, auth: MSGraphAuth, http_client: httpx.AsyncClient | None = None):
+    def __init__(
+        self,
+        auth: MSGraphAuth,
+        http_client: httpx.AsyncClient | None = None,
+        base_url: str = GRAPH_BASE_URL,
+    ):
         self._auth = auth
         self._client = http_client or httpx.AsyncClient(
-            base_url=GRAPH_BASE_URL,
+            base_url=base_url,
             timeout=httpx.Timeout(30.0, connect=10.0),
         )
         self._refresh_token()

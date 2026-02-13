@@ -161,6 +161,7 @@ pub enum SourceType {
     Web,
     Notion,
     Hubspot,
+    Microsoft,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
