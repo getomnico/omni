@@ -8,8 +8,7 @@ const config = {
         csp: {
             mode: 'auto',
             directives: {
-                'style-src': ['self', 'unsafe-inline', 'https://fonts.googleapis.com'],
-                'font-src': ['self', 'https://fonts.gstatic.com'],
+                'style-src': ['self', 'unsafe-inline'],
             },
         },
     },

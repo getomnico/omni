@@ -57,6 +57,7 @@
     },
     "dependencies": {
         "@anthropic-ai/sdk": "^0.64.0",
+        "@fontsource-variable/inter": "^5.2.8",
         "@node-rs/argon2": "^2.0.2",
         "@opentelemetry/api": "^1.9.0",
         "@opentelemetry/auto-instrumentations-node": "^0.53.0",
