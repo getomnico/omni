@@ -21,6 +21,7 @@ export enum ServiceProvider {
     ATLASSIAN = 'atlassian',
     GITHUB = 'github',
     MICROSOFT = 'microsoft',
+    HUBSPOT = 'hubspot',
 }
 
 export enum AuthType {
@@ -65,4 +66,8 @@ export interface FilesystemSourceConfig {
     exclude_patterns?: string[]
     max_file_size_bytes?: number
     scan_interval_seconds?: number
+}
+
+export interface HubspotSourceConfig {
+    portal_id?: string
 }

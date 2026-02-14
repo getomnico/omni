@@ -23,6 +23,7 @@
     import GoogleWorkspaceSetup from '$lib/components/google-workspace-setup.svelte'
     import AtlassianConnectorSetup from '$lib/components/atlassian-connector-setup.svelte'
     import SlackConnectorSetup from '$lib/components/slack-connector-setup.svelte'
+    import HubspotConnectorSetup from '$lib/components/hubspot-connector-setup.svelte'
     import WebConnectorSetupDialog from '$lib/components/web-connector-setup-dialog.svelte'
     import FilesystemConnectorSetupDialog from '$lib/components/filesystem-connector-setup-dialog.svelte'
     import { SourceType } from '$lib/types'
@@ -95,6 +96,7 @@
     let showSlackSetup = $state(false)
     let showWebSetup = $state(false)
     let showFilesystemSetup = $state(false)
+    let showHubspotSetup = $state(false)
 
     function handleConnect(integrationId: string) {
         if (integrationId === 'google') {
@@ -107,6 +109,8 @@
             showWebSetup = true
         } else if (integrationId === 'filesystem') {
             showFilesystemSetup = true
+        } else if (integrationId === 'hubspot') {
+            showHubspotSetup = true
         }
     }
 
@@ -135,6 +139,11 @@
         window.location.reload()
     }
 
+    function handleHubspotSetupSuccess() {
+        showHubspotSetup = false
+        window.location.reload()
+    }
+
     function getSourceIcon(sourceType: SourceType) {
         switch (sourceType) {
             case SourceType.GOOGLE_DRIVE:
@@ -147,6 +156,8 @@
                 return confluenceLogo
             case SourceType.JIRA:
                 return jiraLogo
+            case SourceType.HUBSPOT:
+                return hubspotLogo
             case SourceType.WEB:
                 return null
             case SourceType.LOCAL_FILES:
@@ -196,6 +207,8 @@
                 return 'pages'
             case SourceType.JIRA:
                 return 'issues'
+            case SourceType.HUBSPOT:
+                return 'records'
             case SourceType.WEB:
                 return 'pages'
             case SourceType.LOCAL_FILES:
@@ -217,6 +230,8 @@
                 return `/admin/settings/integrations/jira/${sourceId}`
             case SourceType.SLACK:
                 return `/admin/settings/integrations/slack/${sourceId}`
+            case SourceType.HUBSPOT:
+                return `/admin/settings/integrations/hubspot/${sourceId}`
             case SourceType.WEB:
                 return `/admin/settings/integrations/web/${sourceId}`
             case SourceType.LOCAL_FILES:
@@ -406,3 +421,8 @@
     bind:open={showFilesystemSetup}
     onSuccess={handleFilesystemSetupSuccess}
     onCancel={() => (showFilesystemSetup = false)} />
+
+<HubspotConnectorSetup
+    bind:open={showHubspotSetup}
+    onSuccess={handleHubspotSetupSuccess}
+    onCancel={() => (showHubspotSetup = false)} />
