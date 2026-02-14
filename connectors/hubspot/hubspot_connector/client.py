@@ -126,11 +126,10 @@ class HubSpotClient:
         Initialize with OAuth access token or private app token.
 
         The token should have these scopes:
-        - crm.objects.contacts.read
+        - crm.objects.contacts.read (contacts + engagements)
         - crm.objects.companies.read
         - crm.objects.deals.read
         - tickets
-        - e-commerce (for engagements)
         """
         self._client = HubSpot(access_token=access_token)
         self._access_token = access_token

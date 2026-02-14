@@ -39,11 +39,10 @@ The connector requires a HubSpot access token (OAuth or Private App):
 
 ## Required OAuth Scopes
 
-- `crm.objects.contacts.read`
+- `crm.objects.contacts.read` (contacts + engagements: calls, emails, meetings, notes, tasks)
 - `crm.objects.companies.read`
 - `crm.objects.deals.read`
 - `tickets`
-- `e-commerce` (for engagements)
 
 ## Usage
 
