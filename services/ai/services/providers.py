@@ -11,12 +11,10 @@ from config import (
     REDIS_URL,
 )
 from db_config import (
-    get_llm_config,
     get_embedding_config,
-    LLMConfig,
-    EmbeddingConfig,
 )
-from providers import create_llm_provider
+from db import ModelsRepository, ModelRecord
+from providers import create_llm_provider, LLMProvider
 from embeddings import create_embedding_provider
 from tools import SearcherTool
 from storage import create_content_storage
@@ -25,6 +23,75 @@ from embeddings.batch_processor import start_batch_processing
 from state import AppState
 
 logger = logging.getLogger(__name__)
+
+
+def _create_provider_from_model_record(record: ModelRecord) -> LLMProvider:
+    """Instantiate an LLMProvider from a model+provider database record."""
+    config = record.config
+    provider_type = record.provider_type
+    model_id = record.model_id
+
+    if provider_type == "vllm":
+        return create_llm_provider("vllm", vllm_url=config.get("apiUrl", ""))
+
+    elif provider_type == "anthropic":
+        return create_llm_provider(
+            "anthropic",
+            api_key=config.get("apiKey"),
+            model=model_id,
+        )
+
+    elif provider_type == "bedrock":
+        region_name = config.get("regionName") or AWS_REGION or None
+        return create_llm_provider(
+            "bedrock",
+            model_id=model_id,
+            secondary_model_id=model_id,
+            region_name=region_name,
+        )
+
+    elif provider_type == "openai":
+        return create_llm_provider(
+            "openai",
+            api_key=config.get("apiKey"),
+            model=model_id,
+        )
+
+    else:
+        raise ValueError(f"Unknown provider type: {provider_type}")
+
+
+async def load_models(app_state: AppState) -> None:
+    """Load all active models from the database and populate app_state."""
+    repo = ModelsRepository()
+    records = await repo.list_active()
+
+    models: dict[str, LLMProvider] = {}
+    default_id: str | None = None
+
+    for record in records:
+        try:
+            provider = _create_provider_from_model_record(record)
+            models[record.id] = provider
+            logger.info(
+                f"Initialized model '{record.display_name}' (type={record.provider_type}, model={record.model_id}, id={record.id})"
+            )
+            if record.is_default:
+                default_id = record.id
+        except Exception as e:
+            logger.error(
+                f"Failed to initialize model '{record.display_name}' (id={record.id}): {e}"
+            )
+
+    app_state.models = models
+    app_state.default_model_id = default_id
+
+    if not models:
+        logger.warning(
+            "No models configured — chat will be unavailable until models are added"
+        )
+    else:
+        logger.info(f"Loaded {len(models)} model(s), default={default_id}")
 
 
 async def initialize_providers(app_state: AppState) -> None:
@@ -93,42 +160,8 @@ async def initialize_providers(app_state: AppState) -> None:
         f"Initialized {provider} embedding provider with model: {app_state.embedding_provider.get_model_name()}"
     )
 
-    # Initialize LLM provider
-    llm_config = await get_llm_config()
-    logger.info(f"Loaded LLM configuration (provider: {llm_config.provider})")
-
-    if llm_config.provider == "vllm":
-        app_state.llm_provider = create_llm_provider(
-            "vllm", vllm_url=llm_config.api_url or ""
-        )
-        logger.info(f"Initialized vLLM provider with URL: {llm_config.api_url}")
-
-    elif llm_config.provider == "anthropic":
-        app_state.llm_provider = create_llm_provider(
-            "anthropic",
-            api_key=llm_config.api_key,
-            model=llm_config.model,
-        )
-        logger.info(f"Initialized Anthropic provider with model: {llm_config.model}")
-
-    elif llm_config.provider == "bedrock":
-        region_name = AWS_REGION if AWS_REGION else None
-        app_state.llm_provider = create_llm_provider(
-            "bedrock",
-            model_id=llm_config.model,
-            secondary_model_id=llm_config.secondary_model,
-            region_name=region_name,
-        )
-        logger.info(f"Initialized AWS Bedrock provider with model: {llm_config.model}")
-        if llm_config.secondary_model:
-            logger.info(f"Using secondary model: {llm_config.secondary_model}")
-        if region_name:
-            logger.info(f"Using AWS region: {region_name}")
-        else:
-            logger.info("Using auto-detected AWS region from ECS environment")
-
-    else:
-        raise ValueError(f"Unknown LLM provider: {llm_config.provider}")
+    # Initialize models from database
+    await load_models(app_state)
 
     # Initialize Redis client for caching
     app_state.redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)

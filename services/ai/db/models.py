@@ -39,16 +39,21 @@ class Chat:
     id: str
     user_id: str
     title: Optional[str]
+    model_id: Optional[str]
     created_at: datetime
     updated_at: datetime
 
     @classmethod
     def from_row(cls, row: dict) -> "Chat":
         """Create Chat from database row"""
+        model_id = row.get("model_id")
+        if model_id:
+            model_id = model_id.strip()
         return cls(
             id=row["id"],
             user_id=row["user_id"],
             title=row.get("title"),
+            model_id=model_id,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -59,9 +64,42 @@ class Chat:
             "id": self.id,
             "user_id": self.user_id,
             "title": self.title,
+            "model_id": self.model_id,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
+
+
+@dataclass
+class ModelRecord:
+    id: str
+    model_provider_id: str
+    model_id: str
+    display_name: str
+    is_default: bool
+    is_deleted: bool
+    provider_type: str
+    config: dict
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_row(cls, row: dict) -> "ModelRecord":
+        config = row["config"]
+        if isinstance(config, str):
+            config = json.loads(config)
+        return cls(
+            id=row["id"].strip(),
+            model_provider_id=row["model_provider_id"].strip(),
+            model_id=row["model_id"],
+            display_name=row["display_name"],
+            is_default=row["is_default"],
+            is_deleted=row["is_deleted"],
+            provider_type=row["provider_type"],
+            config=config,
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
 
 
 @dataclass

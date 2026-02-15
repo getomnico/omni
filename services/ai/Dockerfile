@@ -11,10 +11,13 @@ ENV UV_PROJECT_ENVIRONMENT=/usr/local
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
+    curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+ADD https://astral.sh/uv/0.10.2/install.sh /uv-installer.sh
+RUN sh /uv-installer.sh && rm /uv-installer.sh && mv /root/.local/bin/uv /bin/uv && mv /root/.local/bin/uvx /bin/uvx
 
 WORKDIR /app
 

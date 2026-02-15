@@ -8,10 +8,13 @@ from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
 from db import ChatsRepository, MessagesRepository
+from db.models import Chat
 from tools import SearcherTool, SearchRequest, SearchResponse, SearchResult
 from models.chat import SearchToolParams, ReadDocumentParams
-from config import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, DEFAULT_TOP_P, LLM_PROVIDER
+from config import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, DEFAULT_TOP_P
+from providers import LLMProvider
 from services.compaction import ConversationCompactor
+from state import AppState
 
 from anthropic import MessageStreamEvent, AsyncStream
 from anthropic.types import (
@@ -115,6 +118,23 @@ SEARCH_TOOLS = [
 ]
 
 
+def _resolve_llm_provider(state: AppState, chat: Chat) -> LLMProvider:
+    """Resolve which LLM provider to use for a chat.
+    Priority: chat's model -> default model -> first available.
+    """
+    models = state.models
+    if not models:
+        raise HTTPException(status_code=503, detail="No models configured")
+
+    if chat.model_id and chat.model_id in models:
+        return models[chat.model_id]
+
+    if state.default_model_id and state.default_model_id in models:
+        return models[state.default_model_id]
+
+    return next(iter(models.values()))
+
+
 def convert_citation_to_param(citation_delta: CitationsDelta) -> TextCitationParam:
     citation = citation_delta.citation
     if citation.type == "char_location":
@@ -171,16 +191,7 @@ async def stream_chat(
     request: Request, chat_id: str = Path(..., description="Chat thread ID")
 ):
     """Stream AI response for a chat thread using Server-Sent Events"""
-    if (
-        not hasattr(request.app.state, "llm_provider")
-        or not request.app.state.llm_provider
-    ):
-        raise HTTPException(status_code=500, detail="LLM provider not initialized")
-
-    if (
-        not hasattr(request.app.state, "searcher_tool")
-        or not request.app.state.searcher_tool
-    ):
+    if not request.app.state.searcher_tool:
         raise HTTPException(status_code=500, detail="Searcher tool not initialized")
 
     # Retrieve chat and messages from database
@@ -188,6 +199,8 @@ async def stream_chat(
     chat = await chats_repo.get(chat_id)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat thread not found")
+
+    llm_provider = _resolve_llm_provider(request.app.state, chat)
 
     messages_repo = MessagesRepository()
     chat_messages = await messages_repo.get_by_chat(chat_id)
@@ -217,7 +230,7 @@ async def stream_chat(
 
     # Check if conversation needs compaction
     compactor = ConversationCompactor(
-        llm_provider=request.app.state.llm_provider,
+        llm_provider=llm_provider,
         redis_client=getattr(request.app.state, "redis_client", None),
     )
     if compactor.needs_compaction(messages, SEARCH_TOOLS):
@@ -264,7 +277,7 @@ async def stream_chat(
                 logger.info(f"Iteration {iteration + 1}/{max_iterations}")
                 content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
 
-                logger.info(f"Sending request to LLM provider ({LLM_PROVIDER})")
+                logger.info(f"Sending request to LLM provider")
                 logger.debug(
                     f"Messages being sent: {json.dumps(conversation_messages, indent=2)}"
                 )
@@ -272,15 +285,13 @@ async def stream_chat(
                     f"Tools available: {[tool['name'] for tool in SEARCH_TOOLS]}"
                 )
 
-                stream: AsyncStream[MessageStreamEvent] = (
-                    request.app.state.llm_provider.stream_response(
-                        prompt="",  # Not used when messages provided
-                        messages=conversation_messages,
-                        tools=SEARCH_TOOLS,
-                        max_tokens=DEFAULT_MAX_TOKENS,
-                        temperature=DEFAULT_TEMPERATURE,
-                        top_p=DEFAULT_TOP_P,
-                    )
+                stream: AsyncStream[MessageStreamEvent] = llm_provider.stream_response(
+                    prompt="",  # Not used when messages provided
+                    messages=conversation_messages,
+                    tools=SEARCH_TOOLS,
+                    max_tokens=DEFAULT_MAX_TOKENS,
+                    temperature=DEFAULT_TEMPERATURE,
+                    top_p=DEFAULT_TOP_P,
                 )
 
                 event_index = 0
@@ -643,12 +654,6 @@ async def generate_chat_title(
     request: Request, chat_id: str = Path(..., description="Chat thread ID")
 ):
     """Generate a title for a chat thread based on its first messages"""
-    if (
-        not hasattr(request.app.state, "llm_provider")
-        or not request.app.state.llm_provider
-    ):
-        raise HTTPException(status_code=500, detail="LLM provider not initialized")
-
     logger.info(f"Generating title for chat: {chat_id}")
 
     try:
@@ -657,6 +662,8 @@ async def generate_chat_title(
         chat = await chats_repo.get(chat_id)
         if not chat:
             raise HTTPException(status_code=404, detail="Chat thread not found")
+
+        llm_provider = _resolve_llm_provider(request.app.state, chat)
 
         # Check if title already exists
         if chat.title:
@@ -692,7 +699,7 @@ async def generate_chat_title(
         # Generate title using LLM
         prompt = f"{TITLE_GENERATION_SYSTEM_PROMPT}\n\nConversation:\n{conversation_text}\n\nTitle:"
 
-        generated_title = await request.app.state.llm_provider.generate_response(
+        generated_title = await llm_provider.generate_response(
             prompt=prompt,
             max_tokens=20,
             temperature=0.7,

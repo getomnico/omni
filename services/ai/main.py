@@ -14,17 +14,19 @@ from services import (
     shutdown_providers,
     start_batch_processor,
 )
-from routers import chat_router, health_router, embeddings_router, prompts_router
+from routers import (
+    chat_router,
+    health_router,
+    embeddings_router,
+    prompts_router,
+    model_providers_router,
+)
 
 from config import (
     PORT,
     EMBEDDING_PROVIDER,
     EMBEDDING_MODEL,
     EMBEDDING_DIMENSIONS,
-    LLM_PROVIDER,
-    LLM_MODEL,
-    LLM_API_URL,
-    AWS_REGION,
 )
 
 setup_logging()
@@ -41,6 +43,7 @@ app.include_router(health_router)
 app.include_router(embeddings_router)
 app.include_router(prompts_router)
 app.include_router(chat_router)
+app.include_router(model_providers_router)
 
 
 @app.on_event("startup")
@@ -68,11 +71,5 @@ if __name__ == "__main__":
     logger.info(f"Starting AI service on port {PORT}")
     logger.info(f"Embedding provider: {EMBEDDING_PROVIDER}, model: {EMBEDDING_MODEL}")
     logger.info(f"Embedding dimensions: {EMBEDDING_DIMENSIONS}")
-    logger.info(f"LLM provider: {LLM_PROVIDER}, model: {LLM_MODEL or 'default'}")
-
-    if LLM_PROVIDER == "vllm":
-        logger.info(f"vLLM URL: {LLM_API_URL}")
-    elif LLM_PROVIDER == "bedrock":
-        logger.info(f"AWS Region: {AWS_REGION if AWS_REGION else 'Auto-detected'}")
 
     uvicorn.run(app, host="0.0.0.0", port=PORT)

@@ -16,7 +16,7 @@ export class ChatRepository {
     /**
      * Create a new chat
      */
-    async create(userId: string, title?: string): Promise<Chat> {
+    async create(userId: string, title?: string, modelId?: string): Promise<Chat> {
         const chatId = ulid()
         const [newChat] = await this.db
             .insert(chats)
@@ -24,6 +24,7 @@ export class ChatRepository {
                 id: chatId,
                 userId,
                 title,
+                modelId: modelId || null,
             })
             .returning()
 

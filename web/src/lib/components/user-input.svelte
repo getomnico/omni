@@ -1,6 +1,7 @@
 <script lang="ts">
     import { Button } from '$lib/components/ui/button'
     import * as Popover from '$lib/components/ui/popover'
+    import * as Select from '$lib/components/ui/select'
     import {
         Send,
         Loader2,
@@ -22,6 +23,13 @@
         onClick: () => void
     }
 
+    export interface ModelOption {
+        id: string
+        displayName: string
+        providerType: string
+        isDefault: boolean
+    }
+
     interface UserInputProps {
         value: string
         inputMode: InputMode
@@ -38,6 +46,9 @@
         onPopoverChange?: (open: boolean) => void
         maxWidth?: string
         containerClass?: string
+        models?: ModelOption[]
+        selectedModelId?: string | null
+        onModelChange?: (modelId: string) => void
     }
 
     export type InputMode = 'search' | 'chat'
@@ -62,7 +73,12 @@
         onPopoverChange,
         maxWidth = 'max-w-4xl',
         containerClass = '',
+        models = [],
+        selectedModelId = null,
+        onModelChange,
     }: UserInputProps = $props()
+
+    let showModelSelector = $derived(models.length >= 2 && inputMode === 'chat')
 
     let inputRef: HTMLDivElement
     let popoverContainer: HTMLDivElement | undefined = $state()
@@ -370,10 +386,35 @@
             data-placeholder={placeholder}>
         </div>
         <div class="flex w-full items-end justify-between">
-            {#if modeSelectorEnabled}
-                {@render modeSelector()}
-            {/if}
-            <div class="flex w-full justify-end">
+            <div class="flex items-center gap-2">
+                {#if modeSelectorEnabled}
+                    {@render modeSelector()}
+                {/if}
+            </div>
+            <div class="flex w-full justify-end gap-2">
+                {#if showModelSelector}
+                    <Select.Root
+                        type="single"
+                        value={selectedModelId ?? undefined}
+                        onValueChange={(v) => {
+                            if (v && onModelChange) onModelChange(v)
+                        }}>
+                        <Select.Trigger
+                            size="sm"
+                            class="hover:bg-muted h-8 max-w-[180px] cursor-pointer border-none text-sm shadow-none"
+                            onclick={(e) => e.stopPropagation()}>
+                            {models.find((m) => m.id === selectedModelId)?.displayName ??
+                                'Select model'}
+                        </Select.Trigger>
+                        <Select.Content align="end">
+                            {#each models as model}
+                                <Select.Item value={model.id}>
+                                    {model.displayName}
+                                </Select.Item>
+                            {/each}
+                        </Select.Content>
+                    </Select.Root>
+                {/if}
                 {#if isStreaming}
                     <Button
                         size="icon"

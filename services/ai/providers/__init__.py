@@ -46,6 +46,7 @@ class LLMProvider(ABC):
 from .anthropic import AnthropicProvider
 from .vllm import VLLMProvider
 from .bedrock import BedrockProvider
+from .openai import OpenAIProvider
 
 
 # Factory function to create LLM providers
@@ -74,6 +75,13 @@ def create_llm_provider(provider_type: str, **kwargs) -> LLMProvider:
             model_id, secondary_model_id=secondary_model_id, region_name=region_name
         )
 
+    elif provider_type.lower() == "openai":
+        api_key = kwargs.get("api_key")
+        if not api_key:
+            raise ValueError("api_key is required for OpenAI provider")
+        model = kwargs.get("model", "gpt-4o")
+        return OpenAIProvider(api_key, model)
+
     else:
         raise ValueError(f"Unknown provider type: {provider_type}")
 
@@ -83,5 +91,6 @@ __all__ = [
     "AnthropicProvider",
     "VLLMProvider",
     "BedrockProvider",
+    "OpenAIProvider",
     "create_llm_provider",
 ]

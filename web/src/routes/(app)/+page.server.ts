@@ -5,6 +5,7 @@ import { eq, sql } from 'drizzle-orm'
 import { env } from '$env/dynamic/private'
 import { logger } from '$lib/server/logger.js'
 import type { SuggestedQuestion, SuggestedQuestionsResponse } from '$lib/types/search.js'
+import { listAllActiveModels } from '$lib/server/db/model-providers'
 
 export const load: PageServerLoad = async ({ locals, fetch }) => {
     // Get connected sources count
@@ -74,6 +75,14 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
         suggestedQuestionsCount: suggestedQuestions.length,
     })
 
+    const allModels = await listAllActiveModels()
+    const models = allModels.map((m) => ({
+        id: m.id,
+        displayName: m.displayName,
+        providerType: m.providerType,
+        isDefault: m.isDefault,
+    }))
+
     return {
         user: locals.user!,
         stats: {
@@ -82,5 +91,6 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
         },
         recentSearches,
         suggestedQuestions,
+        models,
     }
 }

@@ -9,6 +9,12 @@ from .content_blobs import ContentBlobsRepository, ContentBlobRecord
 from .embedding_queue import EmbeddingQueueRepository, EmbeddingQueueItem, QueueStatus
 from .embeddings import EmbeddingsRepository, Embedding
 from .embedding_batch_jobs import EmbeddingBatchJobsRepository, BatchJob
+from .model_providers import (
+    ModelProvidersRepository,
+    ModelProviderRecord,
+    ModelsRepository,
+)
+from .models import ModelRecord
 
 __all__ = [
     "get_db_pool",
@@ -33,4 +39,8 @@ __all__ = [
     "Embedding",
     "EmbeddingBatchJobsRepository",
     "BatchJob",
+    "ModelProvidersRepository",
+    "ModelProviderRecord",
+    "ModelsRepository",
+    "ModelRecord",
 ]

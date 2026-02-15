@@ -142,12 +142,38 @@ export const magicLinks = pgTable('magic_links', {
     userId: text('user_id').references(() => user.id),
 })
 
+export const modelProviders = pgTable('model_providers', {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    providerType: text('provider_type').notNull(),
+    config: jsonb('config').notNull().default({}),
+    isDeleted: boolean('is_deleted').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+})
+
+export const models = pgTable('models', {
+    id: text('id').primaryKey(),
+    modelProviderId: text('model_provider_id')
+        .notNull()
+        .references(() => modelProviders.id, { onDelete: 'cascade' }),
+    modelId: text('model_id').notNull(),
+    displayName: text('display_name').notNull(),
+    isDefault: boolean('is_default').notNull().default(false),
+    isDeleted: boolean('is_deleted').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+})
+
 export const chats = pgTable('chats', {
     id: text('id').primaryKey(),
     userId: text('user_id')
         .notNull()
         .references(() => user.id, { onDelete: 'cascade' }),
     title: text('title'),
+    modelId: text('model_id').references(() => models.id, {
+        onDelete: 'set null',
+    }),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
@@ -191,6 +217,8 @@ export type ConnectorEventsQueue = typeof connectorEventsQueue.$inferSelect
 export type SyncRun = typeof syncRuns.$inferSelect
 export type ApprovedDomain = typeof approvedDomains.$inferSelect
 export type MagicLink = typeof magicLinks.$inferSelect
+export type ModelProvider = typeof modelProviders.$inferSelect
+export type Model = typeof models.$inferSelect
 export type Chat = typeof chats.$inferSelect
 export type ChatMessage = typeof chatMessages.$inferSelect
 export type ResponseFeedback = typeof responseFeedback.$inferSelect

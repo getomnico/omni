@@ -1,6 +1,6 @@
 """Typed application state for FastAPI app.state"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import redis.asyncio as aioredis
 
@@ -19,7 +19,8 @@ class AppState:
     """
 
     embedding_provider: EmbeddingProvider | None = None
-    llm_provider: LLMProvider | None = None
+    models: dict[str, LLMProvider] = field(default_factory=dict)
+    default_model_id: str | None = None
     searcher_tool: SearcherTool | None = None
     content_storage: ContentStorage | None = None
     redis_client: aioredis.Redis | None = None

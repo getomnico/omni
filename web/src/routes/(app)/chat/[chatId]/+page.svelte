@@ -842,6 +842,13 @@
     <!-- Chat Container -->
     <div bind:this={chatContainerRef} class="flex w-full flex-1 flex-col overflow-y-auto px-4 pt-6">
         <div class="mx-auto mb-20 flex w-full max-w-4xl flex-1 flex-col gap-6">
+            {#if data.modelDisplayName}
+                <div class="flex justify-center">
+                    <span class="text-muted-foreground rounded-full border px-3 py-0.5 text-xs">
+                        {data.modelDisplayName}
+                    </span>
+                </div>
+            {/if}
             <!-- Existing Messages -->
             {#each processedMessages as message, i (message.id)}
                 {#if message.role === 'user'}

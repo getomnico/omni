@@ -14,6 +14,21 @@
     let isSearching = $state(false)
     let inputMode = $state<InputMode>(userPreferences.get('inputMode'))
 
+    const models = $derived(data.models)
+
+    const savedModelId = userPreferences.get('preferredModelId')
+    const initialModelId = $derived.by(() => {
+        if (savedModelId && models.find((m) => m.id === savedModelId)) {
+            return savedModelId
+        }
+        const defaultModel = models.find((m) => m.isDefault)
+        return defaultModel?.id ?? models[0]?.id ?? null
+    })
+    let selectedModelId = $state<string | null>(null)
+    $effect(() => {
+        selectedModelId = initialModelId
+    })
+
     $effect(() => {
         userPreferences.set('inputMode', inputMode)
     })
@@ -39,6 +54,7 @@
             headers: {
                 'Content-Type': 'application/json',
             },
+            body: JSON.stringify({ modelId: selectedModelId }),
         })
 
         if (!response.ok) {
@@ -123,7 +139,13 @@
             {popoverItems}
             showPopover={popoverOpen}
             onPopoverChange={(open) => (popoverOpen = open)}
-            maxWidth="max-w-2xl" />
+            maxWidth="max-w-2xl"
+            {models}
+            {selectedModelId}
+            onModelChange={(id) => {
+                selectedModelId = id
+                userPreferences.set('preferredModelId', id)
+            }} />
 
         <!-- Suggested Questions -->
         {#if data.suggestedQuestions && data.suggestedQuestions.length > 0}
