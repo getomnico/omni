@@ -19,6 +19,10 @@ on:
       - 'Cargo.lock'
       - '.github/workflows/build-google-connector.yml'
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   build:
     uses: ./.github/workflows/build-connector.yml
