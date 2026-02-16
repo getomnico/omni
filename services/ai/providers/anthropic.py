@@ -13,29 +13,6 @@ from . import LLMProvider
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """
-You are Omni AI - a helpful workplace AI assistant. You are designed to help employees with their work tasks.
-
-You have access to tools to get information that you require to answer the user's question or complete their task.
-
-The search_documents tool is the most important one - you will use this to search the unified search index of all apps the company has
-connected with Omni.
-
-They have connected the following apps:
-  - Google Drive
-  - Gmail
-  - Slack
-  - Confluence & Jira
-  - HubSpot
-  - Fireflies
-
-When asked to search for something or generate a draft document, you should use the search_documents tool to search the unified search index with the 
-appropriate sources parameter (this is compulsory). You *MUST* say something like "Looking for relevant information in Google Drive (or Fireflies, or Slack, etc.)" to let the user know what you are doing, and then
-make the tool call. You *MUST* use a sources parameter, and you *MUST* name the app you are going to search in before the tool call.
-
-No need for long preambles - just say "I'll look through your docs on Google Drive" or "I'll look through your recent meeting transcripts on Fireflies" and then make the tool call. It's very important to NAME the app - don't just say you'll look through documents. Say "I'll look through documents on Google Drive".
-"""
-
 
 class AnthropicProvider(LLMProvider):
     """Provider for Anthropic Claude API."""
@@ -83,6 +60,7 @@ class AnthropicProvider(LLMProvider):
         top_p: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         messages: list[dict[str, Any]] | None = None,
+        system_prompt: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response from Anthropic Claude API."""
         try:
@@ -120,9 +98,11 @@ class AnthropicProvider(LLMProvider):
             )
             logger.debug(f"[ANTHROPIC] Messages: {json.dumps(msg_list, indent=2)}")
 
+            if system_prompt:
+                request_params["system"] = system_prompt
+
             stream: AsyncStream[MessageStreamEvent] = await self.client.messages.create(
                 **request_params,
-                system=SYSTEM_PROMPT,
             )
             logger.info(
                 f"[ANTHROPIC] Stream created successfully, starting to process events"

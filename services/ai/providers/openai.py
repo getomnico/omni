@@ -60,12 +60,16 @@ class OpenAIProvider(LLMProvider):
         top_p: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         messages: list[dict[str, Any]] | None = None,
+        system_prompt: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response from OpenAI, yielding Anthropic-compatible MessageStreamEvents."""
         try:
             msg_list = self._convert_messages(
                 messages or [{"role": "user", "content": prompt}]
             )
+
+            if system_prompt:
+                msg_list.insert(0, {"role": "system", "content": system_prompt})
 
             request_params: dict[str, Any] = {
                 "model": self.model,

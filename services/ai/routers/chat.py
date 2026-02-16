@@ -7,12 +7,13 @@ from fastapi import APIRouter, HTTPException, Path, Request
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
-from db import ChatsRepository, MessagesRepository
+from db import ChatsRepository, MessagesRepository, SourcesRepository
 from db.models import Chat
 from tools import SearcherTool, SearchRequest, SearchResponse, SearchResult
 from models.chat import SearchToolParams, ReadDocumentParams
 from config import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, DEFAULT_TOP_P
 from providers import LLMProvider
+from prompts import build_chat_system_prompt
 from services.compaction import ConversationCompactor
 from state import AppState
 
@@ -237,6 +238,11 @@ async def stream_chat(
         logger.info(f"Compacting conversation for chat {chat_id}")
         messages = await compactor.compact_conversation(chat_id, messages)
 
+    # Build system prompt from active sources
+    sources_repo = SourcesRepository()
+    active_sources = await sources_repo.get_active_sources()
+    system_prompt = build_chat_system_prompt(active_sources)
+
     # Stream AI response with tool calling
     async def stream_generator():
         try:
@@ -292,6 +298,7 @@ async def stream_chat(
                     max_tokens=DEFAULT_MAX_TOKENS,
                     temperature=DEFAULT_TEMPERATURE,
                     top_p=DEFAULT_TOP_P,
+                    system_prompt=system_prompt,
                 )
 
                 event_index = 0

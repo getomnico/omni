@@ -423,6 +423,7 @@ class BedrockProvider(LLMProvider):
         max_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
+        system_prompt: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response from AWS Bedrock models."""
         try:
@@ -459,6 +460,9 @@ class BedrockProvider(LLMProvider):
                 logger.info(
                     f"[BEDROCK] Invoking model {self.model_id} with streaming response"
                 )
+
+                if system_prompt:
+                    request_params["system"] = system_prompt
 
                 stream = self.client.messages.create(**request_params)
 
@@ -534,6 +538,9 @@ class BedrockProvider(LLMProvider):
                         "topP": top_p or 0.9,
                     },
                 }
+
+                if system_prompt:
+                    request_params["system"] = [{"text": system_prompt}]
 
                 if tools:
                     request_params["toolConfig"] = {"tools": tools}

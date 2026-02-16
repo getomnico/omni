@@ -21,6 +21,7 @@ class LLMProvider(ABC):
         top_p: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         messages: list[dict[str, Any]] | None = None,
+        system_prompt: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream a response from the LLM provider. Returns Anthropic MessageStreamEvent objects."""
         pass

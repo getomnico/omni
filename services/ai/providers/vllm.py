@@ -30,6 +30,7 @@ class VLLMProvider(LLMProvider):
         top_p: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         messages: list[dict[str, Any]] | None = None,
+        system_prompt: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response from vLLM service."""
         # vLLM doesn't support tools yet, so we ignore the tools parameter
@@ -40,6 +41,9 @@ class VLLMProvider(LLMProvider):
 
         # Use provided messages or create from prompt
         msg_list = messages or [{"role": "user", "content": prompt}]
+
+        if system_prompt:
+            msg_list = [{"role": "system", "content": system_prompt}] + msg_list
 
         payload = {
             "model": "placeholder",  # vLLM ignores this but requires it
