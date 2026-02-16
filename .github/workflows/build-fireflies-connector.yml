@@ -1,27 +1,27 @@
-name: Build Atlassian Connector
+name: Build Fireflies Connector
 
 on:
   push:
     branches: [main, master]
     tags: ['v*']
     paths:
-      - 'connectors/atlassian/**'
+      - 'connectors/fireflies/**'
       - 'shared/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - '.github/workflows/build-atlassian-connector.yml'
+      - '.github/workflows/build-fireflies-connector.yml'
   pull_request:
     branches: [main, master]
     paths:
-      - 'connectors/atlassian/**'
+      - 'connectors/fireflies/**'
       - 'shared/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - '.github/workflows/build-atlassian-connector.yml'
+      - '.github/workflows/build-fireflies-connector.yml'
 
 jobs:
   build:
     uses: ./.github/workflows/build-connector.yml
     with:
-      connector-name: atlassian
+      connector-name: fireflies
       connector-type: rust
