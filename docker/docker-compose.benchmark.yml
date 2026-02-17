@@ -2,7 +2,7 @@
 # Does NOT require docker-compose.dev.yml
 #
 # Usage:
-#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.benchmark.yml --env-file .env up -d
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.benchmark.yml --env-file .env up -d --build
 #
 # Only starts: postgres, redis, migrator, searcher, indexer, ai
 # Connectors, web, and caddy are disabled via profiles.
@@ -34,16 +34,28 @@ services:
       - redis_benchmark_data:/data
 
   migrator:
+    image: omni-migrator:bench
+    build:
+      context: ..
+      dockerfile: services/migrations/Dockerfile
     environment:
       <<: *benchmark-db
 
   searcher:
+    image: omni-searcher:bench
+    build:
+      context: ..
+      dockerfile: services/searcher/Dockerfile
     ports:
       - "${SEARCHER_PORT}:${SEARCHER_PORT}"
     environment:
       <<: *benchmark-db
 
   indexer:
+    image: omni-indexer:bench
+    build:
+      context: ..
+      dockerfile: services/indexer/Dockerfile
     ports:
       - "${INDEXER_PORT}:${INDEXER_PORT}"
     environment:
@@ -51,6 +63,10 @@ services:
       RUST_LOG: info
 
   ai:
+    image: omni-ai:bench
+    build:
+      context: ../services/ai
+      dockerfile: Dockerfile
     ports:
       - "${AI_SERVICE_PORT}:${AI_SERVICE_PORT}"
     environment:
