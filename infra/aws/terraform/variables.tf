@@ -140,6 +140,12 @@ variable "resend_api_key" {
   sensitive   = true
 }
 
+variable "embedding_api_url" {
+  description = "Embedding API base URL"
+  type        = string
+  default     = "https://api.jina.ai/v1"
+}
+
 # Networking Configuration
 variable "vpc_cidr" {
   description = "CIDR block for VPC"

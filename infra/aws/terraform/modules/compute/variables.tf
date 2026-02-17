@@ -186,3 +186,8 @@ variable "bedrock_batch_role_arn" {
   description = "ARN of the IAM role for Bedrock batch inference"
   type        = string
 }
+
+variable "embedding_api_url" {
+  description = "Embedding API base URL"
+  type        = string
+}

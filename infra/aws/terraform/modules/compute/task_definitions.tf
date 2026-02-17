@@ -5,7 +5,7 @@ locals {
   connector_manager_url = "http://connector-manager.omni-${var.customer_name}.local:3004"
 
   otel_environment = [
-    { name = "RUST_LOG", value = "debug" },
+    { name = "RUST_LOG", value = "info" },
     { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = var.otel_endpoint },
     { name = "OTEL_DEPLOYMENT_ID", value = var.customer_name },
     { name = "OTEL_DEPLOYMENT_ENVIRONMENT", value = "production" },
@@ -23,7 +23,7 @@ locals {
     { name = "DATABASE_USERNAME", value = var.database_username },
     { name = "DATABASE_SSL", value = "false" },
     { name = "DB_MAX_CONNECTIONS", value = "10" },
-    { name = "DB_ACQUIRE_TIMEOUT_SECONDS", value = "30" }
+    { name = "DB_ACQUIRE_TIMEOUT_SECONDS", value = "3" }
   ]
 
   common_environment = concat(local.db_environment, local.redis_environment, local.otel_environment)
@@ -108,8 +108,9 @@ resource "aws_ecs_task_definition" "web" {
       { name = "SLACK_CONNECTOR_URL", value = "http://slack-connector.omni-${var.customer_name}.local:4002" },
       { name = "ATLASSIAN_CONNECTOR_URL", value = "http://atlassian-connector.omni-${var.customer_name}.local:4003" },
       { name = "WEB_CONNECTOR_URL", value = "http://web-connector.omni-${var.customer_name}.local:4004" },
-      { name = "SESSION_COOKIE_NAME", value = "omni_session" },
-      { name = "SESSION_DURATION_DAYS", value = "30" },
+      { name = "SESSION_COOKIE_NAME", value = "auth-session" },
+      { name = "SESSION_DURATION_DAYS", value = "7" },
+      { name = "OMNI_DOMAIN", value = var.custom_domain },
       { name = "ORIGIN", value = local.app_url },
       { name = "APP_URL", value = local.app_url },
       { name = "EMAIL_PROVIDER", value = "resend" },
@@ -160,10 +161,8 @@ resource "aws_ecs_task_definition" "searcher" {
     environment = concat(local.common_environment, [
       { name = "PORT", value = "3001" },
       { name = "AI_SERVICE_URL", value = "http://ai.omni-${var.customer_name}.local:3003" },
-      { name = "TYPO_TOLERANCE_ENABLED", value = "true" },
-      { name = "TYPO_TOLERANCE_MAX_DISTANCE", value = "2" },
-      { name = "TYPO_TOLERANCE_MIN_WORD_LENGTH", value = "4" },
       { name = "SEMANTIC_SEARCH_TIMEOUT_MS", value = "1000" },
+      { name = "RAG_CONTEXT_WINDOW", value = "2" },
       # Storage configuration
       { name = "STORAGE_BACKEND", value = "s3" },
       { name = "S3_BUCKET", value = var.content_bucket_name },
@@ -265,9 +264,8 @@ resource "aws_ecs_task_definition" "ai" {
       { name = "EMBEDDING_PROVIDER", value = "jina" },
       { name = "EMBEDDING_MODEL", value = "jina-embeddings-v3" },
       { name = "EMBEDDING_DIMENSIONS", value = "1024" },
-      { name = "LLM_PROVIDER", value = "bedrock" },
-      { name = "LLM_MODEL", value = "amazon.nova-pro-v1:0" },
-      { name = "LLM_SECONDARY_MODEL", value = "amazon.nova-lite-v1:0" },
+      { name = "EMBEDDING_API_URL", value = var.embedding_api_url },
+      { name = "EMBEDDING_MAX_MODEL_LEN", value = "8192" },
       { name = "AI_WORKERS", value = "1" },
       # Storage configuration
       { name = "STORAGE_BACKEND", value = "s3" },
@@ -335,6 +333,10 @@ resource "aws_ecs_task_definition" "connector_manager" {
       { name = "CONNECTOR_MICROSOFT_URL", value = "http://microsoft-connector.omni-${var.customer_name}.local:4007" },
       { name = "CONNECTOR_NOTION_URL", value = "http://notion-connector.omni-${var.customer_name}.local:4008" },
       { name = "CONNECTOR_FIREFLIES_URL", value = "http://fireflies-connector.omni-${var.customer_name}.local:4009" },
+      { name = "MAX_CONCURRENT_SYNCS", value = "10" },
+      { name = "MAX_CONCURRENT_SYNCS_PER_TYPE", value = "3" },
+      { name = "SCHEDULER_POLL_INTERVAL_SECONDS", value = "60" },
+      { name = "STALE_SYNC_TIMEOUT_MINUTES", value = "60" },
       # Storage configuration
       { name = "STORAGE_BACKEND", value = "s3" },
       { name = "S3_BUCKET", value = var.content_bucket_name },

@@ -183,14 +183,11 @@ resource "google_cloud_run_v2_service" "searcher" {
 
       dynamic "env" {
         for_each = merge(local.common_env, local.storage_env, {
-          PORT                           = "3001"
-          AI_SERVICE_URL                 = local.service_url["ai"]
-          TYPO_TOLERANCE_ENABLED         = "true"
-          TYPO_TOLERANCE_MAX_DISTANCE    = "2"
-          TYPO_TOLERANCE_MIN_WORD_LENGTH = "4"
-          SEMANTIC_SEARCH_TIMEOUT_MS     = "1000"
-          RAG_CONTEXT_WINDOW             = "2"
-          RUST_LOG                       = "info"
+          PORT                       = "3001"
+          AI_SERVICE_URL             = local.service_url["ai"]
+          SEMANTIC_SEARCH_TIMEOUT_MS = "1000"
+          RAG_CONTEXT_WINDOW         = "2"
+          RUST_LOG                   = "info"
         })
         content {
           name  = env.key
