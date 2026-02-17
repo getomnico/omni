@@ -1,22 +1,14 @@
 # Omni Search Benchmarks
 
-A comprehensive benchmarking system for evaluating Omni's hybrid search (FTS + semantic embeddings) performance, including both search relevance and latency measurements.
+A benchmarking system for evaluating Omni's hybrid search (FTS + semantic embeddings) performance. A single `run` command measures both search relevance and query latency in one pass.
 
 ## Overview
 
-This benchmarking harness provides:
-
-### Relevance Benchmarks
 - **Standard IR Benchmarks**: BEIR and MS MARCO dataset support
 - **Comprehensive Metrics**: nDCG, MRR, MAP, Precision, Recall at various cutoffs
-- **Search Mode Comparison**: Compare fulltext, semantic, and hybrid search performance
+- **Latency Metrics**: Per-query timing with min, mean, median, p95, p99, and throughput (QPS)
+- **Search Mode Comparison**: Compare fulltext, semantic, and hybrid search
 - **Automated Reports**: HTML and CSV reports with statistical analysis
-
-### Latency Benchmarks
-- **Performance Testing**: Measure search latency under various load conditions
-- **Natural Questions Dataset**: Uses Google's NQ dataset for realistic query workloads
-- **Execution Modes**: Burst mode (max throughput) or rate-limited mode (target QPS)
-- **Detailed Statistics**: Min, max, mean, median, p95, p99 latencies and throughput metrics
 
 ## Quick Start
 
@@ -24,77 +16,70 @@ This benchmarking harness provides:
 
 1. **Start Omni services** with Docker Compose:
    ```bash
-   cd /path/to/omni
-   docker compose up -d
+   docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml --env-file .env up -d
    ```
 
-2. **Install required tools**:
+2. **Rust toolchain** (if not already installed):
    ```bash
-   # PostgreSQL client tools
-   sudo apt-get install postgresql-client
-   
-   # Redis client tools
-   sudo apt-get install redis-tools
-   
-   # Rust toolchain (if not already installed)
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    ```
 
-### Running Relevance Benchmarks
+### Running Benchmarks
 
 ```bash
-# Quick test with BEIR dataset and hybrid search
-cd benchmarks
-./scripts/run_benchmarks.sh
+# Download datasets first
+cargo run --release -p omni-benchmarks -- setup --dataset beir
 
-# Test all search modes
-./scripts/run_benchmarks.sh beir all
+# Run benchmark (relevance + latency) with hybrid search
+cargo run --release -p omni-benchmarks -- run \
+  --config benchmarks/config/default.toml \
+  --dataset beir \
+  --search-mode hybrid
 
-# Full comprehensive benchmark (longer running)
-./scripts/run_benchmarks.sh beir all false
+# Test all search modes with warmup and concurrency tuning
+cargo run --release -p omni-benchmarks -- run \
+  --config benchmarks/config/default.toml \
+  --dataset beir \
+  --search-mode all \
+  --warmup 100 \
+  --concurrency 10
 
-# Get help
-./scripts/run_benchmarks.sh --help
+# Generate reports from saved results
+cargo run --release -p omni-benchmarks -- report \
+  --results-dir benchmarks/results \
+  --format html
 ```
 
-### Running Latency Benchmarks
+### CLI Reference
 
-```bash
-cd benchmarks
+```
+benchmark <COMMAND>
 
-# Run with default settings (burst mode, 1000 queries)
-./scripts/run_latency_benchmark.sh
-
-# Run with rate limiting at 10 QPS
-./scripts/run_latency_benchmark.sh --target-qps 10 --num-queries 500
-
-# Skip indexing (use existing data)
-./scripts/run_latency_benchmark.sh --skip-indexing --num-queries 2000
-
-# Limit document corpus size
-./scripts/run_latency_benchmark.sh --max-docs 10000
-
-# Get help
-./scripts/run_latency_benchmark.sh --help
+Commands:
+  setup       Download and prepare benchmark datasets
+  run         Run benchmark evaluation (relevance + latency)
+  report      Generate benchmark report
+  prepare-nq  Prepare Natural Questions dataset (fast Rust implementation)
 ```
 
-## What the Benchmarks Do
+#### `run` options
 
-### Relevance Benchmarks
-1. **Database Setup**: Creates a separate `omni_benchmark` database to ensure clean state
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-c, --config` | `benchmarks/config/default.toml` | Configuration file path |
+| `-d, --dataset` | `beir` | Dataset to benchmark (`beir`, `msmarco`) |
+| `-s, --search-mode` | `all` | Search mode (`fulltext`, `semantic`, `hybrid`, `all`) |
+| `--warmup` | `50` | Warmup queries (not measured) |
+| `--concurrency` | from config | Concurrent query execution |
+
+## How It Works
+
+1. **Database Setup**: Creates a separate `omni_benchmark` database
 2. **Dataset Loading**: Downloads and parses benchmark datasets (BEIR/MS MARCO)
-3. **Document Indexing**: Loads benchmark documents into Omni's database
-4. **Query Execution**: Runs benchmark queries against different search modes
-5. **Metrics Calculation**: Computes nDCG, MRR, MAP, Precision, Recall
-6. **Report Generation**: Creates detailed HTML and CSV reports
-
-### Latency Benchmarks
-1. **Data Preparation**: Parses Natural Questions dataset (requires pre-download)
-2. **Document Indexing**: Loads documents with embeddings into Omni
-3. **Warmup Phase**: Runs warmup queries to prime caches
-4. **Benchmark Phase**: Executes queries in burst or rate-limited mode
-5. **Statistics Calculation**: Computes latency percentiles and throughput
-6. **Results Export**: Saves detailed JSON results with per-query measurements
+3. **Document Indexing**: Loads benchmark documents into Omni via the connector event queue
+4. **Warmup Phase**: Runs warmup queries to prime caches (not measured)
+5. **Benchmark Phase**: Executes queries concurrently, capturing both relevance results and per-query latency
+6. **Results**: Computes unified metrics (relevance + latency) and saves to JSON
 
 ## Configuration
 
@@ -118,139 +103,97 @@ datasets = ["nfcorpus", "fiqa", "scifact"]  # Lightweight datasets for quick tes
 ## Available Datasets
 
 ### BEIR (Benchmarking Information Retrieval)
-- **nfcorpus**: Medical/nutrition documents (small, good for testing)
-- **fiqa**: Financial question answering
-- **scifact**: Scientific fact verification
-- **trec-covid**: COVID-19 research papers
-- **nq**: Natural Questions
-- **hotpotqa**: Multi-hop reasoning
-- And more...
+
+The standard heterogeneous IR benchmark suite. Each sub-dataset covers a different domain.
+
+| Dataset | Domain | Queries | Corpus | Download |
+|---------|--------|---------|--------|----------|
+| nfcorpus | Biomedical / nutrition | ~323 | ~3.6K | ~2MB |
+| fiqa | Financial QA | ~648 | ~57K | ~30MB |
+| scifact | Scientific fact-checking | ~300 | ~5K | ~5MB |
+| trec-covid | COVID-19 research | ~50 | ~171K | ~70MB |
+| scidocs | Computer science papers | ~1K | ~25K | ~40MB |
+| nq | Natural Questions (Wikipedia) | ~3.4K | ~2.6M | ~2GB |
+| hotpotqa | Multi-hop reasoning | ~7.4K | ~5.2M | ~3GB |
+| climate-fever | Climate claims | ~1.5K | ~5.4M | ~3GB |
+| fever | Wikipedia fact verification | ~6.6K | ~5.4M | ~3GB |
+| dbpedia-entity | Entity search | ~400 | ~4.6M | ~3GB |
+| webis-touche2020 | Argument retrieval | ~49 | ~382K | ~300MB |
+| quora | Duplicate question detection | ~10K | ~523K | ~50MB |
+
+For quick iteration, use the smaller datasets (`nfcorpus`, `scifact`, `fiqa`). For thorough evaluation, use `nq` or `hotpotqa`.
 
 ### MS MARCO
-- **Passage Ranking**: Large-scale passage retrieval
-- **Document Ranking**: Full document retrieval
 
-### Custom/Enterprise
-- **Synthetic Enterprise**: Generated queries for typical enterprise search scenarios
-- **Custom Datasets**: Load your own query/document pairs
+Microsoft's large-scale passage ranking dataset from Bing search queries.
 
-## Metrics Explained
+| Variant | Queries (dev) | Corpus | Download |
+|---------|---------------|--------|----------|
+| Passage | ~6.9K | ~8.8M | ~3GB |
 
-### Relevance Metrics
-- **nDCG@k**: Normalized Discounted Cumulative Gain - primary ranking quality metric
-- **MRR**: Mean Reciprocal Rank - position of first relevant result
-- **MAP@k**: Mean Average Precision - average precision across recall levels
-- **Precision@k**: Fraction of retrieved docs that are relevant
-- **Recall@k**: Fraction of relevant docs that are retrieved
+Binary relevance labels only (relevant / not relevant).
 
-### Latency Metrics
-- **Min/Max**: Minimum and maximum query latency
-- **Mean**: Average query latency
+## Metrics
+
+### Relevance
+- **nDCG@k**: Normalized Discounted Cumulative Gain — primary ranking quality metric
+- **MRR**: Mean Reciprocal Rank — how high the first relevant result ranks
+- **MAP@k**: Mean Average Precision — average precision across recall levels
+- **Precision@k**: Fraction of top-k results that are relevant
+- **Recall@k**: Fraction of all relevant docs found in top-k
+
+### Latency
+- **Min / Max / Mean**: Basic latency distribution
 - **Median (p50)**: 50th percentile latency
-- **p95/p99**: 95th and 99th percentile latencies
-- **Throughput (QPS)**: Queries processed per second
+- **p95 / p99**: Tail latencies
+- **Throughput (QPS)**: Queries per second over the benchmark duration
 
 ## Search Modes
 
-- **fulltext**: PostgreSQL full-text search only
-- **semantic**: Vector similarity search only  
-- **hybrid**: Combines fulltext and semantic search with weighted scores
+- **fulltext**: ParadeDB BM25 full-text search only
+- **semantic**: pgvector cosine similarity search only
+- **hybrid**: Combines BM25 + vector similarity with weighted scores
 
-## Manual Usage
+## Results
 
-You can also run benchmarks manually:
+After running benchmarks, results are saved to:
+
+- `results/<dataset>_<mode>_<timestamp>_results.json` — unified JSON with both relevance and latency metrics
+- `results/benchmark_report.html` — interactive HTML report (via `report` command)
+- `results/benchmark_results.csv` — CSV export (via `report` command)
+
+## Preparing Natural Questions Data
+
+The NQ dataset requires downloading Google's raw data and converting it:
 
 ```bash
-cd benchmarks
-
-# Build the benchmark binary
-cargo build --release
-
-# Download datasets
-cargo run --release -p omni-benchmarks -- setup --dataset beir
-
-# Run relevance benchmark
-cargo run --release -p omni-benchmarks -- run \
-  --config config/default.toml \
-  --dataset beir \
-  --search-mode hybrid
-
-# Generate reports
-cargo run --release -p omni-benchmarks -- report \
-  --results-dir results \
-  --format html
-
-# Prepare Natural Questions dataset (requires pre-downloaded NQ data)
-cargo run --release -p omni-benchmarks -- prepare-nq \
-  --input-dir data/v1.0 \
-  --output-dir data/nq_benchmark \
-  --max-documents 100000
-
-# Run latency benchmark
-cargo run --release -p omni-benchmarks -- latency \
-  --config config/latency.toml \
-  --data-dir data/nq_benchmark \
-  --num-queries 1000 \
-  --concurrency 10 \
-  --warmup 100
-```
-
-## Results and Reports
-
-After running benchmarks, check:
-
-### Relevance Results
-- `results/benchmark_report.html` - Interactive HTML report
-- `results/benchmark_results.csv` - Raw metrics in CSV format
-- `results/*.json` - Individual benchmark run results
-
-### Latency Results
-- `results/latency/*.json` - Detailed latency results with per-query measurements
-
-## Dataset Sizes
-
-### Relevance Datasets (BEIR/MS MARCO)
-| Dataset | Queries | Documents | Download Size | Time Estimate |
-|---------|---------|-----------|---------------|---------------|
-| nfcorpus | 323 | 3.6K | ~2MB | 2-3 minutes |
-| fiqa | 648 | 57K | ~30MB | 5-10 minutes |
-| scifact | 300 | 5K | ~5MB | 2-3 minutes |
-| nq (BEIR) | 3,452 | 2.7M | ~2GB | 30-60 minutes |
-| msmarco | 6,980 | 8.8M | ~3GB | 60+ minutes |
-
-### Latency Dataset (Natural Questions)
-| Dataset | Queries | Documents | Download Size | Notes |
-|---------|---------|-----------|---------------|-------|
-| NQ (full) | 307K | 307K | ~43GB | Download via gsutil |
-
-To download NQ data:
-```bash
+# Download raw NQ data (~43GB)
 gsutil -m cp -R gs://natural_questions/v1.0 benchmarks/data/
+
+# Prepare benchmark format
+cargo run --release -p omni-benchmarks -- prepare-nq \
+  --input-dir benchmarks/data/v1.0 \
+  --output-dir benchmarks/data/nq_benchmark \
+  --max-documents 100000
 ```
 
 ## Troubleshooting
 
 ### Services Not Running
 ```bash
-# Check Docker services
-docker compose ps
-
-# Check service health
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml --env-file .env ps
 curl http://localhost:3001/health
 ```
 
 ### Database Issues
 ```bash
-# Check PostgreSQL connection
 pg_isready -h localhost -p 5432 -U postgres
-
-# Check if benchmark DB exists
 psql -h localhost -U postgres -l | grep omni_benchmark
 ```
 
 ### Memory Issues
-- Reduce concurrent queries: `concurrent_queries = 2`
-- Use smaller datasets for testing
+- Reduce `concurrent_queries` in config
+- Use smaller datasets (`nfcorpus`, `scifact`) for testing
 - Increase Docker memory limits
 
 ## Architecture
@@ -260,32 +203,16 @@ benchmarks/
 ├── src/
 │   ├── config/          # Configuration management
 │   ├── datasets/        # Dataset loaders (BEIR, MS MARCO, NQ, custom)
-│   ├── evaluator/       # Metrics calculation and benchmark execution
-│   │   ├── metrics.rs           # Relevance and latency metrics
-│   │   ├── benchmark_evaluator.rs  # Relevance benchmark runner
-│   │   └── latency_benchmark.rs    # Latency benchmark runner
+│   ├── evaluator/       # Unified benchmark runner and metrics
+│   │   ├── benchmark_evaluator.rs  # Query execution with timing
+│   │   └── metrics.rs              # Relevance + latency metrics
 │   ├── indexer/         # Document indexing into Omni database
+│   ├── prepare_nq.rs   # NQ dataset preparation (HTML → text)
 │   ├── reporter/        # Report generation (HTML, CSV, JSON)
 │   └── search_client/   # HTTP client for Omni searcher service
 ├── config/
-│   ├── default.toml     # Relevance benchmark configuration
-│   └── latency.toml     # Latency benchmark configuration
+│   └── default.toml     # Benchmark configuration
 ├── scripts/
-│   ├── run_benchmarks.sh        # Relevance benchmark script
-│   └── run_latency_benchmark.sh # Latency benchmark script
+│   └── run_benchmarks.sh
 └── results/             # Generated reports and metrics
-    └── latency/         # Latency benchmark results
 ```
-
-## Contributing
-
-To add new datasets or metrics:
-
-1. Implement the `DatasetLoader` trait for new datasets
-2. Add metrics to `MetricsCalculator`
-3. Update configuration schema
-4. Add tests and documentation
-
-## License
-
-This benchmarking system is part of the Omni project and follows the same license.
