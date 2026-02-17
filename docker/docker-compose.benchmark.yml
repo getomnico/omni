@@ -100,4 +100,7 @@ services:
 
 volumes:
   postgres_benchmark_data:
+    name: omni-postgres-benchmark-data 
   redis_benchmark_data:
+    name: omni-redis-benchmark-data 
+

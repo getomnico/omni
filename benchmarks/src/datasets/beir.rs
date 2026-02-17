@@ -96,7 +96,7 @@ impl BeirDataset {
         Ok(())
     }
 
-    async fn download_single_dataset(&self, dataset_name: &str) -> Result<()> {
+    pub async fn download_single_dataset(&self, dataset_name: &str) -> Result<()> {
         let dataset_dir = format!("{}/{}", self.cache_dir, dataset_name);
 
         // Check if already downloaded

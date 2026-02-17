@@ -28,7 +28,7 @@ struct Cli {
 enum Commands {
     /// Download and prepare benchmark datasets
     Setup {
-        /// Dataset to download (beir, msmarco, all)
+        /// Dataset to download (beir, beir/<name>, msmarco, nq, all)
         #[arg(short, long, default_value = "all")]
         dataset: String,
     },
@@ -103,33 +103,40 @@ async fn main() -> Result<()> {
 }
 
 async fn setup_datasets(dataset: &str) -> Result<()> {
-    match dataset {
-        "beir" => {
-            info!("Setting up BEIR datasets...");
-            let beir_loader = BeirDataset::new("benchmarks/data/beir".to_string());
-            beir_loader.download_all().await?;
-        }
-        "msmarco" => {
-            info!("Setting up MS MARCO datasets...");
-            let msmarco_loader = MsMarcoDataset::new("benchmarks/data/msmarco".to_string());
-            msmarco_loader.download().await?;
-        }
-        "nq" => {
-            info!("Setting up Natural Questions dataset (dev shards, ~1GB)...");
-            let nq_config = config::NqConfig::default();
-            NaturalQuestionsDataset::download_and_prepare(&nq_config).await?;
-        }
-        "all" => {
-            info!("Setting up all datasets (excluding NQ, use --dataset nq separately)...");
-            let beir_loader = BeirDataset::new("benchmarks/data/beir".to_string());
-            beir_loader.download_all().await?;
+    // Handle beir/<name> syntax for downloading a single BEIR dataset
+    if let Some(beir_name) = dataset.strip_prefix("beir/") {
+        info!("Setting up BEIR dataset: {}...", beir_name);
+        let beir_loader = BeirDataset::new("benchmarks/data/beir".to_string());
+        beir_loader.download_single_dataset(beir_name).await?;
+    } else {
+        match dataset {
+            "beir" => {
+                info!("Setting up all BEIR datasets...");
+                let beir_loader = BeirDataset::new("benchmarks/data/beir".to_string());
+                beir_loader.download_all().await?;
+            }
+            "msmarco" => {
+                info!("Setting up MS MARCO datasets...");
+                let msmarco_loader = MsMarcoDataset::new("benchmarks/data/msmarco".to_string());
+                msmarco_loader.download().await?;
+            }
+            "nq" => {
+                info!("Setting up Natural Questions dataset (dev shards, ~1GB)...");
+                let nq_config = config::NqConfig::default();
+                NaturalQuestionsDataset::download_and_prepare(&nq_config).await?;
+            }
+            "all" => {
+                info!("Setting up all datasets (excluding NQ, use --dataset nq separately)...");
+                let beir_loader = BeirDataset::new("benchmarks/data/beir".to_string());
+                beir_loader.download_all().await?;
 
-            let msmarco_loader = MsMarcoDataset::new("benchmarks/data/msmarco".to_string());
-            msmarco_loader.download().await?;
-        }
-        _ => {
-            warn!("Unknown dataset: {}", dataset);
-            return Err(anyhow::anyhow!("Unsupported dataset: {}", dataset));
+                let msmarco_loader = MsMarcoDataset::new("benchmarks/data/msmarco".to_string());
+                msmarco_loader.download().await?;
+            }
+            _ => {
+                warn!("Unknown dataset: {}", dataset);
+                return Err(anyhow::anyhow!("Unsupported dataset: {}", dataset));
+            }
         }
     }
 
@@ -163,14 +170,19 @@ async fn run_benchmarks(
 
     indexer.setup_benchmark_database().await?;
 
-    let dataset_loader: Box<dyn DatasetLoader> = match dataset {
-        "beir" => {
+    let dataset_loader: Box<dyn DatasetLoader> =
+        if dataset == "beir" || dataset.starts_with("beir/") {
+            let selected = dataset
+                .strip_prefix("beir/")
+                .map(|s| s.to_string())
+                .or_else(|| config.datasets.beir.selected_dataset.clone());
+
             let mut beir_dataset = BeirDataset::new(config.datasets.beir.cache_dir.clone())
                 .with_datasets(config.datasets.beir.datasets.clone())
                 .with_download_url(config.datasets.beir.download_url_base.clone());
 
-            if let Some(selected) = &config.datasets.beir.selected_dataset {
-                beir_dataset = beir_dataset.with_selected_dataset(selected.clone());
+            if let Some(name) = selected {
+                beir_dataset = beir_dataset.with_selected_dataset(name);
             }
             if let Some(max) = config.datasets.beir.max_documents {
                 beir_dataset = beir_dataset.with_max_documents(max);
@@ -180,25 +192,27 @@ async fn run_benchmarks(
             }
 
             Box::new(beir_dataset)
-        }
-        "msmarco" => {
-            let mut msmarco_dataset =
-                MsMarcoDataset::new(config.datasets.msmarco.cache_dir.clone());
-            if let Some(max) = config.datasets.msmarco.max_documents {
-                msmarco_dataset = msmarco_dataset.with_max_documents(max);
+        } else {
+            match dataset {
+                "msmarco" => {
+                    let mut msmarco_dataset =
+                        MsMarcoDataset::new(config.datasets.msmarco.cache_dir.clone());
+                    if let Some(max) = config.datasets.msmarco.max_documents {
+                        msmarco_dataset = msmarco_dataset.with_max_documents(max);
+                    }
+                    if let Some(max) = config.datasets.msmarco.max_queries {
+                        msmarco_dataset = msmarco_dataset.with_max_queries(max);
+                    }
+                    Box::new(msmarco_dataset)
+                }
+                "nq" => {
+                    let nq_dataset =
+                        NaturalQuestionsDataset::download_and_prepare(&config.datasets.nq).await?;
+                    Box::new(nq_dataset)
+                }
+                _ => return Err(anyhow::anyhow!("Unsupported dataset: {}", dataset)),
             }
-            if let Some(max) = config.datasets.msmarco.max_queries {
-                msmarco_dataset = msmarco_dataset.with_max_queries(max);
-            }
-            Box::new(msmarco_dataset)
-        }
-        "nq" => {
-            let nq_dataset =
-                NaturalQuestionsDataset::download_and_prepare(&config.datasets.nq).await?;
-            Box::new(nq_dataset)
-        }
-        _ => return Err(anyhow::anyhow!("Unsupported dataset: {}", dataset)),
-    };
+        };
 
     let _source_id = if config.index_documents_before_search {
         info!("Streaming documents to Omni database (memory-efficient mode)");
