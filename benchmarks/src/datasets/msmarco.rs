@@ -2,7 +2,7 @@ use crate::datasets::{Dataset, DatasetLoader, Document, Query, RelevantDoc};
 use anyhow::Result;
 use async_trait::async_trait;
 use flate2::read::GzDecoder;
-use futures::stream::{self, StreamExt};
+use futures::stream::{self};
 use futures::Stream;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;

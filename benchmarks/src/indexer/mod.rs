@@ -1,10 +1,10 @@
 use crate::config::BenchmarkConfig;
 use crate::datasets::{Dataset, Document};
+use crate::evaluator::metrics::SystemInfo;
 use anyhow::Result;
 use futures::stream::StreamExt;
 use futures::Stream;
 use serde::{Deserialize, Serialize};
-use shared::embedding_queue::EmbeddingQueueStatus;
 use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use shared::queue::EventQueue;
 use shared::utils::generate_ulid;
@@ -686,6 +686,37 @@ impl BenchmarkIndexer {
         );
 
         Ok((source_id, stats))
+    }
+
+    pub async fn get_system_info(&self) -> Result<SystemInfo> {
+        let total_documents: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM documents")
+            .fetch_one(&self.db_pool)
+            .await
+            .unwrap_or(0);
+
+        let total_embeddings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM embeddings")
+            .fetch_one(&self.db_pool)
+            .await
+            .unwrap_or(0);
+
+        let index_size_bytes: Option<i64> = sqlx::query_scalar(
+            "SELECT pg_total_relation_size('documents') + COALESCE(pg_total_relation_size('embeddings'), 0)",
+        )
+        .fetch_one(&self.db_pool)
+        .await
+        .ok();
+
+        let postgres_version: Option<String> = sqlx::query_scalar("SELECT version()")
+            .fetch_one(&self.db_pool)
+            .await
+            .ok();
+
+        Ok(SystemInfo {
+            total_documents,
+            total_embeddings,
+            index_size_bytes,
+            postgres_version,
+        })
     }
 }
 

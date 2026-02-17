@@ -4,8 +4,10 @@ pub mod msmarco;
 pub mod natural_questions;
 
 pub use beir::*;
+#[allow(unused_imports)]
 pub use custom::*;
 pub use msmarco::*;
+#[allow(unused_imports)]
 pub use natural_questions::*;
 
 use anyhow::Result;

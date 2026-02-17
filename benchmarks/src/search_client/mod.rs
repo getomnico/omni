@@ -134,14 +134,14 @@ mod tests {
         let request = create_search_request("test query".to_string(), SearchMode::Hybrid);
         let request = with_limit(request, 10);
         let request = with_offset(request, 0);
-        let request = with_sources(request, vec!["google".to_string()]);
+        let request = with_sources(request, vec![SourceType::GoogleDrive]);
         let request = with_facets(request, true);
 
         assert_eq!(request.query, "test query");
         assert_eq!(request.mode, Some(SearchMode::Hybrid));
         assert_eq!(request.limit, Some(10));
         assert_eq!(request.offset, Some(0));
-        assert_eq!(request.source_types, Some(vec!["google".to_string()]));
+        assert_eq!(request.source_types, Some(vec![SourceType::GoogleDrive]));
         assert_eq!(request.include_facets, Some(true));
     }
 }

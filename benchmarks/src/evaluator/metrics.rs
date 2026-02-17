@@ -199,13 +199,13 @@ impl MetricsCalculator {
             return 0.0;
         }
 
-        // Calculate DCG@k
+        // Calculate DCG@k using standard formula: DCG = Σ rel_i / log2(rank+1)
+        // where rank is 1-indexed, so for 0-indexed i: discount = log2(i+2)
         let mut dcg = 0.0;
         for (i, doc) in retrieved_docs.iter().take(k).enumerate() {
             if let Some(&relevance) = relevant_docs.get(&doc.doc_id) {
-                let gain = relevance;
-                let discount = if i == 0 { 1.0 } else { (1.0 + i as f64).log2() };
-                dcg += gain / discount;
+                let discount = (2.0 + i as f64).log2();
+                dcg += relevance / discount;
             }
         }
 
@@ -215,9 +215,8 @@ impl MetricsCalculator {
 
         let mut idcg = 0.0;
         for (i, &relevance) in ideal_relevances.iter().take(k).enumerate() {
-            let gain = relevance;
-            let discount = if i == 0 { 1.0 } else { (1.0 + i as f64).log2() };
-            idcg += gain / discount;
+            let discount = (2.0 + i as f64).log2();
+            idcg += relevance / discount;
         }
 
         if idcg == 0.0 {
@@ -343,6 +342,87 @@ impl AggregatedMetrics {
 }
 
 // ============================================================================
+// Unified Benchmark Result
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkConfigSummary {
+    pub dataset_name: String,
+    pub search_mode: String,
+    pub total_queries: usize,
+    pub concurrent_queries: usize,
+    pub warmup_queries: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkResult {
+    pub relevance: AggregatedMetrics,
+    pub latency: LatencyStats,
+    pub system_info: Option<SystemInfo>,
+    pub config_summary: BenchmarkConfigSummary,
+    pub run_timestamp: DateTime<Utc>,
+}
+
+impl BenchmarkResult {
+    pub fn save_to_file(&self, path: &str) -> Result<()> {
+        let json = serde_json::to_string_pretty(self)?;
+        let base_dir = std::path::Path::new(path).parent().unwrap();
+        if !base_dir.exists() {
+            std::fs::create_dir_all(base_dir)?;
+        }
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    pub fn print_summary(&self) {
+        println!("\n=== Benchmark Results ===");
+        println!("Dataset: {}", self.config_summary.dataset_name);
+        println!("Search Mode: {}", self.config_summary.search_mode);
+        println!(
+            "Queries: {} (warmup: {})",
+            self.config_summary.total_queries, self.config_summary.warmup_queries
+        );
+        println!("Timestamp: {}", self.run_timestamp);
+        println!();
+
+        println!("Relevance Metrics:");
+        println!("  nDCG@1:  {:.4}", self.relevance.mean_ndcg_at_1);
+        println!("  nDCG@5:  {:.4}", self.relevance.mean_ndcg_at_5);
+        println!("  nDCG@10: {:.4}", self.relevance.mean_ndcg_at_10);
+        println!("  nDCG@20: {:.4}", self.relevance.mean_ndcg_at_20);
+        println!("  MRR:     {:.4}", self.relevance.mean_mrr);
+        println!("  MAP@10:  {:.4}", self.relevance.mean_map_at_10);
+        println!("  P@10:    {:.4}", self.relevance.mean_precision_at_10);
+        println!("  R@10:    {:.4}", self.relevance.mean_recall_at_10);
+        println!();
+
+        println!("Latency (ms):");
+        println!("  Min:    {:.2}", self.latency.min_ms);
+        println!("  Mean:   {:.2}", self.latency.mean_ms);
+        println!("  Median: {:.2} (p50)", self.latency.median_ms);
+        println!("  p95:    {:.2}", self.latency.p95_ms);
+        println!("  p99:    {:.2}", self.latency.p99_ms);
+        println!("  Max:    {:.2}", self.latency.max_ms);
+        println!();
+
+        println!("Throughput:");
+        println!("  Total Duration: {:.2}s", self.latency.total_duration_secs);
+        println!("  QPS: {:.2}", self.latency.throughput_qps);
+
+        if let Some(ref info) = self.system_info {
+            println!();
+            println!("System Info:");
+            println!("  Documents: {}", info.total_documents);
+            println!("  Embeddings: {}", info.total_embeddings);
+            if let Some(size) = info.index_size_bytes {
+                println!("  Index Size: {:.2} MB", size as f64 / 1024.0 / 1024.0);
+            }
+        }
+        println!("=========================\n");
+    }
+}
+
+// ============================================================================
 // Latency Metrics
 // ============================================================================
 
@@ -400,52 +480,6 @@ pub struct SystemInfo {
     pub total_embeddings: i64,
     pub index_size_bytes: Option<i64>,
     pub postgres_version: Option<String>,
-}
-
-/// Complete latency benchmark result
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LatencyBenchmarkResult {
-    pub dataset_name: String,
-    pub search_mode: String,
-    pub config: LatencyBenchmarkConfig,
-    pub latency_stats: LatencyStats,
-    pub measurements: Vec<LatencyMeasurement>,
-    pub system_info: SystemInfo,
-    pub run_timestamp: DateTime<Utc>,
-}
-
-/// Configuration for latency benchmark
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LatencyBenchmarkConfig {
-    pub num_queries: usize,
-    pub concurrency: usize,
-    pub warmup_queries: usize,
-    pub timeout_ms: u64,
-    /// Target queries per second. 0 = unlimited (burst mode)
-    pub target_qps: f64,
-}
-
-impl Default for LatencyBenchmarkConfig {
-    fn default() -> Self {
-        Self {
-            num_queries: 1000,
-            concurrency: 10,
-            warmup_queries: 100,
-            timeout_ms: 30000,
-            target_qps: 0.0, // unlimited by default
-        }
-    }
-}
-
-impl LatencyBenchmarkConfig {
-    /// Calculate inter-query delay in milliseconds based on target QPS
-    pub fn inter_query_delay_ms(&self) -> Option<u64> {
-        if self.target_qps <= 0.0 {
-            None
-        } else {
-            Some((1000.0 / self.target_qps) as u64)
-        }
-    }
 }
 
 pub struct LatencyCalculator;
@@ -541,59 +575,6 @@ impl LatencyCalculator {
     }
 }
 
-impl LatencyBenchmarkResult {
-    pub fn save_to_file(&self, path: &str) -> Result<()> {
-        let json = serde_json::to_string_pretty(self)?;
-        let base_dir = std::path::Path::new(path).parent().unwrap();
-        if !base_dir.exists() {
-            std::fs::create_dir_all(base_dir)?;
-        }
-        std::fs::write(path, json)?;
-        Ok(())
-    }
-
-    pub fn print_summary(&self) {
-        println!("\n=== Latency Benchmark Results ===");
-        println!("Dataset: {}", self.dataset_name);
-        println!("Search Mode: {}", self.search_mode);
-        println!("Timestamp: {}", self.run_timestamp);
-        println!();
-        println!("Configuration:");
-        println!("  Queries: {}", self.config.num_queries);
-        println!("  Concurrency: {}", self.config.concurrency);
-        println!("  Warmup: {}", self.config.warmup_queries);
-        println!();
-        println!("Query Statistics:");
-        println!("  Total: {}", self.latency_stats.count);
-        println!("  Successful: {}", self.latency_stats.successful);
-        println!("  Failed: {}", self.latency_stats.failed);
-        println!();
-        println!("Latency (ms):");
-        println!("  Min:    {:.2}", self.latency_stats.min_ms);
-        println!("  Max:    {:.2}", self.latency_stats.max_ms);
-        println!("  Mean:   {:.2}", self.latency_stats.mean_ms);
-        println!("  Median: {:.2} (p50)", self.latency_stats.median_ms);
-        println!("  p95:    {:.2}", self.latency_stats.p95_ms);
-        println!("  p99:    {:.2}", self.latency_stats.p99_ms);
-        println!("  StdDev: {:.2}", self.latency_stats.std_dev_ms);
-        println!();
-        println!("Throughput:");
-        println!(
-            "  Total Duration: {:.2}s",
-            self.latency_stats.total_duration_secs
-        );
-        println!("  QPS: {:.2}", self.latency_stats.throughput_qps);
-        println!();
-        println!("System Info:");
-        println!("  Documents: {}", self.system_info.total_documents);
-        println!("  Embeddings: {}", self.system_info.total_embeddings);
-        if let Some(size) = self.system_info.index_size_bytes {
-            println!("  Index Size: {:.2} MB", size as f64 / 1024.0 / 1024.0);
-        }
-        println!("=================================\n");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,7 +604,14 @@ mod tests {
         relevant_docs.insert("doc3".to_string(), 0.5);
 
         let ndcg = MetricsCalculator::calculate_ndcg(&retrieved_docs, &relevant_docs, 3);
-        assert!(ndcg > 0.0 && ndcg <= 1.0);
+
+        // doc1 (rel=1.0) at rank 1 (i=0): 1.0 / log2(2) = 1.0
+        // doc3 (rel=0.5) at rank 3 (i=2): 0.5 / log2(4) = 0.25
+        // DCG = 1.0 + 0.25 = 1.25
+        // IDCG: rel=1.0 at rank 1: 1.0/log2(2) = 1.0, rel=0.5 at rank 2: 0.5/log2(3) ≈ 0.3155
+        // IDCG = 1.0 + 0.3155 = 1.3155
+        // nDCG = 1.25 / 1.3155 ≈ 0.9502
+        assert!((ndcg - 0.9502).abs() < 0.001);
     }
 
     #[test]

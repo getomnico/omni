@@ -1,14 +1,16 @@
 use crate::datasets::{Dataset, DatasetLoader, Document, Query, RelevantDoc};
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::stream::{self, StreamExt};
+use futures::stream::{self};
 use futures::Stream;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::pin::Pin;
 use tracing::info;
+#[cfg(test)]
+use {futures::StreamExt, std::path::Path};
 
 /// Dataset loader for prepared Natural Questions benchmark data.
 ///

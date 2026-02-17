@@ -24,11 +24,7 @@ reqwest = { workspace = true, features = ["stream"] }
 csv = "1.3"
 flate2 = "1.0"
 tar = "0.4"
-rayon = "1.10"
 scraper = "0.22"
-
-# Mathematical operations for metrics
-statrs = "0.16"
 chrono = { version = "0.4", features = ["serde"] }
 
 # Async utilities
@@ -40,7 +36,6 @@ async-trait = "0.1"
 indicatif = "0.17"
 
 # File system operations
-walkdir = "2.3"
 tempfile = "3.8"
 
 # Configuration
@@ -48,8 +43,7 @@ config = "0.14"
 toml = "0.8"
 
 # Database
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "time"] }
-uuid = "1.0"
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "time"] }
 
 # Shared Clio types
 shared = { path = "../shared" }
