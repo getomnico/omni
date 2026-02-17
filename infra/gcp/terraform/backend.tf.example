@@ -1,0 +1,10 @@
+# Uncomment and configure for remote state storage in GCS.
+# Create the bucket first with: gsutil mb -p <PROJECT_ID> -l <REGION> gs://<BUCKET_NAME>
+# Enable versioning: gsutil versioning set on gs://<BUCKET_NAME>
+
+# terraform {
+#   backend "gcs" {
+#     bucket = "omni-CUSTOMER-terraform-state"
+#     prefix = "terraform/state"
+#   }
+# }

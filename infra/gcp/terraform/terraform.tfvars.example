@@ -1,0 +1,23 @@
+# Required
+project_id     = "my-gcp-project"
+customer_name  = "acme-corp"
+github_org     = "omni-platform"
+custom_domain  = "omni.acme-corp.com"
+jina_api_key   = "jina_xxxxxxxxxxxx"
+
+# Optional - uncomment to override defaults
+# region                = "us-central1"
+# environment           = "production"
+# database_name         = "omni"
+# database_username     = "omni"
+# paradedb_machine_type = "e2-small"
+# paradedb_disk_size_gb = 50
+# redis_tier            = "BASIC"
+# redis_memory_size_gb  = 1
+# cloud_run_cpu         = "1"
+# cloud_run_memory      = "1Gi"
+# cloud_run_min_instances = 0
+# cloud_run_max_instances = 2
+# log_retention_days    = 30
+# resend_api_key        = "re_xxxxxxxxxxxx"
+# embedding_api_url     = "https://api.jina.ai/v1"
