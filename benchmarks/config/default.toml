@@ -1,11 +1,12 @@
-# Clio Search Relevance Benchmark Configuration
+# Omni Search Benchmark Configuration
 
 # Search service configuration (Docker services)
 searcher_url = "http://localhost:3001"
-indexer_url = "http://localhost:3002" 
+indexer_url = "http://localhost:3002"
 database_url = "postgresql://omni_dev:omni_dev_password@localhost:5432/omni_benchmark"
 redis_url = "redis://localhost:6379"
 max_results_per_query = 100
+# For latency benchmarks, try: concurrent_queries = 10, rate_limit_delay_ms = 0
 concurrent_queries = 5
 rate_limit_delay_ms = 100
 timeout_seconds = 30
