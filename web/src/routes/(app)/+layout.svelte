@@ -31,7 +31,7 @@
         LogOut,
         MessageCirclePlus,
         Settings,
-        Ellipsis,
+        EllipsisVertical,
         Star,
         StarOff,
         Pencil,
@@ -399,13 +399,13 @@
         <DropdownMenu.Root>
             <DropdownMenu.Trigger>
                 {#snippet child({ props })}
-                    <SidebarMenuAction {...props} showOnHover>
-                        <Ellipsis class="h-4 w-4" />
+                    <SidebarMenuAction {...props} showOnHover class="cursor-pointer">
+                        <EllipsisVertical class="h-4 w-4" />
                     </SidebarMenuAction>
                 {/snippet}
             </DropdownMenu.Trigger>
             <DropdownMenu.Content side="right" align="start">
-                <DropdownMenu.Item onclick={() => toggleStar(chat)}>
+                <DropdownMenu.Item onclick={() => toggleStar(chat)} class="cursor-pointer">
                     {#if chat.isStarred}
                         <StarOff class="h-4 w-4" />
                         <span>Unstar</span>
@@ -414,13 +414,13 @@
                         <span>Star</span>
                     {/if}
                 </DropdownMenu.Item>
-                <DropdownMenu.Item onclick={() => openRenameDialog(chat)}>
+                <DropdownMenu.Item onclick={() => openRenameDialog(chat)} class="cursor-pointer">
                     <Pencil class="h-4 w-4" />
                     <span>Rename</span>
                 </DropdownMenu.Item>
                 <DropdownMenu.Separator />
                 <DropdownMenu.Item
-                    class="text-destructive focus:text-destructive"
+                    class="text-destructive focus:text-destructive cursor-pointer"
                     onclick={() => {
                         deleteTargetChat = chat
                     }}>
