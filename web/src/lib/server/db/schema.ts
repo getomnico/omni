@@ -171,6 +171,7 @@ export const chats = pgTable('chats', {
         .notNull()
         .references(() => user.id, { onDelete: 'cascade' }),
     title: text('title'),
+    isStarred: boolean('is_starred').notNull().default(false),
     modelId: text('model_id').references(() => models.id, {
         onDelete: 'set null',
     }),
@@ -185,6 +186,7 @@ export const chatMessages = pgTable('chat_messages', {
         .references(() => chats.id, { onDelete: 'cascade' }),
     messageSeqNum: integer('message_seq_num').notNull(),
     message: jsonb('message').$type<MessageParam>().notNull(),
+    contentText: text('content_text'),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
 

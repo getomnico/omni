@@ -12,9 +12,14 @@ export const load: LayoutServerLoad = async ({ locals, depends }) => {
     }
 
     depends('app:recent_chats')
-    const recentChats = await chatRepository.getByUserId(locals.user.id, 20, 0)
+    const [starredChats, recentChats] = await Promise.all([
+        chatRepository.getByUserId(locals.user.id, { isStarred: true }),
+        chatRepository.getByUserId(locals.user.id, { limit: 20, isStarred: false }),
+    ])
+
     return {
         user: locals.user,
+        starredChats,
         recentChats,
     }
 }
