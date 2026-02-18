@@ -96,27 +96,3 @@ resource "aws_secretsmanager_secret_version" "encryption_salt" {
   })
 }
 
-resource "random_password" "session_secret" {
-  length           = 64
-  special          = true
-  upper            = true
-  lower            = true
-  numeric          = true
-  override_special = "!@#$%^&*()-_=+[]{}|;:,.<>?"
-}
-
-resource "aws_secretsmanager_secret" "session_secret" {
-  name        = "omni/${var.customer_name}/session-secret"
-  description = "Session secret for web application"
-
-  tags = merge(local.common_tags, {
-    Name = "omni-${var.customer_name}-session-secret"
-  })
-}
-
-resource "aws_secretsmanager_secret_version" "session_secret" {
-  secret_id = aws_secretsmanager_secret.session_secret.id
-  secret_string = jsonencode({
-    secret = random_password.session_secret.result
-  })
-}

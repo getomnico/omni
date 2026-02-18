@@ -137,11 +137,6 @@ variable "encryption_salt_arn" {
   type        = string
 }
 
-variable "session_secret_arn" {
-  description = "ARN of session secret"
-  type        = string
-}
-
 variable "resend_api_key" {
   description = "Resend API key for emails"
   type        = string

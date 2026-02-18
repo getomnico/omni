@@ -106,11 +106,6 @@ variable "encryption_salt_secret_id" {
   type        = string
 }
 
-variable "session_secret_secret_id" {
-  description = "Secret Manager secret ID for session secret"
-  type        = string
-}
-
 variable "all_secret_ids" {
   description = "List of all secret IDs for IAM binding"
   type        = list(string)

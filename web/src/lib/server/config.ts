@@ -154,7 +154,6 @@ function loadConfig(): AppConfig {
     validateUrl(connectorManagerUrl, 'CONNECTOR_MANAGER_URL')
 
     // Session configuration
-    const sessionSecret = getRequiredEnv('SESSION_SECRET')
     const sessionCookieName = getOptionalEnv('SESSION_COOKIE_NAME', 'auth-session')
     const sessionDurationDays = validatePositiveNumber(
         getOptionalEnv('SESSION_DURATION_DAYS', '7'),
@@ -201,7 +200,6 @@ function loadConfig(): AppConfig {
             webConnectorUrl,
         },
         session: {
-            secret: sessionSecret,
             cookieName: sessionCookieName,
             durationDays: sessionDurationDays,
         },

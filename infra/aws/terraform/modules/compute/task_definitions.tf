@@ -119,9 +119,7 @@ resource "aws_ecs_task_definition" "web" {
       { name = "AI_ANSWER_ENABLED", value = "true" }
     ])
 
-    secrets = concat(local.common_secrets, [
-      { name = "SESSION_SECRET", valueFrom = "${var.session_secret_arn}:secret::" }
-    ])
+    secrets = local.common_secrets
   }])
 
   tags = merge(local.common_tags, {

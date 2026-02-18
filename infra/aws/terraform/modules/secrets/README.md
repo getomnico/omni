@@ -8,7 +8,6 @@ This module creates and manages secrets in AWS Secrets Manager for Omni infrastr
 - JINA API key secret (provided via variable)
 - Encryption key secret (auto-generated, 64 characters)
 - Encryption salt secret (auto-generated, 32 characters)
-- Session secret (auto-generated, 64 characters)
 
 ## Usage
 
@@ -41,7 +40,6 @@ module "secrets" {
 | jina_api_key_arn | ARN of JINA API key secret |
 | encryption_key_arn | ARN of encryption key secret |
 | encryption_salt_arn | ARN of encryption salt secret |
-| session_secret_arn | ARN of session secret |
 
 ## Secret Format
 
@@ -69,13 +67,6 @@ module "secrets" {
 ```json
 {
   "salt": "<generated-salt>"
-}
-```
-
-### Session Secret
-```json
-{
-  "secret": "<generated-secret>"
 }
 ```
 

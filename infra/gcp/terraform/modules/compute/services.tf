@@ -121,16 +121,7 @@ resource "google_cloud_run_v2_service" "web" {
         }
       }
 
-      env {
-        name = "SESSION_SECRET"
-        value_source {
-          secret_key_ref {
-            secret  = var.session_secret_secret_id
-            version = "latest"
-          }
-        }
-      }
-    }
+}
   }
 
   depends_on = [

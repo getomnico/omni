@@ -13,7 +13,7 @@ const logger = createLogger('auth')
 const DAY_IN_MS = 1000 * 60 * 60 * 24
 const SESSION_DURATION_MS = DAY_IN_MS * config.session.durationDays
 
-export const sessionCookieName = 'auth-session'
+export const sessionCookieName = config.session.cookieName
 
 export function generateSessionToken() {
     const bytes = crypto.getRandomValues(new Uint8Array(18))

@@ -24,11 +24,6 @@ output "encryption_salt_secret_id" {
   value       = google_secret_manager_secret.encryption_salt.secret_id
 }
 
-output "session_secret_secret_id" {
-  description = "Secret Manager secret ID for session secret"
-  value       = google_secret_manager_secret.session_secret.secret_id
-}
-
 output "all_secret_ids" {
   description = "List of all secret IDs for IAM binding"
   value = [
@@ -36,6 +31,5 @@ output "all_secret_ids" {
     google_secret_manager_secret.jina_api_key.secret_id,
     google_secret_manager_secret.encryption_key.secret_id,
     google_secret_manager_secret.encryption_salt.secret_id,
-    google_secret_manager_secret.session_secret.secret_id,
   ]
 }

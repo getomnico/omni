@@ -126,7 +126,6 @@ module "compute" {
   jina_api_key_secret_id      = module.secrets.jina_api_key_secret_id
   encryption_key_secret_id    = module.secrets.encryption_key_secret_id
   encryption_salt_secret_id   = module.secrets.encryption_salt_secret_id
-  session_secret_secret_id    = module.secrets.session_secret_secret_id
   all_secret_ids              = module.secrets.all_secret_ids
 
   resend_api_key    = var.resend_api_key

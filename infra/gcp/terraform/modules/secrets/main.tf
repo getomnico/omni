@@ -76,24 +76,3 @@ resource "google_secret_manager_secret_version" "encryption_salt" {
   secret_data = random_password.encryption_salt.result
 }
 
-resource "random_password" "session_secret" {
-  length           = 64
-  special          = true
-  upper            = true
-  lower            = true
-  numeric          = true
-  override_special = "!@#$%^&*()-_=+[]{}|;:,.<>?"
-}
-
-resource "google_secret_manager_secret" "session_secret" {
-  secret_id = "omni-${var.customer_name}-session-secret"
-
-  replication {
-    auto {}
-  }
-}
-
-resource "google_secret_manager_secret_version" "session_secret" {
-  secret      = google_secret_manager_secret.session_secret.id
-  secret_data = random_password.session_secret.result
-}

@@ -23,8 +23,3 @@ output "encryption_salt_arn" {
   description = "ARN of encryption salt secret"
   value       = aws_secretsmanager_secret.encryption_salt.arn
 }
-
-output "session_secret_arn" {
-  description = "ARN of session secret"
-  value       = aws_secretsmanager_secret.session_secret.arn
-}

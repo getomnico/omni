@@ -66,7 +66,6 @@ module "compute" {
   jina_api_key_arn      = module.secrets.jina_api_key_arn
   encryption_key_arn    = module.secrets.encryption_key_arn
   encryption_salt_arn   = module.secrets.encryption_salt_arn
-  session_secret_arn    = module.secrets.session_secret_arn
 
   google_client_id     = var.google_client_id
   google_client_secret = var.google_client_secret
@@ -101,7 +100,6 @@ module "compute" {
 | jina_api_key_arn | JINA API key secret ARN | string | - | yes |
 | encryption_key_arn | Encryption key secret ARN | string | - | yes |
 | encryption_salt_arn | Encryption salt secret ARN | string | - | yes |
-| session_secret_arn | Session secret ARN | string | - | yes |
 | resend_api_key | Resend API key | string | "CONFIGURE_RESEND_API_KEY" | no |
 
 ## Outputs

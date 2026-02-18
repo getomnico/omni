@@ -162,7 +162,6 @@ module "compute" {
   jina_api_key_arn      = module.secrets.jina_api_key_arn
   encryption_key_arn    = module.secrets.encryption_key_arn
   encryption_salt_arn   = module.secrets.encryption_salt_arn
-  session_secret_arn    = module.secrets.session_secret_arn
 
   resend_api_key    = var.resend_api_key
   embedding_api_url = var.embedding_api_url
