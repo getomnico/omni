@@ -9,6 +9,15 @@ use uuid::Uuid;
 
 use crate::gmail::GmailMessage;
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GoogleConnectorState {
+    pub webhook_channel_id: Option<String>,
+    pub webhook_resource_id: Option<String>,
+    pub webhook_expires_at: Option<i64>,
+    pub gmail_history_ids: Option<HashMap<String, String>>,
+    pub drive_page_tokens: Option<HashMap<String, String>>,
+}
+
 #[derive(Debug, Clone)]
 pub struct UserFile {
     pub user_email: Arc<String>,
@@ -200,14 +209,14 @@ pub struct WebhookChannel {
 }
 
 impl WebhookChannel {
-    pub fn new(webhook_url: String, token: Option<String>) -> Self {
+    pub fn new(webhook_url: String, source_id: &str) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             channel_type: "web_hook".to_string(),
             address: webhook_url,
             params: None,
             expiration: None,
-            token,
+            token: Some(source_id.to_string()),
         }
     }
 }
@@ -230,6 +239,7 @@ pub struct WebhookNotification {
     pub resource_id: Option<String>,
     pub resource_uri: Option<String>,
     pub changed: Option<String>,
+    pub source_id: Option<String>,
 }
 
 impl WebhookNotification {
@@ -257,12 +267,18 @@ impl WebhookNotification {
             .and_then(|h| h.to_str().ok())
             .map(|s| s.to_string());
 
+        let source_id = headers
+            .get("x-goog-channel-token")
+            .and_then(|h| h.to_str().ok())
+            .map(|s| s.to_string());
+
         Some(Self {
             channel_id,
             resource_state,
             resource_id,
             resource_uri,
             changed,
+            source_id,
         })
     }
 }
@@ -748,15 +764,12 @@ mod tests {
 
     #[test]
     fn test_webhook_channel_creation() {
-        let channel = WebhookChannel::new(
-            "https://example.com/webhook".to_string(),
-            Some("token123".to_string()),
-        );
+        let channel = WebhookChannel::new("https://example.com/webhook".to_string(), "source123");
 
         assert!(!channel.id.is_empty()); // UUID generated
         assert_eq!(channel.channel_type, "web_hook");
         assert_eq!(channel.address, "https://example.com/webhook");
-        assert_eq!(channel.token, Some("token123".to_string()));
+        assert_eq!(channel.token, Some("source123".to_string()));
         assert!(channel.params.is_none());
         assert!(channel.expiration.is_none());
     }

@@ -8,7 +8,7 @@ pub mod sync_manager;
 use anyhow::Result as AnyhowResult;
 use axum::{
     middleware,
-    routing::{get, post},
+    routing::{get, post, put},
     Router,
 };
 use config::ConnectorManagerConfig;
@@ -71,26 +71,15 @@ pub fn create_app(state: AppState) -> Router {
         )
         // Webhook notification endpoint
         .route("/sdk/webhook/notify", post(handlers::sdk_notify_webhook))
-        // Webhook channel management
+        // Connector state management
         .route(
-            "/sdk/webhook/channel",
-            post(handlers::sdk_save_webhook_channel),
+            "/sdk/source/:source_id/connector-state",
+            put(handlers::sdk_update_connector_state),
         )
+        // Sources by type
         .route(
-            "/sdk/webhook/channel/:channel_id",
-            get(handlers::sdk_get_webhook_channel_by_id),
-        )
-        .route(
-            "/sdk/webhook/channel/:channel_id",
-            axum::routing::delete(handlers::sdk_delete_webhook_channel),
-        )
-        .route(
-            "/sdk/webhook/channel/by-source/:source_id",
-            get(handlers::sdk_get_webhook_channel_by_source),
-        )
-        .route(
-            "/sdk/webhook/channels/expiring",
-            post(handlers::sdk_get_expiring_webhook_channels),
+            "/sdk/sources/by-type/:source_type",
+            get(handlers::sdk_get_sources_by_type),
         )
         .layer(
             ServiceBuilder::new()

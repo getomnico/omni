@@ -223,37 +223,3 @@ pub struct SdkWebhookNotification {
 pub struct SdkWebhookResponse {
     pub sync_run_id: String,
 }
-
-// ============================================================================
-// SDK Webhook Channel Management
-// ============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SdkSaveWebhookChannelRequest {
-    pub source_id: String,
-    pub channel_id: String,
-    pub resource_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub resource_uri: Option<String>,
-    pub webhook_url: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SdkWebhookChannel {
-    pub id: String,
-    pub source_id: String,
-    pub channel_id: String,
-    pub resource_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub resource_uri: Option<String>,
-    pub webhook_url: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SdkExpiringWebhookChannelsRequest {
-    pub hours_ahead: i64,
-}

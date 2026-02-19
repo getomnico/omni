@@ -82,32 +82,6 @@ struct WebhookNotificationResponse {
     sync_run_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WebhookChannel {
-    pub id: String,
-    pub source_id: String,
-    pub channel_id: String,
-    pub resource_id: String,
-    pub resource_uri: Option<String>,
-    pub webhook_url: String,
-    pub expires_at: Option<i64>,
-}
-
-#[derive(Debug, Serialize)]
-struct SaveWebhookChannelRequest {
-    source_id: String,
-    channel_id: String,
-    resource_id: String,
-    resource_uri: Option<String>,
-    webhook_url: String,
-    expires_at: Option<i64>,
-}
-
-#[derive(Debug, Serialize)]
-struct ExpiringWebhookChannelsRequest {
-    hours_ahead: i64,
-}
-
 impl SdkClient {
     pub fn new(connector_manager_url: &str) -> Self {
         Self {
@@ -487,169 +461,58 @@ impl SdkClient {
         Ok(result.sync_run_id)
     }
 
-    /// Save a webhook channel
-    pub async fn save_webhook_channel(
+    /// Save connector state for a source
+    pub async fn save_connector_state(
         &self,
         source_id: &str,
-        channel_id: &str,
-        resource_id: &str,
-        resource_uri: Option<&str>,
-        webhook_url: &str,
-        expires_at: Option<i64>,
-    ) -> Result<WebhookChannel> {
-        debug!(
-            "SDK: Saving webhook channel for source_id={}, channel_id={}",
-            source_id, channel_id
-        );
-
-        let request = SaveWebhookChannelRequest {
-            source_id: source_id.to_string(),
-            channel_id: channel_id.to_string(),
-            resource_id: resource_id.to_string(),
-            resource_uri: resource_uri.map(|s| s.to_string()),
-            webhook_url: webhook_url.to_string(),
-            expires_at,
-        };
+        state: serde_json::Value,
+    ) -> Result<()> {
+        debug!("SDK: Saving connector state for source_id={}", source_id);
 
         let response = self
             .client
-            .post(format!("{}/sdk/webhook/channel", self.base_url))
-            .json(&request)
-            .send()
-            .await
-            .context("Failed to save webhook channel")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to save webhook channel: {} - {}", status, body);
-        }
-
-        let result: WebhookChannel = response
-            .json()
-            .await
-            .context("Failed to parse webhook channel response")?;
-        Ok(result)
-    }
-
-    /// Get a webhook channel by channel_id
-    pub async fn get_webhook_channel(&self, channel_id: &str) -> Result<WebhookChannel> {
-        debug!("SDK: Getting webhook channel by channel_id={}", channel_id);
-
-        let response = self
-            .client
-            .get(format!(
-                "{}/sdk/webhook/channel/{}",
-                self.base_url, channel_id
-            ))
-            .send()
-            .await
-            .context("Failed to get webhook channel")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to get webhook channel: {} - {}", status, body);
-        }
-
-        let result: WebhookChannel = response
-            .json()
-            .await
-            .context("Failed to parse webhook channel response")?;
-        Ok(result)
-    }
-
-    /// Get a webhook channel by source_id
-    pub async fn get_webhook_channel_by_source(
-        &self,
-        source_id: &str,
-    ) -> Result<Option<WebhookChannel>> {
-        debug!("SDK: Getting webhook channel by source_id={}", source_id);
-
-        let response = self
-            .client
-            .get(format!(
-                "{}/sdk/webhook/channel/by-source/{}",
+            .put(format!(
+                "{}/sdk/source/{}/connector-state",
                 self.base_url, source_id
             ))
+            .json(&state)
             .send()
             .await
-            .context("Failed to get webhook channel by source")?;
+            .context("Failed to save connector state")?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "Failed to get webhook channel by source: {} - {}",
-                status,
-                body
-            );
-        }
-
-        let result: Option<WebhookChannel> = response
-            .json()
-            .await
-            .context("Failed to parse webhook channel response")?;
-        Ok(result)
-    }
-
-    /// Delete a webhook channel by channel_id
-    pub async fn delete_webhook_channel(&self, channel_id: &str) -> Result<()> {
-        debug!("SDK: Deleting webhook channel channel_id={}", channel_id);
-
-        let response = self
-            .client
-            .delete(format!(
-                "{}/sdk/webhook/channel/{}",
-                self.base_url, channel_id
-            ))
-            .send()
-            .await
-            .context("Failed to delete webhook channel")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to delete webhook channel: {} - {}", status, body);
+            anyhow::bail!("Failed to save connector state: {} - {}", status, body);
         }
 
         Ok(())
     }
 
-    /// Get expiring webhook channels
-    pub async fn get_expiring_webhook_channels(
-        &self,
-        hours_ahead: i64,
-    ) -> Result<Vec<WebhookChannel>> {
-        debug!(
-            "SDK: Getting expiring webhook channels, hours_ahead={}",
-            hours_ahead
-        );
-
-        let request = ExpiringWebhookChannelsRequest { hours_ahead };
+    /// Get all active sources of a given type
+    pub async fn get_sources_by_type(&self, source_type: &str) -> Result<Vec<Source>> {
+        debug!("SDK: Getting sources by type={}", source_type);
 
         let response = self
             .client
-            .post(format!("{}/sdk/webhook/channels/expiring", self.base_url))
-            .json(&request)
+            .get(format!(
+                "{}/sdk/sources/by-type/{}",
+                self.base_url, source_type
+            ))
             .send()
             .await
-            .context("Failed to get expiring webhook channels")?;
+            .context("Failed to get sources by type")?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "Failed to get expiring webhook channels: {} - {}",
-                status,
-                body
-            );
+            anyhow::bail!("Failed to get sources by type: {} - {}", status, body);
         }
 
-        let result: Vec<WebhookChannel> = response
+        let result: Vec<Source> = response
             .json()
             .await
-            .context("Failed to parse expiring webhook channels response")?;
+            .context("Failed to parse sources response")?;
         Ok(result)
     }
 }

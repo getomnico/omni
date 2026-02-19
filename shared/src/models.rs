@@ -441,22 +441,6 @@ pub struct SyncResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct WebhookChannel {
-    pub id: String,
-    pub source_id: String,
-    pub channel_id: String,
-    pub resource_id: String,
-    pub resource_uri: Option<String>,
-    pub webhook_url: String,
-    #[serde(with = "time::serde::iso8601::option")]
-    pub expires_at: Option<OffsetDateTime>,
-    #[serde(with = "time::serde::iso8601")]
-    pub created_at: OffsetDateTime,
-    #[serde(with = "time::serde::iso8601")]
-    pub updated_at: OffsetDateTime,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ApprovedDomain {
     pub id: String,
     pub domain: String,

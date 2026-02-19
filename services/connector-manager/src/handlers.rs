@@ -399,10 +399,9 @@ impl IntoResponse for ApiError {
 
 use crate::models::{
     SdkCancelSyncRequest, SdkCancelSyncResponse, SdkCompleteRequest, SdkCreateSyncRequest,
-    SdkCreateSyncResponse, SdkEmitEventRequest, SdkExpiringWebhookChannelsRequest, SdkFailRequest,
-    SdkIncrementScannedRequest, SdkSaveWebhookChannelRequest, SdkSourceSyncConfigResponse,
-    SdkStatusResponse, SdkStoreContentRequest, SdkStoreContentResponse, SdkUserEmailResponse,
-    SdkWebhookChannel, SdkWebhookNotification, SdkWebhookResponse,
+    SdkCreateSyncResponse, SdkEmitEventRequest, SdkFailRequest, SdkIncrementScannedRequest,
+    SdkSourceSyncConfigResponse, SdkStatusResponse, SdkStoreContentRequest,
+    SdkStoreContentResponse, SdkUserEmailResponse, SdkWebhookNotification, SdkWebhookResponse,
 };
 
 pub async fn sdk_emit_event(
@@ -706,157 +705,44 @@ pub async fn sdk_notify_webhook(
 }
 
 // ============================================================================
-// SDK Webhook Channel Management
+// SDK Connector State Management
 // ============================================================================
 
-pub async fn sdk_save_webhook_channel(
-    State(state): State<AppState>,
-    Json(request): Json<SdkSaveWebhookChannelRequest>,
-) -> Result<Json<SdkWebhookChannel>, ApiError> {
-    info!(
-        "SDK: Saving webhook channel for source={}, channel_id={}",
-        request.source_id, request.channel_id
-    );
-
-    let id = shared::utils::generate_ulid();
-    let expires_at = request
-        .expires_at
-        .and_then(|ts| time::OffsetDateTime::from_unix_timestamp(ts).ok());
-
-    sqlx::query(
-        r#"
-        INSERT INTO webhook_channels (id, source_id, channel_id, resource_id, resource_uri, webhook_url, expires_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        ON CONFLICT (channel_id) DO UPDATE SET
-            resource_id = EXCLUDED.resource_id,
-            resource_uri = EXCLUDED.resource_uri,
-            webhook_url = EXCLUDED.webhook_url,
-            expires_at = EXCLUDED.expires_at
-        "#,
-    )
-    .bind(&id)
-    .bind(&request.source_id)
-    .bind(&request.channel_id)
-    .bind(&request.resource_id)
-    .bind(&request.resource_uri)
-    .bind(&request.webhook_url)
-    .bind(expires_at)
-    .execute(state.db_pool.pool())
-    .await
-    .map_err(|e| ApiError::Internal(format!("Failed to save webhook channel: {}", e)))?;
-
-    Ok(Json(SdkWebhookChannel {
-        id,
-        source_id: request.source_id,
-        channel_id: request.channel_id,
-        resource_id: request.resource_id,
-        resource_uri: request.resource_uri,
-        webhook_url: request.webhook_url,
-        expires_at: request.expires_at,
-    }))
-}
-
-pub async fn sdk_get_webhook_channel_by_id(
-    State(state): State<AppState>,
-    Path(channel_id): Path<String>,
-) -> Result<Json<SdkWebhookChannel>, ApiError> {
-    debug!("SDK: Getting webhook channel by id={}", channel_id);
-
-    let row: (String, String, String, String, Option<String>, String, Option<time::OffsetDateTime>) = sqlx::query_as(
-        "SELECT id, source_id, channel_id, resource_id, resource_uri, webhook_url, expires_at FROM webhook_channels WHERE channel_id = $1",
-    )
-    .bind(&channel_id)
-    .fetch_one(state.db_pool.pool())
-    .await
-    .map_err(|e| match e {
-        sqlx::Error::RowNotFound => ApiError::NotFound(format!("Webhook channel not found: {}", channel_id)),
-        _ => ApiError::Internal(format!("Failed to get webhook channel: {}", e)),
-    })?;
-
-    Ok(Json(SdkWebhookChannel {
-        id: row.0,
-        source_id: row.1,
-        channel_id: row.2,
-        resource_id: row.3,
-        resource_uri: row.4,
-        webhook_url: row.5,
-        expires_at: row.6.map(|t| t.unix_timestamp()),
-    }))
-}
-
-pub async fn sdk_get_webhook_channel_by_source(
+pub async fn sdk_update_connector_state(
     State(state): State<AppState>,
     Path(source_id): Path<String>,
-) -> Result<Json<Option<SdkWebhookChannel>>, ApiError> {
-    debug!("SDK: Getting webhook channel by source_id={}", source_id);
-
-    let result: Option<(String, String, String, String, Option<String>, String, Option<time::OffsetDateTime>)> = sqlx::query_as(
-        "SELECT id, source_id, channel_id, resource_id, resource_uri, webhook_url, expires_at FROM webhook_channels WHERE source_id = $1",
-    )
-    .bind(&source_id)
-    .fetch_optional(state.db_pool.pool())
-    .await
-    .map_err(|e| ApiError::Internal(format!("Failed to get webhook channel: {}", e)))?;
-
-    Ok(Json(result.map(|row| SdkWebhookChannel {
-        id: row.0,
-        source_id: row.1,
-        channel_id: row.2,
-        resource_id: row.3,
-        resource_uri: row.4,
-        webhook_url: row.5,
-        expires_at: row.6.map(|t| t.unix_timestamp()),
-    })))
-}
-
-pub async fn sdk_delete_webhook_channel(
-    State(state): State<AppState>,
-    Path(channel_id): Path<String>,
+    Json(new_state): Json<serde_json::Value>,
 ) -> Result<Json<SdkStatusResponse>, ApiError> {
-    info!("SDK: Deleting webhook channel id={}", channel_id);
+    debug!("SDK: Updating connector state for source_id={}", source_id);
 
-    sqlx::query("DELETE FROM webhook_channels WHERE channel_id = $1")
-        .bind(&channel_id)
-        .execute(state.db_pool.pool())
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    source_repo
+        .update_connector_state(&source_id, new_state)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to delete webhook channel: {}", e)))?;
+        .map_err(|e| ApiError::Internal(format!("Failed to update connector state: {}", e)))?;
 
     Ok(Json(SdkStatusResponse {
         status: "ok".to_string(),
     }))
 }
 
-pub async fn sdk_get_expiring_webhook_channels(
+// ============================================================================
+// SDK Sources by Type
+// ============================================================================
+
+pub async fn sdk_get_sources_by_type(
     State(state): State<AppState>,
-    Json(request): Json<SdkExpiringWebhookChannelsRequest>,
-) -> Result<Json<Vec<SdkWebhookChannel>>, ApiError> {
-    debug!(
-        "SDK: Getting expiring webhook channels, hours_ahead={}",
-        request.hours_ahead
-    );
+    Path(source_type): Path<String>,
+) -> Result<Json<Vec<shared::models::Source>>, ApiError> {
+    debug!("SDK: Getting sources by type={}", source_type);
 
-    let threshold = time::OffsetDateTime::now_utc() + time::Duration::hours(request.hours_ahead);
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let sources = source_repo
+        .find_by_type(&source_type)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get sources by type: {}", e)))?;
 
-    let rows: Vec<(String, String, String, String, Option<String>, String, Option<time::OffsetDateTime>)> = sqlx::query_as(
-        "SELECT id, source_id, channel_id, resource_id, resource_uri, webhook_url, expires_at FROM webhook_channels WHERE expires_at IS NOT NULL AND expires_at <= $1",
-    )
-    .bind(threshold)
-    .fetch_all(state.db_pool.pool())
-    .await
-    .map_err(|e| ApiError::Internal(format!("Failed to get expiring channels: {}", e)))?;
+    let active_sources: Vec<_> = sources.into_iter().filter(|s| s.is_active).collect();
 
-    let channels = rows
-        .into_iter()
-        .map(|row| SdkWebhookChannel {
-            id: row.0,
-            source_id: row.1,
-            channel_id: row.2,
-            resource_id: row.3,
-            resource_uri: row.4,
-            webhook_url: row.5,
-            expires_at: row.6.map(|t| t.unix_timestamp()),
-        })
-        .collect();
-
-    Ok(Json(channels))
+    Ok(Json(active_sources))
 }

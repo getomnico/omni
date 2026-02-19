@@ -1,7 +1,7 @@
 use shared::RedisConfig;
 use std::env;
 use std::process;
-use tracing::error;
+use tracing::{error, info};
 
 fn get_required_env(key: &str) -> String {
     env::var(key).unwrap_or_else(|_| {
@@ -41,6 +41,7 @@ pub struct GoogleConnectorConfig {
     pub port: u16,
     pub webhook_url: Option<String>,
     pub ai_service_url: String,
+    pub webhook_renewal_interval_seconds: u64,
 }
 
 impl GoogleConnectorConfig {
@@ -50,25 +51,36 @@ impl GoogleConnectorConfig {
         let port_str = get_required_env("PORT");
         let port = parse_port(&port_str, "PORT");
 
-        let webhook_url = env::var("GOOGLE_WEBHOOK_URL").ok();
-        if let Some(ref url) = webhook_url {
-            if !url.trim().is_empty() {
-                validate_url(url, "GOOGLE_WEBHOOK_URL");
-                if !url.starts_with("https://") {
-                    error!("GOOGLE_WEBHOOK_URL must use HTTPS for Google webhooks");
-                    process::exit(1);
-                }
-            }
-        }
+        let webhook_url = Self::derive_webhook_url();
 
         let ai_service_url = get_required_env("AI_SERVICE_URL");
         let ai_service_url = validate_url(&ai_service_url, "AI_SERVICE_URL");
+
+        let webhook_renewal_interval_seconds = env::var("WEBHOOK_RENEWAL_CHECK_INTERVAL_SECONDS")
+            .unwrap_or_else(|_| "3600".to_string())
+            .parse::<u64>()
+            .unwrap_or(3600);
 
         Self {
             redis,
             port,
             webhook_url,
             ai_service_url,
+            webhook_renewal_interval_seconds,
         }
+    }
+
+    fn derive_webhook_url() -> Option<String> {
+        let domain = env::var("OMNI_DOMAIN").ok()?;
+        let domain = domain.trim().to_string();
+
+        if domain.is_empty() || domain == "localhost" {
+            info!("OMNI_DOMAIN is '{}', webhooks disabled", domain);
+            return None;
+        }
+
+        let url = format!("https://{}/google-webhook", domain);
+        info!("Derived webhook URL: {}", url);
+        Some(url)
     }
 }
