@@ -293,7 +293,11 @@ pub async fn execute_action(
     let action_request = ActionRequest {
         action: request.action,
         params: request.params,
-        credentials: creds.credentials,
+        credentials: json!({
+            "credentials": creds.credentials,
+            "config": creds.config,
+            "principal_email": creds.principal_email,
+        }),
     };
 
     let response = client

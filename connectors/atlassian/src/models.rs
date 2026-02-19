@@ -75,11 +75,27 @@ pub struct ActionResponse {
 }
 
 impl ActionResponse {
+    pub fn success(result: JsonValue) -> Self {
+        Self {
+            status: "success".to_string(),
+            result: Some(result),
+            error: None,
+        }
+    }
+
     pub fn not_supported(action: &str) -> Self {
         Self {
             status: "error".to_string(),
             result: None,
             error: Some(format!("Action not supported: {}", action)),
+        }
+    }
+
+    pub fn error(msg: impl Into<String>) -> Self {
+        Self {
+            status: "error".to_string(),
+            result: None,
+            error: Some(msg.into()),
         }
     }
 }

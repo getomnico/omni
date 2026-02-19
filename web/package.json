@@ -42,7 +42,7 @@
         "globals": "^16.0.0",
         "mode-watcher": "^1.0.8",
         "prettier": "^3.4.2",
-        "prettier-plugin-svelte": "^3.4.1",
+        "prettier-plugin-svelte": "^3.5.0",
         "prettier-plugin-tailwindcss": "^0.6.11",
         "svelte": "^5.0.0",
         "svelte-check": "^4.0.0",

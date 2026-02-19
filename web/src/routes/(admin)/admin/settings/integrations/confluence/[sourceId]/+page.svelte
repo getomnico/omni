@@ -29,6 +29,11 @@
     let hasUnsavedChanges = $state(false)
     let skipUnsavedCheck = $state(false)
 
+    let allSpaces: { key: string; name: string }[] | null = null
+    let suggestions = $state<{ key: string; name: string }[]>([])
+    let showSuggestions = $state(false)
+    let isLoadingSpaces = $state(false)
+
     let beforeUnloadHandler: ((e: BeforeUnloadEvent) => void) | null = null
 
     let originalEnabled = data.source.isActive
@@ -45,6 +50,54 @@
 
     function removeSpace(space: string) {
         spaceFilters = spaceFilters.filter((s) => s !== space)
+    }
+
+    function selectSuggestion(key: string) {
+        if (!spaceFilters.includes(key)) {
+            spaceFilters = [...spaceFilters, key]
+        }
+        spaceInput = ''
+        suggestions = []
+        showSuggestions = false
+    }
+
+    async function fetchSpaces() {
+        if (allSpaces !== null) return
+        isLoadingSpaces = true
+        try {
+            const res = await fetch(`/api/sources/${data.source.id}/action`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: 'search_spaces',
+                    params: { type: 'confluence' },
+                }),
+            })
+            if (res.ok) {
+                const body = await res.json()
+                allSpaces = body.result ?? []
+            }
+        } catch {
+            // Silently fail - user can still type manually
+        } finally {
+            isLoadingSpaces = false
+        }
+    }
+
+    function filterSpaces(query: string) {
+        if (!allSpaces) return
+        const q = query.trim().toLowerCase()
+        if (!q) {
+            suggestions = []
+            showSuggestions = false
+            return
+        }
+        suggestions = allSpaces.filter(
+            (s) =>
+                (s.key.toLowerCase().includes(q) || s.name.toLowerCase().includes(q)) &&
+                !spaceFilters.includes(s.key),
+        )
+        showSuggestions = suggestions.length > 0
     }
 
     function validateForm() {
@@ -181,25 +234,65 @@
                                 Filter specific spaces (leave empty for all spaces)
                             </p>
 
-                            <div class="flex gap-2">
-                                <Input
-                                    bind:value={spaceInput}
-                                    placeholder="Enter space key..."
-                                    disabled={!enabled}
-                                    class="flex-1"
-                                    onkeydown={(e) => {
-                                        if (e.key === 'Enter') {
-                                            e.preventDefault()
-                                            addSpace()
-                                        }
-                                    }} />
-                                <Button
-                                    type="button"
-                                    variant="secondary"
-                                    onclick={addSpace}
-                                    disabled={!enabled || !spaceInput.trim()}>
-                                    Add
-                                </Button>
+                            <div class="relative">
+                                <div class="flex gap-2">
+                                    <Input
+                                        bind:value={spaceInput}
+                                        placeholder="Search spaces or enter key..."
+                                        disabled={!enabled}
+                                        class="flex-1"
+                                        oninput={(e) => filterSpaces(e.currentTarget.value)}
+                                        onfocusout={() => {
+                                            setTimeout(() => (showSuggestions = false), 200)
+                                        }}
+                                        onfocus={() => {
+                                            fetchSpaces()
+                                            if (suggestions.length > 0) showSuggestions = true
+                                        }}
+                                        onkeydown={(e) => {
+                                            if (e.key === 'Enter') {
+                                                e.preventDefault()
+                                                addSpace()
+                                            }
+                                            if (e.key === 'Escape') {
+                                                showSuggestions = false
+                                            }
+                                        }} />
+                                    <Button
+                                        type="button"
+                                        variant="secondary"
+                                        onclick={addSpace}
+                                        disabled={!enabled || !spaceInput.trim()}>
+                                        Add
+                                    </Button>
+                                </div>
+                                {#if showSuggestions}
+                                    <div
+                                        class="border-border bg-popover text-popover-foreground absolute z-10 mt-1 w-full rounded-md border shadow-md">
+                                        <ul class="max-h-48 overflow-y-auto py-1">
+                                            {#each suggestions as suggestion}
+                                                <li>
+                                                    <button
+                                                        type="button"
+                                                        class="hover:bg-accent w-full px-3 py-2 text-left text-sm"
+                                                        onmousedown={() =>
+                                                            selectSuggestion(suggestion.key)}>
+                                                        <span class="font-medium"
+                                                            >{suggestion.key}</span>
+                                                        <span class="text-muted-foreground ml-2"
+                                                            >{suggestion.name}</span>
+                                                    </button>
+                                                </li>
+                                            {/each}
+                                        </ul>
+                                    </div>
+                                {/if}
+                                {#if isLoadingSpaces}
+                                    <div
+                                        class="text-muted-foreground absolute top-2.5 right-16 text-xs">
+                                        <Loader2 class="h-3 w-3 animate-spin" />
+                                    </div>
+                                {/if}
                             </div>
 
                             {#if spaceFilters.length > 0}

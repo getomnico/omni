@@ -16,8 +16,11 @@ use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tracing::{error, info};
 
+use crate::auth::AtlassianCredentials;
+use crate::client::AtlassianClient;
 use crate::models::{
-    ActionRequest, ActionResponse, CancelRequest, CancelResponse, ConnectorManifest, SyncResponse,
+    ActionDefinition, ActionRequest, ActionResponse, CancelRequest, CancelResponse,
+    ConnectorManifest, SyncResponse,
 };
 use crate::sync::SyncManager;
 
@@ -84,7 +87,18 @@ async fn manifest() -> impl IntoResponse {
         name: "atlassian".to_string(),
         version: "1.0.0".to_string(),
         sync_modes: vec!["full".to_string(), "incremental".to_string()],
-        actions: vec![], // Atlassian connector has no actions yet
+        actions: vec![ActionDefinition {
+            name: "search_spaces".to_string(),
+            description: "Search Confluence spaces or Jira projects".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Search query to filter by name or key" },
+                    "type": { "type": "string", "enum": ["confluence", "jira"], "description": "Whether to search Confluence spaces or Jira projects" }
+                },
+                "required": ["type"]
+            }),
+        }],
     };
     Json(manifest)
 }
@@ -130,8 +144,110 @@ async fn cancel_sync(
 async fn execute_action(Json(request): Json<ActionRequest>) -> impl IntoResponse {
     info!("Action requested: {}", request.action);
 
-    // Atlassian connector doesn't support any actions yet
-    Json(ActionResponse::not_supported(&request.action))
+    match request.action.as_str() {
+        "search_spaces" => Json(handle_search_spaces(request.params, request.credentials).await),
+        _ => Json(ActionResponse::not_supported(&request.action)),
+    }
+}
+
+async fn handle_search_spaces(
+    params: serde_json::Value,
+    credentials: serde_json::Value,
+) -> ActionResponse {
+    let query = params
+        .get("query")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let search_type = match params.get("type").and_then(|v| v.as_str()) {
+        Some(t) => t.to_string(),
+        None => return ActionResponse::error("Missing required parameter: type"),
+    };
+
+    let base_url = match credentials
+        .get("config")
+        .and_then(|c| c.get("base_url"))
+        .and_then(|v| v.as_str())
+    {
+        Some(u) => u.to_string(),
+        None => return ActionResponse::error("Missing base_url in credentials config"),
+    };
+    let user_email = match credentials.get("principal_email").and_then(|v| v.as_str()) {
+        Some(e) => e.to_string(),
+        None => return ActionResponse::error("Missing principal_email in credentials"),
+    };
+    let api_token = match credentials
+        .get("credentials")
+        .and_then(|c| c.get("api_token"))
+        .and_then(|v| v.as_str())
+    {
+        Some(t) => t.to_string(),
+        None => return ActionResponse::error("Missing api_token in credentials"),
+    };
+
+    let creds = AtlassianCredentials::new(base_url, user_email, api_token);
+    let client = AtlassianClient::new();
+
+    match search_type.as_str() {
+        "confluence" => match client.get_confluence_spaces(&creds).await {
+            Ok(spaces) => {
+                let results: Vec<serde_json::Value> = spaces
+                    .into_iter()
+                    .filter(|s| {
+                        s.r#type != "personal"
+                            && (query.is_empty()
+                                || s.key.to_lowercase().contains(&query)
+                                || s.name.to_lowercase().contains(&query))
+                    })
+                    .map(|s| {
+                        json!({
+                            "key": s.key,
+                            "name": s.name,
+                            "type": "confluence"
+                        })
+                    })
+                    .collect();
+                ActionResponse::success(json!(results))
+            }
+            Err(e) => ActionResponse::error(format!("Failed to fetch Confluence spaces: {}", e)),
+        },
+        "jira" => match client.get_jira_projects(&creds, &[]).await {
+            Ok(projects) => {
+                let results: Vec<serde_json::Value> = projects
+                    .into_iter()
+                    .filter(|p| {
+                        if query.is_empty() {
+                            return true;
+                        }
+                        let key = p
+                            .get("key")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_lowercase();
+                        let name = p
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_lowercase();
+                        key.contains(&query) || name.contains(&query)
+                    })
+                    .map(|p| {
+                        json!({
+                            "key": p.get("key").and_then(|v| v.as_str()).unwrap_or(""),
+                            "name": p.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                            "type": "jira"
+                        })
+                    })
+                    .collect();
+                ActionResponse::success(json!(results))
+            }
+            Err(e) => ActionResponse::error(format!("Failed to fetch Jira projects: {}", e)),
+        },
+        _ => ActionResponse::error(format!(
+            "Invalid type: {}. Must be 'confluence' or 'jira'",
+            search_type
+        )),
+    }
 }
 
 async fn test_connection(

@@ -31,6 +31,11 @@
     let hasUnsavedChanges = $state(false)
     let skipUnsavedCheck = $state(false)
 
+    let allProjects: { key: string; name: string }[] | null = null
+    let suggestions = $state<{ key: string; name: string }[]>([])
+    let showSuggestions = $state(false)
+    let isLoadingProjects = $state(false)
+
     let beforeUnloadHandler: ((e: BeforeUnloadEvent) => void) | null = null
 
     let originalEnabled = data.source.isActive
@@ -47,6 +52,54 @@
 
     function removeProject(project: string) {
         projectFilters = projectFilters.filter((p) => p !== project)
+    }
+
+    function selectSuggestion(key: string) {
+        if (!projectFilters.includes(key)) {
+            projectFilters = [...projectFilters, key]
+        }
+        projectInput = ''
+        suggestions = []
+        showSuggestions = false
+    }
+
+    async function fetchProjects() {
+        if (allProjects !== null) return
+        isLoadingProjects = true
+        try {
+            const res = await fetch(`/api/sources/${data.source.id}/action`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: 'search_spaces',
+                    params: { type: 'jira' },
+                }),
+            })
+            if (res.ok) {
+                const body = await res.json()
+                allProjects = body.result ?? []
+            }
+        } catch {
+            // Silently fail - user can still type manually
+        } finally {
+            isLoadingProjects = false
+        }
+    }
+
+    function filterProjects(query: string) {
+        if (!allProjects) return
+        const q = query.trim().toLowerCase()
+        if (!q) {
+            suggestions = []
+            showSuggestions = false
+            return
+        }
+        suggestions = allProjects.filter(
+            (p) =>
+                (p.key.toLowerCase().includes(q) || p.name.toLowerCase().includes(q)) &&
+                !projectFilters.includes(p.key),
+        )
+        showSuggestions = suggestions.length > 0
     }
 
     function validateForm() {
@@ -181,25 +234,65 @@
                                 Filter specific projects (leave empty for all projects)
                             </p>
 
-                            <div class="flex gap-2">
-                                <Input
-                                    bind:value={projectInput}
-                                    placeholder="Enter project key..."
-                                    disabled={!enabled}
-                                    class="flex-1"
-                                    onkeydown={(e) => {
-                                        if (e.key === 'Enter') {
-                                            e.preventDefault()
-                                            addProject()
-                                        }
-                                    }} />
-                                <Button
-                                    type="button"
-                                    variant="secondary"
-                                    onclick={addProject}
-                                    disabled={!enabled || !projectInput.trim()}>
-                                    Add
-                                </Button>
+                            <div class="relative">
+                                <div class="flex gap-2">
+                                    <Input
+                                        bind:value={projectInput}
+                                        placeholder="Search projects or enter key..."
+                                        disabled={!enabled}
+                                        class="flex-1"
+                                        oninput={(e) => filterProjects(e.currentTarget.value)}
+                                        onfocusout={() => {
+                                            setTimeout(() => (showSuggestions = false), 200)
+                                        }}
+                                        onfocus={() => {
+                                            fetchProjects()
+                                            if (suggestions.length > 0) showSuggestions = true
+                                        }}
+                                        onkeydown={(e) => {
+                                            if (e.key === 'Enter') {
+                                                e.preventDefault()
+                                                addProject()
+                                            }
+                                            if (e.key === 'Escape') {
+                                                showSuggestions = false
+                                            }
+                                        }} />
+                                    <Button
+                                        type="button"
+                                        variant="secondary"
+                                        onclick={addProject}
+                                        disabled={!enabled || !projectInput.trim()}>
+                                        Add
+                                    </Button>
+                                </div>
+                                {#if showSuggestions}
+                                    <div
+                                        class="border-border bg-popover text-popover-foreground absolute z-10 mt-1 w-full rounded-md border shadow-md">
+                                        <ul class="max-h-48 overflow-y-auto py-1">
+                                            {#each suggestions as suggestion}
+                                                <li>
+                                                    <button
+                                                        type="button"
+                                                        class="hover:bg-accent w-full px-3 py-2 text-left text-sm"
+                                                        onmousedown={() =>
+                                                            selectSuggestion(suggestion.key)}>
+                                                        <span class="font-medium"
+                                                            >{suggestion.key}</span>
+                                                        <span class="text-muted-foreground ml-2"
+                                                            >{suggestion.name}</span>
+                                                    </button>
+                                                </li>
+                                            {/each}
+                                        </ul>
+                                    </div>
+                                {/if}
+                                {#if isLoadingProjects}
+                                    <div
+                                        class="text-muted-foreground absolute top-2.5 right-16 text-xs">
+                                        <Loader2 class="h-3 w-3 animate-spin" />
+                                    </div>
+                                {/if}
                             </div>
 
                             {#if projectFilters.length > 0}
