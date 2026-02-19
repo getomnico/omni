@@ -475,12 +475,9 @@ impl ConfluencePage {
         let url = format!("{}/wiki{}", base_url, self.links.webui.clone());
         let path = self.title.clone();
 
-        // Display metadata (not for filtering)
         let mut extra = HashMap::new();
         let mut confluence_extra = HashMap::new();
-        confluence_extra.insert("space_id".to_string(), json!(self.space_id));
         confluence_extra.insert("parent_id".to_string(), json!(self.parent_id));
-        confluence_extra.insert("status".to_string(), json!(self.status));
         confluence_extra.insert("version".to_string(), json!(self.version.number));
         extra.insert("confluence".to_string(), json!(confluence_extra));
 
@@ -657,25 +654,9 @@ impl JiraIssue {
                     .unwrap_or(OffsetDateTime::UNIX_EPOCH)
             });
 
-        // Display metadata (not for filtering)
         let mut extra = HashMap::new();
         let mut jira_extra = HashMap::new();
-        jira_extra.insert("issue_key".to_string(), json!(self.key));
         jira_extra.insert("project_id".to_string(), json!(self.fields.project.id));
-        jira_extra.insert("project_key".to_string(), json!(self.fields.project.key));
-        jira_extra.insert("project_name".to_string(), json!(self.fields.project.name));
-        jira_extra.insert("issue_type".to_string(), json!(self.fields.issuetype.name));
-        jira_extra.insert("status".to_string(), json!(self.fields.status.name));
-        jira_extra.insert(
-            "status_category".to_string(),
-            json!(self.fields.status.status_category.name),
-        );
-        if let Some(priority) = &self.fields.priority {
-            jira_extra.insert("priority".to_string(), json!(priority.name));
-        }
-        if let Some(labels) = &self.fields.labels {
-            jira_extra.insert("labels".to_string(), json!(labels));
-        }
         extra.insert("jira".to_string(), json!(jira_extra));
 
         let url = Some(format!("{}/browse/{}", base_url, self.key));

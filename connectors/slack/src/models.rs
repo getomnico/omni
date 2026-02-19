@@ -349,20 +349,15 @@ impl MessageGroup {
 
         let mut extra = HashMap::new();
 
-        // Store Slack-specific hierarchical data
+        // Store Slack-specific hierarchical data (non-attribute fields only)
         let mut slack_metadata = HashMap::new();
         slack_metadata.insert("channel_id".to_string(), serde_json::json!(self.channel_id));
-        slack_metadata.insert(
-            "channel_name".to_string(),
-            serde_json::json!(self.channel_name),
-        );
         slack_metadata.insert(
             "message_count".to_string(),
             serde_json::json!(self.message_count()),
         );
         slack_metadata.insert("authors".to_string(), serde_json::json!(authors));
         slack_metadata.insert("date".to_string(), serde_json::json!(self.date.to_string()));
-        slack_metadata.insert("is_thread".to_string(), serde_json::json!(self.is_thread));
         if let Some(thread_ts) = &self.thread_ts {
             slack_metadata.insert("thread_ts".to_string(), serde_json::json!(thread_ts));
         }
@@ -440,10 +435,9 @@ impl SlackFile {
 
         let mut extra = HashMap::new();
 
-        // Store Slack-specific file metadata
+        // Store Slack-specific file metadata (non-attribute fields only)
         let mut slack_metadata = HashMap::new();
         slack_metadata.insert("channel_id".to_string(), json!(channel_id.clone()));
-        slack_metadata.insert("channel_name".to_string(), json!(channel_name.clone()));
         slack_metadata.insert("file_name".to_string(), json!(self.name));
         slack_metadata.insert("file_id".to_string(), json!(self.id));
         extra.insert("slack".to_string(), json!(slack_metadata));

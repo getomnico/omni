@@ -530,7 +530,6 @@ impl GmailThread {
     ) -> Result<ConnectorEvent, anyhow::Error> {
         let mut extra = HashMap::new();
         extra.insert("thread_id".to_string(), json!(self.thread_id));
-        extra.insert("message_count".to_string(), json!(self.total_messages));
         extra.insert(
             "participants".to_string(),
             json!(self.participants.iter().collect::<Vec<_>>()),

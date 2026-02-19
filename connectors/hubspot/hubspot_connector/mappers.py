@@ -65,10 +65,7 @@ def map_hubspot_object_to_document(
             updated_at=updated_at,
             url=url,
             mime_type="text/plain",
-            extra={
-                "hubspot_id": hubspot_id,
-                "object_type": object_type,
-            },
+            extra=None,
         ),
         permissions=DocumentPermissions(public=True),
         attributes={
