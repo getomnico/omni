@@ -37,6 +37,7 @@ class Document(BaseModel):
     content_type: str | None
     url: str | None
     source_type: str | None = None
+    attributes: dict | None = None
 
 
 class SearchResult(BaseModel):

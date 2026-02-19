@@ -539,8 +539,18 @@ async def stream_chat(
 
                         # Add document content as text blocks
                         read_tool_result_content_blocks: list[TextBlockParam] = []
+
+                        # Attach all attributes
+                        doc = read_results[0].document if read_results else None
+                        if doc:
+                            read_tool_result_content_blocks.append(
+                                TextBlockParam(
+                                    type="text",
+                                    text=json.dumps({"attributes": doc.attributes}),
+                                )
+                            )
+
                         for result in read_results:
-                            doc = result.document
                             read_tool_result_content_blocks.append(
                                 TextBlockParam(
                                     type="text",

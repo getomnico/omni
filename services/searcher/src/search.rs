@@ -4,7 +4,7 @@ use crate::models::{
 use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::db::repositories::{DocumentRepository, EmbeddingRepository};
-use shared::models::ChunkResult;
+use shared::models::{ChunkResult, Document};
 use shared::utils::safe_str_slice;
 use shared::{
     AIClient, DatabasePool, ObjectStorage, Repository, SearcherConfig, StorageFactory,
@@ -15,7 +15,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, info};
 
 pub struct SearchEngine {
@@ -27,7 +27,7 @@ pub struct SearchEngine {
 }
 
 impl SearchEngine {
-    const CONTENT_SIZE_THRESHOLD: usize = 50_000; // 10KB threshold
+    const CONTENT_SIZE_THRESHOLD: usize = 50_000; // 50KB threshold
 
     pub async fn new(
         db_pool: DatabasePool,
@@ -45,11 +45,7 @@ impl SearchEngine {
         })
     }
 
-    fn prepare_document_for_response(
-        &self,
-        mut doc: shared::models::Document,
-    ) -> shared::models::Document {
-        // Clear content_id from search responses for security and efficiency
+    fn prepare_document_for_response(&self, mut doc: Document) -> Document {
         doc.content_id = None;
 
         // Append metadata hash to URL for frontend icon resolution
@@ -740,7 +736,7 @@ impl SearchEngine {
 
         // Apply timeout to semantic search
         let semantic_future = tokio::time::timeout(
-            std::time::Duration::from_millis(self.config.semantic_search_timeout_ms),
+            Duration::from_millis(self.config.semantic_search_timeout_ms),
             self.semantic_search(request),
         );
 
