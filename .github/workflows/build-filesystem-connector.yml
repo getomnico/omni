@@ -1,0 +1,31 @@
+name: Build Filesystem Connector
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+    paths:
+      - 'connectors/filesystem/**'
+      - 'shared/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/build-filesystem-connector.yml'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'connectors/filesystem/**'
+      - 'shared/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/build-filesystem-connector.yml'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-connector.yml
+    with:
+      connector-name: filesystem
+      connector-type: rust
