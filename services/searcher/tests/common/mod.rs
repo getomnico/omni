@@ -33,8 +33,7 @@ impl SearcherTestFixture {
             database: test_env.database_config(),
             redis: test_env.redis_config(),
             ai_service_url: test_env.mock_ai_server.base_url.clone(),
-            hybrid_search_fts_weight: 0.6,
-            hybrid_search_semantic_weight: 0.4,
+            rrf_k: 60.0,
             semantic_search_timeout_ms: 5000,
             rag_context_window: 2,
         };

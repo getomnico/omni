@@ -10,6 +10,7 @@ use shared::{
     AIClient, DatabasePool, ObjectStorage, Repository, SearcherConfig, StorageFactory,
     UserRepository,
 };
+use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -767,23 +768,28 @@ impl SearchEngine {
             semantic_results.len()
         );
 
-        // Combine and deduplicate results
-        let mut combined_results = HashMap::new();
+        // Reciprocal Rank Fusion: score by rank position, not raw scores
+        let k = self.config.rrf_k;
+        let mut combined_results: HashMap<String, SearchResult> = HashMap::new();
+        let mut rrf_scores: HashMap<String, f32> = HashMap::new();
 
-        // Add FTS results with normalized scores
-        for result in fts_results {
+        for (rank, result) in fts_results.into_iter().enumerate() {
             let doc_id = result.document.id.clone();
-            let normalized_score = self.normalize_fts_score(result.score);
+            let rrf_contrib = 1.0 / (k + (rank + 1) as f32);
             debug!(
-                "FTS result document {} [id={}], score={}",
-                result.document.title, doc_id, normalized_score
+                "FTS result document {} [id={}], rank={}, rrf_contrib={:.6}",
+                result.document.title,
+                doc_id,
+                rank + 1,
+                rrf_contrib
             );
+            *rrf_scores.entry(doc_id.clone()).or_insert(0.0) += rrf_contrib;
             let prepared_doc = self.prepare_document_for_response(result.document);
             combined_results.insert(
                 doc_id,
                 SearchResult {
                     document: prepared_doc,
-                    score: normalized_score * self.config.hybrid_search_fts_weight,
+                    score: 0.0,
                     highlights: result.highlights,
                     match_type: "fulltext".to_string(),
                     content: result.content,
@@ -791,45 +797,44 @@ impl SearchEngine {
             );
         }
 
-        // Add or update with semantic results
-        for result in semantic_results {
+        for (rank, result) in semantic_results.into_iter().enumerate() {
             let doc_id = result.document.id.clone();
-
+            let rrf_contrib = 1.0 / (k + (rank + 1) as f32);
             debug!(
-                "Semantic result document {} [id={}], score={}",
-                result.document.title, doc_id, result.score
+                "Semantic result document {} [id={}], rank={}, rrf_contrib={:.6}",
+                result.document.title,
+                doc_id,
+                rank + 1,
+                rrf_contrib
             );
-            match combined_results.get_mut(&doc_id) {
-                Some(existing) => {
-                    // Combine scores for documents found in both searches
-                    existing.score += result.score * self.config.hybrid_search_semantic_weight;
-                }
-                None => {
-                    // Add new semantic-only result
+            *rrf_scores.entry(doc_id.clone()).or_insert(0.0) += rrf_contrib;
+            combined_results
+                .entry(doc_id)
+                .and_modify(|existing| {
+                    existing.match_type = "hybrid".to_string();
+                })
+                .or_insert_with(|| {
                     let prepared_doc = self.prepare_document_for_response(result.document);
-                    combined_results.insert(
-                        doc_id,
-                        SearchResult {
-                            document: prepared_doc,
-                            score: result.score * self.config.hybrid_search_semantic_weight,
-                            highlights: result.highlights,
-                            match_type: "semantic".to_string(),
-                            content: result.content,
-                        },
-                    );
-                }
-            }
+                    SearchResult {
+                        document: prepared_doc,
+                        score: 0.0,
+                        highlights: result.highlights,
+                        match_type: "semantic".to_string(),
+                        content: result.content,
+                    }
+                });
         }
 
-        // Convert to vector and sort by combined score
-        let mut final_results: Vec<SearchResult> = combined_results.into_values().collect();
-        final_results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        // Apply RRF scores and sort
+        let mut final_results: Vec<SearchResult> = combined_results
+            .into_iter()
+            .map(|(doc_id, mut result)| {
+                result.score = rrf_scores[&doc_id];
+                result
+            })
+            .collect();
+        final_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
 
-        // Apply limit
         if final_results.len() > request.limit() as usize {
             final_results.truncate(request.limit() as usize);
         }
@@ -839,11 +844,6 @@ impl SearchEngine {
             start_time.elapsed().as_millis()
         );
         Ok(final_results)
-    }
-
-    fn normalize_fts_score(&self, score: f32) -> f32 {
-        // TODO
-        score
     }
 
     fn generate_cache_key(&self, request: &SearchRequest) -> String {

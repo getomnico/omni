@@ -21,8 +21,7 @@ pub struct SearcherConfig {
     pub redis: RedisConfig,
     pub port: u16,
     pub ai_service_url: String,
-    pub hybrid_search_fts_weight: f32,
-    pub hybrid_search_semantic_weight: f32,
+    pub rrf_k: f32,
     pub semantic_search_timeout_ms: u64,
     pub rag_context_window: i32,
 }
@@ -166,22 +165,14 @@ impl SearcherConfig {
         let ai_service_url = get_required_env("AI_SERVICE_URL");
         let ai_service_url = validate_url(&ai_service_url, "AI_SERVICE_URL");
 
-        let hybrid_search_fts_weight = get_optional_env("HYBRID_SEARCH_FTS_WEIGHT", "0.3")
+        let rrf_k = get_optional_env("RRF_K", "60.0")
             .parse::<f32>()
             .unwrap_or_else(|_| {
-                eprintln!("ERROR: Invalid value for HYBRID_SEARCH_FTS_WEIGHT");
-                eprintln!("Must be a float between 0.0 and 1.0");
+                eprintln!("ERROR: Invalid value for RRF_K");
+                eprintln!("Must be a positive float");
                 process::exit(1);
             });
 
-        let hybrid_search_semantic_weight =
-            get_optional_env("HYBRID_SEARCH_SEMANTIC_WEIGHT", "1.0")
-                .parse::<f32>()
-                .unwrap_or_else(|_| {
-                    eprintln!("ERROR: Invalid value for HYBRID_SEARCH_SEMANTIC_WEIGHT");
-                    eprintln!("Must be a float between 0.0 and 1.0");
-                    process::exit(1);
-                });
         let semantic_search_timeout_ms = get_optional_env("SEMANTIC_SEARCH_TIMEOUT_MS", "5000")
             .parse::<u64>()
             .unwrap_or_else(|_| {
@@ -203,8 +194,7 @@ impl SearcherConfig {
             redis,
             port,
             ai_service_url,
-            hybrid_search_fts_weight,
-            hybrid_search_semantic_weight,
+            rrf_k,
             semantic_search_timeout_ms,
             rag_context_window,
         }
