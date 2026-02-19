@@ -3,7 +3,7 @@
     import type { Snippet } from 'svelte'
     import { cn } from '$lib/utils'
     import { page } from '$app/state'
-    import { ArrowLeft, Cable, Users, Brain, ArrowUpRight } from '@lucide/svelte'
+    import { ArrowLeft, Cable, Users, Cpu, ArrowUpRight } from '@lucide/svelte'
     import Button from '$lib/components/ui/button/button.svelte'
 
     interface Props {
@@ -65,8 +65,8 @@
                                 )}>
                                 {#snippet child({ props })}
                                     <a href="/admin/settings/llm" {...props}>
-                                        <Brain class="h-4 w-4" />
-                                        <span>LLM Config</span>
+                                        <Cpu class="h-4 w-4" />
+                                        <span>LLM Providers</span>
                                     </a>
                                 {/snippet}
                             </Sidebar.MenuButton>
@@ -80,7 +80,7 @@
                                 {#snippet child({ props })}
                                     <a href="/admin/settings/embeddings" {...props}>
                                         <ArrowUpRight class="h-4 w-4" />
-                                        <span>Embedding Config</span>
+                                        <span>Embedding Providers</span>
                                     </a>
                                 {/snippet}
                             </Sidebar.MenuButton>
