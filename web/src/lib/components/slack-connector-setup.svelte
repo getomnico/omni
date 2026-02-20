@@ -15,6 +15,7 @@
     let { open = $bindable(false), onSuccess, onCancel }: Props = $props()
 
     let botToken = $state('')
+    let appToken = $state('')
     let isSubmitting = $state(false)
 
     async function handleSubmit() {
@@ -26,6 +27,10 @@
 
             if (!botToken.startsWith('xoxb-')) {
                 throw new Error('Bot token must start with xoxb-')
+            }
+
+            if (appToken.trim() && !appToken.startsWith('xapp-')) {
+                throw new Error('App-Level Token must start with xapp-')
             }
 
             const sourceResponse = await fetch('/api/sources', {
@@ -51,7 +56,10 @@
                     sourceId: source.id,
                     provider: 'slack',
                     authType: AuthType.BOT_TOKEN,
-                    credentials: { bot_token: botToken },
+                    credentials: {
+                        bot_token: botToken,
+                        ...(appToken.trim() ? { app_token: appToken } : {}),
+                    },
                 }),
             })
 
@@ -63,6 +71,7 @@
             open = false
 
             botToken = ''
+            appToken = ''
 
             if (onSuccess) {
                 onSuccess()
@@ -78,6 +87,7 @@
     function handleCancel() {
         open = false
         botToken = ''
+        appToken = ''
         if (onCancel) {
             onCancel()
         }
@@ -107,6 +117,20 @@
                         href="https://api.slack.com/apps"
                         target="_blank"
                         class="text-blue-600 hover:underline">api.slack.com/apps</a>
+                </p>
+            </div>
+
+            <div class="space-y-2">
+                <Label for="app-token">App-Level Token (optional)</Label>
+                <Input
+                    id="app-token"
+                    bind:value={appToken}
+                    placeholder="xapp-..."
+                    type="password" />
+                <p class="text-muted-foreground text-sm">
+                    Enables realtime updates via Socket Mode. Generate one under your Slack App
+                    &rarr; Settings &rarr; Basic Information &rarr; App-Level Tokens with the
+                    <code class="bg-muted rounded px-1">connections:write</code> scope.
                 </p>
             </div>
         </div>

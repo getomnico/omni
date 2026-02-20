@@ -85,6 +85,17 @@ impl ActionResponse {
 }
 
 // ============================================================================
+// Connector State
+// ============================================================================
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SlackConnectorState {
+    #[serde(default)]
+    pub channel_timestamps: HashMap<String, String>,
+    pub team_id: Option<String>,
+}
+
+// ============================================================================
 // Slack Models
 // ============================================================================
 
@@ -144,6 +155,13 @@ pub struct ConversationsListResponse {
     pub ok: bool,
     pub channels: Vec<SlackChannel>,
     pub response_metadata: Option<ResponseMetadata>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ConversationInfoResponse {
+    pub ok: bool,
+    pub channel: SlackChannel,
     pub error: Option<String>,
 }
 
@@ -411,6 +429,37 @@ impl MessageGroup {
             metadata,
             permissions,
             attributes: Some(attributes),
+        }
+    }
+
+    pub fn to_update_event(
+        &self,
+        sync_run_id: String,
+        source_id: String,
+        content_id: String,
+    ) -> ConnectorEvent {
+        let event = self.to_connector_event(sync_run_id, source_id, content_id);
+        if let ConnectorEvent::DocumentCreated {
+            sync_run_id,
+            source_id,
+            document_id,
+            content_id,
+            metadata,
+            permissions,
+            attributes,
+        } = event
+        {
+            ConnectorEvent::DocumentUpdated {
+                sync_run_id,
+                source_id,
+                document_id,
+                content_id,
+                metadata,
+                permissions: Some(permissions),
+                attributes,
+            }
+        } else {
+            event
         }
     }
 

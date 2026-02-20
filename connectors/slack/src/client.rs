@@ -5,22 +5,29 @@ use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use crate::models::{
-    ConversationsHistoryResponse, ConversationsListResponse, SlackFile, UsersListResponse,
+    ConversationInfoResponse, ConversationsHistoryResponse, ConversationsListResponse, SlackFile,
+    UsersListResponse,
 };
 
-const SLACK_API_BASE: &str = "https://slack.com/api";
+const DEFAULT_SLACK_API_BASE: &str = "https://slack.com/api";
 
 pub struct SlackClient {
     client: Client,
     rate_limiter: RateLimiter,
+    base_url: String,
 }
 
 impl SlackClient {
     pub fn new() -> Self {
+        Self::with_base_url(DEFAULT_SLACK_API_BASE.to_string())
+    }
+
+    pub fn with_base_url(base_url: String) -> Self {
         Self {
             client: Client::new(),
             // Slack Tier 3 allows ~50 req/min; 1 req/sec keeps us safely under.
             rate_limiter: RateLimiter::new(1, 5),
+            base_url,
         }
     }
 
@@ -86,7 +93,7 @@ impl SlackClient {
     ) -> Result<ConversationsListResponse> {
         let mut url = format!(
             "{}/conversations.list?types=public_channel,private_channel&limit=200",
-            SLACK_API_BASE
+            self.base_url
         );
 
         if let Some(cursor) = cursor {
@@ -116,7 +123,7 @@ impl SlackClient {
     ) -> Result<ConversationsHistoryResponse> {
         let mut url = format!(
             "{}/conversations.history?channel={}&limit=200",
-            SLACK_API_BASE, channel_id
+            self.base_url, channel_id
         );
 
         if let Some(cursor) = cursor {
@@ -155,7 +162,7 @@ impl SlackClient {
     ) -> Result<ConversationsHistoryResponse> {
         let mut url = format!(
             "{}/conversations.replies?channel={}&ts={}&limit=200",
-            SLACK_API_BASE, channel_id, thread_ts
+            self.base_url, channel_id, thread_ts
         );
 
         if let Some(cursor) = cursor {
@@ -180,7 +187,7 @@ impl SlackClient {
     }
 
     pub async fn join_conversation(&self, token: &str, channel_id: &str) -> Result<()> {
-        let url = format!("{}/conversations.join", SLACK_API_BASE);
+        let url = format!("{}/conversations.join", self.base_url);
         let payload = serde_json::json!({ "channel": channel_id });
 
         self.rate_limiter
@@ -220,7 +227,7 @@ impl SlackClient {
     }
 
     pub async fn list_users(&self, token: &str, cursor: Option<&str>) -> Result<UsersListResponse> {
-        let mut url = format!("{}/users.list?limit=200", SLACK_API_BASE);
+        let mut url = format!("{}/users.list?limit=200", self.base_url);
 
         if let Some(cursor) = cursor {
             url.push_str(&format!("&cursor={}", cursor));
@@ -237,6 +244,28 @@ impl SlackClient {
 
         info!("Found {} users", response.members.len());
         Ok(response)
+    }
+
+    pub async fn get_conversation_info(
+        &self,
+        token: &str,
+        channel_id: &str,
+    ) -> Result<crate::models::SlackChannel> {
+        let url = format!(
+            "{}/conversations.info?channel={}",
+            self.base_url, channel_id
+        );
+
+        let response: ConversationInfoResponse = self.make_request(&url, token).await?;
+
+        if !response.ok {
+            return Err(anyhow!(
+                "conversations.info failed: {}",
+                response.error.unwrap_or("Unknown error".to_string())
+            ));
+        }
+
+        Ok(response.channel)
     }
 
     pub async fn download_file(&self, token: &str, file: &SlackFile) -> Result<String> {

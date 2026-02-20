@@ -1,8 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::DateTime;
 use dashmap::DashMap;
-use serde_json::json;
-use shared::models::{ServiceProvider, SourceType, SyncRequest};
+use shared::models::{ServiceProvider, SourceType, SyncRequest, SyncType};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -11,6 +10,7 @@ use tracing::{debug, error, info, warn};
 use crate::auth::AuthManager;
 use crate::client::SlackClient;
 use crate::content::ContentProcessor;
+use crate::models::SlackConnectorState;
 use shared::SdkClient;
 
 struct ActiveSync {
@@ -25,10 +25,23 @@ pub struct SyncManager {
 }
 
 impl SyncManager {
+    pub fn sdk_client(&self) -> &SdkClient {
+        &self.sdk_client
+    }
+
     pub fn new(sdk_client: SdkClient) -> Self {
         Self {
             auth_manager: AuthManager::new(),
             slack_client: SlackClient::new(),
+            sdk_client,
+            active_syncs: DashMap::new(),
+        }
+    }
+
+    pub fn with_slack_base_url(sdk_client: SdkClient, base_url: String) -> Self {
+        Self {
+            auth_manager: AuthManager::with_base_url(base_url.clone()),
+            slack_client: SlackClient::with_base_url(base_url),
             sdk_client,
             active_syncs: DashMap::new(),
         }
@@ -101,15 +114,20 @@ impl SyncManager {
                 .ensure_valid_credentials(&mut creds)
                 .await?;
 
-            // Load channel timestamps from connector state via SDK
-            let mut channel_timestamps: HashMap<String, String> = self
+            // Load typed connector state via SDK
+            let mut connector_state: SlackConnectorState = self
                 .sdk_client
                 .get_connector_state(source_id)
                 .await?
-                .and_then(|state| {
-                    serde_json::from_value(state.get("channel_timestamps")?.clone()).ok()
-                })
+                .and_then(|state| serde_json::from_value(state).ok())
                 .unwrap_or_default();
+
+            connector_state.team_id = Some(creds.team_id.clone());
+            self.sdk_client
+                .save_connector_state(source_id, serde_json::to_value(&connector_state)?)
+                .await?;
+
+            let mut channel_timestamps = connector_state.channel_timestamps;
 
             let mut content_processor = ContentProcessor::new();
 
@@ -219,7 +237,14 @@ impl SyncManager {
                     "Sync completed for source {}: {} documents processed",
                     source.name, updated
                 );
-                let new_state = json!({ "channel_timestamps": channel_timestamps });
+                let mut final_state: SlackConnectorState = self
+                    .sdk_client
+                    .get_connector_state(source_id)
+                    .await?
+                    .and_then(|s| serde_json::from_value(s).ok())
+                    .unwrap_or_default();
+                final_state.channel_timestamps = channel_timestamps;
+                let new_state = serde_json::to_value(&final_state)?;
                 self.sdk_client
                     .complete(sync_run_id, scanned as i32, updated as i32, Some(new_state))
                     .await?;
@@ -417,6 +442,218 @@ impl SyncManager {
                         .await
                     {
                         error!("Failed to emit file event: {}", e);
+                        continue;
+                    }
+                    published_files += 1;
+                }
+                Ok(_) => debug!("Skipped empty file: {}", file.name),
+                Err(e) => warn!("Failed to download file {}: {}", file.name, e),
+            }
+        }
+
+        Ok((published_groups, published_files, latest_ts))
+    }
+
+    pub async fn sync_realtime_event(&self, source_id: &str, channel_id: &str) -> Result<()> {
+        info!(source_id, channel_id, "Starting realtime sync for channel");
+
+        let sync_run_id = self
+            .sdk_client
+            .create_sync_run(source_id, SyncType::Incremental)
+            .await
+            .context("Failed to create sync run for realtime event")?;
+
+        let result: Result<()> = async {
+            let bot_token = self.get_bot_token(source_id).await?;
+            let mut creds = self.auth_manager.validate_bot_token(&bot_token).await?;
+            self.auth_manager
+                .ensure_valid_credentials(&mut creds)
+                .await?;
+
+            let mut connector_state: SlackConnectorState = self
+                .sdk_client
+                .get_connector_state(source_id)
+                .await?
+                .and_then(|state| serde_json::from_value(state).ok())
+                .unwrap_or_default();
+
+            let channel = self
+                .slack_client
+                .get_conversation_info(&creds.bot_token, channel_id)
+                .await?;
+
+            let mut content_processor = ContentProcessor::new();
+            self.fetch_all_users(&creds.bot_token, &mut content_processor)
+                .await?;
+
+            let last_ts = connector_state.channel_timestamps.get(channel_id).cloned();
+
+            let (message_groups, files, new_latest_ts) = self
+                .sync_channel_for_update(
+                    source_id,
+                    &sync_run_id,
+                    &channel,
+                    &creds.bot_token,
+                    last_ts.as_deref(),
+                    &content_processor,
+                )
+                .await?;
+
+            if let Some(ts) = new_latest_ts {
+                connector_state
+                    .channel_timestamps
+                    .insert(channel_id.to_string(), ts);
+            }
+
+            self.sdk_client
+                .save_connector_state(source_id, serde_json::to_value(&connector_state)?)
+                .await?;
+
+            let updated = message_groups + files;
+            self.sdk_client
+                .complete(&sync_run_id, 1, updated as i32, None)
+                .await?;
+
+            info!(
+                source_id,
+                channel_id, message_groups, files, "Realtime sync completed for channel"
+            );
+
+            Ok(())
+        }
+        .await;
+
+        if let Err(e) = &result {
+            error!(
+                source_id,
+                channel_id,
+                error = %e,
+                "Realtime sync failed for channel"
+            );
+            let _ = self.sdk_client.fail(&sync_run_id, &e.to_string()).await;
+        }
+
+        result
+    }
+
+    async fn sync_channel_for_update(
+        &self,
+        source_id: &str,
+        sync_run_id: &str,
+        channel: &crate::models::SlackChannel,
+        token: &str,
+        last_ts: Option<&str>,
+        content_processor: &ContentProcessor,
+    ) -> Result<(usize, usize, Option<String>)> {
+        debug!(
+            "Syncing channel for update: {} ({})",
+            channel.name, channel.id
+        );
+
+        let oldest = last_ts.and_then(|ts| {
+            let secs = ts.split('.').next()?.parse::<i64>().ok()?;
+            let dt = DateTime::from_timestamp(secs, 0)?;
+            let start_of_day = dt.date_naive().and_hms_opt(0, 0, 0)?;
+            Some(format!("{}.000000", start_of_day.and_utc().timestamp() - 1))
+        });
+
+        let mut all_messages = Vec::new();
+        let mut cursor = None;
+        let mut latest_ts: Option<String> = last_ts.map(|s| s.to_string());
+
+        loop {
+            let response = self
+                .slack_client
+                .get_conversation_history(
+                    token,
+                    &channel.id,
+                    cursor.as_deref(),
+                    oldest.as_deref(),
+                    None,
+                )
+                .await?;
+
+            if let Some(first_message) = response.messages.first() {
+                latest_ts = Some(first_message.ts.clone());
+            }
+
+            all_messages.extend(response.messages);
+
+            if !response.has_more {
+                break;
+            }
+
+            cursor = response
+                .response_metadata
+                .and_then(|meta| meta.next_cursor)
+                .filter(|c| !c.is_empty());
+
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        let message_groups = content_processor.group_messages_by_date(
+            channel.id.clone(),
+            channel.name.clone(),
+            all_messages.clone(),
+        )?;
+
+        let mut published_groups = 0;
+        let mut published_files = 0;
+
+        for group in message_groups {
+            let content_id = match self
+                .sdk_client
+                .store_content(sync_run_id, &group.to_document_content())
+                .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    error!("Failed to store content for realtime sync: {}", e);
+                    continue;
+                }
+            };
+
+            let event =
+                group.to_update_event(sync_run_id.to_string(), source_id.to_string(), content_id);
+            if let Err(e) = self
+                .sdk_client
+                .emit_event(sync_run_id, source_id, event)
+                .await
+            {
+                error!("Failed to emit update event: {}", e);
+                continue;
+            }
+            published_groups += 1;
+        }
+
+        let files = content_processor.extract_files_from_messages(&all_messages);
+        for file in files {
+            match self.slack_client.download_file(token, file).await {
+                Ok(content) if !content.is_empty() => {
+                    let content_id =
+                        match self.sdk_client.store_content(sync_run_id, &content).await {
+                            Ok(id) => id,
+                            Err(e) => {
+                                error!("Failed to store file content for realtime sync: {}", e);
+                                continue;
+                            }
+                        };
+
+                    let event = file.to_connector_event(
+                        sync_run_id.to_string(),
+                        source_id.to_string(),
+                        channel.id.clone(),
+                        channel.name.clone(),
+                        content_id,
+                    );
+                    if let Err(e) = self
+                        .sdk_client
+                        .emit_event(sync_run_id, source_id, event)
+                        .await
+                    {
+                        error!("Failed to emit file update event: {}", e);
                         continue;
                     }
                     published_files += 1;

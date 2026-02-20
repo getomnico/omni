@@ -35,14 +35,22 @@ impl SlackBotCredentials {
     }
 }
 
+const DEFAULT_SLACK_API_BASE: &str = "https://slack.com/api";
+
 pub struct AuthManager {
     client: Client,
+    base_url: String,
 }
 
 impl AuthManager {
     pub fn new() -> Self {
+        Self::with_base_url(DEFAULT_SLACK_API_BASE.to_string())
+    }
+
+    pub fn with_base_url(base_url: String) -> Self {
         Self {
             client: Client::new(),
+            base_url,
         }
     }
 
@@ -55,9 +63,10 @@ impl AuthManager {
             ));
         }
 
+        let url = format!("{}/auth.test", self.base_url);
         let response = self
             .client
-            .post("https://slack.com/api/auth.test")
+            .post(&url)
             .header("Authorization", format!("Bearer {}", bot_token))
             .header("Content-Type", "application/json")
             .send()

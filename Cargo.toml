@@ -48,6 +48,9 @@ nonzero_ext = "0.3"
 rand = "0.8"
 url = "2.5"
 dashmap = "6.1.0"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+tokio-util = "0.7"
+futures-util = "0.3"
 
 # OpenTelemetry dependencies
 opentelemetry = "0.27"

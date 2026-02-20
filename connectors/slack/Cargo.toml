@@ -9,6 +9,10 @@ license.workspace = true
 name = "omni-slack-connector"
 path = "src/main.rs"
 
+[lib]
+name = "omni_slack_connector"
+path = "src/lib.rs"
+
 [dependencies]
 shared = { path = "../../shared" }
 anyhow = { workspace = true }
@@ -18,6 +22,7 @@ chrono = { workspace = true, features = ["serde"] }
 dashmap = { workspace = true }
 dotenvy = { workspace = true }
 reqwest = { workspace = true, features = ["json", "rustls-tls"], default-features = false }
+rustls = "0.23"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 time = { workspace = true }
@@ -27,7 +32,12 @@ tower-http = { workspace = true, features = ["cors", "trace"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid = { workspace = true, features = ["v4", "serde"] }
+tokio-tungstenite = { workspace = true }
+tokio-util = { workspace = true }
+futures-util = { workspace = true }
 
 [dev-dependencies]
 testcontainers = { workspace = true }
-testcontainers-modules = { workspace = true, features = ["postgres"] }
+testcontainers-modules = { workspace = true, features = ["postgres", "redis"] }
+omni-connector-manager = { path = "../../services/connector-manager" }
+sqlx = { workspace = true, features = ["runtime-tokio-rustls", "postgres"] }
