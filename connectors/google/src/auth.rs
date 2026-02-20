@@ -95,6 +95,8 @@ impl ServiceAccountAuth {
             impersonate_user, self.scopes
         );
 
+        debug!("Building JWT for user: {}", impersonate_user);
+
         let now = Utc::now();
         let exp = now + Duration::hours(1);
 
@@ -117,12 +119,31 @@ impl ServiceAccountAuth {
             ("assertion", &jwt),
         ];
 
-        let response = self
-            .client
-            .post(&self.service_account.token_uri)
-            .form(&params)
-            .send()
-            .await?;
+        debug!(
+            "Sending token request to {}",
+            self.service_account.token_uri
+        );
+
+        let response = match tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.client
+                .post(&self.service_account.token_uri)
+                .form(&params)
+                .send(),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => {
+                return Err(anyhow!(
+                    "Token request to {} timed out after 30s for user {}",
+                    self.service_account.token_uri,
+                    impersonate_user
+                ));
+            }
+        };
+
+        debug!("Token response received: status={}", response.status());
 
         if !response.status().is_success() {
             let error_text = response.text().await?;
@@ -137,6 +158,11 @@ impl ServiceAccountAuth {
 
         let token_response: TokenResponse = response.json().await?;
 
+        debug!(
+            "Acquiring token cache write lock for user: {}",
+            impersonate_user
+        );
+
         // Cache the token
         {
             let mut cache = self.token_cache.write().await;
@@ -148,6 +174,8 @@ impl ServiceAccountAuth {
                 },
             );
         }
+
+        debug!("Token cached for user: {}", impersonate_user);
 
         Ok(token_response.access_token)
     }

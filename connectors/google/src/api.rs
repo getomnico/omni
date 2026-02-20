@@ -7,6 +7,7 @@ use axum::{
     Router,
 };
 use dashmap::DashSet;
+use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use shared::telemetry;
@@ -98,13 +99,16 @@ async fn trigger_sync(
     let active_syncs = state.active_syncs.clone();
 
     tokio::spawn(async move {
-        let result = sync_manager.sync_source_from_request(request).await;
+        let result = std::panic::AssertUnwindSafe(sync_manager.sync_source_from_request(request))
+            .catch_unwind()
+            .await;
 
-        // Remove from active syncs when done
         active_syncs.remove(&source_id);
 
-        if let Err(e) = result {
-            error!("Sync {} failed: {}", sync_run_id, e);
+        match result {
+            Ok(Ok(())) => info!("Sync {} completed successfully", sync_run_id),
+            Ok(Err(e)) => error!("Sync {} failed: {}", sync_run_id, e),
+            Err(panic_err) => error!("Sync {} panicked: {:?}", sync_run_id, panic_err),
         }
     });
 
