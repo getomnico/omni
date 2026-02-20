@@ -5786,6 +5786,7 @@ dependencies = [
  "fastrand",
  "h2 0.4.12",
  "hashbrown 0.15.5",
+ "httpdate",
  "lazy_static",
  "libc",
  "log",

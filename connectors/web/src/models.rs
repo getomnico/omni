@@ -137,7 +137,20 @@ impl WebPage {
     pub fn from_spider_page(page: &Page) -> Result<Self> {
         let url = page.get_url().to_string();
         let html = page.get_html();
-        Self::from_html(url, &html)
+        let mut web_page = Self::from_html(url, &html)?;
+
+        if let Some(headers) = &page.headers {
+            web_page.etag = headers
+                .get(reqwest::header::ETAG)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+            web_page.last_modified = headers
+                .get(reqwest::header::LAST_MODIFIED)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+        }
+
+        Ok(web_page)
     }
 
     /// Create a WebPage from raw HTML content
@@ -333,6 +346,11 @@ impl PageSyncState {
         // Fall back to content hash comparison
         self.content_hash != page.content_hash
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct WebConnectorState {
+    pub last_sync_completed_at: Option<String>,
 }
 
 #[cfg(test)]

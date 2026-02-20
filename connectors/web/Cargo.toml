@@ -29,7 +29,7 @@ tower-http = { workspace = true, features = ["cors", "trace"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid = { workspace = true, features = ["v4", "serde"] }
-spider = { version = "2", default-features = false, features = ["basic", "sitemap"] }
+spider = { version = "2", default-features = false, features = ["basic", "sitemap", "headers"] }
 scraper = "0.21"
 sha2 = "0.10"
 url = "2.5"

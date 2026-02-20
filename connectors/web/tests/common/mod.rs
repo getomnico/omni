@@ -1,4 +1,7 @@
 use anyhow::Result;
+use std::future::Future;
+use std::time::{Duration, Instant};
+
 use omni_connector_manager::{
     config::ConnectorManagerConfig, create_app as create_cm_app,
     sync_manager::SyncManager as CMSyncManager, AppState as CMAppState,
@@ -25,6 +28,12 @@ pub struct WebConnectorTestFixture {
 impl WebConnectorTestFixture {
     /// Create a new test fixture with all dependencies including connector-manager
     pub async fn new() -> Result<Self> {
+        std::env::set_var(
+            "ENCRYPTION_KEY",
+            "test_master_key_that_is_long_enough_32_chars",
+        );
+        std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars");
+
         let test_env = TestEnvironment::new().await?;
 
         // Create connector-manager config for testing
@@ -168,12 +177,47 @@ impl WebConnectorTestFixture {
 
     /// Create a SyncRequest for testing
     pub fn create_sync_request(&self, sync_run_id: &str, source_id: &str) -> SyncRequest {
+        self.create_sync_request_with_mode(sync_run_id, source_id, "full")
+    }
+
+    /// Create a SyncRequest with a specific sync mode
+    pub fn create_sync_request_with_mode(
+        &self,
+        sync_run_id: &str,
+        source_id: &str,
+        sync_mode: &str,
+    ) -> SyncRequest {
         SyncRequest {
             sync_run_id: sync_run_id.to_string(),
             source_id: source_id.to_string(),
-            sync_mode: "full".to_string(),
+            sync_mode: sync_mode.to_string(),
             last_sync_at: None,
         }
+    }
+
+    /// Create an incremental sync run for testing
+    pub async fn create_incremental_sync_run(&self, source_id: &str) -> Result<String> {
+        let sync_run_id = shared::utils::generate_ulid();
+
+        sqlx::query(
+            "INSERT INTO sync_runs (id, source_id, sync_type, status, started_at) VALUES ($1, $2, $3, $4, NOW())",
+        )
+        .bind(&sync_run_id)
+        .bind(source_id)
+        .bind(shared::models::SyncType::Incremental)
+        .bind(shared::models::SyncStatus::Running)
+        .execute(self.pool())
+        .await?;
+
+        Ok(sync_run_id)
+    }
+
+    /// Get connector state for a source via SDK
+    pub async fn get_connector_state(&self, source_id: &str) -> Result<Option<serde_json::Value>> {
+        self.sdk_client
+            .get_connector_state(source_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
     /// Get queued events for a source
@@ -204,4 +248,19 @@ impl WebConnectorTestFixture {
             .await
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
+}
+
+pub async fn poll_until<F, Fut>(f: F, timeout: Duration) -> Result<()>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<bool>>,
+{
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if f().await? {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(anyhow::anyhow!("Timed out waiting for condition"))
 }

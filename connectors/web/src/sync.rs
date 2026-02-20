@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info};
 
 use crate::config::WebSourceConfig;
-use crate::models::{PageSyncState, SyncRequest, WebPage};
+use crate::models::{PageSyncState, SyncRequest, WebConnectorState, WebPage};
 
 /// Result of a crawl operation
 pub struct CrawlResult {
@@ -205,10 +205,26 @@ impl SyncManager {
         let sync_run_id = &request.sync_run_id;
         let source_id = &request.source_id;
 
+        let is_incremental = request.sync_mode == "incremental";
+
         info!(
-            "Starting sync for source: {} (sync_run_id: {})",
-            source_id, sync_run_id
+            "Starting {} sync for source: {} (sync_run_id: {})",
+            request.sync_mode, source_id, sync_run_id
         );
+
+        if is_incremental {
+            match self.sdk_client.get_connector_state(source_id).await {
+                Ok(Some(_)) => {
+                    debug!("Found existing connector state for incremental sync");
+                }
+                Ok(None) => {
+                    info!("No prior connector state found for incremental sync, proceeding with full crawl");
+                }
+                Err(e) => {
+                    error!("Failed to load connector state: {}", e);
+                }
+            }
+        }
 
         // Fetch source via SDK
         let source = self
@@ -336,6 +352,18 @@ impl SyncManager {
             deleted_urls.len()
         );
 
+        // Save connector state
+        let connector_state = WebConnectorState {
+            last_sync_completed_at: Some(chrono::Utc::now().to_rfc3339()),
+        };
+        if let Err(e) = self
+            .sdk_client
+            .save_connector_state(source_id, serde_json::to_value(&connector_state)?)
+            .await
+        {
+            error!("Failed to save connector state: {}", e);
+        }
+
         // Mark sync as completed via SDK
         if let Err(e) = self
             .sdk_client
@@ -421,11 +449,11 @@ impl SyncManager {
                 .set_page_sync_state(source_id, url, &new_state)
                 .await?;
 
-            sync_state.add_url_to_set(source_id, url).await?;
-
             let mut count = pages_updated.lock().await;
             *count += 1;
         }
+
+        sync_state.add_url_to_set(source_id, url).await?;
 
         let mut count = pages_processed.lock().await;
         *count += 1;

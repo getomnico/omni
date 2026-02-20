@@ -351,21 +351,182 @@ async fn test_event_contains_correct_metadata() -> Result<()> {
     Ok(())
 }
 
-/// Test that SDK endpoints are being called correctly
 #[tokio::test]
-async fn test_sdk_integration_source_fetch() -> Result<()> {
+async fn test_incremental_sync_saves_connector_state() -> Result<()> {
     let fixture = WebConnectorTestFixture::new().await?;
 
-    let user_id = fixture.create_test_user("sdk_test@example.com").await?;
+    let user_id = fixture
+        .create_test_user("incremental_test@example.com")
+        .await?;
     let source_id = fixture
-        .create_test_source("SDK Test Website", &user_id, "https://sdk-test.com")
+        .create_test_source("Incremental Website", &user_id, "https://incremental.com")
         .await?;
 
-    // Test that SDK client can fetch the source via connector-manager
-    let source = fixture.sdk_client.get_source(&source_id).await?;
-    assert_eq!(source.id, source_id);
-    assert_eq!(source.name, "SDK Test Website");
-    assert!(source.is_active);
+    let mock_pages = MockPageSource::from_html_pages(vec![(
+        "https://incremental.com/page1",
+        &create_test_html("Page 1", "Some content"),
+    )]);
+
+    let sync_run_id = fixture.create_incremental_sync_run(&source_id).await?;
+    let sync_manager = fixture.create_sync_manager(Arc::new(mock_pages));
+    let sync_request =
+        fixture.create_sync_request_with_mode(&sync_run_id, &source_id, "incremental");
+    sync_manager.sync_source(sync_request).await?;
+
+    let state = fixture.get_connector_state(&source_id).await?;
+    assert!(
+        state.is_some(),
+        "Connector state should be saved after sync"
+    );
+    let state = state.unwrap();
+    assert!(
+        state["last_sync_completed_at"].as_str().is_some(),
+        "State should contain last_sync_completed_at"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_incremental_sync_with_no_prior_state() -> Result<()> {
+    let fixture = WebConnectorTestFixture::new().await?;
+
+    let user_id = fixture
+        .create_test_user("no_state_test@example.com")
+        .await?;
+    let source_id = fixture
+        .create_test_source("No State Website", &user_id, "https://nostate.com")
+        .await?;
+
+    // Verify no prior state exists
+    let prior_state = fixture.get_connector_state(&source_id).await?;
+    assert!(prior_state.is_none(), "Should have no prior state");
+
+    let mock_pages = MockPageSource::from_html_pages(vec![
+        (
+            "https://nostate.com/page1",
+            &create_test_html("Page 1", "Content one"),
+        ),
+        (
+            "https://nostate.com/page2",
+            &create_test_html("Page 2", "Content two"),
+        ),
+    ]);
+
+    let sync_run_id = fixture.create_incremental_sync_run(&source_id).await?;
+    let sync_manager = fixture.create_sync_manager(Arc::new(mock_pages));
+    let sync_request =
+        fixture.create_sync_request_with_mode(&sync_run_id, &source_id, "incremental");
+    sync_manager.sync_source(sync_request).await?;
+
+    // All pages should still be indexed even without prior state
+    let events = fixture.get_queued_events(&source_id).await?;
+    assert_eq!(
+        events.len(),
+        2,
+        "All pages should be indexed on first incremental sync"
+    );
+
+    // State should now be saved
+    let state = fixture.get_connector_state(&source_id).await?;
+    assert!(
+        state.is_some(),
+        "Connector state should be saved after incremental sync"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_full_sync_lifecycle_via_api() -> Result<()> {
+    use axum_test::{TestServer, TestServerConfig};
+    use omni_web_connector::api::{create_router, ApiState};
+    use serde_json::json;
+
+    let fixture = WebConnectorTestFixture::new().await?;
+
+    let user_id = fixture
+        .create_test_user("api_lifecycle@example.com")
+        .await?;
+    let source_id = fixture
+        .create_test_source("API Test Website", &user_id, "https://api-test.com")
+        .await?;
+    let sync_run_id = fixture.create_sync_run(&source_id).await?;
+
+    let mock_pages = MockPageSource::from_html_pages(vec![
+        (
+            "https://api-test.com/",
+            &create_test_html("Home", "Welcome to the API test site"),
+        ),
+        (
+            "https://api-test.com/about",
+            &create_test_html("About", "About us page"),
+        ),
+    ]);
+
+    let sync_manager = Arc::new(fixture.create_sync_manager(Arc::new(mock_pages)));
+    let api_state = ApiState { sync_manager };
+    let app = create_router(api_state);
+
+    let config = TestServerConfig::builder()
+        .default_content_type("application/json")
+        .expect_success_by_default()
+        .build();
+    let server = TestServer::new_with_config(app, config).unwrap();
+
+    // 1. GET /manifest — verify the connector reports its capabilities
+    let resp = server.get("/manifest").await;
+    let manifest: serde_json::Value = resp.json();
+    assert_eq!(manifest["name"], "web");
+    let sync_modes: Vec<String> = serde_json::from_value(manifest["sync_modes"].clone()).unwrap();
+    assert!(sync_modes.contains(&"full".to_string()));
+    assert!(sync_modes.contains(&"incremental".to_string()));
+
+    // 2. POST /sync — trigger sync via the HTTP endpoint (spawns background task)
+    let resp = server
+        .post("/sync")
+        .json(&json!({
+            "sync_run_id": sync_run_id,
+            "source_id": source_id,
+            "sync_mode": "full",
+        }))
+        .await;
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["status"], "started");
+
+    // 3. Wait for the background sync task to complete
+    common::poll_until(
+        || async {
+            let run = fixture.get_sync_run(&sync_run_id).await?;
+            Ok(run
+                .map(|r| r.status == SyncStatus::Completed)
+                .unwrap_or(false))
+        },
+        std::time::Duration::from_secs(10),
+    )
+    .await?;
+
+    // 4. Verify events in the queue
+    let events = fixture.get_queued_events(&source_id).await?;
+    assert_eq!(events.len(), 2, "Expected 2 events for 2 pages");
+    for event in &events {
+        assert_eq!(event["type"].as_str(), Some("document_created"));
+        assert!(event["content_id"].as_str().is_some());
+        assert!(event["metadata"]["title"].as_str().is_some());
+    }
+
+    // 5. Verify sync run completed with correct counters
+    let sync_run = fixture.get_sync_run(&sync_run_id).await?.unwrap();
+    assert_eq!(sync_run.status, SyncStatus::Completed);
+    assert_eq!(sync_run.documents_scanned, 2);
+    assert_eq!(sync_run.documents_updated, 2);
+
+    // 6. Verify connector state was persisted
+    let state = fixture.get_connector_state(&source_id).await?;
+    assert!(
+        state.is_some(),
+        "Connector state should be saved after sync"
+    );
 
     Ok(())
 }
