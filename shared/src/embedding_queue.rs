@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use ulid::Ulid;
 
+use crate::db::repositories::EmbeddingProviderRepository;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EmbeddingQueueStatus {
@@ -78,39 +80,76 @@ impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for EmbeddingQueueItem {
 #[derive(Clone)]
 pub struct EmbeddingQueue {
     pool: PgPool,
+    provider_repo: EmbeddingProviderRepository,
 }
 
 impl EmbeddingQueue {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        let provider_repo = EmbeddingProviderRepository::new(&pool);
+        Self {
+            pool,
+            provider_repo,
+        }
     }
 
-    pub async fn enqueue(&self, document_id: String) -> Result<String> {
+    pub async fn enqueue(&self, document_id: String) -> Result<Option<String>> {
+        if !self.provider_repo.has_active_provider().await? {
+            return Ok(None);
+        }
+
         let id = Ulid::new().to_string();
 
-        sqlx::query("INSERT INTO embedding_queue (id, document_id) VALUES ($1, $2)")
-            .bind(&id)
-            .bind(&document_id)
-            .execute(&self.pool)
-            .await?;
+        let result = sqlx::query(
+            r#"
+            INSERT INTO embedding_queue (id, document_id)
+            SELECT $1, $2
+            WHERE NOT EXISTS (
+                SELECT 1 FROM embedding_queue
+                WHERE document_id = $2 AND status IN ('pending', 'processing')
+            )
+            "#,
+        )
+        .bind(&id)
+        .bind(&document_id)
+        .execute(&self.pool)
+        .await?;
 
-        Ok(id)
+        if result.rows_affected() > 0 {
+            Ok(Some(id))
+        } else {
+            Ok(None)
+        }
     }
 
     pub async fn enqueue_batch(&self, document_ids: Vec<String>) -> Result<Vec<String>> {
+        if !self.provider_repo.has_active_provider().await? {
+            return Ok(vec![]);
+        }
+
         let mut tx = self.pool.begin().await?;
         let mut ids = Vec::new();
 
         for document_id in document_ids {
             let id = Ulid::new().to_string();
 
-            sqlx::query("INSERT INTO embedding_queue (id, document_id) VALUES ($1, $2)")
-                .bind(&id)
-                .bind(&document_id)
-                .execute(&mut *tx)
-                .await?;
+            let result = sqlx::query(
+                r#"
+                INSERT INTO embedding_queue (id, document_id)
+                SELECT $1, $2
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM embedding_queue
+                    WHERE document_id = $2 AND status IN ('pending', 'processing')
+                )
+                "#,
+            )
+            .bind(&id)
+            .bind(&document_id)
+            .execute(&mut *tx)
+            .await?;
 
-            ids.push(id);
+            if result.rows_affected() > 0 {
+                ids.push(id);
+            }
         }
 
         tx.commit().await?;

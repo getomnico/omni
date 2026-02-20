@@ -103,6 +103,13 @@ impl DocumentRepository {
         Ok(documents)
     }
 
+    pub async fn list_all_ids(&self) -> Result<Vec<String>, DatabaseError> {
+        let rows = sqlx::query_scalar::<_, String>("SELECT id FROM documents")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows)
+    }
+
     pub async fn fetch_all_title_entries(&self) -> Result<Vec<TitleEntry>, DatabaseError> {
         let entries = sqlx::query_as::<_, TitleEntry>(
             r#"

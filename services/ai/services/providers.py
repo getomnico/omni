@@ -12,8 +12,9 @@ from config import (
 )
 from db_config import (
     get_embedding_config,
+    invalidate_embedding_config_cache,
 )
-from db import ModelsRepository, ModelRecord
+from db import ModelsRepository, ModelRecord, EmbeddingProvidersRepository
 from providers import create_llm_provider, LLMProvider
 from embeddings import create_embedding_provider
 from tools import SearcherTool
@@ -94,8 +95,22 @@ async def load_models(app_state: AppState) -> None:
         logger.info(f"Loaded {len(models)} model(s), default={default_id}")
 
 
-async def initialize_providers(app_state: AppState) -> None:
-    """Initialize all providers (embedding, LLM, tools, storage)."""
+async def _init_embedding_provider(app_state: AppState) -> None:
+    """Initialize the embedding provider from current config."""
+    repo = EmbeddingProvidersRepository()
+    fingerprint = await repo.get_current_fingerprint()
+
+    if fingerprint is None:
+        app_state.embedding_provider = None
+        app_state.embedding_provider_type = None
+        app_state.embedding_provider_id = None
+        app_state.embedding_provider_updated_at = None
+        logger.warning("No current embedding provider configured")
+        return
+
+    app_state.embedding_provider_id = fingerprint[0]
+    app_state.embedding_provider_updated_at = fingerprint[1]
+
     embedding_config = await get_embedding_config()
     provider = embedding_config.provider
     logger.info(f"Loaded embedding configuration (provider: {provider})")
@@ -156,9 +171,52 @@ async def initialize_providers(app_state: AppState) -> None:
     else:
         raise ValueError(f"Unknown embedding provider: {provider}")
 
+    app_state.embedding_provider_type = provider
     logger.info(
         f"Initialized {provider} embedding provider with model: {app_state.embedding_provider.get_model_name()}"
     )
+
+
+async def reload_embedding_provider(app_state: AppState) -> None:
+    """Re-read current embedding provider from DB and re-initialize."""
+    invalidate_embedding_config_cache()
+    await _init_embedding_provider(app_state)
+
+
+PROVIDER_WATCH_INTERVAL_SECONDS = 30
+
+
+async def _watch_embedding_provider(app_state: AppState) -> None:
+    """Poll DB for embedding provider changes and reload when detected."""
+    repo = EmbeddingProvidersRepository()
+    while True:
+        await asyncio.sleep(PROVIDER_WATCH_INTERVAL_SECONDS)
+        try:
+            fingerprint = await repo.get_current_fingerprint()
+            current_id = fingerprint[0] if fingerprint else None
+            current_updated_at = fingerprint[1] if fingerprint else None
+
+            if (
+                current_id != app_state.embedding_provider_id
+                or current_updated_at != app_state.embedding_provider_updated_at
+            ):
+                if fingerprint is None:
+                    logger.info("Embedding provider removed, clearing provider")
+                else:
+                    logger.info(
+                        f"Embedding provider change detected (id={current_id}), reloading"
+                    )
+                await reload_embedding_provider(app_state)
+        except Exception:
+            logger.exception("Error checking for embedding provider changes")
+
+
+async def initialize_providers(app_state: AppState) -> None:
+    """Initialize all providers (embedding, LLM, tools, storage)."""
+    await _init_embedding_provider(app_state)
+
+    asyncio.create_task(_watch_embedding_provider(app_state))
+    logger.info("Started embedding provider watcher")
 
     # Initialize models from database
     await load_models(app_state)
@@ -178,16 +236,9 @@ async def initialize_providers(app_state: AppState) -> None:
 
 async def start_batch_processor(app_state: AppState) -> None:
     """Start the embedding batch processor in the background."""
-    embedding_config = await get_embedding_config()
-    asyncio.create_task(
-        start_batch_processing(
-            app_state.content_storage,
-            app_state.embedding_provider,
-            embedding_config.provider,
-        )
-    )
+    asyncio.create_task(start_batch_processing(app_state))
     logger.info(
-        f"Started embedding batch processing with provider: {embedding_config.provider}"
+        f"Started embedding batch processing with provider: {app_state.embedding_provider_type}"
     )
 
 

@@ -145,6 +145,12 @@ impl EmbeddingRepository {
 
         let mut bind_index = 5; // Starting after $1 (vector), $2 (limit), $3 (offset), $4 (dims)
 
+        // Filter by the current active embedding model via subquery
+        where_conditions.push(
+            "e.model_name = (SELECT config->>'model' FROM embedding_providers WHERE is_current = TRUE AND is_deleted = FALSE LIMIT 1)"
+                .to_string(),
+        );
+
         // Add document_id filter if provided
         if let Some(_) = document_id {
             where_conditions.push(format!("e.document_id = ${}", bind_index));
@@ -173,11 +179,7 @@ impl EmbeddingRepository {
             where_conditions.push(self.generate_permission_filter(email));
         }
 
-        let where_clause = if where_conditions.len() > 0 {
-            format!("WHERE {}", where_conditions.join(" AND "))
-        } else {
-            "".to_string()
-        };
+        let where_clause = format!("WHERE {}", where_conditions.join(" AND "));
 
         let query_str = format!(
             r#"
@@ -265,7 +267,9 @@ impl EmbeddingRepository {
             r#"
             SELECT id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name, dimensions, created_at
             FROM embeddings
-            WHERE document_id = $1 AND chunk_index = ANY($2)
+            WHERE document_id = $1
+              AND chunk_index = ANY($2)
+              AND model_name = (SELECT config->>'model' FROM embedding_providers WHERE is_current = TRUE AND is_deleted = FALSE LIMIT 1)
             ORDER BY chunk_index
             "#,
         )

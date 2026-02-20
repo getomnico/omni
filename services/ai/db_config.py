@@ -16,7 +16,7 @@ from config import (
     EMBEDDING_DIMENSIONS,
     EMBEDDING_MAX_MODEL_LEN,
 )
-from db import fetch_embedding_config
+from db import EmbeddingProvidersRepository
 
 
 # =============================================================================
@@ -32,21 +32,6 @@ class EmbeddingConfig:
     api_url: Optional[str] = None
     dimensions: Optional[int] = None
     max_model_len: Optional[int] = None
-
-
-def parse_embedding_config(data: dict) -> EmbeddingConfig:
-    provider = data.get("provider")
-    if not provider:
-        raise ValueError("Embedding config missing 'provider' field")
-
-    return EmbeddingConfig(
-        provider=provider,
-        api_key=data.get("apiKey"),
-        model=data.get("model", ""),
-        api_url=data.get("apiUrl"),
-        dimensions=data.get("dimensions"),
-        max_model_len=data.get("maxModelLen"),
-    )
 
 
 class EmbeddingConfigCache:
@@ -65,10 +50,20 @@ class EmbeddingConfigCache:
         return elapsed < self.CACHE_TTL_SECONDS
 
     async def _fetch_from_database(self) -> Optional[EmbeddingConfig]:
-        config_data = await fetch_embedding_config()
-        if config_data:
-            return parse_embedding_config(config_data)
-        return None
+        repo = EmbeddingProvidersRepository()
+        record = await repo.get_current()
+        if record is None:
+            return None
+
+        config = record.config
+        return EmbeddingConfig(
+            provider=record.provider_type,
+            api_key=config.get("apiKey"),
+            model=config.get("model", ""),
+            api_url=config.get("apiUrl"),
+            dimensions=config.get("dimensions"),
+            max_model_len=config.get("maxModelLen"),
+        )
 
     def _get_env_fallback_config(self) -> EmbeddingConfig:
         return EmbeddingConfig(

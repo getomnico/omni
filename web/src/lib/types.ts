@@ -73,3 +73,14 @@ export interface FilesystemSourceConfig {
 export interface HubspotSourceConfig {
     portal_id?: string
 }
+
+export const EMBEDDING_PROVIDER_TYPES = ['local', 'jina', 'openai', 'cohere', 'bedrock'] as const
+export type EmbeddingProviderType = (typeof EMBEDDING_PROVIDER_TYPES)[number]
+
+export const PROVIDER_LABELS: Record<EmbeddingProviderType, string> = {
+    local: 'Local (vLLM)',
+    jina: 'Jina AI',
+    openai: 'OpenAI',
+    cohere: 'Cohere',
+    bedrock: 'AWS Bedrock',
+}

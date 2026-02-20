@@ -112,6 +112,7 @@ pub fn create_app(state: AppState) -> Router {
         .route("/service-credentials", post(create_service_credentials))
         .route("/admin/gc/run", post(run_gc))
         .route("/admin/gc/stats", get(gc_stats))
+        .route("/admin/reindex-embeddings", post(reindex_embeddings))
         .layer(
             ServiceBuilder::new()
                 .layer(middleware::from_fn(telemetry::middleware::trace_layer))
@@ -456,6 +457,30 @@ async fn create_service_credentials(
             }))
         }
     }
+}
+
+async fn reindex_embeddings(State(state): State<AppState>) -> IndexerResult<Json<Value>> {
+    let repo = DocumentRepository::new(state.db_pool.pool());
+
+    let document_ids = repo
+        .list_all_ids()
+        .await
+        .map_err(|e| IndexerError::Internal(format!("Failed to list document IDs: {}", e)))?;
+
+    let count = document_ids.len();
+    if count > 0 {
+        state
+            .embedding_queue
+            .enqueue_batch(document_ids)
+            .await
+            .map_err(|e| IndexerError::Internal(format!("Failed to enqueue documents: {}", e)))?;
+    }
+
+    info!("Enqueued {} documents for re-embedding", count);
+    Ok(Json(json!({
+        "status": "ok",
+        "enqueued": count
+    })))
 }
 
 async fn run_gc(State(state): State<AppState>) -> IndexerResult<Json<GCResult>> {

@@ -36,6 +36,7 @@ impl SearchEngine {
         config: SearcherConfig,
     ) -> Result<Self> {
         let content_storage = StorageFactory::from_env(db_pool.pool().clone()).await?;
+
         Ok(Self {
             db_pool,
             redis_client,
@@ -622,7 +623,6 @@ impl SearchEngine {
         let sources = request.source_types.as_deref();
         let content_types = request.content_types.as_deref();
 
-        // Get chunk results with indices
         let chunk_results = embedding_repo
             .find_similar_with_filters(
                 query_embedding,

@@ -1,6 +1,7 @@
 """Typed application state for FastAPI app.state"""
 
 from dataclasses import dataclass, field
+from datetime import datetime
 
 import redis.asyncio as aioredis
 
@@ -19,6 +20,9 @@ class AppState:
     """
 
     embedding_provider: EmbeddingProvider | None = None
+    embedding_provider_type: str | None = None
+    embedding_provider_id: str | None = None
+    embedding_provider_updated_at: datetime | None = None
     models: dict[str, LLMProvider] = field(default_factory=dict)
     default_model_id: str | None = None
     searcher_tool: SearcherTool | None = None

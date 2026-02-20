@@ -41,6 +41,7 @@ from db import (
     BatchJob,
     QueueStatus,
 )
+from state import AppState
 
 # Import boto3 and smart_open lazily for Bedrock provider
 boto3 = None
@@ -251,23 +252,19 @@ class EmbeddingBatchProcessor:
         queue_repo: EmbeddingQueueRepository,
         embeddings_repo: EmbeddingsRepository,
         batch_jobs_repo: EmbeddingBatchJobsRepository,
-        content_storage,
-        embedding_provider,
-        provider_type: str,
+        app_state: AppState,
     ):
         self.documents_repo = documents_repo
         self.queue_repo = queue_repo
         self.embeddings_repo = embeddings_repo
         self.batch_jobs_repo = batch_jobs_repo
-        self.content_storage = content_storage
-        self.embedding_provider = embedding_provider
-        self.provider_type = provider_type
+        self.app_state = app_state
 
         # Only initialize Bedrock-specific components when needed
         self.storage_client: Optional[StorageClient] = None
         self.batch_provider: Optional[BatchInferenceProvider] = None
 
-        if provider_type == "bedrock":
+        if self.provider_type == "bedrock":
             self.storage_client = self._create_storage_client()
             self.batch_provider = self._create_batch_provider()
 
@@ -276,7 +273,6 @@ class EmbeddingBatchProcessor:
             "last_change_time": time.time(),
         }
 
-        # Limit concurrent embedding operations to yield more frequently to higher-priority tasks
         self._embedding_semaphore = asyncio.Semaphore(1)
 
         # Progress tracking (populated at online loop start)
@@ -288,6 +284,18 @@ class EmbeddingBatchProcessor:
         self._baseline_completed = 0
         self._baseline_failed = 0
         self._last_progress_log_time: Optional[float] = None
+
+    @property
+    def embedding_provider(self):
+        return self.app_state.embedding_provider
+
+    @property
+    def provider_type(self) -> str:
+        return self.app_state.embedding_provider_type or "local"
+
+    @property
+    def content_storage(self):
+        return self.app_state.content_storage
 
     def _create_storage_client(self) -> StorageClient:
         """Factory for storage client (Bedrock only)"""
@@ -937,22 +945,18 @@ class EmbeddingBatchProcessor:
 # ============================================================================
 # Public API for Integration
 # ============================================================================
-async def start_batch_processing(
-    content_storage, embedding_provider, provider_type: str
-):
+async def start_batch_processing(app_state: AppState):
     """Start batch processing background tasks.
 
-    Args:
-        content_storage: Storage client for fetching document content
-        embedding_provider: The configured embedding provider
-        provider_type: Type of provider ("bedrock", "local", "openai", "jina")
+    The processor reads the current embedding provider and provider type from
+    app_state on each iteration, so hot-swapping providers doesn't require a restart.
     """
-    logger.info(f"Starting embedding batch processing with provider: {provider_type}")
+    logger.info(
+        f"Starting embedding batch processing with provider: {app_state.embedding_provider_type}"
+    )
 
-    # Get shared database pool
     db_pool = await get_db_pool()
 
-    # Create repository instances
     documents_repo = DocumentsRepository(db_pool)
     queue_repo = EmbeddingQueueRepository(db_pool)
     embeddings_repo = EmbeddingsRepository(db_pool)
@@ -963,10 +967,7 @@ async def start_batch_processing(
         queue_repo=queue_repo,
         embeddings_repo=embeddings_repo,
         batch_jobs_repo=batch_jobs_repo,
-        content_storage=content_storage,
-        embedding_provider=embedding_provider,
-        provider_type=provider_type,
+        app_state=app_state,
     )
 
-    # Start the processing loop
     await processor.processing_loop()

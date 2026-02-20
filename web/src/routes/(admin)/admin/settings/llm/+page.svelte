@@ -7,24 +7,15 @@
     import * as Alert from '$lib/components/ui/alert'
     import * as AlertDialog from '$lib/components/ui/alert-dialog'
     import * as Dialog from '$lib/components/ui/dialog'
-    import {
-        AlertCircle,
-        CheckCircle2,
-        Loader2,
-        Info,
-        Pencil,
-        Trash2,
-        Star,
-        Server,
-        Plus,
-    } from '@lucide/svelte'
+    import { CheckCircle2, Loader2, Info, Pencil, Trash2, Star, Server, Plus } from '@lucide/svelte'
     import { cn } from '$lib/utils'
-    import type { PageData, ActionData } from './$types'
+    import { toast } from 'svelte-sonner'
+    import type { PageData } from './$types'
     import anthropicIcon from '$lib/images/icons/anthropic.svg'
     import openaiIcon from '$lib/images/icons/openai.svg'
     import awsIcon from '$lib/images/icons/aws.svg'
 
-    let { data, form }: { data: PageData; form: ActionData } = $props()
+    let { data }: { data: PageData } = $props()
 
     type ProviderType = 'vllm' | 'anthropic' | 'bedrock' | 'openai'
 
@@ -147,6 +138,18 @@
         dialogOpen = true
     }
 
+    function enhanceWithToast() {
+        return async ({ result, update }: { result: any; update: () => Promise<void> }) => {
+            await update()
+            confirmDialogOpen = false
+            if (result.type === 'success') {
+                toast.success(result.data?.message || 'Operation completed successfully')
+            } else if (result.type === 'failure') {
+                toast.error(result.data?.error || 'Something went wrong')
+            }
+        }
+    }
+
     function openAddModelDialog(providerId: string) {
         modelFormState = {
             ...emptyModelForm,
@@ -164,24 +167,6 @@
                 Connect an LLM provider to enable AI-powered features
             </p>
         </div>
-
-        {#if form?.success}
-            <Alert.Root variant="default" class="border-green-500 bg-green-50">
-                <CheckCircle2 class="h-4 w-4 text-green-600" />
-                <Alert.Title class="text-green-900">Success</Alert.Title>
-                <Alert.Description class="text-green-800">
-                    {form.message || 'Operation completed successfully'}
-                </Alert.Description>
-            </Alert.Root>
-        {/if}
-
-        {#if form?.error}
-            <Alert.Root variant="destructive">
-                <AlertCircle class="h-4 w-4" />
-                <Alert.Title>Error</Alert.Title>
-                <Alert.Description>{form.error}</Alert.Description>
-            </Alert.Root>
-        {/if}
 
         <!-- Provider Cards -->
         <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -230,7 +215,7 @@
                                                     <form
                                                         method="POST"
                                                         action="?/setDefaultModel"
-                                                        use:enhance>
+                                                        use:enhance={enhanceWithToast}>
                                                         <input
                                                             type="hidden"
                                                             name="id"
@@ -252,7 +237,10 @@
                                                     </span>
                                                 {/if}
                                             </div>
-                                            <form method="POST" action="?/deleteModel" use:enhance>
+                                            <form
+                                                method="POST"
+                                                action="?/deleteModel"
+                                                use:enhance={enhanceWithToast}>
                                                 <input type="hidden" name="id" value={model.id} />
                                                 <button
                                                     type="button"
@@ -293,7 +281,10 @@
                                     <Pencil class="h-3 w-3" />
                                     Edit
                                 </Button>
-                                <form method="POST" action="?/delete" use:enhance>
+                                <form
+                                    method="POST"
+                                    action="?/delete"
+                                    use:enhance={enhanceWithToast}>
                                     <input type="hidden" name="id" value={provider.id} />
                                     <Button
                                         type="button"
@@ -347,10 +338,17 @@
                     action={editMode ? '?/edit' : '?/add'}
                     use:enhance={() => {
                         isSubmitting = true
-                        return async ({ update }) => {
+                        return async ({ result, update }) => {
                             await update()
                             isSubmitting = false
                             dialogOpen = false
+                            if (result.type === 'success') {
+                                toast.success(
+                                    result.data?.message || 'Operation completed successfully',
+                                )
+                            } else if (result.type === 'failure') {
+                                toast.error(result.data?.error || 'Something went wrong')
+                            }
                         }
                     }}
                     class="space-y-4">
@@ -472,10 +470,15 @@
                     action="?/addModel"
                     use:enhance={() => {
                         isModelSubmitting = true
-                        return async ({ update }) => {
+                        return async ({ result, update }) => {
                             await update()
                             isModelSubmitting = false
                             modelDialogOpen = false
+                            if (result.type === 'success') {
+                                toast.success(result.data?.message || 'Model added successfully')
+                            } else if (result.type === 'failure') {
+                                toast.error(result.data?.error || 'Something went wrong')
+                            }
                         }
                     }}
                     class="space-y-4">

@@ -203,9 +203,13 @@ export const responseFeedback = pgTable('response_feedback', {
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
 
-export const configuration = pgTable('configuration', {
-    key: text('key').primaryKey(),
-    value: jsonb('value').notNull(),
+export const embeddingProviders = pgTable('embedding_providers', {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    providerType: text('provider_type').notNull(),
+    config: jsonb('config').notNull().default({}),
+    isCurrent: boolean('is_current').notNull().default(false),
+    isDeleted: boolean('is_deleted').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
@@ -224,4 +228,4 @@ export type Model = typeof models.$inferSelect
 export type Chat = typeof chats.$inferSelect
 export type ChatMessage = typeof chatMessages.$inferSelect
 export type ResponseFeedback = typeof responseFeedback.$inferSelect
-export type Configuration = typeof configuration.$inferSelect
+export type EmbeddingProvider = typeof embeddingProviders.$inferSelect

@@ -1,3 +1,6 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use anyhow::Result;
 use redis::Client as RedisClient;
 use sqlx::PgPool;
@@ -143,8 +146,51 @@ impl TestEnvironment {
         .execute(pool)
         .await?;
 
+        sqlx::query(
+            r#"
+            INSERT INTO embedding_providers (id, name, provider_type, config, is_current, is_deleted)
+            VALUES ('01TEST_EMBED_PROV', 'test', 'local', '{"model": "test-model"}', TRUE, FALSE)
+            ON CONFLICT (id) DO NOTHING
+            "#,
+        )
+        .execute(pool)
+        .await?;
+
         Ok(())
     }
+}
+
+/// Generate a deterministic 1024-dim embedding from text using word-level hashing.
+/// Shared between the mock AI server and test data seeding so that semantically
+/// similar texts (sharing words) produce similar embeddings.
+pub fn generate_test_embedding(text: &str) -> Vec<f32> {
+    let mut embedding = vec![0.0f32; 1024];
+    let lower = text.to_lowercase();
+
+    // Word-level hashing (primary signal)
+    for word in lower.split_whitespace() {
+        let mut hasher = DefaultHasher::new();
+        word.hash(&mut hasher);
+        let dim = (hasher.finish() % 1024) as usize;
+        embedding[dim] += 1.0;
+    }
+
+    // Character trigram hashing (provides baseline overlap between texts)
+    let chars: Vec<char> = lower.chars().collect();
+    for window in chars.windows(3) {
+        let mut hasher = DefaultHasher::new();
+        window.hash(&mut hasher);
+        let dim = (hasher.finish() % 1024) as usize;
+        embedding[dim] += 0.1;
+    }
+
+    let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for x in &mut embedding {
+            *x /= norm;
+        }
+    }
+    embedding
 }
 
 /// Mock AI server for testing
@@ -201,21 +247,13 @@ impl MockAIServer {
             response: String,
         }
 
-        // Mock embeddings endpoint - returns a fixed 1024-dim vector
         async fn mock_embeddings(Json(req): Json<EmbeddingRequest>) -> Json<EmbeddingResponse> {
             let mut embeddings = Vec::new();
             let mut chunks_count = Vec::new();
             let mut chunks = Vec::new();
 
             for text in &req.texts {
-                // Generate a deterministic embedding based on text hash
-                let mut embedding = vec![0.0; 1024];
-                let hash = text.len() as f32;
-                for i in 0..1024 {
-                    embedding[i] = (hash + i as f32) / 1024.0;
-                }
-
-                // For simplicity, treat each text as a single chunk
+                let embedding = generate_test_embedding(text);
                 embeddings.push(vec![embedding]);
                 chunks_count.push(1);
                 chunks.push(vec![(0, text.len() as i32)]);
@@ -245,7 +283,6 @@ impl MockAIServer {
             Json(GenerateResponse { response })
         }
 
-        // Health check endpoint
         async fn health() -> (axum::http::StatusCode, &'static str) {
             (axum::http::StatusCode::OK, "OK")
         }

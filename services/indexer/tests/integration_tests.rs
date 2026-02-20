@@ -492,6 +492,7 @@ async fn test_recovery_and_dead_letter() {
     let queue_id = embedding_queue
         .enqueue("embed_recovery_doc".to_string())
         .await
+        .unwrap()
         .unwrap();
 
     sqlx::query(

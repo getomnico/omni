@@ -7,6 +7,21 @@ mod tests {
 
     const TEST_SOURCE_ID: &str = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
 
+    async fn insert_active_embedding_provider(pool: &PgPool) {
+        let id = Ulid::new().to_string();
+        sqlx::query(
+            r#"
+            INSERT INTO embedding_providers (id, name, provider_type, is_current, is_deleted)
+            VALUES ($1, 'test-provider', 'local', TRUE, FALSE)
+            ON CONFLICT DO NOTHING
+            "#,
+        )
+        .bind(&id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
     async fn create_document(pool: &PgPool) -> String {
         let doc_id = Ulid::new().to_string();
         sqlx::query(
@@ -29,10 +44,11 @@ mod tests {
         let env = TestEnvironment::new().await.unwrap();
         let pool = env.db_pool.pool().clone();
         let queue = EmbeddingQueue::new(pool.clone());
+        insert_active_embedding_provider(&pool).await;
 
         let doc_id = create_document(&pool).await;
 
-        let queue_id = queue.enqueue(doc_id.clone()).await.unwrap();
+        let queue_id = queue.enqueue(doc_id.clone()).await.unwrap().unwrap();
         assert!(!queue_id.is_empty());
 
         let batch = queue.dequeue_batch(10).await.unwrap();
@@ -50,6 +66,7 @@ mod tests {
         let env = TestEnvironment::new().await.unwrap();
         let pool = env.db_pool.pool().clone();
         let queue = EmbeddingQueue::new(pool.clone());
+        insert_active_embedding_provider(&pool).await;
 
         let mut doc_ids = Vec::new();
         for _ in 0..3 {
@@ -68,9 +85,10 @@ mod tests {
         let env = TestEnvironment::new().await.unwrap();
         let pool = env.db_pool.pool().clone();
         let queue = EmbeddingQueue::new(pool.clone());
+        insert_active_embedding_provider(&pool).await;
 
         let doc_id = create_document(&pool).await;
-        let queue_id = queue.enqueue(doc_id.clone()).await.unwrap();
+        let queue_id = queue.enqueue(doc_id.clone()).await.unwrap().unwrap();
 
         // Dequeue then mark failed (retry_count becomes 1)
         let batch = queue.dequeue_batch(10).await.unwrap();
@@ -91,9 +109,10 @@ mod tests {
         let env = TestEnvironment::new().await.unwrap();
         let pool = env.db_pool.pool().clone();
         let queue = EmbeddingQueue::new(pool.clone());
+        insert_active_embedding_provider(&pool).await;
 
         let doc_id = create_document(&pool).await;
-        let queue_id = queue.enqueue(doc_id.clone()).await.unwrap();
+        let queue_id = queue.enqueue(doc_id.clone()).await.unwrap().unwrap();
 
         // Fail 3 times to exhaust retries
         for i in 0..3 {
@@ -115,9 +134,10 @@ mod tests {
         let env = TestEnvironment::new().await.unwrap();
         let pool = env.db_pool.pool().clone();
         let queue = EmbeddingQueue::new(pool.clone());
+        insert_active_embedding_provider(&pool).await;
 
         let doc_id = create_document(&pool).await;
-        let queue_id = queue.enqueue(doc_id).await.unwrap();
+        let queue_id = queue.enqueue(doc_id).await.unwrap().unwrap();
 
         let batch = queue.dequeue_batch(10).await.unwrap();
         assert_eq!(batch.len(), 1);
@@ -134,11 +154,12 @@ mod tests {
         let env = TestEnvironment::new().await.unwrap();
         let pool = env.db_pool.pool().clone();
         let queue = EmbeddingQueue::new(pool.clone());
+        insert_active_embedding_provider(&pool).await;
 
         let mut ids = Vec::new();
         for _ in 0..2 {
             let doc_id = create_document(&pool).await;
-            let qid = queue.enqueue(doc_id).await.unwrap();
+            let qid = queue.enqueue(doc_id).await.unwrap().unwrap();
             ids.push(qid);
         }
 
@@ -158,9 +179,10 @@ mod tests {
         let env = TestEnvironment::new().await.unwrap();
         let pool = env.db_pool.pool().clone();
         let queue = EmbeddingQueue::new(pool.clone());
+        insert_active_embedding_provider(&pool).await;
 
         let doc_id = create_document(&pool).await;
-        queue.enqueue(doc_id).await.unwrap();
+        queue.enqueue(doc_id).await.unwrap().unwrap();
 
         // Dequeue sets processing + processing_started_at
         queue.dequeue_batch(10).await.unwrap();
@@ -179,6 +201,7 @@ mod tests {
         let env = TestEnvironment::new().await.unwrap();
         let pool = env.db_pool.pool().clone();
         let queue = EmbeddingQueue::new(pool.clone());
+        insert_active_embedding_provider(&pool).await;
 
         let stats = queue.get_queue_stats().await.unwrap();
         assert_eq!(stats.pending, 0);
@@ -189,7 +212,7 @@ mod tests {
         // Add 3 items
         for _ in 0..3 {
             let doc_id = create_document(&pool).await;
-            queue.enqueue(doc_id).await.unwrap();
+            queue.enqueue(doc_id).await.unwrap().unwrap();
         }
 
         let stats = queue.get_queue_stats().await.unwrap();
@@ -200,5 +223,28 @@ mod tests {
         let stats = queue.get_queue_stats().await.unwrap();
         assert_eq!(stats.pending, 1);
         assert_eq!(stats.processing, 2);
+    }
+
+    #[tokio::test]
+    async fn test_enqueue_skipped_without_active_provider() {
+        let env = TestEnvironment::new().await.unwrap();
+        let pool = env.db_pool.pool().clone();
+        let queue = EmbeddingQueue::new(pool.clone());
+
+        let doc_id = create_document(&pool).await;
+
+        let result = queue.enqueue(doc_id).await.unwrap();
+        assert!(result.is_none());
+
+        let mut doc_ids = Vec::new();
+        for _ in 0..3 {
+            doc_ids.push(create_document(&pool).await);
+        }
+
+        let ids = queue.enqueue_batch(doc_ids).await.unwrap();
+        assert!(ids.is_empty());
+
+        let stats = queue.get_queue_stats().await.unwrap();
+        assert_eq!(stats.pending, 0);
     }
 }
