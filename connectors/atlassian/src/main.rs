@@ -20,6 +20,8 @@ use shared::SdkClient;
 use api::{create_router, ApiState};
 use sync::SyncManager;
 
+const WEBHOOK_RENEWAL_INTERVAL_SECS: u64 = 3600;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv().ok();
@@ -35,13 +37,32 @@ async fn main() -> Result<()> {
 
     let sdk_client = SdkClient::from_env()?;
 
-    let sync_manager = Arc::new(Mutex::new(SyncManager::new(redis_client, sdk_client)));
+    let sync_manager = Arc::new(Mutex::new(SyncManager::new(
+        redis_client,
+        sdk_client,
+        config.webhook_url.clone(),
+    )));
+
+    if config.webhook_url.is_some() {
+        let renewal_manager = Arc::clone(&sync_manager);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(
+                    WEBHOOK_RENEWAL_INTERVAL_SECS,
+                ))
+                .await;
+
+                info!("Running periodic webhook check");
+                let mut manager = renewal_manager.lock().await;
+                manager.ensure_webhooks_for_all_sources().await;
+            }
+        });
+    }
 
     let api_state = ApiState {
         sync_manager: Arc::clone(&sync_manager),
     };
 
-    // Create HTTP server
     let app = create_router(api_state);
     let port = std::env::var("PORT")?.parse::<u16>()?;
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
@@ -49,7 +70,6 @@ async fn main() -> Result<()> {
 
     info!("HTTP server listening on {}", addr);
 
-    // Run HTTP server (connector-manager handles scheduling)
     if let Err(e) = axum::serve(listener, app).await {
         error!("HTTP server stopped: {:?}", e);
     }

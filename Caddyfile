@@ -85,6 +85,20 @@
         }
     }
 
+    # Handle Atlassian webhook notifications
+    handle /webhook/atlassian {
+        rewrite /webhook/atlassian /webhook
+        reverse_proxy atlassian-connector:{$ATLASSIAN_CONNECTOR_PORT} {
+            health_uri /health
+            health_interval 30s
+            health_timeout 5s
+
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+            header_up X-Forwarded-Host {host}
+        }
+    }
+
     handle /auth/atlassian/* {
         reverse_proxy atlassian-connector:{$ATLASSIAN_CONNECTOR_PORT} {
             health_uri /health

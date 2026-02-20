@@ -2,23 +2,27 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use redis::{AsyncCommands, Client as RedisClient};
-use shared::models::{ServiceCredentials, ServiceProvider, SourceType, SyncRequest};
+use shared::models::{ServiceCredentials, ServiceProvider, SourceType, SyncRequest, SyncType};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::auth::{AtlassianCredentials, AuthManager};
+use crate::client::AtlassianApi;
 use crate::confluence::ConfluenceProcessor;
 use crate::jira::JiraProcessor;
+use crate::models::{AtlassianConnectorState, AtlassianWebhookEvent};
 use shared::SdkClient;
 
 pub struct SyncManager {
     sdk_client: SdkClient,
     auth_manager: AuthManager,
+    client: Arc<dyn AtlassianApi>,
     confluence_processor: ConfluenceProcessor,
     jira_processor: JiraProcessor,
     active_syncs: DashMap<String, Arc<AtomicBool>>,
+    webhook_url: Option<String>,
 }
 
 pub struct SyncState {
@@ -230,16 +234,33 @@ impl SyncState {
 }
 
 impl SyncManager {
-    pub fn new(redis_client: RedisClient, sdk_client: SdkClient) -> Self {
+    pub fn new(
+        redis_client: RedisClient,
+        sdk_client: SdkClient,
+        webhook_url: Option<String>,
+    ) -> Self {
+        let client: Arc<dyn AtlassianApi> = Arc::new(crate::client::AtlassianClient::new());
+        Self::with_client(client, redis_client, sdk_client, webhook_url)
+    }
+
+    pub fn with_client(
+        client: Arc<dyn AtlassianApi>,
+        redis_client: RedisClient,
+        sdk_client: SdkClient,
+        webhook_url: Option<String>,
+    ) -> Self {
         Self {
             sdk_client: sdk_client.clone(),
             auth_manager: AuthManager::new(),
             confluence_processor: ConfluenceProcessor::new(
+                client.clone(),
                 sdk_client.clone(),
                 redis_client.clone(),
             ),
-            jira_processor: JiraProcessor::new(sdk_client),
+            jira_processor: JiraProcessor::new(client.clone(), sdk_client),
+            client,
             active_syncs: DashMap::new(),
+            webhook_url,
         }
     }
 
@@ -373,6 +394,14 @@ impl SyncManager {
                         None,
                     )
                     .await?;
+
+                if let Err(e) = self
+                    .ensure_webhook_registered(source_id, &credentials)
+                    .await
+                {
+                    warn!("Failed to register webhook for source {}: {}", source_id, e);
+                }
+
                 Ok(())
             }
             Err(e) => {
@@ -418,7 +447,13 @@ impl SyncManager {
         match source_type {
             SourceType::Confluence => {
                 self.confluence_processor
-                    .sync_all_spaces_incremental(credentials, source_id, sync_run_id, cancelled)
+                    .sync_all_spaces_incremental(
+                        credentials,
+                        source_id,
+                        sync_run_id,
+                        last_sync,
+                        cancelled,
+                    )
                     .await
             }
             SourceType::Jira => {
@@ -512,5 +547,198 @@ impl SyncManager {
             .await?;
 
         Ok((jira_projects, confluence_spaces))
+    }
+
+    pub async fn ensure_webhook_registered(
+        &self,
+        source_id: &str,
+        creds: &AtlassianCredentials,
+    ) -> Result<()> {
+        let webhook_url = match &self.webhook_url {
+            Some(url) => url,
+            None => return Ok(()),
+        };
+
+        let state: AtlassianConnectorState = self
+            .sdk_client
+            .get_connector_state(source_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+
+        if let Some(webhook_id) = state.webhook_id {
+            match self.client.get_webhook(creds, webhook_id).await {
+                Ok(true) => {
+                    debug!(
+                        "Webhook {} still exists for source {}",
+                        webhook_id, source_id
+                    );
+                    return Ok(());
+                }
+                Ok(false) => {
+                    info!("Webhook {} no longer exists, re-registering", webhook_id);
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to check webhook {}: {}, re-registering",
+                        webhook_id, e
+                    );
+                }
+            }
+        }
+
+        let full_url = format!("{}?source_id={}", webhook_url, source_id);
+        let webhook_id = self.client.register_webhook(creds, &full_url).await?;
+        info!("Registered webhook {} for source {}", webhook_id, source_id);
+
+        let new_state = AtlassianConnectorState {
+            webhook_id: Some(webhook_id),
+        };
+        let state_value = serde_json::to_value(&new_state)?;
+        self.sdk_client
+            .save_connector_state(source_id, state_value)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn handle_webhook_event(
+        &mut self,
+        source_id: &str,
+        event: AtlassianWebhookEvent,
+    ) -> Result<()> {
+        info!(
+            "Handling webhook event '{}' for source {}",
+            event.webhook_event, source_id
+        );
+
+        match event.webhook_event.as_str() {
+            "jira:issue_deleted" => {
+                if let Some(issue) = &event.issue {
+                    let project_key = issue
+                        .fields
+                        .as_ref()
+                        .and_then(|f| f.project.as_ref())
+                        .map(|p| p.key.as_str())
+                        .unwrap_or("");
+
+                    if project_key.is_empty() {
+                        warn!("Cannot delete issue without project key");
+                        return Ok(());
+                    }
+
+                    let sync_run_id = self
+                        .sdk_client
+                        .create_sync_run(source_id, SyncType::Incremental)
+                        .await?;
+
+                    let result = self
+                        .jira_processor
+                        .delete_issue(source_id, &sync_run_id, project_key, &issue.key)
+                        .await;
+
+                    match &result {
+                        Ok(_) => self.sdk_client.complete(&sync_run_id, 1, 1, None).await?,
+                        Err(e) => self.sdk_client.fail(&sync_run_id, &e.to_string()).await?,
+                    }
+                    result
+                } else {
+                    Ok(())
+                }
+            }
+            "page_removed" | "page_trashed" => {
+                if let Some(page) = &event.page {
+                    let space_key = page
+                        .space_key
+                        .as_deref()
+                        .or_else(|| page.space.as_ref().map(|s| s.key.as_str()))
+                        .unwrap_or("");
+
+                    if space_key.is_empty() {
+                        warn!("Cannot delete page without space key");
+                        return Ok(());
+                    }
+
+                    let sync_run_id = self
+                        .sdk_client
+                        .create_sync_run(source_id, SyncType::Incremental)
+                        .await?;
+
+                    let result = self
+                        .confluence_processor
+                        .delete_page(source_id, &sync_run_id, space_key, &page.id)
+                        .await;
+
+                    match &result {
+                        Ok(_) => self.sdk_client.complete(&sync_run_id, 1, 1, None).await?,
+                        Err(e) => self.sdk_client.fail(&sync_run_id, &e.to_string()).await?,
+                    }
+                    result
+                } else {
+                    Ok(())
+                }
+            }
+            "jira:issue_created" | "jira:issue_updated" | "page_created" | "page_updated" => {
+                self.sdk_client
+                    .notify_webhook(source_id, &event.webhook_event)
+                    .await?;
+                Ok(())
+            }
+            _ => {
+                debug!("Ignoring unhandled webhook event: {}", event.webhook_event);
+                Ok(())
+            }
+        }
+    }
+
+    pub async fn ensure_webhooks_for_all_sources(&mut self) {
+        let source_types = ["confluence", "jira"];
+
+        for source_type in &source_types {
+            let sources = match self.sdk_client.get_sources_by_type(source_type).await {
+                Ok(s) => s,
+                Err(e) => {
+                    debug!("Failed to list {:?} sources: {}", source_type, e);
+                    continue;
+                }
+            };
+
+            for source in sources {
+                let source_id = &source.id;
+                let service_creds = match self.get_service_credentials(source_id).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        debug!("Failed to get credentials for source {}: {}", source_id, e);
+                        continue;
+                    }
+                };
+
+                let (base_url, user_email, api_token) =
+                    match self.extract_atlassian_credentials(&service_creds) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            debug!("Failed to extract credentials for {}: {}", source_id, e);
+                            continue;
+                        }
+                    };
+
+                let creds = match self
+                    .get_or_validate_credentials(&base_url, &user_email, &api_token)
+                    .await
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        debug!("Failed to validate credentials for {}: {}", source_id, e);
+                        continue;
+                    }
+                };
+
+                if let Err(e) = self.ensure_webhook_registered(source_id, &creds).await {
+                    warn!("Failed to ensure webhook for source {}: {}", source_id, e);
+                }
+            }
+        }
     }
 }

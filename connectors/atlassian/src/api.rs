@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     middleware,
     response::{IntoResponse, Json},
@@ -17,10 +17,10 @@ use tower_http::cors::CorsLayer;
 use tracing::{error, info};
 
 use crate::auth::AtlassianCredentials;
-use crate::client::AtlassianClient;
+use crate::client::{AtlassianApi, AtlassianClient};
 use crate::models::{
-    ActionDefinition, ActionRequest, ActionResponse, CancelRequest, CancelResponse,
-    ConnectorManifest, SyncResponse,
+    ActionDefinition, ActionRequest, ActionResponse, AtlassianWebhookEvent, CancelRequest,
+    CancelResponse, ConnectorManifest, SyncResponse,
 };
 use crate::sync::SyncManager;
 
@@ -56,6 +56,11 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct WebhookQuery {
+    pub source_id: String,
+}
+
 pub fn create_router(state: ApiState) -> Router {
     Router::new()
         // Protocol endpoints
@@ -64,6 +69,7 @@ pub fn create_router(state: ApiState) -> Router {
         .route("/sync", post(trigger_sync))
         .route("/cancel", post(cancel_sync))
         .route("/action", post(execute_action))
+        .route("/webhook", post(handle_webhook))
         // Admin endpoints
         .route("/test-connection", post(test_connection))
         .layer(
@@ -125,6 +131,31 @@ async fn trigger_sync(
     });
 
     Ok(Json(SyncResponse::started()))
+}
+
+async fn handle_webhook(
+    State(state): State<ApiState>,
+    Query(query): Query<WebhookQuery>,
+    Json(event): Json<AtlassianWebhookEvent>,
+) -> impl IntoResponse {
+    let source_id = query.source_id;
+    info!(
+        "Received webhook event '{}' for source {}",
+        event.webhook_event, source_id
+    );
+
+    let sync_manager = state.sync_manager.clone();
+    tokio::spawn(async move {
+        let mut manager = sync_manager.lock().await;
+        if let Err(e) = manager.handle_webhook_event(&source_id, event).await {
+            error!(
+                "Failed to handle webhook event for source {}: {}",
+                source_id, e
+            );
+        }
+    });
+
+    StatusCode::OK
 }
 
 async fn cancel_sync(

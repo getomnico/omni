@@ -1,29 +1,111 @@
 use anyhow::{anyhow, Result};
+use chrono::{DateTime, Utc};
 use futures::stream::StreamExt;
 use redis::Client as RedisClient;
 use shared::models::{ConnectorEvent, SyncType};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 use crate::auth::AtlassianCredentials;
-use crate::client::AtlassianClient;
+use crate::client::AtlassianApi;
 use crate::models::{ConfluencePage, ConfluencePageStatus, ConfluenceSpace};
 use crate::sync::SyncState;
 use shared::SdkClient;
 
 pub struct ConfluenceProcessor {
-    client: AtlassianClient,
+    client: Arc<dyn AtlassianApi>,
     sdk_client: SdkClient,
     sync_state: SyncState,
 }
 
 impl ConfluenceProcessor {
-    pub fn new(sdk_client: SdkClient, redis_client: RedisClient) -> Self {
+    pub fn new(
+        client: Arc<dyn AtlassianApi>,
+        sdk_client: SdkClient,
+        redis_client: RedisClient,
+    ) -> Self {
         Self {
-            client: AtlassianClient::new(),
+            client,
             sdk_client,
             sync_state: SyncState::new(redis_client),
         }
+    }
+
+    pub async fn sync_all_spaces_incremental(
+        &mut self,
+        creds: &AtlassianCredentials,
+        source_id: &str,
+        sync_run_id: &str,
+        last_sync: DateTime<Utc>,
+        cancelled: &AtomicBool,
+    ) -> Result<u32> {
+        info!(
+            "Starting incremental Confluence sync for source: {} since {} (sync_run_id: {})",
+            source_id,
+            last_sync.format("%Y-%m-%d %H:%M"),
+            sync_run_id
+        );
+
+        let cql = format!(
+            "lastModified >= \"{}\" AND type = page",
+            last_sync.format("%Y-%m-%d %H:%M")
+        );
+
+        let mut total_pages_processed = 0;
+        let mut pages_batch = Vec::with_capacity(100);
+
+        let mut stream = self.client.search_confluence_pages_by_cql(creds, &cql);
+
+        while let Some(result) = stream.next().await {
+            if cancelled.load(Ordering::SeqCst) {
+                info!(
+                    "Confluence incremental sync {} cancelled after {} pages",
+                    sync_run_id, total_pages_processed
+                );
+                return Ok(total_pages_processed);
+            }
+
+            let cql_page = result?;
+            if let Some(page) = cql_page.into_confluence_page() {
+                pages_batch.push(page);
+            }
+
+            if pages_batch.len() >= 100 {
+                let count = self
+                    .process_pages(pages_batch, source_id, sync_run_id, &creds.base_url)
+                    .await?;
+                total_pages_processed += count;
+                if let Err(e) = self
+                    .sdk_client
+                    .increment_scanned(sync_run_id, count as i32)
+                    .await
+                {
+                    error!("Failed to increment scanned count: {}", e);
+                }
+                pages_batch = Vec::with_capacity(100);
+            }
+        }
+
+        if !pages_batch.is_empty() {
+            let count = self
+                .process_pages(pages_batch, source_id, sync_run_id, &creds.base_url)
+                .await?;
+            total_pages_processed += count;
+            if let Err(e) = self
+                .sdk_client
+                .increment_scanned(sync_run_id, count as i32)
+                .await
+            {
+                error!("Failed to increment scanned count: {}", e);
+            }
+        }
+
+        info!(
+            "Completed incremental Confluence sync. Pages processed: {}",
+            total_pages_processed
+        );
+        Ok(total_pages_processed)
     }
 
     pub async fn sync_all_spaces(
@@ -33,42 +115,9 @@ impl ConfluenceProcessor {
         sync_run_id: &str,
         cancelled: &AtomicBool,
     ) -> Result<u32> {
-        self.sync_spaces_internal(creds, source_id, sync_run_id, SyncType::Full, cancelled)
-            .await
-    }
-
-    pub async fn sync_all_spaces_incremental(
-        &mut self,
-        creds: &AtlassianCredentials,
-        source_id: &str,
-        sync_run_id: &str,
-        cancelled: &AtomicBool,
-    ) -> Result<u32> {
-        self.sync_spaces_internal(
-            creds,
-            source_id,
-            sync_run_id,
-            SyncType::Incremental,
-            cancelled,
-        )
-        .await
-    }
-
-    async fn sync_spaces_internal(
-        &mut self,
-        creds: &AtlassianCredentials,
-        source_id: &str,
-        sync_run_id: &str,
-        sync_type: SyncType,
-        cancelled: &AtomicBool,
-    ) -> Result<u32> {
-        let sync_type_str = match sync_type {
-            SyncType::Full => "full",
-            SyncType::Incremental => "incremental",
-        };
         info!(
-            "Starting {} Confluence sync for source: {} (sync_run_id: {})",
-            sync_type_str, source_id, sync_run_id
+            "Starting full Confluence sync for source: {} (sync_run_id: {})",
+            source_id, sync_run_id
         );
 
         let spaces = self.get_accessible_spaces(creds).await?;
@@ -95,7 +144,6 @@ impl ConfluenceProcessor {
                 Ok(pages_count) => {
                     total_pages_processed += pages_count;
                     info!("Synced {} pages from space: {}", pages_count, space.id);
-                    // Update scanned count via SDK
                     if let Err(e) = self
                         .sdk_client
                         .increment_scanned(sync_run_id, pages_count as i32)

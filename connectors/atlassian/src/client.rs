@@ -1,17 +1,80 @@
 use anyhow::{anyhow, Result};
+use async_trait::async_trait;
 use futures::stream::Stream;
 use reqwest::{Client, Response, StatusCode};
 use serde::de::DeserializeOwned;
 use shared::rate_limiter::{RateLimiter, RetryableError};
 use std::pin::Pin;
 use std::time::Duration;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::auth::AtlassianCredentials;
 use crate::models::{
-    ConfluenceGetPagesResponse, ConfluenceGetSpacesResponse, ConfluencePage, ConfluenceSpace,
-    JiraField, JiraIssue, JiraSearchResponse,
+    AtlassianWebhookRegistration, AtlassianWebhookRegistrationResponse, ConfluenceCqlPage,
+    ConfluenceCqlSearchResponse, ConfluenceGetPagesResponse, ConfluenceGetSpacesResponse,
+    ConfluencePage, ConfluenceSpace, JiraField, JiraIssue, JiraSearchResponse,
 };
+
+#[async_trait]
+pub trait AtlassianApi: Send + Sync {
+    fn get_confluence_pages<'a>(
+        &'a self,
+        creds: &'a AtlassianCredentials,
+        space_id: &'a str,
+    ) -> Pin<Box<dyn Stream<Item = Result<ConfluencePage>> + Send + 'a>>;
+
+    fn search_confluence_pages_by_cql<'a>(
+        &'a self,
+        creds: &'a AtlassianCredentials,
+        cql: &'a str,
+    ) -> Pin<Box<dyn Stream<Item = Result<ConfluenceCqlPage>> + Send + 'a>>;
+
+    async fn get_confluence_spaces(
+        &self,
+        creds: &AtlassianCredentials,
+    ) -> Result<Vec<ConfluenceSpace>>;
+
+    async fn get_confluence_page_by_id(
+        &self,
+        creds: &AtlassianCredentials,
+        page_id: &str,
+        expand: &[&str],
+    ) -> Result<ConfluencePage>;
+
+    async fn get_jira_issues(
+        &self,
+        creds: &AtlassianCredentials,
+        jql: &str,
+        max_results: u32,
+        next_page_token: Option<&str>,
+        fields: &[String],
+    ) -> Result<JiraSearchResponse>;
+
+    async fn get_jira_issue_by_key(
+        &self,
+        creds: &AtlassianCredentials,
+        issue_key: &str,
+        fields: &[String],
+    ) -> Result<JiraIssue>;
+
+    async fn get_jira_fields(&self, creds: &AtlassianCredentials) -> Result<Vec<JiraField>>;
+
+    async fn get_jira_projects(
+        &self,
+        creds: &AtlassianCredentials,
+        expand: &[&str],
+    ) -> Result<Vec<serde_json::Value>>;
+
+    async fn register_webhook(
+        &self,
+        creds: &AtlassianCredentials,
+        webhook_url: &str,
+    ) -> Result<u64>;
+
+    async fn delete_webhook(&self, creds: &AtlassianCredentials, webhook_id: u64) -> Result<()>;
+
+    async fn get_webhook(&self, creds: &AtlassianCredentials, webhook_id: u64) -> Result<bool>;
+}
 
 pub struct AtlassianClient {
     client: Client,
@@ -117,8 +180,11 @@ impl AtlassianClient {
         }
         Duration::from_secs(60)
     }
+}
 
-    pub fn get_confluence_pages<'a>(
+#[async_trait]
+impl AtlassianApi for AtlassianClient {
+    fn get_confluence_pages<'a>(
         &'a self,
         creds: &'a AtlassianCredentials,
         space_id: &'a str,
@@ -178,7 +244,7 @@ impl AtlassianClient {
         })
     }
 
-    pub async fn get_confluence_page_by_id(
+    async fn get_confluence_page_by_id(
         &self,
         creds: &AtlassianCredentials,
         page_id: &str,
@@ -203,31 +269,62 @@ impl AtlassianClient {
         .await
     }
 
-    pub async fn get_confluence_pages_updated_since(
-        &self,
-        creds: &AtlassianCredentials,
-        space_id: &str,
-        since: &str,
-    ) -> Result<ConfluenceGetPagesResponse> {
-        let auth_header = creds.get_basic_auth_header();
-        let url = format!("{}/wiki/api/v2/spaces/{}/pages", creds.base_url, space_id);
+    fn search_confluence_pages_by_cql<'a>(
+        &'a self,
+        creds: &'a AtlassianCredentials,
+        cql: &'a str,
+    ) -> Pin<Box<dyn Stream<Item = Result<ConfluenceCqlPage>> + Send + 'a>> {
+        Box::pin(async_stream::stream! {
+            let auth_header = creds.get_basic_auth_header();
+            let url = format!("{}/wiki/rest/api/content/search", creds.base_url);
+            let page_size = 50;
+            let mut start = 0;
 
-        debug!(
-            "Searching Confluence pages updated since {}: {}",
-            since, url
-        );
+            loop {
+                debug!("Searching Confluence pages with CQL: {} (start={})", cql, start);
 
-        let client = self.client.clone();
-        self.make_request(move || {
-            client
-                .get(&url)
-                .header("Authorization", &auth_header)
-                .header("Accept", "application/json")
+                let client = self.client.clone();
+                let params = vec![
+                    ("cql", cql.to_string()),
+                    ("limit", page_size.to_string()),
+                    ("start", start.to_string()),
+                    ("expand", "body.storage,version,space".to_string()),
+                ];
+
+                let resp: Result<ConfluenceCqlSearchResponse> = self
+                    .make_request(|| {
+                        client
+                            .get(&url)
+                            .query(&params)
+                            .header("Authorization", &auth_header)
+                            .header("Accept", "application/json")
+                    })
+                    .await;
+
+                let resp = match resp {
+                    Ok(r) => r,
+                    Err(e) => {
+                        yield Err(e);
+                        return;
+                    }
+                };
+
+                debug!("CQL search returned {} results (start={})", resp.size, start);
+
+                let result_count = resp.results.len();
+                for page in resp.results {
+                    yield Ok(page);
+                }
+
+                if (result_count as i64) < resp.limit {
+                    return;
+                }
+                start += result_count as i64;
+            }
         })
-        .await
     }
 
-    pub async fn get_jira_issues(
+    async fn get_jira_issues(
         &self,
         creds: &AtlassianCredentials,
         jql: &str,
@@ -264,7 +361,7 @@ impl AtlassianClient {
         .await
     }
 
-    pub async fn get_jira_issue_by_key(
+    async fn get_jira_issue_by_key(
         &self,
         creds: &AtlassianCredentials,
         issue_key: &str,
@@ -296,7 +393,7 @@ impl AtlassianClient {
         .await
     }
 
-    pub async fn get_jira_fields(&self, creds: &AtlassianCredentials) -> Result<Vec<JiraField>> {
+    async fn get_jira_fields(&self, creds: &AtlassianCredentials) -> Result<Vec<JiraField>> {
         let auth_header = creds.get_basic_auth_header();
         let url = format!("{}/rest/api/3/field", creds.base_url);
 
@@ -312,7 +409,7 @@ impl AtlassianClient {
         .await
     }
 
-    pub async fn get_confluence_spaces(
+    async fn get_confluence_spaces(
         &self,
         creds: &AtlassianCredentials,
     ) -> Result<Vec<ConfluenceSpace>> {
@@ -361,7 +458,7 @@ impl AtlassianClient {
         }
     }
 
-    pub async fn get_jira_projects(
+    async fn get_jira_projects(
         &self,
         creds: &AtlassianCredentials,
         expand: &[&str],
@@ -383,5 +480,133 @@ impl AtlassianClient {
                 .header("Accept", "application/json")
         })
         .await
+    }
+
+    async fn register_webhook(
+        &self,
+        creds: &AtlassianCredentials,
+        webhook_url: &str,
+    ) -> Result<u64> {
+        let auth_header = creds.get_basic_auth_header();
+        let url = format!("{}/rest/webhooks/1.0/webhook", creds.base_url);
+
+        let registration = AtlassianWebhookRegistration {
+            name: "Omni Atlassian Connector".to_string(),
+            url: webhook_url.to_string(),
+            events: vec![
+                "jira:issue_created".to_string(),
+                "jira:issue_updated".to_string(),
+                "jira:issue_deleted".to_string(),
+                "page_created".to_string(),
+                "page_updated".to_string(),
+                "page_removed".to_string(),
+                "page_trashed".to_string(),
+            ],
+            enabled: true,
+        };
+
+        debug!("Registering Atlassian webhook: {}", url);
+
+        let client = self.client.clone();
+        let resp: AtlassianWebhookRegistrationResponse = self
+            .make_request(move || {
+                client
+                    .post(&url)
+                    .header("Authorization", &auth_header)
+                    .header("Accept", "application/json")
+                    .header("Content-Type", "application/json")
+                    .json(&registration)
+            })
+            .await?;
+
+        let webhook_id = resp
+            .self_url
+            .rsplit('/')
+            .next()
+            .and_then(|id| id.parse::<u64>().ok())
+            .ok_or_else(|| {
+                anyhow!(
+                    "Failed to parse webhook ID from response: {}",
+                    resp.self_url
+                )
+            })?;
+
+        debug!("Registered webhook with ID: {}", webhook_id);
+        Ok(webhook_id)
+    }
+
+    async fn delete_webhook(&self, creds: &AtlassianCredentials, webhook_id: u64) -> Result<()> {
+        let auth_header = creds.get_basic_auth_header();
+        let url = format!(
+            "{}/rest/webhooks/1.0/webhook/{}",
+            creds.base_url, webhook_id
+        );
+
+        debug!("Deleting Atlassian webhook {}: {}", webhook_id, url);
+
+        let client = self.client.clone();
+        self.rate_limiter
+            .execute_with_retry(|| async {
+                let response = client
+                    .delete(&url)
+                    .header("Authorization", &auth_header)
+                    .send()
+                    .await
+                    .map_err(|e| shared::rate_limiter::RetryableError::Transient(e.into()))?;
+
+                match response.status() {
+                    StatusCode::OK | StatusCode::NO_CONTENT => Ok(()),
+                    StatusCode::NOT_FOUND => Ok(()),
+                    StatusCode::TOO_MANY_REQUESTS => {
+                        let retry_after = Self::extract_retry_after(&response);
+                        Err(shared::rate_limiter::RetryableError::RateLimited {
+                            retry_after,
+                            message: "Rate limited".to_string(),
+                        })
+                    }
+                    _ => {
+                        let status = response.status();
+                        let text = response.text().await.unwrap_or_default();
+                        Err(shared::rate_limiter::RetryableError::Permanent(anyhow!(
+                            "Failed to delete webhook: HTTP {} - {}",
+                            status,
+                            text
+                        )))
+                    }
+                }
+            })
+            .await
+    }
+
+    async fn get_webhook(&self, creds: &AtlassianCredentials, webhook_id: u64) -> Result<bool> {
+        let auth_header = creds.get_basic_auth_header();
+        let url = format!(
+            "{}/rest/webhooks/1.0/webhook/{}",
+            creds.base_url, webhook_id
+        );
+
+        debug!("Checking Atlassian webhook {}: {}", webhook_id, url);
+
+        let client = self.client.clone();
+        let result: Result<serde_json::Value> = self
+            .make_request(move || {
+                client
+                    .get(&url)
+                    .header("Authorization", &auth_header)
+                    .header("Accept", "application/json")
+            })
+            .await;
+
+        match result {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                let err_str = e.to_string();
+                if err_str.contains("not found") || err_str.contains("404") {
+                    Ok(false)
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 }

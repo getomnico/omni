@@ -8,7 +8,7 @@ pub mod models;
 pub mod sync;
 
 pub use auth::{AtlassianCredentials, AuthManager};
-pub use client::AtlassianClient;
+pub use client::{AtlassianApi, AtlassianClient};
 pub use config::AtlassianConnectorConfig;
 pub use confluence::ConfluenceProcessor;
 pub use jira::JiraProcessor;

@@ -2,10 +2,11 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, Duration, Utc};
 use shared::models::{ConnectorEvent, SyncType};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 use crate::auth::AtlassianCredentials;
-use crate::client::AtlassianClient;
+use crate::client::AtlassianApi;
 use crate::models::JiraIssue;
 use shared::SdkClient;
 
@@ -36,7 +37,7 @@ fn build_fields(custom_fields: Option<&[String]>) -> Vec<String> {
 }
 
 pub struct JiraProcessor {
-    client: AtlassianClient,
+    client: Arc<dyn AtlassianApi>,
     sdk_client: SdkClient,
     cached_custom_fields: Option<(Vec<String>, DateTime<Utc>)>,
 }
@@ -44,9 +45,9 @@ pub struct JiraProcessor {
 const CUSTOM_FIELDS_CACHE_TTL_DAYS: i64 = 1;
 
 impl JiraProcessor {
-    pub fn new(sdk_client: SdkClient) -> Self {
+    pub fn new(client: Arc<dyn AtlassianApi>, sdk_client: SdkClient) -> Self {
         Self {
-            client: AtlassianClient::new(),
+            client,
             sdk_client,
             cached_custom_fields: None,
         }

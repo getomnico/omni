@@ -440,7 +440,189 @@ pub struct JiraField {
     pub custom: bool,
 }
 
+// ============================================================================
+// CQL Search Response Types (Confluence v1 REST API)
+// ============================================================================
+
 #[derive(Debug, Serialize, Deserialize)]
+pub struct ConfluenceCqlSearchResponse {
+    pub results: Vec<ConfluenceCqlPage>,
+    pub start: i64,
+    pub limit: i64,
+    pub size: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfluenceCqlPage {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    #[serde(rename = "type")]
+    pub content_type: String,
+    pub space: Option<ConfluenceCqlSpace>,
+    pub version: Option<ConfluenceCqlVersion>,
+    pub body: Option<ConfluenceCqlBody>,
+    #[serde(rename = "_links")]
+    pub links: Option<ConfluenceCqlLinks>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfluenceCqlSpace {
+    pub id: Option<i64>,
+    pub key: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfluenceCqlVersion {
+    pub number: i32,
+    pub when: String,
+    #[serde(rename = "minorEdit")]
+    pub minor_edit: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfluenceCqlBody {
+    pub storage: Option<ConfluenceContent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfluenceCqlLinks {
+    pub webui: Option<String>,
+    #[serde(rename = "self")]
+    pub self_link: Option<String>,
+}
+
+impl ConfluenceCqlPage {
+    pub fn into_confluence_page(self) -> Option<ConfluencePage> {
+        let space = self.space.as_ref()?;
+        let version = self.version.as_ref()?;
+
+        let space_id = space
+            .id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| space.key.clone());
+
+        let status = match self.status.as_str() {
+            "current" => ConfluencePageStatus::Current,
+            "draft" => ConfluencePageStatus::Draft,
+            "trashed" => ConfluencePageStatus::Trashed,
+            "archived" => ConfluencePageStatus::Archived,
+            _ => ConfluencePageStatus::Current,
+        };
+
+        let created_at = time::OffsetDateTime::now_utc();
+        let version_created_at = chrono::DateTime::parse_from_rfc3339(&version.when)
+            .ok()
+            .map(|dt| {
+                time::OffsetDateTime::from_unix_timestamp(dt.timestamp())
+                    .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
+            })
+            .unwrap_or(created_at);
+
+        let webui = self
+            .links
+            .as_ref()
+            .and_then(|l| l.webui.clone())
+            .unwrap_or_default();
+
+        Some(ConfluencePage {
+            id: self.id,
+            status,
+            title: self.title,
+            space_id,
+            parent_id: None,
+            parent_type: None,
+            position: None,
+            author_id: String::new(),
+            owner_id: None,
+            last_owner_id: None,
+            subtype: None,
+            created_at: version_created_at,
+            version: ConfluenceVersion {
+                created_at: version_created_at,
+                message: String::new(),
+                number: version.number,
+                minor_edit: version.minor_edit,
+                author_id: String::new(),
+            },
+            body: self.body.map(|b| ConfluencePageBody {
+                storage: b.storage,
+                atlas_doc_format: None,
+            }),
+            links: ConfluencePageLinks {
+                webui,
+                editui: String::new(),
+                tinyui: String::new(),
+            },
+        })
+    }
+}
+
+// ============================================================================
+// Webhook Types
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AtlassianConnectorState {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub webhook_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AtlassianWebhookRegistration {
+    pub name: String,
+    pub url: String,
+    pub events: Vec<String>,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AtlassianWebhookRegistrationResponse {
+    #[serde(rename = "self")]
+    pub self_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AtlassianWebhookEvent {
+    #[serde(rename = "webhookEvent")]
+    pub webhook_event: String,
+    pub issue: Option<AtlassianWebhookIssue>,
+    pub page: Option<AtlassianWebhookPage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AtlassianWebhookIssue {
+    pub id: String,
+    pub key: String,
+    pub fields: Option<AtlassianWebhookIssueFields>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AtlassianWebhookIssueFields {
+    pub project: Option<AtlassianWebhookProject>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AtlassianWebhookProject {
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AtlassianWebhookPage {
+    pub id: String,
+    #[serde(rename = "spaceKey")]
+    pub space_key: Option<String>,
+    pub space: Option<AtlassianWebhookSpace>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AtlassianWebhookSpace {
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JiraSearchResponse {
     pub issues: Vec<JiraIssue>,
     #[serde(rename = "isLast", default)]

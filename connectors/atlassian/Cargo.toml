@@ -32,3 +32,11 @@ urlencoding = "2.1"
 async-stream = "0.3"
 futures = { workspace = true }
 dashmap = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+omni-connector-manager = { path = "../../services/connector-manager" }
+testcontainers = { workspace = true }
+testcontainers-modules = { workspace = true }
+axum-test = { workspace = true }
+tokio = { workspace = true, features = ["full", "test-util"] }
