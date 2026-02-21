@@ -259,10 +259,7 @@ resource "aws_ecs_task_definition" "ai" {
       { name = "PORT", value = "3003" },
       { name = "SEARCHER_URL", value = "http://searcher.omni-${var.customer_name}.local:3001" },
       { name = "MODEL_PATH", value = "/models" },
-      { name = "EMBEDDING_PROVIDER", value = var.embedding_provider },
       { name = "EMBEDDING_MODEL", value = var.embedding_model },
-      { name = "EMBEDDING_DIMENSIONS", value = var.embedding_dimensions },
-      { name = "EMBEDDING_API_URL", value = var.embedding_api_url },
       { name = "EMBEDDING_MAX_MODEL_LEN", value = var.embedding_max_model_len },
       { name = "AI_WORKERS", value = var.ai_workers },
       # Storage configuration
@@ -270,10 +267,6 @@ resource "aws_ecs_task_definition" "ai" {
       { name = "S3_BUCKET", value = var.content_bucket_name },
       { name = "S3_REGION", value = var.region },
       # Batch inference configuration
-      # TODO: Batch processing on AWS Bedrock is not enabled by default, it requires creating a support case. We will
-      # therefore avoid using batch processing for now.
-      # We will disable embeddings entirely for now, until we find a good solution for this issue.
-      { name = "ENABLE_EMBEDDING_BATCH_INFERENCE", value = "false" },
       { name = "EMBEDDING_BATCH_S3_BUCKET", value = var.batch_bucket_name },
       { name = "EMBEDDING_BATCH_BEDROCK_ROLE_ARN", value = var.bedrock_batch_role_arn },
       { name = "EMBEDDING_BATCH_MIN_DOCUMENTS", value = var.embedding_batch_min_documents },
@@ -283,9 +276,7 @@ resource "aws_ecs_task_definition" "ai" {
       { name = "EMBEDDING_BATCH_MONITOR_POLL_INTERVAL", value = var.embedding_batch_monitor_poll_interval }
     ])
 
-    secrets = concat(local.common_secrets, [
-      { name = "EMBEDDING_API_KEY", valueFrom = var.embedding_api_key_arn }
-    ])
+    secrets = local.common_secrets
   }])
 
   tags = merge(local.common_tags, {

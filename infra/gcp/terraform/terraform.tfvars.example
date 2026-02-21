@@ -3,7 +3,6 @@ project_id     = "my-gcp-project"
 customer_name  = "acme-corp"
 github_org     = "omni-platform"
 custom_domain  = "omni.acme-corp.com"
-embedding_api_key   = "your-embedding-api-key-here"
 
 # Optional - uncomment to override defaults
 # region                = "us-central1"
@@ -20,12 +19,9 @@ embedding_api_key   = "your-embedding-api-key-here"
 # cloud_run_max_instances = 2
 # log_retention_days    = 30
 # resend_api_key        = "re_xxxxxxxxxxxx"
-# embedding_api_url     = "https://api.jina.ai/v1"
 
-# Optional: AI Service Configuration
-# embedding_provider      = "jina"
+# Optional: AI Service Configuration (embedding provider is configured in the UI)
 # embedding_model         = "jina-embeddings-v3"
-# embedding_dimensions    = "1024"
 # embedding_max_model_len = "8192"
 # ai_workers              = "1"
 

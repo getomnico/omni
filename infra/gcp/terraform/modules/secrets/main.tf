@@ -19,18 +19,6 @@ resource "google_secret_manager_secret_version" "database_password" {
   secret_data = random_password.database.result
 }
 
-resource "google_secret_manager_secret" "embedding_api_key" {
-  secret_id = "omni-${var.customer_name}-embedding-api-key"
-
-  replication {
-    auto {}
-  }
-}
-
-resource "google_secret_manager_secret_version" "embedding_api_key" {
-  secret      = google_secret_manager_secret.embedding_api_key.id
-  secret_data = var.embedding_api_key
-}
 
 resource "random_password" "encryption_key" {
   length           = 64

@@ -122,10 +122,6 @@ variable "database_password_arn" {
   type        = string
 }
 
-variable "embedding_api_key_arn" {
-  description = "ARN of Embedding API key secret"
-  type        = string
-}
 
 variable "encryption_key_arn" {
   description = "ARN of encryption key secret"
@@ -182,28 +178,10 @@ variable "bedrock_batch_role_arn" {
   type        = string
 }
 
-variable "embedding_api_url" {
-  description = "Embedding API base URL"
-  type        = string
-}
-
-# AI Service Configuration
-variable "embedding_provider" {
-  description = "Embedding provider"
-  type        = string
-  default     = "jina"
-}
-
 variable "embedding_model" {
   description = "Embedding model name"
   type        = string
   default     = "jina-embeddings-v3"
-}
-
-variable "embedding_dimensions" {
-  description = "Embedding vector dimensions"
-  type        = string
-  default     = "1024"
 }
 
 variable "embedding_max_model_len" {

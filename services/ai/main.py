@@ -22,12 +22,7 @@ from routers import (
     model_providers_router,
 )
 
-from config import (
-    PORT,
-    EMBEDDING_PROVIDER,
-    EMBEDDING_MODEL,
-    EMBEDDING_DIMENSIONS,
-)
+from config import PORT
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -69,7 +64,5 @@ async def shutdown_event():
 
 if __name__ == "__main__":
     logger.info(f"Starting AI service on port {PORT}")
-    logger.info(f"Embedding provider: {EMBEDDING_PROVIDER}, model: {EMBEDDING_MODEL}")
-    logger.info(f"Embedding dimensions: {EMBEDDING_DIMENSIONS}")
 
     uvicorn.run(app, host="0.0.0.0", port=PORT)

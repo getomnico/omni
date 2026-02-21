@@ -1,7 +1,6 @@
 # Required Variables
 customer_name = "acme-corp"
 github_org    = "omni-platform"
-embedding_api_key  = "your-embedding-api-key-here"
 
 # Optional: AWS Configuration
 region      = "us-east-1"
@@ -36,12 +35,9 @@ log_retention_days = 30
 # Optional: Application Configuration
 resend_api_key = "your-resend-api-key"
 
-# Optional: AI Service Configuration
-# embedding_provider      = "jina"
+# Optional: AI Service Configuration (embedding provider is configured in the UI)
 # embedding_model         = "jina-embeddings-v3"
-# embedding_dimensions    = "1024"
 # embedding_max_model_len = "8192"
-# embedding_api_url       = "https://api.jina.ai/v1"
 # ai_workers              = "1"
 
 # Optional: Searcher Configuration

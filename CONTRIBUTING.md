@@ -41,7 +41,7 @@ Thank you for your interest in contributing to Omni! This document provides guid
 1. **Configure environment**:
    ```bash
    cp .env.example .env
-   # Edit .env to add your API keys (LLM_API_KEY, EMBEDDING_API_KEY, etc.)
+   # Edit .env to configure your settings
    ```
 
 2. **Start development environment**:

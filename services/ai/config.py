@@ -37,18 +37,6 @@ def validate_port(port_str: str) -> int:
         sys.exit(1)
 
 
-def validate_embedding_dimensions(dims_str: str) -> int:
-    """Validate embedding dimensions"""
-    try:
-        dims = int(dims_str)
-        if dims < 1:
-            raise ValueError("Embedding dimensions must be positive")
-        return dims
-    except ValueError as e:
-        print(f"ERROR: Invalid embedding dimensions '{dims_str}': {e}", file=sys.stderr)
-        sys.exit(1)
-
-
 def construct_database_url() -> str:
     """Construct database URL from individual components"""
     database_host = get_required_env("DATABASE_HOST")
@@ -68,14 +56,8 @@ MODEL_PATH = get_required_env("MODEL_PATH")
 REDIS_URL = get_required_env("REDIS_URL")
 DATABASE_URL = construct_database_url()
 
-# Embedding provider configuration
-EMBEDDING_PROVIDER = get_required_env("EMBEDDING_PROVIDER").lower()
-EMBEDDING_MODEL = get_required_env("EMBEDDING_MODEL")
-EMBEDDING_DIMENSIONS = validate_embedding_dimensions(
-    get_required_env("EMBEDDING_DIMENSIONS")
-)
-EMBEDDING_API_KEY = get_optional_env("EMBEDDING_API_KEY", "")
-EMBEDDING_API_URL = get_optional_env("EMBEDDING_API_URL", "")
+# Embedding configuration (only batch processing vars remain; provider config is in DB)
+EMBEDDING_MODEL = get_optional_env("EMBEDDING_MODEL", "")
 EMBEDDING_MAX_MODEL_LEN = int(get_optional_env("EMBEDDING_MAX_MODEL_LEN", "8192"))
 
 DEFAULT_MAX_TOKENS = int(get_optional_env("DEFAULT_MAX_TOKENS", "8192"))
@@ -85,10 +67,6 @@ DEFAULT_TOP_P = float(get_optional_env("DEFAULT_TOP_P", "1.0"))
 # AWS configuration
 AWS_REGION = get_optional_env("AWS_REGION", "")  # Optional, auto-detected in ECS
 
-# Embedding batch inference configuration
-ENABLE_EMBEDDING_BATCH_INFERENCE = (
-    get_optional_env("ENABLE_EMBEDDING_BATCH_INFERENCE", "false").lower() == "true"
-)
 EMBEDDING_BATCH_S3_BUCKET = get_optional_env("EMBEDDING_BATCH_S3_BUCKET", "")
 EMBEDDING_BATCH_BEDROCK_ROLE_ARN = get_optional_env(
     "EMBEDDING_BATCH_BEDROCK_ROLE_ARN", ""

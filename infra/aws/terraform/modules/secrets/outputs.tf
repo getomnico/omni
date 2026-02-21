@@ -9,10 +9,6 @@ output "database_password" {
   sensitive   = true
 }
 
-output "embedding_api_key_arn" {
-  description = "ARN of Embedding API key secret"
-  value       = aws_secretsmanager_secret.embedding_api_key.arn
-}
 
 output "encryption_key_arn" {
   description = "ARN of encryption key secret"

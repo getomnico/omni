@@ -14,9 +14,3 @@ variable "database_username" {
   type        = string
   default     = "omni"
 }
-
-variable "embedding_api_key" {
-  description = "Embedding API key for embedding generation"
-  type        = string
-  sensitive   = true
-}

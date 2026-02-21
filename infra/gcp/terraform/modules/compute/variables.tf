@@ -91,10 +91,6 @@ variable "database_password_secret_id" {
   type        = string
 }
 
-variable "embedding_api_key_secret_id" {
-  description = "Secret Manager secret ID for Embedding API key"
-  type        = string
-}
 
 variable "encryption_key_secret_id" {
   description = "Secret Manager secret ID for encryption key"
@@ -140,33 +136,16 @@ variable "hmac_secret" {
   sensitive   = true
 }
 
-variable "embedding_api_url" {
-  description = "Embedding API base URL"
-  type        = string
-}
-
 variable "cloud_run_sa_email" {
   description = "Cloud Run service account email (created at root level)"
   type        = string
 }
 
 # AI Service Configuration
-variable "embedding_provider" {
-  description = "Embedding provider"
-  type        = string
-  default     = "jina"
-}
-
 variable "embedding_model" {
   description = "Embedding model name"
   type        = string
   default     = "jina-embeddings-v3"
-}
-
-variable "embedding_dimensions" {
-  description = "Embedding vector dimensions"
-  type        = string
-  default     = "1024"
 }
 
 variable "embedding_max_model_len" {

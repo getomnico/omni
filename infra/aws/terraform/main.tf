@@ -15,7 +15,6 @@ module "secrets" {
   customer_name     = var.customer_name
   environment       = var.environment
   database_username = var.database_username
-  embedding_api_key      = var.embedding_api_key
 }
 
 module "monitoring" {
@@ -159,17 +158,13 @@ module "compute" {
   region         = var.region
 
   database_password_arn = module.secrets.database_password_arn
-  embedding_api_key_arn      = module.secrets.embedding_api_key_arn
   encryption_key_arn    = module.secrets.encryption_key_arn
   encryption_salt_arn   = module.secrets.encryption_salt_arn
 
   resend_api_key    = var.resend_api_key
-  embedding_api_url = var.embedding_api_url
 
   # AI service configuration
-  embedding_provider      = var.embedding_provider
   embedding_model         = var.embedding_model
-  embedding_dimensions    = var.embedding_dimensions
   embedding_max_model_len = var.embedding_max_model_len
   ai_workers              = var.ai_workers
 

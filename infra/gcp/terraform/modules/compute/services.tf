@@ -342,13 +342,9 @@ resource "google_cloud_run_v2_service" "ai" {
           PORT                             = "3003"
           SEARCHER_URL                     = local.service_url["searcher"]
           MODEL_PATH                       = "/models"
-          EMBEDDING_PROVIDER                              = var.embedding_provider
           EMBEDDING_MODEL                                 = var.embedding_model
-          EMBEDDING_DIMENSIONS                            = var.embedding_dimensions
           AI_WORKERS                                      = var.ai_workers
-          EMBEDDING_API_URL                               = var.embedding_api_url
           EMBEDDING_MAX_MODEL_LEN                         = var.embedding_max_model_len
-          ENABLE_EMBEDDING_BATCH_INFERENCE                = "false"
           EMBEDDING_BATCH_S3_BUCKET                       = var.batch_bucket_name
           EMBEDDING_BATCH_MIN_DOCUMENTS                   = var.embedding_batch_min_documents
           EMBEDDING_BATCH_MAX_DOCUMENTS                   = var.embedding_batch_max_documents
@@ -372,15 +368,6 @@ resource "google_cloud_run_v2_service" "ai" {
         }
       }
 
-      env {
-        name = "EMBEDDING_API_KEY"
-        value_source {
-          secret_key_ref {
-            secret  = var.embedding_api_key_secret_id
-            version = "latest"
-          }
-        }
-      }
 
     }
   }

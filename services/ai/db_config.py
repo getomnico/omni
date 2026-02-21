@@ -1,21 +1,12 @@
 """
 Database-backed configuration for embedding settings.
-Provides cached access to configuration stored in PostgreSQL,
-with fallback to environment variables.
+Provides cached access to configuration stored in PostgreSQL.
 """
 
 import time
 from typing import Optional
 from dataclasses import dataclass
 
-from config import (
-    EMBEDDING_PROVIDER,
-    EMBEDDING_API_KEY,
-    EMBEDDING_MODEL,
-    EMBEDDING_API_URL,
-    EMBEDDING_DIMENSIONS,
-    EMBEDDING_MAX_MODEL_LEN,
-)
 from db import EmbeddingProvidersRepository
 
 
@@ -65,19 +56,9 @@ class EmbeddingConfigCache:
             max_model_len=config.get("maxModelLen"),
         )
 
-    def _get_env_fallback_config(self) -> EmbeddingConfig:
-        return EmbeddingConfig(
-            provider=EMBEDDING_PROVIDER,
-            api_key=EMBEDDING_API_KEY or None,
-            model=EMBEDDING_MODEL or "",
-            api_url=EMBEDDING_API_URL or None,
-            dimensions=EMBEDDING_DIMENSIONS,
-            max_model_len=EMBEDDING_MAX_MODEL_LEN,
-        )
-
-    async def get_config(self) -> EmbeddingConfig:
+    async def get_config(self) -> Optional[EmbeddingConfig]:
         if self._is_cache_valid():
-            return self._cache  # type: ignore
+            return self._cache
 
         db_config = await self._fetch_from_database()
         if db_config is not None:
@@ -85,10 +66,7 @@ class EmbeddingConfigCache:
             self._cache_timestamp = time.time()
             return db_config
 
-        env_config = self._get_env_fallback_config()
-        self._cache = env_config
-        self._cache_timestamp = time.time()
-        return env_config
+        return None
 
     def invalidate_cache(self):
         self._cache = None
@@ -99,7 +77,7 @@ class EmbeddingConfigCache:
 _embedding_config_cache = EmbeddingConfigCache()
 
 
-async def get_embedding_config() -> EmbeddingConfig:
+async def get_embedding_config() -> Optional[EmbeddingConfig]:
     return await _embedding_config_cache.get_config()
 
 

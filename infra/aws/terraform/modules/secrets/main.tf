@@ -32,19 +32,6 @@ resource "aws_secretsmanager_secret_version" "database_password" {
   })
 }
 
-resource "aws_secretsmanager_secret" "embedding_api_key" {
-  name        = "omni/${var.customer_name}/embedding-api-key"
-  description = "Embedding API key for embedding generation"
-
-  tags = merge(local.common_tags, {
-    Name = "omni-${var.customer_name}-embedding-api-key"
-  })
-}
-
-resource "aws_secretsmanager_secret_version" "embedding_api_key" {
-  secret_id     = aws_secretsmanager_secret.embedding_api_key.id
-  secret_string = var.embedding_api_key
-}
 
 resource "random_password" "encryption_key" {
   length           = 64

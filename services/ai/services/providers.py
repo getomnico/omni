@@ -7,7 +7,6 @@ import redis.asyncio as aioredis
 
 from config import (
     AWS_REGION,
-    EMBEDDING_MAX_MODEL_LEN,
     REDIS_URL,
 )
 from db_config import (
@@ -115,7 +114,7 @@ async def _init_embedding_provider(app_state: AppState) -> None:
     provider = embedding_config.provider
     logger.info(f"Loaded embedding configuration (provider: {provider})")
 
-    max_model_len = embedding_config.max_model_len or EMBEDDING_MAX_MODEL_LEN
+    max_model_len = embedding_config.max_model_len or 8192
 
     if provider == "jina":
         if not embedding_config.api_key:

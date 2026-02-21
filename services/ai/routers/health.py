@@ -4,7 +4,7 @@ import logging
 
 from fastapi import APIRouter, Request
 
-from config import PORT, EMBEDDING_DIMENSIONS
+from config import PORT
 from db_config import get_embedding_config
 
 logger = logging.getLogger(__name__)
@@ -47,10 +47,12 @@ async def health_check(request: Request):
     return {
         "status": "healthy",
         "service": "ai",
-        "embedding_provider": embedding_config.provider,
+        "embedding_provider": embedding_config.provider if embedding_config else "none",
         "embedding_model": embedding_model,
         "port": PORT,
-        "embedding_dimensions": EMBEDDING_DIMENSIONS,
+        "embedding_dimensions": (
+            embedding_config.dimensions if embedding_config else None
+        ),
         "llm_provider": llm_provider_name,
         "llm_model": llm_model_name,
         "llm_health": llm_health,

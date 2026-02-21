@@ -19,12 +19,6 @@ variable "github_org" {
   type        = string
 }
 
-variable "embedding_api_key" {
-  description = "Embedding API key for embedding generation"
-  type        = string
-  sensitive   = true
-}
-
 # Optional Variables with Defaults
 variable "region" {
   description = "GCP region"
@@ -132,12 +126,6 @@ variable "resend_api_key" {
   sensitive   = true
 }
 
-variable "embedding_api_url" {
-  description = "Embedding API base URL"
-  type        = string
-  default     = "https://api.jina.ai/v1"
-}
-
 variable "vpc_cidr" {
   description = "CIDR block for VPC subnet"
   type        = string
@@ -145,22 +133,10 @@ variable "vpc_cidr" {
 }
 
 # AI Service Configuration
-variable "embedding_provider" {
-  description = "Embedding provider (jina, openai, local, bedrock)"
-  type        = string
-  default     = "jina"
-}
-
 variable "embedding_model" {
   description = "Embedding model name"
   type        = string
   default     = "jina-embeddings-v3"
-}
-
-variable "embedding_dimensions" {
-  description = "Embedding vector dimensions"
-  type        = string
-  default     = "1024"
 }
 
 variable "embedding_max_model_len" {

@@ -45,7 +45,6 @@ module "secrets" {
   customer_name     = var.customer_name
   environment       = var.environment
   database_username = var.database_username
-  embedding_api_key      = var.embedding_api_key
   depends_on        = [google_project_service.apis]
 }
 
@@ -123,18 +122,14 @@ module "compute" {
   redis_url = module.cache.redis_url
 
   database_password_secret_id = module.secrets.database_password_secret_id
-  embedding_api_key_secret_id      = module.secrets.embedding_api_key_secret_id
   encryption_key_secret_id    = module.secrets.encryption_key_secret_id
   encryption_salt_secret_id   = module.secrets.encryption_salt_secret_id
   all_secret_ids              = module.secrets.all_secret_ids
 
   resend_api_key    = var.resend_api_key
-  embedding_api_url = var.embedding_api_url
 
   # AI service configuration
-  embedding_provider      = var.embedding_provider
   embedding_model         = var.embedding_model
-  embedding_dimensions    = var.embedding_dimensions
   embedding_max_model_len = var.embedding_max_model_len
   ai_workers              = var.ai_workers
 
