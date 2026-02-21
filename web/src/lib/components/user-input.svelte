@@ -80,6 +80,23 @@
 
     let showModelSelector = $derived(models.length >= 2 && inputMode === 'chat')
 
+    const providerDisplayNames: Record<string, string> = {
+        anthropic: 'Anthropic',
+        openai: 'OpenAI',
+        vllm: 'vLLM',
+        bedrock: 'Bedrock',
+    }
+
+    function formatProviderName(provider: string): string {
+        return (
+            providerDisplayNames[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1)
+        )
+    }
+
+    let groupedModels = $derived(
+        Object.entries(Object.groupBy(models, (m) => m.providerType)) as [string, ModelOption[]][],
+    )
+
     let inputRef: HTMLDivElement
     let popoverContainer: HTMLDivElement | undefined = $state()
     let placeholder = $derived(placeholders[inputMode])
@@ -407,10 +424,17 @@
                                 'Select model'}
                         </Select.Trigger>
                         <Select.Content align="end">
-                            {#each models as model}
-                                <Select.Item value={model.id}>
-                                    {model.displayName}
-                                </Select.Item>
+                            {#each groupedModels as [provider, providerModels]}
+                                <Select.Group>
+                                    <Select.GroupHeading>
+                                        {formatProviderName(provider)}
+                                    </Select.GroupHeading>
+                                    {#each providerModels as model}
+                                        <Select.Item value={model.id}>
+                                            {model.displayName}
+                                        </Select.Item>
+                                    {/each}
+                                </Select.Group>
                             {/each}
                         </Select.Content>
                     </Select.Root>
