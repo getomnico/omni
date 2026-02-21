@@ -36,10 +36,13 @@
     let { data }: PageProps = $props()
 
     type SourceId = string
-    let runningSyncs = $derived<Map<SourceId, SyncRun>>(data.runningSyncs)
-    let latestCompletedSyncs = $derived<Map<SourceId, SyncRun>>(data.latestCompletedSyncs)
+    let latestSyncRuns = $state<Map<SourceId, SyncRun>>(data.latestSyncRuns)
     let documentCounts = $state<Record<SourceId, number>>({})
     let eventSource = $state<EventSource | null>(null)
+
+    $effect(() => {
+        latestSyncRuns = data.latestSyncRuns
+    })
 
     onMount(() => {
         // Set up Server-Sent Events for real-time sync status updates
@@ -48,14 +51,13 @@
             try {
                 const statusData = JSON.parse(event.data)
                 if (statusData.overall?.latestSyncRuns) {
-                    // Update running syncs from SSE data
-                    const newRunningSyncs = new Map<SourceId, SyncRun>()
+                    const updated = new Map(latestSyncRuns)
                     statusData.overall.latestSyncRuns.forEach((sync: any) => {
-                        if (sync.status === 'running') {
-                            newRunningSyncs.set(sync.sourceId, sync)
+                        if (sync.sourceId) {
+                            updated.set(sync.sourceId, sync)
                         }
                     })
-                    runningSyncs = newRunningSyncs
+                    latestSyncRuns = updated
                 }
                 if (statusData.overall?.documentCounts) {
                     documentCounts = statusData.overall.documentCounts
@@ -283,6 +285,7 @@
                 <div class="space-y-2">
                     {#each data.connectedSources as source}
                         {@const noun = getSourceNoun(source.sourceType as SourceType)}
+                        {@const sync = latestSyncRuns.get(source.id)}
                         <div
                             class="flex items-center justify-between gap-4 rounded-lg border px-4 py-3">
                             <div class="flex flex-1 items-start gap-3">
@@ -307,9 +310,8 @@
                                     </div>
                                     <div
                                         class="text-muted-foreground flex items-center gap-1 text-xs">
-                                        {#if runningSyncs.has(source.id)}
-                                            {@const sync = runningSyncs.get(source.id)}
-                                            {#if sync && sync.documentsScanned && sync.documentsScanned > 0}
+                                        {#if sync?.status === 'running'}
+                                            {#if sync.documentsScanned && sync.documentsScanned > 0}
                                                 <span
                                                     >Syncing... {sync.documentsScanned.toLocaleString()}
                                                     {noun} scanned{#if sync.documentsUpdated && sync.documentsUpdated > 0},
@@ -320,8 +322,7 @@
                                         {:else}
                                             <span
                                                 >Last sync: {formatDate(
-                                                    latestCompletedSyncs.get(source.id)
-                                                        ?.completedAt ?? null,
+                                                    sync?.completedAt ?? null,
                                                 )}</span>
                                         {/if}
                                         {#if documentCounts[source.id]}
@@ -339,7 +340,8 @@
                                         variant="outline"
                                         size="sm"
                                         class="cursor-pointer"
-                                        disabled={runningSyncs.has(source.id)}
+                                        disabled={latestSyncRuns.get(source.id)?.status ===
+                                            'running'}
                                         onclick={() => handleSync(source.id)}>
                                         Sync
                                     </Button>

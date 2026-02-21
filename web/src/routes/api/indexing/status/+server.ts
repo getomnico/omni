@@ -162,7 +162,7 @@ export const GET: RequestHandler = async ({ url }) => {
                     logger.info('PostgreSQL LISTEN/NOTIFY setup successful')
                 } catch (error) {
                     logger.error('Error setting up PostgreSQL notifications:', error)
-                    // Fall back to polling if LISTEN/NOTIFY fails (every 10 seconds to avoid spam)
+                    // Fall back to polling if LISTEN/NOTIFY fails
                     pollingInterval = setInterval(() => {
                         if (!isClosed) {
                             throttledFetchStatus()

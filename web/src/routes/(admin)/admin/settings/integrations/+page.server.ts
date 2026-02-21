@@ -6,13 +6,11 @@ export const load: PageServerLoad = async ({ locals }) => {
     requireAdmin(locals)
 
     const connectedSources = await sourcesRepository.getAll()
-    const runningSyncs = await sourcesRepository.getRunningSyncs()
-    const latestCompletedSyncs = await sourcesRepository.getLatestCompletedSyncs()
+    const latestSyncRuns = await sourcesRepository.getLatestSyncRuns()
 
     return {
         connectedSources,
-        runningSyncs,
-        latestCompletedSyncs,
+        latestSyncRuns,
         availableIntegrations: [
             {
                 id: 'google',

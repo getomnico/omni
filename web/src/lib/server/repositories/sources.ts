@@ -17,13 +17,7 @@ export class SourcesRepository {
         return result[0] ?? null
     }
 
-    async getRunningSyncs(): Promise<Map<string, SyncRun>> {
-        const running = await db.select().from(syncRuns).where(eq(syncRuns.status, 'running'))
-
-        return new Map(running.map((sync) => [sync.sourceId, sync]))
-    }
-
-    async getLatestCompletedSyncs(): Promise<Map<string, SyncRun>> {
+    async getLatestSyncRuns(): Promise<Map<string, SyncRun>> {
         const rows = await db
             .select()
             .from(syncRuns)
@@ -31,8 +25,7 @@ export class SourcesRepository {
                 sql`${syncRuns.id} IN (
                     SELECT DISTINCT ON (source_id) id
                     FROM sync_runs
-                    WHERE status = 'completed'
-                    ORDER BY source_id, completed_at DESC
+                    ORDER BY source_id, started_at DESC
                 )`,
             )
 
