@@ -94,7 +94,15 @@
     }
 
     let groupedModels = $derived(
-        Object.entries(Object.groupBy(models, (m) => m.providerType)) as [string, ModelOption[]][],
+        Object.entries(
+            models.reduce<Record<string, ModelOption[]>>((acc, m) => {
+                if (!acc[m.providerType]) {
+                    acc[m.providerType] = []
+                }
+                acc[m.providerType].push(m)
+                return acc
+            }, {}),
+        ),
     )
 
     let inputRef: HTMLDivElement
