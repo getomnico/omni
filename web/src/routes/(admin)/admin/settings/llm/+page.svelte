@@ -14,10 +14,11 @@
     import anthropicIcon from '$lib/images/icons/anthropic.svg'
     import openaiIcon from '$lib/images/icons/openai.svg'
     import awsIcon from '$lib/images/icons/aws.svg'
+    import geminiIcon from '$lib/images/icons/gemini.svg'
 
     let { data }: { data: PageData } = $props()
 
-    type ProviderType = 'vllm' | 'anthropic' | 'bedrock' | 'openai'
+    type ProviderType = 'vllm' | 'anthropic' | 'bedrock' | 'openai' | 'gemini'
 
     interface ProviderFormState {
         id?: string
@@ -72,7 +73,7 @@
         confirmDialogOpen = true
     }
 
-    const showApiKey = (p: ProviderType) => p === 'anthropic' || p === 'openai'
+    const showApiKey = (p: ProviderType) => p === 'anthropic' || p === 'openai' || p === 'gemini'
     const showApiUrl = (p: ProviderType) => p === 'vllm'
     const showRegion = (p: ProviderType) => p === 'bedrock'
 
@@ -103,9 +104,14 @@
             description: 'Self-hosted models via a vLLM-compatible endpoint',
             icon: null,
         },
+        gemini: {
+            label: 'Google Gemini',
+            description: 'Gemini models via the Google AI API',
+            icon: geminiIcon,
+        },
     }
 
-    const providerTypes: ProviderType[] = ['anthropic', 'openai', 'bedrock', 'vllm']
+    const providerTypes: ProviderType[] = ['anthropic', 'openai', 'gemini', 'bedrock', 'vllm']
 
     let providerByType = $derived(
         Object.fromEntries(
@@ -169,7 +175,7 @@
         </div>
 
         <!-- Provider Cards -->
-        <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <div class="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
             {#each providerTypes as type}
                 {@const provider = providerByType[type]}
                 {@const meta = providerMeta[type]}

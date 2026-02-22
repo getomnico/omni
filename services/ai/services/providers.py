@@ -57,6 +57,13 @@ def _create_provider_from_model_record(record: ModelRecord) -> LLMProvider:
             model=model_id,
         )
 
+    elif provider_type == "gemini":
+        return create_llm_provider(
+            "gemini",
+            api_key=config.get("apiKey"),
+            model=model_id,
+        )
+
     else:
         raise ValueError(f"Unknown provider type: {provider_type}")
 

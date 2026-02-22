@@ -31,6 +31,7 @@ dependencies = [
     "pgvector>=0.4.2",
     "redis>=5.0.0",
     "cohere>=5.20.4",
+    "google-genai>=1.0.0",
 ]
 
 [tool.pytest.ini_options]

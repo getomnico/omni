@@ -48,6 +48,7 @@ from .anthropic import AnthropicProvider
 from .vllm import VLLMProvider
 from .bedrock import BedrockProvider
 from .openai import OpenAIProvider
+from .gemini import GeminiProvider
 
 
 # Factory function to create LLM providers
@@ -83,6 +84,13 @@ def create_llm_provider(provider_type: str, **kwargs) -> LLMProvider:
         model = kwargs.get("model", "gpt-4o")
         return OpenAIProvider(api_key, model)
 
+    elif provider_type.lower() == "gemini":
+        api_key = kwargs.get("api_key")
+        if not api_key:
+            raise ValueError("api_key is required for Gemini provider")
+        model = kwargs.get("model", "gemini-2.5-flash")
+        return GeminiProvider(api_key, model)
+
     else:
         raise ValueError(f"Unknown provider type: {provider_type}")
 
@@ -93,5 +101,6 @@ __all__ = [
     "VLLMProvider",
     "BedrockProvider",
     "OpenAIProvider",
+    "GeminiProvider",
     "create_llm_provider",
 ]

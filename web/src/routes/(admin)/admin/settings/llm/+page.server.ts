@@ -219,6 +219,8 @@ function validateConfig(
         return 'API key is required for Anthropic'
     if (providerType === 'openai' && !config.apiKey && !isEdit)
         return 'API key is required for OpenAI'
+    if (providerType === 'gemini' && !config.apiKey && !isEdit)
+        return 'API key is required for Gemini'
 
     return null
 }
