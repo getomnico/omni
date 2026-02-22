@@ -1,5 +1,7 @@
 """
 OpenAI Provider — streams responses and normalizes them to Anthropic MessageStreamEvent format.
+
+Uses the OpenAI Responses API (client.responses.create).
 """
 
 import json
@@ -29,24 +31,20 @@ logger = logging.getLogger(__name__)
 
 
 def _convert_tools_to_openai(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert Anthropic tool schema to OpenAI function-calling format."""
-    openai_tools = []
-    for tool in tools:
-        openai_tools.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": tool["name"],
-                    "description": tool.get("description", ""),
-                    "parameters": tool["input_schema"],
-                },
-            }
-        )
-    return openai_tools
+    """Convert Anthropic tool schema to OpenAI Responses API function-calling format (flat)."""
+    return [
+        {
+            "type": "function",
+            "name": tool["name"],
+            "description": tool.get("description", ""),
+            "parameters": tool["input_schema"],
+        }
+        for tool in tools
+    ]
 
 
 class OpenAIProvider(LLMProvider):
-    """Provider for OpenAI API (GPT-4, etc.)."""
+    """Provider for OpenAI API (GPT-4, etc.) using the Responses API."""
 
     def __init__(self, api_key: str, model: str):
         self.client = AsyncOpenAI(api_key=api_key)
@@ -62,22 +60,21 @@ class OpenAIProvider(LLMProvider):
         messages: list[dict[str, Any]] | None = None,
         system_prompt: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
-        """Stream response from OpenAI, yielding Anthropic-compatible MessageStreamEvents."""
+        """Stream response from OpenAI Responses API, yielding Anthropic-compatible MessageStreamEvents."""
         try:
-            msg_list = self._convert_messages(
+            input_items = self._convert_messages(
                 messages or [{"role": "user", "content": prompt}]
             )
 
-            if system_prompt:
-                msg_list.insert(0, {"role": "system", "content": system_prompt})
-
             request_params: dict[str, Any] = {
                 "model": self.model,
-                "messages": msg_list,
-                "max_tokens": max_tokens or 4096,
-                "temperature": temperature or 0.7,
+                "input": input_items,
+                "max_output_tokens": max_tokens or 4096,
                 "stream": True,
             }
+
+            if system_prompt:
+                request_params["instructions"] = system_prompt
 
             if top_p is not None:
                 request_params["top_p"] = top_p
@@ -89,10 +86,10 @@ class OpenAIProvider(LLMProvider):
                 )
 
             logger.info(
-                f"[OPENAI] Model: {self.model}, Messages: {len(msg_list)}, Max tokens: {request_params['max_tokens']}"
+                f"[OPENAI] Model: {self.model}, Input items: {len(input_items)}, Max tokens: {request_params['max_output_tokens']}"
             )
 
-            stream = await self.client.chat.completions.create(**request_params)
+            stream = await self.client.responses.create(**request_params)
 
             # Emit message_start
             yield RawMessageStartEvent(
@@ -107,22 +104,16 @@ class OpenAIProvider(LLMProvider):
                 ),
             )
 
-            # Track content blocks: OpenAI streams text in choice deltas and tool calls separately
-            current_text_index = 0
             text_started = False
-            tool_call_indices: dict[int, int] = (
-                {}
-            )  # openai tool index -> our content block index
+            current_text_index = 0
+            tool_call_indices: dict[str, int] = {}  # call_id -> content block index
             next_block_index = 0
 
-            async for chunk in stream:
-                if not chunk.choices:
-                    continue
+            async for event in stream:
+                event_type = event.type
 
-                delta = chunk.choices[0].delta
-
-                # Handle text content
-                if delta.content is not None:
+                # Handle text deltas
+                if event_type == "response.output_text.delta":
                     if not text_started:
                         current_text_index = next_block_index
                         next_block_index += 1
@@ -136,44 +127,42 @@ class OpenAIProvider(LLMProvider):
                     yield RawContentBlockDeltaEvent(
                         type="content_block_delta",
                         index=current_text_index,
-                        delta=TextDelta(type="text_delta", text=delta.content),
+                        delta=TextDelta(type="text_delta", text=event.delta),
                     )
 
-                # Handle tool calls
-                if delta.tool_calls:
-                    for tc in delta.tool_calls:
-                        tc_idx = tc.index
-                        if tc_idx not in tool_call_indices:
-                            block_index = next_block_index
-                            next_block_index += 1
-                            tool_call_indices[tc_idx] = block_index
-                            yield RawContentBlockStartEvent(
-                                type="content_block_start",
-                                index=block_index,
-                                content_block=ToolUseBlock(
-                                    type="tool_use",
-                                    id=tc.id or "",
-                                    name=(
-                                        tc.function.name
-                                        if tc.function and tc.function.name
-                                        else ""
-                                    ),
-                                    input={},
-                                ),
-                            )
+                # Handle tool call start
+                elif event_type == "response.output_item.added":
+                    item = event.item
+                    if item.type == "function_call":
+                        block_index = next_block_index
+                        next_block_index += 1
+                        tool_call_indices[item.call_id] = block_index
+                        yield RawContentBlockStartEvent(
+                            type="content_block_start",
+                            index=block_index,
+                            content_block=ToolUseBlock(
+                                type="tool_use",
+                                id=item.call_id,
+                                name=item.name,
+                                input={},
+                            ),
+                        )
 
-                        if tc.function and tc.function.arguments:
-                            yield RawContentBlockDeltaEvent(
-                                type="content_block_delta",
-                                index=tool_call_indices[tc_idx],
-                                delta=InputJSONDelta(
-                                    type="input_json_delta",
-                                    partial_json=tc.function.arguments,
-                                ),
-                            )
+                # Handle tool call argument deltas
+                elif event_type == "response.function_call_arguments.delta":
+                    call_id = event.item_id
+                    if call_id in tool_call_indices:
+                        yield RawContentBlockDeltaEvent(
+                            type="content_block_delta",
+                            index=tool_call_indices[call_id],
+                            delta=InputJSONDelta(
+                                type="input_json_delta",
+                                partial_json=event.delta,
+                            ),
+                        )
 
-                # Handle finish
-                if chunk.choices[0].finish_reason is not None:
+                # Handle completion
+                elif event_type == "response.completed":
                     break
 
             yield RawMessageStopEvent(type="message_stop")
@@ -184,18 +173,18 @@ class OpenAIProvider(LLMProvider):
             )
 
     def _convert_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Convert Anthropic-style messages to OpenAI format."""
-        openai_messages = []
+        """Convert Anthropic-style messages to OpenAI Responses API input items."""
+        input_items: list[dict[str, Any]] = []
         for msg in messages:
             role = msg["role"]
             content = msg.get("content", "")
 
             if isinstance(content, str):
-                openai_messages.append({"role": role, "content": content})
+                input_items.append({"role": role, "content": content})
                 continue
 
             if not isinstance(content, list):
-                openai_messages.append({"role": role, "content": str(content)})
+                input_items.append({"role": role, "content": str(content)})
                 continue
 
             # Handle block-based content
@@ -213,22 +202,19 @@ class OpenAIProvider(LLMProvider):
                 elif block_type == "tool_use":
                     tool_calls.append(
                         {
-                            "id": block["id"],
-                            "type": "function",
-                            "function": {
-                                "name": block["name"],
-                                "arguments": (
-                                    json.dumps(block["input"])
-                                    if isinstance(block["input"], dict)
-                                    else str(block["input"])
-                                ),
-                            },
+                            "type": "function_call",
+                            "call_id": block["id"],
+                            "name": block["name"],
+                            "arguments": (
+                                json.dumps(block["input"])
+                                if isinstance(block["input"], dict)
+                                else str(block["input"])
+                            ),
                         }
                     )
                 elif block_type == "tool_result":
                     result_content = block.get("content", "")
                     if isinstance(result_content, list):
-                        # Extract text from search_result and text blocks
                         parts = []
                         for rb in result_content:
                             if isinstance(rb, dict):
@@ -248,31 +234,27 @@ class OpenAIProvider(LLMProvider):
                         result_content = "\n\n".join(parts)
                     tool_results.append(
                         {
-                            "role": "tool",
-                            "tool_call_id": block.get("tool_use_id", ""),
-                            "content": str(result_content),
+                            "type": "function_call_output",
+                            "call_id": block.get("tool_use_id", ""),
+                            "output": str(result_content),
                         }
                     )
 
             if role == "assistant":
-                msg_dict: dict[str, Any] = {"role": "assistant"}
                 if text_parts:
-                    msg_dict["content"] = "\n".join(text_parts)
-                if tool_calls:
-                    msg_dict["tool_calls"] = tool_calls
-                    if "content" not in msg_dict:
-                        msg_dict["content"] = None
-                openai_messages.append(msg_dict)
+                    input_items.append(
+                        {"role": "assistant", "content": "\n".join(text_parts)}
+                    )
+                for tc in tool_calls:
+                    input_items.append(tc)
             elif role == "user" and tool_results:
                 for tr in tool_results:
-                    openai_messages.append(tr)
+                    input_items.append(tr)
             else:
                 if text_parts:
-                    openai_messages.append(
-                        {"role": role, "content": "\n".join(text_parts)}
-                    )
+                    input_items.append({"role": role, "content": "\n".join(text_parts)})
 
-        return openai_messages
+        return input_items
 
     async def generate_response(
         self,
@@ -281,17 +263,17 @@ class OpenAIProvider(LLMProvider):
         temperature: float | None = None,
         top_p: float | None = None,
     ) -> str:
-        """Generate non-streaming response from OpenAI."""
+        """Generate non-streaming response from OpenAI Responses API."""
         try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=max_tokens or 4096,
-                temperature=temperature or 0.7,
-                stream=False,
-            )
+            params: dict[str, Any] = {
+                "model": self.model,
+                "input": prompt,
+                "max_output_tokens": max_tokens or 4096,
+                "stream": False,
+            }
+            response = await self.client.responses.create(**params)
 
-            content = response.choices[0].message.content
+            content = response.output_text
             if not content:
                 raise Exception("Empty response from OpenAI")
 
@@ -304,10 +286,10 @@ class OpenAIProvider(LLMProvider):
     async def health_check(self) -> bool:
         """Check if OpenAI API is accessible."""
         try:
-            await self.client.chat.completions.create(
+            await self.client.responses.create(
                 model=self.model,
-                messages=[{"role": "user", "content": "Hello"}],
-                max_tokens=1,
+                input="Hello",
+                max_output_tokens=1,
                 stream=False,
             )
             return True

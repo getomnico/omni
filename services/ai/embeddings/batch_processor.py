@@ -951,6 +951,10 @@ async def start_batch_processing(app_state: AppState):
     The processor reads the current embedding provider and provider type from
     app_state on each iteration, so hot-swapping providers doesn't require a restart.
     """
+    if not app_state.embedding_provider:
+        logger.warning(f"No embedding provider configured, skipping batch processing")
+        return
+
     logger.info(
         f"Starting embedding batch processing with provider: {app_state.embedding_provider_type}"
     )
