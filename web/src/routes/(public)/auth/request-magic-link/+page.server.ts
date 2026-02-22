@@ -5,7 +5,6 @@ import { EmailService } from '$lib/server/email'
 import { db } from '$lib/server/db'
 import { user } from '$lib/server/db/schema'
 import { eq } from 'drizzle-orm'
-import { rateLimit } from '$lib/server/rateLimit'
 import { z } from 'zod'
 import type { Actions } from './$types'
 
@@ -14,18 +13,7 @@ const magicLinkRequestSchema = z.object({
 })
 
 export const actions: Actions = {
-    default: async ({ request, getClientAddress }) => {
-        const clientIp = getClientAddress()
-
-        // Rate limiting: 3 requests per 15 minutes per IP
-        const rateLimitResult = await rateLimit(`magic-link:${clientIp}`, 3, 15 * 60)
-        if (!rateLimitResult.success) {
-            return fail(429, {
-                error: 'Too many magic link requests. Please try again later.',
-                rateLimitExceeded: true,
-            })
-        }
-
+    default: async ({ request }) => {
         const formData = await request.formData()
         const email = formData.get('email')?.toString()?.toLowerCase()
 

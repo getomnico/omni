@@ -9,36 +9,9 @@ import { sha256 } from '@oslojs/crypto/sha2'
 import { encodeHexLowerCase } from '@oslojs/encoding'
 import { userRepository } from '$lib/server/db/users'
 import { SystemFlags } from '$lib/server/system-flags'
+import { getGoogleAuthConfig } from '$lib/server/db/auth-providers'
 import { verify } from '@node-rs/argon2'
 import type { Actions, PageServerLoad } from './$types.js'
-
-// Rate limiting store (in production, use Redis)
-const loginAttempts = new Map<string, { count: number; lastAttempt: number }>()
-const RATE_LIMIT_MAX_ATTEMPTS = 5
-const RATE_LIMIT_WINDOW = 15 * 60 * 1000 // 15 minutes
-
-function checkRateLimit(ip: string): boolean {
-    const now = Date.now()
-    const attempts = loginAttempts.get(ip)
-
-    if (!attempts) {
-        loginAttempts.set(ip, { count: 1, lastAttempt: now })
-        return true
-    }
-
-    if (now - attempts.lastAttempt > RATE_LIMIT_WINDOW) {
-        loginAttempts.set(ip, { count: 1, lastAttempt: now })
-        return true
-    }
-
-    if (attempts.count >= RATE_LIMIT_MAX_ATTEMPTS) {
-        return false
-    }
-
-    attempts.count++
-    attempts.lastAttempt = now
-    return true
-}
 
 export const load: PageServerLoad = async ({ cookies, locals, url }) => {
     if (locals.user) {
@@ -51,6 +24,10 @@ export const load: PageServerLoad = async ({ cookies, locals, url }) => {
         // System not initialized, redirect to signup for initial admin creation
         throw redirect(302, '/signup')
     }
+
+    // Check if Google Auth is enabled
+    const googleConfig = await getGoogleAuthConfig()
+    const googleAuthEnabled = googleConfig?.enabled ?? false
 
     // Handle OAuth error messages from URL parameters
     const error = url.searchParams.get('error')
@@ -96,6 +73,7 @@ export const load: PageServerLoad = async ({ cookies, locals, url }) => {
 
         return {
             error: errorMessage,
+            googleAuthEnabled,
         }
     }
 
@@ -106,28 +84,22 @@ export const load: PageServerLoad = async ({ cookies, locals, url }) => {
     if (welcome) {
         return {
             success: 'Welcome to Omni! Your account has been created successfully.',
+            googleAuthEnabled,
         }
     }
 
     if (linked) {
         return {
             success: `Your ${linked} account has been successfully linked.`,
+            googleAuthEnabled,
         }
     }
 
-    return {}
+    return { googleAuthEnabled }
 }
 
 export const actions: Actions = {
-    default: async ({ request, cookies, getClientAddress }) => {
-        const clientIP = getClientAddress()
-
-        if (!checkRateLimit(clientIP)) {
-            return fail(429, {
-                error: 'Too many login attempts. Please try again in 15 minutes.',
-            })
-        }
-
+    default: async ({ request, cookies }) => {
         const formData = await request.formData()
         const email = formData.get('email') as string
         const password = formData.get('password') as string
@@ -192,9 +164,6 @@ export const actions: Actions = {
             const session = await createSession(sessionToken, foundUser.id)
 
             setSessionTokenCookie(cookies, sessionToken, session.expiresAt)
-
-            // Clear rate limiting on successful login
-            loginAttempts.delete(clientIP)
         } catch (error) {
             console.error('Login error:', error)
             return fail(500, {

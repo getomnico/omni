@@ -1,15 +1,11 @@
 import { redirect } from '@sveltejs/kit'
 import { UserOAuthCredentialsService } from '$lib/server/oauth/userCredentials'
-import { applyRateLimit } from '$lib/server/rateLimit'
 import { validateSession } from '$lib/server/auth'
 import { session } from '$lib/server/config'
 import type { RequestHandler } from './$types'
 
-export const POST: RequestHandler = async ({ url, cookies, getClientAddress }) => {
+export const POST: RequestHandler = async ({ url, cookies }) => {
     try {
-        // Apply rate limiting for OAuth unlinking requests
-        await applyRateLimit(getClientAddress(), 'oauth-unlink', 5, 60) // 5 requests per minute
-
         // Check if user is authenticated
         const sessionId = cookies.get(session.cookieName)
         if (!sessionId) {
@@ -44,11 +40,6 @@ export const POST: RequestHandler = async ({ url, cookies, getClientAddress }) =
         throw redirect(302, '/settings/integrations?success=google_unlinked')
     } catch (error) {
         console.error('OAuth unlink error:', error)
-
-        // Handle rate limiting errors
-        if (error instanceof Error && error.message.includes('Rate limit')) {
-            throw redirect(302, '/settings/integrations?error=rate_limit')
-        }
 
         // Re-throw redirects
         if (error instanceof Response) {

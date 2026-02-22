@@ -26,19 +26,21 @@ export class UserOAuthCredentialsService {
         tokens: OAuthTokens,
     ): Promise<UserOAuthCredential> {
         const id = ulid()
-        const expiresAt = tokens.expires_in ? new Date(Date.now() + tokens.expires_in * 1000) : null
+        const expiresAt = tokens.expires_in
+            ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+            : null
 
         const scopes = tokens.scope ? tokens.scope.split(' ') : []
 
         await db.execute(sql`
             INSERT INTO user_oauth_credentials (
-                id, user_id, provider, provider_user_id, 
-                access_token, refresh_token, token_type, 
+                id, user_id, provider, provider_user_id,
+                access_token, refresh_token, token_type,
                 expires_at, scopes, profile_data
             ) VALUES (
                 ${id}, ${userId}, ${provider}, ${profile.id},
                 ${tokens.access_token}, ${tokens.refresh_token || null}, ${tokens.token_type},
-                ${expiresAt}, ${JSON.stringify(scopes)}, ${JSON.stringify(profile)}
+                ${expiresAt}, ${`{${scopes.join(',')}}`}, ${JSON.stringify(profile)}
             )
             ON CONFLICT (user_id, provider, provider_user_id) 
             DO UPDATE SET
@@ -59,19 +61,19 @@ export class UserOAuthCredentialsService {
         provider: string,
         providerUserId: string,
     ): Promise<UserOAuthCredential> {
-        const result = await db.execute(sql`
-            SELECT * FROM user_oauth_credentials 
-            WHERE user_id = ${userId} 
-            AND provider = ${provider} 
+        const rows = await db.execute(sql`
+            SELECT * FROM user_oauth_credentials
+            WHERE user_id = ${userId}
+            AND provider = ${provider}
             AND provider_user_id = ${providerUserId}
             LIMIT 1
         `)
 
-        if (!result.rows.length) {
+        if (!rows.length) {
             throw new Error('OAuth credentials not found')
         }
 
-        const row = result.rows[0] as any
+        const row = rows[0] as any
         return {
             id: row.id,
             user_id: row.user_id,
@@ -89,13 +91,13 @@ export class UserOAuthCredentialsService {
     }
 
     static async getUserOAuthCredentials(userId: string): Promise<UserOAuthCredential[]> {
-        const result = await db.execute(sql`
-            SELECT * FROM user_oauth_credentials 
+        const rows = await db.execute(sql`
+            SELECT * FROM user_oauth_credentials
             WHERE user_id = ${userId}
             ORDER BY provider, created_at
         `)
 
-        return result.rows.map((row: any) => ({
+        return rows.map((row: any) => ({
             id: row.id,
             user_id: row.user_id,
             provider: row.provider,
@@ -115,18 +117,18 @@ export class UserOAuthCredentialsService {
         provider: string,
         providerUserId: string,
     ): Promise<UserOAuthCredential | null> {
-        const result = await db.execute(sql`
-            SELECT * FROM user_oauth_credentials 
-            WHERE provider = ${provider} 
+        const rows = await db.execute(sql`
+            SELECT * FROM user_oauth_credentials
+            WHERE provider = ${provider}
             AND provider_user_id = ${providerUserId}
             LIMIT 1
         `)
 
-        if (!result.rows.length) {
+        if (!rows.length) {
             return null
         }
 
-        const row = result.rows[0] as any
+        const row = rows[0] as any
         return {
             id: row.id,
             user_id: row.user_id,
@@ -162,11 +164,13 @@ export class UserOAuthCredentialsService {
         providerUserId: string,
         tokens: OAuthTokens,
     ): Promise<void> {
-        const expiresAt = tokens.expires_in ? new Date(Date.now() + tokens.expires_in * 1000) : null
+        const expiresAt = tokens.expires_in
+            ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+            : null
 
         await db.execute(sql`
-            UPDATE user_oauth_credentials 
-            SET 
+            UPDATE user_oauth_credentials
+            SET
                 access_token = ${tokens.access_token},
                 refresh_token = COALESCE(${tokens.refresh_token}, refresh_token),
                 token_type = ${tokens.token_type},

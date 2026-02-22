@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm'
 import { db } from './db'
 import { approvedDomains, user, type ApprovedDomain } from './db/schema'
-import { createId } from '@paralleldrive/cuid2'
+import { ulid } from 'ulid'
 
 export interface DomainResult {
     success: boolean
@@ -61,7 +61,7 @@ export class DomainService {
                 }
             }
 
-            const id = createId()
+            const id = ulid()
             const newDomain = {
                 id,
                 domain,

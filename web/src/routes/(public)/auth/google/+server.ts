@@ -1,16 +1,14 @@
 import { redirect } from '@sveltejs/kit'
 import { GoogleOAuthService } from '$lib/server/oauth/google'
-import { checkRateLimit } from '$lib/server/rateLimit'
 import type { RequestHandler } from './$types'
+import { logger } from '$lib/server/logger'
 
-export const GET: RequestHandler = async ({ url, getClientAddress }) => {
+export const GET: RequestHandler = async ({ url }) => {
+    let authUrl: string
     try {
-        // Apply rate limiting for OAuth requests
-        await checkRateLimit(getClientAddress(), 'oauth-initiate', 5, 60) // 5 requests per minute
-
         // Check if Google OAuth is configured
-        if (!GoogleOAuthService.isConfigured()) {
-            console.error('Google OAuth is not configured')
+        if (!(await GoogleOAuthService.isConfigured())) {
+            logger.error('Google OAuth is not configured')
             throw redirect(302, '/login?error=oauth_not_configured')
         }
 
@@ -31,17 +29,9 @@ export const GET: RequestHandler = async ({ url, getClientAddress }) => {
         }
 
         // Generate OAuth authorization URL
-        const authUrl = await GoogleOAuthService.generateAuthUrl(redirectUri)
-
-        // Redirect to Google OAuth
-        throw redirect(302, authUrl)
+        authUrl = await GoogleOAuthService.generateAuthUrl(redirectUri)
     } catch (error) {
-        console.error('OAuth initiation error:', error)
-
-        // Handle rate limiting errors
-        if (error instanceof Error && error.message.includes('Rate limit')) {
-            throw redirect(302, '/login?error=rate_limit')
-        }
+        logger.error('OAuth initiation error:', error)
 
         // Re-throw redirects
         if (error instanceof Response) {
@@ -51,6 +41,10 @@ export const GET: RequestHandler = async ({ url, getClientAddress }) => {
         // Handle other errors
         throw redirect(302, '/login?error=oauth_error')
     }
+
+    // Redirect to Google OAuth
+    logger.info('Redirecting to Google:', authUrl)
+    throw redirect(302, authUrl)
 }
 
 // Also handle POST requests for consistency

@@ -3,7 +3,7 @@
     import type { Snippet } from 'svelte'
     import { cn } from '$lib/utils'
     import { page } from '$app/state'
-    import { ArrowLeft, Cable, Users, Cpu, ArrowUpRight } from '@lucide/svelte'
+    import { ArrowLeft, Cable, Users, Shield, Cpu, ArrowUpRight } from '@lucide/svelte'
     import Button from '$lib/components/ui/button/button.svelte'
 
     interface Props {
@@ -53,6 +53,20 @@
                                     <a href="/admin/settings/user-management" {...props}>
                                         <Users class="h-4 w-4" />
                                         <span>User Management</span>
+                                    </a>
+                                {/snippet}
+                            </Sidebar.MenuButton>
+                        </Sidebar.MenuItem>
+                        <Sidebar.MenuItem>
+                            <Sidebar.MenuButton
+                                class={cn(
+                                    page.url.pathname === '/admin/settings/authentication' &&
+                                        'bg-sidebar-accent text-sidebar-accent-foreground',
+                                )}>
+                                {#snippet child({ props })}
+                                    <a href="/admin/settings/authentication" {...props}>
+                                        <Shield class="h-4 w-4" />
+                                        <span>Authentication</span>
                                     </a>
                                 {/snippet}
                             </Sidebar.MenuButton>

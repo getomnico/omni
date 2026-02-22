@@ -1,16 +1,12 @@
 import { redirect } from '@sveltejs/kit'
 import { GoogleOAuthService } from '$lib/server/oauth/google'
 import { AccountLinkingService } from '$lib/server/oauth/accountLinking'
-import { applyRateLimit } from '$lib/server/rateLimit'
 import { validateSession } from '$lib/server/auth'
 import { session } from '$lib/server/config'
 import type { RequestHandler } from './$types'
 
-export const GET: RequestHandler = async ({ url, cookies, getClientAddress }) => {
+export const GET: RequestHandler = async ({ url, cookies }) => {
     try {
-        // Apply rate limiting for OAuth linking requests
-        await applyRateLimit(getClientAddress(), 'oauth-link', 5, 60) // 5 requests per minute
-
         // Check if user is authenticated
         const sessionId = cookies.get(session.cookieName)
         if (!sessionId) {
@@ -25,7 +21,7 @@ export const GET: RequestHandler = async ({ url, cookies, getClientAddress }) =>
         }
 
         // Check if Google OAuth is configured
-        if (!GoogleOAuthService.isConfigured()) {
+        if (!(await GoogleOAuthService.isConfigured())) {
             console.error('Google OAuth is not configured')
             throw redirect(302, '/settings/integrations?error=oauth_not_configured')
         }
@@ -51,11 +47,6 @@ export const GET: RequestHandler = async ({ url, cookies, getClientAddress }) =>
         throw redirect(302, authUrl)
     } catch (error) {
         console.error('OAuth link initiation error:', error)
-
-        // Handle rate limiting errors
-        if (error instanceof Error && error.message.includes('Rate limit')) {
-            throw redirect(302, '/settings/integrations?error=rate_limit')
-        }
 
         // Re-throw redirects
         if (error instanceof Response) {

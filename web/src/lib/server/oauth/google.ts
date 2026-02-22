@@ -1,28 +1,35 @@
-import { oauth } from '../config'
+import { getGoogleAuthConfig } from '../db/auth-providers'
+import { app } from '../config'
 import { OAuthStateManager } from './state'
-import type { OAuthConfig, OAuthProfile, OAuthTokens, OAuthError } from './types'
+import type { OAuthProfile, OAuthTokens, OAuthError } from './types'
+
+const GOOGLE_AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth'
+const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
+const GOOGLE_USERINFO_ENDPOINT = 'https://openidconnect.googleapis.com/v1/userinfo'
+const DEFAULT_SCOPES = ['openid', 'profile', 'email']
 
 export class GoogleOAuthService {
-    private static readonly GOOGLE_CONFIG: OAuthConfig = {
-        clientId: oauth.google.clientId,
-        clientSecret: oauth.google.clientSecret,
-        redirectUri: oauth.google.redirectUri,
-        scopes: oauth.google.scopes,
-        authorizationEndpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
-        tokenEndpoint: 'https://oauth2.googleapis.com/token',
-        userinfoEndpoint: 'https://openidconnect.googleapis.com/v1/userinfo',
+    private static async loadConfig() {
+        const config = await getGoogleAuthConfig()
+        if (!config || !config.enabled || !config.clientId || !config.clientSecret) {
+            return null
+        }
+        return {
+            clientId: config.clientId,
+            clientSecret: config.clientSecret,
+            redirectUri: `${app.publicUrl}/auth/google/callback`,
+            scopes: DEFAULT_SCOPES,
+        }
     }
 
-    static isConfigured(): boolean {
-        return !!(
-            this.GOOGLE_CONFIG.clientId &&
-            this.GOOGLE_CONFIG.clientSecret &&
-            this.GOOGLE_CONFIG.redirectUri
-        )
+    static async isConfigured(): Promise<boolean> {
+        const config = await this.loadConfig()
+        return config !== null
     }
 
     static async generateAuthUrl(redirectUri?: string, userId?: string): Promise<string> {
-        if (!this.isConfigured()) {
+        const config = await this.loadConfig()
+        if (!config) {
             throw new Error('Google OAuth is not configured')
         }
 
@@ -30,14 +37,13 @@ export class GoogleOAuthService {
             'google',
             redirectUri,
             userId,
-            { nonce },
         )
 
         const params = new URLSearchParams({
-            client_id: this.GOOGLE_CONFIG.clientId,
-            redirect_uri: this.GOOGLE_CONFIG.redirectUri,
+            client_id: config.clientId,
+            redirect_uri: config.redirectUri,
             response_type: 'code',
-            scope: this.GOOGLE_CONFIG.scopes.join(' '),
+            scope: config.scopes.join(' '),
             state: stateToken,
             access_type: 'offline',
             prompt: 'consent',
@@ -45,7 +51,7 @@ export class GoogleOAuthService {
             hd: '*', // Allow any Google Workspace domain
         })
 
-        return `${this.GOOGLE_CONFIG.authorizationEndpoint}?${params.toString()}`
+        return `${GOOGLE_AUTH_ENDPOINT}?${params.toString()}`
     }
 
     static async exchangeCodeForTokens(
@@ -55,20 +61,25 @@ export class GoogleOAuthService {
         tokens: OAuthTokens
         state: any
     }> {
+        const config = await this.loadConfig()
+        if (!config) {
+            throw new Error('Google OAuth is not configured')
+        }
+
         const state = await OAuthStateManager.validateAndConsumeState(stateToken)
         if (!state) {
             throw new Error('Invalid or expired OAuth state')
         }
 
         const tokenParams = new URLSearchParams({
-            client_id: this.GOOGLE_CONFIG.clientId,
-            client_secret: this.GOOGLE_CONFIG.clientSecret,
+            client_id: config.clientId,
+            client_secret: config.clientSecret,
             code: code,
             grant_type: 'authorization_code',
-            redirect_uri: this.GOOGLE_CONFIG.redirectUri,
+            redirect_uri: config.redirectUri,
         })
 
-        const response = await fetch(this.GOOGLE_CONFIG.tokenEndpoint, {
+        const response = await fetch(GOOGLE_TOKEN_ENDPOINT, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded',
@@ -90,7 +101,7 @@ export class GoogleOAuthService {
     }
 
     static async fetchUserProfile(accessToken: string): Promise<OAuthProfile> {
-        const response = await fetch(this.GOOGLE_CONFIG.userinfoEndpoint, {
+        const response = await fetch(GOOGLE_USERINFO_ENDPOINT, {
             headers: {
                 Authorization: `Bearer ${accessToken}`,
             },
@@ -118,14 +129,19 @@ export class GoogleOAuthService {
     }
 
     static async refreshToken(refreshToken: string): Promise<OAuthTokens> {
+        const config = await this.loadConfig()
+        if (!config) {
+            throw new Error('Google OAuth is not configured')
+        }
+
         const params = new URLSearchParams({
-            client_id: this.GOOGLE_CONFIG.clientId,
-            client_secret: this.GOOGLE_CONFIG.clientSecret,
+            client_id: config.clientId,
+            client_secret: config.clientSecret,
             refresh_token: refreshToken,
             grant_type: 'refresh_token',
         })
 
-        const response = await fetch(this.GOOGLE_CONFIG.tokenEndpoint, {
+        const response = await fetch(GOOGLE_TOKEN_ENDPOINT, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded',

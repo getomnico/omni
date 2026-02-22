@@ -124,19 +124,19 @@ export class AccountLinkingService {
     }
 
     private static async findUserByEmail(email: string): Promise<User | null> {
-        const result = await db.execute(sql`
+        const rows = await db.execute(sql`
             SELECT * FROM users WHERE email = ${email} LIMIT 1
         `)
 
-        if (!result.rows.length) {
+        if (!rows.length) {
             return null
         }
 
-        const row = result.rows[0] as any
+        const row = rows[0] as any
         return {
             id: row.id,
             email: row.email,
-            name: row.name,
+            name: row.full_name,
             role: row.role,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -144,19 +144,19 @@ export class AccountLinkingService {
     }
 
     private static async getUserById(id: string): Promise<User> {
-        const result = await db.execute(sql`
+        const rows = await db.execute(sql`
             SELECT * FROM users WHERE id = ${id} LIMIT 1
         `)
 
-        if (!result.rows.length) {
+        if (!rows.length) {
             throw new Error('User not found')
         }
 
-        const row = result.rows[0] as any
+        const row = rows[0] as any
         return {
             id: row.id,
             email: row.email,
-            name: row.name,
+            name: row.full_name,
             role: row.role,
             created_at: row.created_at,
             updated_at: row.updated_at,
@@ -172,12 +172,12 @@ export class AccountLinkingService {
 
         // Default role is 'user', first user gets 'admin' role
         const firstUserResult = await db.execute(sql`SELECT COUNT(*) as count FROM users`)
-        const userCount = parseInt((firstUserResult.rows[0] as any).count)
+        const userCount = parseInt((firstUserResult[0] as any).count)
         const role = userCount === 0 ? 'admin' : 'user'
 
         await db.execute(sql`
-            INSERT INTO users (id, email, name, role, password_hash, email_verified)
-            VALUES (${id}, ${profile.email}, ${name}, ${role}, '', ${profile.email_verified || false})
+            INSERT INTO users (id, email, full_name, role, password_hash)
+            VALUES (${id}, ${profile.email}, ${name}, ${role}, '')
         `)
 
         return this.getUserById(id)
@@ -191,17 +191,8 @@ export class AccountLinkingService {
         if (oauthName && oauthName !== user.name && oauthName !== user.email) {
             await db.execute(sql`
                 UPDATE users 
-                SET name = ${oauthName}, updated_at = NOW()
+                SET full_name = ${oauthName}, updated_at = NOW()
                 WHERE id = ${user.id}
-            `)
-        }
-
-        // Update email verification status if OAuth provider verified the email
-        if (profile.email_verified) {
-            await db.execute(sql`
-                UPDATE users 
-                SET email_verified = true, updated_at = NOW()
-                WHERE id = ${user.id} AND email_verified = false
             `)
         }
     }
