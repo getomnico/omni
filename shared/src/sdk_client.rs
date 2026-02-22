@@ -489,6 +489,33 @@ impl SdkClient {
         Ok(())
     }
 
+    /// Get connector config for a provider (e.g. OAuth app credentials)
+    pub async fn get_connector_config(&self, provider: &str) -> Result<serde_json::Value> {
+        debug!("SDK: Getting connector config for provider={}", provider);
+
+        let response = self
+            .client
+            .get(format!(
+                "{}/sdk/connector-configs/{}",
+                self.base_url, provider
+            ))
+            .send()
+            .await
+            .context("Failed to get connector config")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Failed to get connector config: {} - {}", status, body);
+        }
+
+        let config: serde_json::Value = response
+            .json()
+            .await
+            .context("Failed to parse connector config response")?;
+        Ok(config)
+    }
+
     /// Get all active sources of a given type
     pub async fn get_sources_by_type(&self, source_type: &str) -> Result<Vec<Source>> {
         debug!("SDK: Getting sources by type={}", source_type);

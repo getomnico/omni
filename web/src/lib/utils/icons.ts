@@ -11,6 +11,7 @@ import atlassianIcon from '$lib/images/icons/atlassian.svg'
 import confluenceIcon from '$lib/images/icons/confluence.svg'
 import jiraIcon from '$lib/images/icons/jira.svg'
 import firefliesIcon from '$lib/images/icons/fireflies.svg'
+import hubspotIcon from '$lib/images/icons/hubspot.svg'
 
 // Google Workspace MIME types
 const GOOGLE_DOCS_MIMETYPES = [
@@ -81,6 +82,8 @@ export function getSourceIconPath(sourceType: string): string | null {
             return jiraIcon
         case SourceType.FIREFLIES:
             return firefliesIcon
+        case SourceType.HUBSPOT:
+            return hubspotIcon
         case SourceType.GITHUB:
             return null // TODO: Add github icon when available
         case SourceType.LOCAL_FILES:

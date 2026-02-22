@@ -1,5 +1,6 @@
 import { requireAdmin } from '$lib/server/authHelpers'
 import { sourcesRepository } from '$lib/server/repositories/sources'
+import { getConnectorConfigPublic } from '$lib/server/db/connector-configs'
 import type { PageServerLoad } from './$types'
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -7,10 +8,14 @@ export const load: PageServerLoad = async ({ locals }) => {
 
     const connectedSources = await sourcesRepository.getAll()
     const latestSyncRuns = await sourcesRepository.getLatestSyncRuns()
+    const googleConnectorConfig = await getConnectorConfigPublic('google')
 
     return {
         connectedSources,
         latestSyncRuns,
+        googleOAuthConfigured: !!(
+            googleConnectorConfig && googleConnectorConfig.config.oauth_client_id
+        ),
         availableIntegrations: [
             {
                 id: 'google',

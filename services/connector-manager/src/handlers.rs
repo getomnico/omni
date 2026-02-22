@@ -746,3 +746,28 @@ pub async fn sdk_get_sources_by_type(
 
     Ok(Json(active_sources))
 }
+
+// ============================================================================
+// SDK Connector Config
+// ============================================================================
+
+pub async fn sdk_get_connector_config(
+    State(state): State<AppState>,
+    Path(provider): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    debug!("SDK: Getting connector config for provider={}", provider);
+
+    let repo = shared::ConnectorConfigRepository::new(state.db_pool.pool().clone());
+    let config = repo
+        .get_by_provider(&provider)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to get connector config: {}", e)))?
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "Connector config not found for provider: {}",
+                provider
+            ))
+        })?;
+
+    Ok(Json(config.config))
+}

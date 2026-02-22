@@ -191,6 +191,9 @@ pub enum AuthType {
     BasicAuth,
     BearerToken,
     BotToken,
+    #[sqlx(rename = "oauth")]
+    #[serde(rename = "oauth")]
+    OAuth,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -210,6 +213,15 @@ pub struct ServiceCredentials {
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::iso8601")]
     pub updated_at: OffsetDateTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ConnectorConfigRow {
+    pub provider: String,
+    pub config: JsonValue,
+    #[serde(with = "time::serde::iso8601")]
+    pub updated_at: OffsetDateTime,
+    pub updated_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

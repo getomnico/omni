@@ -2,9 +2,10 @@ import { json, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
 import { db } from '$lib/server/db'
 import { sources, serviceCredentials, syncRuns } from '$lib/server/db/schema'
-import { eq, inArray, desc, sql } from 'drizzle-orm'
+import { and, eq, inArray, desc, sql } from 'drizzle-orm'
 import { ulid } from 'ulid'
 import { logger } from '$lib/server/logger'
+import { SourceType } from '$lib/types'
 
 export const GET: RequestHandler = async ({ locals }) => {
     if (!locals.user) {
@@ -75,6 +76,28 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
     if (!name || !sourceType) {
         throw error(400, 'Name and sourceType are required')
+    }
+
+    // OAuth-based connectors should only have one source per user. Other connectors
+    // (e.g. web) can have multiple instances — one per site the user wants to crawl.
+    // TODO: Consider adding other OAuth connectors (e.g. Outlook, Slack) as they support user-level OAuth.
+    const uniqueSourceTypes: string[] = [SourceType.GOOGLE_DRIVE, SourceType.GMAIL]
+    if (uniqueSourceTypes.includes(sourceType)) {
+        const [existing] = await db
+            .select({ id: sources.id })
+            .from(sources)
+            .where(
+                and(
+                    eq(sources.sourceType, sourceType),
+                    eq(sources.createdBy, locals.user.id),
+                    eq(sources.isDeleted, false),
+                ),
+            )
+            .limit(1)
+
+        if (existing) {
+            throw error(409, `A ${sourceType} source already exists`)
+        }
     }
 
     const [newSource] = await db

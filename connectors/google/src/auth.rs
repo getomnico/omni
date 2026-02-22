@@ -230,7 +230,159 @@ impl ServiceAccountAuth {
     }
 }
 
-/// Determine the required scopes based on the source type
+/// OAuth2 authentication for individual user tokens
+#[derive(Clone)]
+pub struct OAuthAuth {
+    access_token: Arc<RwLock<String>>,
+    refresh_token: String,
+    client_id: String,
+    client_secret: String,
+    token_expiry: Arc<RwLock<i64>>,
+    user_email: String,
+    client: Client,
+}
+
+impl OAuthAuth {
+    pub fn new(
+        access_token: String,
+        refresh_token: String,
+        expires_at: i64,
+        user_email: String,
+        client_id: String,
+        client_secret: String,
+    ) -> Result<Self> {
+        let client = Client::builder()
+            .pool_max_idle_per_host(5)
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| anyhow!("Failed to build HTTP client: {}", e))?;
+
+        Ok(Self {
+            access_token: Arc::new(RwLock::new(access_token)),
+            refresh_token,
+            client_id,
+            client_secret,
+            token_expiry: Arc::new(RwLock::new(expires_at)),
+            user_email,
+            client,
+        })
+    }
+
+    pub fn user_email(&self) -> &str {
+        &self.user_email
+    }
+
+    /// Get a valid access token, refreshing if near expiry
+    pub async fn get_access_token(&self, _user_email: &str) -> Result<String> {
+        let now = Utc::now().timestamp();
+        let expiry = { *self.token_expiry.read().await };
+
+        // Refresh if token expires within 5 minutes
+        if expiry <= now + 300 {
+            return self.refresh_access_token().await;
+        }
+
+        Ok(self.access_token.read().await.clone())
+    }
+
+    pub async fn refresh_access_token(&self) -> Result<String> {
+        info!(
+            "Refreshing OAuth access token for user: {}",
+            self.user_email
+        );
+
+        let params = [
+            ("client_id", self.client_id.as_str()),
+            ("client_secret", self.client_secret.as_str()),
+            ("refresh_token", self.refresh_token.as_str()),
+            ("grant_type", "refresh_token"),
+        ];
+
+        let response = self
+            .client
+            .post("https://oauth2.googleapis.com/token")
+            .form(&params)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            return Err(anyhow!(
+                "Failed to refresh OAuth token for {}: {}",
+                self.user_email,
+                error_text
+            ));
+        }
+
+        #[derive(Deserialize)]
+        struct TokenResponse {
+            access_token: String,
+            expires_in: i64,
+        }
+
+        let token_response: TokenResponse = response.json().await?;
+        let now = Utc::now().timestamp();
+
+        {
+            let mut token = self.access_token.write().await;
+            *token = token_response.access_token.clone();
+        }
+        {
+            let mut expiry = self.token_expiry.write().await;
+            *expiry = now + token_response.expires_in;
+        }
+
+        Ok(token_response.access_token)
+    }
+
+    pub async fn get_fresh_token(&self, user_email: &str) -> Result<String> {
+        self.get_access_token(user_email).await
+    }
+}
+
+/// Unified auth enum that wraps both service account and OAuth authentication
+#[derive(Clone)]
+pub enum GoogleAuth {
+    ServiceAccount(ServiceAccountAuth),
+    OAuth(OAuthAuth),
+}
+
+impl GoogleAuth {
+    pub async fn get_access_token(&self, user_email: &str) -> Result<String> {
+        match self {
+            GoogleAuth::ServiceAccount(sa) => sa.get_access_token(user_email).await,
+            GoogleAuth::OAuth(oauth) => oauth.get_access_token(user_email).await,
+        }
+    }
+
+    pub async fn get_fresh_token(&self, user_email: &str) -> Result<String> {
+        match self {
+            GoogleAuth::ServiceAccount(sa) => sa.get_fresh_token(user_email).await,
+            GoogleAuth::OAuth(oauth) => oauth.get_fresh_token(user_email).await,
+        }
+    }
+
+    pub async fn refresh_access_token(&self, user_email: &str) -> Result<String> {
+        match self {
+            GoogleAuth::ServiceAccount(sa) => sa.refresh_access_token(user_email).await,
+            GoogleAuth::OAuth(oauth) => oauth.refresh_access_token().await,
+        }
+    }
+
+    pub fn is_oauth(&self) -> bool {
+        matches!(self, GoogleAuth::OAuth(_))
+    }
+
+    pub fn oauth_user_email(&self) -> Option<&str> {
+        match self {
+            GoogleAuth::OAuth(oauth) => Some(oauth.user_email()),
+            _ => None,
+        }
+    }
+}
+
+/// Determine the required scopes based on the source type (for service accounts with admin delegation)
 pub fn get_scopes_for_source_type(source_type: SourceType) -> Vec<String> {
     let mut scopes = vec![
         // Admin scope is always needed to list users
@@ -245,13 +397,30 @@ pub fn get_scopes_for_source_type(source_type: SourceType) -> Vec<String> {
             scopes.push("https://www.googleapis.com/auth/gmail.readonly".to_string());
         }
         _ => {
-            // For any other source type, this shouldn't be called, but include both for compatibility
             scopes.push("https://www.googleapis.com/auth/drive.readonly".to_string());
             scopes.push("https://www.googleapis.com/auth/gmail.readonly".to_string());
         }
     }
 
     scopes
+}
+
+/// Determine the required OAuth scopes for a source type (no admin directory scope)
+pub fn get_oauth_scopes_for_source_type(source_type: SourceType) -> Vec<String> {
+    match source_type {
+        SourceType::GoogleDrive => {
+            vec!["https://www.googleapis.com/auth/drive.readonly".to_string()]
+        }
+        SourceType::Gmail => {
+            vec!["https://www.googleapis.com/auth/gmail.readonly".to_string()]
+        }
+        _ => {
+            vec![
+                "https://www.googleapis.com/auth/drive.readonly".to_string(),
+                "https://www.googleapis.com/auth/gmail.readonly".to_string(),
+            ]
+        }
+    }
 }
 
 pub fn is_auth_error(status: reqwest::StatusCode) -> bool {
@@ -266,7 +435,7 @@ pub enum ApiResult<T> {
 }
 
 pub async fn execute_with_auth_retry<T, F, Fut>(
-    auth: &ServiceAccountAuth,
+    auth: &GoogleAuth,
     user_email: &str,
     rate_limiter: Arc<RateLimiter>,
     operation: F,

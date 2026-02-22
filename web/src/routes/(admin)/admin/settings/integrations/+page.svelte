@@ -22,6 +22,7 @@
     import { Globe, HardDrive, Loader2 } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import GoogleWorkspaceSetup from '$lib/components/google-workspace-setup.svelte'
+    import GoogleOAuthSetup from '$lib/components/google-oauth-setup.svelte'
     import AtlassianConnectorSetup from '$lib/components/atlassian-connector-setup.svelte'
     import SlackConnectorSetup from '$lib/components/slack-connector-setup.svelte'
     import HubspotConnectorSetup from '$lib/components/hubspot-connector-setup.svelte'
@@ -96,12 +97,18 @@
     }
 
     let showGoogleSetup = $state(false)
+    let showGoogleOAuthSetup = $state(false)
     let showAtlassianSetup = $state(false)
     let showSlackSetup = $state(false)
     let showWebSetup = $state(false)
     let showFilesystemSetup = $state(false)
     let showHubspotSetup = $state(false)
     let showFirefliesSetup = $state(false)
+
+    function handleGoogleOAuthSetupSuccess() {
+        showGoogleOAuthSetup = false
+        window.location.reload()
+    }
 
     function handleConnect(integrationId: string) {
         if (integrationId === 'google') {
@@ -398,7 +405,7 @@
                             <CardDescription>{integration.description}</CardDescription>
                         </CardHeader>
                         <CardContent class="flex-1" />
-                        <CardFooter>
+                        <CardFooter class="flex gap-2">
                             {#if integration.comingSoon}
                                 <Button size="sm" disabled>Coming Soon</Button>
                             {:else}
@@ -408,6 +415,15 @@
                                     onclick={() => handleConnect(integration.id)}>
                                     Connect
                                 </Button>
+                                {#if integration.id === 'google' && data.googleOAuthConfigured}
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        class="cursor-pointer"
+                                        onclick={() => (showGoogleOAuthSetup = true)}>
+                                        Connect with OAuth
+                                    </Button>
+                                {/if}
                             {/if}
                         </CardFooter>
                     </Card>
@@ -419,8 +435,14 @@
 
 <GoogleWorkspaceSetup
     bind:open={showGoogleSetup}
+    googleOAuthConfigured={data.googleOAuthConfigured}
     onSuccess={handleGoogleSetupSuccess}
     onCancel={() => (showGoogleSetup = false)} />
+
+<GoogleOAuthSetup
+    bind:open={showGoogleOAuthSetup}
+    onSuccess={handleGoogleOAuthSetupSuccess}
+    onCancel={() => (showGoogleOAuthSetup = false)} />
 
 <AtlassianConnectorSetup
     bind:open={showAtlassianSetup}

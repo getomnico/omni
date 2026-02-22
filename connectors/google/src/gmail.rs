@@ -8,7 +8,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tracing::debug;
 
-use crate::auth::{execute_with_auth_retry, is_auth_error, ApiResult, ServiceAccountAuth};
+use crate::auth::{execute_with_auth_retry, is_auth_error, ApiResult, GoogleAuth};
 use shared::RateLimiter;
 
 const GMAIL_API_BASE: &str = "https://gmail.googleapis.com/gmail/v1";
@@ -93,7 +93,7 @@ impl GmailClient {
 
     pub async fn list_messages(
         &self,
-        auth: &ServiceAccountAuth,
+        auth: &GoogleAuth,
         user_email: &str,
         query: Option<&str>,
         max_results: Option<u32>,
@@ -172,7 +172,7 @@ impl GmailClient {
 
     pub async fn list_threads(
         &self,
-        auth: &ServiceAccountAuth,
+        auth: &GoogleAuth,
         user_email: &str,
         query: Option<&str>,
         max_results: Option<u32>,
@@ -251,7 +251,7 @@ impl GmailClient {
 
     pub async fn get_message(
         &self,
-        auth: &ServiceAccountAuth,
+        auth: &GoogleAuth,
         user_email: &str,
         message_id: &str,
         format: MessageFormat,
@@ -325,7 +325,7 @@ impl GmailClient {
 
     pub async fn get_thread(
         &self,
-        auth: &ServiceAccountAuth,
+        auth: &GoogleAuth,
         user_email: &str,
         thread_id: &str,
         format: MessageFormat,
@@ -399,7 +399,7 @@ impl GmailClient {
 
     pub async fn batch_get_threads(
         &self,
-        auth: &ServiceAccountAuth,
+        auth: &GoogleAuth,
         user_email: &str,
         thread_ids: &[String],
         format: MessageFormat,
@@ -554,7 +554,7 @@ impl GmailClient {
 
     pub async fn list_history(
         &self,
-        auth: &ServiceAccountAuth,
+        auth: &GoogleAuth,
         user_email: &str,
         start_history_id: &str,
         max_results: Option<u32>,
@@ -616,11 +616,7 @@ impl GmailClient {
         .await
     }
 
-    pub async fn get_profile(
-        &self,
-        auth: &ServiceAccountAuth,
-        user_email: &str,
-    ) -> Result<GmailProfile> {
+    pub async fn get_profile(&self, auth: &GoogleAuth, user_email: &str) -> Result<GmailProfile> {
         let rate_limiter = self.get_or_create_user_rate_limiter(user_email)?;
         execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| async move {
             let url = format!("{}/users/{}/profile", GMAIL_API_BASE, user_email);

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use zip::ZipArchive;
 
-use crate::auth::{execute_with_auth_retry, is_auth_error, ApiResult, ServiceAccountAuth};
+use crate::auth::{execute_with_auth_retry, is_auth_error, ApiResult, GoogleAuth};
 use crate::models::{
     DriveChangesResponse, GoogleDriveFile, GooglePresentation, WebhookChannel,
     WebhookChannelResponse,
@@ -78,7 +78,7 @@ impl DriveClient {
 
     pub async fn list_files(
         &self,
-        auth: &ServiceAccountAuth,
+        auth: &GoogleAuth,
         user_email: &str,
         page_token: Option<&str>,
         created_after: Option<&str>,
@@ -147,7 +147,7 @@ impl DriveClient {
 
     pub async fn get_file_content(
         &self,
-        auth: &ServiceAccountAuth,
+        auth: &GoogleAuth,
         user_email: &str,
         file: &GoogleDriveFile,
     ) -> Result<String> {
@@ -227,7 +227,7 @@ impl DriveClient {
 
     async fn get_google_doc_content(
         &self,
-        auth: &ServiceAccountAuth,
+        auth: &GoogleAuth,
         user_email: &str,
         file_id: &str,
     ) -> Result<String> {
@@ -288,7 +288,7 @@ impl DriveClient {
 
     async fn get_google_sheet_content(
         &self,
-        auth: &ServiceAccountAuth,
+        auth: &GoogleAuth,
         user_email: &str,
         file_id: &str,
     ) -> Result<String> {
@@ -352,7 +352,7 @@ impl DriveClient {
 
     async fn get_google_slides_content(
         &self,
-        auth: &ServiceAccountAuth,
+        auth: &GoogleAuth,
         user_email: &str,
         file_id: &str,
     ) -> Result<String> {
@@ -399,7 +399,7 @@ impl DriveClient {
 
     async fn download_file_content(
         &self,
-        auth: &ServiceAccountAuth,
+        auth: &GoogleAuth,
         user_email: &str,
         file_id: &str,
     ) -> Result<String> {
@@ -446,7 +446,7 @@ impl DriveClient {
 
     async fn download_file_binary(
         &self,
-        auth: &ServiceAccountAuth,
+        auth: &GoogleAuth,
         user_email: &str,
         file_id: &str,
     ) -> Result<Vec<u8>> {
@@ -506,7 +506,7 @@ impl DriveClient {
 
     async fn get_pdf_content(
         &self,
-        auth: &ServiceAccountAuth,
+        auth: &GoogleAuth,
         user_email: &str,
         file_id: &str,
     ) -> Result<String> {
@@ -608,7 +608,7 @@ impl DriveClient {
 
     async fn get_docx_content(
         &self,
-        auth: &ServiceAccountAuth,
+        auth: &GoogleAuth,
         user_email: &str,
         file_id: &str,
     ) -> Result<String> {
@@ -626,7 +626,7 @@ impl DriveClient {
 
     async fn get_excel_content(
         &self,
-        auth: &ServiceAccountAuth,
+        auth: &GoogleAuth,
         user_email: &str,
         file_id: &str,
     ) -> Result<String> {
@@ -644,7 +644,7 @@ impl DriveClient {
 
     async fn get_powerpoint_content(
         &self,
-        auth: &ServiceAccountAuth,
+        auth: &GoogleAuth,
         user_email: &str,
         file_id: &str,
     ) -> Result<String> {
@@ -662,7 +662,7 @@ impl DriveClient {
 
     async fn get_legacy_office_content(
         &self,
-        auth: &ServiceAccountAuth,
+        auth: &GoogleAuth,
         user_email: &str,
         file_id: &str,
         mime_type: &str,
@@ -809,7 +809,7 @@ impl DriveClient {
 
     pub async fn get_folder_metadata(
         &self,
-        auth: &ServiceAccountAuth,
+        auth: &GoogleAuth,
         user_email: &str,
         folder_id: &str,
     ) -> Result<GoogleDriveFile> {

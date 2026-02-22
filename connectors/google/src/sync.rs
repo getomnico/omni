@@ -8,7 +8,7 @@ use time::{self, OffsetDateTime};
 use tracing::{debug, error, info, warn};
 
 use crate::admin::AdminClient;
-use crate::auth::ServiceAccountAuth;
+use crate::auth::{GoogleAuth, OAuthAuth, ServiceAccountAuth};
 use crate::cache::LruFolderCache;
 use crate::drive::DriveClient;
 use crate::gmail::{GmailClient, MessageFormat};
@@ -17,7 +17,7 @@ use crate::models::{
     WebhookChannelResponse, WebhookNotification,
 };
 use shared::models::{
-    ConnectorEvent, ServiceCredentials, ServiceProvider, Source, SourceType, SyncType,
+    AuthType, ConnectorEvent, ServiceCredentials, ServiceProvider, Source, SourceType, SyncType,
 };
 use shared::SdkClient;
 use shared::{AIClient, RateLimiter};
@@ -350,7 +350,7 @@ impl SyncManager {
     async fn sync_drive_for_user(
         &self,
         user_email: &str,
-        service_auth: Arc<ServiceAccountAuth>,
+        service_auth: Arc<GoogleAuth>,
         source_id: &str,
         sync_run_id: &str,
         sync_state: &SyncState,
@@ -503,7 +503,7 @@ impl SyncManager {
     async fn sync_drive_for_user_incremental(
         &self,
         user_email: &str,
-        service_auth: Arc<ServiceAccountAuth>,
+        service_auth: Arc<GoogleAuth>,
         source_id: &str,
         sync_run_id: &str,
         sync_state: &SyncState,
@@ -640,7 +640,7 @@ impl SyncManager {
         source_id: &str,
         sync_run_id: &str,
         sync_state: &SyncState,
-        service_auth: Arc<ServiceAccountAuth>,
+        service_auth: Arc<GoogleAuth>,
     ) -> Result<(usize, usize)> {
         info!("Processing batch of {} files", files.len());
 
@@ -754,37 +754,43 @@ impl SyncManager {
         sync_type: SyncType,
     ) -> Result<(usize, usize, usize)> {
         let service_creds = self.get_service_credentials(&source.id).await?;
-        let service_auth = Arc::new(self.create_service_auth(&service_creds, source.source_type)?);
-        let domain = self.get_domain_from_credentials(&service_creds)?;
-        let user_email = self.get_user_email_from_source(&source.id).await
-            .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source.id, e))?;
+        let service_auth = Arc::new(self.create_auth(&service_creds, source.source_type).await?);
 
         // Calculate cutoff date for filtering
         let (drive_cutoff_date, _gmail_cutoff_date) = self.get_cutoff_date()?;
         info!("Using Drive cutoff date: {}", drive_cutoff_date);
 
-        // Get all users in the organization
-        info!("Listing all users in domain: {}", domain);
+        // Build user list: single OAuth user or all domain users
+        let user_emails: Vec<String> = if service_auth.is_oauth() {
+            let email = service_auth
+                .oauth_user_email()
+                .ok_or_else(|| anyhow::anyhow!("OAuth auth missing user_email"))?
+                .to_string();
+            info!("OAuth Drive sync for single user: {}", email);
+            vec![email]
+        } else {
+            let domain = self.get_domain_from_credentials(&service_creds)?;
+            let user_email = self.get_user_email_from_source(&source.id).await
+                .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source.id, e))?;
 
-        // Use the logged-in user's email to list all users (they should be a super-admin)
-        info!("Using user email: {}", user_email);
-        let admin_access_token = service_auth.get_access_token(&user_email).await
-            .map_err(|e| anyhow::anyhow!("Failed to get access token for user {}: {}. Make sure the user is a super-admin and the service account has domain-wide delegation enabled.", user_email, e))?;
-        let all_users = self
-            .admin_client
-            .list_all_users(&admin_access_token, &domain)
-            .await?;
-        info!("Found {} users in domain {}", all_users.len(), domain);
+            info!("Listing all users in domain: {}", domain);
+            info!("Using user email: {}", user_email);
+            let admin_access_token = service_auth.get_access_token(&user_email).await
+                .map_err(|e| anyhow::anyhow!("Failed to get access token for user {}: {}. Make sure the user is a super-admin and the service account has domain-wide delegation enabled.", user_email, e))?;
+            let all_users = self
+                .admin_client
+                .list_all_users(&admin_access_token, &domain)
+                .await?;
+            info!("Found {} users in domain {}", all_users.len(), domain);
 
-        // Apply user filtering based on source settings
-        let filtered_users = all_users
-            .into_iter()
-            .filter(|user| source.should_index_user(&user.primary_email))
-            .collect::<Vec<_>>();
-        info!(
-            "After filtering: {} users will be indexed",
-            filtered_users.len()
-        );
+            let filtered: Vec<String> = all_users
+                .into_iter()
+                .filter(|user| source.should_index_user(&user.primary_email))
+                .map(|user| user.primary_email)
+                .collect();
+            info!("After filtering: {} users will be indexed", filtered.len());
+            filtered
+        };
 
         let is_incremental = matches!(sync_type, SyncType::Incremental);
 
@@ -810,7 +816,7 @@ impl SyncManager {
 
         info!(
             "Starting user processing for {} users (Drive, incremental={})",
-            filtered_users.len(),
+            user_emails.len(),
             is_incremental
         );
 
@@ -819,15 +825,13 @@ impl SyncManager {
         let mut total_scanned = 0;
         let mut errors = 0;
 
-        for user in &filtered_users {
+        for cur_user_email in &user_emails {
             if self.is_cancelled(sync_run_id) {
                 info!("Sync {} cancelled, stopping Drive sync early", sync_run_id);
                 break;
             }
 
-            let cur_user_email = user.primary_email.clone();
-
-            match service_auth.get_access_token(&cur_user_email).await {
+            match service_auth.get_access_token(cur_user_email).await {
                 Ok(access_token) => {
                     info!("Processing user: {}", cur_user_email);
 
@@ -844,7 +848,7 @@ impl SyncManager {
                             }
                         };
 
-                    let stored_page_token = old_page_tokens.get(&cur_user_email);
+                    let stored_page_token = old_page_tokens.get(cur_user_email.as_str());
                     let use_incremental = is_incremental && stored_page_token.is_some();
 
                     let result = if use_incremental {
@@ -922,7 +926,7 @@ impl SyncManager {
                         new_page_tokens
                             .lock()
                             .unwrap()
-                            .insert(cur_user_email, page_token);
+                            .insert(cur_user_email.clone(), page_token);
                     }
                 }
                 Err(e) => {
@@ -1005,32 +1009,42 @@ impl SyncManager {
         sync_type: SyncType,
     ) -> Result<(usize, usize, usize)> {
         let service_creds = self.get_service_credentials(&source.id).await?;
-        let service_auth = Arc::new(self.create_service_auth(&service_creds, source.source_type)?);
-        let domain = self.get_domain_from_credentials(&service_creds)?;
-        let user_email = self.get_user_email_from_source(&source.id).await
-            .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source.id, e))?;
+        let service_auth = Arc::new(self.create_auth(&service_creds, source.source_type).await?);
 
         let (_drive_cutoff_date, gmail_cutoff_date) = self.get_cutoff_date()?;
         info!("Using Gmail cutoff date: {}", gmail_cutoff_date);
 
-        info!("Listing all users in domain: {}", domain);
-        info!("Using user email: {}", user_email);
-        let admin_access_token = service_auth.get_access_token(&user_email).await
-            .map_err(|e| anyhow::anyhow!("Failed to get access token for user {}: {}. Make sure the user is a super-admin and the service account has domain-wide delegation enabled.", user_email, e))?;
-        let all_users = self
-            .admin_client
-            .list_all_users(&admin_access_token, &domain)
-            .await?;
-        info!("Found {} users in domain {}", all_users.len(), domain);
+        // Build user list: single OAuth user or all domain users
+        let user_emails: Vec<String> = if service_auth.is_oauth() {
+            let email = service_auth
+                .oauth_user_email()
+                .ok_or_else(|| anyhow::anyhow!("OAuth auth missing user_email"))?
+                .to_string();
+            info!("OAuth Gmail sync for single user: {}", email);
+            vec![email]
+        } else {
+            let domain = self.get_domain_from_credentials(&service_creds)?;
+            let user_email = self.get_user_email_from_source(&source.id).await
+                .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source.id, e))?;
 
-        let filtered_users = all_users
-            .into_iter()
-            .filter(|user| source.should_index_user(&user.primary_email))
-            .collect::<Vec<_>>();
-        info!(
-            "After filtering: {} users will be indexed",
-            filtered_users.len()
-        );
+            info!("Listing all users in domain: {}", domain);
+            info!("Using user email: {}", user_email);
+            let admin_access_token = service_auth.get_access_token(&user_email).await
+                .map_err(|e| anyhow::anyhow!("Failed to get access token for user {}: {}. Make sure the user is a super-admin and the service account has domain-wide delegation enabled.", user_email, e))?;
+            let all_users = self
+                .admin_client
+                .list_all_users(&admin_access_token, &domain)
+                .await?;
+            info!("Found {} users in domain {}", all_users.len(), domain);
+
+            let filtered: Vec<String> = all_users
+                .into_iter()
+                .filter(|user| source.should_index_user(&user.primary_email))
+                .map(|user| user.primary_email)
+                .collect();
+            info!("After filtering: {} users will be indexed", filtered.len());
+            filtered
+        };
 
         let is_incremental = matches!(sync_type, SyncType::Incremental);
 
@@ -1054,22 +1068,20 @@ impl SyncManager {
 
         info!(
             "Starting sequential user processing for {} users (Gmail, incremental={})",
-            filtered_users.len(),
+            user_emails.len(),
             is_incremental
         );
 
         let mut total_processed = 0;
         let mut total_updated = 0;
 
-        for user in &filtered_users {
+        for cur_user_email in &user_emails {
             if self.is_cancelled(sync_run_id) {
                 info!("Sync {} cancelled, stopping Gmail sync early", sync_run_id);
                 break;
             }
 
-            let cur_user_email = user.primary_email.clone();
-
-            match service_auth.get_access_token(&cur_user_email).await {
+            match service_auth.get_access_token(cur_user_email).await {
                 Ok(_token) => {
                     info!("Processing user: {}", cur_user_email);
 
@@ -1088,7 +1100,7 @@ impl SyncManager {
                         }
                     };
 
-                    let stored_history_id = old_history_ids.get(&cur_user_email);
+                    let stored_history_id = old_history_ids.get(cur_user_email.as_str());
                     let use_incremental = is_incremental && stored_history_id.is_some();
 
                     let result = if use_incremental {
@@ -1157,7 +1169,7 @@ impl SyncManager {
                     }
 
                     if let Some(history_id) = current_history_id {
-                        new_history_ids.insert(cur_user_email, history_id);
+                        new_history_ids.insert(cur_user_email.clone(), history_id);
                     }
                 }
                 Err(e) => {
@@ -1277,6 +1289,84 @@ impl SyncManager {
             .unwrap_or_else(|| crate::auth::get_scopes_for_source_type(source_type));
 
         ServiceAccountAuth::new(service_account_json, scopes)
+    }
+
+    /// Create GoogleAuth from credentials, branching on auth_type (JWT vs OAuth)
+    async fn create_auth(
+        &self,
+        creds: &ServiceCredentials,
+        source_type: SourceType,
+    ) -> Result<GoogleAuth> {
+        match creds.auth_type {
+            AuthType::OAuth => {
+                let access_token = creds
+                    .credentials
+                    .get("access_token")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let refresh_token = creds
+                    .credentials
+                    .get("refresh_token")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("Missing refresh_token in OAuth credentials"))?
+                    .to_string();
+
+                let expires_at = creds
+                    .credentials
+                    .get("expires_at")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+
+                let user_email = creds
+                    .credentials
+                    .get("user_email")
+                    .and_then(|v| v.as_str())
+                    .or(creds.principal_email.as_deref())
+                    .ok_or_else(|| anyhow::anyhow!("Missing user_email in OAuth credentials"))?
+                    .to_string();
+
+                // Fetch connector config for OAuth client_id/secret
+                let connector_config = self
+                    .sdk_client
+                    .get_connector_config("google")
+                    .await
+                    .context("Failed to fetch Google connector config for OAuth")?;
+
+                let client_id = connector_config
+                    .get("oauth_client_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Missing oauth_client_id in Google connector config")
+                    })?
+                    .to_string();
+
+                let client_secret = connector_config
+                    .get("oauth_client_secret")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Missing oauth_client_secret in Google connector config")
+                    })?
+                    .to_string();
+
+                let oauth_auth = OAuthAuth::new(
+                    access_token,
+                    refresh_token,
+                    expires_at,
+                    user_email,
+                    client_id,
+                    client_secret,
+                )?;
+
+                Ok(GoogleAuth::OAuth(oauth_auth))
+            }
+            _ => {
+                // Default: JWT / service account
+                let sa = self.create_service_auth(creds, source_type)?;
+                Ok(GoogleAuth::ServiceAccount(sa))
+            }
+        }
     }
 
     fn get_domain_from_credentials(&self, creds: &ServiceCredentials) -> Result<String> {
@@ -1486,7 +1576,7 @@ impl SyncManager {
 
     async fn resolve_file_path(
         &self,
-        auth: &ServiceAccountAuth,
+        auth: &GoogleAuth,
         user_email: &str,
         file: &crate::models::GoogleDriveFile,
     ) -> Result<String> {
@@ -1504,7 +1594,7 @@ impl SyncManager {
 
     async fn build_full_path(
         &self,
-        auth: &ServiceAccountAuth,
+        auth: &GoogleAuth,
         user_email: &str,
         folder_id: &str,
         file_name: &str,
@@ -1615,7 +1705,7 @@ impl SyncManager {
     async fn sync_gmail_for_user(
         &self,
         user_email: &str,
-        service_auth: Arc<ServiceAccountAuth>,
+        service_auth: Arc<GoogleAuth>,
         source_id: &str,
         sync_run_id: &str,
         processed_threads: Arc<std::sync::Mutex<HashSet<String>>>,
@@ -1708,7 +1798,7 @@ impl SyncManager {
     async fn sync_gmail_for_user_incremental(
         &self,
         user_email: &str,
-        service_auth: Arc<ServiceAccountAuth>,
+        service_auth: Arc<GoogleAuth>,
         source_id: &str,
         sync_run_id: &str,
         start_history_id: &str,
@@ -1804,7 +1894,7 @@ impl SyncManager {
         &self,
         thread_ids: Vec<String>,
         user_email: &str,
-        service_auth: Arc<ServiceAccountAuth>,
+        service_auth: Arc<GoogleAuth>,
         source_id: &str,
         sync_run_id: &str,
         processed_threads: Arc<std::sync::Mutex<HashSet<String>>>,

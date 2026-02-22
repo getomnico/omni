@@ -211,6 +211,13 @@ export const authProviders = pgTable('auth_providers', {
     updatedBy: text('updated_by').references(() => user.id),
 })
 
+export const connectorConfigs = pgTable('connector_configs', {
+    provider: text('provider').primaryKey(),
+    config: jsonb('config').notNull().default({}),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    updatedBy: text('updated_by').references(() => user.id),
+})
+
 export const embeddingProviders = pgTable('embedding_providers', {
     id: text('id').primaryKey(),
     name: text('name').notNull(),
@@ -237,4 +244,5 @@ export type Chat = typeof chats.$inferSelect
 export type ChatMessage = typeof chatMessages.$inferSelect
 export type ResponseFeedback = typeof responseFeedback.$inferSelect
 export type AuthProvider = typeof authProviders.$inferSelect
+export type ConnectorConfig = typeof connectorConfigs.$inferSelect
 export type EmbeddingProvider = typeof embeddingProviders.$inferSelect

@@ -32,6 +32,7 @@ export enum AuthType {
     BASIC_AUTH = 'basic_auth',
     BEARER_TOKEN = 'bearer_token',
     BOT_TOKEN = 'bot_token',
+    OAUTH = 'oauth',
 }
 
 export interface WebSourceConfig {

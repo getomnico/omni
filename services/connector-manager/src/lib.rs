@@ -81,6 +81,11 @@ pub fn create_app(state: AppState) -> Router {
             "/sdk/sources/by-type/:source_type",
             get(handlers::sdk_get_sources_by_type),
         )
+        // Connector config
+        .route(
+            "/sdk/connector-configs/:provider",
+            get(handlers::sdk_get_connector_config),
+        )
         .layer(
             ServiceBuilder::new()
                 .layer(middleware::from_fn(telemetry::middleware::trace_layer))
