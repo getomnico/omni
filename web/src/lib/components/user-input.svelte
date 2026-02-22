@@ -13,7 +13,7 @@
     } from '@lucide/svelte'
     import { cn } from '$lib/utils'
     import type { Component } from 'svelte'
-    import * as ToggleGroup from '$lib/components/ui/toggle-group'
+    import * as ButtonGroup from '$lib/components/ui/button-group'
     import * as Tooltip from '$lib/components/ui/tooltip'
     import type { TypeaheadResult } from '$lib/types/search'
 
@@ -314,6 +314,9 @@
         if (inputRef) {
             onInput(inputRef.innerText)
             detectMention()
+            if (!mentionActive && onPopoverChange) {
+                onPopoverChange(false)
+            }
         }
     }
 
@@ -341,47 +344,62 @@
 </script>
 
 {#snippet modeSelector()}
-    <ToggleGroup.Root
-        variant="outline"
-        size="sm"
-        type="single"
-        bind:value={inputMode}
-        onclick={(e) => {
-            e.stopPropagation()
-        }}>
-        <ToggleGroup.Item value="chat" aria-label="Toggle chat" class="cursor-pointer">
-            <Tooltip.Provider delayDuration={300}>
-                <Tooltip.Root>
-                    <Tooltip.Trigger class="cursor-pointer">
-                        <MessageCircle class="size-4" />
-                    </Tooltip.Trigger>
-                    <Tooltip.Content>
-                        <div class="text-center">
-                            <div class="font-semibold">Chat</div>
-                            <div class="text-xs opacity-90">Have a conversation with AI</div>
+    <Tooltip.Provider delayDuration={300}>
+        <ButtonGroup.Root>
+            <Tooltip.Root>
+                <Tooltip.Trigger>
+                    {#snippet child({ props })}
+                        <Button
+                            {...props}
+                            variant="outline"
+                            size="icon-sm"
+                            class="data-[active=true]:bg-accent data-[active=true]:text-foreground text-muted-foreground cursor-pointer"
+                            data-active={inputMode === 'chat'}
+                            aria-label="Chat mode"
+                            onclick={(e) => {
+                                e.stopPropagation()
+                                inputMode = 'chat'
+                            }}>
+                            <MessageCircle class="size-4" />
+                        </Button>
+                    {/snippet}
+                </Tooltip.Trigger>
+                <Tooltip.Content>
+                    <div class="text-center">
+                        <div class="font-semibold">Chat</div>
+                        <div class="text-xs opacity-90">Have a conversation with AI</div>
+                    </div>
+                </Tooltip.Content>
+            </Tooltip.Root>
+            <Tooltip.Root>
+                <Tooltip.Trigger>
+                    {#snippet child({ props })}
+                        <Button
+                            {...props}
+                            variant="outline"
+                            size="icon-sm"
+                            class="data-[active=true]:bg-accent data-[active=true]:text-foreground text-muted-foreground cursor-pointer"
+                            data-active={inputMode === 'search'}
+                            aria-label="Search mode"
+                            onclick={(e) => {
+                                e.stopPropagation()
+                                inputMode = 'search'
+                            }}>
+                            <Search class="size-4" />
+                        </Button>
+                    {/snippet}
+                </Tooltip.Trigger>
+                <Tooltip.Content>
+                    <div class="text-center">
+                        <div class="font-semibold">Search</div>
+                        <div class="text-xs opacity-90">
+                            Find information with AI-powered answers
                         </div>
-                    </Tooltip.Content>
-                </Tooltip.Root>
-            </Tooltip.Provider>
-        </ToggleGroup.Item>
-        <ToggleGroup.Item value="search" aria-label="Toggle search" class="cursor-pointer">
-            <Tooltip.Provider delayDuration={300}>
-                <Tooltip.Root>
-                    <Tooltip.Trigger class="cursor-pointer">
-                        <Search class="size-4" />
-                    </Tooltip.Trigger>
-                    <Tooltip.Content>
-                        <div class="text-center">
-                            <div class="font-semibold">Search</div>
-                            <div class="text-xs opacity-90">
-                                Find information with AI-powered answers
-                            </div>
-                        </div>
-                    </Tooltip.Content>
-                </Tooltip.Root>
-            </Tooltip.Provider>
-        </ToggleGroup.Item>
-    </ToggleGroup.Root>
+                    </div>
+                </Tooltip.Content>
+            </Tooltip.Root>
+        </ButtonGroup.Root>
+    </Tooltip.Provider>
 {/snippet}
 
 <div class={cn('w-full', maxWidth, containerClass)} bind:this={popoverContainer}>
@@ -431,14 +449,14 @@
                             {models.find((m) => m.id === selectedModelId)?.displayName ??
                                 'Select model'}
                         </Select.Trigger>
-                        <Select.Content align="end">
+                        <Select.Content class="max-h-96 w-3xs" align="end">
                             {#each groupedModels as [provider, providerModels]}
                                 <Select.Group>
                                     <Select.GroupHeading>
                                         {formatProviderName(provider)}
                                     </Select.GroupHeading>
                                     {#each providerModels as model}
-                                        <Select.Item value={model.id}>
+                                        <Select.Item class="cursor-pointer" value={model.id}>
                                             {model.displayName}
                                         </Select.Item>
                                     {/each}
@@ -464,7 +482,11 @@
                         class="size-8 cursor-pointer"
                         onclick={handleSubmitClick}
                         disabled={!value.trim() || disabled}>
-                        <SendHorizontal class="h-3 w-3" />
+                        {#if inputMode === 'search'}
+                            <Search class="h-3 w-3" />
+                        {:else}
+                            <SendHorizontal class="h-3 w-3" />
+                        {/if}
                     </Button>
                 {/if}
             </div>
