@@ -4,7 +4,6 @@ Thank you for your interest in contributing to Omni! This document provides guid
 
 ## Table of Contents
 
-- [Code of Conduct](#code-of-conduct)
 - [Getting Started](#getting-started)
 - [Development Setup](#development-setup)
 - [Project Structure](#project-structure)
@@ -19,7 +18,7 @@ Thank you for your interest in contributing to Omni! This document provides guid
 1. **Fork the repository** on GitHub
 2. **Clone your fork** locally:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/omni.git
+   git clone https://github.com/<ylur_gh_username>/omni.git
    cd omni
    ```
 3. **Add upstream remote**:
@@ -33,7 +32,7 @@ Thank you for your interest in contributing to Omni! This document provides guid
 
 - **Docker** and Docker Compose (primary requirement - all services run in containers)
 - **Rust** 1.75+ (install via [rustup](https://rustup.rs/)) - only needed for local development outside containers
-- **Node.js** 18+ - only needed for local frontend development
+- **Node.js** 22+ - only needed for local frontend development
 - **Python** 3.12+ - only needed for local AI service development
 
 ### Initial Setup
@@ -41,6 +40,7 @@ Thank you for your interest in contributing to Omni! This document provides guid
 1. **Configure environment**:
    ```bash
    cp .env.example .env
+
    # Edit .env to configure your settings
    ```
 
@@ -85,17 +85,19 @@ uv sync
 
 ```
 omni/
-├── services/          # Core microservices
-│   ├── searcher/      # Search query processing (Rust)
-│   ├── indexer/       # Document indexing (Rust)
-│   └── ai/            # AI/ML service (Python)
-├── connectors/        # Data source connectors (Rust)
+├── services/                    # Core microservices
+│   ├── searcher/                # Search query processing (Rust)
+│   ├── indexer/                 # Document indexing (Rust)
+│   ├── connector-manager/       # Orchestrates connector containers
+│   └── ai/                      # AI/ML service (Python)
+├── connectors/                  # Data source connectors (Rust)
 │   ├── google/
 │   ├── slack/
-│   └── atlassian/
-├── web/               # SvelteKit frontend
-├── shared/            # Shared Rust libraries
-└── scripts/           # Build and deployment scripts
+│   ├── atlassian/
+│   └── ...
+├── web/                         # SvelteKit frontend
+├── sdk/                         # Python and TS SDK for building custom connectors
+└── shared/                      # Shared Rust libraries
 ```
 
 ## Making Changes
@@ -109,9 +111,9 @@ omni/
 
 2. **Make your changes** following our guidelines
 
-3. **Test your changes** thoroughly
+3. **Test your changes** against the local dev deployment
 
-4. **Commit with meaningful messages**:
+4. **Make a commit**:
    ```bash
    git commit -m "Add new search filter capability"
    ```
@@ -167,20 +169,6 @@ pytest
 
 3. **Create a Pull Request** on GitHub
 
-4. **PR Requirements**:
-   - Clear description of changes
-   - Reference any related issues
-   - All tests passing
-   - Code follows style guidelines
-   - Documentation updated if needed
-
-### Review Process
-
-- PRs require at least one maintainer approval
-- Address all review feedback
-- Keep PRs focused and reasonably sized
-- Be patient - reviews may take a few days
-
 ## Style Guidelines
 
 ### Rust Code
@@ -190,30 +178,10 @@ pytest
 - Run `cargo clippy` and address warnings
 - Add doc comments for public APIs
 
-Example:
-```rust
-/// Processes a search query and returns ranked results
-///
-/// # Arguments
-/// * `query` - The search query string
-/// * `filters` - Optional search filters
-///
-/// # Returns
-/// A vector of search results ordered by relevance
-pub async fn search(
-    query: &str,
-    filters: Option<SearchFilters>,
-) -> Result<Vec<SearchResult>, SearchError> {
-    // Implementation
-}
-```
-
 ### TypeScript/Svelte
 
 - Use TypeScript strict mode
 - Follow the existing code style
-- Prefer composition over inheritance
-- Use descriptive variable names
 
 ### Python Code
 
@@ -227,12 +195,5 @@ pub async fn search(
 - **Discord**: Join our [community Discord](https://discord.gg/aNr2J3xD)
 - **GitHub Issues**: For bug reports and feature requests
 - **Discussions**: For questions and ideas
-
-## Recognition
-
-Contributors will be recognized in our:
-- Contributors list
-- Release notes
-- Project documentation
 
 Thank you for contributing to Omni! 🎉
