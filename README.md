@@ -13,7 +13,7 @@ Connects to your workplace apps, helps employees find information and get work d
 
 </div>
 
-![Omni Demo](.github/assets/omni.avif)
+![Omni Demo](.github/assets/omni_2.avif)
 
 ---
 
