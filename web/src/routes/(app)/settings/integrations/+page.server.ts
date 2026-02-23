@@ -12,14 +12,14 @@ export const load: PageServerLoad = async ({ locals }) => {
         throw redirect(302, '/login')
     }
 
+    if (locals.user.role === 'admin') {
+        throw redirect(302, '/admin/settings/integrations')
+    }
+
     const googleConnectorConfig = await getConnectorConfigPublic('google')
 
     // Load all sources created by the current user (active + inactive)
-    const userSources = await db
-        .select()
-        .from(sources)
-        .where(and(eq(sources.createdBy, locals.user.id), eq(sources.isDeleted, false)))
-        .orderBy(desc(sources.createdAt))
+    const userSources = await sourcesRepository.getByUserId(locals.user.id)
 
     // Get latest sync runs and filter to only user's sources
     const allSyncRuns = await sourcesRepository.getLatestSyncRuns()

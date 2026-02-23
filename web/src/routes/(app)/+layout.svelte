@@ -314,15 +314,6 @@
             </SidebarGroup>
             <SidebarGroup>
                 <div class="flex flex-col gap-1">
-                    <div class="flex justify-start">
-                        <Button
-                            variant="ghost"
-                            href="/settings/integrations"
-                            class="flex w-full justify-start has-[>svg]:px-2">
-                            <Plug />
-                            <span class="group-data-[collapsible=icon]:hidden">Integrations</span>
-                        </Button>
-                    </div>
                     {#if data.user.role === 'admin'}
                         <div class="flex justify-start">
                             <Button
@@ -331,6 +322,17 @@
                                 class="flex w-full justify-start has-[>svg]:px-2">
                                 <Settings />
                                 <span class="group-data-[collapsible=icon]:hidden">Settings</span>
+                            </Button>
+                        </div>
+                    {:else}
+                        <div class="flex justify-start">
+                            <Button
+                                variant="ghost"
+                                href="/settings/integrations"
+                                class="flex w-full justify-start has-[>svg]:px-2">
+                                <Plug />
+                                <span class="group-data-[collapsible=icon]:hidden"
+                                    >Integrations</span>
                             </Button>
                         </div>
                     {/if}
