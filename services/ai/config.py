@@ -107,3 +107,11 @@ ENABLE_CONVERSATION_COMPACTION = (
 COMPACTION_CACHE_TTL_SECONDS = int(
     get_optional_env("COMPACTION_CACHE_TTL_SECONDS", "86400")
 )  # 24 hours
+
+# Agent configuration
+AGENT_MAX_ITERATIONS = int(get_optional_env("AGENT_MAX_ITERATIONS", "15"))
+CONNECTOR_MANAGER_URL = get_required_env("CONNECTOR_MANAGER_URL")
+APPROVAL_TIMEOUT_SECONDS = int(
+    get_optional_env("APPROVAL_TIMEOUT_SECONDS", "600")
+)  # 10 minutes
+SANDBOX_URL = get_optional_env("SANDBOX_URL", "")

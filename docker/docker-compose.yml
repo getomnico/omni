@@ -149,8 +149,13 @@ services:
       EMBEDDING_BATCH_ACCUMULATION_TIMEOUT_SECONDS: ${EMBEDDING_BATCH_ACCUMULATION_TIMEOUT_SECONDS:-300}
       EMBEDDING_BATCH_ACCUMULATION_POLL_INTERVAL: ${EMBEDDING_BATCH_ACCUMULATION_POLL_INTERVAL:-10}
       EMBEDDING_BATCH_MONITOR_POLL_INTERVAL: ${EMBEDDING_BATCH_MONITOR_POLL_INTERVAL:-30}
+      CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      SANDBOX_URL: ${SANDBOX_URL:-}
+      AGENT_MAX_ITERATIONS: ${AGENT_MAX_ITERATIONS:-15}
+      APPROVAL_TIMEOUT_SECONDS: ${APPROVAL_TIMEOUT_SECONDS:-600}
     networks:
       - omni-network
+      - sandbox-net
     volumes:
       - ai_models:/models
     depends_on:
@@ -160,6 +165,46 @@ services:
         condition: service_healthy
       migrator:
         condition: service_completed_successfully
+    restart: unless-stopped
+    logging: *default-logging
+
+  # Sandbox - Isolated code execution for the AI agent.
+  # Runs on sandbox-net only (no access to omni-network / internal services).
+  # The AI service bridges both networks to reach it.
+  sandbox:
+    build:
+      context: ..
+      dockerfile: services/sandbox/Dockerfile
+    container_name: omni-sandbox
+    expose:
+      - "${SANDBOX_PORT}"
+    environment:
+      PORT: ${SANDBOX_PORT}
+      SCRATCH_DIR: /scratch
+      EXECUTION_TIMEOUT: "30"
+      SANDBOX_ENABLED: "true"
+    volumes:
+      - sandbox_data:/scratch
+    networks:
+      - sandbox-net
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    depends_on:
+      ai:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${SANDBOX_PORT}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
     logging: *default-logging
 
@@ -518,6 +563,9 @@ services:
 networks:
   omni-network:
     driver: bridge
+  sandbox-net:
+    driver: bridge
+    internal: true  # No external network access
 
 volumes:
   postgres_data:
@@ -534,3 +582,5 @@ volumes:
     name: omni-caddy-data
   caddy_config:
     name: omni-caddy-config
+  sandbox_data:
+    name: omni-sandbox-data

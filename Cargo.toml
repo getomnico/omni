@@ -3,6 +3,7 @@ members = [
     "services/searcher",
     "services/indexer",
     "services/connector-manager",
+    "services/sandbox",
     "connectors/google",
     "connectors/slack",
     "connectors/atlassian",

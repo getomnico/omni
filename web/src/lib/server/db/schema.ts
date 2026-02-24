@@ -218,6 +218,24 @@ export const connectorConfigs = pgTable('connector_configs', {
     updatedBy: text('updated_by').references(() => user.id),
 })
 
+export const toolApprovals = pgTable('tool_approvals', {
+    id: text('id').primaryKey(),
+    chatId: text('chat_id')
+        .notNull()
+        .references(() => chats.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+        .notNull()
+        .references(() => user.id, { onDelete: 'cascade' }),
+    toolName: text('tool_name').notNull(),
+    toolInput: jsonb('tool_input').notNull(),
+    sourceId: text('source_id'),
+    sourceType: text('source_type'),
+    status: text('status').notNull().default('pending'),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true, mode: 'date' }),
+    resolvedBy: text('resolved_by').references(() => user.id),
+})
+
 export const embeddingProviders = pgTable('embedding_providers', {
     id: text('id').primaryKey(),
     name: text('name').notNull(),
@@ -246,3 +264,4 @@ export type ResponseFeedback = typeof responseFeedback.$inferSelect
 export type AuthProvider = typeof authProviders.$inferSelect
 export type ConnectorConfig = typeof connectorConfigs.$inferSelect
 export type EmbeddingProvider = typeof embeddingProviders.$inferSelect
+export type ToolApproval = typeof toolApprovals.$inferSelect

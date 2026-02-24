@@ -22,9 +22,27 @@ export type ToolMessageContent = {
             source: string
         }[]
     }
+    // For connector action tools
+    actionResult?: {
+        toolUseId: string
+        text: string
+        isError: boolean
+    }
+    // Approval state for write actions
+    approval?: {
+        status: 'pending' | 'approved' | 'denied'
+        approvalId: string
+    }
 }
 
-export type ToolName = 'search_documents' | 'read_document'
+export type ApprovalRequiredEvent = {
+    approval_id: string
+    tool_name: string
+    tool_input: Record<string, unknown>
+    tool_call_id: string
+}
+
+export type ToolName = 'search_documents' | 'read_document' | string
 
 export type MessageContent = Array<TextMessageContent | ToolMessageContent>
 export type ProcessedMessage = {

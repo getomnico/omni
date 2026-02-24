@@ -85,18 +85,18 @@ class AnthropicProvider(LLMProvider):
             if tools:
                 request_params["tools"] = tools
                 logger.info(
-                    f"[ANTHROPIC] Sending request with {len(tools)} tools: {[t['name'] for t in tools]}"
+                    f"Sending request with {len(tools)} tools: {[t['name'] for t in tools]}"
                 )
             else:
-                logger.info(f"[ANTHROPIC] Sending request without tools")
+                logger.info(f"Sending request without tools")
 
             logger.info(
-                f"[ANTHROPIC] Model: {self.model}, Messages: {len(msg_list)}, Max tokens: {request_params['max_tokens']}"
+                f"Model: {self.model}, Messages: {len(msg_list)}, Max tokens: {request_params['max_tokens']}"
             )
             logger.debug(
-                f"[ANTHROPIC] Full request params: {json.dumps({k: v for k, v in request_params.items() if k != 'messages'}, indent=2)}"
+                f"Full request params: {json.dumps({k: v for k, v in request_params.items() if k != 'messages'}, indent=2)}"
             )
-            logger.debug(f"[ANTHROPIC] Messages: {json.dumps(msg_list, indent=2)}")
+            logger.debug(f"Messages: {json.dumps(msg_list, indent=2)}")
 
             if system_prompt:
                 request_params["system"] = system_prompt
@@ -104,50 +104,38 @@ class AnthropicProvider(LLMProvider):
             stream: AsyncStream[MessageStreamEvent] = await self.client.messages.create(
                 **request_params,
             )
-            logger.info(
-                f"[ANTHROPIC] Stream created successfully, starting to process events"
-            )
+            logger.info(f"Stream created successfully, starting to process events")
 
             event_count = 0
             async for event in stream:
                 event_count += 1
-                logger.debug(f"[ANTHROPIC] Event {event_count}: {event.type}")
+                logger.debug(f"Event {event_count}: {event.type}")
                 if event.type == "content_block_start":
-                    logger.info(
-                        f"[ANTHROPIC] Content block start: type={event.content_block.type}"
-                    )
+                    logger.info(f"Content block start: type={event.content_block.type}")
                     if event.content_block.type == "tool_use":
                         logger.info(
-                            f"[ANTHROPIC] Tool use started: {event.content_block.name} (id: {event.content_block.id}) (input: {json.dumps(event.content_block.input)})"
+                            f"Tool use started: {event.content_block.name} (id: {event.content_block.id}) (input: {json.dumps(event.content_block.input)})"
                         )
                 elif event.type == "content_block_delta":
                     if event.delta.type == "text_delta":
-                        logger.debug(f"[ANTHROPIC] Text delta: '{event.delta.text}'")
+                        logger.debug(f"Text delta: '{event.delta.text}'")
                     elif event.delta.type == "input_json_delta":
-                        logger.debug(
-                            f"[ANTHROPIC] JSON delta: {event.delta.partial_json}"
-                        )
+                        logger.debug(f"JSON delta: {event.delta.partial_json}")
                 elif event.type == "citation":
-                    logger.info(f"[ANTHROPIC] Citation: {event.citation}")
+                    logger.info(f"Citation: {event.citation}")
                 elif event.type == "content_block_stop":
                     logger.info(
-                        f"[ANTHROPIC] Content block stop at index {getattr(event, 'index', '<unknown>')}"
+                        f"Content block stop at index {getattr(event, 'index', '<unknown>')}"
                     )
                 elif event.type == "message_delta":
-                    logger.info(
-                        f"[ANTHROPIC] Message delta stop reason: {event.delta.stop_reason}"
-                    )
+                    logger.info(f"Message delta stop reason: {event.delta.stop_reason}")
                 elif event.type == "message_stop":
-                    logger.info(
-                        f"[ANTHROPIC] Message completed after {event_count} events"
-                    )
+                    logger.info(f"Message completed after {event_count} events")
 
                 yield event
 
         except Exception as e:
-            logger.error(
-                f"[ANTHROPIC] Failed to stream from Anthropic: {str(e)}", exc_info=True
-            )
+            logger.error(f"Failed to stream from Anthropic: {str(e)}", exc_info=True)
 
     async def generate_response(
         self,

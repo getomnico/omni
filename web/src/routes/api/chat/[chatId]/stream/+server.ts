@@ -168,6 +168,30 @@ export const GET: RequestHandler = async ({ params, locals }) => {
                                 continue
                             }
 
+                            // Forward approval_required events to client
+                            if (eventType === 'approval_required' && data) {
+                                try {
+                                    const approvalData = JSON.parse(data)
+                                    // Save approval record to database using the same ID from Redis
+                                    const { toolApprovalRepository } =
+                                        await import('$lib/server/db/tool-approvals.js')
+                                    await toolApprovalRepository.createWithId(
+                                        approvalData.approval_id,
+                                        chatId,
+                                        chat.userId,
+                                        approvalData.tool_name,
+                                        approvalData.tool_input,
+                                    )
+                                } catch (err) {
+                                    logger.error('Failed to save tool approval record', err, {
+                                        chatId,
+                                    })
+                                }
+                                const approvalEvent = `event: approval_required\ndata: ${data}\n\n`
+                                controller.enqueue(encoder.encode(approvalEvent))
+                                continue
+                            }
+
                             // Special handling for certain events
                             if (eventType === 'message' && data) {
                                 try {
@@ -178,15 +202,44 @@ export const GET: RequestHandler = async ({ params, locals }) => {
                                         parsedData.type === 'tool_result' &&
                                         Array.isArray(parsedData.content)
                                     ) {
-                                        // Redact search result content (keep title/source, remove content)
-                                        const redactedContent = parsedData.content
-                                            .filter((item: any) => item.type === 'search_result')
-                                            .map((searchResult: any) => ({
-                                                type: 'search_result',
-                                                title: searchResult.title,
-                                                source: searchResult.source,
-                                                content: [], // Redact the highlights
-                                            }))
+                                        // Separate search results from other content types
+                                        const hasSearchResults = parsedData.content.some(
+                                            (item: any) => item.type === 'search_result',
+                                        )
+
+                                        let redactedContent
+                                        if (hasSearchResults) {
+                                            // Redact search result content (keep title/source, remove highlights)
+                                            redactedContent = parsedData.content
+                                                .filter(
+                                                    (item: any) => item.type === 'search_result',
+                                                )
+                                                .map((searchResult: any) => ({
+                                                    type: 'search_result',
+                                                    title: searchResult.title,
+                                                    source: searchResult.source,
+                                                    content: [], // Redact the highlights
+                                                }))
+                                        } else {
+                                            // For non-search results (connector actions, sandbox, etc.)
+                                            // Forward text content as-is (truncated for safety)
+                                            redactedContent = parsedData.content.map(
+                                                (item: any) => {
+                                                    if (
+                                                        item.type === 'text' &&
+                                                        item.text?.length > 5000
+                                                    ) {
+                                                        return {
+                                                            ...item,
+                                                            text:
+                                                                item.text.substring(0, 5000) +
+                                                                '\n... (truncated)',
+                                                        }
+                                                    }
+                                                    return item
+                                                },
+                                            )
+                                        }
 
                                         const redactedData = {
                                             ...parsedData,

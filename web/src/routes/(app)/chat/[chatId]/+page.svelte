@@ -30,6 +30,7 @@
         TextMessageContent,
         ToolMessageContent,
         MessageContent,
+        ApprovalRequiredEvent,
     } from '$lib/types/message'
     import ToolMessage from '$lib/components/tool-message.svelte'
     import { cn } from '$lib/utils'
@@ -73,6 +74,7 @@
     let copiedMessageId = $state<number | null>(null)
     let copiedUrl = $state(false)
     let messageFeedback = $state<Record<string, 'upvote' | 'downvote'>>({})
+    let pendingApproval = $state<ApprovalRequiredEvent | null>(null)
 
     function copyMessageToClipboard(message: ProcessedMessage) {
         const content = message.content
@@ -542,11 +544,7 @@
                         createdAt: new Date(),
                     })
                 } else if (data.type === 'content_block_start') {
-                    if (
-                        data.content_block.type === 'tool_use' &&
-                        (data.content_block.name === 'search_documents' ||
-                            data.content_block.name === 'read_document')
-                    ) {
+                    if (data.content_block.type === 'tool_use') {
                         collectStreamingResponse(data.content_block, data.index)
                         currToolUseId = data.content_block.id
                         currToolUseName = data.content_block.name
@@ -587,6 +585,16 @@
             }
         })
 
+        eventSource.addEventListener('approval_required', (event) => {
+            try {
+                const approvalData: ApprovalRequiredEvent = JSON.parse(event.data)
+                pendingApproval = approvalData
+                isStreaming = false
+            } catch (err) {
+                console.error('Failed to parse approval_required event:', err)
+            }
+        })
+
         eventSource.addEventListener('end_of_stream', () => {
             streamCompleted = true
             isStreaming = false
@@ -604,6 +612,35 @@
             eventSource?.close()
             eventSource = null
         })
+    }
+
+    async function handleApproval(decision: 'approved' | 'denied') {
+        if (!pendingApproval) return
+
+        try {
+            const response = await fetch(`/api/chat/${data.chat.id}/approve`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    approvalId: pendingApproval.approval_id,
+                    decision,
+                }),
+            })
+
+            if (!response.ok) {
+                console.error('Failed to submit approval decision')
+                return
+            }
+
+            pendingApproval = null
+
+            if (decision === 'approved') {
+                // Re-trigger stream to resume execution
+                streamResponse(data.chat.id)
+            }
+        } catch (err) {
+            console.error('Error submitting approval:', err)
+        }
     }
 
     async function handleSubmit() {
@@ -895,6 +932,48 @@
                     </div>
                 {/if}
             {/each}
+
+            <!-- Approval Required UI -->
+            {#if pendingApproval}
+                <div class="mx-auto w-full max-w-lg">
+                    <div class="rounded-lg border border-amber-200 bg-amber-50 p-4">
+                        <div class="mb-2 flex items-center gap-2">
+                            <CircleAlertIcon class="h-5 w-5 text-amber-600" />
+                            <h3 class="text-sm font-semibold text-amber-800">
+                                Action requires approval
+                            </h3>
+                        </div>
+                        <div class="mb-3 space-y-1">
+                            <p class="text-sm text-amber-700">
+                                <span class="font-medium"
+                                    >{pendingApproval.tool_name.replace('__', ' > ')}</span>
+                            </p>
+                            <pre
+                                class="max-h-32 overflow-auto rounded bg-amber-100 p-2 text-xs text-amber-900">{JSON.stringify(
+                                    pendingApproval.tool_input,
+                                    null,
+                                    2,
+                                )}</pre>
+                        </div>
+                        <div class="flex gap-2">
+                            <Button
+                                size="sm"
+                                variant="default"
+                                class="cursor-pointer bg-green-600 text-white hover:bg-green-700"
+                                onclick={() => handleApproval('approved')}>
+                                Approve
+                            </Button>
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                class="cursor-pointer"
+                                onclick={() => handleApproval('denied')}>
+                                Deny
+                            </Button>
+                        </div>
+                    </div>
+                </div>
+            {/if}
 
             <!-- Streaming AI Response -->
             {#if isStreaming || error}

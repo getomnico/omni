@@ -87,6 +87,14 @@ services:
       - ../services/ai:/app
     command: python -m uvicorn main:app --host 0.0.0.0 --port ${AI_SERVICE_PORT} --reload
 
+  sandbox:
+    image: omni-sandbox:dev
+    build:
+      context: ..
+      dockerfile: services/sandbox/Dockerfile
+    ports:
+      - "${SANDBOX_PORT}:${SANDBOX_PORT}"
+
   connector-manager:
     image: omni-connector-manager:dev
     build:

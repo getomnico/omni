@@ -108,16 +108,24 @@ class ConversationCompactor:
         return needs_compact
 
     def split_messages_for_compaction(
-        self, messages: list[MessageParam]
+        self,
+        messages: list[MessageParam],
+        has_connector_actions: bool = False,
     ) -> tuple[list[MessageParam], list[MessageParam]]:
         """Split messages into old (to summarize) and recent (keep intact).
 
         Ensures tool_use/tool_result pairs are never split.
+        When connector actions are present, keep more recent messages to
+        preserve tool call context in longer agent conversations.
         """
-        if len(messages) <= COMPACTION_RECENT_MESSAGES_COUNT:
+        recent_count = COMPACTION_RECENT_MESSAGES_COUNT
+        if has_connector_actions:
+            recent_count = max(recent_count, 30)
+
+        if len(messages) <= recent_count:
             return [], messages
 
-        split_point = len(messages) - COMPACTION_RECENT_MESSAGES_COUNT
+        split_point = len(messages) - recent_count
 
         # Adjust split point to keep tool pairs together
         # If the message at split_point is a user message containing tool_results,

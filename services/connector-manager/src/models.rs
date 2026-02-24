@@ -16,6 +16,12 @@ pub struct ActionDefinition {
     pub name: String,
     pub description: String,
     pub parameters: JsonValue,
+    #[serde(default = "default_action_mode")]
+    pub mode: String, // "read" | "write"
+}
+
+fn default_action_mode() -> String {
+    "write".to_string()
 }
 
 // SyncRequest and SyncResponse are imported from shared crate

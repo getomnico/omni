@@ -1,6 +1,15 @@
 <script lang="ts">
     import * as Accordion from '$lib/components/ui/accordion'
-    import { Search, FileText, TextSearch, ExternalLink } from '@lucide/svelte'
+    import {
+        Search,
+        FileText,
+        TextSearch,
+        ExternalLink,
+        Play,
+        FileCode,
+        Terminal,
+        Pencil,
+    } from '@lucide/svelte'
     import type { ToolMessageContent, ToolName } from '$lib/types/message'
     import { cn } from '$lib/utils'
     import {
@@ -14,7 +23,7 @@
         message: ToolMessageContent
     }
 
-    const ToolIndicators = {
+    const ToolIndicators: Record<string, { loading: string; loaded: string }> = {
         search_documents: {
             loading: 'searching',
             loaded: 'searched',
@@ -23,25 +32,75 @@
             loading: 'reading',
             loaded: 'read',
         },
+        write_file: {
+            loading: 'writing',
+            loaded: 'wrote',
+        },
+        read_file: {
+            loading: 'reading',
+            loaded: 'read',
+        },
+        run_bash: {
+            loading: 'running',
+            loaded: 'ran',
+        },
+        run_python: {
+            loading: 'running',
+            loaded: 'ran',
+        },
     }
 
-    const ToolInputKey = {
+    const ToolInputKey: Record<string, string> = {
         search_documents: 'query',
         read_document: 'name',
+        write_file: 'path',
+        read_file: 'path',
+        run_bash: 'command',
+        run_python: 'code',
     }
 
     let { message }: Props = $props()
     const toolName = message.toolUse.name as ToolName
+
+    // Determine if this is a connector action (contains __)
+    const isConnectorAction = toolName.includes('__')
+    const connectorDisplayName = isConnectorAction ? toolName.replace('__', ' > ') : toolName
+
     let statusIndicator = $derived(
-        message.toolResult
-            ? ToolIndicators[toolName]?.loaded
-            : ToolIndicators[toolName]?.loading || 'using',
+        message.toolResult || message.actionResult
+            ? ToolIndicators[toolName]?.loaded || 'completed'
+            : ToolIndicators[toolName]?.loading || 'running',
     )
-    const toolInputKey = ToolInputKey[toolName] || 'query'
+
+    const toolInputKey = ToolInputKey[toolName] || (isConnectorAction ? '' : 'query')
 
     let sources = $derived<string[]>(message.toolUse.input?.sources || [])
 
+    // Get a short summary of the tool input for display
+    let inputSummary = $derived(() => {
+        if (toolInputKey && message.toolUse.input?.[toolInputKey]) {
+            const val = message.toolUse.input[toolInputKey]
+            if (typeof val === 'string' && val.length > 80) {
+                return val.substring(0, 80) + '...'
+            }
+            return val
+        }
+        // For connector actions, show a brief summary of params
+        if (isConnectorAction) {
+            const params = Object.entries(message.toolUse.input || {})
+            if (params.length === 0) return ''
+            return params
+                .slice(0, 2)
+                .map(([k, v]) => `${k}: ${String(v).substring(0, 40)}`)
+                .join(', ')
+        }
+        return ''
+    })
+
     let selectedItem = $state<string>()
+
+    // Determine if this is a sandbox tool
+    const isSandboxTool = ['write_file', 'read_file', 'run_bash', 'run_python'].includes(toolName)
 </script>
 
 {#if toolName === 'read_document'}
@@ -56,6 +115,57 @@
                     {statusIndicator}: {message.toolUse.input[toolInputKey]}
                 </div>
             </div>
+        </div>
+    </div>
+{:else if isSandboxTool}
+    <div
+        class={cn(
+            'flex cursor-pointer items-center justify-between rounded-md border border-gray-200 px-3 py-3 text-sm hover:no-underline',
+        )}>
+        <div class="flex w-full items-center justify-between">
+            <div class="flex items-center gap-2">
+                {#if toolName === 'run_python'}
+                    <FileCode class="h-5 w-5 text-blue-600" />
+                {:else if toolName === 'run_bash'}
+                    <Terminal class="h-5 w-5 text-green-600" />
+                {:else if toolName === 'write_file'}
+                    <Pencil class="h-5 w-5 text-amber-600" />
+                {:else}
+                    <FileText class="h-5 w-5" />
+                {/if}
+                <div class="max-w-screen-md truncate text-sm font-normal">
+                    {statusIndicator}: {inputSummary()}
+                </div>
+            </div>
+        </div>
+    </div>
+{:else if isConnectorAction}
+    <div
+        class={cn(
+            'flex cursor-pointer items-center justify-between rounded-md border border-gray-200 px-3 py-3 text-sm hover:no-underline',
+            message.approval?.status === 'pending' && 'border-amber-300 bg-amber-50',
+            message.approval?.status === 'denied' && 'border-red-200 bg-red-50',
+        )}>
+        <div class="flex w-full items-center justify-between">
+            <div class="flex items-center gap-2">
+                <Play class="h-5 w-5 text-purple-600" />
+                <div class="max-w-screen-md truncate text-sm font-normal">
+                    {statusIndicator}: {connectorDisplayName}
+                    {#if inputSummary()}
+                        <span class="text-muted-foreground"> ({inputSummary()})</span>
+                    {/if}
+                </div>
+            </div>
+            {#if message.approval}
+                <div
+                    class="text-xs font-medium {message.approval.status === 'approved'
+                        ? 'text-green-600'
+                        : message.approval.status === 'denied'
+                          ? 'text-red-600'
+                          : 'text-amber-600'}">
+                    {message.approval.status}
+                </div>
+            {/if}
         </div>
     </div>
 {:else}

@@ -82,11 +82,11 @@ class OpenAIProvider(LLMProvider):
             if tools:
                 request_params["tools"] = _convert_tools_to_openai(tools)
                 logger.info(
-                    f"[OPENAI] Sending request with {len(tools)} tools: {[t['name'] for t in tools]}"
+                    f"Sending request with {len(tools)} tools: {[t['name'] for t in tools]}"
                 )
 
             logger.info(
-                f"[OPENAI] Model: {self.model}, Input items: {len(input_items)}, Max tokens: {request_params['max_output_tokens']}"
+                f"Model: {self.model}, Input items: {len(input_items)}, Max tokens: {request_params['max_output_tokens']}"
             )
 
             stream = await self.client.responses.create(**request_params)
@@ -168,9 +168,7 @@ class OpenAIProvider(LLMProvider):
             yield RawMessageStopEvent(type="message_stop")
 
         except Exception as e:
-            logger.error(
-                f"[OPENAI] Failed to stream from OpenAI: {str(e)}", exc_info=True
-            )
+            logger.error(f"Failed to stream from OpenAI: {str(e)}", exc_info=True)
 
     def _convert_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert Anthropic-style messages to OpenAI Responses API input items."""
@@ -280,7 +278,7 @@ class OpenAIProvider(LLMProvider):
             return content
 
         except Exception as e:
-            logger.error(f"[OPENAI] Failed to generate response: {str(e)}")
+            logger.error(f"Failed to generate response: {str(e)}")
             raise Exception(f"Failed to generate response: {str(e)}")
 
     async def health_check(self) -> bool:

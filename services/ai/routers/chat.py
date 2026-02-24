@@ -8,10 +8,26 @@ from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
 from db import ChatsRepository, MessagesRepository, SourcesRepository
+from db.documents import DocumentsRepository
 from db.models import Chat
-from tools import SearcherTool, SearchRequest, SearchResponse, SearchResult
-from models.chat import SearchToolParams, ReadDocumentParams
-from config import DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, DEFAULT_TOP_P
+from tools import (
+    SearcherTool,
+    ToolRegistry,
+    ToolContext,
+    SearchToolHandler,
+    ConnectorToolHandler,
+)
+from tools.search_handler import SEARCH_TOOLS
+from tools.sandbox_handler import SandboxToolHandler
+from config import (
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_TEMPERATURE,
+    DEFAULT_TOP_P,
+    AGENT_MAX_ITERATIONS,
+    CONNECTOR_MANAGER_URL,
+    APPROVAL_TIMEOUT_SECONDS,
+    SANDBOX_URL,
+)
 from providers import LLMProvider
 from prompts import build_chat_system_prompt
 from services.compaction import ConversationCompactor
@@ -45,78 +61,6 @@ Based on the first message(s) of a conversation, generate a title that is:
 - Does not include quotes or special formatting
 
 Just respond with the title text, nothing else."""
-
-SEARCH_TOOLS = [
-    {
-        "name": "search_documents",
-        "description": "Search enterprise documents using hybrid text and semantic search. Use this when you need to find information to answer user questions. Wherever possible, use the sources parameter to limit the search to specific apps.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The search query to find relevant documents. Can search using keywords, or a natural language question to get semantic search results.",
-                },
-                "sources": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Optional: specific source types to search (valid values: google_drive, slack, confluence, jira, web, slack, fireflies, hubspot.)",
-                },
-                "content_types": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Optional: file types to include (e.g., pdf, docx, txt)",
-                },
-                "attributes": {
-                    "type": "object",
-                    "description": (
-                        "Optional: filter results by document attributes. "
-                        "Common Jira attributes: status, priority, issue_type, assignee, reporter, labels, components, project_key. "
-                        "Common Confluence attributes: space_id, status. "
-                        'Values can be: a string for exact match (e.g., {"status": "Done"}), '
-                        'an array for OR match (e.g., {"priority": ["High", "Critical"]}), '
-                        'or an object with gte/lte keys for range queries (e.g., {"updated": {"gte": "2024-01-01"}}).'
-                    ),
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of results to return (default: 10)",
-                },
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "read_document",
-        "description": "Read the content of a specific document by its URL. For small documents, returns the full content. For large documents, you can provide a query parameter to get the most relevant sections. Use this when you need detailed information from a specific document (e.g., from search results).",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "id": {
-                    "type": "string",
-                    "description": "The ID of the document to read",
-                },
-                "name": {
-                    "type": "string",
-                    "description": "The name of the document to read",
-                },
-                "query": {
-                    "type": "string",
-                    "description": "Optional: specify what you're looking for to get the most relevant sections. If you specify line numbers, this this will be ignored.",
-                },
-                "start_line": {
-                    "type": "integer",
-                    "description": "Optional: start line number (inclusive) to read from.",
-                },
-                "end_line": {
-                    "type": "integer",
-                    "description": "Optional: end line number (inclusive) to read to",
-                },
-            },
-            "required": ["id", "name"],
-        },
-    },
-]
 
 
 def _resolve_llm_provider(state: AppState, chat: Chat) -> LLMProvider:
@@ -187,6 +131,105 @@ def convert_citation_to_param(citation_delta: CitationsDelta) -> TextCitationPar
         raise ValueError(f"Unknown citation type: {citation.type}")
 
 
+async def _build_registry(
+    request: Request, chat: Chat
+) -> tuple[ToolRegistry, list[dict] | None]:
+    """Build a ToolRegistry with all available handlers.
+
+    Returns the registry and the raw connector actions list (for system prompt).
+    """
+    registry = ToolRegistry()
+
+    # Always register search tools
+    registry.register(SearchToolHandler(searcher_tool=request.app.state.searcher_tool))
+
+    connector_actions: list[dict] | None = None
+
+    # Register connector tools if connector-manager is configured
+    if CONNECTOR_MANAGER_URL:
+        connector_handler = ConnectorToolHandler(
+            connector_manager_url=CONNECTOR_MANAGER_URL,
+            user_id=chat.user_id,
+            redis_client=getattr(request.app.state, "redis_client", None),
+        )
+        await connector_handler._ensure_initialized()
+        registry.register(connector_handler)
+
+        # Collect action metadata for system prompt
+        if connector_handler._actions:
+            connector_actions = [
+                {
+                    "source_type": a.source_type,
+                    "action_name": a.action_name,
+                    "description": a.description,
+                    "mode": a.mode,
+                }
+                for a in connector_handler._actions.values()
+            ]
+
+    # Register sandbox tools if sandbox service is configured
+    if SANDBOX_URL:
+        registry.register(
+            SandboxToolHandler(
+                sandbox_url=SANDBOX_URL,
+                content_storage=request.app.state.content_storage,
+                documents_repo=DocumentsRepository(),
+            )
+        )
+
+    return registry, connector_actions
+
+
+async def _save_pending_approval(
+    redis_client,
+    chat_id: str,
+    tool_call: dict,
+    conversation_messages: list[MessageParam],
+    action_info: dict | None = None,
+) -> str:
+    """Save pending approval state to Redis."""
+    import ulid
+
+    approval_id = str(ulid.ULID())
+    state = {
+        "approval_id": approval_id,
+        "tool_call": {
+            "id": tool_call["id"],
+            "name": tool_call["name"],
+            "input": tool_call["input"],
+        },
+        "conversation_messages": conversation_messages,
+        "source_id": action_info.get("source_id") if action_info else None,
+        "source_type": action_info.get("source_type") if action_info else None,
+        "action_name": action_info.get("action_name") if action_info else None,
+    }
+
+    key = f"chat:{chat_id}:pending_approval"
+    await redis_client.set(
+        key, json.dumps(state, default=str), ex=APPROVAL_TIMEOUT_SECONDS
+    )
+    logger.info(f"Saved pending approval {approval_id} for chat {chat_id}")
+    return approval_id
+
+
+async def _get_pending_approval(redis_client, chat_id: str) -> dict | None:
+    """Get pending approval state from Redis."""
+    key = f"chat:{chat_id}:pending_approval"
+    try:
+        data = await redis_client.get(key)
+        if data:
+            return json.loads(data)
+    except Exception as e:
+        logger.warning(f"Failed to get pending approval: {e}")
+    return None
+
+
+async def _clear_pending_approval(redis_client, chat_id: str) -> None:
+    """Clear pending approval state from Redis."""
+    key = f"chat:{chat_id}:pending_approval"
+    await redis_client.delete(key)
+
+
 @router.get("/chat/{chat_id}/stream")
 async def stream_chat(
     request: Request, chat_id: str = Path(..., description="Chat thread ID")
@@ -208,9 +251,19 @@ async def stream_chat(
     if not chat_messages:
         raise HTTPException(status_code=404, detail="No messages found for chat")
 
-    # Check if we need to process - only if last message is from user
+    # Build registry and discover connector actions
+    registry, connector_actions = await _build_registry(request, chat)
+    all_tools = registry.get_all_tools()
+
+    # Check for pending approval resume flow
+    redis_client = getattr(request.app.state, "redis_client", None)
+    pending = None
+    if redis_client:
+        pending = await _get_pending_approval(redis_client, chat_id)
+
+    # Check if we need to process - only if last message is from user (or resuming from approval)
     last_message = chat_messages[-1]
-    if last_message.message.get("role") != "user":
+    if not pending and last_message.message.get("role") != "user":
         logger.info(
             f"Last message is not from user, no processing needed. Chat ID: {chat_id}"
         )
@@ -232,28 +285,60 @@ async def stream_chat(
     # Check if conversation needs compaction
     compactor = ConversationCompactor(
         llm_provider=llm_provider,
-        redis_client=getattr(request.app.state, "redis_client", None),
+        redis_client=redis_client,
     )
-    if compactor.needs_compaction(messages, SEARCH_TOOLS):
+    if compactor.needs_compaction(messages, all_tools):
         logger.info(f"Compacting conversation for chat {chat_id}")
         messages = await compactor.compact_conversation(chat_id, messages)
 
     # Build system prompt from active sources
     sources_repo = SourcesRepository()
     active_sources = await sources_repo.get_active_sources()
-    system_prompt = build_chat_system_prompt(active_sources)
+    system_prompt = build_chat_system_prompt(active_sources, connector_actions)
 
     # Stream AI response with tool calling
     async def stream_generator():
         try:
             conversation_messages = messages.copy()
-            max_iterations = 10  # Prevent infinite loops
+
+            # Handle approval resume
+            if pending:
+                logger.info(f"Resuming from pending approval for chat {chat_id}")
+                await _clear_pending_approval(redis_client, chat_id)
+
+                tool_call = pending["tool_call"]
+
+                # Check if this was approved or denied by looking at DB
+                # For now, if we're resuming, it was approved (the frontend only
+                # re-invokes the stream after approval)
+                context = ToolContext(
+                    chat_id=chat_id,
+                    user_id=chat.user_id,
+                    user_email=None,
+                )
+                result = await registry.execute(
+                    tool_call["name"], tool_call["input"], context
+                )
+
+                tool_result = ToolResultBlockParam(
+                    type="tool_result",
+                    tool_use_id=tool_call["id"],
+                    content=result.content,
+                    is_error=result.is_error,
+                )
+
+                # Emit the tool result to the client
+                yield f"event: message\ndata: {json.dumps(tool_result)}\n\n"
+
+                tool_result_message = MessageParam(role="user", content=[tool_result])
+                conversation_messages.append(tool_result_message)
+                yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
+
             logger.info(
                 f"Starting conversation with {len(conversation_messages)} initial messages"
             )
 
             # Extract the first user message query for caching purposes
-            # We only cache the initial question, not follow-ups, as follow-ups don't make sense in isolation
             original_user_query = None
             for msg in conversation_messages:
                 if msg.get("role") == "user":
@@ -262,7 +347,6 @@ async def stream_chat(
                         original_user_query = content
                         break
                     elif isinstance(content, list):
-                        # Extract text from content blocks
                         text_parts = [
                             block.get("text", "")
                             for block in content
@@ -272,7 +356,14 @@ async def stream_chat(
                             original_user_query = " ".join(text_parts)
                             break
 
-            for iteration in range(max_iterations):
+            context = ToolContext(
+                chat_id=chat_id,
+                user_id=chat.user_id,
+                user_email=None,
+                original_user_query=original_user_query,
+            )
+
+            for iteration in range(AGENT_MAX_ITERATIONS):
                 # Check if client disconnected before starting expensive operations
                 if await request.is_disconnected():
                     logger.info(
@@ -280,21 +371,19 @@ async def stream_chat(
                     )
                     break
 
-                logger.info(f"Iteration {iteration + 1}/{max_iterations}")
+                logger.info(f"Iteration {iteration + 1}/{AGENT_MAX_ITERATIONS}")
                 content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
 
                 logger.info(f"Sending request to LLM provider")
                 logger.debug(
                     f"Messages being sent: {json.dumps(conversation_messages, indent=2)}"
                 )
-                logger.debug(
-                    f"Tools available: {[tool['name'] for tool in SEARCH_TOOLS]}"
-                )
+                logger.debug(f"Tools available: {[tool['name'] for tool in all_tools]}")
 
                 stream: AsyncStream[MessageStreamEvent] = llm_provider.stream_response(
                     prompt="",  # Not used when messages provided
                     messages=conversation_messages,
-                    tools=SEARCH_TOOLS,
+                    tools=all_tools,
                     max_tokens=DEFAULT_MAX_TOKENS,
                     temperature=DEFAULT_TEMPERATURE,
                     top_p=DEFAULT_TOP_P,
@@ -311,8 +400,6 @@ async def stream_chat(
                         logger.info(f"Message start received.")
 
                     if event.type == "content_block_delta":
-                        # Amazon models send the first content_block_delta directly without sending the
-                        # content_block_start event first, so we need to handle that case.
                         logger.debug(
                             f"Content block delta received at index {event.index}: {event.delta}"
                         )
@@ -330,7 +417,6 @@ async def stream_chat(
                             text_block["text"] += event.delta.text
                         elif event.delta.type == "input_json_delta":
                             if event.index >= len(content_blocks):
-                                # This should never happen in the case of tool calls, because the start event will add a new entry in content blocks, but we handle it anyway
                                 logger.warning(
                                     f"Received input JSON delta for unknown content block index {event.index}, creating new tool use block"
                                 )
@@ -435,138 +521,67 @@ async def stream_chat(
                     )
                     break
 
-                # Execute each tool call and add results
+                # Execute each tool call via the registry
                 tool_results: list[ToolResultBlockParam] = []
                 for tool_call in tool_calls:
-                    if tool_call["name"] == "search_documents":
-                        try:
-                            tool_call_params = SearchToolParams.model_validate(
-                                tool_call["input"]
-                            )
-                        except ValidationError as e:
-                            logger.error(
-                                f"Failed to parse search_documents tool call input: {tool_call['input']}. Error: {e}"
-                            )
-                            continue
+                    tool_name = tool_call["name"]
 
-                        search_query = tool_call_params.query
+                    # Check if this tool requires approval
+                    if registry.requires_approval(tool_name):
                         logger.info(
-                            f"Executing search_documents tool with query: {search_query}"
-                        )
-                        search_results = await execute_search_tool(
-                            searcher_tool=request.app.state.searcher_tool,
-                            tool_input=tool_call_params,
-                            user_id=chat.user_id,
-                            original_user_query=original_user_query,
-                        )
-                        documents = [res.document for res in search_results]
-                        logger.info(f"Search returned {len(documents)} documents")
-                        logger.debug(
-                            f"Document titles: {[doc.title for doc in documents]}..."
+                            f"Tool {tool_name} requires approval, pausing stream"
                         )
 
-                        # Add each document as a document block for automatic citations
-                        search_tool_result_content_blocks: list[
-                            SearchResultBlockParam
-                        ] = []
-                        for result in search_results:
-                            doc = result.document
-                            doc_content_text_blocks = [
-                                TextBlockParam(
-                                    type="text",
-                                    text=h,
-                                )
-                                for h in result.highlights
-                            ]
-                            search_tool_result_content_blocks.append(
-                                SearchResultBlockParam(
-                                    type="search_result",
-                                    title=doc.title,
-                                    source=doc.url or "<unknown>",
+                        # Save state to Redis for resume
+                        if redis_client:
+                            approval_id = await _save_pending_approval(
+                                redis_client,
+                                chat_id,
+                                tool_call,
+                                conversation_messages,
+                            )
+
+                            # Emit approval_required event
+                            approval_event = {
+                                "approval_id": approval_id,
+                                "tool_name": tool_name,
+                                "tool_input": tool_call["input"],
+                                "tool_call_id": tool_call["id"],
+                            }
+                            yield f"event: approval_required\ndata: {json.dumps(approval_event)}\n\n"
+                            yield f"event: end_of_stream\ndata: Approval required\n\n"
+                            return
+                        else:
+                            # No Redis, can't do approvals — treat as denied
+                            tool_results.append(
+                                ToolResultBlockParam(
+                                    type="tool_result",
+                                    tool_use_id=tool_call["id"],
                                     content=[
-                                        # Add a separate text block with the document ID, title, URL
-                                        # This will help the model issue read_document calls later
-                                        TextBlockParam(
-                                            type="text",
-                                            text=f"[Document ID: {doc.id}]",
-                                        ),
-                                        TextBlockParam(
-                                            type="text",
-                                            text=f"[Document Name: {doc.title}]",
-                                        ),
-                                        TextBlockParam(
-                                            type="text",
-                                            text=f"[URL: {doc.url or '<unknown>'}]",
-                                        ),
-                                        *doc_content_text_blocks,
+                                        {
+                                            "type": "text",
+                                            "text": "This action requires user approval, but the approval system is not available.",
+                                        }
                                     ],
-                                    citations=CitationsConfigParam(enabled=True),
+                                    is_error=True,
                                 )
-                            )
-
-                        tool_result = ToolResultBlockParam(
-                            type="tool_result",
-                            tool_use_id=tool_call["id"],
-                            content=search_tool_result_content_blocks,
-                            is_error=False,
-                        )
-                        tool_results.append(tool_result)
-
-                        yield f"event: message\ndata: {json.dumps(tool_result)}\n\n"
-
-                    elif tool_call["name"] == "read_document":
-                        try:
-                            tool_call_params = ReadDocumentParams.model_validate(
-                                tool_call["input"]
-                            )
-                        except ValidationError as e:
-                            logger.error(
-                                f"Failed to parse read_document tool call input: {tool_call['input']}. Error: {e}"
                             )
                             continue
 
-                        logger.info(
-                            f"Executing read_document tool with params: {tool_call_params}"
-                        )
-                        read_results = await execute_read_document_tool(
-                            searcher_tool=request.app.state.searcher_tool,
-                            tool_input=tool_call_params,
-                            user_id=chat.user_id,
-                        )
-                        logger.info(
-                            f"Read document returned {len(read_results)} chunks/content"
-                        )
+                    # Execute the tool
+                    result = await registry.execute(
+                        tool_name, tool_call["input"], context
+                    )
 
-                        # Add document content as text blocks
-                        read_tool_result_content_blocks: list[TextBlockParam] = []
+                    tool_result = ToolResultBlockParam(
+                        type="tool_result",
+                        tool_use_id=tool_call["id"],
+                        content=result.content,
+                        is_error=result.is_error,
+                    )
+                    tool_results.append(tool_result)
 
-                        # Attach all attributes
-                        doc = read_results[0].document if read_results else None
-                        if doc:
-                            read_tool_result_content_blocks.append(
-                                TextBlockParam(
-                                    type="text",
-                                    text=json.dumps({"attributes": doc.attributes}),
-                                )
-                            )
-
-                        for result in read_results:
-                            read_tool_result_content_blocks.append(
-                                TextBlockParam(
-                                    type="text",
-                                    text="\n".join(result.highlights),
-                                )
-                            )
-
-                        tool_result = ToolResultBlockParam(
-                            type="tool_result",
-                            tool_use_id=tool_call["id"],
-                            content=read_tool_result_content_blocks,
-                            is_error=False,
-                        )
-                        tool_results.append(tool_result)
-
-                        yield f"event: message\ndata: {json.dumps(tool_result)}\n\n"
+                    yield f"event: message\ndata: {json.dumps(tool_result)}\n\n"
 
                 tool_result_message = MessageParam(role="user", content=tool_results)
                 conversation_messages.append(tool_result_message)
@@ -590,80 +605,6 @@ async def stream_chat(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
-
-
-async def execute_search_tool(
-    searcher_tool: SearcherTool,
-    tool_input: SearchToolParams,
-    user_id: str,
-    user_email: str | None = None,
-    original_user_query: str | None = None,
-) -> list[SearchResult]:
-    """Execute search_documents tool by calling omni-searcher"""
-    logger.info(f"Executing search with query: {tool_input.query}")
-    logger.debug(
-        f"Full search parameters: query={tool_input.query}, sources={tool_input.sources}, content_types={tool_input.content_types}, limit={tool_input.limit}"
-    )
-
-    search_request = SearchRequest(
-        query=tool_input.query,
-        source_types=tool_input.sources,
-        content_types=tool_input.content_types,
-        limit=tool_input.limit or 10,
-        offset=0,
-        mode="hybrid",
-        user_id=user_id,
-        user_email=user_email,
-        is_generated_query=True,
-        original_user_query=original_user_query,
-        include_facets=False,
-        ignore_typos=True,  # LLMs will generaly not generate typos, so we avoid typo handling
-        attribute_filters=tool_input.attributes,
-    )
-    try:
-        search_response: SearchResponse = await searcher_tool.handle(search_request)
-    except Exception as e:
-        logger.error(f"Search failed: {e}")
-        return []
-
-    logger.info(f"Search successful, processing {len(search_response.results)} results")
-    return search_response.results
-
-
-async def execute_read_document_tool(
-    searcher_tool: SearcherTool,
-    tool_input: ReadDocumentParams,
-    user_id: str,
-    user_email: str | None = None,
-) -> list[SearchResult]:
-    """Execute read_document tool by calling omni-searcher with document_id filter"""
-    logger.info(f"Reading document: {tool_input}")
-    document_id = tool_input.id
-    document_content_start_line = tool_input.start_line
-    document_content_end_line = tool_input.end_line
-
-    # Create search request with document_id filter
-    # Use query if provided for semantic search within document, otherwise use empty query
-    search_request = SearchRequest(
-        query=tool_input.query or "",
-        document_id=document_id,
-        document_content_start_line=document_content_start_line,
-        document_content_end_line=document_content_end_line,
-        limit=20,  # Get up to 20 chunks for large documents
-        offset=0,
-        mode="hybrid",
-        user_id=user_id,
-        user_email=user_email,
-    )
-
-    try:
-        search_response: SearchResponse = await searcher_tool.handle(search_request)
-    except Exception as e:
-        logger.error(f"Read document failed: {e}")
-        return []
-
-    logger.info(f"Read successful, retrieved {len(search_response.results)} chunks")
-    return search_response.results
 
 
 @router.post("/chat/{chat_id}/generate_title")

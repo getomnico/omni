@@ -173,11 +173,11 @@ class GeminiProvider(LLMProvider):
             if tools:
                 config.tools = _convert_tools_to_gemini(tools)
                 logger.info(
-                    f"[GEMINI] Sending request with {len(tools)} tools: {[t['name'] for t in tools]}"
+                    f"Sending request with {len(tools)} tools: {[t['name'] for t in tools]}"
                 )
 
             logger.info(
-                f"[GEMINI] Model: {self.model}, Messages: {len(contents)}, Max tokens: {config.max_output_tokens}"
+                f"Model: {self.model}, Messages: {len(contents)}, Max tokens: {config.max_output_tokens}"
             )
 
             # Emit message_start
@@ -259,9 +259,7 @@ class GeminiProvider(LLMProvider):
             yield RawMessageStopEvent(type="message_stop")
 
         except Exception as e:
-            logger.error(
-                f"[GEMINI] Failed to stream from Gemini: {str(e)}", exc_info=True
-            )
+            logger.error(f"Failed to stream from Gemini: {str(e)}", exc_info=True)
 
     async def generate_response(
         self,
@@ -291,7 +289,7 @@ class GeminiProvider(LLMProvider):
             return response.text
 
         except Exception as e:
-            logger.error(f"[GEMINI] Failed to generate response: {str(e)}")
+            logger.error(f"Failed to generate response: {str(e)}")
             raise Exception(f"Failed to generate response: {str(e)}")
 
     async def health_check(self) -> bool:
