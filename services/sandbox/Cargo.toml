@@ -26,6 +26,8 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 dotenvy = { workspace = true }
 tower-http = { workspace = true }
+base64 = "0.22"
+mime_guess = "2"
 landlock = "0.4"
 nix = { version = "0.29", features = ["process", "fs"] }
 

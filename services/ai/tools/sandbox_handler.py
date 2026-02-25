@@ -7,8 +7,6 @@ import logging
 
 import httpx
 
-from db.documents import DocumentsRepository
-from storage import ContentStorage, PostgresContentStorage
 from tools.registry import ToolContext, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -42,6 +40,14 @@ SANDBOX_TOOLS = [
                     "type": "string",
                     "description": "Relative file path within the scratch workspace",
                 },
+                "start_line": {
+                    "type": "integer",
+                    "description": "1-based start line number (default: 1)",
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "1-based end line number, inclusive (default: last line)",
+                },
             },
             "required": ["path"],
         },
@@ -62,7 +68,7 @@ SANDBOX_TOOLS = [
     },
     {
         "name": "run_python",
-        "description": "Run Python code in the scratch workspace. Pre-installed libraries: pandas, numpy, openpyxl, json, csv. Use for data analysis, processing, and transformation.",
+        "description": "Run Python code in the scratch workspace. Pre-installed libraries: pandas, numpy, openpyxl, matplotlib, seaborn, json, csv. Use for data analysis, processing, transformation, and visualization.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -74,57 +80,37 @@ SANDBOX_TOOLS = [
             "required": ["code"],
         },
     },
+    {
+        "name": "present_artifact",
+        "description": "Present a generated file (chart, processed spreadsheet, etc.) to the user. The file must already exist in the scratch workspace. Without calling this tool, users cannot see files you generate.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Relative file path within the scratch workspace (e.g., 'chart.png', 'output.xlsx')",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "A short, descriptive title for the artifact (e.g., 'Sales Chart Q4')",
+                },
+            },
+            "required": ["path", "title"],
+        },
+    },
 ]
 
-COPY_TO_SANDBOX_TOOL = {
-    "name": "copy_to_sandbox",
-    "description": (
-        "Copy a document directly from storage into the sandbox workspace. "
-        "Use this to efficiently get a full document into the workspace for processing "
-        "with run_python or run_bash, instead of reading it into the conversation first. "
-        "Note: this copies the extracted text content, not the original binary format."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "document_id": {
-                "type": "string",
-                "description": "The document ID (from search results) to copy",
-            },
-            "path": {
-                "type": "string",
-                "description": "Relative file path in the workspace to write to (e.g., 'data.csv', 'report.txt')",
-            },
-            "document_name": {
-                "type": "string",
-                "description": "Optional human-readable name for logging purposes",
-            },
-        },
-        "required": ["document_id", "path"],
-    },
-}
-
-_TOOL_NAMES = {"write_file", "read_file", "run_bash", "run_python", "copy_to_sandbox"}
+_TOOL_NAMES = {"write_file", "read_file", "run_bash", "run_python", "present_artifact"}
 
 
 class SandboxToolHandler:
     """Dispatches sandbox tool calls to the sidecar service."""
 
-    def __init__(
-        self,
-        sandbox_url: str,
-        content_storage: ContentStorage | PostgresContentStorage | None = None,
-        documents_repo: DocumentsRepository | None = None,
-    ) -> None:
+    def __init__(self, sandbox_url: str) -> None:
         self._sandbox_url = sandbox_url.rstrip("/")
-        self._content_storage = content_storage
-        self._documents_repo = documents_repo
 
     def get_tools(self) -> list[dict]:
-        tools = list(SANDBOX_TOOLS)
-        if self._content_storage and self._documents_repo:
-            tools.append(COPY_TO_SANDBOX_TOOL)
-        return tools
+        return list(SANDBOX_TOOLS)
 
     def can_handle(self, tool_name: str) -> bool:
         return tool_name in _TOOL_NAMES
@@ -134,85 +120,9 @@ class SandboxToolHandler:
             False  # No approval needed — sandbox only affects ephemeral scratch space
         )
 
-    async def _execute_copy_to_sandbox(
-        self, tool_input: dict, context: ToolContext
-    ) -> ToolResult:
-        """Copy a document from storage directly into the sandbox filesystem."""
-        document_id = tool_input["document_id"]
-        path = tool_input["path"]
-        document_name = tool_input.get("document_name", document_id)
-
-        try:
-            # 1. Look up the document to get its content_id
-            doc = await self._documents_repo.get_by_id(document_id)
-            if doc is None:
-                return ToolResult(
-                    content=[
-                        {"type": "text", "text": f"Document not found: {document_id}"}
-                    ],
-                    is_error=True,
-                )
-
-            if not doc.content_id:
-                return ToolResult(
-                    content=[
-                        {
-                            "type": "text",
-                            "text": f"Document '{document_name}' has no extracted text content available.",
-                        }
-                    ],
-                    is_error=True,
-                )
-
-            # 2. Fetch the full text content from storage
-            content = await self._content_storage.get_text(doc.content_id)
-
-            # 3. Write the content to the sandbox filesystem
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                resp = await client.post(
-                    f"{self._sandbox_url}/files/write",
-                    json={
-                        "path": path,
-                        "content": content,
-                        "chat_id": context.chat_id,
-                    },
-                )
-                resp.raise_for_status()
-
-            size_kb = len(content.encode("utf-8")) / 1024
-            return ToolResult(
-                content=[
-                    {
-                        "type": "text",
-                        "text": f"Copied '{document_name}' to {path} ({size_kb:.1f} KB)",
-                    }
-                ],
-            )
-
-        except ValueError as e:
-            return ToolResult(
-                content=[
-                    {"type": "text", "text": f"Failed to read document content: {e}"}
-                ],
-                is_error=True,
-            )
-        except httpx.TimeoutException:
-            return ToolResult(
-                content=[{"type": "text", "text": "Timed out writing file to sandbox"}],
-                is_error=True,
-            )
-        except Exception as e:
-            logger.error(f"copy_to_sandbox failed: {e}")
-            return ToolResult(
-                content=[{"type": "text", "text": f"copy_to_sandbox error: {e}"}],
-                is_error=True,
-            )
-
     async def execute(
         self, tool_name: str, tool_input: dict, context: ToolContext
     ) -> ToolResult:
-        if tool_name == "copy_to_sandbox":
-            return await self._execute_copy_to_sandbox(tool_input, context)
 
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -226,12 +136,15 @@ class SandboxToolHandler:
                         },
                     )
                 elif tool_name == "read_file":
+                    body = {
+                        "path": tool_input["path"],
+                        "chat_id": context.chat_id,
+                        "start_line": tool_input.get("start_line"),
+                        "end_line": tool_input.get("end_line"),
+                    }
                     resp = await client.post(
                         f"{self._sandbox_url}/files/read",
-                        json={
-                            "path": tool_input["path"],
-                            "chat_id": context.chat_id,
-                        },
+                        json={k: v for k, v in body.items() if v is not None},
                     )
                 elif tool_name == "run_bash":
                     resp = await client.post(
@@ -249,6 +162,54 @@ class SandboxToolHandler:
                             "chat_id": context.chat_id,
                         },
                     )
+                elif tool_name == "present_artifact":
+                    # Stat the file to verify it exists and get metadata
+                    resp = await client.post(
+                        f"{self._sandbox_url}/files/stat",
+                        json={
+                            "path": tool_input["path"],
+                            "chat_id": context.chat_id,
+                        },
+                    )
+                    if resp.status_code != 200:
+                        try:
+                            error_msg = resp.json().get("detail", resp.text)
+                        except Exception:
+                            error_msg = resp.text
+                        return ToolResult(
+                            content=[{"type": "text", "text": error_msg}],
+                            is_error=True,
+                        )
+                    stat = resp.json()
+
+                    if not stat.get("exists"):
+                        return ToolResult(
+                            content=[
+                                {
+                                    "type": "text",
+                                    "text": f"File not found: {tool_input['path']}",
+                                }
+                            ],
+                            is_error=True,
+                        )
+
+                    artifact_url = (
+                        f"/api/chat/{context.chat_id}/artifacts/{tool_input['path']}"
+                    )
+                    artifact_info = {
+                        "url": artifact_url,
+                        "title": tool_input["title"],
+                        "content_type": stat["content_type"],
+                        "size_bytes": stat["size_bytes"],
+                    }
+                    return ToolResult(
+                        content=[
+                            {
+                                "type": "text",
+                                "text": json.dumps(artifact_info),
+                            }
+                        ],
+                    )
                 else:
                     return ToolResult(
                         content=[
@@ -260,7 +221,15 @@ class SandboxToolHandler:
                         is_error=True,
                     )
 
-                resp.raise_for_status()
+                if resp.status_code != 200:
+                    try:
+                        error_msg = resp.json().get("detail", resp.text)
+                    except Exception:
+                        error_msg = resp.text
+                    return ToolResult(
+                        content=[{"type": "text", "text": error_msg}],
+                        is_error=True,
+                    )
                 result = resp.json()
 
         except httpx.TimeoutException:

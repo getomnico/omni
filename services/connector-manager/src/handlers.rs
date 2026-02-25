@@ -20,7 +20,7 @@ use shared::db::repositories::SyncRunRepository;
 use shared::models::{SourceType, SyncType};
 use shared::queue::EventQueue;
 use shared::utils;
-use shared::{Repository, ServiceCredentialsRepo, SourceRepository};
+use shared::{DocumentRepository, Repository, ServiceCredentialsRepo, SourceRepository};
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::time::Duration;
@@ -250,7 +250,7 @@ pub async fn list_connectors(
 pub async fn execute_action(
     State(state): State<AppState>,
     Json(request): Json<ExecuteActionRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
     info!(
         "Executing action {} for source {}",
         request.action, request.source_id
@@ -289,10 +289,34 @@ pub async fn execute_action(
             ))
         })?;
 
+    // Resolve document_id -> external_id if present in params
+    let mut params = request.params.clone();
+    if let Some(doc_id) = params.get("document_id").and_then(|v| v.as_str()) {
+        let doc_repo = DocumentRepository::new(state.db_pool.pool());
+        if let Ok(Some(doc)) = doc_repo.find_by_id(doc_id).await {
+            info!(
+                "Resolved document_id {} -> external_id {}",
+                doc_id, doc.external_id
+            );
+            if let Some(obj) = params.as_object_mut() {
+                obj.remove("document_id");
+                obj.insert(
+                    "file_id".to_string(),
+                    serde_json::Value::String(doc.external_id),
+                );
+            }
+        } else {
+            return Err(ApiError::NotFound(format!(
+                "Document not found: {}",
+                doc_id
+            )));
+        }
+    }
+
     let client = ConnectorClient::new();
     let action_request = ActionRequest {
         action: request.action,
-        params: request.params,
+        params,
         credentials: json!({
             "credentials": creds.credentials,
             "config": creds.config,
@@ -300,16 +324,58 @@ pub async fn execute_action(
         }),
     };
 
+    // Use raw response to support binary passthrough
     let response = client
-        .execute_action(connector_url, &action_request)
+        .execute_action_raw(connector_url, &action_request)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    Ok(Json(json!({
-        "status": response.status,
-        "result": response.result,
-        "error": response.error
-    })))
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/json")
+        .to_string();
+
+    // If JSON response, parse and return as before
+    if content_type.contains("application/json") {
+        let body = response
+            .text()
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+        let action_response: crate::models::ActionResponse =
+            serde_json::from_str(&body).map_err(|e| ApiError::Internal(e.to_string()))?;
+
+        let json_body = json!({
+            "status": action_response.status,
+            "result": action_response.result,
+            "error": action_response.error
+        });
+
+        Ok(axum::Json(json_body).into_response())
+    } else {
+        // Binary passthrough: proxy the response body and headers
+        let mut builder = axum::response::Response::builder()
+            .status(axum::http::StatusCode::OK)
+            .header("Content-Type", &content_type);
+
+        // Forward X-File-Name header if present
+        if let Some(file_name) = response.headers().get("x-file-name") {
+            builder = builder.header("X-File-Name", file_name);
+        }
+        // Forward Content-Length if present
+        if let Some(content_length) = response.headers().get("content-length") {
+            builder = builder.header("Content-Length", content_length);
+        }
+
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+        Ok(builder.body(axum::body::Body::from(bytes)).unwrap())
+    }
 }
 
 pub async fn list_actions(

@@ -33,10 +33,14 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
 
+ENV MPLBACKEND=Agg
+
 RUN pip install --no-cache-dir \
     pandas>=2.2.0 \
     numpy>=1.26.0 \
-    openpyxl>=3.1.0
+    openpyxl>=3.1.0 \
+    matplotlib>=3.9.0 \
+    seaborn>=0.13.0
 
 # Run as non-root user
 RUN useradd -m sandbox

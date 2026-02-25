@@ -9,8 +9,11 @@
         FileCode,
         Terminal,
         Pencil,
+        Image,
+        Download,
     } from '@lucide/svelte'
     import type { ToolMessageContent, ToolName } from '$lib/types/message'
+    import { ToolApprovalStatus } from '$lib/types/message'
     import { cn } from '$lib/utils'
     import {
         getIconFromSearchResult,
@@ -29,8 +32,8 @@
             loaded: 'searched',
         },
         read_document: {
-            loading: 'reading',
-            loaded: 'read',
+            loading: 'fetching',
+            loaded: 'fetched',
         },
         write_file: {
             loading: 'writing',
@@ -48,6 +51,10 @@
             loading: 'running',
             loaded: 'ran',
         },
+        present_artifact: {
+            loading: 'presenting',
+            loaded: 'presented',
+        },
     }
 
     const ToolInputKey: Record<string, string> = {
@@ -57,6 +64,28 @@
         read_file: 'path',
         run_bash: 'command',
         run_python: 'code',
+        present_artifact: 'title',
+    }
+
+    const ToolApprovalColors: Record<
+        ToolApprovalStatus,
+        { borderColor: string; bgColor: string; color: string }
+    > = {
+        [ToolApprovalStatus.Pending]: {
+            borderColor: 'border-amber-300',
+            bgColor: 'bg-amber-50',
+            color: 'text-amber-600',
+        },
+        [ToolApprovalStatus.Approved]: {
+            borderColor: 'border-green-200',
+            bgColor: 'bg-green-50',
+            color: 'text-green-600',
+        },
+        [ToolApprovalStatus.Denied]: {
+            borderColor: 'border-red-200',
+            bgColor: 'bg-red-50',
+            color: 'text-red-600',
+        },
     }
 
     let { message }: Props = $props()
@@ -100,7 +129,28 @@
     let selectedItem = $state<string>()
 
     // Determine if this is a sandbox tool
-    const isSandboxTool = ['write_file', 'read_file', 'run_bash', 'run_python'].includes(toolName)
+    const isSandboxTool = [
+        'write_file',
+        'read_file',
+        'run_bash',
+        'run_python',
+        'present_artifact',
+    ].includes(toolName)
+
+    // Parse artifact data for present_artifact tool
+    let artifactData = $derived.by(() => {
+        if (toolName !== 'present_artifact' || !message.actionResult?.text) return null
+        try {
+            return JSON.parse(message.actionResult.text) as {
+                url: string
+                title: string
+                content_type: string
+                size_bytes: number
+            }
+        } catch {
+            return null
+        }
+    })
 </script>
 
 {#if toolName === 'read_document'}
@@ -118,33 +168,62 @@
         </div>
     </div>
 {:else if isSandboxTool}
-    <div
-        class={cn(
-            'flex cursor-pointer items-center justify-between rounded-md border border-gray-200 px-3 py-3 text-sm hover:no-underline',
-        )}>
-        <div class="flex w-full items-center justify-between">
-            <div class="flex items-center gap-2">
-                {#if toolName === 'run_python'}
-                    <FileCode class="h-5 w-5 text-blue-600" />
-                {:else if toolName === 'run_bash'}
-                    <Terminal class="h-5 w-5 text-green-600" />
-                {:else if toolName === 'write_file'}
-                    <Pencil class="h-5 w-5 text-amber-600" />
-                {:else}
-                    <FileText class="h-5 w-5" />
-                {/if}
-                <div class="max-w-screen-md truncate text-sm font-normal">
-                    {statusIndicator}: {inputSummary()}
+    {#if toolName === 'present_artifact' && artifactData}
+        <div class="mt-2">
+            {#if artifactData.content_type.startsWith('image/')}
+                <figure class="rounded-lg border border-gray-200 p-2">
+                    <img
+                        src={artifactData.url}
+                        alt={artifactData.title}
+                        class="!m-0 max-w-full rounded" />
+                    <figcaption class="text-muted-foreground mt-1 text-center text-xs">
+                        {artifactData.title}
+                    </figcaption>
+                </figure>
+            {:else}
+                <a
+                    href={artifactData.url}
+                    download
+                    class="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm no-underline hover:bg-gray-50">
+                    <Download class="h-4 w-4" />
+                    <span>{artifactData.title}</span>
+                    <span class="text-muted-foreground text-xs">
+                        ({Math.round(artifactData.size_bytes / 1024)} KB)
+                    </span>
+                </a>
+            {/if}
+        </div>
+    {:else}
+        <div
+            class={cn(
+                'flex cursor-pointer items-center justify-between rounded-md border border-gray-200 px-3 py-3 text-sm hover:no-underline',
+            )}>
+            <div class="flex w-full items-center justify-between">
+                <div class="flex items-center gap-2">
+                    {#if toolName === 'present_artifact'}
+                        <Image class="h-5 w-5 text-violet-600" />
+                    {:else if toolName === 'run_python'}
+                        <FileCode class="h-5 w-5 text-blue-600" />
+                    {:else if toolName === 'run_bash'}
+                        <Terminal class="h-5 w-5 text-green-600" />
+                    {:else if toolName === 'write_file'}
+                        <Pencil class="h-5 w-5 text-amber-600" />
+                    {:else}
+                        <FileText class="h-5 w-5" />
+                    {/if}
+                    <div class="max-w-screen-md truncate text-sm font-normal">
+                        {statusIndicator}: {inputSummary()}
+                    </div>
                 </div>
             </div>
         </div>
-    </div>
+    {/if}
 {:else if isConnectorAction}
     <div
         class={cn(
             'flex cursor-pointer items-center justify-between rounded-md border border-gray-200 px-3 py-3 text-sm hover:no-underline',
-            message.approval?.status === 'pending' && 'border-amber-300 bg-amber-50',
-            message.approval?.status === 'denied' && 'border-red-200 bg-red-50',
+            message.approval && ToolApprovalColors[message.approval.status]?.borderColor,
+            message.approval && ToolApprovalColors[message.approval.status]?.bgColor,
         )}>
         <div class="flex w-full items-center justify-between">
             <div class="flex items-center gap-2">
@@ -158,11 +237,10 @@
             </div>
             {#if message.approval}
                 <div
-                    class="text-xs font-medium {message.approval.status === 'approved'
-                        ? 'text-green-600'
-                        : message.approval.status === 'denied'
-                          ? 'text-red-600'
-                          : 'text-amber-600'}">
+                    class={cn(
+                        'text-xs font-medium',
+                        ToolApprovalColors[message.approval.status]?.color,
+                    )}>
                     {message.approval.status}
                 </div>
             {/if}

@@ -16,6 +16,10 @@ class Document:
 
     id: str
     content_id: Optional[str]
+    source_id: Optional[str] = None
+    external_id: Optional[str] = None
+    title: Optional[str] = None
+    content_type: Optional[str] = None
     embedding_status: Optional[str] = None
 
 
@@ -46,7 +50,7 @@ class DocumentsRepository:
         pool = await self._get_pool()
 
         row = await pool.fetchrow(
-            "SELECT id, content_id, embedding_status FROM documents WHERE id = $1",
+            "SELECT id, content_id, source_id, external_id, title, content_type, embedding_status FROM documents WHERE id = $1",
             document_id,
         )
 
@@ -54,6 +58,10 @@ class DocumentsRepository:
             return Document(
                 id=row["id"],
                 content_id=row["content_id"],
+                source_id=row["source_id"],
+                external_id=row["external_id"],
+                title=row["title"],
+                content_type=row["content_type"],
                 embedding_status=row["embedding_status"],
             )
         return None

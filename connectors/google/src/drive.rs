@@ -444,7 +444,108 @@ impl DriveClient {
         .await
     }
 
-    async fn download_file_binary(
+    pub async fn get_file_metadata(
+        &self,
+        auth: &GoogleAuth,
+        user_email: &str,
+        file_id: &str,
+    ) -> Result<GoogleDriveFile> {
+        let file_id = file_id.to_string();
+
+        let rate_limiter = self.get_or_create_user_rate_limiter(user_email)?;
+        execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
+            let file_id = file_id.clone();
+            async move {
+                let url = format!(
+                    "{}/files/{}?fields=id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents",
+                    DRIVE_API_BASE, &file_id
+                );
+
+                debug!("Getting file metadata: {}", file_id);
+                let response = self
+                    .client
+                    .get(&url)
+                    .bearer_auth(&token)
+                    .send()
+                    .await
+                    .with_context(|| format!("Failed to get metadata for file {}", file_id))?;
+
+                let status = response.status();
+                if is_auth_error(status) {
+                    return Ok(ApiResult::AuthError);
+                } else if !status.is_success() {
+                    let error_text = response.text().await?;
+                    return Ok(ApiResult::OtherError(anyhow!(
+                        "Failed to get file metadata {}: HTTP {} - {}",
+                        file_id,
+                        status,
+                        error_text
+                    )));
+                }
+
+                let file: GoogleDriveFile = response.json().await.with_context(|| {
+                    format!("Failed to parse metadata for file {}", file_id)
+                })?;
+
+                Ok(ApiResult::Success(file))
+            }
+        })
+        .await
+    }
+
+    pub async fn export_file(
+        &self,
+        auth: &GoogleAuth,
+        user_email: &str,
+        file_id: &str,
+        export_mime_type: &str,
+    ) -> Result<Vec<u8>> {
+        let file_id = file_id.to_string();
+        let export_mime_type = export_mime_type.to_string();
+
+        let rate_limiter = self.get_or_create_user_rate_limiter(user_email)?;
+        execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
+            let file_id = file_id.clone();
+            let export_mime_type = export_mime_type.clone();
+            async move {
+                let url = format!(
+                    "{}/files/{}/export?mimeType={}",
+                    DRIVE_API_BASE, &file_id, &export_mime_type
+                );
+
+                debug!("Exporting file {} as {}", file_id, export_mime_type);
+                let response = self
+                    .client
+                    .get(&url)
+                    .bearer_auth(&token)
+                    .send()
+                    .await
+                    .with_context(|| format!("Failed to export file {}", file_id))?;
+
+                let status = response.status();
+                if is_auth_error(status) {
+                    return Ok(ApiResult::AuthError);
+                } else if !status.is_success() {
+                    let error_text = response.text().await?;
+                    return Ok(ApiResult::OtherError(anyhow!(
+                        "Failed to export file {}: HTTP {} - {}",
+                        file_id,
+                        status,
+                        error_text
+                    )));
+                }
+
+                let bytes = response.bytes().await.with_context(|| {
+                    format!("Failed to read export content for file {}", file_id)
+                })?;
+
+                Ok(ApiResult::Success(bytes.to_vec()))
+            }
+        })
+        .await
+    }
+
+    pub async fn download_file_binary(
         &self,
         auth: &GoogleAuth,
         user_email: &str,

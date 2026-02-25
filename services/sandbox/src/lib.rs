@@ -76,7 +76,10 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         .route("/execute/bash", post(handlers::execute_bash))
         .route("/execute/python", post(handlers::execute_python))
         .route("/files/write", post(handlers::write_file))
+        .route("/files/write_binary", post(handlers::write_file_binary))
         .route("/files/read", post(handlers::read_file))
+        .route("/files/stat", post(handlers::file_stat))
+        .route("/files/download", get(handlers::download_file))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

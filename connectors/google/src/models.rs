@@ -867,6 +867,12 @@ pub struct ActionDefinition {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+    #[serde(default = "default_action_mode")]
+    pub mode: String,
+}
+
+fn default_action_mode() -> String {
+    "write".to_string()
 }
 
 // Import SyncRequest and SyncResponse from shared crate

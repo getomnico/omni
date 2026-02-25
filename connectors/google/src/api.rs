@@ -17,10 +17,11 @@ use tower_http::cors::CorsLayer;
 use tracing::{debug, error, info, warn};
 
 use crate::admin::AdminClient;
-use crate::auth::ServiceAccountAuth;
+use crate::auth::{GoogleAuth, ServiceAccountAuth};
+use crate::drive::DriveClient;
 use crate::models::{
-    ActionRequest, ActionResponse, CancelRequest, CancelResponse, ConnectorManifest, SyncRequest,
-    SyncResponse, SyncResponseExt, WebhookNotification,
+    ActionDefinition, ActionRequest, ActionResponse, CancelRequest, CancelResponse,
+    ConnectorManifest, SyncRequest, SyncResponse, SyncResponseExt, WebhookNotification,
 };
 use crate::sync::SyncManager;
 use shared::models::{ServiceProvider, SourceType};
@@ -64,7 +65,18 @@ async fn manifest() -> impl IntoResponse {
         name: "google".to_string(),
         version: "1.0.0".to_string(),
         sync_modes: vec!["full".to_string(), "incremental".to_string()],
-        actions: vec![], // Google connector has no actions yet
+        actions: vec![ActionDefinition {
+            name: "fetch_file".to_string(),
+            description: "Download a file from Google Drive. Exports Google Workspace files to Office format.".to_string(),
+            mode: "read".to_string(),
+            parameters: json!({
+                "file_id": {
+                    "type": "string",
+                    "required": true,
+                    "description": "The Google Drive file ID"
+                }
+            }),
+        }],
     };
     Json(manifest)
 }
@@ -128,11 +140,173 @@ async fn cancel_sync(
     })
 }
 
-async fn execute_action(Json(request): Json<ActionRequest>) -> impl IntoResponse {
+async fn execute_action(
+    Json(request): Json<ActionRequest>,
+) -> Result<axum::response::Response, (StatusCode, Json<ActionResponse>)> {
     info!("Action requested: {}", request.action);
 
-    // Google connector doesn't support any actions yet
-    Json(ActionResponse::not_supported(&request.action))
+    match request.action.as_str() {
+        "fetch_file" => execute_fetch_file(request).await,
+        _ => {
+            let resp = ActionResponse::not_supported(&request.action);
+            Err((StatusCode::BAD_REQUEST, Json(resp)))
+        }
+    }
+}
+
+async fn execute_fetch_file(
+    request: ActionRequest,
+) -> Result<axum::response::Response, (StatusCode, Json<ActionResponse>)> {
+    let file_id = request
+        .params
+        .get("file_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            let resp = ActionResponse {
+                status: "error".to_string(),
+                result: None,
+                error: Some("Missing required parameter: file_id".to_string()),
+            };
+            (StatusCode::BAD_REQUEST, Json(resp))
+        })?
+        .to_string();
+
+    // Extract credentials (same pattern as search_users)
+    let service_account_key = request
+        .credentials
+        .get("credentials")
+        .and_then(|c| c.get("service_account_key"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            let resp = ActionResponse {
+                status: "error".to_string(),
+                result: None,
+                error: Some("Missing service_account_key in credentials".to_string()),
+            };
+            (StatusCode::BAD_REQUEST, Json(resp))
+        })?;
+
+    let principal_email = request
+        .credentials
+        .get("principal_email")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            let resp = ActionResponse {
+                status: "error".to_string(),
+                result: None,
+                error: Some("Missing principal_email in credentials".to_string()),
+            };
+            (StatusCode::BAD_REQUEST, Json(resp))
+        })?;
+
+    // Create auth
+    let scopes = crate::auth::get_scopes_for_source_type(SourceType::GoogleDrive);
+    let auth = ServiceAccountAuth::new(service_account_key, scopes).map_err(|e| {
+        error!("Failed to create auth: {}", e);
+        let resp = ActionResponse {
+            status: "error".to_string(),
+            result: None,
+            error: Some(format!("Authentication failed: {}", e)),
+        };
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(resp))
+    })?;
+
+    let google_auth = GoogleAuth::ServiceAccount(auth);
+    let drive_client = DriveClient::new();
+
+    // Get file metadata to determine mime type
+    let file_meta = drive_client
+        .get_file_metadata(&google_auth, principal_email, &file_id)
+        .await
+        .map_err(|e| {
+            error!("Failed to get file metadata: {}", e);
+            let resp = ActionResponse {
+                status: "error".to_string(),
+                result: None,
+                error: Some(format!("Failed to get file metadata: {}", e)),
+            };
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(resp))
+        })?;
+
+    let mime_type = &file_meta.mime_type;
+    let file_name = &file_meta.name;
+
+    // Map Google Workspace types to their export MIME type and file extension
+    let export_mapping: Option<(&str, &str)> = match mime_type.as_str() {
+        "application/vnd.google-apps.spreadsheet" => Some((
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".xlsx",
+        )),
+        "application/vnd.google-apps.document" => Some((
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".docx",
+        )),
+        "application/vnd.google-apps.presentation" => Some((
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ".pptx",
+        )),
+        _ => None,
+    };
+
+    let (bytes, content_type, download_name) = if let Some((export_mime, ext)) = export_mapping {
+        let bytes = drive_client
+            .export_file(&google_auth, principal_email, &file_id, export_mime)
+            .await
+            .map_err(|e| {
+                error!("Failed to export file: {}", e);
+                let resp = ActionResponse {
+                    status: "error".to_string(),
+                    result: None,
+                    error: Some(format!("Failed to export file: {}", e)),
+                };
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(resp))
+            })?;
+        (
+            bytes,
+            export_mime.to_string(),
+            ensure_extension(file_name, ext),
+        )
+    } else {
+        let bytes = drive_client
+            .download_file_binary(&google_auth, principal_email, &file_id)
+            .await
+            .map_err(|e| {
+                error!("Failed to download file: {}", e);
+                let resp = ActionResponse {
+                    status: "error".to_string(),
+                    result: None,
+                    error: Some(format!("Failed to download file: {}", e)),
+                };
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(resp))
+            })?;
+        (bytes, mime_type.clone(), file_name.clone())
+    };
+
+    info!(
+        "Returning binary response for file '{}' ({} bytes, {})",
+        download_name,
+        bytes.len(),
+        content_type
+    );
+
+    // Return binary HTTP response with metadata headers
+    let response = axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", &content_type)
+        .header("X-File-Name", &download_name)
+        .header("Content-Length", bytes.len().to_string())
+        .body(axum::body::Body::from(bytes))
+        .unwrap();
+
+    Ok(response)
+}
+
+fn ensure_extension(name: &str, ext: &str) -> String {
+    if name.ends_with(ext) {
+        name.to_string()
+    } else {
+        format!("{}{}", name, ext)
+    }
 }
 
 async fn handle_webhook(

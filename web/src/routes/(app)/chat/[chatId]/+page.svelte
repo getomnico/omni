@@ -230,6 +230,23 @@
             }
         }
 
+        const updateActionResult = (actionResult: {
+            toolUseId: string
+            text: string
+            isError: boolean
+        }) => {
+            for (const message of processedMessages) {
+                if (message.role === 'assistant') {
+                    for (const block of message.content) {
+                        if (block.type === 'tool' && block.toolUse.id === actionResult.toolUseId) {
+                            block.actionResult = actionResult
+                            return
+                        }
+                    }
+                }
+            }
+        }
+
         const messages = chatMessages.map((m) => m.message)
         for (let i = 0; i < messages.length; i++) {
             const message = messages[i]
@@ -313,16 +330,31 @@
                             const toolUseId = block.tool_use_id
                             const searchResults = Array.isArray(block.content)
                                 ? (block.content.filter(
-                                      (b) => b.type === 'search_result',
+                                      (b: any) => b.type === 'search_result',
                                   ) as SearchResultBlockParam[])
                                 : []
-                            updateToolResults({
-                                toolUseId,
-                                content: searchResults.map((r) => ({
-                                    title: r.title,
-                                    source: r.source,
-                                })),
-                            })
+                            if (searchResults.length > 0) {
+                                updateToolResults({
+                                    toolUseId,
+                                    content: searchResults.map((r) => ({
+                                        title: r.title,
+                                        source: r.source,
+                                    })),
+                                })
+                            }
+
+                            // Extract text content for non-search tool results (e.g., present_artifact)
+                            const textBlocks = Array.isArray(block.content)
+                                ? block.content.filter((b: any) => b.type === 'text')
+                                : []
+                            if (textBlocks.length > 0) {
+                                const text = textBlocks.map((b: any) => b.text).join('\n')
+                                updateActionResult({
+                                    toolUseId,
+                                    text,
+                                    isError: block.is_error || false,
+                                })
+                            }
                         }
                     }
                 }

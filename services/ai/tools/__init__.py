@@ -6,6 +6,7 @@ from .registry import ToolRegistry, ToolHandler, ToolContext, ToolResult
 from .search_handler import SearchToolHandler
 from .connector_handler import ConnectorToolHandler
 from .sandbox_handler import SandboxToolHandler
+from .document_handler import DocumentToolHandler
 
 __all__ = [
     "SearcherTool",
@@ -19,4 +20,5 @@ __all__ = [
     "SearchToolHandler",
     "ConnectorToolHandler",
     "SandboxToolHandler",
+    "DocumentToolHandler",
 ]

@@ -3,8 +3,9 @@ import json
 import logging
 from typing import cast
 
+import httpx
 from fastapi import APIRouter, HTTPException, Path, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import ValidationError
 
 from db import ChatsRepository, MessagesRepository, SourcesRepository
@@ -16,6 +17,7 @@ from tools import (
     ToolContext,
     SearchToolHandler,
     ConnectorToolHandler,
+    DocumentToolHandler,
 )
 from tools.search_handler import SEARCH_TOOLS
 from tools.sandbox_handler import SandboxToolHandler
@@ -167,15 +169,21 @@ async def _build_registry(
                 for a in connector_handler._actions.values()
             ]
 
-    # Register sandbox tools if sandbox service is configured
-    if SANDBOX_URL:
+    # Register document handler (unified read_document tool)
+    content_storage = getattr(request.app.state, "content_storage", None)
+    if content_storage or CONNECTOR_MANAGER_URL:
         registry.register(
-            SandboxToolHandler(
-                sandbox_url=SANDBOX_URL,
-                content_storage=request.app.state.content_storage,
+            DocumentToolHandler(
+                content_storage=content_storage,
                 documents_repo=DocumentsRepository(),
+                sandbox_url=SANDBOX_URL or None,
+                connector_manager_url=CONNECTOR_MANAGER_URL or None,
             )
         )
+
+    # Register sandbox tools if sandbox service is configured
+    if SANDBOX_URL:
+        registry.register(SandboxToolHandler(sandbox_url=SANDBOX_URL))
 
     return registry, connector_actions
 
@@ -690,3 +698,38 @@ async def generate_chat_title(
         raise HTTPException(
             status_code=500, detail=f"Failed to generate title: {str(e)}"
         )
+
+
+@router.get("/chat/{chat_id}/artifacts/{path:path}")
+async def download_artifact(
+    request: Request,
+    chat_id: str = Path(..., description="Chat thread ID"),
+    path: str = Path(..., description="Relative file path in the sandbox"),
+):
+    """Proxy artifact downloads from the sandbox service."""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(
+                f"{SANDBOX_URL}/files/download",
+                params={"chat_id": chat_id, "path": path},
+            )
+
+            if resp.status_code == 404:
+                raise HTTPException(status_code=404, detail="Artifact not found")
+
+            resp.raise_for_status()
+
+            content_type = resp.headers.get("content-type", "application/octet-stream")
+            return Response(
+                content=resp.content,
+                media_type=content_type,
+                headers={"Cache-Control": "private, max-age=3600"},
+            )
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Sandbox artifact download failed: {e}")
+        raise HTTPException(
+            status_code=502, detail="Failed to fetch artifact from sandbox"
+        )
+    except Exception as e:
+        logger.error(f"Artifact download error: {e}")
+        raise HTTPException(status_code=500, detail="Internal error fetching artifact")

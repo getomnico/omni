@@ -7,6 +7,17 @@ export type TextMessageContent = {
     citations?: Array<TextCitationParam>
 }
 
+export enum ToolApprovalStatus {
+    Pending = 'pending',
+    Approved = 'approved',
+    Denied = 'denied',
+}
+
+export type ToolApproval = {
+    status: ToolApprovalStatus
+    approvalId: string
+}
+
 export type ToolMessageContent = {
     id: number
     type: 'tool'
@@ -29,10 +40,7 @@ export type ToolMessageContent = {
         isError: boolean
     }
     // Approval state for write actions
-    approval?: {
-        status: 'pending' | 'approved' | 'denied'
-        approvalId: string
-    }
+    approval?: ToolApproval
 }
 
 export type ApprovalRequiredEvent = {

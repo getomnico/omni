@@ -144,6 +144,37 @@ impl ConnectorClient {
             .map_err(|e| ClientError::InvalidResponse(e.to_string()))
     }
 
+    /// Execute an action and return the raw response without parsing.
+    /// Used for binary passthrough when the connector returns non-JSON responses.
+    pub async fn execute_action_raw(
+        &self,
+        connector_url: &str,
+        request: &ActionRequest,
+    ) -> Result<reqwest::Response, ClientError> {
+        let url = format!("{}/action", connector_url);
+        debug!("Executing action (raw) {} at {}", request.action, url);
+
+        let response = self
+            .client
+            .post(&url)
+            .json(request)
+            .send()
+            .await
+            .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            error!("Failed to execute action (raw): {} - {}", status, body);
+            return Err(ClientError::ConnectorError {
+                status: status.as_u16(),
+                message: body,
+            });
+        }
+
+        Ok(response)
+    }
+
     pub async fn health_check(&self, connector_url: &str) -> bool {
         let url = format!("{}/health", connector_url);
         match self.client.get(&url).send().await {
