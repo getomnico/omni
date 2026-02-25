@@ -63,8 +63,6 @@ Omni is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for detail
 
 <div align="center">
 
-**Ready to take control of your enterprise search?**
-
 [⭐ Star this repo](https://github.com/getomnico/omni) • [Documentation](https://docs.getomni.co) • [Discussions](https://github.com/getomnico/omni/discussions)
 
 </div>
