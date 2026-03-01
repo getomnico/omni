@@ -172,9 +172,7 @@ services:
   # Runs on sandbox-net only (no access to omni-network / internal services).
   # The AI service bridges both networks to reach it.
   sandbox:
-    build:
-      context: ..
-      dockerfile: services/sandbox/Dockerfile
+    image: ghcr.io/getomnico/omni/omni-sandbox:${OMNI_VERSION:-latest}
     container_name: omni-sandbox
     expose:
       - "${SANDBOX_PORT}"
