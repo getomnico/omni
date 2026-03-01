@@ -1,27 +1,14 @@
 # Contributing to Omni
 
-Thank you for your interest in contributing to Omni! This document provides guidelines and instructions for contributing to the project.
-
-## Table of Contents
-
-- [Getting Started](#getting-started)
-- [Development Setup](#development-setup)
-- [Project Structure](#project-structure)
-- [Making Changes](#making-changes)
-- [Testing](#testing)
-- [Submitting Changes](#submitting-changes)
-- [Style Guidelines](#style-guidelines)
-- [Community](#community)
-
 ## Getting Started
 
-1. **Fork the repository** on GitHub
-2. **Clone your fork** locally:
+1. Fork the repository on GitHub
+2. Clone your fork locally:
    ```bash
-   git clone https://github.com/<ylur_gh_username>/omni.git
+   git clone https://github.com/<your_gh_username>/omni.git
    cd omni
    ```
-3. **Add upstream remote**:
+3. Add upstream remote:
    ```bash
    git remote add upstream https://github.com/getomnico/omni.git
    ```
@@ -30,32 +17,29 @@ Thank you for your interest in contributing to Omni! This document provides guid
 
 ### Prerequisites
 
-- **Docker** and Docker Compose (primary requirement - all services run in containers)
-- **Rust** 1.75+ (install via [rustup](https://rustup.rs/)) - only needed for local development outside containers
-- **Node.js** 22+ - only needed for local frontend development
-- **Python** 3.12+ - only needed for local AI service development
+- **Docker** and Docker Compose (primary requirement — all services run in containers)
+- **Rust** 1.75+ (install via [rustup](https://rustup.rs/)) — only needed for development outside containers
+- **Node.js** 22+ — only needed for frontend development outside containers
+- **Python** 3.12+ and [uv](https://docs.astral.sh/uv/) — only needed for AI service development outside containers
 
 ### Initial Setup
 
-1. **Configure environment**:
+1. Configure environment:
    ```bash
    cp .env.example .env
-
-   # Edit .env to configure your settings
    ```
 
-2. **Start development environment**:
+2. Start the development environment:
    ```bash
    docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml --env-file .env up -d --build
    ```
 
-3. **Access the application**:
-   - Web UI: http://localhost:3000
+3. Access the web UI at http://localhost:3000
 
 ### Development Workflow
 
-- **Hot-reload services**: `omni-web` (SvelteKit) and `omni-ai` (Python/FastAPI) automatically reload when you edit their source files
-- **Rust services**: Need to be rebuilt after changes:
+- `omni-web` (SvelteKit) and `omni-ai` (Python/FastAPI) hot-reload when you edit source files
+- Rust services need to be rebuilt after changes:
   ```bash
   docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml --env-file .env up -d --build searcher
   ```
@@ -64,136 +48,83 @@ Thank you for your interest in contributing to Omni! This document provides guid
 
 If you prefer developing outside containers:
 
-**Rust services**:
 ```bash
+# Rust services
 cargo build --workspace
-```
 
-**Frontend**:
-```bash
-cd web
-npm install
-```
+# Frontend
+cd web && npm install
 
-**AI service**:
-```bash
-cd services/ai
-uv sync
+# AI service
+cd services/ai && uv sync
 ```
 
 ## Project Structure
 
 ```
 omni/
-├── services/                    # Core microservices
-│   ├── searcher/                # Search query processing (Rust)
-│   ├── indexer/                 # Document indexing (Rust)
-│   ├── connector-manager/       # Orchestrates connector containers
-│   └── ai/                      # AI/ML service (Python)
-├── connectors/                  # Data source connectors (Rust)
-│   ├── google/
-│   ├── slack/
-│   ├── atlassian/
+├── services/
+│   ├── searcher/               # Search engine (Rust)
+│   ├── indexer/                # Document indexing (Rust)
+│   ├── ai/                    # LLM orchestration, agent (Python)
+│   ├── connector-manager/     # Connector orchestration (Rust)
+│   ├── sandbox/               # Code execution sandbox (Rust)
+│   └── migrations/            # SQL migrations
+├── connectors/                # One container per data source
+│   ├── google/                #   Google Drive & Gmail (Rust)
+│   ├── slack/                 #   Slack (Rust)
+│   ├── atlassian/             #   Confluence & Jira (Rust)
 │   └── ...
-├── web/                         # SvelteKit frontend
-├── sdk/                         # Python and TS SDK for building custom connectors
-└── shared/                      # Shared Rust libraries
+├── web/                       # SvelteKit frontend
+├── sdk/                       # Connector SDKs (Python, TypeScript)
+├── shared/                    # Shared Rust libraries
+└── docker/                    # Compose files
 ```
-
-## Making Changes
-
-### Workflow
-
-1. **Create a feature branch**:
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-
-2. **Make your changes** following our guidelines
-
-3. **Test your changes** against the local dev deployment
-
-4. **Make a commit**:
-   ```bash
-   git commit -m "Add new search filter capability"
-   ```
 
 ## Testing
 
 ### Running Tests
 
-**Rust tests**:
+**Rust:**
 ```bash
-# Run all tests
 cargo test --workspace
 
-# Run specific service tests
+# Specific service
 cargo test -p indexer
 
-# Run with logs
+# With logs
 RUST_LOG=debug cargo test --workspace
 ```
 
-**Frontend tests**:
-```bash
-cd web
-npm test
-npm run test:e2e  # End-to-end tests
-```
-
-**Python tests**:
+**Python (AI service):**
 ```bash
 cd services/ai
-pytest
+uv run pytest
 ```
 
 ### Writing Tests
 
-- Prefer integration tests
-- Avoid unnecessary unit tests for the sake of coverage
+- Prefer integration tests over unit tests. We use testcontainers to bring up real Postgres (ParadeDB) and Redis instances — the existing test harnesses in most services already do this.
+- For Python connector tests, there's a testing harness at `sdk/python/omni_connector/testing`.
+- Avoid unit tests just for coverage. If the behavior is better tested against a real database instance, do that instead.
 
 ## Submitting Changes
 
-### Pull Request Process
-
-1. **Update your fork**:
+1. Create a feature branch:
+   ```bash
+   git checkout -b feature/your-feature-name
+   ```
+2. Make your changes and test against the local dev deployment
+3. Update your fork and push:
    ```bash
    git fetch upstream
    git rebase upstream/main
-   ```
-
-2. **Push to your fork**:
-   ```bash
    git push origin feature/your-feature-name
    ```
-
-3. **Create a Pull Request** on GitHub
-
-## Style Guidelines
-
-### Rust Code
-
-- Follow standard Rust conventions
-- Use `cargo fmt` before committing
-- Run `cargo clippy` and address warnings
-- Add doc comments for public APIs
-
-### TypeScript/Svelte
-
-- Use TypeScript strict mode
-- Follow the existing code style
-
-### Python Code
-
-- Follow PEP 8
-- Use type hints
-- Add docstrings for functions and classes
-- Keep functions focused and small
+4. Create a Pull Request on GitHub
 
 ## Getting Help
 
-- **Discord**: Join our [community Discord](https://discord.gg/aNr2J3xD)
-- **GitHub Issues**: For bug reports and feature requests
-- **Discussions**: For questions and ideas
-
-Thank you for contributing to Omni! 🎉
+- **Discord**: [Community Discord](https://discord.gg/aNr2J3xD)
+- **GitHub Issues**: Bug reports and feature requests
+- **Discussions**: Questions and ideas
