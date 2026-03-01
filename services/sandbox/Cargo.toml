@@ -33,3 +33,9 @@ nix = { version = "0.29", features = ["process", "fs"] }
 
 [dev-dependencies]
 axum-test = { workspace = true }
+testcontainers = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = "0.22"
