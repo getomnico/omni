@@ -7,6 +7,17 @@ import type { Chat, ChatMessage } from './schema'
 import * as schema from './schema'
 import { ulid } from 'ulid'
 
+// Raw database row type for chat search results (snake_case from SQL)
+type ChatRow = {
+    id: string
+    user_id: string
+    title: string | null
+    is_starred: boolean
+    model_id: string | null
+    created_at: Date
+    updated_at: Date
+}
+
 function extractContentText(message: MessageParam): string | null {
     if (message.role !== 'user' && message.role !== 'assistant') return null
 
@@ -149,15 +160,18 @@ export class ChatRepository {
             LIMIT 20
         `)
 
-        return results.map((row: any) => ({
-            id: row.id,
-            userId: row.user_id,
-            title: row.title,
-            isStarred: row.is_starred,
-            modelId: row.model_id,
-            createdAt: row.created_at,
-            updatedAt: row.updated_at,
-        }))
+        return results.map((row) => {
+            const r = row as ChatRow
+            return {
+                id: r.id,
+                userId: r.user_id,
+                title: r.title,
+                isStarred: r.is_starred,
+                modelId: r.model_id,
+                createdAt: r.created_at,
+                updatedAt: r.updated_at,
+            }
+        })
     }
 }
 
