@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Duration, Utc};
-use shared::models::{ConnectorEvent, SyncType};
+use shared::models::{ConnectorEvent, DocumentPermissions, SyncType};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -40,6 +41,7 @@ pub struct JiraProcessor {
     client: Arc<dyn AtlassianApi>,
     sdk_client: SdkClient,
     cached_custom_fields: Option<(Vec<String>, DateTime<Utc>)>,
+    project_permissions_cache: HashMap<String, DocumentPermissions>,
 }
 
 const CUSTOM_FIELDS_CACHE_TTL_DAYS: i64 = 1;
@@ -50,7 +52,125 @@ impl JiraProcessor {
             client,
             sdk_client,
             cached_custom_fields: None,
+            project_permissions_cache: HashMap::new(),
         }
+    }
+
+    async fn get_project_permissions(
+        &mut self,
+        creds: &AtlassianCredentials,
+        project_key: &str,
+    ) -> DocumentPermissions {
+        if let Some(cached) = self.project_permissions_cache.get(project_key) {
+            return cached.clone();
+        }
+
+        let perms = match self.fetch_project_permissions(creds, project_key).await {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(
+                    "Failed to fetch permissions for project {}, defaulting to public: {}",
+                    project_key, e
+                );
+                DocumentPermissions {
+                    public: true,
+                    users: vec![],
+                    groups: vec![],
+                }
+            }
+        };
+
+        self.project_permissions_cache
+            .insert(project_key.to_string(), perms.clone());
+        perms
+    }
+
+    async fn fetch_project_permissions(
+        &self,
+        creds: &AtlassianCredentials,
+        project_key: &str,
+    ) -> Result<DocumentPermissions> {
+        // Get all roles for the project
+        let roles = self
+            .client
+            .get_jira_project_roles(creds, project_key)
+            .await?;
+
+        let mut user_account_ids = Vec::new();
+        let mut group_names = Vec::new();
+
+        // Fetch actors for each role
+        for (_role_name, role_url) in &roles {
+            // Extract role ID from URL (e.g., ".../role/10002")
+            let role_id = role_url.rsplit('/').next().unwrap_or_default();
+
+            if role_id.is_empty() {
+                continue;
+            }
+
+            match self
+                .client
+                .get_jira_project_role_actors(creds, project_key, role_id)
+                .await
+            {
+                Ok(role_actors) => {
+                    for actor in &role_actors.actors {
+                        match actor.actor_type.as_str() {
+                            "atlassian-user-role-actor" => {
+                                if let Some(user) = &actor.actor_user {
+                                    user_account_ids.push(user.account_id.clone());
+                                }
+                            }
+                            "atlassian-group-role-actor" => {
+                                if let Some(group) = &actor.actor_group {
+                                    group_names.push(group.name.clone());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to fetch actors for role {} in project {}: {}",
+                        role_id, project_key, e
+                    );
+                }
+            }
+        }
+
+        // Resolve accountIds to emails
+        let mut user_emails = Vec::new();
+        if !user_account_ids.is_empty() {
+            user_account_ids.sort();
+            user_account_ids.dedup();
+            match self
+                .client
+                .get_jira_users_bulk(creds, &user_account_ids)
+                .await
+            {
+                Ok(id_email_pairs) => {
+                    user_emails.extend(id_email_pairs.into_iter().map(|(_, email)| email));
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to resolve user emails for project {}: {}",
+                        project_key, e
+                    );
+                }
+            }
+        }
+
+        user_emails.sort();
+        user_emails.dedup();
+        group_names.sort();
+        group_names.dedup();
+
+        Ok(DocumentPermissions {
+            public: false,
+            users: user_emails,
+            groups: group_names,
+        })
     }
 
     async fn get_custom_field_ids(&mut self, creds: &AtlassianCredentials) -> Vec<String> {
@@ -228,7 +348,13 @@ impl JiraProcessor {
 
             let issues_count = response.issues.len();
             let count = self
-                .process_issues(response.issues, source_id, &creds.base_url, sync_run_id)
+                .process_issues(
+                    response.issues,
+                    source_id,
+                    &creds.base_url,
+                    sync_run_id,
+                    creds,
+                )
                 .await?;
 
             total_issues += count;
@@ -287,7 +413,13 @@ impl JiraProcessor {
 
             let issues_count = response.issues.len();
             let count = self
-                .process_issues(response.issues, source_id, &creds.base_url, sync_run_id)
+                .process_issues(
+                    response.issues,
+                    source_id,
+                    &creds.base_url,
+                    sync_run_id,
+                    creds,
+                )
                 .await?;
 
             total_issues += count;
@@ -318,11 +450,12 @@ impl JiraProcessor {
     }
 
     async fn process_issues(
-        &self,
+        &mut self,
         issues: Vec<JiraIssue>,
         source_id: &str,
         base_url: &str,
         sync_run_id: &str,
+        creds: &AtlassianCredentials,
     ) -> Result<u32> {
         let mut count = 0;
 
@@ -352,11 +485,16 @@ impl JiraProcessor {
                 }
             };
 
+            let permissions = self
+                .get_project_permissions(creds, &issue.fields.project.key)
+                .await;
+
             let event = issue.to_connector_event(
                 sync_run_id.to_string(),
                 source_id.to_string(),
                 base_url,
                 content_id,
+                permissions,
             );
 
             // Emit event via SDK
@@ -418,11 +556,16 @@ impl JiraProcessor {
                     )
                 })?;
 
+            let permissions = self
+                .get_project_permissions(creds, &issue.fields.project.key)
+                .await;
+
             let event = issue.to_connector_event(
                 sync_run_id.clone(),
                 source_id.to_string(),
                 &creds.base_url,
                 content_id,
+                permissions,
             );
             self.sdk_client
                 .emit_event(&sync_run_id, source_id, event)
@@ -514,7 +657,13 @@ impl JiraProcessor {
 
                 let issues_count = response.issues.len();
                 let count = self
-                    .process_issues(response.issues, source_id, &creds.base_url, &sync_run_id)
+                    .process_issues(
+                        response.issues,
+                        source_id,
+                        &creds.base_url,
+                        &sync_run_id,
+                        creds,
+                    )
                     .await?;
 
                 total_issues += count;
