@@ -23,6 +23,22 @@ impl ContentProcessor {
         info!("Updated user cache with {} users", self.users.len());
     }
 
+    pub fn resolve_member_emails(&self, user_ids: &[String]) -> Vec<String> {
+        let mut emails: Vec<String> = user_ids
+            .iter()
+            .filter_map(|id| {
+                let user = self.users.get(id)?;
+                if user.is_bot {
+                    return None;
+                }
+                user.email().map(|e| e.to_string())
+            })
+            .collect();
+        emails.sort();
+        emails.dedup();
+        emails
+    }
+
     pub fn get_author_name(&self, user_id: &str) -> String {
         self.users
             .get(user_id)

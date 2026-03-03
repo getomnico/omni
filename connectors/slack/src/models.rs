@@ -100,11 +100,24 @@ pub struct SlackConnectorState {
 // ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlackUserProfile {
+    pub email: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlackUser {
     pub id: String,
     pub name: String,
     pub real_name: Option<String>,
     pub is_bot: bool,
+    #[serde(default)]
+    pub profile: Option<SlackUserProfile>,
+}
+
+impl SlackUser {
+    pub fn email(&self) -> Option<&str> {
+        self.profile.as_ref()?.email.as_deref()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,6 +191,14 @@ pub struct ConversationsHistoryResponse {
 pub struct UsersListResponse {
     pub ok: bool,
     pub members: Vec<SlackUser>,
+    pub response_metadata: Option<ResponseMetadata>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ConversationsMembersResponse {
+    pub ok: bool,
+    pub members: Vec<String>,
     pub response_metadata: Option<ResponseMetadata>,
     pub error: Option<String>,
 }
@@ -311,6 +332,7 @@ impl MessageGroup {
         sync_run_id: String,
         source_id: String,
         content_id: String,
+        member_emails: &[String],
     ) -> ConnectorEvent {
         let title = if self.is_thread {
             format!("Thread in #{} - {}", self.channel_name, self.date)
@@ -415,8 +437,8 @@ impl MessageGroup {
 
         let permissions = DocumentPermissions {
             public: false,
-            users: vec![],
-            groups: vec![self.channel_id.clone()],
+            users: member_emails.to_vec(),
+            groups: vec![],
         };
 
         let attributes = self.to_attributes().into_attributes();
@@ -437,8 +459,9 @@ impl MessageGroup {
         sync_run_id: String,
         source_id: String,
         content_id: String,
+        member_emails: &[String],
     ) -> ConnectorEvent {
-        let event = self.to_connector_event(sync_run_id, source_id, content_id);
+        let event = self.to_connector_event(sync_run_id, source_id, content_id, member_emails);
         if let ConnectorEvent::DocumentCreated {
             sync_run_id,
             source_id,
@@ -479,6 +502,7 @@ impl SlackFile {
         channel_id: String,
         channel_name: String,
         content_id: String,
+        member_emails: &[String],
     ) -> ConnectorEvent {
         let document_id = format!("slack_file_{}", self.id);
 
@@ -505,8 +529,8 @@ impl SlackFile {
 
         let permissions = DocumentPermissions {
             public: false,
-            users: vec![],
-            groups: vec![channel_id],
+            users: member_emails.to_vec(),
+            groups: vec![],
         };
 
         let attributes = SlackFileAttributes {

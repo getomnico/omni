@@ -3,7 +3,8 @@ mod mock_slack;
 
 use common::SlackConnectorTestFixture;
 use mock_slack::{
-    make_test_channels, make_test_messages, make_test_users, MockSlackServer, MockSlackState,
+    make_test_channel_members, make_test_channels, make_test_messages, make_test_users,
+    MockSlackServer, MockSlackState,
 };
 use omni_slack_connector::models::{SlackConnectorState, SlackMessage};
 use omni_slack_connector::sync::SyncManager;
@@ -57,6 +58,7 @@ async fn test_full_sync_creates_events() {
         channels: make_test_channels(),
         messages: make_test_messages(BASE_TS),
         users: make_test_users(),
+        channel_members: make_test_channel_members(),
     };
     let mock_server = MockSlackServer::start(mock_state).await;
 
@@ -106,6 +108,37 @@ async fn test_full_sync_creates_events() {
             "Title should contain the date, got: {}",
             title
         );
+
+        // Verify permissions contain member emails and no groups
+        let permissions = event
+            .get("permissions")
+            .expect("event should have permissions");
+        let users = permissions
+            .get("users")
+            .and_then(|v| v.as_array())
+            .expect("permissions should have users array");
+        assert!(!users.is_empty(), "permissions.users should not be empty");
+        let user_emails: Vec<&str> = users.iter().filter_map(|v| v.as_str()).collect();
+        assert!(
+            user_emails.contains(&"alice@example.com"),
+            "permissions.users should contain alice@example.com, got: {:?}",
+            user_emails
+        );
+        assert!(
+            user_emails.contains(&"bob@example.com"),
+            "permissions.users should contain bob@example.com, got: {:?}",
+            user_emails
+        );
+
+        let groups = permissions
+            .get("groups")
+            .and_then(|v| v.as_array())
+            .expect("permissions should have groups array");
+        assert!(
+            groups.is_empty(),
+            "permissions.groups should be empty, got: {:?}",
+            groups
+        );
     }
 
     // Verify sync run completed
@@ -137,6 +170,7 @@ async fn test_sync_persists_state_for_incremental() {
         channels: make_test_channels(),
         messages: make_test_messages(BASE_TS),
         users: make_test_users(),
+        channel_members: make_test_channel_members(),
     };
     let mock_server = MockSlackServer::start(mock_state).await;
 
@@ -174,6 +208,7 @@ async fn test_sync_persists_state_for_incremental() {
         channels: make_test_channels(),
         messages: later_messages,
         users: make_test_users(),
+        channel_members: make_test_channel_members(),
     };
     let mock_server2 = MockSlackServer::start(mock_state2).await;
 
@@ -224,6 +259,7 @@ async fn test_realtime_event_syncs_single_channel() {
         channels: make_test_channels(),
         messages: make_test_messages(BASE_TS),
         users: make_test_users(),
+        channel_members: make_test_channel_members(),
     };
     let mock_server = MockSlackServer::start(mock_state).await;
 
@@ -267,6 +303,7 @@ async fn test_realtime_event_syncs_single_channel() {
         channels: make_test_channels(),
         messages: later_messages,
         users: make_test_users(),
+        channel_members: make_test_channel_members(),
     };
     let mock_server2 = MockSlackServer::start(mock_state2).await;
 

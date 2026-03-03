@@ -5,8 +5,8 @@ use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use crate::models::{
-    ConversationInfoResponse, ConversationsHistoryResponse, ConversationsListResponse, SlackFile,
-    UsersListResponse,
+    ConversationInfoResponse, ConversationsHistoryResponse, ConversationsListResponse,
+    ConversationsMembersResponse, SlackFile, UsersListResponse,
 };
 
 const DEFAULT_SLACK_API_BASE: &str = "https://slack.com/api";
@@ -266,6 +266,38 @@ impl SlackClient {
         }
 
         Ok(response.channel)
+    }
+
+    pub async fn get_conversation_members(
+        &self,
+        token: &str,
+        channel_id: &str,
+        cursor: Option<&str>,
+    ) -> Result<ConversationsMembersResponse> {
+        let mut url = format!(
+            "{}/conversations.members?channel={}&limit=200",
+            self.base_url, channel_id
+        );
+
+        if let Some(cursor) = cursor {
+            url.push_str(&format!("&cursor={}", cursor));
+        }
+
+        let response: ConversationsMembersResponse = self.make_request(&url, token).await?;
+
+        if !response.ok {
+            return Err(anyhow!(
+                "conversations.members failed: {}",
+                response.error.unwrap_or("Unknown error".to_string())
+            ));
+        }
+
+        debug!(
+            "Retrieved {} members from channel {}",
+            response.members.len(),
+            channel_id
+        );
+        Ok(response)
     }
 
     pub async fn download_file(&self, token: &str, file: &SlackFile) -> Result<String> {

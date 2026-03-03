@@ -6,8 +6,8 @@ use axum::{
 };
 use omni_slack_connector::models::{
     AuthTestResponse, ConversationInfoResponse, ConversationsHistoryResponse,
-    ConversationsListResponse, ResponseMetadata, SlackChannel, SlackMessage, SlackUser,
-    UsersListResponse,
+    ConversationsListResponse, ConversationsMembersResponse, ResponseMetadata, SlackChannel,
+    SlackMessage, SlackUser, SlackUserProfile, UsersListResponse,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -18,6 +18,7 @@ pub struct MockSlackState {
     pub channels: Vec<SlackChannel>,
     pub messages: HashMap<String, Vec<SlackMessage>>,
     pub users: Vec<SlackUser>,
+    pub channel_members: HashMap<String, Vec<String>>,
 }
 
 pub struct MockSlackServer {
@@ -35,6 +36,7 @@ impl MockSlackServer {
             .route("/conversations.info", get(conversations_info))
             .route("/conversations.history", get(conversations_history))
             .route("/users.list", get(users_list))
+            .route("/conversations.members", get(conversations_members))
             .route("/conversations.join", post(conversations_join))
             .with_state(state);
 
@@ -182,6 +184,31 @@ async fn users_list(
     })
 }
 
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct ConversationsMembersParams {
+    channel: String,
+    cursor: Option<String>,
+}
+
+async fn conversations_members(
+    State(state): State<Arc<MockSlackState>>,
+    Query(params): Query<ConversationsMembersParams>,
+) -> Json<ConversationsMembersResponse> {
+    let members = state
+        .channel_members
+        .get(&params.channel)
+        .cloned()
+        .unwrap_or_default();
+
+    Json(ConversationsMembersResponse {
+        ok: true,
+        members,
+        response_metadata: Some(ResponseMetadata { next_cursor: None }),
+        error: None,
+    })
+}
+
 async fn conversations_join() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "ok": true }))
 }
@@ -214,14 +241,33 @@ pub fn make_test_users() -> Vec<SlackUser> {
             name: "alice".to_string(),
             real_name: Some("Alice Smith".to_string()),
             is_bot: false,
+            profile: Some(SlackUserProfile {
+                email: Some("alice@example.com".to_string()),
+            }),
         },
         SlackUser {
             id: "U002".to_string(),
             name: "bob".to_string(),
             real_name: Some("Bob Jones".to_string()),
             is_bot: false,
+            profile: Some(SlackUserProfile {
+                email: Some("bob@example.com".to_string()),
+            }),
         },
     ]
+}
+
+pub fn make_test_channel_members() -> HashMap<String, Vec<String>> {
+    let mut members = HashMap::new();
+    members.insert(
+        "C001".to_string(),
+        vec!["U001".to_string(), "U002".to_string()],
+    );
+    members.insert(
+        "C002".to_string(),
+        vec!["U001".to_string(), "U002".to_string()],
+    );
+    members
 }
 
 pub fn make_test_messages(base_ts: i64) -> HashMap<String, Vec<SlackMessage>> {

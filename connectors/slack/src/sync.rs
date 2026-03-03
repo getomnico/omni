@@ -376,6 +376,10 @@ impl SyncManager {
             all_messages.clone(),
         )?;
 
+        // Fetch channel members and resolve to emails for permissions
+        let member_ids = self.fetch_channel_members(token, &channel.id).await?;
+        let member_emails = content_processor.resolve_member_emails(&member_ids);
+
         let mut published_groups = 0;
         let mut published_files = 0;
 
@@ -400,6 +404,7 @@ impl SyncManager {
                 sync_run_id.to_string(),
                 source_id.to_string(),
                 content_id,
+                &member_emails,
             );
             if let Err(e) = self
                 .sdk_client
@@ -435,6 +440,7 @@ impl SyncManager {
                         channel.id.clone(),
                         channel.name.clone(),
                         content_id,
+                        &member_emails,
                     );
                     if let Err(e) = self
                         .sdk_client
@@ -599,6 +605,10 @@ impl SyncManager {
             all_messages.clone(),
         )?;
 
+        // Fetch channel members and resolve to emails for permissions
+        let member_ids = self.fetch_channel_members(token, &channel.id).await?;
+        let member_emails = content_processor.resolve_member_emails(&member_ids);
+
         let mut published_groups = 0;
         let mut published_files = 0;
 
@@ -615,8 +625,12 @@ impl SyncManager {
                 }
             };
 
-            let event =
-                group.to_update_event(sync_run_id.to_string(), source_id.to_string(), content_id);
+            let event = group.to_update_event(
+                sync_run_id.to_string(),
+                source_id.to_string(),
+                content_id,
+                &member_emails,
+            );
             if let Err(e) = self
                 .sdk_client
                 .emit_event(sync_run_id, source_id, event)
@@ -647,6 +661,7 @@ impl SyncManager {
                         channel.id.clone(),
                         channel.name.clone(),
                         content_id,
+                        &member_emails,
                     );
                     if let Err(e) = self
                         .sdk_client
@@ -664,6 +679,30 @@ impl SyncManager {
         }
 
         Ok((published_groups, published_files, latest_ts))
+    }
+
+    async fn fetch_channel_members(&self, token: &str, channel_id: &str) -> Result<Vec<String>> {
+        let mut all_members = Vec::new();
+        let mut cursor = None;
+
+        loop {
+            let response = self
+                .slack_client
+                .get_conversation_members(token, channel_id, cursor.as_deref())
+                .await?;
+            all_members.extend(response.members);
+
+            cursor = response
+                .response_metadata
+                .and_then(|meta| meta.next_cursor)
+                .filter(|c| !c.is_empty());
+
+            if cursor.is_none() {
+                break;
+            }
+        }
+
+        Ok(all_members)
     }
 
     async fn get_bot_token(&self, source_id: &str) -> Result<String> {
