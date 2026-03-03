@@ -13,6 +13,10 @@ use omni_atlassian_connector::models::{
     ConfluenceVersion, JiraFields, JiraIssue, JiraIssueType, JiraProject, JiraSearchResponse,
     JiraStatus, JiraStatusCategory,
 };
+use omni_atlassian_connector::models::{
+    ConfluencePermissionOperation, ConfluencePermissionPrincipal, ConfluenceSpacePermission,
+    JiraActorGroup, JiraActorUser, JiraRoleActor, JiraRoleActorsResponse,
+};
 use omni_atlassian_connector::{
     AtlassianCredentials, ConfluenceProcessor, JiraProcessor, SyncManager,
 };
@@ -593,6 +597,234 @@ async fn test_webhook_reregistration_on_missing() -> Result<()> {
         .await?
         .unwrap();
     assert_eq!(state["webhook_id"], 1000);
+
+    Ok(())
+}
+
+// =============================================================================
+// Permission Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_confluence_sync_fetches_and_caches_space_permissions() -> Result<()> {
+    let fixture = setup_test_fixture(SourceType::Confluence).await?;
+
+    *fixture.mock_api.spaces.lock().unwrap() =
+        vec![make_confluence_space("100", "DEV", "Development")];
+
+    // Multiple pages in the same space — permissions should be fetched once
+    *fixture.mock_api.pages.lock().unwrap() = vec![vec![
+        make_confluence_page("1001", "Dev Page 1", "100", 1),
+        make_confluence_page("1002", "Dev Page 2", "100", 1),
+        make_confluence_page("1003", "Dev Page 3", "100", 1),
+    ]];
+
+    // Space permissions: 2 read users + 1 write-only (should be ignored)
+    fixture.mock_api.space_permissions.lock().unwrap().insert(
+        "100".to_string(),
+        vec![
+            ConfluenceSpacePermission {
+                id: "perm1".to_string(),
+                principal: ConfluencePermissionPrincipal {
+                    principal_type: "user".to_string(),
+                    id: "user-account-1".to_string(),
+                },
+                operation: ConfluencePermissionOperation {
+                    key: "read".to_string(),
+                    target: "space".to_string(),
+                },
+            },
+            ConfluenceSpacePermission {
+                id: "perm2".to_string(),
+                principal: ConfluencePermissionPrincipal {
+                    principal_type: "user".to_string(),
+                    id: "user-account-2".to_string(),
+                },
+                operation: ConfluencePermissionOperation {
+                    key: "read".to_string(),
+                    target: "space".to_string(),
+                },
+            },
+            ConfluenceSpacePermission {
+                id: "perm3".to_string(),
+                principal: ConfluencePermissionPrincipal {
+                    principal_type: "user".to_string(),
+                    id: "writer-account".to_string(),
+                },
+                operation: ConfluencePermissionOperation {
+                    key: "write".to_string(),
+                    target: "space".to_string(),
+                },
+            },
+        ],
+    );
+
+    *fixture.mock_api.bulk_users.lock().unwrap() = vec![
+        (
+            "user-account-1".to_string(),
+            "alice@example.com".to_string(),
+        ),
+        ("user-account-2".to_string(), "bob@example.com".to_string()),
+    ];
+
+    let redis_url = fixture.state.config.redis.redis_url.clone();
+    let redis_client = redis::Client::open(redis_url)?;
+    let mut processor = ConfluenceProcessor::new(
+        fixture.mock_api.clone(),
+        fixture.sdk_client.clone(),
+        redis_client,
+    );
+
+    let cancelled = AtomicBool::new(false);
+    let sync_run_id = fixture
+        .sdk_client
+        .create_sync_run(SOURCE_ID, shared::models::SyncType::Full)
+        .await?;
+
+    let creds = test_credentials();
+    let count = processor
+        .sync_all_spaces(&creds, SOURCE_ID, &sync_run_id, &cancelled)
+        .await?;
+
+    assert_eq!(count, 3);
+
+    let events = get_queued_events(&fixture.pool).await?;
+    assert_eq!(events.len(), 3);
+
+    // All 3 pages should have the same permissions
+    for event in &events {
+        let perms = &event["permissions"];
+        assert_eq!(perms["public"], false);
+        let users: Vec<String> = perms["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert!(users.contains(&"alice@example.com".to_string()));
+        assert!(users.contains(&"bob@example.com".to_string()));
+        assert_eq!(users.len(), 2, "write-only user should be excluded");
+    }
+
+    // Permissions fetched once for the space, not per page
+    let perm_calls = fixture
+        .mock_api
+        .get_calls_for("get_confluence_space_permissions");
+    assert_eq!(
+        perm_calls.len(),
+        1,
+        "permissions should be cached per space"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_jira_sync_fetches_and_caches_project_permissions() -> Result<()> {
+    let fixture = setup_test_fixture(SourceType::Jira).await?;
+
+    *fixture.mock_api.jira_projects.lock().unwrap() = vec![serde_json::json!({
+        "key": "PROJ",
+        "name": "Test Project",
+    })];
+
+    // Multiple issues in the same project — permissions should be fetched once
+    *fixture.mock_api.jira_search_response.lock().unwrap() = Some(JiraSearchResponse {
+        issues: vec![
+            make_jira_issue("PROJ-1", "First Issue", "PROJ"),
+            make_jira_issue("PROJ-2", "Second Issue", "PROJ"),
+            make_jira_issue("PROJ-3", "Third Issue", "PROJ"),
+        ],
+        is_last: true,
+        next_page_token: None,
+    });
+
+    let mut roles = std::collections::HashMap::new();
+    roles.insert(
+        "Developers".to_string(),
+        "https://test.atlassian.net/rest/api/3/project/PROJ/role/10002".to_string(),
+    );
+    *fixture.mock_api.project_roles.lock().unwrap() = roles;
+
+    fixture.mock_api.role_actors.lock().unwrap().insert(
+        "10002".to_string(),
+        JiraRoleActorsResponse {
+            name: "Developers".to_string(),
+            actors: vec![
+                JiraRoleActor {
+                    display_name: "Alice".to_string(),
+                    actor_type: "atlassian-user-role-actor".to_string(),
+                    name: None,
+                    actor_user: Some(JiraActorUser {
+                        account_id: "user-alice".to_string(),
+                    }),
+                    actor_group: None,
+                },
+                JiraRoleActor {
+                    display_name: "Engineering".to_string(),
+                    actor_type: "atlassian-group-role-actor".to_string(),
+                    name: None,
+                    actor_user: None,
+                    actor_group: Some(JiraActorGroup {
+                        name: "engineering-team".to_string(),
+                        display_name: "Engineering".to_string(),
+                        group_id: Some("group-1".to_string()),
+                    }),
+                },
+            ],
+        },
+    );
+
+    *fixture.mock_api.bulk_users.lock().unwrap() =
+        vec![("user-alice".to_string(), "alice@example.com".to_string())];
+
+    let mut processor = JiraProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
+
+    let cancelled = AtomicBool::new(false);
+    let sync_run_id = fixture
+        .sdk_client
+        .create_sync_run(SOURCE_ID, shared::models::SyncType::Full)
+        .await?;
+
+    let creds = test_credentials();
+    let count = processor
+        .sync_all_projects(&creds, SOURCE_ID, &sync_run_id, &cancelled)
+        .await?;
+
+    assert_eq!(count, 3);
+
+    let events = get_queued_events(&fixture.pool).await?;
+    assert_eq!(events.len(), 3);
+
+    // All 3 issues should have the same permissions
+    for event in &events {
+        let perms = &event["permissions"];
+        assert_eq!(perms["public"], false);
+
+        let users: Vec<String> = perms["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert!(users.contains(&"alice@example.com".to_string()));
+
+        let groups: Vec<String> = perms["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert!(groups.contains(&"engineering-team".to_string()));
+    }
+
+    // Roles fetched once for the project, not per issue
+    let role_calls = fixture.mock_api.get_calls_for("get_jira_project_roles");
+    assert_eq!(
+        role_calls.len(),
+        1,
+        "permissions should be cached per project"
+    );
 
     Ok(())
 }
