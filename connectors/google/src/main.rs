@@ -78,6 +78,15 @@ async fn main() -> Result<()> {
         info!("Webhooks disabled, no renewal loop started");
     }
 
+    // Spawn webhook debounce processor
+    {
+        let processor_sync_manager = Arc::clone(&sync_manager);
+        tokio::spawn(async move {
+            processor_sync_manager.run_webhook_processor().await;
+        });
+        info!("Webhook debounce processor started");
+    }
+
     // Create API state with shared services
     let api_state = ApiState {
         sync_manager: Arc::clone(&sync_manager),

@@ -46,3 +46,6 @@ quick-xml = "0.31"
 dashmap = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
+
+[dev-dependencies]
+omni-connector-manager = { path = "../../services/connector-manager" }

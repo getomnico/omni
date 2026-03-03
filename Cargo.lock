@@ -3876,6 +3876,7 @@ dependencies = [
  "governor",
  "jsonwebtoken",
  "nonzero_ext",
+ "omni-connector-manager",
  "quick-xml 0.31.0",
  "rand 0.8.5",
  "redis",

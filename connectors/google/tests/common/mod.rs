@@ -1,37 +1,137 @@
 use anyhow::Result;
+use axum::{routing::post, Json, Router};
+use omni_connector_manager::{config::ConnectorManagerConfig, create_app, AppState};
+use omni_google_connector::sync::SyncManager;
 use redis::Client as RedisClient;
 use shared::db::repositories::SyncRunRepository;
+use shared::models::{SourceType, SyncResponse};
+use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
+use shared::{ObjectStorage, SdkClient};
 use sqlx::PgPool;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::net::TcpListener;
+
+const TEST_SOURCE_ID: &str = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
 
 /// Test fixture for Google connector integration tests
 pub struct GoogleConnectorTestFixture {
     pub test_env: TestEnvironment,
+    pub sync_manager: Arc<SyncManager>,
+    _cm_server_handle: tokio::task::JoinHandle<()>,
+    _mock_connector_handle: tokio::task::JoinHandle<()>,
 }
 
 impl GoogleConnectorTestFixture {
     /// Create a new test fixture with all dependencies
     pub async fn new() -> Result<Self> {
+        std::env::set_var(
+            "ENCRYPTION_KEY",
+            "test_master_key_that_is_long_enough_32_chars",
+        );
+        std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars");
+
         let test_env = TestEnvironment::new().await?;
-        Ok(Self { test_env })
+
+        // Update the seeded source to be a Google Drive source
+        seed_google_drive_source(test_env.db_pool.pool()).await?;
+
+        // Start a mock Google connector that accepts /sync requests
+        let mock_connector_app = Router::new().route(
+            "/sync",
+            post(|| async {
+                Json(SyncResponse {
+                    status: "accepted".to_string(),
+                    message: None,
+                })
+            }),
+        );
+        let mock_connector_listener = TcpListener::bind("127.0.0.1:0").await?;
+        let mock_connector_port = mock_connector_listener.local_addr()?.port();
+        let mock_connector_handle = tokio::spawn(async move {
+            axum::serve(mock_connector_listener, mock_connector_app)
+                .await
+                .unwrap();
+        });
+
+        // Set up connector-manager server
+        let mut connector_urls = HashMap::new();
+        connector_urls.insert(
+            SourceType::GoogleDrive,
+            format!("http://127.0.0.1:{}", mock_connector_port),
+        );
+
+        let config = ConnectorManagerConfig {
+            database: test_env.database_config(),
+            redis: test_env.redis_config(),
+            port: 0,
+            connector_urls,
+            max_concurrent_syncs: 2,
+            max_concurrent_syncs_per_type: 3,
+            scheduler_interval_seconds: 600,
+            stale_sync_timeout_minutes: 1,
+        };
+
+        let content_storage: Arc<dyn ObjectStorage> =
+            Arc::new(PostgresStorage::new(test_env.db_pool.pool().clone()));
+
+        let cm_sync_manager = Arc::new(omni_connector_manager::sync_manager::SyncManager::new(
+            &test_env.db_pool,
+            config.clone(),
+        ));
+
+        let app_state = AppState {
+            db_pool: test_env.db_pool.clone(),
+            config,
+            sync_manager: cm_sync_manager,
+            content_storage,
+        };
+
+        let app = create_app(app_state);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let cm_server_handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let sdk_client = SdkClient::new(&format!("http://127.0.0.1:{}", port));
+        let admin_client = Arc::new(omni_google_connector::admin::AdminClient::new());
+
+        let sync_manager = Arc::new(SyncManager::new(
+            test_env.redis_client.clone(),
+            test_env.mock_ai_server.base_url.clone(),
+            admin_client,
+            sdk_client,
+            None,
+        ));
+
+        Ok(Self {
+            test_env,
+            sync_manager,
+            _cm_server_handle: cm_server_handle,
+            _mock_connector_handle: mock_connector_handle,
+        })
     }
 
-    /// Get the database pool
     pub fn pool(&self) -> &PgPool {
         self.test_env.db_pool.pool()
     }
 
-    /// Get the Redis client
     pub fn redis_client(&self) -> RedisClient {
         self.test_env.redis_client.clone()
     }
 
-    /// Get the SyncRunRepository for testing sync operations
     pub fn sync_run_repo(&self) -> SyncRunRepository {
         SyncRunRepository::new(self.pool())
     }
 
-    /// Create a test user and return the user ID
+    pub fn source_id(&self) -> &str {
+        TEST_SOURCE_ID
+    }
+
     pub async fn create_test_user(&self, email: &str) -> Result<String> {
         let user_id = shared::utils::generate_ulid();
 
@@ -49,7 +149,6 @@ impl GoogleConnectorTestFixture {
         Ok(user_id)
     }
 
-    /// Create a test source and return the source ID
     pub async fn create_test_source(
         &self,
         name: &str,
@@ -72,7 +171,6 @@ impl GoogleConnectorTestFixture {
         Ok(source_id)
     }
 
-    /// Create a sync run with specific status and timing
     pub async fn create_sync_run(
         &self,
         source_id: &str,
@@ -96,7 +194,6 @@ impl GoogleConnectorTestFixture {
         Ok(sync_run_id)
     }
 
-    /// Create a completed sync run
     pub async fn create_completed_sync_run(
         &self,
         source_id: &str,
@@ -123,4 +220,18 @@ impl GoogleConnectorTestFixture {
 
         Ok(sync_run_id)
     }
+}
+
+async fn seed_google_drive_source(pool: &PgPool) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE sources SET source_type = 'google_drive', name = 'Test Google Drive Source'
+        WHERE id = $1
+        "#,
+    )
+    .bind(TEST_SOURCE_ID)
+    .execute(pool)
+    .await?;
+
+    Ok(())
 }

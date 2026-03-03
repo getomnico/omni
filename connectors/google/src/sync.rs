@@ -2,9 +2,11 @@ use anyhow::{anyhow, Context, Result};
 use dashmap::DashMap;
 use redis::{AsyncCommands, Client as RedisClient};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use time::{self, OffsetDateTime};
+use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
 
 use crate::admin::AdminClient;
@@ -26,6 +28,12 @@ struct ActiveSync {
     cancelled: AtomicBool,
 }
 
+pub struct WebhookDebounce {
+    pub last_received: Instant,
+    pub last_event_type: String,
+    pub count: u32,
+}
+
 pub struct SyncManager {
     redis_client: RedisClient,
     drive_client: DriveClient,
@@ -35,6 +43,9 @@ pub struct SyncManager {
     folder_cache: LruFolderCache,
     active_syncs: DashMap<String, Arc<ActiveSync>>,
     webhook_url: Option<String>,
+    pub webhook_debounce: DashMap<String, WebhookDebounce>,
+    webhook_notify: Arc<Notify>,
+    pub debounce_duration_ms: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -220,6 +231,9 @@ impl SyncManager {
             folder_cache: LruFolderCache::new(10_000),
             active_syncs: DashMap::new(),
             webhook_url,
+            webhook_debounce: DashMap::new(),
+            webhook_notify: Arc::new(Notify::new()),
+            debounce_duration_ms: AtomicU64::new(10 * 60 * 1000),
         }
     }
 
@@ -1413,29 +1427,25 @@ impl SyncManager {
                 );
             }
             "add" | "update" | "remove" | "trash" | "untrash" | "change" => {
+                let now = Instant::now();
+                let mut entry = self
+                    .webhook_debounce
+                    .entry(source_id.clone())
+                    .or_insert_with(|| WebhookDebounce {
+                        last_received: now,
+                        last_event_type: notification.resource_state.clone(),
+                        count: 0,
+                    });
+                entry.last_received = now;
+                entry.last_event_type = notification.resource_state.clone();
+                entry.count += 1;
+
                 info!(
-                    "Notifying connector-manager of webhook event for source {} (state: {})",
-                    source_id, notification.resource_state
+                    "Buffered webhook event for source {} (state: {}, buffered_count: {})",
+                    source_id, notification.resource_state, entry.count
                 );
 
-                match self
-                    .sdk_client
-                    .notify_webhook(&source_id, &notification.resource_state)
-                    .await
-                {
-                    Ok(sync_run_id) => {
-                        info!(
-                            "Connector-manager created sync run {} for webhook event",
-                            sync_run_id
-                        );
-                    }
-                    Err(e) => {
-                        error!(
-                            "Failed to notify connector-manager of webhook event for source {}: {}",
-                            source_id, e
-                        );
-                    }
-                }
+                self.webhook_notify.notify_one();
             }
             _ => {
                 debug!(
@@ -1446,6 +1456,64 @@ impl SyncManager {
         }
 
         Ok(())
+    }
+
+    /// Background loop that coalesces rapid webhook notifications.
+    /// Waits until 10 minutes of quiet time per source, then fires one
+    /// `notify_webhook` call for all buffered events.
+    pub async fn run_webhook_processor(self: &Arc<Self>) {
+        const POLL_INTERVAL: Duration = Duration::from_secs(30);
+        let debounce_duration =
+            Duration::from_millis(self.debounce_duration_ms.load(Ordering::Relaxed));
+
+        loop {
+            tokio::select! {
+                _ = self.webhook_notify.notified() => {}
+                _ = tokio::time::sleep(POLL_INTERVAL) => {}
+            }
+
+            let now = Instant::now();
+            let mut expired: Vec<(String, String, u32)> = Vec::new();
+
+            // Collect expired entries
+            for entry in self.webhook_debounce.iter() {
+                if now.duration_since(entry.last_received) >= debounce_duration {
+                    expired.push((
+                        entry.key().clone(),
+                        entry.last_event_type.clone(),
+                        entry.count,
+                    ));
+                }
+            }
+
+            // Notify first, only remove on success
+            for (source_id, event_type, count) in expired {
+                info!(
+                    "Debounce expired for source {} ({} buffered events), notifying connector-manager",
+                    source_id, count
+                );
+
+                match self
+                    .sdk_client
+                    .notify_webhook(&source_id, &event_type)
+                    .await
+                {
+                    Ok(sync_run_id) => {
+                        self.webhook_debounce.remove(&source_id);
+                        info!(
+                            "Connector-manager created sync run {} for debounced webhook (source: {})",
+                            sync_run_id, source_id
+                        );
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to notify connector-manager for debounced webhook (source: {}): {}",
+                            source_id, e
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Ensure a webhook is registered for a source.
