@@ -40,10 +40,12 @@ web/dist/
 web/build/
 web/.svelte-kit/
 
-# Python venv
-venv/
-services/ai/venv/
-services/ai/.venv/
+# Python venvs (any location)
+**/.venv/
+**/venv/
+
+# Terraform
+**/.terraform/
 
 # Python build artifacts
 **/__pycache__/

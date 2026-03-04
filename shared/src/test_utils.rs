@@ -259,15 +259,173 @@ pub async fn wait_for_document_deleted(
     }
 }
 
-/// Returns the content strings for the 5 test documents, in insertion order.
+/// Returns the content strings for the 9 test documents, in insertion order.
 /// Keep in sync with `create_test_documents`.
-pub fn test_document_contents() -> Vec<&'static str> {
+struct TestDoc {
+    external_id: &'static str,
+    title: &'static str,
+    content: &'static str,
+    content_type: &'static str,
+    attributes: serde_json::Value,
+    metadata: serde_json::Value,
+    permissions: serde_json::Value,
+}
+
+fn test_documents() -> Vec<TestDoc> {
     vec![
-        "This is a comprehensive guide to Rust programming language. It covers memory safety, ownership, borrowing, and lifetimes. Rust is a systems programming language that runs blazingly fast, prevents segfaults, and guarantees thread safety.",
-        "Attendees discussed the roadmap for Q4. Key priorities include improving search functionality, implementing semantic search, and optimizing database queries. The team will focus on PostgreSQL performance and Redis caching.",
-        "The search engine combines full-text search with vector embeddings. It uses PostgreSQL with pgvector extension for similarity search. The architecture includes caching layer with Redis and supports multiple search modes: fulltext, semantic, and hybrid.",
-        "The API provides endpoints for document management and search. POST /search accepts queries with different modes. GET /suggestions returns autocomplete suggestions. All endpoints require authentication via JWT tokens.",
-        "Welcome to Clio! This guide will help you get started with searching across your organization's documents. You can search using keywords, phrases, or ask questions in natural language. The system will find relevant documents and highlight important passages.",
+        TestDoc {
+            external_id: "tech_doc_1",
+            title: "Rust Programming Guide",
+            content: "This is a comprehensive guide to Rust programming language. It covers memory safety, ownership, borrowing, and lifetimes. Rust is a systems programming language that runs blazingly fast, prevents segfaults, and guarantees thread safety.",
+            content_type: "documentation",
+            attributes: json!({"language": "rust", "category": "programming"}),
+            metadata: json!({"type": "documentation", "category": "programming"}),
+            permissions: json!({"users": ["user1"], "groups": ["engineers"]}),
+        },
+        TestDoc {
+            external_id: "meeting_notes_1",
+            title: "Q4 Planning Meeting",
+            content: "Attendees discussed the roadmap for Q4. Key priorities include improving search functionality, implementing semantic search, and optimizing database queries. The team will focus on PostgreSQL performance and Redis caching.",
+            content_type: "meeting_notes",
+            attributes: json!({"category": "business", "quarter": "Q4"}),
+            metadata: json!({"type": "meeting", "date": "2024-01-15"}),
+            permissions: json!({"users": ["user1", "user2"], "groups": ["team"]}),
+        },
+        TestDoc {
+            external_id: "project_spec_1",
+            title: "Search Engine Architecture",
+            content: "The search engine combines full-text search with vector embeddings. It uses PostgreSQL with pgvector extension for similarity search. The architecture includes caching layer with Redis and supports multiple search modes: fulltext, semantic, and hybrid.",
+            content_type: "specification",
+            attributes: json!({"category": "programming", "component": "search"}),
+            metadata: json!({"type": "specification", "project": "clio"}),
+            permissions: json!({"users": ["user1"], "groups": ["architects"]}),
+        },
+        TestDoc {
+            external_id: "api_doc_1",
+            title: "REST API Endpoints",
+            content: "The API provides endpoints for document management and search. POST /search accepts queries with different modes. GET /suggestions returns autocomplete suggestions. All endpoints require authentication via JWT tokens.",
+            content_type: "api_documentation",
+            attributes: json!({"category": "programming", "component": "api"}),
+            metadata: json!({"type": "api_documentation", "version": "1.0"}),
+            permissions: json!({"users": ["user1", "user2"], "groups": ["developers"]}),
+        },
+        TestDoc {
+            external_id: "user_guide_1",
+            title: "Getting Started Guide",
+            content: "Welcome to Clio! This guide will help you get started with searching across your organization's documents. You can search using keywords, phrases, or ask questions in natural language. The system will find relevant documents and highlight important passages.",
+            content_type: "user_guide",
+            attributes: json!({"category": "onboarding"}),
+            metadata: json!({"type": "user_guide", "audience": "end_users"}),
+            permissions: json!({"users": ["user1", "user2", "user3"], "groups": ["all_users"]}),
+        },
+        TestDoc {
+            external_id: "ref_doc_1",
+            title: "Square Root Mathematics",
+            content: "The square root of a number is a value that, when multiplied by itself, gives the original number. Square roots are fundamental in mathematics and appear in many formulas.",
+            content_type: "reference",
+            attributes: json!({"category": "reference"}),
+            metadata: json!({"type": "reference"}),
+            permissions: json!({"users": ["user1"], "groups": ["all_users"]}),
+        },
+        TestDoc {
+            external_id: "legal_doc_1",
+            title: "BlueSquare NDA",
+            content: "Non-disclosure agreement between BlueSquare Inc and the organization. This NDA covers confidential information shared during the blue square partnership negotiations.",
+            content_type: "legal",
+            attributes: json!({"category": "legal"}),
+            metadata: json!({"type": "legal"}),
+            permissions: json!({"users": ["user1"], "groups": ["all_users"]}),
+        },
+        TestDoc {
+            external_id: "report_doc_1",
+            title: "CRM Sales Reports",
+            content: "Monthly CRM sales reports covering pipeline metrics, conversion rates, and revenue forecasts. The CRM sales report includes data from all regional teams and quarterly comparisons.",
+            content_type: "report",
+            attributes: json!({"category": "business"}),
+            metadata: json!({"type": "report"}),
+            permissions: json!({"users": ["user1"], "groups": ["all_users"]}),
+        },
+        TestDoc {
+            external_id: "report_doc_2",
+            title: "Urban Crime Reports",
+            content: "Analysis of urban crime reports across major metropolitan areas. This report examines trends in crime reporting, law enforcement response times, and community safety initiatives.",
+            content_type: "report",
+            attributes: json!({"category": "research"}),
+            metadata: json!({"type": "report"}),
+            permissions: json!({"users": ["user1"], "groups": ["all_users"]}),
+        },
+        TestDoc {
+            external_id: "maint_doc_1",
+            title: "Rust Prevention and Corrosion Control",
+            content: "Guide to preventing rust and corrosion on industrial equipment. Regular maintenance programming schedules help avoid costly repairs. Apply protective coatings to all exposed metal surfaces and inspect safety equipment monthly.",
+            content_type: "documentation",
+            attributes: json!({"category": "maintenance"}),
+            metadata: json!({"type": "documentation"}),
+            permissions: json!({"users": ["user1"], "groups": ["all_users"]}),
+        },
+        TestDoc {
+            external_id: "policy_doc_1",
+            title: "API Gateway Rate Limiting Policy",
+            content: "Internal API gateway rate limiting policy. All REST endpoints must respect global rate limits. The search functionality is exposed via the gateway but the primary endpoints serve the mobile application.",
+            content_type: "policy",
+            attributes: json!({"category": "infrastructure"}),
+            metadata: json!({"type": "policy"}),
+            permissions: json!({"users": ["user1"], "groups": ["all_users"]}),
+        },
+        TestDoc {
+            external_id: "career_doc_1",
+            title: "Job Search Tips for Engineers",
+            content: "Tips for conducting an effective job search in the tech industry. Build a strong architecture for your career by networking and maintaining an updated portfolio. Search engines like LinkedIn and Indeed can help.",
+            content_type: "article",
+            attributes: json!({"category": "career"}),
+            metadata: json!({"type": "article"}),
+            permissions: json!({"users": ["user1"], "groups": ["all_users"]}),
+        },
+        TestDoc {
+            external_id: "meeting_notes_2",
+            title: "Q4 Budget Review",
+            content: "Q4 budget review meeting with the finance team. Revenue targets were met but Q4 expenses exceeded projections by 12 percent. Planning for next fiscal year begins in January.",
+            content_type: "meeting_notes",
+            attributes: json!({"category": "business", "quarter": "Q4"}),
+            metadata: json!({"type": "meeting"}),
+            permissions: json!({"users": ["user1", "user2"], "groups": ["finance"]}),
+        },
+        TestDoc {
+            external_id: "safety_doc_1",
+            title: "Workplace Safety Guidelines",
+            content: "Workplace safety guidelines for the warehouse facility. All employees must complete mandatory safety training annually. Emergency procedures are posted near every exit. Report any safety hazards to management immediately.",
+            content_type: "policy",
+            attributes: json!({"category": "hr"}),
+            metadata: json!({"type": "policy"}),
+            permissions: json!({"users": ["user1"], "groups": ["all_users"]}),
+        },
+        TestDoc {
+            external_id: "edu_doc_1",
+            title: "Geometry of Quadrilaterals",
+            content: "Geometry lesson on quadrilaterals. A square has four equal sides and four right angles. Rectangles, rhombuses, and parallelograms are related shapes. The area of a square is calculated by squaring the side length.",
+            content_type: "reference",
+            attributes: json!({"category": "reference"}),
+            metadata: json!({"type": "reference"}),
+            permissions: json!({"users": ["user1"], "groups": ["all_users"]}),
+        },
+        TestDoc {
+            external_id: "report_doc_3",
+            title: "Death of a Salesman Book Report",
+            content: "Book report on Death of a Salesman by Arthur Miller. The play explores themes of the American Dream and personal sales of identity. Willy Loman's tragic story highlights the gap between ambition and reality.",
+            content_type: "report",
+            attributes: json!({"category": "literature"}),
+            metadata: json!({"type": "report"}),
+            permissions: json!({"users": ["user1"], "groups": ["all_users"]}),
+        },
+        TestDoc {
+            external_id: "travel_doc_1",
+            title: "Tokyo Travel Guide",
+            content: "Travel guide to Tokyo for first-time visitors. Must-see attractions include Shibuya Crossing, Senso-ji Temple, and the Meiji Shrine. The city offers an incredible mix of traditional culture and modern technology.",
+            content_type: "article",
+            attributes: json!({"category": "travel"}),
+            metadata: json!({"type": "article"}),
+            permissions: json!({"users": ["user1"], "groups": ["all_users"]}),
+        },
     ]
 }
 
@@ -277,125 +435,29 @@ pub async fn create_test_documents(pool: &PgPool) -> Result<Vec<String>> {
     let mut doc_ids = Vec::new();
     let content_storage = crate::ContentStorage::new(pool.clone());
 
-    // Document 1: Technical documentation
-    let doc_1_id = Ulid::new().to_string();
-    let content_1 = "This is a comprehensive guide to Rust programming language. It covers memory safety, ownership, borrowing, and lifetimes. Rust is a systems programming language that runs blazingly fast, prevents segfaults, and guarantees thread safety.".to_string();
-    let content_1_id = content_storage.store_text(content_1.clone()).await?;
-    sqlx::query(
-        r#"
-        INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, attributes, content, metadata, permissions, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
-        "#,
-    )
-    .bind(&doc_1_id)
-    .bind(source_id)
-    .bind("tech_doc_1")
-    .bind("Rust Programming Guide")
-    .bind(&content_1_id)
-    .bind("documentation")
-    .bind(json!({"language": "rust", "category": "programming"}))
-    .bind(&content_1)
-    .bind(json!({"type": "documentation", "category": "programming"}))
-    .bind(json!({"users": ["user1"], "groups": ["engineers"]}))
-    .execute(pool)
-    .await?;
-    doc_ids.push(doc_1_id);
-
-    // Document 2: Meeting notes
-    let doc_2_id = Ulid::new().to_string();
-    let content_2 = "Attendees discussed the roadmap for Q4. Key priorities include improving search functionality, implementing semantic search, and optimizing database queries. The team will focus on PostgreSQL performance and Redis caching.".to_string();
-    let content_2_id = content_storage.store_text(content_2.clone()).await?;
-    sqlx::query(
-        r#"
-        INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, attributes, content, metadata, permissions, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
-        "#,
-    )
-    .bind(&doc_2_id)
-    .bind(source_id)
-    .bind("meeting_notes_1")
-    .bind("Q4 Planning Meeting")
-    .bind(&content_2_id)
-    .bind("meeting_notes")
-    .bind(json!({"category": "business", "quarter": "Q4"}))
-    .bind(&content_2)
-    .bind(json!({"type": "meeting", "date": "2024-01-15"}))
-    .bind(json!({"users": ["user1", "user2"], "groups": ["team"]}))
-    .execute(pool)
-    .await?;
-    doc_ids.push(doc_2_id);
-
-    // Document 3: Project specifications
-    let doc_3_id = Ulid::new().to_string();
-    let content_3 = "The search engine combines full-text search with vector embeddings. It uses PostgreSQL with pgvector extension for similarity search. The architecture includes caching layer with Redis and supports multiple search modes: fulltext, semantic, and hybrid.".to_string();
-    let content_3_id = content_storage.store_text(content_3.clone()).await?;
-    sqlx::query(
-        r#"
-        INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, attributes, content, metadata, permissions, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
-        "#,
-    )
-    .bind(&doc_3_id)
-    .bind(source_id)
-    .bind("project_spec_1")
-    .bind("Search Engine Architecture")
-    .bind(&content_3_id)
-    .bind("specification")
-    .bind(json!({"category": "programming", "component": "search"}))
-    .bind(&content_3)
-    .bind(json!({"type": "specification", "project": "clio"}))
-    .bind(json!({"users": ["user1"], "groups": ["architects"]}))
-    .execute(pool)
-    .await?;
-    doc_ids.push(doc_3_id);
-
-    // Document 4: API documentation
-    let doc_4_id = Ulid::new().to_string();
-    let content_4 = "The API provides endpoints for document management and search. POST /search accepts queries with different modes. GET /suggestions returns autocomplete suggestions. All endpoints require authentication via JWT tokens.".to_string();
-    let content_4_id = content_storage.store_text(content_4.clone()).await?;
-    sqlx::query(
-        r#"
-        INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, attributes, content, metadata, permissions, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
-        "#,
-    )
-    .bind(&doc_4_id)
-    .bind(source_id)
-    .bind("api_doc_1")
-    .bind("REST API Endpoints")
-    .bind(&content_4_id)
-    .bind("api_documentation")
-    .bind(json!({"category": "programming", "component": "api"}))
-    .bind(&content_4)
-    .bind(json!({"type": "api_documentation", "version": "1.0"}))
-    .bind(json!({"users": ["user1", "user2"], "groups": ["developers"]}))
-    .execute(pool)
-    .await?;
-    doc_ids.push(doc_4_id);
-
-    // Document 5: User guide
-    let doc_5_id = Ulid::new().to_string();
-    let content_5 = "Welcome to Clio! This guide will help you get started with searching across your organization's documents. You can search using keywords, phrases, or ask questions in natural language. The system will find relevant documents and highlight important passages.".to_string();
-    let content_5_id = content_storage.store_text(content_5.clone()).await?;
-    sqlx::query(
-        r#"
-        INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, attributes, content, metadata, permissions, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
-        "#,
-    )
-    .bind(&doc_5_id)
-    .bind(source_id)
-    .bind("user_guide_1")
-    .bind("Getting Started Guide")
-    .bind(&content_5_id)
-    .bind("user_guide")
-    .bind(json!({"category": "onboarding"}))
-    .bind(&content_5)
-    .bind(json!({"type": "user_guide", "audience": "end_users"}))
-    .bind(json!({"users": ["user1", "user2", "user3"], "groups": ["all_users"]}))
-    .execute(pool)
-    .await?;
-    doc_ids.push(doc_5_id);
+    for doc in test_documents() {
+        let doc_id = Ulid::new().to_string();
+        let content_id = content_storage.store_text(doc.content.to_string()).await?;
+        sqlx::query(
+            r#"
+            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, attributes, content, metadata, permissions, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
+            "#,
+        )
+        .bind(&doc_id)
+        .bind(source_id)
+        .bind(doc.external_id)
+        .bind(doc.title)
+        .bind(&content_id)
+        .bind(doc.content_type)
+        .bind(&doc.attributes)
+        .bind(doc.content)
+        .bind(&doc.metadata)
+        .bind(&doc.permissions)
+        .execute(pool)
+        .await?;
+        doc_ids.push(doc_id);
+    }
 
     Ok(doc_ids)
 }
@@ -406,10 +468,10 @@ pub async fn create_test_documents(pool: &PgPool) -> Result<Vec<String>> {
 pub async fn create_test_documents_with_embeddings(pool: &PgPool) -> Result<Vec<String>> {
     let doc_ids = create_test_documents(pool).await?;
 
-    let contents = test_document_contents();
+    let docs = test_documents();
 
     for (i, doc_id) in doc_ids.iter().enumerate() {
-        let embedding = crate::test_environment::generate_test_embedding(contents[i]);
+        let embedding = crate::test_environment::generate_test_embedding(docs[i].content);
         let embedding_id = Ulid::new().to_string();
 
         sqlx::query(
@@ -422,7 +484,7 @@ pub async fn create_test_documents_with_embeddings(pool: &PgPool) -> Result<Vec<
         .bind(doc_id)
         .bind(0) // chunk_index
         .bind(0) // chunk_start_offset
-        .bind(contents[i].len() as i32) // chunk_end_offset
+        .bind(docs[i].content.len() as i32) // chunk_end_offset
         .bind(&embedding)
         .bind("test-model") // model_name — matches mock AI server
         .bind(1024_i16) // dimensions

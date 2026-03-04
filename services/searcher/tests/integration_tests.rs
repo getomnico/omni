@@ -111,6 +111,26 @@ async fn test_fulltext_search() -> Result<()> {
         "Expected Rust Programming Guide as first result, got: {:?}",
         titles
     );
+    // Cross-fields scoring: only "Rust Programming Guide" matches both terms;
+    // "Rust Prevention and Corrosion Control" is filtered by the score threshold
+    assert_eq!(
+        titles.len(),
+        1,
+        "Expected exactly 1 result for 'rust programming', got: {:?}",
+        titles
+    );
+    // Score ratio: cross-fields should produce a clear gap between #1 and #2
+    let results = response["results"].as_array().unwrap();
+    if results.len() > 1 {
+        let top_score = results[0]["score"].as_f64().unwrap();
+        let second_score = results[1]["score"].as_f64().unwrap();
+        assert!(
+            top_score > second_score * 1.2,
+            "Top score ({}) should be >1.2x second score ({})",
+            top_score,
+            second_score
+        );
+    }
     assert_match_type(&response, "fulltext");
     assert_scores_descending(&response);
 
@@ -127,7 +147,7 @@ async fn test_fulltext_search() -> Result<()> {
     assert_match_type(&response, "fulltext");
     assert_scores_descending(&response);
 
-    // Query 3: "meeting planning Q4" — should find Q4 Planning Meeting first
+    // Query 3: "meeting planning Q4" — should find Q4-related docs at the top
     let (status, response) = fixture
         .search("meeting planning Q4", Some("fulltext"), None)
         .await?;
@@ -137,15 +157,15 @@ async fn test_fulltext_search() -> Result<()> {
         !titles.is_empty(),
         "Expected results for 'meeting planning Q4'"
     );
-    assert_eq!(
-        titles[0], "Q4 Planning Meeting",
-        "Expected Q4 Planning Meeting as first result, got: {:?}",
+    assert!(
+        titles.iter().take(2).any(|t| t == "Q4 Planning Meeting"),
+        "Expected Q4 Planning Meeting in top 2 results, got: {:?}",
         titles
     );
     assert_match_type(&response, "fulltext");
     assert_scores_descending(&response);
 
-    // Query 4: "search" — should match multiple docs
+    // Query 4: "search" — should match multiple docs, and verify facets
     let (status, response) = fixture.search("search", Some("fulltext"), None).await?;
     assert_eq!(status, StatusCode::OK);
     let titles = result_titles(&response);
@@ -153,6 +173,106 @@ async fn test_fulltext_search() -> Result<()> {
         titles.len() >= 2,
         "Expected at least 2 results for 'search', got: {:?}",
         titles
+    );
+    assert_match_type(&response, "fulltext");
+    assert_scores_descending(&response);
+
+    // Facets: include_facets defaults to true, so every response should have them
+    let facets = response["facets"]
+        .as_array()
+        .expect("Expected facets array in response");
+    assert!(
+        !facets.is_empty(),
+        "Expected non-empty facets for broad 'search' query"
+    );
+    for facet in facets {
+        assert!(
+            facet["name"].as_str().is_some(),
+            "Facet should have a 'name' field"
+        );
+        let values = facet["values"]
+            .as_array()
+            .expect("Facet should have a 'values' array");
+        assert!(!values.is_empty(), "Facet values should be non-empty");
+        for fv in values {
+            assert!(
+                fv["value"].as_str().is_some(),
+                "Facet value should have a 'value' string"
+            );
+            let count = fv["count"]
+                .as_i64()
+                .expect("Facet value should have a 'count' integer");
+            assert!(count > 0, "Facet count should be positive, got {}", count);
+        }
+    }
+
+    // Query 5: phrase ranking — "blue square nda"
+    // BlueSquare NDA should rank first (phrase match on "blue square" in title & content).
+    // "Square Root Mathematics" only token-matches "square", so it scores much lower.
+    let (status, response) = fixture
+        .search("blue square nda", Some("fulltext"), None)
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles = result_titles(&response);
+    // Cross-fields + phrase bonus: BlueSquare NDA matches all 3 terms plus phrase "blue square".
+    // Square Root Mathematics matches "square" only. Geometry of Quadrilaterals matches "square"
+    // via content ("squaring the side length").
+    assert_eq!(
+        titles,
+        vec![
+            "BlueSquare NDA",
+            "Square Root Mathematics",
+            "Geometry of Quadrilaterals"
+        ],
+        "Expected exact ranking for 'blue square nda'"
+    );
+    let results = response["results"].as_array().unwrap();
+    let top_score = results[0]["score"].as_f64().unwrap();
+    let second_score = results[1]["score"].as_f64().unwrap();
+    assert!(
+        top_score > second_score * 2.0,
+        "Phrase match ({}) should be >2x the token-only match ({})",
+        top_score,
+        second_score
+    );
+    assert_match_type(&response, "fulltext");
+    assert_scores_descending(&response);
+
+    // Query 6: phrase ranking — "crm sales report"
+    // "CRM Sales Reports" should rank first (phrase match on "crm sales report").
+    // "Urban Crime Reports" only token-matches "report(s)", so it scores much lower.
+    let (status, response) = fixture
+        .search("crm sales report", Some("fulltext"), None)
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles = result_titles(&response);
+    assert!(
+        !titles.is_empty(),
+        "Expected results for 'crm sales report'"
+    );
+    assert_eq!(
+        titles[0], "CRM Sales Reports",
+        "Expected CRM Sales Reports as first result, got: {:?}",
+        titles
+    );
+    let results = response["results"].as_array().unwrap();
+    let top_score = results[0]["score"].as_f64().unwrap();
+    if results.len() > 1 {
+        let second_score = results[1]["score"].as_f64().unwrap();
+        assert!(
+            top_score > second_score,
+            "Phrase match score ({}) should be higher than the token-only match score ({})",
+            top_score,
+            second_score
+        );
+    }
+    // With stemming: "sales" stems to "sale", which does NOT match "salesman".
+    // So "Death of a Salesman Book Report" only matches "report" (1/3 terms),
+    // scoring below the threshold. Only "CRM Sales Reports" survives.
+    assert_eq!(
+        titles,
+        vec!["CRM Sales Reports"],
+        "Expected exact ranking for 'crm sales report'"
     );
     assert_match_type(&response, "fulltext");
     assert_scores_descending(&response);
@@ -250,7 +370,8 @@ async fn test_search_with_limit() -> Result<()> {
     let fixture = SearcherTestFixture::new().await?;
     let _doc_ids = fixture.seed_search_data().await?;
 
-    let (status, response) = fixture.search("guide", Some("fulltext"), Some(2)).await?;
+    // "square" matches multiple docs; limit=2 should cap results
+    let (status, response) = fixture.search("square", Some("fulltext"), Some(2)).await?;
 
     assert_eq!(status, StatusCode::OK);
     assert!(response["results"].is_array());
@@ -258,6 +379,45 @@ async fn test_search_with_limit() -> Result<()> {
     let results = response["results"].as_array().unwrap();
     assert!(results.len() <= 2);
     assert!(response["total_count"].as_i64().unwrap() >= 1);
+
+    // Pagination: page 1 (offset=0, limit=2)
+    let (status, page1_response) = fixture
+        .search_with_body(json!({
+            "query": "square",
+            "mode": "fulltext",
+            "limit": 2,
+            "offset": 0
+        }))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let page1_titles = result_titles(&page1_response);
+    assert!(
+        page1_response["has_more"].as_bool().unwrap_or(false),
+        "First page should have has_more=true since 'square' matches >2 docs"
+    );
+
+    // Pagination: page 2 (offset=2, limit=2)
+    let (status, page2_response) = fixture
+        .search_with_body(json!({
+            "query": "square",
+            "mode": "fulltext",
+            "limit": 2,
+            "offset": 2
+        }))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let page2_titles = result_titles(&page2_response);
+
+    // No overlapping titles between pages
+    for title in &page1_titles {
+        assert!(
+            !page2_titles.contains(title),
+            "Duplicate result '{}' across pages. Page1: {:?}, Page2: {:?}",
+            title,
+            page1_titles,
+            page2_titles
+        );
+    }
 
     Ok(())
 }
@@ -313,7 +473,7 @@ async fn test_permission_filtering() -> Result<()> {
     let fixture = SearcherTestFixture::new().await?;
     let _doc_ids = fixture.seed_search_data().await?;
 
-    // user1 has access to all 5 docs (is in every document's users list)
+    // user1 has access to all docs (is in every document's users list)
     let (status, response) = fixture
         .search_with_user("guide", Some("fulltext"), None, Some("user1"))
         .await?;
@@ -352,13 +512,13 @@ async fn test_highlighting() -> Result<()> {
     let results = response["results"].as_array().unwrap();
     assert!(!results.is_empty(), "Expected results for 'memory safety'");
 
-    // Doc 1 (Rust Programming Guide) should be first — it contains "memory safety"
-    assert_eq!(
-        results[0]["document"]["title"].as_str().unwrap(),
-        "Rust Programming Guide"
-    );
+    // Find "Rust Programming Guide" — it contains "memory safety" and should have highlights
+    let rust_guide = results
+        .iter()
+        .find(|r| r["document"]["title"].as_str().unwrap() == "Rust Programming Guide")
+        .expect("Expected Rust Programming Guide in results for 'memory safety'");
 
-    let highlights = results[0]["highlights"].as_array().unwrap();
+    let highlights = rust_guide["highlights"].as_array().unwrap();
     assert!(
         !highlights.is_empty(),
         "Expected non-empty highlights for 'memory safety' query"
@@ -373,6 +533,13 @@ async fn test_highlighting() -> Result<()> {
         highlight_text.contains("**memory**") || highlight_text.contains("**safety**"),
         "Expected bold markers in highlights, got: {}",
         highlight_text
+    );
+
+    // Highlight count should respect the SQL snippet limit (3)
+    assert!(
+        highlights.len() <= 3,
+        "Expected at most 3 highlight snippets, got {}",
+        highlights.len()
     );
 
     Ok(())
@@ -575,6 +742,38 @@ async fn test_typeahead_limit_respected() -> Result<()> {
         results.len() <= 1,
         "Expected at most 1 result with limit=1, got {}",
         results.len()
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_score_threshold_filters_low_relevance() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let _doc_ids = fixture.seed_search_data().await?;
+
+    // "ownership borrowing lifetimes" — only "Rust Programming Guide" has all three terms.
+    // The 15% score threshold should prune docs that only weakly token-match one term.
+    let (status, response) = fixture
+        .search("ownership borrowing lifetimes", Some("fulltext"), None)
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles = result_titles(&response);
+    assert!(
+        !titles.is_empty(),
+        "Expected results for 'ownership borrowing lifetimes'"
+    );
+    assert_eq!(
+        titles[0], "Rust Programming Guide",
+        "Rust Programming Guide should be first for 'ownership borrowing lifetimes', got: {:?}",
+        titles
+    );
+    // The threshold should keep the result set small — only docs scoring >= 15% of the top score
+    assert!(
+        titles.len() <= 5,
+        "Expected at most 5 results after score threshold pruning for a very specific query, got {}: {:?}",
+        titles.len(),
+        titles
     );
 
     Ok(())

@@ -261,6 +261,14 @@ impl SearchEngine {
             });
         }
 
+        const MIN_SCORE_RATIO: f32 = 0.15;
+        if let Some(max_score) = results.first().map(|r| r.score) {
+            if max_score > 0.0 {
+                let threshold = max_score * MIN_SCORE_RATIO;
+                results.retain(|r| r.score >= threshold);
+            }
+        }
+
         info!(
             "Fulltext search completed in {}ms",
             start_time.elapsed().as_millis()
