@@ -70,3 +70,37 @@ variable "project_id" {
   description = "GCP project ID"
   type        = string
 }
+
+# ============================================================================
+# PostgreSQL Tuning
+# ============================================================================
+
+variable "pg_shared_buffers" {
+  description = "PostgreSQL shared_buffers setting"
+  type        = string
+  default     = "1GB"
+}
+
+variable "pg_max_parallel_workers_per_gather" {
+  description = "PostgreSQL max_parallel_workers_per_gather (should match BM25 target_segment_count)"
+  type        = number
+  default     = 2
+}
+
+variable "pg_max_parallel_workers" {
+  description = "PostgreSQL max_parallel_workers (must be >= max_parallel_maintenance_workers)"
+  type        = number
+  default     = 4
+}
+
+variable "pg_max_parallel_maintenance_workers" {
+  description = "PostgreSQL max_parallel_maintenance_workers (for REINDEX/CREATE INDEX)"
+  type        = number
+  default     = 2
+}
+
+variable "pg_max_worker_processes" {
+  description = "PostgreSQL max_worker_processes"
+  type        = number
+  default     = 8
+}

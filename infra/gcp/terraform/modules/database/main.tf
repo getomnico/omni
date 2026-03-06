@@ -59,7 +59,15 @@ resource "google_compute_instance" "paradedb" {
     gce-container-declaration = yamlencode({
       spec = {
         containers = [{
-          image = var.container_image
+          image   = var.container_image
+          command = ["postgres"]
+          args = [
+            "-c", "shared_buffers=${var.pg_shared_buffers}",
+            "-c", "max_parallel_workers_per_gather=${var.pg_max_parallel_workers_per_gather}",
+            "-c", "max_parallel_workers=${var.pg_max_parallel_workers}",
+            "-c", "max_parallel_maintenance_workers=${var.pg_max_parallel_maintenance_workers}",
+            "-c", "max_worker_processes=${var.pg_max_worker_processes}",
+          ]
           env = [
             { name = "POSTGRES_DB", value = var.database_name },
             { name = "POSTGRES_USER", value = var.database_username },

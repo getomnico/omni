@@ -286,6 +286,15 @@ resource "aws_ecs_task_definition" "paradedb" {
     image     = var.paradedb_container_image
     essential = true
 
+    command = [
+      "postgres",
+      "-c", "shared_buffers=${var.pg_shared_buffers}",
+      "-c", "max_parallel_workers_per_gather=${var.pg_max_parallel_workers_per_gather}",
+      "-c", "max_parallel_workers=${var.pg_max_parallel_workers}",
+      "-c", "max_parallel_maintenance_workers=${var.pg_max_parallel_maintenance_workers}",
+      "-c", "max_worker_processes=${var.pg_max_worker_processes}",
+    ]
+
     portMappings = [{
       containerPort = 5432
       hostPort      = 5432
