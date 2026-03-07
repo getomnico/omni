@@ -19,9 +19,10 @@ def map_page_to_document(
     created_by = page.get("created_by", {})
     parent = page.get("parent", {})
 
+    content_type_value = "database_entry" if is_database_entry else "page"
+
     attributes: dict[str, Any] = {
         "source_type": "notion",
-        "content_type": "database_entry" if is_database_entry else "page",
     }
     if is_database_entry and parent.get("type") == "database_id":
         attributes["parent_database"] = parent["database_id"]
@@ -35,6 +36,7 @@ def map_page_to_document(
             created_at=_parse_iso(page.get("created_time")),
             updated_at=_parse_iso(page.get("last_edited_time")),
             url=page.get("url"),
+            content_type=content_type_value,
             mime_type="text/plain",
         ),
         permissions=DocumentPermissions(public=False),
@@ -60,12 +62,12 @@ def map_database_to_document(
             created_at=_parse_iso(database.get("created_time")),
             updated_at=_parse_iso(database.get("last_edited_time")),
             url=database.get("url"),
+            content_type="database",
             mime_type="text/plain",
         ),
         permissions=DocumentPermissions(public=False),
         attributes={
             "source_type": "notion",
-            "content_type": "database",
         },
     )
 

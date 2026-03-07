@@ -48,13 +48,13 @@ export function getDocumentIconPath(sourceType: string, contentType: string): st
 
     // For Google Drive, check content type to determine specific icon
     if (sourceType === SourceType.GOOGLE_DRIVE) {
-        if (GOOGLE_DOCS_MIMETYPES.includes(contentType)) {
+        if (contentType === 'document' || GOOGLE_DOCS_MIMETYPES.includes(contentType)) {
             return googleDocsIcon
         }
-        if (GOOGLE_SHEETS_MIMETYPES.includes(contentType)) {
+        if (contentType === 'spreadsheet' || GOOGLE_SHEETS_MIMETYPES.includes(contentType)) {
             return googleSheetsIcon
         }
-        if (GOOGLE_SLIDES_MIMETYPES.includes(contentType)) {
+        if (contentType === 'presentation' || GOOGLE_SLIDES_MIMETYPES.includes(contentType)) {
             return googleSlidesIcon
         }
         // Default to generic Google Drive icon for other file types

@@ -21,6 +21,7 @@ class DocumentMetadata(BaseModel):
     author: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    content_type: str | None = None
     mime_type: str | None = None
     size: str | None = None
     url: str | None = None

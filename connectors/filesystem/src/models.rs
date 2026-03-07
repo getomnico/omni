@@ -62,6 +62,7 @@ impl FileSystemFile {
                     .ok()
                     .and_then(|d| OffsetDateTime::from_unix_timestamp(d.as_secs() as i64).ok())
             }),
+            content_type: None,
             mime_type: Some(self.mime_type.clone()),
             size: Some(self.size.to_string()),
             url: None,

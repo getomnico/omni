@@ -248,6 +248,7 @@ pub struct DocumentMetadata {
     pub created_at: Option<OffsetDateTime>,
     #[serde(default, with = "time::serde::iso8601::option")]
     pub updated_at: Option<OffsetDateTime>,
+    pub content_type: Option<String>,
     pub mime_type: Option<String>,
     pub size: Option<String>,
     pub url: Option<String>,

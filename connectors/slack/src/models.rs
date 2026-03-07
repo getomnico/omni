@@ -425,6 +425,7 @@ impl MessageGroup {
             }),
             created_at,
             updated_at,
+            content_type: Some("message".to_string()),
             mime_type: Some("text/plain".to_string()),
             size: Some(self.content_size().to_string()),
             url: Some(format!(
@@ -520,6 +521,7 @@ impl SlackFile {
             author: None,
             created_at: None,
             updated_at: None,
+            content_type: None,
             mime_type: self.mimetype.clone(),
             size: Some(self.size.to_string()),
             url: self.permalink.clone(),

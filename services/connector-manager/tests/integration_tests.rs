@@ -325,6 +325,7 @@ async fn test_sdk_event_and_content() {
             author: None,
             created_at: None,
             updated_at: None,
+            content_type: None,
             mime_type: Some("text/plain".to_string()),
             size: Some("100".to_string()),
             url: None,

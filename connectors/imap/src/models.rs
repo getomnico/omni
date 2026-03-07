@@ -235,8 +235,14 @@ pub fn build_thread_connector_event(
         .map(|message| message.subject.clone())
         .unwrap_or_else(|| NO_SUBJECT_PLACEHOLDER.to_string());
 
-    let created_at = sorted_messages.iter().filter_map(|message| message.date).min();
-    let updated_at = sorted_messages.iter().filter_map(|message| message.date).max();
+    let created_at = sorted_messages
+        .iter()
+        .filter_map(|message| message.date)
+        .min();
+    let updated_at = sorted_messages
+        .iter()
+        .filter_map(|message| message.date)
+        .max();
 
     let mut participants = Vec::new();
     let mut seen_participants = HashSet::new();
@@ -291,7 +297,10 @@ pub fn build_thread_connector_event(
     extra.insert("message_count".to_string(), json!(sorted_messages.len()));
     extra.insert(
         "imap_uids".to_string(),
-        json!(sorted_messages.iter().map(|message| message.imap_uid).collect::<Vec<_>>()),
+        json!(sorted_messages
+            .iter()
+            .map(|message| message.imap_uid)
+            .collect::<Vec<_>>()),
     );
     extra.insert("message_ids".to_string(), json!(message_ids));
     extra.insert("account".to_string(), json!(account_display_name));
@@ -316,6 +325,7 @@ pub fn build_thread_connector_event(
         author: Some(first.from.clone()),
         created_at,
         updated_at,
+        content_type: Some("email_thread".to_string()),
         mime_type: Some("application/x-imap-thread".to_string()),
         size: Some(
             sorted_messages
@@ -353,7 +363,9 @@ pub fn build_thread_connector_event(
     // Email correspondents are NOT granted access - they are just metadata participants.
     let permissions = DocumentPermissions {
         public: false,
-        users: user_email.map(|e| vec![e.to_lowercase()]).unwrap_or_default(),
+        users: user_email
+            .map(|e| vec![e.to_lowercase()])
+            .unwrap_or_default(),
         groups: vec![],
     };
 
@@ -463,11 +475,7 @@ fn extract_body_text(mail: &ParsedMail) -> String {
     body
 }
 
-fn collect_text_parts(
-    mail: &ParsedMail,
-    plain: &mut Vec<String>,
-    html: &mut Vec<String>,
-) {
+fn collect_text_parts(mail: &ParsedMail, plain: &mut Vec<String>, html: &mut Vec<String>) {
     // Skip parts that are file attachments — those are handled by
     // extract_attachments() and must not be double-counted as inline body.
     if is_file_attachment(mail) {
@@ -513,10 +521,7 @@ fn is_file_attachment(mail: &ParsedMail) -> bool {
     {
         return true;
     }
-    mail.ctype
-        .params
-        .get("name")
-        .is_some_and(|v| !v.is_empty())
+    mail.ctype.params.get("name").is_some_and(|v| !v.is_empty())
 }
 
 /// Column width used when rendering HTML emails to plain text.
@@ -538,9 +543,7 @@ fn parse_address_list(value: &str) -> Vec<String> {
             .iter()
             .flat_map(|addr| match addr {
                 MailAddr::Single(info) => vec![info.to_string()],
-                MailAddr::Group(group) => {
-                    group.addrs.iter().map(|info| info.to_string()).collect()
-                }
+                MailAddr::Group(group) => group.addrs.iter().map(|info| info.to_string()).collect(),
             })
             .collect(),
         Err(_) => {
@@ -704,4 +707,3 @@ pub fn resolve_new_email_thread_root(
     // Root message or orphan: use the email's own thread_id.
     email.thread_id()
 }
-

@@ -79,17 +79,13 @@ impl From<GoogleDriveFile> for FolderMetadata {
     }
 }
 
-/// Structured attributes for Google Drive files, used for filtering and faceting.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GoogleDriveFileAttributes {
-    pub mime_type: String,
-}
-
-impl GoogleDriveFileAttributes {
-    pub fn into_attributes(self) -> DocumentAttributes {
-        let mut attrs = HashMap::new();
-        attrs.insert("mime_type".into(), json!(self.mime_type));
-        attrs
+fn mime_type_to_content_type(mime_type: &str) -> Option<String> {
+    match mime_type {
+        "application/vnd.google-apps.document" => Some("document".to_string()),
+        "application/vnd.google-apps.spreadsheet" => Some("spreadsheet".to_string()),
+        "application/vnd.google-apps.presentation" => Some("presentation".to_string()),
+        "application/pdf" => Some("pdf".to_string()),
+        _ => None,
     }
 }
 
@@ -120,12 +116,6 @@ impl GmailThreadAttributes {
 }
 
 impl GoogleDriveFile {
-    pub fn to_attributes(&self) -> GoogleDriveFileAttributes {
-        GoogleDriveFileAttributes {
-            mime_type: self.mime_type.clone(),
-        }
-    }
-
     pub fn to_connector_event(
         &self,
         sync_run_id: &str,
@@ -190,6 +180,7 @@ impl GoogleDriveFile {
                     .ok()
                     .map(|dt| OffsetDateTime::from_unix_timestamp(dt.timestamp()).unwrap())
             }),
+            content_type: mime_type_to_content_type(&self.mime_type),
             mime_type: Some(self.mime_type.clone()),
             size: self.size.clone(),
             url: self.web_view_link.clone(),
@@ -203,7 +194,7 @@ impl GoogleDriveFile {
             groups,
         };
 
-        let attributes = self.to_attributes().into_attributes();
+        let attributes = HashMap::new();
 
         ConnectorEvent::DocumentCreated {
             sync_run_id: sync_run_id.to_string(),
@@ -590,6 +581,7 @@ impl GmailThread {
             author: None,
             created_at: updated_at,
             updated_at,
+            content_type: Some("email_thread".to_string()),
             mime_type: Some("application/x-gmail-thread".to_string()),
             size: None,
             url: Some(format!(
@@ -683,41 +675,38 @@ mod tests {
                 assert_eq!(permissions.users, vec!["user@example.com".to_string()]);
                 assert!(permissions.groups.is_empty());
 
-                // Check attributes
+                // Attributes should be empty (mime_type moved to metadata)
                 let attrs = attributes.unwrap();
-                assert_eq!(
-                    attrs.get("mime_type").unwrap().as_str().unwrap(),
-                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                );
+                assert!(attrs.is_empty());
             }
             _ => panic!("Expected DocumentCreated event"),
         }
     }
 
     #[test]
-    fn test_google_drive_file_attributes() {
-        let file = GoogleDriveFile {
-            id: "file123".to_string(),
-            name: "test.pdf".to_string(),
-            mime_type: "application/pdf".to_string(),
-            web_view_link: None,
-            created_time: None,
-            modified_time: None,
-            size: None,
-            parents: None,
-            shared: None,
-            permissions: None,
-            owners: None,
-        };
+    fn test_google_drive_file_content_type_mapping() {
+        let cases = vec![
+            ("application/vnd.google-apps.document", Some("document")),
+            (
+                "application/vnd.google-apps.spreadsheet",
+                Some("spreadsheet"),
+            ),
+            (
+                "application/vnd.google-apps.presentation",
+                Some("presentation"),
+            ),
+            ("application/pdf", Some("pdf")),
+            ("text/plain", None),
+        ];
 
-        let attrs = file.to_attributes();
-        assert_eq!(attrs.mime_type, "application/pdf");
-
-        let doc_attrs = attrs.into_attributes();
-        assert_eq!(
-            doc_attrs.get("mime_type").unwrap().as_str().unwrap(),
-            "application/pdf"
-        );
+        for (mime, expected) in cases {
+            assert_eq!(
+                mime_type_to_content_type(mime).as_deref(),
+                expected,
+                "Failed for MIME type: {}",
+                mime
+            );
+        }
     }
 
     #[test]

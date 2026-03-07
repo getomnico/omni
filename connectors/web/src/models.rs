@@ -284,6 +284,7 @@ impl WebPage {
                     sqlx::types::time::OffsetDateTime::from_unix_timestamp(dt.timestamp()).ok()
                 })
                 .flatten(),
+            content_type: Some("webpage".to_string()),
             mime_type: Some("text/html".to_string()),
             size: Some(self.content.len().to_string()),
             url: Some(self.url.clone()),

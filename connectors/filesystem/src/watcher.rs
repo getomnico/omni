@@ -343,6 +343,7 @@ impl FileSystemEventProcessor {
                                 time::OffsetDateTime::from_unix_timestamp(d.as_secs() as i64).ok()
                             })
                     }),
+                    content_type: None,
                     mime_type: Some(file.mime_type),
                     size: Some(file.size.to_string()),
                     url: None,

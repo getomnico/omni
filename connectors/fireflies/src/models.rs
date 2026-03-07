@@ -197,6 +197,7 @@ impl Transcript {
             author: self.organizer_email.clone(),
             created_at,
             updated_at: created_at,
+            content_type: Some("meeting_transcript".to_string()),
             mime_type: Some("text/plain".to_string()),
             size: Some(self.generate_content().len().to_string()),
             url,

@@ -10,6 +10,7 @@ pub struct ParsedQuery {
     pub cleaned_query: String,
     pub attribute_filters: HashMap<String, AttributeFilter>,
     pub source_types: Vec<SourceType>,
+    pub content_types: Vec<String>,
     pub date_filter: Option<DateFilter>,
     pub person_terms: Vec<String>,
 }
@@ -69,7 +70,7 @@ fn extract_operators(query: &str, result: &mut ParsedQuery) -> String {
                 }
             }
             "type" => {
-                apply_type_filter(&value, &mut result.attribute_filters);
+                apply_type_filter(&value, &mut result.content_types);
             }
             "channel" => {
                 merge_attribute_filter(&mut result.attribute_filters, "channel_name", &value);
@@ -251,36 +252,28 @@ fn resolve_source_alias(alias: &str) -> Option<SourceType> {
         "onedrive" | "one_drive" => Some(SourceType::OneDrive),
         "sharepoint" | "share_point" => Some(SourceType::SharePoint),
         "outlook" => Some(SourceType::Outlook),
+        "hubspot" => Some(SourceType::Hubspot),
+        "fireflies" => Some(SourceType::Fireflies),
+        "web" | "website" => Some(SourceType::Web),
         _ => None,
     }
 }
 
-fn apply_type_filter(value: &str, filters: &mut HashMap<String, AttributeFilter>) {
+fn apply_type_filter(value: &str, content_types: &mut Vec<String>) {
     match value.to_lowercase().as_str() {
-        "spreadsheet" | "sheet" => {
-            merge_attribute_filter(filters, "content_type", "spreadsheet");
+        "spreadsheet" | "sheet" => content_types.push("spreadsheet".to_string()),
+        "doc" | "document" => content_types.push("document".to_string()),
+        "slide" | "presentation" => content_types.push("presentation".to_string()),
+        "pdf" => content_types.push("pdf".to_string()),
+        "issue" => content_types.push("issue".to_string()),
+        "pr" | "pull_request" => content_types.push("pull_request".to_string()),
+        "page" => content_types.push("page".to_string()),
+        "email" => {
+            content_types.push("email_thread".to_string());
+            content_types.push("email".to_string());
         }
-        "doc" | "document" => {
-            merge_attribute_filter(filters, "content_type", "document");
-        }
-        "slide" | "presentation" => {
-            merge_attribute_filter(filters, "content_type", "presentation");
-        }
-        "pdf" => {
-            merge_attribute_filter(filters, "file_extension", "pdf");
-        }
-        "issue" => {
-            merge_attribute_filter(filters, "content_type", "issue");
-        }
-        "pr" | "pull_request" => {
-            merge_attribute_filter(filters, "content_type", "pull_request");
-        }
-        "page" => {
-            merge_attribute_filter(filters, "content_type", "page");
-        }
-        _ => {
-            merge_attribute_filter(filters, "content_type", value);
-        }
+        "meeting" | "transcript" => content_types.push("meeting_transcript".to_string()),
+        _ => content_types.push(value.to_string()),
     }
 }
 
@@ -399,18 +392,28 @@ mod tests {
     fn test_type_operator() {
         let parsed = parse("type:spreadsheet budget");
         assert_eq!(parsed.cleaned_query, "budget");
-        assert_eq!(
-            parsed.attribute_filters.get("content_type"),
-            Some(&AttributeFilter::Exact(JsonValue::String(
-                "spreadsheet".to_string()
-            )))
-        );
+        assert_eq!(parsed.content_types, vec!["spreadsheet".to_string()]);
     }
 
     #[test]
     fn test_type_operator_pdf() {
         let parsed = parse("type:pdf invoice");
-        assert!(parsed.attribute_filters.contains_key("file_extension"));
+        assert_eq!(parsed.content_types, vec!["pdf".to_string()]);
+    }
+
+    #[test]
+    fn test_type_operator_email() {
+        let parsed = parse("type:email invoice");
+        assert_eq!(
+            parsed.content_types,
+            vec!["email_thread".to_string(), "email".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_type_operator_meeting() {
+        let parsed = parse("type:meeting notes");
+        assert_eq!(parsed.content_types, vec!["meeting_transcript".to_string()]);
     }
 
     #[test]
@@ -590,6 +593,10 @@ mod tests {
             ("onedrive", SourceType::OneDrive),
             ("sharepoint", SourceType::SharePoint),
             ("outlook", SourceType::Outlook),
+            ("hubspot", SourceType::Hubspot),
+            ("fireflies", SourceType::Fireflies),
+            ("web", SourceType::Web),
+            ("website", SourceType::Web),
         ];
 
         for (alias, expected) in cases {
@@ -652,24 +659,26 @@ mod tests {
     #[test]
     fn test_type_aliases() {
         let cases = vec![
-            ("sheet", "content_type"),
-            ("doc", "content_type"),
-            ("slide", "content_type"),
-            ("presentation", "content_type"),
-            ("pdf", "file_extension"),
-            ("issue", "content_type"),
-            ("pr", "content_type"),
-            ("pull_request", "content_type"),
-            ("page", "content_type"),
+            ("sheet", "spreadsheet"),
+            ("doc", "document"),
+            ("slide", "presentation"),
+            ("presentation", "presentation"),
+            ("pdf", "pdf"),
+            ("issue", "issue"),
+            ("pr", "pull_request"),
+            ("pull_request", "pull_request"),
+            ("page", "page"),
         ];
 
-        for (type_val, expected_key) in cases {
+        for (type_val, expected_content_type) in cases {
             let parsed = parse(&format!("type:{} query", type_val));
             assert!(
-                parsed.attribute_filters.contains_key(expected_key),
-                "type:{} should produce filter key '{}'",
+                parsed
+                    .content_types
+                    .contains(&expected_content_type.to_string()),
+                "type:{} should produce content_type '{}'",
                 type_val,
-                expected_key
+                expected_content_type
             );
         }
     }

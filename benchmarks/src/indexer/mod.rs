@@ -386,6 +386,7 @@ impl BenchmarkIndexer {
             author: None,
             created_at: None,
             updated_at: None,
+            content_type: None,
             mime_type: Some("text/plain".to_string()),
             size: Some(doc.content.len().to_string()),
             url: None,

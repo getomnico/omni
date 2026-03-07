@@ -64,6 +64,7 @@ def map_hubspot_object_to_document(
             created_at=created_at,
             updated_at=updated_at,
             url=url,
+            content_type=object_type,
             mime_type="text/plain",
             extra=None,
         ),

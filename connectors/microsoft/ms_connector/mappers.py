@@ -75,6 +75,7 @@ def map_message_to_document(
             created_at=_parse_iso(message.get("sentDateTime")),
             updated_at=_parse_iso(message.get("receivedDateTime")),
             url=message.get("webLink"),
+            content_type="email",
             mime_type="message/rfc822",
             extra={
                 "message_id": msg_id,
@@ -124,6 +125,7 @@ def map_event_to_document(
             created_at=start_dt,
             updated_at=start_dt,
             url=event.get("webLink"),
+            content_type="event",
             mime_type="text/calendar",
             extra={
                 "event_id": event_id,

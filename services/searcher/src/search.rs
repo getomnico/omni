@@ -118,6 +118,7 @@ impl SearchEngine {
         let parsed = query_parser::parse(&request.query);
         let has_parsed_filters = !parsed.attribute_filters.is_empty()
             || !parsed.source_types.is_empty()
+            || !parsed.content_types.is_empty()
             || parsed.date_filter.is_some();
 
         let mut request = request;
@@ -128,6 +129,16 @@ impl SearchEngine {
             let filters = request.attribute_filters.get_or_insert_with(HashMap::new);
             for (key, filter) in parsed.attribute_filters {
                 filters.entry(key).or_insert(filter);
+            }
+        }
+
+        // Merge parsed content types
+        if !parsed.content_types.is_empty() {
+            let cts = request.content_types.get_or_insert_with(Vec::new);
+            for ct in parsed.content_types {
+                if !cts.contains(&ct) {
+                    cts.push(ct);
+                }
             }
         }
 
