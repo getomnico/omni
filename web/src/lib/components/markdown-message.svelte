@@ -19,13 +19,64 @@
     let { content, citations }: Props = $props()
     let containerRef: HTMLElement | undefined = $state()
 
+    const appNames = Object.values(SourceType)
+        .map((st) => getSourceDisplayName(st))
+        .filter((name): name is string => !!name)
+        .sort((a, b) => b.length - a.length)
+    let injectedApps = new Set<string>()
+
+    const injectAppIcon = (text: string): string => {
+        const matches: { idx: number; appName: string; iconSrc: string }[] = []
+        const textLower = text.toLowerCase()
+
+        for (const appName of appNames) {
+            if (injectedApps.has(appName)) continue
+            const idx = textLower.indexOf(appName.toLowerCase())
+            if (idx === -1) continue
+            const sourceType = getSourceTypeFromDisplayName(appName)
+            const iconSrc = sourceType ? getSourceIconPath(sourceType) : null
+            if (!iconSrc) continue
+            matches.push({ idx, appName, iconSrc })
+        }
+
+        matches.sort((a, b) => a.idx - b.idx)
+
+        let result = ''
+        let cursor = 0
+        for (const m of matches) {
+            if (m.idx < cursor) continue
+            result += text.slice(cursor, m.idx)
+            result += `<img src="${m.iconSrc}" alt="" style="display:inline;height:1em;width:1em;vertical-align:sub;margin-right:0.15em;margin-top:0;margin-bottom:0">`
+            result += `<strong>${m.appName}</strong>`
+            cursor = m.idx + m.appName.length
+            injectedApps.add(m.appName)
+        }
+        result += text.slice(cursor)
+        return result
+    }
+
     const renderer: RendererObject = {
         link({ href, tokens }: Tokens.Link): string {
             const citation = citations?.find(
                 (c) => c.type === 'search_result_location' && c.source === href,
             ) as CitationSearchResultLocationParam | null
+
             const text = this.parser.parseInline(tokens)
-            return `<a href="${href}" class="omni-reflink" title="${citation?.title}" data-snippet="${citation?.cited_text}">${text}</a>`
+            if (citation) {
+                return `<a href="${href}" class="omni-reflink" title="${citation?.title}" data-snippet="${citation?.cited_text}">${text}</a>`
+            } else {
+                return `<a href="${href}">${text}</a>`
+            }
+        },
+
+        text(tokens: Tokens.Text | Tokens.Escape | Tokens.Tag): string {
+            let result: string
+            if (tokens.type === 'text' && tokens.tokens) {
+                result = this.parser.parseInline(tokens.tokens || [])
+            } else {
+                result = tokens.text
+            }
+            return injectAppIcon(result)
         },
     }
 
@@ -36,6 +87,7 @@
             return
         }
 
+        injectedApps = new Set<string>()
         containerRef.innerHTML = marked.parse(content, { async: false })
 
         const linkPlaceholders = containerRef.querySelectorAll('.omni-reflink')
@@ -58,76 +110,6 @@
 
             link.remove()
         })
-
-        // Inject app icons inline before the first occurrence of each recognized app name
-        const appNames = Object.values(SourceType)
-            .map((st) => getSourceDisplayName(st))
-            .filter((name): name is string => !!name)
-            .sort((a, b) => b.length - a.length)
-        const injectedApps = new Set<string>()
-
-        const isInsideSkippedTag = (node: Node): boolean => {
-            let ancestor = node.parentElement
-            while (ancestor && ancestor !== containerRef) {
-                const tag = ancestor.tagName.toLowerCase()
-                if (tag === 'a' || tag === 'code' || tag === 'pre') return true
-                ancestor = ancestor.parentElement
-            }
-            return false
-        }
-
-        const processTextNode = (textNode: Text) => {
-            if (isInsideSkippedTag(textNode)) return
-
-            for (const appName of appNames) {
-                if (injectedApps.has(appName)) continue
-
-                const textLower = textNode.textContent?.toLowerCase() ?? ''
-                const idx = textLower.indexOf(appName.toLowerCase())
-                if (idx === -1) continue
-
-                // Split: [before] | [appName + rest]
-                const afterNode = textNode.splitText(idx)
-                // Split: [appName] | [rest]
-                const restNode = afterNode.splitText(appName.length)
-                const matchedText = afterNode.textContent ?? appName
-
-                const sourceType = getSourceTypeFromDisplayName(matchedText)
-                const iconSrc = sourceType ? getSourceIconPath(sourceType) : null
-                if (!iconSrc) continue
-
-                const img = document.createElement('img')
-                img.src = iconSrc
-                img.alt = ''
-                img.style.display = 'inline'
-                img.style.height = '1em'
-                img.style.width = '1em'
-                img.style.verticalAlign = 'sub'
-                img.style.marginRight = '0.15em'
-                img.style.marginTop = '0em'
-                img.style.marginBottom = '0em'
-
-                const bold = document.createElement('strong')
-                bold.textContent = appName
-
-                const parent = afterNode.parentNode!
-                parent.insertBefore(img, afterNode)
-                parent.replaceChild(bold, afterNode)
-                injectedApps.add(appName)
-
-                processTextNode(restNode)
-            }
-        }
-
-        const walker = document.createTreeWalker(containerRef, NodeFilter.SHOW_TEXT)
-        const textNodes: Text[] = []
-        let node: Text | null
-        while ((node = walker.nextNode() as Text | null)) {
-            textNodes.push(node)
-        }
-        for (const textNode of textNodes) {
-            processTextNode(textNode)
-        }
     })
 </script>
 

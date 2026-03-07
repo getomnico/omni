@@ -318,6 +318,10 @@
                         </div>
                     </div>
                 </Accordion.Content>
+            {:else}
+                <Accordion.Content class="bg-card rounded-b-md border border-t-0 border-gray-200">
+                    <div class="px-4 py-2 text-center text-sm">No results found</div>
+                </Accordion.Content>
             {/if}
         </Accordion.Item>
     </Accordion.Root>

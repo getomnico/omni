@@ -506,15 +506,13 @@
                                       (b: any) => b.type === 'search_result',
                                   ) as SearchResultBlockParam[])
                                 : []
-                            if (searchResults.length > 0) {
-                                updateToolResults({
-                                    toolUseId,
-                                    content: searchResults.map((r) => ({
-                                        title: r.title,
-                                        source: r.source,
-                                    })),
-                                })
-                            }
+                            updateToolResults({
+                                toolUseId,
+                                content: searchResults.map((r) => ({
+                                    title: r.title,
+                                    source: r.source,
+                                })),
+                            })
 
                             // Extract text content for non-search tool results (e.g., present_artifact)
                             const textBlocks = Array.isArray(block.content)
@@ -1260,7 +1258,9 @@
                                 {/if}
                             {/each}
                         </div>
-                        {@render sourcesSection(collectSources(message))}
+                        {#if !isStreaming}
+                            {@render sourcesSection(collectSources(message))}
+                        {/if}
                         <div class="flex items-center gap-1">
                             {#if message.siblingIds && message.siblingIds.length > 1}
                                 {@render branchNavigation(message)}
