@@ -4,6 +4,7 @@
     import SearchResultItem from '$lib/components/search-results/search-result-item.svelte'
     import { Button } from '$lib/components/ui/button/index.js'
     import { Input } from '$lib/components/ui/input/index.js'
+    import * as Pagination from '$lib/components/ui/pagination/index.js'
     import { getSourceIconPath } from '$lib/utils/icons'
     import { FileText, Funnel, Search } from '@lucide/svelte'
     import type { PageData } from './$types.js'
@@ -67,25 +68,41 @@
             currentUrl.searchParams.append(facetField, value)
         }
 
-        // Navigate to the new URL
+        // Reset to page 1 when filters change
+        currentUrl.searchParams.delete('page')
         window.location.href = currentUrl.toString()
     }
 
     function clearFilters() {
         const currentUrl = new URL(window.location.href)
-        // Remove all filter params (for now just source_type)
         currentUrl.searchParams.delete('source_type')
+        currentUrl.searchParams.delete('page')
         window.location.href = currentUrl.toString()
     }
 
     function clearFacetFilters(facetField: string) {
         const currentUrl = new URL(window.location.href)
         currentUrl.searchParams.delete(facetField)
+        currentUrl.searchParams.delete('page')
         window.location.href = currentUrl.toString()
     }
 
     function getTotalSelectedFilters(): number {
         return selectedSourceTypes.size
+    }
+
+    let totalPages = $derived(
+        data.searchResults ? Math.ceil(data.searchResults.total_count / data.pageSize) : 1,
+    )
+
+    function navigateToPage(newPage: number) {
+        const currentUrl = new URL(window.location.href)
+        if (newPage <= 1) {
+            currentUrl.searchParams.delete('page')
+        } else {
+            currentUrl.searchParams.set('page', String(newPage))
+        }
+        window.location.href = currentUrl.toString()
     }
 
     function handleSearch() {
@@ -153,7 +170,7 @@
                                     variant="ghost"
                                     size="sm"
                                     onclick={() => clearFacetFilters(facet.name)}
-                                    class="h-6 px-2 text-xs">
+                                    class="h-6 cursor-pointer px-2 text-xs">
                                     Clear
                                 </Button>
                             {/if}
@@ -215,9 +232,39 @@
                     </div>
 
                     <!-- Pagination -->
-                    {#if data.searchResults?.has_more}
-                        <div class="mt-8 text-center">
-                            <Button variant="outline">Load More Results</Button>
+                    {#if totalPages > 1}
+                        <div class="mt-8">
+                            <Pagination.Root
+                                count={data.searchResults.total_count}
+                                perPage={data.pageSize}
+                                page={data.currentPage}
+                                onPageChange={(newPage) => navigateToPage(newPage)}
+                                siblingCount={1}>
+                                {#snippet children({ pages, currentPage })}
+                                    <Pagination.Content>
+                                        <Pagination.Item>
+                                            <Pagination.Previous />
+                                        </Pagination.Item>
+                                        {#each pages as p (p.key)}
+                                            {#if p.type === 'ellipsis'}
+                                                <Pagination.Item>
+                                                    <Pagination.Ellipsis />
+                                                </Pagination.Item>
+                                            {:else}
+                                                <Pagination.Item>
+                                                    <Pagination.Link
+                                                        page={p}
+                                                        isActive={currentPage === p.value}
+                                                        class="cursor-pointer" />
+                                                </Pagination.Item>
+                                            {/if}
+                                        {/each}
+                                        <Pagination.Item>
+                                            <Pagination.Next />
+                                        </Pagination.Item>
+                                    </Pagination.Content>
+                                {/snippet}
+                            </Pagination.Root>
                         </div>
                     {/if}
                 {:else}
@@ -278,7 +325,7 @@
                                 variant="ghost"
                                 size="sm"
                                 onclick={() => clearFacetFilters('source_type')}
-                                class="text-xs">
+                                class="cursor-pointer text-xs">
                                 Clear
                             </Button>
                         {/if}

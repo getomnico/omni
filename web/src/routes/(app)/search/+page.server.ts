@@ -8,6 +8,8 @@ export const load = async ({ url, fetch, locals }) => {
 
     // Parse source_type filter from URL params (can be multiple)
     const sourceTypes = url.searchParams.getAll('source_type')
+    const page = Math.max(1, parseInt(url.searchParams.get('page') || '1'))
+    const PAGE_SIZE = 20
 
     if (!query || query.trim() === '') {
         return {
@@ -15,6 +17,8 @@ export const load = async ({ url, fetch, locals }) => {
             sources: null,
             aiAnswerEnabled,
             selectedSourceTypes: sourceTypes,
+            currentPage: 1,
+            pageSize: PAGE_SIZE,
         }
     }
 
@@ -29,8 +33,8 @@ export const load = async ({ url, fetch, locals }) => {
                 },
                 body: JSON.stringify({
                     query: query.trim(),
-                    limit: 20,
-                    offset: 0,
+                    limit: PAGE_SIZE,
+                    offset: (page - 1) * PAGE_SIZE,
                     mode: 'hybrid',
                     user_id: locals.user?.id,
                     user_email: locals.user?.email,
@@ -59,6 +63,8 @@ export const load = async ({ url, fetch, locals }) => {
                 error: 'Search service unavailable',
                 aiAnswerEnabled,
                 selectedSourceTypes: sourceTypes,
+                currentPage: page,
+                pageSize: PAGE_SIZE,
             }
         }
 
@@ -79,6 +85,8 @@ export const load = async ({ url, fetch, locals }) => {
             sources,
             aiAnswerEnabled,
             selectedSourceTypes: sourceTypes,
+            currentPage: page,
+            pageSize: PAGE_SIZE,
         }
     } catch (error) {
         console.error('Error performing search:', error)
@@ -88,6 +96,8 @@ export const load = async ({ url, fetch, locals }) => {
             error: 'Failed to perform search',
             aiAnswerEnabled,
             selectedSourceTypes: sourceTypes,
+            currentPage: page,
+            pageSize: PAGE_SIZE,
         }
     }
 }

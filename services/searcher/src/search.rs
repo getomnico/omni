@@ -178,8 +178,12 @@ impl SearchEngine {
 
         let (search_result, facets) = tokio::join!(search_future, facets_future);
         let results = search_result?;
-        let total_count = results.len() as i64;
-        let has_more = results.len() as i64 >= limit;
+        // TODO: this will need to change once we introduce more facets beyond just source_type
+        let total_count = facets
+            .iter()
+            .flat_map(|f| f.values.iter().map(|fv| fv.count))
+            .sum();
+        let has_more = total_count >= limit;
         let query_time = start_time.elapsed().as_millis() as u64;
 
         info!(
