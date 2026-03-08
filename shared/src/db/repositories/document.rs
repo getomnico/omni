@@ -268,10 +268,10 @@ impl DocumentRepository {
         // then SUM across terms. This rewards docs matching MORE query terms.
         // Phrase bonus is additive on top.
 
-        // Tokenize query via ParadeDB: stems, removes stopwords, ASCII-folds
-        // This matches the index tokenizer pipeline exactly.
+        // Tokenize query via ParadeDB ICU tokenizer: Unicode word-boundary
+        // segmentation with ASCII folding. Matches the index tokenizer exactly.
         let raw_terms: Vec<String> = sqlx::query_scalar(
-            "SELECT unnest($1::pdb.simple('stemmer=english', 'stopwords_language=english', 'ascii_folding=true')::text[])"
+            "SELECT unnest($1::pdb.icu('ascii_folding=true')::text[])"
         )
         .bind(query)
         .fetch_all(&self.pool)
@@ -281,7 +281,7 @@ impl DocumentRepository {
         let terms: Vec<String> = raw_terms
             .into_iter()
             .filter(|t| seen.insert(t.clone()))
-            .take(8)
+            .take(12)
             .collect();
 
         // Bind params: $1 = full query, $2..$(1+N) = individual terms, then filters
@@ -308,8 +308,12 @@ impl DocumentRepository {
             format!(" AND {}", filters.join(" AND "))
         };
 
-        // Per-term: best of title (default tokenizer), title (source_code tokenizer to handle
-        // CamelCase), and content
+        // Per-term: best score across all tokenizer paths.
+        //   - title (ICU): multilingual exact match
+        //   - title_secondary (source_code): CamelCase splitting
+        //   - title_en (ICU + English stemmer): English morphological match
+        //   - content (ICU): multilingual exact match
+        //   - content_en (ICU + English stemmer): English morphological match
         let mut term_branches = Vec::new();
         for (i, _term) in terms.iter().enumerate() {
             let term_param = format!("${}", 2 + i);
@@ -322,19 +326,31 @@ impl DocumentRepository {
                     WHERE title::pdb.alias('title_secondary') ||| {term_param}::pdb.boost(2){common_where} \
                     UNION ALL \
                     SELECT id, pdb.score(id) as score FROM documents \
-                    WHERE content ||| {term_param}{common_where}\
+                    WHERE title::pdb.alias('title_en') ||| {term_param}::pdb.boost(2){common_where} \
+                    UNION ALL \
+                    SELECT id, pdb.score(id) as score FROM documents \
+                    WHERE content ||| {term_param}{common_where} \
+                    UNION ALL \
+                    SELECT id, pdb.score(id) as score FROM documents \
+                    WHERE content::pdb.alias('content_en') ||| {term_param}{common_where}\
                 ) t{i} GROUP BY id"
             ));
         }
 
-        // Phrase branches: best of title phrase vs content phrase (using $1 = full query)
+        // Phrase branches: best across ICU + English-stemmed paths (using $1 = full query)
         let phrase_branch = format!(
             "SELECT id, MAX(score) as score FROM (\
                 SELECT id, pdb.score(id) as score FROM documents \
                 WHERE title ### $1::pdb.slop(2)::pdb.boost(10){common_where} \
                 UNION ALL \
                 SELECT id, pdb.score(id) as score FROM documents \
-                WHERE content ### $1::pdb.slop(2)::pdb.boost(5){common_where}\
+                WHERE title::pdb.alias('title_en') ### $1::pdb.slop(2)::pdb.boost(10){common_where} \
+                UNION ALL \
+                SELECT id, pdb.score(id) as score FROM documents \
+                WHERE content ### $1::pdb.slop(2)::pdb.boost(5){common_where} \
+                UNION ALL \
+                SELECT id, pdb.score(id) as score FROM documents \
+                WHERE content::pdb.alias('content_en') ### $1::pdb.slop(2)::pdb.boost(5){common_where}\
             ) p GROUP BY id"
         );
 
@@ -692,10 +708,14 @@ impl DocumentRepository {
 
         let union_branches = [
             format!("SELECT id, pdb.score(id) as score FROM documents WHERE title ||| $1::pdb.boost(2){common_where}"),
+            format!("SELECT id, pdb.score(id) as score FROM documents WHERE title::pdb.alias('title_en') ||| $1::pdb.boost(2){common_where}"),
             format!("SELECT id, pdb.score(id) as score FROM documents WHERE content ||| $1{common_where}"),
-            format!("SELECT id, pdb.score(id) as score FROM documents WHERE title::pdb.alias('title_secondary') ||| $1{common_where}"),
+            format!("SELECT id, pdb.score(id) as score FROM documents WHERE content::pdb.alias('content_en') ||| $1{common_where}"),
+            format!("SELECT id, pdb.score(id) as score FROM documents WHERE title::pdb.alias('title_secondary') ||| $1::pdb.boost(2){common_where}"),
             format!("SELECT id, pdb.score(id) as score FROM documents WHERE title ### $1::pdb.slop(2)::pdb.boost(10){common_where}"),
+            format!("SELECT id, pdb.score(id) as score FROM documents WHERE title::pdb.alias('title_en') ### $1::pdb.slop(2)::pdb.boost(10){common_where}"),
             format!("SELECT id, pdb.score(id) as score FROM documents WHERE content ### $1::pdb.slop(2)::pdb.boost(5){common_where}"),
+            format!("SELECT id, pdb.score(id) as score FROM documents WHERE content::pdb.alias('content_en') ### $1::pdb.slop(2)::pdb.boost(5){common_where}"),
         ];
 
         let query_str = format!(
