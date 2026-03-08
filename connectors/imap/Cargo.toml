@@ -1,0 +1,41 @@
+[package]
+name = "omni-imap-connector"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "omni-imap-connector"
+path = "src/main.rs"
+
+[lib]
+name = "omni_imap_connector"
+path = "src/lib.rs"
+
+[dependencies]
+shared = { path = "../../shared" }
+anyhow = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+dashmap = { workspace = true }
+dotenvy = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tower = { workspace = true }
+tower-http = { workspace = true, features = ["cors", "trace"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+# IMAP
+async-imap = { version = "0.10", default-features = false, features = ["runtime-tokio"] }
+tokio-native-tls = "0.3"
+native-tls = "0.2"
+
+# Email parsing
+mailparse = "0.15"
+html2text = "0.12"
+urlencoding = "2.1"

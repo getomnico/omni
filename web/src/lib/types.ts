@@ -14,6 +14,7 @@ export enum SourceType {
     OUTLOOK = 'outlook',
     OUTLOOK_CALENDAR = 'outlook_calendar',
     FIREFLIES = 'fireflies',
+    IMAP = 'imap',
 }
 
 export enum ServiceProvider {
@@ -24,6 +25,7 @@ export enum ServiceProvider {
     MICROSOFT = 'microsoft',
     HUBSPOT = 'hubspot',
     FIREFLIES = 'fireflies',
+    IMAP = 'imap',
 }
 
 export enum AuthType {
@@ -75,6 +77,19 @@ export interface HubspotSourceConfig {
     portal_id?: string
 }
 
+export interface ImapSourceConfig {
+    display_name?: string
+    host: string
+    port: number
+    /** "tls" | "starttls" | "none" */
+    encryption: string
+    folder_allowlist: string[]
+    folder_denylist: string[]
+    /** 0 = unlimited */
+    max_message_size: number
+    sync_enabled: boolean
+}
+
 export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.GOOGLE_DRIVE]: 1800,
     [SourceType.GMAIL]: 1800,
@@ -89,6 +104,7 @@ export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.SHARE_POINT]: 3600,
     [SourceType.OUTLOOK_CALENDAR]: 3600,
     [SourceType.FIREFLIES]: 3600,
+    [SourceType.IMAP]: 3600,
     [SourceType.LOCAL_FILES]: 86400,
     [SourceType.WEB]: 86400,
 }

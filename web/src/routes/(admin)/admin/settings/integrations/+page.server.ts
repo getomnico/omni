@@ -74,6 +74,14 @@ export const load: PageServerLoad = async ({ locals }) => {
                 authType: 'api_key',
             },
             {
+                id: 'imap',
+                name: 'IMAP Email',
+                description:
+                    'Index emails from any IMAP-compatible mailbox (Gmail, Outlook, Fastmail, etc.)',
+                connected: connectedSources.some((source) => source.sourceType === 'imap'),
+                authType: 'basic_auth',
+            },
+            {
                 id: 'microsoft',
                 name: 'Microsoft 365',
                 description: 'Connect to OneDrive, SharePoint, Outlook mail and calendar',

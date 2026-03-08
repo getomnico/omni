@@ -19,7 +19,7 @@
     import hubspotLogo from '$lib/images/icons/hubspot.svg'
     import firefliesLogo from '$lib/images/icons/fireflies.svg'
     import microsoftLogo from '$lib/images/icons/microsoft.svg'
-    import { Globe, HardDrive, Loader2 } from '@lucide/svelte'
+    import { Globe, HardDrive, Loader2, Mail } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import GoogleWorkspaceSetup from '$lib/components/google-workspace-setup.svelte'
     import GoogleOAuthSetup from '$lib/components/google-oauth-setup.svelte'
@@ -27,6 +27,7 @@
     import SlackConnectorSetup from '$lib/components/slack-connector-setup.svelte'
     import HubspotConnectorSetup from '$lib/components/hubspot-connector-setup.svelte'
     import FirefliesConnectorSetup from '$lib/components/fireflies-connector-setup.svelte'
+    import ImapConnectorSetup from '$lib/components/imap-connector-setup.svelte'
     import WebConnectorSetupDialog from '$lib/components/web-connector-setup-dialog.svelte'
     import FilesystemConnectorSetupDialog from '$lib/components/filesystem-connector-setup-dialog.svelte'
     import { SourceType } from '$lib/types'
@@ -104,6 +105,7 @@
     let showFilesystemSetup = $state(false)
     let showHubspotSetup = $state(false)
     let showFirefliesSetup = $state(false)
+    let showImapSetup = $state(false)
 
     function handleGoogleOAuthSetupSuccess() {
         showGoogleOAuthSetup = false
@@ -125,6 +127,8 @@
             showHubspotSetup = true
         } else if (integrationId === 'fireflies') {
             showFirefliesSetup = true
+        } else if (integrationId === 'imap') {
+            showImapSetup = true
         }
     }
 
@@ -163,6 +167,11 @@
         window.location.reload()
     }
 
+    function handleImapSetupSuccess() {
+        showImapSetup = false
+        window.location.reload()
+    }
+
     function getSourceIcon(sourceType: SourceType) {
         switch (sourceType) {
             case SourceType.GOOGLE_DRIVE:
@@ -183,6 +192,8 @@
                 return null
             case SourceType.LOCAL_FILES:
                 return null
+            case SourceType.IMAP:
+                return null // uses Mail lucide icon
             default:
                 return null
         }
@@ -234,6 +245,8 @@
                 return 'records'
             case SourceType.FIREFLIES:
                 return 'transcripts'
+            case SourceType.IMAP:
+                return 'emails'
             case SourceType.WEB:
                 return 'pages'
             case SourceType.LOCAL_FILES:
@@ -259,6 +272,8 @@
                 return `/admin/settings/integrations/hubspot/${sourceId}`
             case SourceType.FIREFLIES:
                 return `/admin/settings/integrations/fireflies/${sourceId}`
+            case SourceType.IMAP:
+                return `/admin/settings/integrations/imap/${sourceId}`
             case SourceType.WEB:
                 return `/admin/settings/integrations/web/${sourceId}`
             case SourceType.LOCAL_FILES:
@@ -305,6 +320,8 @@
                                     <Globe class="h-6 w-6" />
                                 {:else if source.sourceType === 'local_files'}
                                     <HardDrive class="h-6 w-6" />
+                                {:else if source.sourceType === 'imap'}
+                                    <Mail class="h-6 w-6" />
                                 {/if}
                                 <div class="flex flex-col gap-0.5">
                                     <div class="flex items-center gap-2">
@@ -399,6 +416,8 @@
                                     <Globe class="h-6 w-6" />
                                 {:else if integration.id === 'filesystem'}
                                     <HardDrive class="h-6 w-6" />
+                                {:else if integration.id === 'imap'}
+                                    <Mail class="h-6 w-6" />
                                 {/if}
                                 <span>{integration.name}</span>
                             </CardTitle>
@@ -473,3 +492,8 @@
     bind:open={showFirefliesSetup}
     onSuccess={handleFirefliesSetupSuccess}
     onCancel={() => (showFirefliesSetup = false)} />
+
+<ImapConnectorSetup
+    bind:open={showImapSetup}
+    onSuccess={handleImapSetupSuccess}
+    onCancel={() => (showImapSetup = false)} />

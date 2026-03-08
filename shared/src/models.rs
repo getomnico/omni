@@ -166,6 +166,7 @@ pub enum SourceType {
     Outlook,
     OutlookCalendar,
     Fireflies,
+    Imap,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -180,6 +181,7 @@ pub enum ServiceProvider {
     Notion,
     Hubspot,
     Fireflies,
+    Imap,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]

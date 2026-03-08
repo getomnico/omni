@@ -1,0 +1,31 @@
+name: Build IMAP Connector
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+    paths:
+      - 'connectors/imap/**'
+      - 'shared/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/build-imap-connector.yml'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'connectors/imap/**'
+      - 'shared/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/build-imap-connector.yml'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-connector.yml
+    with:
+      connector-name: imap
+      connector-type: rust

@@ -168,6 +168,14 @@ services:
     environment:
       RUST_LOG: debug
 
+  imap-connector:
+    image: omni-imap-connector:dev
+    build:
+      context: ..
+      dockerfile: connectors/imap/Dockerfile
+    environment:
+      RUST_LOG: debug
+
   microsoft-connector:
     image: omni-microsoft-connector:dev
     build:

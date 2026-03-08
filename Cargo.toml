@@ -10,6 +10,7 @@ members = [
     "connectors/filesystem",
     "connectors/fireflies",
     "connectors/web",
+    "connectors/imap",
     "shared",
     "benchmarks",
 ]
