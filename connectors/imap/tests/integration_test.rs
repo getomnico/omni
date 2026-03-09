@@ -1216,3 +1216,245 @@ fn test_thread_document_id_stable_when_dateless_non_root_reply_sorts_first() {
         id_full
     );
 }
+
+// ── Attachment extraction ─────────────────────────────────────────────────────
+
+use omni_imap_connector::attachment::extract_attachments;
+
+/// Helper: build a raw RFC 2822 email with a single base64-encoded attachment.
+fn build_email_with_attachment(
+    content_type: &str,
+    filename: &str,
+    body_bytes: &[u8],
+) -> Vec<u8> {
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(body_bytes);
+    format!(
+        "From: sender@example.com\r\n\
+         To: recipient@example.com\r\n\
+         Subject: Attachment test\r\n\
+         MIME-Version: 1.0\r\n\
+         Content-Type: multipart/mixed; boundary=\"boundary42\"\r\n\
+         \r\n\
+         --boundary42\r\n\
+         Content-Type: text/plain; charset=utf-8\r\n\
+         \r\n\
+         See attached.\r\n\
+         --boundary42\r\n\
+         Content-Type: {}; name=\"{}\"\r\n\
+         Content-Disposition: attachment; filename=\"{}\"\r\n\
+         Content-Transfer-Encoding: base64\r\n\
+         \r\n\
+         {}\r\n\
+         --boundary42--\r\n",
+        content_type, filename, filename, encoded
+    )
+    .into_bytes()
+}
+
+#[test]
+fn test_attachment_plain_text_extracted() {
+    let raw = build_email_with_attachment(
+        "text/plain",
+        "notes.txt",
+        b"Important meeting notes for Q4 review.",
+    );
+    let parsed = mailparse::parse_mail(&raw).unwrap();
+    let attachments = extract_attachments(&parsed);
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0].filename, "notes.txt");
+    assert!(
+        attachments[0].text.contains("Important meeting notes"),
+        "Expected text content, got: '{}'",
+        attachments[0].text
+    );
+}
+
+#[test]
+fn test_attachment_csv_extracted() {
+    let raw = build_email_with_attachment(
+        "text/csv",
+        "data.csv",
+        b"name,age\nAlice,30\nBob,25",
+    );
+    let parsed = mailparse::parse_mail(&raw).unwrap();
+    let attachments = extract_attachments(&parsed);
+    assert_eq!(attachments.len(), 1);
+    assert!(attachments[0].text.contains("Alice"));
+}
+
+#[test]
+fn test_attachment_html_converted_to_text() {
+    let raw = build_email_with_attachment(
+        "text/html",
+        "report.html",
+        b"<html><body><h1>Report</h1><p>Quarterly earnings summary.</p></body></html>",
+    );
+    let parsed = mailparse::parse_mail(&raw).unwrap();
+    let attachments = extract_attachments(&parsed);
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0].filename, "report.html");
+    assert!(
+        attachments[0].text.contains("Quarterly earnings summary"),
+        "Expected HTML-to-text conversion, got: '{}'",
+        attachments[0].text
+    );
+    assert!(
+        !attachments[0].text.contains("<p>"),
+        "Should not contain raw HTML tags"
+    );
+}
+
+#[test]
+fn test_attachment_docx_extracted() {
+    // Build a minimal DOCX in memory.
+    let docx = docx_rs::Docx::new().add_paragraph(
+        docx_rs::Paragraph::new()
+            .add_run(docx_rs::Run::new().add_text("Contract draft version 3")),
+    );
+    let mut docx_bytes = Vec::new();
+    docx.build()
+        .pack(std::io::Cursor::new(&mut docx_bytes))
+        .unwrap();
+
+    let raw = build_email_with_attachment(
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "contract.docx",
+        &docx_bytes,
+    );
+    let parsed = mailparse::parse_mail(&raw).unwrap();
+    let attachments = extract_attachments(&parsed);
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0].filename, "contract.docx");
+    assert!(
+        attachments[0].text.contains("Contract draft version 3"),
+        "Expected DOCX content, got: '{}'",
+        attachments[0].text
+    );
+}
+
+#[test]
+fn test_attachment_pptx_extracted() {
+    use std::io::Write;
+    let mut pptx_bytes = Vec::new();
+    {
+        let cursor = std::io::Cursor::new(&mut pptx_bytes);
+        let mut zip = zip::ZipWriter::new(cursor);
+        zip.start_file(
+            "ppt/slides/slide1.xml",
+            zip::write::FileOptions::default(),
+        )
+        .unwrap();
+        write!(
+            zip,
+            r#"<?xml version="1.0"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:cSld><p:spTree><p:sp><p:txBody>
+    <a:p><a:r><a:t>Budget presentation 2026</a:t></a:r></a:p>
+  </p:txBody></p:sp></p:spTree></p:cSld>
+</p:sld>"#
+        )
+        .unwrap();
+        zip.finish().unwrap();
+    }
+
+    let raw = build_email_with_attachment(
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "budget.pptx",
+        &pptx_bytes,
+    );
+    let parsed = mailparse::parse_mail(&raw).unwrap();
+    let attachments = extract_attachments(&parsed);
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0].filename, "budget.pptx");
+    assert!(
+        attachments[0].text.contains("Budget presentation 2026"),
+        "Expected PPTX content, got: '{}'",
+        attachments[0].text
+    );
+}
+
+#[test]
+fn test_unsupported_attachment_skipped() {
+    let raw = build_email_with_attachment(
+        "image/png",
+        "photo.png",
+        &[0x89, 0x50, 0x4E, 0x47], // PNG magic bytes
+    );
+    let parsed = mailparse::parse_mail(&raw).unwrap();
+    let attachments = extract_attachments(&parsed);
+    assert!(
+        attachments.is_empty(),
+        "image/png should not produce any extracted attachment"
+    );
+}
+
+#[test]
+fn test_multiple_attachments_extracted() {
+    use base64::Engine;
+    let txt_encoded =
+        base64::engine::general_purpose::STANDARD.encode(b"Text file content");
+    let csv_encoded =
+        base64::engine::general_purpose::STANDARD.encode(b"col1,col2\na,b");
+
+    let raw = format!(
+        "From: a@b.com\r\n\
+         Subject: Multi-attach\r\n\
+         MIME-Version: 1.0\r\n\
+         Content-Type: multipart/mixed; boundary=\"sep\"\r\n\
+         \r\n\
+         --sep\r\n\
+         Content-Type: text/plain; charset=utf-8\r\n\
+         \r\n\
+         Body text.\r\n\
+         --sep\r\n\
+         Content-Type: text/plain; name=\"notes.txt\"\r\n\
+         Content-Disposition: attachment; filename=\"notes.txt\"\r\n\
+         Content-Transfer-Encoding: base64\r\n\
+         \r\n\
+         {}\r\n\
+         --sep\r\n\
+         Content-Type: text/csv; name=\"data.csv\"\r\n\
+         Content-Disposition: attachment; filename=\"data.csv\"\r\n\
+         Content-Transfer-Encoding: base64\r\n\
+         \r\n\
+         {}\r\n\
+         --sep--\r\n",
+        txt_encoded, csv_encoded
+    )
+    .into_bytes();
+
+    let parsed = mailparse::parse_mail(&raw).unwrap();
+    let attachments = extract_attachments(&parsed);
+    assert_eq!(attachments.len(), 2, "Expected 2 attachments, got {}", attachments.len());
+    let filenames: Vec<&str> = attachments.iter().map(|a| a.filename.as_str()).collect();
+    assert!(filenames.contains(&"notes.txt"));
+    assert!(filenames.contains(&"data.csv"));
+}
+
+#[test]
+fn test_attachment_text_included_in_parsed_email_body() {
+    let raw = build_email_with_attachment(
+        "text/plain",
+        "readme.txt",
+        b"Attachment content here.",
+    );
+    let email = parse_raw_email(&raw, 1, "INBOX").unwrap();
+    assert!(
+        email.body_text.contains("[Attachment: readme.txt]"),
+        "body_text should contain attachment header, got: '{}'",
+        email.body_text
+    );
+    assert!(
+        email.body_text.contains("Attachment content here."),
+        "body_text should contain attachment text, got: '{}'",
+        email.body_text
+    );
+    // The inline body should also be present.
+    assert!(
+        email.body_text.contains("See attached."),
+        "body_text should contain inline text too, got: '{}'",
+        email.body_text
+    );
+}

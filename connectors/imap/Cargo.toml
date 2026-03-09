@@ -39,3 +39,13 @@ native-tls = "0.2"
 mailparse = "0.15"
 html2text = "0.12"
 urlencoding = "2.1"
+
+# Attachment text extraction
+docx-rs = "0.4"
+calamine = "0.22"
+zip = "0.6"
+quick-xml = "0.31"
+pdf_oxide = "0.3"
+
+[dev-dependencies]
+base64 = "0.21"
