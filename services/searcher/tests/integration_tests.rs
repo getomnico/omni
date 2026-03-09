@@ -268,11 +268,11 @@ async fn test_fulltext_search() -> Result<()> {
             second_score
         );
     }
-    // Dual tokenizer: ICU primary + English-stemmed aliases.
+    // Dual tokenizer: simple primary + English-stemmed aliases.
     // Via English alias: "sales"→"sale" does NOT match "salesman".
-    // Via ICU exact: "sales" DOES match "sales" in "Death of a Salesman" content.
+    // Via simple exact: "sales" DOES match "sales" in "Death of a Salesman" content.
     // "CRM Sales Reports" matches 3/3 terms on both paths → dominant score.
-    // "Death of a Salesman Book Report" matches 2/3 via ICU ("sales" + "report").
+    // "Death of a Salesman Book Report" matches 2/3 via simple ("sales" + "report").
     // Both may appear, but CRM doc ranks first due to phrase match + more term hits.
     assert!(
         titles.len() <= 2,
