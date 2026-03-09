@@ -268,10 +268,10 @@ impl DocumentRepository {
         // then SUM across terms. This rewards docs matching MORE query terms.
         // Phrase bonus is additive on top.
 
-        // Tokenize query via ParadeDB ICU tokenizer: Unicode word-boundary
-        // segmentation with ASCII folding. Matches the index tokenizer exactly.
+        // Tokenize query via ParadeDB simple tokenizer: splits on non-alphanumeric
+        // characters, lowercases, ASCII-folds. Matches the index tokenizer exactly.
         let raw_terms: Vec<String> = sqlx::query_scalar(
-            "SELECT unnest($1::pdb.icu('ascii_folding=true')::text[])"
+            "SELECT unnest($1::pdb.simple('ascii_folding=true')::text[])"
         )
         .bind(query)
         .fetch_all(&self.pool)
@@ -309,10 +309,10 @@ impl DocumentRepository {
         };
 
         // Per-term: best score across all tokenizer paths.
-        //   - title (ICU): multilingual exact match
+        //   - title (simple): splits on underscores/dots/hyphens, exact match
         //   - title_secondary (source_code): CamelCase splitting
-        //   - title_en (ICU + English stemmer): English morphological match
-        //   - content (ICU): multilingual exact match
+        //   - title_en (simple + English stemmer): English morphological match
+        //   - content (ICU): Unicode word-boundary segmentation for CJK/Thai
         //   - content_en (ICU + English stemmer): English morphological match
         let mut term_branches = Vec::new();
         for (i, _term) in terms.iter().enumerate() {
@@ -337,7 +337,7 @@ impl DocumentRepository {
             ));
         }
 
-        // Phrase branches: best across ICU + English-stemmed paths (using $1 = full query)
+        // Phrase branches: best across simple/ICU + English-stemmed paths (using $1 = full query)
         let phrase_branch = format!(
             "SELECT id, MAX(score) as score FROM (\
                 SELECT id, pdb.score(id) as score FROM documents \

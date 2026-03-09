@@ -1,16 +1,22 @@
--- Multilingual FTS via dual tokenizers: ICU primary + English-stemmed aliases.
+-- Multilingual FTS via dual tokenizers + English-stemmed aliases.
 --
--- ICU (primary): Unicode word-boundary segmentation — works for any language
---   including CJK, Thai, German, etc. No stemming, so tokens are exact.
+-- Title fields use pdb.simple: splits on non-alphanumeric characters (underscores,
+--   dots, hyphens), lowercases. Handles filenames like
+--   "Quartalsbericht_Q3_2024_Entwurf.docx" correctly across any language.
 --
--- English aliases (title_en, content_en): ICU segmentation + Snowball English
+-- Content fields use pdb.icu: Unicode word-boundary segmentation — handles CJK,
+--   Thai, and other scripts that don't use spaces between words. For space-
+--   separated languages (English, German, etc.) it produces the same result as
+--   simple.
+--
+-- English aliases (title_en, content_en): same base tokenizer + Snowball English
 --   stemmer. Preserves English morphological matching ("reports" → "report")
---   without degrading other languages — the English stemmer is a no-op on
---   non-Latin tokens and the primary ICU path is always searched alongside.
+--   without degrading other languages — the primary unstemmed path is always
+--   searched alongside.
 --
 -- source_code alias (title_secondary): CamelCase splitting for code identifiers.
 --
--- Stopwords dropped: no universal list exists; BM25/IDF naturally downweights
+-- No stopwords: no universal list exists; BM25/IDF naturally downweights
 -- high-frequency terms. English stopwords would wrongly remove words in other
 -- languages (e.g. "die" is a German article).
 --
@@ -23,9 +29,9 @@ USING bm25 (
     id,
     (source_id::pdb.literal),
     (external_id::pdb.literal),
-    (title::pdb.icu('ascii_folding=true')),
+    (title::pdb.simple('ascii_folding=true')),
     (title::pdb.source_code('alias=title_secondary', 'ascii_folding=true')),
-    (title::pdb.icu('alias=title_en', 'stemmer=english', 'ascii_folding=true')),
+    (title::pdb.simple('alias=title_en', 'stemmer=english', 'ascii_folding=true')),
     (content::pdb.icu('ascii_folding=true')),
     (content::pdb.icu('alias=content_en', 'stemmer=english', 'ascii_folding=true')),
     (content_type::pdb.literal),
