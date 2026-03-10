@@ -84,3 +84,99 @@ impl ImapAccountConfig {
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_config_from_json_defaults() {
+        let cfg_json = json!({
+            "host": "imap.example.com",
+            "port": 993
+        });
+        let cfg: ImapAccountConfig = serde_json::from_value(cfg_json).unwrap();
+        assert_eq!(cfg.host, "imap.example.com");
+        assert_eq!(cfg.port, 993);
+        assert_eq!(cfg.encryption, "tls");
+        assert!(cfg.sync_enabled);
+        assert!(cfg.folder_allowlist.is_empty());
+        assert!(cfg.folder_denylist.iter().any(|f| f == "Trash"));
+        assert!(cfg.folder_denylist.iter().any(|f| f == "Spam"));
+        assert_eq!(cfg.max_message_size, 0);
+        assert_eq!(cfg.webmail_url_template, None);
+    }
+
+    #[test]
+    fn test_folder_filtering_allowlist_only() {
+        let cfg = ImapAccountConfig {
+            display_name: None,
+            host: "mail.example.com".into(),
+            port: 993,
+            encryption: "tls".into(),
+            folder_allowlist: vec!["INBOX".into(), "Sent".into()],
+            folder_denylist: vec![],
+            webmail_url_template: None,
+            max_message_size: 0,
+            sync_enabled: true,
+        };
+        assert!(cfg.should_index_folder("INBOX"));
+        assert!(cfg.should_index_folder("Sent"));
+        assert!(!cfg.should_index_folder("Drafts"));
+        assert!(!cfg.should_index_folder("Trash"));
+    }
+
+    #[test]
+    fn test_folder_filtering_denylist_only() {
+        let cfg = ImapAccountConfig {
+            display_name: None,
+            host: "mail.example.com".into(),
+            port: 993,
+            encryption: "tls".into(),
+            folder_allowlist: vec![],
+            folder_denylist: vec!["Spam".into(), "Trash".into()],
+            max_message_size: 0,
+            webmail_url_template: None,
+            sync_enabled: true,
+        };
+        assert!(cfg.should_index_folder("INBOX"));
+        assert!(cfg.should_index_folder("Sent"));
+        assert!(!cfg.should_index_folder("Spam"));
+        assert!(!cfg.should_index_folder("Trash"));
+    }
+
+    #[test]
+    fn test_folder_filtering_denylist_beats_allowlist() {
+        let cfg = ImapAccountConfig {
+            display_name: None,
+            host: "mail.example.com".into(),
+            port: 993,
+            encryption: "tls".into(),
+            folder_allowlist: vec!["INBOX".into()],
+            folder_denylist: vec!["INBOX".into()],
+            max_message_size: 0,
+            webmail_url_template: None,
+            sync_enabled: true,
+        };
+        assert!(!cfg.should_index_folder("INBOX"));
+    }
+
+    #[test]
+    fn test_folder_filtering_case_insensitive() {
+        let cfg = ImapAccountConfig {
+            display_name: None,
+            host: "mail.example.com".into(),
+            port: 993,
+            encryption: "tls".into(),
+            folder_allowlist: vec!["inbox".into()],
+            folder_denylist: vec![],
+            webmail_url_template: None,
+            max_message_size: 0,
+            sync_enabled: true,
+        };
+        assert!(cfg.should_index_folder("INBOX"));
+        assert!(cfg.should_index_folder("inbox"));
+        assert!(cfg.should_index_folder("Inbox"));
+    }
+}

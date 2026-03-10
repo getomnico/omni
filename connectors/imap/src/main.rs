@@ -25,7 +25,7 @@ async fn main() -> Result<()> {
 
     let app = create_router(api_state);
     let port = std::env::var("PORT")
-        .unwrap_or_else(|_| "8080".to_string())
+        .expect("PORT environment variable must be set")
         .parse::<u16>()?;
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
