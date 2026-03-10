@@ -205,9 +205,19 @@ async def _init_embedding_provider(app_state: AppState) -> None:
 
 
 async def reload_embedding_provider(app_state: AppState) -> None:
-    """Re-read current embedding provider from DB and re-initialize."""
+    """Re-read current embedding provider from DB and re-initialize.
+    
+    If a provider is newly configured (transitioning from None), also start
+    the batch processor which may have exited early during startup.
+    """
+    was_none = app_state.embedding_provider is None
     invalidate_embedding_config_cache()
     await _init_embedding_provider(app_state)
+    
+    # Start batch processor if we just gained a provider
+    if was_none and app_state.embedding_provider is not None:
+        logger.info("Embedding provider became available, starting batch processor")
+        await start_batch_processor(app_state)
 
 
 def _handle_model_provider_notification(app_state: AppState, payload: dict) -> None:
