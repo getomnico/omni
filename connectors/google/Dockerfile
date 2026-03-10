@@ -1,5 +1,5 @@
 # Multi-stage build for Google connector service
-FROM lukemathwalker/cargo-chef:latest-rust-1.91.0-bookworm AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-1.91.1-bookworm AS chef
 WORKDIR /app
 
 FROM chef AS planner
