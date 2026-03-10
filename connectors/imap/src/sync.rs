@@ -118,6 +118,13 @@ impl SyncManager {
         self.active_syncs
             .insert(sync_run_id.to_string(), cancelled.clone());
 
+        // Get the source creator's email for document permissions
+        let user_email = self
+            .sdk_client
+            .get_user_email_for_source(source_id)
+            .await
+            .ok();
+
         let result = self
             .execute_sync(
                 &account_config,
@@ -126,6 +133,7 @@ impl SyncManager {
                 source_id,
                 sync_run_id,
                 &display_name,
+                user_email.as_deref(),
                 &mut connector_state,
                 &cancelled,
             )
@@ -180,6 +188,7 @@ impl SyncManager {
         source_id: &str,
         sync_run_id: &str,
         display_name: &str,
+        user_email: Option<&str>,
         state: &mut ImapConnectorState,
         cancelled: &AtomicBool,
     ) -> Result<(usize, usize)> {
@@ -220,6 +229,7 @@ impl SyncManager {
                     source_id,
                     sync_run_id,
                     display_name,
+                    user_email,
                     state,
                     cancelled,
                 )
@@ -253,6 +263,7 @@ impl SyncManager {
         source_id: &str,
         sync_run_id: &str,
         display_name: &str,
+        user_email: Option<&str>,
         state: &mut ImapConnectorState,
         cancelled: &AtomicBool,
     ) -> Result<(usize, usize)> {
@@ -435,6 +446,7 @@ impl SyncManager {
                     content_id,
                     display_name,
                     config.webmail_url_template.as_deref(),
+                    user_email,
                     thread_existed,
                 );
 
@@ -568,6 +580,7 @@ impl SyncManager {
                             content_id,
                             display_name,
                             config.webmail_url_template.as_deref(),
+                            user_email,
                             true, // always an update
                         );
                         if let Err(e) = self
@@ -653,6 +666,7 @@ impl SyncManager {
                     content_id,
                     display_name,
                     config.webmail_url_template.as_deref(),
+                    user_email,
                     true,
                 )
             };

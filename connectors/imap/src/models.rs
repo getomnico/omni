@@ -132,6 +132,7 @@ impl ParsedEmail {
         content_id: String,
         account_display_name: &str,
         webmail_url_template: Option<&str>,
+        user_email: Option<&str>,
     ) -> ConnectorEvent {
         build_thread_connector_event(
             &[self.clone()],
@@ -140,6 +141,7 @@ impl ParsedEmail {
             content_id,
             account_display_name,
             webmail_url_template,
+            user_email,
             false,
         )
     }
@@ -211,6 +213,7 @@ pub fn build_thread_connector_event(
     content_id: String,
     account_display_name: &str,
     webmail_url_template: Option<&str>,
+    user_email: Option<&str>,
     is_update: bool,
 ) -> ConnectorEvent {
     let sorted_messages = sort_thread_messages(messages);
@@ -346,9 +349,11 @@ pub fn build_thread_connector_event(
         a
     };
 
+    // IMAP permissions: only the account owner (source creator) should have access.
+    // Email correspondents are NOT granted access - they are just metadata participants.
     let permissions = DocumentPermissions {
         public: false,
-        users: participants,
+        users: user_email.map(|e| vec![e.to_lowercase()]).unwrap_or_default(),
         groups: vec![],
     };
 

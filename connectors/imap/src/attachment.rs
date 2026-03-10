@@ -193,13 +193,23 @@ fn html_to_text(html: &str) -> String {
 // to keep behaviour consistent across connectors.
 
 fn extract_pdf_text(data: &[u8]) -> Result<String> {
-    let mut doc = pdf_oxide::PdfDocument::from_bytes(data.to_vec())
-        .context("Failed to parse PDF")?;
-    let text = doc
-        .extract_all_text()
-        .context("Failed to extract text from PDF")?;
-    let text = text.trim().to_string();
-    Ok(text)
+    // Wrap PDF extraction in catch_unwind because pdf_oxide can panic on
+    // certain malformed PDFs or PDFs with multi-byte UTF-8 characters in
+    // font handling code.
+    let data_owned = data.to_vec();
+    let result = std::panic::catch_unwind(move || {
+        let mut doc = pdf_oxide::PdfDocument::from_bytes(data_owned)?;
+        doc.extract_all_text()
+    });
+
+    match result {
+        Ok(Ok(text)) => Ok(text.trim().to_string()),
+        Ok(Err(e)) => Err(anyhow!("Failed to extract text from PDF: {}", e)),
+        Err(_) => {
+            warn!("PDF extraction panicked - skipping this attachment");
+            Err(anyhow!("PDF extraction panicked due to malformed content"))
+        }
+    }
 }
 
 fn extract_docx_text(data: &[u8]) -> Result<String> {

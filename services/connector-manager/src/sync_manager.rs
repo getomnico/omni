@@ -192,7 +192,10 @@ impl SyncManager {
             FROM sync_runs sr
             JOIN sources s ON sr.source_id = s.id
             WHERE sr.status = 'running'
-            AND (sr.last_activity_at IS NULL OR sr.last_activity_at < $1)
+            AND (
+                (sr.last_activity_at IS NOT NULL AND sr.last_activity_at < $1)
+                OR (sr.last_activity_at IS NULL AND sr.created_at < $1)
+            )
             "#,
         )
         .bind(cutoff)

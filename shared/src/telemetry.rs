@@ -24,7 +24,9 @@ impl TelemetryConfig {
     pub fn from_env(service_name: &str) -> Self {
         Self {
             service_name: service_name.to_string(),
-            otlp_endpoint: std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok(),
+            otlp_endpoint: std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+                .ok()
+                .filter(|s| !s.is_empty()),
             deployment_id: std::env::var("OTEL_DEPLOYMENT_ID")
                 .unwrap_or_else(|_| ulid::Ulid::new().to_string()),
             environment: std::env::var("OTEL_DEPLOYMENT_ENVIRONMENT")

@@ -351,6 +351,7 @@ fn test_to_connector_event_document_created() {
         "content-abc".to_string(),
         "My Work Account",
         None,
+        Some("owner@example.com"),
     );
 
     match event {
@@ -730,17 +731,16 @@ fn test_thread_permissions_include_all_participants() {
         "content-1".into(),
         "Test Account",
         None,
+        Some("owner@example.com"),
         false,
     );
 
     match event {
         ConnectorEvent::DocumentCreated { permissions, .. } => {
             assert!(!permissions.public);
-            assert!(permissions.users.iter().any(|u| u == "alice@example.com"));
-            assert!(permissions.users.iter().any(|u| u == "bob@example.com"));
-            assert!(permissions.users.iter().any(|u| u == "charlie@example.com"));
-            assert!(permissions.users.iter().any(|u| u == "dave@example.com"));
-            assert_eq!(permissions.users.len(), 4);
+            // Only the owner should have access, not participants
+            assert_eq!(permissions.users, vec!["owner@example.com"]);
+            assert!(permissions.groups.is_empty());
         }
         _ => panic!("Expected DocumentCreated"),
     }
@@ -773,6 +773,7 @@ fn test_thread_attributes_include_subject_recipients_flags_and_thread_id() {
         "content-2".into(),
         "Test",
         None,
+        Some("owner@test.com"),
         false,
     );
 
@@ -858,6 +859,7 @@ fn test_webmail_url_from_template() {
         "content-4".into(),
         "Gmail",
         Some(template),
+        Some("owner@gmail.com"),
         false,
     );
 
@@ -958,6 +960,7 @@ fn test_build_thread_connector_event_updates_existing_thread() {
         "content-5".into(),
         "Account",
         None,
+        Some("owner@account.com"),
         true, // is_update = true → DocumentUpdated
     );
 
@@ -1182,6 +1185,7 @@ fn test_thread_document_id_stable_when_dateless_non_root_reply_sorts_first() {
         "c1".into(),
         "Acct",
         None,
+        Some("owner@acct.com"),
         false,
     );
     // Build event without grandchild (simulates grandchild already deleted).
@@ -1192,6 +1196,7 @@ fn test_thread_document_id_stable_when_dateless_non_root_reply_sorts_first() {
         "c2".into(),
         "Acct",
         None,
+        Some("owner@acct.com"),
         true,
     );
 
