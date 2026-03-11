@@ -12,17 +12,13 @@
     import googleLogo from '$lib/images/icons/google.svg'
     import slackLogo from '$lib/images/icons/slack.svg'
     import atlassianLogo from '$lib/images/icons/atlassian.svg'
-    import googleDriveLogo from '$lib/images/icons/google-drive.svg'
-    import gmailLogo from '$lib/images/icons/gmail.svg'
-    import confluenceLogo from '$lib/images/icons/confluence.svg'
-    import jiraLogo from '$lib/images/icons/jira.svg'
     import hubspotLogo from '$lib/images/icons/hubspot.svg'
     import firefliesLogo from '$lib/images/icons/fireflies.svg'
     import microsoftLogo from '$lib/images/icons/microsoft.svg'
+    import { getSourceIconPath } from '$lib/utils/icons'
     import { Globe, HardDrive, Loader2, Mail } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import GoogleWorkspaceSetup from '$lib/components/google-workspace-setup.svelte'
-    import GoogleOAuthSetup from '$lib/components/google-oauth-setup.svelte'
     import AtlassianConnectorSetup from '$lib/components/atlassian-connector-setup.svelte'
     import SlackConnectorSetup from '$lib/components/slack-connector-setup.svelte'
     import HubspotConnectorSetup from '$lib/components/hubspot-connector-setup.svelte'
@@ -99,7 +95,6 @@
     }
 
     let showGoogleSetup = $state(false)
-    let showGoogleOAuthSetup = $state(false)
     let showAtlassianSetup = $state(false)
     let showSlackSetup = $state(false)
     let showWebSetup = $state(false)
@@ -108,11 +103,6 @@
     let showFirefliesSetup = $state(false)
     let showImapSetup = $state(false)
     let showMicrosoftSetup = $state(false)
-
-    function handleGoogleOAuthSetupSuccess() {
-        showGoogleOAuthSetup = false
-        window.location.reload()
-    }
 
     function handleConnect(integrationId: string) {
         if (integrationId === 'google') {
@@ -181,36 +171,8 @@
         window.location.reload()
     }
 
-    function getSourceIcon(sourceType: SourceType) {
-        switch (sourceType) {
-            case SourceType.GOOGLE_DRIVE:
-                return googleDriveLogo
-            case SourceType.GMAIL:
-                return gmailLogo
-            case SourceType.SLACK:
-                return slackLogo
-            case SourceType.CONFLUENCE:
-                return confluenceLogo
-            case SourceType.JIRA:
-                return jiraLogo
-            case SourceType.HUBSPOT:
-                return hubspotLogo
-            case SourceType.FIREFLIES:
-                return firefliesLogo
-            case SourceType.ONE_DRIVE:
-            case SourceType.OUTLOOK:
-            case SourceType.OUTLOOK_CALENDAR:
-            case SourceType.SHARE_POINT:
-                return microsoftLogo
-            case SourceType.WEB:
-                return null
-            case SourceType.LOCAL_FILES:
-                return null
-            case SourceType.IMAP:
-                return null // uses Mail lucide icon
-            default:
-                return null
-        }
+    function getSourceIcon(sourceType: string) {
+        return getSourceIconPath(sourceType)
     }
 
     function getIntegrationIcon(integrationId: string) {
@@ -458,15 +420,6 @@
                                 onclick={() => handleConnect(integration.id)}>
                                 Connect
                             </Button>
-                            {#if integration.id === 'google' && data.googleOAuthConfigured}
-                                <Button
-                                    size="sm"
-                                    variant="outline"
-                                    class="cursor-pointer"
-                                    onclick={() => (showGoogleOAuthSetup = true)}>
-                                    Connect with OAuth
-                                </Button>
-                            {/if}
                         </CardFooter>
                     </Card>
                 {/each}
@@ -480,11 +433,6 @@
     googleOAuthConfigured={data.googleOAuthConfigured}
     onSuccess={handleGoogleSetupSuccess}
     onCancel={() => (showGoogleSetup = false)} />
-
-<GoogleOAuthSetup
-    bind:open={showGoogleOAuthSetup}
-    onSuccess={handleGoogleOAuthSetupSuccess}
-    onCancel={() => (showGoogleOAuthSetup = false)} />
 
 <AtlassianConnectorSetup
     bind:open={showAtlassianSetup}

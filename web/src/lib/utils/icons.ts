@@ -12,6 +12,10 @@ import confluenceIcon from '$lib/images/icons/confluence.svg'
 import jiraIcon from '$lib/images/icons/jira.svg'
 import firefliesIcon from '$lib/images/icons/fireflies.svg'
 import hubspotIcon from '$lib/images/icons/hubspot.svg'
+import microsoftIcon from '$lib/images/icons/microsoft.svg'
+import oneDriveIcon from '$lib/images/icons/onedrive.svg'
+import outlookIcon from '$lib/images/icons/outlook.svg'
+import sharePointIcon from '$lib/images/icons/sharepoint.svg'
 
 // Google Workspace MIME types
 const GOOGLE_DOCS_MIMETYPES = [
@@ -88,10 +92,19 @@ export function getSourceIconPath(sourceType: string): string | null {
             return firefliesIcon
         case SourceType.HUBSPOT:
             return hubspotIcon
+        case SourceType.ONE_DRIVE:
+            return oneDriveIcon
+        case SourceType.OUTLOOK:
+        case SourceType.OUTLOOK_CALENDAR:
+            return outlookIcon
+        case SourceType.SHARE_POINT:
+            return sharePointIcon
         case SourceType.GITHUB:
             return null // TODO: Add github icon when available
         case SourceType.LOCAL_FILES:
             return null // Use fallback FileText icon
+        case SourceType.IMAP:
+            return null // Uses Mail lucide icon
         default:
             return null // Use fallback FileText icon
     }
