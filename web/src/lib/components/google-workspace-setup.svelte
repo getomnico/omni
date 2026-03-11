@@ -4,10 +4,13 @@
     import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
     import { Textarea } from '$lib/components/ui/textarea'
+    import { Checkbox } from '$lib/components/ui/checkbox'
     import { AuthType } from '$lib/types'
     import { toast } from 'svelte-sonner'
     import { goto } from '$app/navigation'
     import { invalidateAll } from '$app/navigation'
+    import googleDriveLogo from '$lib/images/icons/google-drive.svg'
+    import gmailLogo from '$lib/images/icons/gmail.svg'
 
     interface Props {
         open: boolean
@@ -29,6 +32,8 @@
     let serviceAccountJson = $state('')
     let principalEmail = $state('')
     let domain = $state('')
+    let connectDrive = $state(true)
+    let connectGmail = $state(true)
     let isSubmitting = $state(false)
 
     // OAuth form state
@@ -39,6 +44,10 @@
     async function handleSubmit() {
         isSubmitting = true
         try {
+            if (!connectDrive && !connectGmail) {
+                throw new Error('Please select at least one service to connect')
+            }
+
             if (!serviceAccountJson.trim()) {
                 throw new Error('Service account JSON is required')
             }
@@ -65,74 +74,74 @@
             const authType = AuthType.JWT
             const provider = 'google'
 
-            // Create Google Drive source
-            const driveSourceResponse = await fetch('/api/sources', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    name: 'Google Drive',
-                    sourceType: 'google_drive',
-                    config,
-                }),
-            })
+            if (connectDrive) {
+                const driveSourceResponse = await fetch('/api/sources', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: 'Google Drive',
+                        sourceType: 'google_drive',
+                        config,
+                    }),
+                })
 
-            if (!driveSourceResponse.ok) {
-                throw new Error('Failed to create Google Drive source')
+                if (!driveSourceResponse.ok) {
+                    throw new Error('Failed to create Google Drive source')
+                }
+
+                const driveSource = await driveSourceResponse.json()
+
+                const driveCredentialsResponse = await fetch('/api/service-credentials', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sourceId: driveSource.id,
+                        provider: provider,
+                        authType: authType,
+                        principalEmail: principalEmail || null,
+                        credentials,
+                        config,
+                    }),
+                })
+
+                if (!driveCredentialsResponse.ok) {
+                    throw new Error('Failed to create Google Drive service credentials')
+                }
             }
 
-            const driveSource = await driveSourceResponse.json()
+            if (connectGmail) {
+                const gmailSourceResponse = await fetch('/api/sources', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: 'Gmail',
+                        sourceType: 'gmail',
+                        config,
+                    }),
+                })
 
-            // Create service credentials for Drive source
-            const driveCredentialsResponse = await fetch('/api/service-credentials', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    sourceId: driveSource.id,
-                    provider: provider,
-                    authType: authType,
-                    principalEmail: principalEmail || null,
-                    credentials,
-                    config,
-                }),
-            })
+                if (!gmailSourceResponse.ok) {
+                    throw new Error('Failed to create Gmail source')
+                }
 
-            if (!driveCredentialsResponse.ok) {
-                throw new Error('Failed to create Google Drive service credentials')
-            }
+                const gmailSource = await gmailSourceResponse.json()
 
-            // Create Gmail source
-            const gmailSourceResponse = await fetch('/api/sources', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    name: 'Gmail',
-                    sourceType: 'gmail',
-                    config,
-                }),
-            })
+                const gmailCredentialsResponse = await fetch('/api/service-credentials', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sourceId: gmailSource.id,
+                        provider: provider,
+                        authType: authType,
+                        principalEmail: principalEmail || null,
+                        credentials: credentials,
+                        config,
+                    }),
+                })
 
-            if (!gmailSourceResponse.ok) {
-                throw new Error('Failed to create Gmail source')
-            }
-
-            const gmailSource = await gmailSourceResponse.json()
-
-            // Create service credentials for Gmail source (same credentials as Drive)
-            const gmailCredentialsResponse = await fetch('/api/service-credentials', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    sourceId: gmailSource.id,
-                    provider: provider,
-                    authType: authType,
-                    principalEmail: principalEmail || null,
-                    credentials: credentials,
-                    config,
-                }),
-            })
-
-            if (!gmailCredentialsResponse.ok) {
-                throw new Error('Failed to create Gmail service credentials')
+                if (!gmailCredentialsResponse.ok) {
+                    throw new Error('Failed to create Gmail service credentials')
+                }
             }
 
             toast.success('Google Workspace connected successfully!')
@@ -199,6 +208,8 @@
         serviceAccountJson = ''
         principalEmail = ''
         domain = ''
+        connectDrive = true
+        connectGmail = true
         googleOAuthClientId = ''
         googleOAuthClientSecret = ''
         if (onCancel) {
@@ -245,6 +256,24 @@
         <!-- Service Account Tab -->
         {#if activeTab === 'service-account'}
             <div class="space-y-4">
+                <div class="space-y-2">
+                    <Label>Services to connect</Label>
+                    <div class="flex gap-4">
+                        <label
+                            class="hover:bg-muted/50 flex flex-1 cursor-pointer items-center gap-3 rounded-lg border p-3">
+                            <Checkbox bind:checked={connectDrive} />
+                            <img src={googleDriveLogo} alt="Google Drive" class="h-5 w-5" />
+                            <span class="font-medium">Google Drive</span>
+                        </label>
+                        <label
+                            class="hover:bg-muted/50 flex flex-1 cursor-pointer items-center gap-3 rounded-lg border p-3">
+                            <Checkbox bind:checked={connectGmail} />
+                            <img src={gmailLogo} alt="Gmail" class="h-5 w-5" />
+                            <span class="font-medium">Gmail</span>
+                        </label>
+                    </div>
+                </div>
+
                 <div class="space-y-2">
                     <Label for="service-account-json">Service Account JSON Key</Label>
                     <Textarea

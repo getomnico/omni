@@ -10,118 +10,22 @@
     import { Button } from '$lib/components/ui/button'
     import type { PageProps } from './$types'
     import googleLogo from '$lib/images/icons/google.svg'
-    import { Globe, HardDrive } from '@lucide/svelte'
+    import { Globe, HardDrive, Mail } from '@lucide/svelte'
     import GoogleOAuthSetup from '$lib/components/google-oauth-setup.svelte'
     import { getSourceIconPath } from '$lib/utils/icons'
     import { enhance } from '$app/forms'
-    import { SourceType } from '$lib/types'
-    import { toast } from 'svelte-sonner'
-    import { invalidateAll } from '$app/navigation'
-    import { onMount, onDestroy } from 'svelte'
-    import type { SyncRun } from '$lib/server/db/schema'
 
     let { data }: PageProps = $props()
 
     let showGoogleOAuthSetup = $state(false)
 
-    let hasGoogleSource = $derived(
-        data.connectedSources.some(
-            (s) => s.sourceType === 'google_drive' || s.sourceType === 'gmail',
-        ),
-    )
-
-    type SourceId = string
-    let latestSyncRuns = $state<Map<SourceId, SyncRun>>(data.latestSyncRuns)
-    let documentCounts = $state<Record<SourceId, number>>({})
-    let eventSource = $state<EventSource | null>(null)
-
-    $effect(() => {
-        latestSyncRuns = data.latestSyncRuns
-    })
-
-    onMount(() => {
-        eventSource = new EventSource('/api/indexing/status')
-        eventSource.onmessage = (event) => {
-            try {
-                const statusData = JSON.parse(event.data)
-                if (statusData.overall?.latestSyncRuns) {
-                    const updated = new Map(latestSyncRuns)
-                    statusData.overall.latestSyncRuns.forEach((sync: any) => {
-                        if (sync.sourceId) {
-                            updated.set(sync.sourceId, sync)
-                        }
-                    })
-                    latestSyncRuns = updated
-                }
-                if (statusData.overall?.documentCounts) {
-                    documentCounts = statusData.overall.documentCounts
-                }
-            } catch (error) {
-                console.error('Error parsing SSE data:', error)
-            }
-        }
-
-        eventSource.onerror = (error) => {
-            console.error('EventSource error:', error)
-        }
-    })
-
-    onDestroy(() => {
-        if (eventSource) {
-            eventSource.close()
-        }
-    })
-
-    async function handleSync(sourceId: string) {
-        try {
-            const response = await fetch(`/api/sources/${sourceId}/sync`, {
-                method: 'POST',
-            })
-            if (!response.ok) {
-                toast.error('Failed to trigger sync')
-            } else {
-                toast.success('Sync triggered successfully')
-                await invalidateAll()
-            }
-        } catch (error) {
-            console.error('Error triggering sync:', error)
-            toast.error('Failed to trigger sync')
-        }
-    }
+    let hasGoogleDrive = $derived(data.userSources.some((s) => s.sourceType === 'google_drive'))
+    let hasGmail = $derived(data.userSources.some((s) => s.sourceType === 'gmail'))
+    let hasAllGoogleSources = $derived(hasGoogleDrive && hasGmail)
 
     function handleGoogleOAuthSetupSuccess() {
         showGoogleOAuthSetup = false
         window.location.reload()
-    }
-
-    function getSourceNoun(sourceType: SourceType): string {
-        switch (sourceType) {
-            case SourceType.GOOGLE_DRIVE:
-                return 'documents'
-            case SourceType.GMAIL:
-                return 'threads'
-            case SourceType.SLACK:
-                return 'messages'
-            case SourceType.CONFLUENCE:
-                return 'pages'
-            case SourceType.JIRA:
-                return 'issues'
-            case SourceType.HUBSPOT:
-                return 'records'
-            case SourceType.FIREFLIES:
-                return 'transcripts'
-            case SourceType.WEB:
-                return 'pages'
-            case SourceType.LOCAL_FILES:
-                return 'files'
-            default:
-                return 'documents'
-        }
-    }
-
-    function formatDate(date: Date | null) {
-        if (!date) return 'Never'
-        return new Date(date).toLocaleString()
     }
 
     function getStatusColor(isActive: boolean) {
@@ -143,16 +47,40 @@
             <p class="text-muted-foreground mt-2">Apps that are currently connected with Omni</p>
         </div>
 
-        <!-- Connected Sources Section -->
-        {#if data.connectedSources.length > 0}
+        <!-- Org-wide Sources -->
+        {#if data.orgWideSources.length > 0}
             <div class="space-y-4">
-                <div class="space-y-2">
-                    {#each data.connectedSources as source}
-                        {@const noun = getSourceNoun(source.sourceType as SourceType)}
-                        {@const sync = latestSyncRuns.get(source.id)}
-                        <div
-                            class="flex items-center justify-between gap-4 rounded-lg border px-4 py-3">
-                            <div class="flex flex-1 items-start gap-3">
+                <h2 class="text-xl font-semibold">Organization</h2>
+                <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                    {#each data.orgWideSources as source}
+                        <div class="flex items-center gap-3 rounded-lg border p-4">
+                            {#if getSourceIconPath(source.sourceType)}
+                                <img
+                                    src={getSourceIconPath(source.sourceType)}
+                                    alt={source.name}
+                                    class="h-6 w-6" />
+                            {:else if source.sourceType === 'web'}
+                                <Globe class="text-muted-foreground h-6 w-6" />
+                            {:else if source.sourceType === 'local_files'}
+                                <HardDrive class="text-muted-foreground h-6 w-6" />
+                            {:else if source.sourceType === 'imap'}
+                                <Mail class="text-muted-foreground h-6 w-6" />
+                            {/if}
+                            <span class="truncate font-medium">{source.name}</span>
+                        </div>
+                    {/each}
+                </div>
+            </div>
+        {/if}
+
+        <!-- User's Own Sources -->
+        {#if data.userSources.length > 0}
+            <div class="space-y-4">
+                <h2 class="text-xl font-semibold">Your Connections</h2>
+                <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                    {#each data.userSources as source}
+                        <div class="flex flex-col gap-3 rounded-lg border p-4">
+                            <div class="flex items-center gap-3">
                                 {#if getSourceIconPath(source.sourceType)}
                                     <img
                                         src={getSourceIconPath(source.sourceType)}
@@ -162,68 +90,28 @@
                                     <Globe class="text-muted-foreground h-6 w-6" />
                                 {:else if source.sourceType === 'local_files'}
                                     <HardDrive class="text-muted-foreground h-6 w-6" />
+                                {:else if source.sourceType === 'imap'}
+                                    <Mail class="text-muted-foreground h-6 w-6" />
                                 {/if}
-                                <div class="flex flex-col gap-0.5">
-                                    <div class="flex items-center gap-2">
-                                        <span class="truncate overflow-hidden font-medium"
-                                            >{source.name}</span>
-                                        <span
-                                            class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(source.isActive)}`}>
-                                            {source.isActive ? 'Enabled' : 'Disabled'}
-                                        </span>
-                                    </div>
-                                    <div
-                                        class="text-muted-foreground flex items-center gap-1 text-xs">
-                                        {#if sync?.status === 'running'}
-                                            {#if sync.documentsScanned && sync.documentsScanned > 0}
-                                                <span
-                                                    >Syncing... {sync.documentsScanned.toLocaleString()}
-                                                    {noun} scanned{#if sync.documentsUpdated && sync.documentsUpdated > 0},
-                                                        {sync.documentsUpdated.toLocaleString()} updated{/if}</span>
-                                            {:else}
-                                                <span>Syncing...</span>
-                                            {/if}
-                                        {:else}
-                                            <span
-                                                >Last sync: {formatDate(
-                                                    sync?.completedAt ?? null,
-                                                )}</span>
-                                        {/if}
-                                        {#if documentCounts[source.id]}
-                                            <span class="text-muted-foreground">&middot;</span>
-                                            <span
-                                                >{documentCounts[source.id].toLocaleString()}
-                                                {noun} indexed</span>
-                                        {/if}
-                                    </div>
-                                </div>
+                                <span class="truncate font-medium">{source.name}</span>
+                                <span
+                                    class={`ml-auto inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(source.isActive)}`}>
+                                    {source.isActive ? 'Enabled' : 'Disabled'}
+                                </span>
                             </div>
-                            <div class="flex gap-2">
-                                {#if source.isActive}
-                                    <Button
-                                        variant="outline"
-                                        size="sm"
-                                        class="cursor-pointer"
-                                        disabled={latestSyncRuns.get(source.id)?.status ===
-                                            'running'}
-                                        onclick={() => handleSync(source.id)}>
-                                        Sync
-                                    </Button>
-                                {/if}
-                                <form
-                                    method="POST"
-                                    action="?/{source.isActive ? 'disable' : 'enable'}"
-                                    use:enhance>
-                                    <input type="hidden" name="sourceId" value={source.id} />
-                                    <Button
-                                        type="submit"
-                                        variant={source.isActive ? 'outline' : 'default'}
-                                        size="sm"
-                                        class="cursor-pointer">
-                                        {source.isActive ? 'Disable' : 'Enable'}
-                                    </Button>
-                                </form>
-                            </div>
+                            <form
+                                method="POST"
+                                action="?/{source.isActive ? 'disable' : 'enable'}"
+                                use:enhance>
+                                <input type="hidden" name="sourceId" value={source.id} />
+                                <Button
+                                    type="submit"
+                                    variant={source.isActive ? 'outline' : 'default'}
+                                    size="sm"
+                                    class="w-full cursor-pointer">
+                                    {source.isActive ? 'Disable' : 'Enable'}
+                                </Button>
+                            </form>
                         </div>
                     {/each}
                 </div>
@@ -254,7 +142,7 @@
                         </CardHeader>
                         <CardContent class="flex-1" />
                         <CardFooter>
-                            {#if hasGoogleSource}
+                            {#if hasAllGoogleSources}
                                 <span class="text-sm font-medium text-green-500"> Connected </span>
                             {:else}
                                 <Button
@@ -268,7 +156,7 @@
                     </Card>
                 </div>
             </div>
-        {:else if data.connectedSources.length === 0}
+        {:else if data.orgWideSources.length === 0 && data.userSources.length === 0}
             <div class="py-12 text-center">
                 <p class="text-muted-foreground text-sm">
                     No integrations are available yet. Contact your administrator to set up
@@ -281,5 +169,6 @@
 
 <GoogleOAuthSetup
     bind:open={showGoogleOAuthSetup}
+    connectedSourceTypes={data.userSources.map((s) => s.sourceType)}
     onSuccess={handleGoogleOAuthSetupSuccess}
     onCancel={() => (showGoogleOAuthSetup = false)} />

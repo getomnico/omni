@@ -1,17 +1,27 @@
 <script lang="ts">
     import * as Dialog from '$lib/components/ui/dialog'
     import { Button } from '$lib/components/ui/button'
+    import { Checkbox } from '$lib/components/ui/checkbox'
     import { toast } from 'svelte-sonner'
     import googleDriveLogo from '$lib/images/icons/google-drive.svg'
     import gmailLogo from '$lib/images/icons/gmail.svg'
 
     interface Props {
         open: boolean
+        connectedSourceTypes?: string[]
         onSuccess?: () => void
         onCancel?: () => void
     }
 
-    let { open = $bindable(false), onSuccess, onCancel }: Props = $props()
+    let {
+        open = $bindable(false),
+        connectedSourceTypes = [],
+        onSuccess,
+        onCancel,
+    }: Props = $props()
+
+    let driveAlreadyConnected = $derived(connectedSourceTypes.includes('google_drive'))
+    let gmailAlreadyConnected = $derived(connectedSourceTypes.includes('gmail'))
 
     let connectDrive = $state(true)
     let connectGmail = $state(true)
@@ -36,9 +46,7 @@
         open = false
         connectDrive = true
         connectGmail = true
-        if (onCancel) {
-            onCancel()
-        }
+        onCancel?.()
     }
 </script>
 
@@ -54,11 +62,21 @@
 
         <div class="space-y-4 py-4">
             <label
-                class="hover:bg-muted/50 flex cursor-pointer items-center gap-3 rounded-lg border p-3">
-                <input type="checkbox" bind:checked={connectDrive} class="h-4 w-4 rounded" />
+                class="flex items-center gap-3 rounded-lg border p-3 {driveAlreadyConnected
+                    ? 'opacity-60'
+                    : 'hover:bg-muted/50 cursor-pointer'}">
+                <Checkbox bind:checked={connectDrive} disabled={driveAlreadyConnected} />
                 <img src={googleDriveLogo} alt="Google Drive" class="h-5 w-5" />
-                <div>
-                    <div class="font-medium">Google Drive</div>
+                <div class="flex-1">
+                    <div class="flex items-center gap-2">
+                        <span class="font-medium">Google Drive</span>
+                        {#if driveAlreadyConnected}
+                            <span
+                                class="inline-flex items-center rounded-full bg-green-100 px-1.5 py-0.5 text-[10px] font-medium text-green-800 dark:bg-green-900/20 dark:text-green-400">
+                                Already connected
+                            </span>
+                        {/if}
+                    </div>
                     <div class="text-muted-foreground text-sm">
                         Index your Drive documents, spreadsheets, and presentations
                     </div>
@@ -66,11 +84,21 @@
             </label>
 
             <label
-                class="hover:bg-muted/50 flex cursor-pointer items-center gap-3 rounded-lg border p-3">
-                <input type="checkbox" bind:checked={connectGmail} class="h-4 w-4 rounded" />
+                class="flex items-center gap-3 rounded-lg border p-3 {gmailAlreadyConnected
+                    ? 'opacity-60'
+                    : 'hover:bg-muted/50 cursor-pointer'}">
+                <Checkbox bind:checked={connectGmail} disabled={gmailAlreadyConnected} />
                 <img src={gmailLogo} alt="Gmail" class="h-5 w-5" />
-                <div>
-                    <div class="font-medium">Gmail</div>
+                <div class="flex-1">
+                    <div class="flex items-center gap-2">
+                        <span class="font-medium">Gmail</span>
+                        {#if gmailAlreadyConnected}
+                            <span
+                                class="inline-flex items-center rounded-full bg-green-100 px-1.5 py-0.5 text-[10px] font-medium text-green-800 dark:bg-green-900/20 dark:text-green-400">
+                                Already connected
+                            </span>
+                        {/if}
+                    </div>
                     <div class="text-muted-foreground text-sm">
                         Index your email threads and conversations
                     </div>
@@ -86,7 +114,9 @@
             <Button variant="outline" onclick={handleCancel} class="cursor-pointer">Cancel</Button>
             <Button
                 onclick={handleConnect}
-                disabled={isSubmitting || (!connectDrive && !connectGmail)}
+                disabled={isSubmitting ||
+                    (!connectDrive && !connectGmail) ||
+                    (driveAlreadyConnected && gmailAlreadyConnected)}
                 class="cursor-pointer">
                 {isSubmitting ? 'Connecting...' : 'Connect with Google'}
             </Button>

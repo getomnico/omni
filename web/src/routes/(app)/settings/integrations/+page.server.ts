@@ -2,7 +2,7 @@ import { redirect, fail } from '@sveltejs/kit'
 import { getConnectorConfigPublic } from '$lib/server/db/connector-configs'
 import { db } from '$lib/server/db'
 import { sources } from '$lib/server/db/schema'
-import { eq, desc, and } from 'drizzle-orm'
+import { eq, and } from 'drizzle-orm'
 import { updateSourceById } from '$lib/server/db/sources'
 import { sourcesRepository } from '$lib/server/repositories/sources'
 import type { PageServerLoad, Actions } from './$types'
@@ -18,22 +18,15 @@ export const load: PageServerLoad = async ({ locals }) => {
 
     const googleConnectorConfig = await getConnectorConfigPublic('google')
 
-    // Load all sources created by the current user (active + inactive)
     const userSources = await sourcesRepository.getByUserId(locals.user.id)
-
-    // Get latest sync runs and filter to only user's sources
-    const allSyncRuns = await sourcesRepository.getLatestSyncRuns()
-    const userSourceIds = new Set(userSources.map((s) => s.id))
-    const userSyncRuns = new Map(
-        [...allSyncRuns.entries()].filter(([sourceId]) => userSourceIds.has(sourceId)),
-    )
+    const orgWideSources = await sourcesRepository.getOrgWide()
 
     return {
         googleOAuthConfigured: !!(
             googleConnectorConfig && googleConnectorConfig.config.oauth_client_id
         ),
-        connectedSources: userSources,
-        latestSyncRuns: userSyncRuns,
+        orgWideSources,
+        userSources,
     }
 }
 
