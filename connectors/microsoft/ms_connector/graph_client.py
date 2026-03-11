@@ -212,6 +212,19 @@ class GraphClient:
             users.append(user)
         return users
 
+    async def search_users(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
+        """Search users by displayName or mail using $filter with startsWith."""
+        filter_expr = f"startswith(displayName,'{query}') or startswith(mail,'{query}')"
+        data = await self.get(
+            "/users",
+            params={
+                "$filter": filter_expr,
+                "$select": "id,displayName,mail,userPrincipalName",
+                "$top": str(limit),
+            },
+        )
+        return data.get("value", [])
+
     async def test_connection(self) -> None:
         """Validate credentials by calling /organization."""
         await self.get("/organization", params={"$select": "id,displayName"})

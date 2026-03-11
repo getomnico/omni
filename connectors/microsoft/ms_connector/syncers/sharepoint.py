@@ -28,6 +28,7 @@ class SharePointSyncer:
         client: GraphClient,
         ctx: SyncContext,
         state: dict[str, Any],
+        source_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         delta_tokens: dict[str, str] = state.get("delta_tokens", {})
         new_tokens: dict[str, str] = {}

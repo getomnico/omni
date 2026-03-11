@@ -28,6 +28,7 @@
     import HubspotConnectorSetup from '$lib/components/hubspot-connector-setup.svelte'
     import FirefliesConnectorSetup from '$lib/components/fireflies-connector-setup.svelte'
     import ImapConnectorSetup from '$lib/components/imap-connector-setup.svelte'
+    import MicrosoftConnectorSetup from '$lib/components/microsoft-connector-setup.svelte'
     import WebConnectorSetupDialog from '$lib/components/web-connector-setup-dialog.svelte'
     import FilesystemConnectorSetupDialog from '$lib/components/filesystem-connector-setup-dialog.svelte'
     import { SourceType } from '$lib/types'
@@ -106,6 +107,7 @@
     let showHubspotSetup = $state(false)
     let showFirefliesSetup = $state(false)
     let showImapSetup = $state(false)
+    let showMicrosoftSetup = $state(false)
 
     function handleGoogleOAuthSetupSuccess() {
         showGoogleOAuthSetup = false
@@ -129,6 +131,8 @@
             showFirefliesSetup = true
         } else if (integrationId === 'imap') {
             showImapSetup = true
+        } else if (integrationId === 'microsoft') {
+            showMicrosoftSetup = true
         }
     }
 
@@ -172,6 +176,11 @@
         window.location.reload()
     }
 
+    function handleMicrosoftSetupSuccess() {
+        showMicrosoftSetup = false
+        window.location.reload()
+    }
+
     function getSourceIcon(sourceType: SourceType) {
         switch (sourceType) {
             case SourceType.GOOGLE_DRIVE:
@@ -188,6 +197,11 @@
                 return hubspotLogo
             case SourceType.FIREFLIES:
                 return firefliesLogo
+            case SourceType.ONE_DRIVE:
+            case SourceType.OUTLOOK:
+            case SourceType.OUTLOOK_CALENDAR:
+            case SourceType.SHARE_POINT:
+                return microsoftLogo
             case SourceType.WEB:
                 return null
             case SourceType.LOCAL_FILES:
@@ -247,6 +261,14 @@
                 return 'transcripts'
             case SourceType.IMAP:
                 return 'emails'
+            case SourceType.ONE_DRIVE:
+                return 'files'
+            case SourceType.OUTLOOK:
+                return 'emails'
+            case SourceType.OUTLOOK_CALENDAR:
+                return 'events'
+            case SourceType.SHARE_POINT:
+                return 'documents'
             case SourceType.WEB:
                 return 'pages'
             case SourceType.LOCAL_FILES:
@@ -278,6 +300,11 @@
                 return `/admin/settings/integrations/web/${sourceId}`
             case SourceType.LOCAL_FILES:
                 return `/admin/settings/integrations/filesystem/${sourceId}`
+            case SourceType.ONE_DRIVE:
+            case SourceType.OUTLOOK:
+            case SourceType.OUTLOOK_CALENDAR:
+            case SourceType.SHARE_POINT:
+                return `/admin/settings/integrations/microsoft/${sourceId}`
             default:
                 return '#'
         }
@@ -425,24 +452,20 @@
                         </CardHeader>
                         <CardContent class="flex-1" />
                         <CardFooter class="flex gap-2">
-                            {#if integration.comingSoon}
-                                <Button size="sm" disabled>Coming Soon</Button>
-                            {:else}
+                            <Button
+                                size="sm"
+                                class="cursor-pointer"
+                                onclick={() => handleConnect(integration.id)}>
+                                Connect
+                            </Button>
+                            {#if integration.id === 'google' && data.googleOAuthConfigured}
                                 <Button
                                     size="sm"
+                                    variant="outline"
                                     class="cursor-pointer"
-                                    onclick={() => handleConnect(integration.id)}>
-                                    Connect
+                                    onclick={() => (showGoogleOAuthSetup = true)}>
+                                    Connect with OAuth
                                 </Button>
-                                {#if integration.id === 'google' && data.googleOAuthConfigured}
-                                    <Button
-                                        size="sm"
-                                        variant="outline"
-                                        class="cursor-pointer"
-                                        onclick={() => (showGoogleOAuthSetup = true)}>
-                                        Connect with OAuth
-                                    </Button>
-                                {/if}
                             {/if}
                         </CardFooter>
                     </Card>
@@ -497,3 +520,8 @@
     bind:open={showImapSetup}
     onSuccess={handleImapSetupSuccess}
     onCancel={() => (showImapSetup = false)} />
+
+<MicrosoftConnectorSetup
+    bind:open={showMicrosoftSetup}
+    onSuccess={handleMicrosoftSetupSuccess}
+    onCancel={() => (showMicrosoftSetup = false)} />

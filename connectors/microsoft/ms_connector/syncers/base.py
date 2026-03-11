@@ -11,6 +11,27 @@ from ..graph_client import GraphClient
 logger = logging.getLogger(__name__)
 
 
+def _should_index_user(user: dict[str, Any], source_config: dict[str, Any]) -> bool:
+    """Check if a user should be indexed based on user filter settings."""
+    mode = source_config.get("user_filter_mode", "all")
+    if mode == "all":
+        return True
+
+    user_email = (user.get("mail") or user.get("userPrincipalName") or "").lower()
+    if not user_email:
+        return False
+
+    if mode == "whitelist":
+        whitelist = source_config.get("user_whitelist") or []
+        return user_email in [e.lower() for e in whitelist]
+
+    if mode == "blacklist":
+        blacklist = source_config.get("user_blacklist") or []
+        return user_email not in [e.lower() for e in blacklist]
+
+    return True
+
+
 class BaseSyncer(abc.ABC):
     """Abstract syncer that iterates over users and runs delta queries."""
 
@@ -34,13 +55,18 @@ class BaseSyncer(abc.ABC):
         client: GraphClient,
         ctx: SyncContext,
         state: dict[str, Any],
+        source_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Run sync across all users. Returns updated state dict."""
+        source_config = source_config or {}
         delta_tokens: dict[str, str] = state.get("delta_tokens", {})
         new_tokens: dict[str, str] = {}
 
         users = await client.list_users()
         logger.info("[%s] Syncing across %d users", self.name, len(users))
+
+        users = [u for u in users if _should_index_user(u, source_config)]
+        logger.info("[%s] %d users after filtering", self.name, len(users))
 
         for user in users:
             if ctx.is_cancelled():

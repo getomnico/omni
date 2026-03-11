@@ -692,6 +692,9 @@ pub async fn sdk_get_source_sync_config(
         credentials,
         connector_state: source.connector_state,
         source_type: source.source_type,
+        user_filter_mode: source.user_filter_mode,
+        user_whitelist: source.user_whitelist,
+        user_blacklist: source.user_blacklist,
     }))
 }
 

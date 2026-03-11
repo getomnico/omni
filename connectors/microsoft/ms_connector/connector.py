@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from omni_connector import Connector, SyncContext
+from omni_connector.models import ActionDefinition, ActionParameter, ActionResponse
 
 from .auth import MSGraphAuth
 from .graph_client import AuthenticationError, GraphAPIError, GraphClient
@@ -41,6 +42,46 @@ class MicrosoftConnector(Connector):
     @property
     def sync_modes(self) -> list[str]:
         return ["full", "incremental"]
+
+    @property
+    def actions(self) -> list[ActionDefinition]:
+        return [
+            ActionDefinition(
+                name="search_users",
+                description="Search Microsoft 365 users by name or email",
+                parameters={
+                    "query": ActionParameter(
+                        type="string", required=True, description="Search query"
+                    ),
+                },
+            )
+        ]
+
+    async def execute_action(
+        self,
+        action: str,
+        params: dict[str, Any],
+        credentials: dict[str, Any],
+    ) -> ActionResponse:
+        if action != "search_users":
+            return ActionResponse.not_supported(action)
+
+        query = params.get("query", "").strip()
+        if not query:
+            return ActionResponse.success({"users": []})
+
+        try:
+            raw_creds = credentials.get("credentials", credentials)
+            auth = MSGraphAuth.from_credentials(raw_creds)
+            client = GraphClient(auth)
+            try:
+                users = await client.search_users(query, limit=20)
+                return ActionResponse.success({"users": users})
+            finally:
+                await client.close()
+        except Exception as e:
+            logger.exception("search_users action failed")
+            return ActionResponse.failure(str(e))
 
     async def sync(
         self,
@@ -82,7 +123,9 @@ class MicrosoftConnector(Connector):
         logger.info("Starting Microsoft sync (syncer=%s)", syncer_key)
 
         try:
-            result_state = await syncer.sync(client, ctx, state)
+            result_state = await syncer.sync(
+                client, ctx, state, source_config=source_config
+            )
             await ctx.complete(new_state=result_state)
             logger.info(
                 "Sync completed: %d scanned, %d emitted",
