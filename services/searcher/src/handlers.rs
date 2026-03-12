@@ -127,6 +127,7 @@ pub async fn search(
         state.redis_client,
         state.ai_client,
         state.config,
+        state.people_cache,
     )
     .await?;
 
@@ -175,6 +176,7 @@ pub async fn recent_searches(
         state.redis_client,
         state.ai_client,
         state.config,
+        state.people_cache,
     )
     .await?;
 
@@ -194,6 +196,7 @@ pub async fn ai_answer(
         state.redis_client.clone(),
         state.ai_client.clone(),
         state.config.clone(),
+        state.people_cache.clone(),
     )
     .await
     .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;

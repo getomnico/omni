@@ -6,7 +6,7 @@ use crate::{
 use serde_json::Value as JsonValue;
 use sqlx::{FromRow, PgPool};
 use std::collections::{HashMap, HashSet};
-use time;
+use time::{self, OffsetDateTime};
 use tracing::debug;
 
 #[derive(FromRow)]
@@ -171,6 +171,27 @@ impl DocumentRepository {
         };
 
         Ok(source_ids)
+    }
+
+    pub async fn fetch_all_permission_users(&self) -> Result<Vec<String>, DatabaseError> {
+        let users: Vec<String> = sqlx::query_scalar(
+            r#"SELECT DISTINCT lower(elem)
+               FROM documents, jsonb_array_elements_text(permissions->'users') AS elem
+               WHERE permissions->'users' IS NOT NULL"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(users)
+    }
+
+    pub async fn fetch_max_last_indexed_at(&self) -> Result<Option<OffsetDateTime>, DatabaseError> {
+        let max_ts: Option<OffsetDateTime> =
+            sqlx::query_scalar(r#"SELECT MAX(last_indexed_at) FROM documents"#)
+                .fetch_one(&self.pool)
+                .await?;
+
+        Ok(max_ts)
     }
 
     fn build_common_filters(

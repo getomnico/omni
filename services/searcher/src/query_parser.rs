@@ -1,3 +1,4 @@
+use crate::people_cache::PeopleCache;
 use regex::Regex;
 use serde_json::Value as JsonValue;
 use shared::models::{AttributeFilter, DateFilter};
@@ -16,7 +17,7 @@ pub struct ParsedQuery {
     pub person_terms: Vec<String>,
 }
 
-pub fn parse(query: &str) -> ParsedQuery {
+pub async fn parse(query: &str, people_cache: &PeopleCache) -> ParsedQuery {
     let mut result = ParsedQuery::default();
     let mut remaining = query.to_string();
 
@@ -27,9 +28,9 @@ pub fn parse(query: &str) -> ParsedQuery {
     remaining = extract_natural_dates(&remaining, &mut result);
 
     // Phase 3: Extract natural language patterns (from/by/in)
-    remaining = extract_natural_patterns(&remaining, &mut result);
+    remaining = extract_natural_patterns(&remaining, &mut result, people_cache).await;
 
-    // Phase 4: Check if first word is a known source alias
+    // Phase 4: Check if any word is a known source alias
     remaining = extract_source_word(&remaining, &mut result);
 
     // Clean up extra whitespace
@@ -190,25 +191,32 @@ fn extract_natural_dates(query: &str, result: &mut ParsedQuery) -> String {
     remaining
 }
 
-fn extract_natural_patterns(query: &str, result: &mut ParsedQuery) -> String {
+async fn extract_natural_patterns(
+    query: &str,
+    result: &mut ParsedQuery,
+    people_cache: &PeopleCache,
+) -> String {
     let mut remaining = query.to_string();
 
     // "from <word>" or "emails from <word>"
     let from_re = Regex::new(r"(?i)\b(?:emails?\s+)?from\s+(\w+)\b").unwrap();
     if let Some(cap) = from_re.captures(&remaining) {
         let value = cap[1].to_string();
-        // Don't treat "from" followed by a known non-person word
-        merge_attribute_filter(&mut result.attribute_filters, "sender", &value);
-        result.person_terms.push(value);
-        remaining = remaining.replacen(cap.get(0).unwrap().as_str(), "", 1);
+        if people_cache.contains(&value).await {
+            merge_attribute_filter(&mut result.attribute_filters, "sender", &value);
+            result.person_terms.push(value);
+            remaining = remaining.replacen(cap.get(0).unwrap().as_str(), "", 1);
+        }
     }
 
     // "by <word>"
     let by_re = Regex::new(r"(?i)\b(?:docs?\s+)?by\s+(\w+)\b").unwrap();
     if let Some(cap) = by_re.captures(&remaining) {
         let value = cap[1].to_string();
-        result.person_terms.push(value);
-        remaining = remaining.replacen(cap.get(0).unwrap().as_str(), "", 1);
+        if people_cache.contains(&value).await {
+            result.person_terms.push(value);
+            remaining = remaining.replacen(cap.get(0).unwrap().as_str(), "", 1);
+        }
     }
 
     // "in <source>" — only match known source aliases
@@ -365,10 +373,33 @@ fn parse_date_value(value: &str, is_before: bool) -> Option<OffsetDateTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::people_cache::PeopleCache;
+    use std::collections::HashSet;
+
+    fn empty_cache() -> PeopleCache {
+        PeopleCache::with_people(HashSet::new())
+    }
+
+    fn cache_with(names: &[&str]) -> PeopleCache {
+        PeopleCache::with_people(names.iter().map(|s| s.to_string()).collect())
+    }
+
+    fn test_parse(query: &str) -> ParsedQuery {
+        let cache = empty_cache();
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(parse(query, &cache))
+    }
+
+    fn test_parse_with_cache(query: &str, cache: &PeopleCache) -> ParsedQuery {
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(parse(query, cache))
+    }
 
     #[test]
     fn test_from_operator() {
-        let parsed = parse("from:sarah@co.com report");
+        let parsed = test_parse("from:sarah@co.com report");
         assert_eq!(parsed.cleaned_query, "report");
         assert!(parsed.attribute_filters.contains_key("sender"));
         assert!(parsed.person_terms.contains(&"sarah@co.com".to_string()));
@@ -376,14 +407,14 @@ mod tests {
 
     #[test]
     fn test_by_operator() {
-        let parsed = parse("by:sarah docs");
+        let parsed = test_parse("by:sarah docs");
         assert_eq!(parsed.cleaned_query, "docs");
         assert!(parsed.person_terms.contains(&"sarah".to_string()));
     }
 
     #[test]
     fn test_in_operator() {
-        let parsed = parse("in:drive meeting notes");
+        let parsed = test_parse("in:drive meeting notes");
         assert_eq!(parsed.cleaned_query, "meeting notes");
         assert_eq!(parsed.source_types, vec![SourceType::GoogleDrive]);
     }
@@ -391,27 +422,27 @@ mod tests {
     #[test]
     fn test_in_operator_gmail_aliases() {
         for alias in &["gmail", "email", "mail"] {
-            let parsed = parse(&format!("in:{} invoice", alias));
+            let parsed = test_parse(&format!("in:{} invoice", alias));
             assert_eq!(parsed.source_types, vec![SourceType::Gmail]);
         }
     }
 
     #[test]
     fn test_type_operator() {
-        let parsed = parse("type:spreadsheet budget");
+        let parsed = test_parse("type:spreadsheet budget");
         assert_eq!(parsed.cleaned_query, "budget");
         assert_eq!(parsed.content_types, vec!["spreadsheet".to_string()]);
     }
 
     #[test]
     fn test_type_operator_pdf() {
-        let parsed = parse("type:pdf invoice");
+        let parsed = test_parse("type:pdf invoice");
         assert_eq!(parsed.content_types, vec!["pdf".to_string()]);
     }
 
     #[test]
     fn test_type_operator_email() {
-        let parsed = parse("type:email invoice");
+        let parsed = test_parse("type:email invoice");
         assert_eq!(
             parsed.content_types,
             vec!["email_thread".to_string(), "email".to_string()]
@@ -420,26 +451,26 @@ mod tests {
 
     #[test]
     fn test_type_operator_meeting() {
-        let parsed = parse("type:meeting notes");
+        let parsed = test_parse("type:meeting notes");
         assert_eq!(parsed.content_types, vec!["meeting_transcript".to_string()]);
     }
 
     #[test]
     fn test_channel_operator() {
-        let parsed = parse("channel:eng standup");
+        let parsed = test_parse("channel:eng standup");
         assert_eq!(parsed.cleaned_query, "standup");
         assert!(parsed.attribute_filters.contains_key("channel_name"));
     }
 
     #[test]
     fn test_status_operator() {
-        let parsed = parse("status:done task");
+        let parsed = test_parse("status:done task");
         assert!(parsed.attribute_filters.contains_key("status"));
     }
 
     #[test]
     fn test_before_after_operators() {
-        let parsed = parse("before:2024-06-01 after:2024-01-01 report");
+        let parsed = test_parse("before:2024-06-01 after:2024-01-01 report");
         assert_eq!(parsed.cleaned_query, "report");
         let df = parsed.date_filter.unwrap();
         assert!(df.before.is_some());
@@ -448,7 +479,7 @@ mod tests {
 
     #[test]
     fn test_before_year_only() {
-        let parsed = parse("before:2024 report");
+        let parsed = test_parse("before:2024 report");
         let df = parsed.date_filter.unwrap();
         let before = df.before.unwrap();
         assert_eq!(before.year(), 2024);
@@ -458,7 +489,7 @@ mod tests {
 
     #[test]
     fn test_after_year_only() {
-        let parsed = parse("after:2024 report");
+        let parsed = test_parse("after:2024 report");
         let df = parsed.date_filter.unwrap();
         let after = df.after.unwrap();
         assert_eq!(after.year(), 2024);
@@ -468,21 +499,21 @@ mod tests {
 
     #[test]
     fn test_quoted_values() {
-        let parsed = parse(r#"from:"Sarah Jones" report"#);
+        let parsed = test_parse(r#"from:"Sarah Jones" report"#);
         assert_eq!(parsed.cleaned_query, "report");
         assert!(parsed.person_terms.contains(&"Sarah Jones".to_string()));
     }
 
     #[test]
     fn test_unknown_operator_passes_through() {
-        let parsed = parse("error:connection timeout");
+        let parsed = test_parse("error:connection timeout");
         assert_eq!(parsed.cleaned_query, "error:connection timeout");
         assert!(parsed.attribute_filters.is_empty());
     }
 
     #[test]
     fn test_multiple_labels_merge_to_anyof() {
-        let parsed = parse("label:bug label:urgent");
+        let parsed = test_parse("label:bug label:urgent");
         match parsed.attribute_filters.get("labels") {
             Some(AttributeFilter::AnyOf(values)) => {
                 assert_eq!(values.len(), 2);
@@ -493,43 +524,59 @@ mod tests {
 
     #[test]
     fn test_empty_query_after_extraction() {
-        let parsed = parse("from:sarah");
+        let parsed = test_parse("from:sarah");
         assert_eq!(parsed.cleaned_query, "");
         assert!(!parsed.attribute_filters.is_empty());
     }
 
     #[test]
     fn test_natural_language_from() {
-        let parsed = parse("emails from john");
+        let cache = cache_with(&["john"]);
+        let parsed = test_parse_with_cache("emails from john", &cache);
         assert_eq!(parsed.cleaned_query, "");
         assert!(parsed.person_terms.contains(&"john".to_string()));
         assert!(parsed.attribute_filters.contains_key("sender"));
     }
 
     #[test]
+    fn test_natural_language_from_unknown_person() {
+        let parsed = test_parse("seashells from the seashore");
+        assert_eq!(parsed.cleaned_query, "seashells from the seashore");
+        assert!(parsed.person_terms.is_empty());
+    }
+
+    #[test]
     fn test_natural_language_by() {
-        let parsed = parse("docs by sarah");
+        let cache = cache_with(&["sarah"]);
+        let parsed = test_parse_with_cache("docs by sarah", &cache);
         assert_eq!(parsed.cleaned_query, "");
         assert!(parsed.person_terms.contains(&"sarah".to_string()));
     }
 
     #[test]
+    fn test_natural_language_by_unknown_person() {
+        let parsed = test_parse("seashells by the seashore");
+        assert_eq!(parsed.cleaned_query, "seashells by the seashore");
+        assert!(parsed.person_terms.is_empty());
+    }
+
+    #[test]
     fn test_natural_language_in_source() {
-        let parsed = parse("in slack standup");
+        let parsed = test_parse("in slack standup");
         assert_eq!(parsed.cleaned_query, "standup");
         assert_eq!(parsed.source_types, vec![SourceType::Slack]);
     }
 
     #[test]
     fn test_natural_in_only_known_sources() {
-        let parsed = parse("changes in production");
+        let parsed = test_parse("changes in production");
         assert_eq!(parsed.cleaned_query, "changes in production");
         assert!(parsed.source_types.is_empty());
     }
 
     #[test]
     fn test_source_word_extraction() {
-        let parsed = parse("standup slack");
+        let parsed = test_parse("standup slack");
         assert_eq!(parsed.cleaned_query, "standup");
         assert!(parsed.source_types.is_empty());
         assert_eq!(parsed.boosted_source_types, vec![SourceType::Slack]);
@@ -537,14 +584,14 @@ mod tests {
 
     #[test]
     fn test_source_word_alone_not_extracted() {
-        let parsed = parse("slack");
+        let parsed = test_parse("slack");
         assert_eq!(parsed.cleaned_query, "slack");
         assert!(parsed.source_types.is_empty());
     }
 
     #[test]
     fn test_natural_date_last_week() {
-        let parsed = parse("budget last week");
+        let parsed = test_parse("budget last week");
         assert_eq!(parsed.cleaned_query, "budget");
         assert!(parsed.date_filter.is_some());
         let df = parsed.date_filter.unwrap();
@@ -553,14 +600,14 @@ mod tests {
 
     #[test]
     fn test_natural_date_last_month() {
-        let parsed = parse("report last month");
+        let parsed = test_parse("report last month");
         assert_eq!(parsed.cleaned_query, "report");
         assert!(parsed.date_filter.unwrap().after.is_some());
     }
 
     #[test]
     fn test_natural_date_yesterday() {
-        let parsed = parse("standup yesterday");
+        let parsed = test_parse("standup yesterday");
         assert_eq!(parsed.cleaned_query, "standup");
         let df = parsed.date_filter.unwrap();
         assert!(df.after.is_some());
@@ -569,14 +616,14 @@ mod tests {
 
     #[test]
     fn test_natural_date_today() {
-        let parsed = parse("emails today");
+        let parsed = test_parse("emails today");
         assert_eq!(parsed.cleaned_query, "emails");
         assert!(parsed.date_filter.unwrap().after.is_some());
     }
 
     #[test]
     fn test_combined_operators() {
-        let parsed = parse("in:slack from:sarah status:done standup");
+        let parsed = test_parse("in:slack from:sarah status:done standup");
         assert_eq!(parsed.cleaned_query, "standup");
         assert_eq!(parsed.source_types, vec![SourceType::Slack]);
         assert!(parsed.attribute_filters.contains_key("sender"));
@@ -625,42 +672,43 @@ mod tests {
 
     #[test]
     fn test_lang_operator() {
-        let parsed = parse("lang:python error handling");
+        let parsed = test_parse("lang:python error handling");
         assert_eq!(parsed.cleaned_query, "error handling");
         assert!(parsed.attribute_filters.contains_key("language"));
     }
 
     #[test]
     fn test_assignee_operator() {
-        let parsed = parse("assignee:john bug fix");
+        let parsed = test_parse("assignee:john bug fix");
         assert_eq!(parsed.cleaned_query, "bug fix");
         assert!(parsed.attribute_filters.contains_key("assignee"));
     }
 
     #[test]
     fn test_project_operator() {
-        let parsed = parse("project:INFRA task");
+        let parsed = test_parse("project:INFRA task");
         assert_eq!(parsed.cleaned_query, "task");
         assert!(parsed.attribute_filters.contains_key("project_key"));
     }
 
     #[test]
     fn test_colon_in_regular_text() {
-        let parsed = parse("How to fix error: timeout");
+        let parsed = test_parse("How to fix error: timeout");
         assert_eq!(parsed.cleaned_query, "How to fix error: timeout");
     }
 
     #[test]
     fn test_explicit_before_natural() {
         // Explicit from: should be extracted, then natural language shouldn't double-extract
-        let parsed = parse("from:sarah report from john");
+        let cache = cache_with(&["john"]);
+        let parsed = test_parse_with_cache("from:sarah report from john", &cache);
         assert!(parsed.person_terms.contains(&"sarah".to_string()));
         assert!(parsed.person_terms.contains(&"john".to_string()));
     }
 
     #[test]
     fn test_case_insensitivity() {
-        let parsed = parse("FROM:sarah IN:Drive report");
+        let parsed = test_parse("FROM:sarah IN:Drive report");
         assert!(parsed.attribute_filters.contains_key("sender"));
         assert_eq!(parsed.source_types, vec![SourceType::GoogleDrive]);
     }
@@ -680,7 +728,7 @@ mod tests {
         ];
 
         for (type_val, expected_content_type) in cases {
-            let parsed = parse(&format!("type:{} query", type_val));
+            let parsed = test_parse(&format!("type:{} query", type_val));
             assert!(
                 parsed
                     .content_types

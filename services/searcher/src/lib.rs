@@ -1,5 +1,6 @@
 pub mod handlers;
 pub mod models;
+pub mod people_cache;
 pub mod query_parser;
 pub mod search;
 pub mod suggested_questions;
@@ -22,6 +23,7 @@ use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tracing::{error, info};
 
+use crate::people_cache::PeopleCache;
 use crate::suggested_questions::SuggestedQuestionsGenerator;
 use crate::typeahead::TitleIndex;
 
@@ -83,6 +85,7 @@ pub struct AppState {
     pub content_storage: Arc<dyn ObjectStorage>,
     pub suggested_questions_generator: Arc<SuggestedQuestionsGenerator>,
     pub title_index: Arc<TitleIndex>,
+    pub people_cache: Arc<PeopleCache>,
 }
 
 pub fn create_app(state: AppState) -> Router {
@@ -138,6 +141,13 @@ pub async fn run_server() -> AnyhowResult<()> {
     title_index.start_background_refresh(300);
     info!("Typeahead index initialized");
 
+    let people_cache = Arc::new(PeopleCache::new(db_pool.clone()));
+    if let Err(e) = people_cache.refresh().await {
+        error!("Failed initial people cache load: {}", e);
+    }
+    people_cache.start_background_refresh(300);
+    info!("People cache initialized");
+
     let app_state = AppState {
         db_pool,
         redis_client,
@@ -146,6 +156,7 @@ pub async fn run_server() -> AnyhowResult<()> {
         content_storage,
         suggested_questions_generator,
         title_index,
+        people_cache,
     };
 
     let app = create_app(app_state);

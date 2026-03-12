@@ -1,6 +1,7 @@
 use crate::models::{
     RecentSearchesResponse, SearchMode, SearchRequest, SearchResponse, SearchResult,
 };
+use crate::people_cache::PeopleCache;
 use crate::query_parser;
 use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
@@ -25,6 +26,7 @@ pub struct SearchEngine {
     ai_client: AIClient,
     content_storage: Arc<dyn ObjectStorage>,
     config: SearcherConfig,
+    people_cache: Arc<PeopleCache>,
 }
 
 impl SearchEngine {
@@ -35,6 +37,7 @@ impl SearchEngine {
         redis_client: RedisClient,
         ai_client: AIClient,
         config: SearcherConfig,
+        people_cache: Arc<PeopleCache>,
     ) -> Result<Self> {
         let content_storage = StorageFactory::from_env(db_pool.pool().clone()).await?;
 
@@ -44,6 +47,7 @@ impl SearchEngine {
             ai_client,
             content_storage,
             config,
+            people_cache,
         })
     }
 
@@ -115,11 +119,13 @@ impl SearchEngine {
         }
 
         // Parse query for structured operators (from:, in:, before:, etc.)
-        let parsed = query_parser::parse(&request.query);
+        let parsed = query_parser::parse(&request.query, &self.people_cache).await;
         let has_parsed_filters = !parsed.attribute_filters.is_empty()
             || !parsed.source_types.is_empty()
+            || !parsed.boosted_source_types.is_empty()
             || !parsed.content_types.is_empty()
-            || parsed.date_filter.is_some();
+            || parsed.date_filter.is_some()
+            || !parsed.person_terms.is_empty();
 
         let mut request = request;
         request.query = parsed.cleaned_query;
