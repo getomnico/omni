@@ -293,6 +293,18 @@ pub enum AttributeFilter {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchOperator {
+    pub operator: String,
+    pub attribute_key: String,
+    #[serde(default = "default_search_operator_value_type")]
+    pub value_type: String, // "person", "text", "datetime"
+}
+
+fn default_search_operator_value_type() -> String {
+    "text".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ConnectorEvent {
     DocumentCreated {

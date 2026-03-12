@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use shared::models::SourceType;
 
+pub use shared::models::SearchOperator;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectorManifest {
     pub name: String,
@@ -9,6 +11,8 @@ pub struct ConnectorManifest {
     pub sync_modes: Vec<String>,
     #[serde(default)]
     pub actions: Vec<ActionDefinition>,
+    #[serde(default)]
+    pub search_operators: Vec<SearchOperator>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

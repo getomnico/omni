@@ -31,6 +31,8 @@ pub struct ConnectorManifest {
     pub version: String,
     pub sync_modes: Vec<String>,
     pub read_only: bool,
+    #[serde(default)]
+    pub search_operators: Vec<shared::models::SearchOperator>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +106,7 @@ async fn manifest() -> impl IntoResponse {
         version: env!("CARGO_PKG_VERSION").to_string(),
         sync_modes: vec!["full".to_string(), "incremental".to_string()],
         read_only: true,
+        search_operators: vec![],
     })
 }
 
@@ -146,8 +149,16 @@ async fn cancel_sync(
 async fn execute_action(Json(request): Json<ActionRequest>) -> impl IntoResponse {
     info!("IMAP action requested: {}", request.action);
     Json(match run_action(&request).await {
-        Ok(data) => ActionResponse { status: "ok".into(), data: Some(data), error: None },
-        Err(e) => ActionResponse { status: "error".into(), data: None, error: Some(e.to_string()) },
+        Ok(data) => ActionResponse {
+            status: "ok".into(),
+            data: Some(data),
+            error: None,
+        },
+        Err(e) => ActionResponse {
+            status: "error".into(),
+            data: None,
+            error: Some(e.to_string()),
+        },
     })
 }
 
@@ -158,7 +169,10 @@ async fn run_action(request: &ActionRequest) -> anyhow::Result<serde_json::Value
             let result = if request.action == "validate_credentials" {
                 Ok(json!({ "authenticated": true }))
             } else {
-                session.list_folders().await.map(|f| json!({ "folders": f }))
+                session
+                    .list_folders()
+                    .await
+                    .map(|f| json!({ "folders": f }))
             };
             session.logout().await;
             result

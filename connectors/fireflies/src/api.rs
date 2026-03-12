@@ -28,6 +28,8 @@ pub struct ConnectorManifest {
     pub name: String,
     pub version: String,
     pub sync_modes: Vec<String>,
+    #[serde(default)]
+    pub search_operators: Vec<shared::models::SearchOperator>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +100,7 @@ async fn manifest() -> impl IntoResponse {
         name: "fireflies".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         sync_modes: vec!["full".to_string(), "incremental".to_string()],
+        search_operators: vec![],
     })
 }
 

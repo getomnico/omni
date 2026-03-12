@@ -48,7 +48,8 @@ async fn manifest() -> impl IntoResponse {
         name: "web".to_string(),
         version: "1.0.0".to_string(),
         sync_modes: vec!["full".to_string(), "incremental".to_string()],
-        actions: vec![], // Web connector has no actions
+        actions: vec![],
+        search_operators: vec![],
     };
     Json(manifest)
 }

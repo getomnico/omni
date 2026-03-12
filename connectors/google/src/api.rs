@@ -24,6 +24,7 @@ use crate::models::{
     ConnectorManifest, SyncRequest, SyncResponse, SyncResponseExt, WebhookNotification,
 };
 use crate::sync::SyncManager;
+use shared::models::SearchOperator;
 use shared::models::{ServiceProvider, SourceType};
 
 #[derive(Clone)]
@@ -77,6 +78,18 @@ async fn manifest() -> impl IntoResponse {
                 }
             }),
         }],
+        search_operators: vec![
+            SearchOperator {
+                operator: "from".to_string(),
+                attribute_key: "sender".to_string(),
+                value_type: "person".to_string(),
+            },
+            SearchOperator {
+                operator: "label".to_string(),
+                attribute_key: "labels".to_string(),
+                value_type: "text".to_string(),
+            },
+        ],
     };
     Json(manifest)
 }

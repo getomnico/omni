@@ -16,6 +16,8 @@ pub struct ConnectorManifest {
     pub sync_modes: Vec<String>,
     #[serde(default)]
     pub actions: Vec<ActionDefinition>,
+    #[serde(default)]
+    pub search_operators: Vec<shared::models::SearchOperator>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

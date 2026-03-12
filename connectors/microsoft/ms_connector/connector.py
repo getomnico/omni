@@ -3,7 +3,7 @@
 import logging
 from typing import Any
 
-from omni_connector import Connector, SyncContext
+from omni_connector import Connector, SearchOperator, SyncContext
 from omni_connector.models import ActionDefinition, ActionParameter, ActionResponse
 
 from .auth import MSGraphAuth
@@ -42,6 +42,14 @@ class MicrosoftConnector(Connector):
     @property
     def sync_modes(self) -> list[str]:
         return ["full", "incremental"]
+
+    @property
+    def search_operators(self) -> list[SearchOperator]:
+        return [
+            SearchOperator(
+                operator="from", attribute_key="sender", value_type="person"
+            ),
+        ]
 
     @property
     def actions(self) -> list[ActionDefinition]:

@@ -1,6 +1,7 @@
 use crate::models::{
     RecentSearchesResponse, SearchMode, SearchRequest, SearchResponse, SearchResult,
 };
+use crate::operator_registry::OperatorRegistry;
 use crate::people_cache::PeopleCache;
 use crate::query_parser;
 use anyhow::Result;
@@ -27,6 +28,7 @@ pub struct SearchEngine {
     content_storage: Arc<dyn ObjectStorage>,
     config: SearcherConfig,
     people_cache: Arc<PeopleCache>,
+    operator_registry: Arc<OperatorRegistry>,
 }
 
 impl SearchEngine {
@@ -38,6 +40,7 @@ impl SearchEngine {
         ai_client: AIClient,
         config: SearcherConfig,
         people_cache: Arc<PeopleCache>,
+        operator_registry: Arc<OperatorRegistry>,
     ) -> Result<Self> {
         let content_storage = StorageFactory::from_env(db_pool.pool().clone()).await?;
 
@@ -48,6 +51,7 @@ impl SearchEngine {
             content_storage,
             config,
             people_cache,
+            operator_registry,
         })
     }
 
@@ -119,7 +123,8 @@ impl SearchEngine {
         }
 
         // Parse query for structured operators (from:, in:, before:, etc.)
-        let parsed = query_parser::parse(&request.query, &self.people_cache).await;
+        let parsed =
+            query_parser::parse(&request.query, &self.people_cache, &self.operator_registry).await;
         let has_parsed_filters = !parsed.attribute_filters.is_empty()
             || !parsed.source_types.is_empty()
             || !parsed.boosted_source_types.is_empty()

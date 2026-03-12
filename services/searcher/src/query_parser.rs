@@ -1,3 +1,4 @@
+use crate::operator_registry::OperatorRegistry;
 use crate::people_cache::PeopleCache;
 use regex::Regex;
 use serde_json::Value as JsonValue;
@@ -17,18 +18,23 @@ pub struct ParsedQuery {
     pub person_terms: Vec<String>,
 }
 
-pub async fn parse(query: &str, people_cache: &PeopleCache) -> ParsedQuery {
+pub async fn parse(
+    query: &str,
+    people_cache: &PeopleCache,
+    operator_registry: &OperatorRegistry,
+) -> ParsedQuery {
     let mut result = ParsedQuery::default();
     let mut remaining = query.to_string();
 
     // Phase 1: Extract explicit operators
-    remaining = extract_operators(&remaining, &mut result);
+    remaining = extract_operators(&remaining, &mut result, operator_registry).await;
 
     // Phase 2: Extract natural language date patterns
     remaining = extract_natural_dates(&remaining, &mut result);
 
     // Phase 3: Extract natural language patterns (from/by/in)
-    remaining = extract_natural_patterns(&remaining, &mut result, people_cache).await;
+    remaining =
+        extract_natural_patterns(&remaining, &mut result, people_cache, operator_registry).await;
 
     // Phase 4: Check if any word is a known source alias
     remaining = extract_source_word(&remaining, &mut result);
@@ -39,12 +45,21 @@ pub async fn parse(query: &str, people_cache: &PeopleCache) -> ParsedQuery {
     result
 }
 
-fn extract_operators(query: &str, result: &mut ParsedQuery) -> String {
-    let re = Regex::new(r#"(?i)\b(from|by|in|type|channel|status|label|project|before|after|lang|assignee):("([^"]+)"|(\S+))"#).unwrap();
+async fn extract_operators(
+    query: &str,
+    result: &mut ParsedQuery,
+    operator_registry: &OperatorRegistry,
+) -> String {
+    let re = match operator_registry.operator_regex().await {
+        Some(re) => re,
+        None => {
+            // Fallback: universal operators only
+            Regex::new(r#"(?i)\b(by|in|type|before|after):("([^"]+)"|(\S+))"#).unwrap()
+        }
+    };
 
     let mut remaining = query.to_string();
 
-    // Collect all matches first to avoid borrow issues
     let matches: Vec<_> = re
         .captures_iter(query)
         .map(|cap| {
@@ -59,10 +74,7 @@ fn extract_operators(query: &str, result: &mut ParsedQuery) -> String {
         remaining = remaining.replacen(&full_match, "", 1);
 
         match operator.as_str() {
-            "from" => {
-                merge_attribute_filter(&mut result.attribute_filters, "sender", &value);
-                result.person_terms.push(value);
-            }
+            // Universal operators — stay in the searcher
             "by" => {
                 result.person_terms.push(value);
             }
@@ -73,18 +85,6 @@ fn extract_operators(query: &str, result: &mut ParsedQuery) -> String {
             }
             "type" => {
                 apply_type_filter(&value, &mut result.content_types);
-            }
-            "channel" => {
-                merge_attribute_filter(&mut result.attribute_filters, "channel_name", &value);
-            }
-            "status" => {
-                merge_attribute_filter(&mut result.attribute_filters, "status", &value);
-            }
-            "label" => {
-                merge_attribute_filter(&mut result.attribute_filters, "labels", &value);
-            }
-            "project" => {
-                merge_attribute_filter(&mut result.attribute_filters, "project_key", &value);
             }
             "before" => {
                 if let Some(dt) = parse_date_value(&value, true) {
@@ -108,13 +108,19 @@ fn extract_operators(query: &str, result: &mut ParsedQuery) -> String {
                         .after = Some(dt);
                 }
             }
-            "lang" => {
-                merge_attribute_filter(&mut result.attribute_filters, "language", &value);
+            // Dynamic operators — looked up from the registry
+            _ => {
+                if let Some(mapping) = operator_registry.get(&operator).await {
+                    merge_attribute_filter(
+                        &mut result.attribute_filters,
+                        &mapping.attribute_key,
+                        &value,
+                    );
+                    if mapping.value_type == "person" {
+                        result.person_terms.push(value);
+                    }
+                }
             }
-            "assignee" => {
-                merge_attribute_filter(&mut result.attribute_filters, "assignee", &value);
-            }
-            _ => {}
         }
     }
 
@@ -195,17 +201,24 @@ async fn extract_natural_patterns(
     query: &str,
     result: &mut ParsedQuery,
     people_cache: &PeopleCache,
+    operator_registry: &OperatorRegistry,
 ) -> String {
     let mut remaining = query.to_string();
 
-    // "from <word>" or "emails from <word>"
+    // "from <word>" or "emails from <word>" — use registry to find attribute_key for "from"
     let from_re = Regex::new(r"(?i)\b(?:emails?\s+)?from\s+(\w+)\b").unwrap();
     if let Some(cap) = from_re.captures(&remaining) {
         let value = cap[1].to_string();
-        if people_cache.contains(&value).await {
-            merge_attribute_filter(&mut result.attribute_filters, "sender", &value);
-            result.person_terms.push(value);
-            remaining = remaining.replacen(cap.get(0).unwrap().as_str(), "", 1);
+        if let Some(mapping) = operator_registry.get("from").await {
+            if mapping.value_type == "person" && people_cache.contains(&value).await {
+                merge_attribute_filter(
+                    &mut result.attribute_filters,
+                    &mapping.attribute_key,
+                    &value,
+                );
+                result.person_terms.push(value);
+                remaining = remaining.replacen(cap.get(0).unwrap().as_str(), "", 1);
+            }
         }
     }
 
@@ -373,7 +386,9 @@ fn parse_date_value(value: &str, is_before: bool) -> Option<OffsetDateTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::operator_registry::OperatorRegistry;
     use crate::people_cache::PeopleCache;
+    use shared::models::SearchOperator;
     use std::collections::HashSet;
 
     fn empty_cache() -> PeopleCache {
@@ -384,17 +399,66 @@ mod tests {
         PeopleCache::with_people(names.iter().map(|s| s.to_string()).collect())
     }
 
+    fn default_registry() -> OperatorRegistry {
+        OperatorRegistry::with_operators(vec![
+            SearchOperator {
+                operator: "from".to_string(),
+                attribute_key: "sender".to_string(),
+                value_type: "person".to_string(),
+            },
+            SearchOperator {
+                operator: "channel".to_string(),
+                attribute_key: "channel_name".to_string(),
+                value_type: "text".to_string(),
+            },
+            SearchOperator {
+                operator: "status".to_string(),
+                attribute_key: "status".to_string(),
+                value_type: "text".to_string(),
+            },
+            SearchOperator {
+                operator: "label".to_string(),
+                attribute_key: "labels".to_string(),
+                value_type: "text".to_string(),
+            },
+            SearchOperator {
+                operator: "project".to_string(),
+                attribute_key: "project_key".to_string(),
+                value_type: "text".to_string(),
+            },
+            SearchOperator {
+                operator: "lang".to_string(),
+                attribute_key: "language".to_string(),
+                value_type: "text".to_string(),
+            },
+            SearchOperator {
+                operator: "assignee".to_string(),
+                attribute_key: "assignee".to_string(),
+                value_type: "person".to_string(),
+            },
+        ])
+    }
+
     fn test_parse(query: &str) -> ParsedQuery {
         let cache = empty_cache();
+        let registry = default_registry();
         tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(parse(query, &cache))
+            .block_on(parse(query, &cache, &registry))
     }
 
     fn test_parse_with_cache(query: &str, cache: &PeopleCache) -> ParsedQuery {
+        let registry = default_registry();
         tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(parse(query, cache))
+            .block_on(parse(query, cache, &registry))
+    }
+
+    fn test_parse_with_registry(query: &str, registry: &OperatorRegistry) -> ParsedQuery {
+        let cache = empty_cache();
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(parse(query, &cache, registry))
     }
 
     #[test]
@@ -699,7 +763,6 @@ mod tests {
 
     #[test]
     fn test_explicit_before_natural() {
-        // Explicit from: should be extracted, then natural language shouldn't double-extract
         let cache = cache_with(&["john"]);
         let parsed = test_parse_with_cache("from:sarah report from john", &cache);
         assert!(parsed.person_terms.contains(&"sarah".to_string()));
@@ -738,5 +801,40 @@ mod tests {
                 expected_content_type
             );
         }
+    }
+
+    #[test]
+    fn test_duplicate_operator_first_wins() {
+        // When two connectors declare the same operator with different attribute_keys,
+        // the registry deduplicates (first-wins), so only one attribute_key is used.
+        let registry = OperatorRegistry::with_operators(vec![
+            SearchOperator {
+                operator: "status".to_string(),
+                attribute_key: "status".to_string(),
+                value_type: "text".to_string(),
+            },
+            SearchOperator {
+                operator: "status".to_string(),
+                attribute_key: "state".to_string(),
+                value_type: "text".to_string(),
+            },
+        ]);
+
+        let parsed = test_parse_with_registry("status:done task", &registry);
+        assert_eq!(parsed.cleaned_query, "task");
+        // First-wins: "status" attribute_key is kept, "state" is ignored
+        assert!(parsed.attribute_filters.contains_key("status"));
+        assert!(!parsed.attribute_filters.contains_key("state"));
+    }
+
+    #[test]
+    fn test_empty_registry_universal_operators_still_work() {
+        let registry = OperatorRegistry::with_operators(vec![]);
+        let parsed =
+            test_parse_with_registry("in:slack type:pdf before:2024-01-01 report", &registry);
+        assert_eq!(parsed.cleaned_query, "report");
+        assert_eq!(parsed.source_types, vec![SourceType::Slack]);
+        assert_eq!(parsed.content_types, vec!["pdf".to_string()]);
+        assert!(parsed.date_filter.is_some());
     }
 }

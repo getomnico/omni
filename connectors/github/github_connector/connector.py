@@ -3,7 +3,7 @@
 import logging
 from typing import Any
 
-from omni_connector import Connector, SyncContext
+from omni_connector import Connector, SearchOperator, SyncContext
 
 from .client import AuthenticationError, GitHubClient, GitHubError
 from .config import CHECKPOINT_INTERVAL
@@ -35,6 +35,21 @@ class GitHubConnector(Connector):
     @property
     def sync_modes(self) -> list[str]:
         return ["full", "incremental"]
+
+    @property
+    def search_operators(self) -> list[SearchOperator]:
+        return [
+            SearchOperator(
+                operator="status", attribute_key="status", value_type="text"
+            ),
+            SearchOperator(operator="label", attribute_key="labels", value_type="text"),
+            SearchOperator(
+                operator="lang", attribute_key="language", value_type="text"
+            ),
+            SearchOperator(
+                operator="assignee", attribute_key="assignee", value_type="person"
+            ),
+        ]
 
     async def sync(
         self,

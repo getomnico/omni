@@ -8,7 +8,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use shared::models::SyncRequest;
+use shared::models::{SearchOperator, SyncRequest};
 use shared::telemetry;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -109,6 +109,28 @@ async fn manifest() -> impl IntoResponse {
                 }
             }),
         }],
+        search_operators: vec![
+            SearchOperator {
+                operator: "status".to_string(),
+                attribute_key: "status".to_string(),
+                value_type: "text".to_string(),
+            },
+            SearchOperator {
+                operator: "label".to_string(),
+                attribute_key: "labels".to_string(),
+                value_type: "text".to_string(),
+            },
+            SearchOperator {
+                operator: "project".to_string(),
+                attribute_key: "project_key".to_string(),
+                value_type: "text".to_string(),
+            },
+            SearchOperator {
+                operator: "assignee".to_string(),
+                attribute_key: "assignee".to_string(),
+                value_type: "person".to_string(),
+            },
+        ],
     };
     Json(manifest)
 }

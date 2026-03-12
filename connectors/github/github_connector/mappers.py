@@ -73,7 +73,7 @@ def map_issue_to_document(
         permissions=_build_permissions(is_private, repo_full_name),
         attributes={
             "source_type": "github",
-            "state": issue.state or "",
+            "status": issue.state or "",
             "labels": ",".join(labels),
             "assignee": assignee_login,
             "milestone": milestone_title,
@@ -109,7 +109,7 @@ def map_pr_to_document(
         permissions=_build_permissions(is_private, repo_full_name),
         attributes={
             "source_type": "github",
-            "state": pr.state or "",
+            "status": pr.state or "",
             "draft": str(is_draft).lower(),
             "labels": ",".join(labels),
             "merged": str(is_merged).lower(),

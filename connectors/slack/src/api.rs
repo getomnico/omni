@@ -8,7 +8,7 @@ use axum::{
 };
 use dashmap::DashSet;
 use serde_json::json;
-use shared::models::SyncRequest;
+use shared::models::{SearchOperator, SyncRequest};
 use shared::telemetry;
 use std::sync::Arc;
 use tower::ServiceBuilder;
@@ -57,7 +57,12 @@ async fn manifest() -> impl IntoResponse {
         name: "slack".to_string(),
         version: "1.0.0".to_string(),
         sync_modes: vec!["full".to_string(), "incremental".to_string()],
-        actions: vec![], // Slack connector has no actions yet
+        actions: vec![],
+        search_operators: vec![SearchOperator {
+            operator: "channel".to_string(),
+            attribute_key: "channel_name".to_string(),
+            value_type: "text".to_string(),
+        }],
     };
     Json(manifest)
 }

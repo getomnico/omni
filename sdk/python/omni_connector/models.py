@@ -91,11 +91,18 @@ class ActionDefinition(BaseModel):
     parameters: dict[str, ActionParameter] = Field(default_factory=dict)
 
 
+class SearchOperator(BaseModel):
+    operator: str
+    attribute_key: str
+    value_type: str = "text"  # "person", "text", "datetime"
+
+
 class ConnectorManifest(BaseModel):
     name: str
     version: str
     sync_modes: list[str]
     actions: list[ActionDefinition] = Field(default_factory=list)
+    search_operators: list[SearchOperator] = Field(default_factory=list)
 
 
 class SyncRequest(BaseModel):

@@ -70,11 +70,19 @@ export const ActionDefinitionSchema = z.object({
 });
 export type ActionDefinition = z.infer<typeof ActionDefinitionSchema>;
 
+export const SearchOperatorSchema = z.object({
+  operator: z.string(),
+  attribute_key: z.string(),
+  value_type: z.string().default('text'),  // "person", "text", "datetime"
+});
+export type SearchOperator = z.infer<typeof SearchOperatorSchema>;
+
 export const ConnectorManifestSchema = z.object({
   name: z.string(),
   version: z.string(),
   sync_modes: z.array(z.string()),
   actions: z.array(ActionDefinitionSchema).default([]),
+  search_operators: z.array(SearchOperatorSchema).default([]),
 });
 export type ConnectorManifest = z.infer<typeof ConnectorManifestSchema>;
 

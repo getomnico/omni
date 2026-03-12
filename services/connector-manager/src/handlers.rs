@@ -15,9 +15,10 @@ use axum::{
     Json,
 };
 use futures::stream::Stream;
+use redis::AsyncCommands;
 use serde_json::json;
 use shared::db::repositories::SyncRunRepository;
-use shared::models::{SourceType, SyncType};
+use shared::models::{SearchOperator, SourceType, SyncType};
 use shared::queue::EventQueue;
 use shared::utils;
 use shared::{DocumentRepository, Repository, ServiceCredentialsRepo, SourceRepository};
@@ -238,6 +239,7 @@ pub async fn list_connectors(
 ) -> Result<Json<Vec<ConnectorInfo>>, ApiError> {
     let client = ConnectorClient::new();
     let mut connectors = Vec::new();
+    let mut all_operators: Vec<SearchOperator> = Vec::new();
 
     for (source_type, url) in &state.config.connector_urls {
         let healthy = client.health_check(url).await;
@@ -247,12 +249,27 @@ pub async fn list_connectors(
             None
         };
 
+        if let Some(ref m) = manifest {
+            all_operators.extend(m.search_operators.clone());
+        }
+
         connectors.push(ConnectorInfo {
             source_type: source_type.clone(),
             url: url.clone(),
             healthy,
             manifest,
         });
+    }
+
+    if let Ok(json) = serde_json::to_string(&all_operators) {
+        match state.redis_client.get_multiplexed_async_connection().await {
+            Ok(mut conn) => {
+                let _: Result<(), _> = conn.set("search:operators", json).await;
+            }
+            Err(e) => {
+                error!("Failed to write search operators to Redis: {}", e);
+            }
+        }
     }
 
     Ok(Json(connectors))
