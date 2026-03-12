@@ -3,6 +3,22 @@ import { sql } from 'drizzle-orm'
 import { ulid } from 'ulid'
 import type { OAuthTokens, OAuthProfile } from './types'
 
+// Raw database row type (snake_case from SQL)
+type UserOAuthCredentialRow = {
+    id: string
+    user_id: string
+    provider: string
+    provider_user_id: string
+    access_token: string | null
+    refresh_token: string | null
+    token_type: string
+    expires_at: Date | null
+    scopes: string[] | null
+    profile_data: Record<string, unknown>
+    created_at: Date
+    updated_at: Date
+}
+
 export interface UserOAuthCredential {
     id: string
     user_id: string
@@ -73,20 +89,20 @@ export class UserOAuthCredentialsService {
             throw new Error('OAuth credentials not found')
         }
 
-        const row = rows[0] as any
+        const r = rows[0] as UserOAuthCredentialRow
         return {
-            id: row.id,
-            user_id: row.user_id,
-            provider: row.provider,
-            provider_user_id: row.provider_user_id,
-            access_token: row.access_token,
-            refresh_token: row.refresh_token,
-            token_type: row.token_type,
-            expires_at: row.expires_at,
-            scopes: row.scopes || [],
-            profile_data: row.profile_data || {},
-            created_at: row.created_at,
-            updated_at: row.updated_at,
+            id: r.id,
+            user_id: r.user_id,
+            provider: r.provider,
+            provider_user_id: r.provider_user_id,
+            access_token: r.access_token ?? undefined,
+            refresh_token: r.refresh_token ?? undefined,
+            token_type: r.token_type,
+            expires_at: r.expires_at ?? undefined,
+            scopes: r.scopes ?? [],
+            profile_data: r.profile_data ?? {},
+            created_at: r.created_at,
+            updated_at: r.updated_at,
         }
     }
 
@@ -97,20 +113,23 @@ export class UserOAuthCredentialsService {
             ORDER BY provider, created_at
         `)
 
-        return rows.map((row: any) => ({
-            id: row.id,
-            user_id: row.user_id,
-            provider: row.provider,
-            provider_user_id: row.provider_user_id,
-            access_token: row.access_token,
-            refresh_token: row.refresh_token,
-            token_type: row.token_type,
-            expires_at: row.expires_at,
-            scopes: row.scopes || [],
-            profile_data: row.profile_data || {},
-            created_at: row.created_at,
-            updated_at: row.updated_at,
-        }))
+        return rows.map((row) => {
+            const r = row as UserOAuthCredentialRow
+            return {
+                id: r.id,
+                user_id: r.user_id,
+                provider: r.provider,
+                provider_user_id: r.provider_user_id,
+                access_token: r.access_token ?? undefined,
+                refresh_token: r.refresh_token ?? undefined,
+                token_type: r.token_type,
+                expires_at: r.expires_at ?? undefined,
+                scopes: r.scopes ?? [],
+                profile_data: r.profile_data ?? {},
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+            }
+        })
     }
 
     static async findByProviderProfile(
@@ -128,20 +147,20 @@ export class UserOAuthCredentialsService {
             return null
         }
 
-        const row = rows[0] as any
+        const r = rows[0] as UserOAuthCredentialRow
         return {
-            id: row.id,
-            user_id: row.user_id,
-            provider: row.provider,
-            provider_user_id: row.provider_user_id,
-            access_token: row.access_token,
-            refresh_token: row.refresh_token,
-            token_type: row.token_type,
-            expires_at: row.expires_at,
-            scopes: row.scopes || [],
-            profile_data: row.profile_data || {},
-            created_at: row.created_at,
-            updated_at: row.updated_at,
+            id: r.id,
+            user_id: r.user_id,
+            provider: r.provider,
+            provider_user_id: r.provider_user_id,
+            access_token: r.access_token ?? undefined,
+            refresh_token: r.refresh_token ?? undefined,
+            token_type: r.token_type,
+            expires_at: r.expires_at ?? undefined,
+            scopes: r.scopes ?? [],
+            profile_data: r.profile_data ?? {},
+            created_at: r.created_at,
+            updated_at: r.updated_at,
         }
     }
 
