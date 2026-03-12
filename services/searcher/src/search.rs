@@ -130,7 +130,8 @@ impl SearchEngine {
             || !parsed.boosted_source_types.is_empty()
             || !parsed.content_types.is_empty()
             || parsed.date_filter.is_some()
-            || !parsed.person_terms.is_empty();
+            || !parsed.person_filters.is_empty()
+            || !parsed.person_boosts.is_empty();
 
         let mut request = request;
         request.query = parsed.cleaned_query;
@@ -163,12 +164,11 @@ impl SearchEngine {
             }
         }
 
-        // Attach date filter and person terms
         if parsed.date_filter.is_some() {
             request.date_filter = parsed.date_filter;
         }
-        if !parsed.person_terms.is_empty() {
-            request.person_terms = Some(parsed.person_terms);
+        if !parsed.person_filters.is_empty() {
+            request.person_filters = Some(parsed.person_filters);
         }
 
         // Generate cache key based on request parameters
@@ -251,8 +251,35 @@ impl SearchEngine {
                         result.score *= SOURCE_BOOST_MULTIPLIER;
                     }
                 }
-                results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
             }
+        }
+
+        // Apply person boost for natural language patterns (e.g. "emails from john")
+        if !parsed.person_boosts.is_empty() {
+            const PERSON_BOOST_MULTIPLIER: f32 = 2.0;
+            let boosts_lower: Vec<String> = parsed
+                .person_boosts
+                .iter()
+                .map(|p| p.to_lowercase())
+                .collect();
+            for result in &mut results {
+                if let Some(author) = result
+                    .document
+                    .metadata
+                    .get("author")
+                    .and_then(|a| a.as_str())
+                {
+                    let author_lower = author.to_lowercase();
+                    if boosts_lower.iter().any(|p| author_lower.contains(p)) {
+                        result.score *= PERSON_BOOST_MULTIPLIER;
+                    }
+                }
+            }
+        }
+
+        // Re-sort if any boosts were applied
+        if !parsed.boosted_source_types.is_empty() || !parsed.person_boosts.is_empty() {
+            results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
         }
         // TODO: this will need to change once we introduce more facets beyond just source_type
         let total_count = facets
@@ -313,7 +340,7 @@ impl SearchEngine {
                 request.user_email().map(|e| e.as_str()),
                 request.document_id.as_deref(),
                 request.date_filter.as_ref(),
-                request.person_terms.as_deref(),
+                request.person_filters.as_deref(),
                 self.config.recency_boost_weight,
                 self.config.recency_half_life_days,
             )

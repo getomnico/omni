@@ -15,7 +15,10 @@ pub struct ParsedQuery {
     pub boosted_source_types: Vec<SourceType>,
     pub content_types: Vec<String>,
     pub date_filter: Option<DateFilter>,
-    pub person_terms: Vec<String>,
+    /// Strict author filter from explicit `by:` operator
+    pub person_filters: Vec<String>,
+    /// Soft person boost from natural language patterns ("emails from john", "docs by sarah")
+    pub person_boosts: Vec<String>,
 }
 
 pub async fn parse(
@@ -33,8 +36,7 @@ pub async fn parse(
     remaining = extract_natural_dates(&remaining, &mut result);
 
     // Phase 3: Extract natural language patterns (from/by/in)
-    remaining =
-        extract_natural_patterns(&remaining, &mut result, people_cache, operator_registry).await;
+    remaining = extract_natural_patterns(&remaining, &mut result, people_cache).await;
 
     // Phase 4: Check if any word is a known source alias
     remaining = extract_source_word(&remaining, &mut result);
@@ -76,7 +78,7 @@ async fn extract_operators(
         match operator.as_str() {
             // Universal operators — stay in the searcher
             "by" => {
-                result.person_terms.push(value);
+                result.person_filters.push(value);
             }
             "in" => {
                 if let Some(source) = resolve_source_alias(&value) {
@@ -116,9 +118,6 @@ async fn extract_operators(
                         &mapping.attribute_key,
                         &value,
                     );
-                    if mapping.value_type == "person" {
-                        result.person_terms.push(value);
-                    }
                 }
             }
         }
@@ -201,33 +200,25 @@ async fn extract_natural_patterns(
     query: &str,
     result: &mut ParsedQuery,
     people_cache: &PeopleCache,
-    operator_registry: &OperatorRegistry,
 ) -> String {
     let mut remaining = query.to_string();
 
-    // "from <word>" or "emails from <word>" — use registry to find attribute_key for "from"
+    // "from <word>" or "emails from <word>" — boost, not filter
     let from_re = Regex::new(r"(?i)\b(?:emails?\s+)?from\s+(\w+)\b").unwrap();
     if let Some(cap) = from_re.captures(&remaining) {
         let value = cap[1].to_string();
-        if let Some(mapping) = operator_registry.get("from").await {
-            if mapping.value_type == "person" && people_cache.contains(&value).await {
-                merge_attribute_filter(
-                    &mut result.attribute_filters,
-                    &mapping.attribute_key,
-                    &value,
-                );
-                result.person_terms.push(value);
-                remaining = remaining.replacen(cap.get(0).unwrap().as_str(), "", 1);
-            }
+        if people_cache.contains(&value).await {
+            result.person_boosts.push(value);
+            remaining = remaining.replacen(cap.get(0).unwrap().as_str(), "", 1);
         }
     }
 
-    // "by <word>"
+    // "by <word>" — boost, not filter
     let by_re = Regex::new(r"(?i)\b(?:docs?\s+)?by\s+(\w+)\b").unwrap();
     if let Some(cap) = by_re.captures(&remaining) {
         let value = cap[1].to_string();
         if people_cache.contains(&value).await {
-            result.person_terms.push(value);
+            result.person_boosts.push(value);
             remaining = remaining.replacen(cap.get(0).unwrap().as_str(), "", 1);
         }
     }
@@ -466,14 +457,17 @@ mod tests {
         let parsed = test_parse("from:sarah@co.com report");
         assert_eq!(parsed.cleaned_query, "report");
         assert!(parsed.attribute_filters.contains_key("sender"));
-        assert!(parsed.person_terms.contains(&"sarah@co.com".to_string()));
+        // Explicit from: is a strict attribute filter, not a person boost
+        assert!(parsed.person_boosts.is_empty());
     }
 
     #[test]
     fn test_by_operator() {
         let parsed = test_parse("by:sarah docs");
         assert_eq!(parsed.cleaned_query, "docs");
-        assert!(parsed.person_terms.contains(&"sarah".to_string()));
+        // Explicit by: is a strict person filter
+        assert!(parsed.person_filters.contains(&"sarah".to_string()));
+        assert!(parsed.person_boosts.is_empty());
     }
 
     #[test]
@@ -565,7 +559,7 @@ mod tests {
     fn test_quoted_values() {
         let parsed = test_parse(r#"from:"Sarah Jones" report"#);
         assert_eq!(parsed.cleaned_query, "report");
-        assert!(parsed.person_terms.contains(&"Sarah Jones".to_string()));
+        assert!(parsed.attribute_filters.contains_key("sender"));
     }
 
     #[test]
@@ -598,15 +592,16 @@ mod tests {
         let cache = cache_with(&["john"]);
         let parsed = test_parse_with_cache("emails from john", &cache);
         assert_eq!(parsed.cleaned_query, "");
-        assert!(parsed.person_terms.contains(&"john".to_string()));
-        assert!(parsed.attribute_filters.contains_key("sender"));
+        // Natural language "from" is a boost, not a filter
+        assert!(parsed.person_boosts.contains(&"john".to_string()));
+        assert!(parsed.attribute_filters.is_empty());
     }
 
     #[test]
     fn test_natural_language_from_unknown_person() {
         let parsed = test_parse("seashells from the seashore");
         assert_eq!(parsed.cleaned_query, "seashells from the seashore");
-        assert!(parsed.person_terms.is_empty());
+        assert!(parsed.person_boosts.is_empty());
     }
 
     #[test]
@@ -614,14 +609,16 @@ mod tests {
         let cache = cache_with(&["sarah"]);
         let parsed = test_parse_with_cache("docs by sarah", &cache);
         assert_eq!(parsed.cleaned_query, "");
-        assert!(parsed.person_terms.contains(&"sarah".to_string()));
+        // Natural language "by" is a boost, not a filter
+        assert!(parsed.person_boosts.contains(&"sarah".to_string()));
+        assert!(parsed.person_filters.is_empty());
     }
 
     #[test]
     fn test_natural_language_by_unknown_person() {
         let parsed = test_parse("seashells by the seashore");
         assert_eq!(parsed.cleaned_query, "seashells by the seashore");
-        assert!(parsed.person_terms.is_empty());
+        assert!(parsed.person_boosts.is_empty());
     }
 
     #[test]
@@ -765,8 +762,10 @@ mod tests {
     fn test_explicit_before_natural() {
         let cache = cache_with(&["john"]);
         let parsed = test_parse_with_cache("from:sarah report from john", &cache);
-        assert!(parsed.person_terms.contains(&"sarah".to_string()));
-        assert!(parsed.person_terms.contains(&"john".to_string()));
+        // Explicit from:sarah → attribute filter (no boost)
+        assert!(parsed.attribute_filters.contains_key("sender"));
+        // Natural "from john" → boost (no attribute filter)
+        assert!(parsed.person_boosts.contains(&"john".to_string()));
     }
 
     #[test]

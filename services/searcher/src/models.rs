@@ -43,7 +43,7 @@ pub struct SearchRequest {
     #[serde(skip)]
     pub date_filter: Option<DateFilter>,
     #[serde(skip)]
-    pub person_terms: Option<Vec<String>>,
+    pub person_filters: Option<Vec<String>>,
 }
 
 impl SearchRequest {

@@ -301,7 +301,7 @@ impl DocumentRepository {
         user_email: Option<&str>,
         document_id: Option<&str>,
         date_filter: Option<&DateFilter>,
-        person_terms: Option<&[String]>,
+        person_filters: Option<&[String]>,
         recency_boost_weight: f32,
         recency_half_life_days: f32,
     ) -> Result<Vec<SearchHit>, DatabaseError> {
@@ -364,6 +364,20 @@ impl DocumentRepository {
             param_idx += 1;
         }
 
+        // Person filters: strict author filtering via BM25 index on metadata
+        if let Some(persons) = person_filters {
+            let conditions: Vec<String> = persons
+                .iter()
+                .map(|p| {
+                    let escaped = p.replace('\'', "''");
+                    format!("metadata ||| 'author:{escaped}'")
+                })
+                .collect();
+            if !conditions.is_empty() {
+                filters.push(format!("({})", conditions.join(" OR ")));
+            }
+        }
+
         let common_where = if filters.is_empty() {
             String::new()
         } else {
@@ -387,21 +401,6 @@ impl DocumentRepository {
                     WHERE content ||| {term_param}{common_where}\
                 ) t{i} GROUP BY id"
             ));
-        }
-
-        // Person-term boosting: search metadata.author and attributes.sender
-        if let Some(persons) = person_terms {
-            for person in persons {
-                let escaped = person.replace('\'', "''");
-                term_branches.push(format!(
-                    "SELECT id, 3.0 as score FROM documents \
-                    WHERE metadata @@@ 'author:{escaped}'{common_where}"
-                ));
-                term_branches.push(format!(
-                    "SELECT id, 3.0 as score FROM documents \
-                    WHERE attributes @@@ 'sender:{escaped}'{common_where}"
-                ));
-            }
         }
 
         // Phrase branches: best of title phrase vs content phrase (using $1 = full query)
