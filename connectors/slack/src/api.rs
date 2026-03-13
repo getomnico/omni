@@ -63,6 +63,7 @@ async fn manifest() -> impl IntoResponse {
             attribute_key: "channel_name".to_string(),
             value_type: "text".to_string(),
         }],
+        read_only: false,
     };
     Json(manifest)
 }

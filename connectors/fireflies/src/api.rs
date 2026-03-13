@@ -23,14 +23,7 @@ pub struct ApiState {
     pub sync_manager: Arc<Mutex<SyncManager>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectorManifest {
-    pub name: String,
-    pub version: String,
-    pub sync_modes: Vec<String>,
-    #[serde(default)]
-    pub search_operators: Vec<shared::models::SearchOperator>,
-}
+use shared::models::ConnectorManifest;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncResponse {
@@ -100,7 +93,9 @@ async fn manifest() -> impl IntoResponse {
         name: "fireflies".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         sync_modes: vec!["full".to_string(), "incremental".to_string()],
+        actions: vec![],
         search_operators: vec![],
+        read_only: false,
     })
 }
 

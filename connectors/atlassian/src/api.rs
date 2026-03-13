@@ -108,6 +108,7 @@ async fn manifest() -> impl IntoResponse {
                     "description": "Whether to search Confluence spaces or Jira projects"
                 }
             }),
+            mode: "read".to_string(),
         }],
         search_operators: vec![
             SearchOperator {
@@ -131,6 +132,7 @@ async fn manifest() -> impl IntoResponse {
                 value_type: "person".to_string(),
             },
         ],
+        read_only: false,
     };
     Json(manifest)
 }

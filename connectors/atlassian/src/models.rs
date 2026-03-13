@@ -1,6 +1,7 @@
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
+pub use shared::models::{ActionDefinition, ConnectorManifest};
 use shared::models::{ConnectorEvent, DocumentAttributes, DocumentMetadata, DocumentPermissions};
 use std::collections::HashMap;
 use time::OffsetDateTime;
@@ -8,24 +9,6 @@ use time::OffsetDateTime;
 // ============================================================================
 // Connector Protocol Models
 // ============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectorManifest {
-    pub name: String,
-    pub version: String,
-    pub sync_modes: Vec<String>,
-    #[serde(default)]
-    pub actions: Vec<ActionDefinition>,
-    #[serde(default)]
-    pub search_operators: Vec<shared::models::SearchOperator>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionDefinition {
-    pub name: String,
-    pub description: String,
-    pub parameters: JsonValue,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncResponse {

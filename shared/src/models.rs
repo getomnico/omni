@@ -305,6 +305,32 @@ fn default_search_operator_value_type() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionDefinition {
+    pub name: String,
+    pub description: String,
+    pub parameters: JsonValue,
+    #[serde(default = "default_action_mode")]
+    pub mode: String,
+}
+
+fn default_action_mode() -> String {
+    "write".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorManifest {
+    pub name: String,
+    pub version: String,
+    pub sync_modes: Vec<String>,
+    #[serde(default)]
+    pub actions: Vec<ActionDefinition>,
+    #[serde(default)]
+    pub search_operators: Vec<SearchOperator>,
+    #[serde(default)]
+    pub read_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ConnectorEvent {
     DocumentCreated {

@@ -918,32 +918,7 @@ mod tests {
 // Connector Protocol Models
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectorManifest {
-    pub name: String,
-    pub version: String,
-    pub sync_modes: Vec<String>,
-    #[serde(default)]
-    pub actions: Vec<ActionDefinition>,
-    #[serde(default)]
-    pub search_operators: Vec<shared::models::SearchOperator>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionDefinition {
-    pub name: String,
-    pub description: String,
-    pub parameters: serde_json::Value,
-    #[serde(default = "default_action_mode")]
-    pub mode: String,
-}
-
-fn default_action_mode() -> String {
-    "write".to_string()
-}
-
-// Import SyncRequest and SyncResponse from shared crate
-pub use shared::models::{SyncRequest, SyncResponse};
+pub use shared::models::{ActionDefinition, ConnectorManifest, SyncRequest, SyncResponse};
 
 /// Extension trait for SyncResponse helper methods
 pub trait SyncResponseExt {

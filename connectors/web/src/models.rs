@@ -16,23 +16,7 @@ pub use shared::models::{SyncRequest, SyncResponse};
 // Connector Protocol Models
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectorManifest {
-    pub name: String,
-    pub version: String,
-    pub sync_modes: Vec<String>,
-    #[serde(default)]
-    pub actions: Vec<ActionDefinition>,
-    #[serde(default)]
-    pub search_operators: Vec<shared::models::SearchOperator>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionDefinition {
-    pub name: String,
-    pub description: String,
-    pub parameters: JsonValue,
-}
+pub use shared::models::{ActionDefinition, ConnectorManifest};
 
 /// Extension trait for SyncResponse helper methods
 pub trait SyncResponseExt {

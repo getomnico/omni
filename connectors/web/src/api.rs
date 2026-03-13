@@ -50,6 +50,7 @@ async fn manifest() -> impl IntoResponse {
         sync_modes: vec!["full".to_string(), "incremental".to_string()],
         actions: vec![],
         search_operators: vec![],
+        read_only: false,
     };
     Json(manifest)
 }

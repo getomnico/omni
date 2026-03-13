@@ -25,15 +25,7 @@ pub struct ApiState {
     pub sync_manager: Arc<SyncManager>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectorManifest {
-    pub name: String,
-    pub version: String,
-    pub sync_modes: Vec<String>,
-    pub read_only: bool,
-    #[serde(default)]
-    pub search_operators: Vec<shared::models::SearchOperator>,
-}
+use shared::models::ConnectorManifest;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncResponse {
@@ -105,8 +97,9 @@ async fn manifest() -> impl IntoResponse {
         name: "imap".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         sync_modes: vec!["full".to_string(), "incremental".to_string()],
-        read_only: true,
+        actions: vec![],
         search_operators: vec![],
+        read_only: true,
     })
 }
 
