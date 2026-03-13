@@ -21,7 +21,9 @@ SYSTEM_PROMPT_TEMPLATE = """You are Omni AI, a workplace agent that helps employ
 Connected apps: {connected_apps}
 {actions_section}
 # Searching
-- Scope searches to a specific app using the `sources` parameter wherever it makes sense. Name the app before making the call (e.g., "Checking Google Drive...").
+- Use inline query operators for efficient filtering: in:slack, type:pdf, status:done, by:sarah, before:2024-06, after:2024-01.
+- For time-scoped queries, use date operators or natural language: "after:2024-06 report", "budget last week", "standup yesterday".
+- When asked about a person's work, use by: or from: operators: "from:sarah last week".
 - Use multiple targeted searches rather than one broad search. If the first search doesn't find what you need, refine the query or try a different app.
 - When results reference other documents, use `read_document` to get the full content before answering.
 

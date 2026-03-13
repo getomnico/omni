@@ -46,6 +46,7 @@ class ConnectorToolHandler:
         self._prefetched_sources = prefetched_sources
         self._actions: dict[str, ConnectorAction] = {}
         self._tools: list[dict] = []
+        self._search_operators: list[dict] = []
         self._initialized = False
 
     async def _ensure_initialized(self) -> None:
@@ -120,6 +121,26 @@ class ConnectorToolHandler:
             if source.get("is_active") and not source.get("is_deleted"):
                 st = source.get("source_type", "")
                 source_by_type.setdefault(st, []).append(source)
+
+        # Extract search operators from connector manifests
+        search_operators: list[dict] = []
+        for connector in connectors:
+            source_type = connector.get("source_type", "")
+            manifest = connector.get("manifest")
+            if not manifest or not connector.get("healthy"):
+                continue
+
+            for op in manifest.get("search_operators", []):
+                search_operators.append(
+                    {
+                        "operator": op.get("operator", ""),
+                        "attribute_key": op.get("attribute_key", ""),
+                        "value_type": op.get("value_type", "text"),
+                        "source_type": source_type,
+                    }
+                )
+
+        self._search_operators = search_operators
 
         # Build action list from connector manifests
         actions: list[dict] = []
@@ -199,6 +220,10 @@ class ConnectorToolHandler:
                     },
                 }
             )
+
+    @property
+    def search_operators(self) -> list[dict]:
+        return self._search_operators
 
     def get_tools(self) -> list[dict]:
         # Note: caller must await _ensure_initialized() before calling this

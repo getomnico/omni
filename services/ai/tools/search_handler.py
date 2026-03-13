@@ -20,49 +20,88 @@ logger = logging.getLogger(__name__)
 
 _TOOL_NAMES = {"search_documents"}
 
+# Operators already documented as universal — exclude from connector-specific lists
+_UNIVERSAL_OPERATORS = {"by", "in", "from", "type", "before", "after"}
 
-def _build_search_tools(connected_source_types: list[str]) -> list[dict]:
-    """Build the search tool definition with dynamic source types."""
-    if connected_source_types:
-        sources_desc = f"Optional: specific source types to search (valid values: {', '.join(sorted(connected_source_types))})"
-    else:
-        sources_desc = "Optional: specific source types to search."
+SOURCE_DISPLAY_NAMES = {
+    "google_drive": "Google Drive",
+    "gmail": "Gmail",
+    "confluence": "Confluence",
+    "jira": "Jira",
+    "slack": "Slack",
+    "hubspot": "HubSpot",
+    "fireflies": "Fireflies",
+    "web": "Web",
+    "local_files": "Files",
+    "github": "GitHub",
+    "notion": "Notion",
+    "one_drive": "OneDrive",
+    "share_point": "SharePoint",
+    "outlook": "Outlook",
+    "outlook_calendar": "Outlook Calendar",
+}
+
+
+def _build_query_description(
+    search_operators: list[dict],
+) -> str:
+    """Build a rich description for the query parameter with operator syntax."""
+    lines = [
+        "The search query. Supports inline operators for filtering:",
+        "",
+        "Universal operators:",
+        "- in:<source> — filter by app (e.g., in:slack, in:drive, in:jira)",
+        "- by:<person> — filter by author/creator",
+        "- from:<person> — filter by sender (emails, messages)",
+        "- type:<type> — content type (sheet, doc, pdf, email, issue, pr, meeting, slide, page)",
+        "- before:<date> / after:<date> — date range (YYYY-MM-DD, YYYY-MM, or YYYY)",
+        "Date keywords (no operator needed): last week, last month, this week, yesterday, today",
+    ]
+
+    # Group connector-specific operators by source_type
+    ops_by_source: dict[str, list[str]] = {}
+    for op in search_operators:
+        if op["operator"] in _UNIVERSAL_OPERATORS:
+            continue
+        source_type = op.get("source_type", "")
+        display_name = SOURCE_DISPLAY_NAMES.get(source_type, source_type)
+        ops_by_source.setdefault(display_name, []).append(f"{op['operator']}:<value>")
+
+    if ops_by_source:
+        lines.append("")
+        lines.append("Connector-specific operators:")
+        for source_name in sorted(ops_by_source):
+            ops_str = ", ".join(sorted(ops_by_source[source_name]))
+            lines.append(f"- {source_name}: {ops_str}")
+
+    lines.append("")
+    lines.append(
+        'Examples: "status:done in:jira sprint tasks", "type:pdf after:2024-01 invoice", "budget last week"'
+    )
+
+    return "\n".join(lines)
+
+
+def _build_search_tools(
+    search_operators: list[dict] | None = None,
+) -> list[dict]:
+    """Build the search tool definition with dynamic operators."""
+    query_desc = _build_query_description(search_operators or [])
 
     return [
         {
             "name": "search_documents",
-            "description": "Search enterprise documents using hybrid text and semantic search. Use this when you need to find information to answer user questions. Wherever possible, use the sources parameter to limit the search to specific apps.",
+            "description": "Search enterprise documents using hybrid text and semantic search. Use this when you need to find information to answer user questions. Use inline query operators (in:, by:, type:, status:, etc.) for filtering.",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "The search query to find relevant documents. Can search using keywords, or a natural language question to get semantic search results.",
+                        "description": query_desc,
                     },
                     "document_id": {
                         "type": "string",
                         "description": "Optional: restrict search to a specific document by ID. Use this to search within a single document for relevant sections.",
-                    },
-                    "sources": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": sources_desc,
-                    },
-                    "content_types": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional: file types to include (e.g., pdf, docx, txt)",
-                    },
-                    "attributes": {
-                        "type": "object",
-                        "description": (
-                            "Optional: filter results by document attributes. "
-                            "Common Jira attributes: status, priority, issue_type, assignee, reporter, labels, components, project_key. "
-                            "Common Confluence attributes: space_id, status. "
-                            'Values can be: a string for exact match (e.g., {"status": "Done"}), '
-                            'an array for OR match (e.g., {"priority": ["High", "Critical"]}), '
-                            'or an object with gte/lte keys for range queries (e.g., {"updated": {"gte": "2024-01-01"}}).'
-                        ),
                     },
                     "limit": {
                         "type": "integer",
@@ -81,10 +120,10 @@ class SearchToolHandler:
     def __init__(
         self,
         searcher_tool: SearcherTool,
-        connected_source_types: list[str] | None = None,
+        search_operators: list[dict] | None = None,
     ) -> None:
         self._searcher = searcher_tool
-        self._tools = _build_search_tools(connected_source_types or [])
+        self._tools = _build_search_tools(search_operators)
 
     def get_tools(self) -> list[dict]:
         return self._tools
@@ -167,8 +206,6 @@ async def _execute_search_tool(
     search_request = SearchRequest(
         query=tool_input.query,
         document_id=tool_input.document_id,
-        source_types=tool_input.sources,
-        content_types=tool_input.content_types,
         limit=tool_input.limit or 10,
         offset=0,
         mode="hybrid",
@@ -178,7 +215,6 @@ async def _execute_search_tool(
         original_user_query=original_user_query,
         include_facets=False,
         ignore_typos=True,
-        attribute_filters=tool_input.attributes,
     )
     try:
         response: SearchResponse = await searcher_tool.handle(search_request)

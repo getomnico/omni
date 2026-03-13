@@ -218,26 +218,46 @@ def _make_chat(user_id: str) -> Chat:
 # ---------------------------------------------------------------------------
 
 
-def test_search_tool_lists_connected_source_types():
-    """When source types are provided, the sources param description lists them."""
-    tools = _build_search_tools(["google_drive", "slack"])
-    sources_prop = tools[0]["input_schema"]["properties"]["sources"]
-    assert "google_drive" in sources_prop["description"]
-    assert "slack" in sources_prop["description"]
+def test_search_tool_has_query_with_operators():
+    """Search tool query description includes universal operators."""
+    tools = _build_search_tools()
+    query_prop = tools[0]["input_schema"]["properties"]["query"]
+    assert "in:<source>" in query_prop["description"]
+    assert "type:<type>" in query_prop["description"]
+    assert "before:<date>" in query_prop["description"]
 
 
-def test_search_tool_no_sources_gives_generic_description():
-    """When no source types are connected, the sources description is generic."""
-    tools = _build_search_tools([])
-    sources_prop = tools[0]["input_schema"]["properties"]["sources"]
-    assert sources_prop["description"] == "Optional: specific source types to search."
+def test_search_tool_includes_connector_operators():
+    """Search tool query description includes connector-specific operators."""
+    operators = [
+        {
+            "operator": "status",
+            "attribute_key": "status",
+            "value_type": "text",
+            "source_type": "jira",
+        },
+        {
+            "operator": "channel",
+            "attribute_key": "channel_name",
+            "value_type": "text",
+            "source_type": "slack",
+        },
+    ]
+    tools = _build_search_tools(operators)
+    query_desc = tools[0]["input_schema"]["properties"]["query"]["description"]
+    assert "Jira" in query_desc
+    assert "status:<value>" in query_desc
+    assert "Slack" in query_desc
+    assert "channel:<value>" in query_desc
 
 
-def test_search_tool_source_types_sorted():
-    """Source types in the description should be sorted alphabetically."""
-    tools = _build_search_tools(["slack", "google_drive", "confluence"])
-    sources_prop = tools[0]["input_schema"]["properties"]["sources"]
-    assert "confluence, google_drive, slack" in sources_prop["description"]
+def test_search_tool_no_sources_or_attributes_params():
+    """Search tool should not have sources, content_types, or attributes params."""
+    tools = _build_search_tools()
+    properties = tools[0]["input_schema"]["properties"]
+    assert "sources" not in properties
+    assert "content_types" not in properties
+    assert "attributes" not in properties
 
 
 # ---------------------------------------------------------------------------
@@ -353,16 +373,11 @@ async def test_build_registry_search_tool_has_dynamic_sources(
 
         result = await _build_registry(request, chat)
 
-        # Verify search tool sources description includes all non-deleted types
+        # Verify search tool has query with operator syntax
         search_tools = result.registry.get_all_tools()
         search_tool = next(t for t in search_tools if t["name"] == "search_documents")
-        sources_desc = search_tool["input_schema"]["properties"]["sources"][
-            "description"
-        ]
-
-        assert "confluence" in sources_desc
-        assert "google_drive" in sources_desc
-        assert "slack" in sources_desc
+        query_desc = search_tool["input_schema"]["properties"]["query"]["description"]
+        assert "in:<source>" in query_desc
 
         # Verify system prompt only includes active sources
         active_sources = [
@@ -401,8 +416,8 @@ async def test_build_registry_no_sources_generic_description(
 
     search_tools = result.registry.get_all_tools()
     search_tool = next(t for t in search_tools if t["name"] == "search_documents")
-    sources_desc = search_tool["input_schema"]["properties"]["sources"]["description"]
-    assert sources_desc == "Optional: specific source types to search."
+    query_desc = search_tool["input_schema"]["properties"]["query"]["description"]
+    assert "in:<source>" in query_desc
 
     active_sources = [
         s for s in (result.sources or []) if s.is_active and not s.is_deleted
@@ -452,13 +467,8 @@ async def test_build_registry_deleted_sources_excluded(
 
         search_tools = result.registry.get_all_tools()
         search_tool = next(t for t in search_tools if t["name"] == "search_documents")
-        sources_desc = search_tool["input_schema"]["properties"]["sources"][
-            "description"
-        ]
-
-        # Connector-manager's find_all_sources filters is_deleted=true
-        assert "google_drive" in sources_desc
-        assert "jira" not in sources_desc
+        query_desc = search_tool["input_schema"]["properties"]["query"]["description"]
+        assert "in:<source>" in query_desc
 
         # System prompt: only active non-deleted
         active_sources = [

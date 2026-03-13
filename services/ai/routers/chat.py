@@ -139,6 +139,7 @@ class RegistryResult:
     registry: ToolRegistry
     connector_actions: list[ConnectorAction] | None
     sources: list[Source] | None
+    search_operators: list[dict] | None
 
 
 async def _fetch_sources_from_connector_manager() -> list[Source] | None:
@@ -162,22 +163,8 @@ async def _build_registry(request: Request, chat: Chat) -> RegistryResult:
     # Fetch sources from connector manager once, share with all handlers
     sources = await _fetch_sources_from_connector_manager()
 
-    # Extract distinct connected source types for search tool definition
-    connected_source_types: list[str] = []
-    if sources is not None:
-        connected_source_types = sorted(
-            set(s.source_type for s in sources if s.source_type and not s.is_deleted)
-        )
-
-    # Always register search tools (with dynamic source types)
-    registry.register(
-        SearchToolHandler(
-            searcher_tool=request.app.state.searcher_tool,
-            connected_source_types=connected_source_types,
-        )
-    )
-
     connector_actions: list[ConnectorAction] | None = None
+    search_operators: list[dict] | None = None
 
     # Register connector tools if connector-manager is configured
     if CONNECTOR_MANAGER_URL:
@@ -193,6 +180,18 @@ async def _build_registry(request: Request, chat: Chat) -> RegistryResult:
         # Collect action metadata for system prompt
         if connector_handler._actions:
             connector_actions = list(connector_handler._actions.values())
+
+        # Collect search operators for search tool description
+        if connector_handler.search_operators:
+            search_operators = connector_handler.search_operators
+
+    # Register search tools (with dynamic operators from connector manifests)
+    registry.register(
+        SearchToolHandler(
+            searcher_tool=request.app.state.searcher_tool,
+            search_operators=search_operators,
+        )
+    )
 
     # Register document handler (unified read_document tool)
     content_storage = getattr(request.app.state, "content_storage", None)
@@ -214,6 +213,7 @@ async def _build_registry(request: Request, chat: Chat) -> RegistryResult:
         registry=registry,
         connector_actions=connector_actions,
         sources=sources,
+        search_operators=search_operators,
     )
 
 
