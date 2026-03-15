@@ -4,7 +4,14 @@ import { modelProviders, models } from './schema'
 import type { ModelProvider, Model } from './schema'
 import { ulid } from 'ulid'
 
-export const MODEL_PROVIDER_TYPES = ['vllm', 'anthropic', 'bedrock', 'openai', 'gemini'] as const
+export const MODEL_PROVIDER_TYPES = [
+    'vllm',
+    'anthropic',
+    'bedrock',
+    'openai',
+    'gemini',
+    'azure_foundry',
+] as const
 export type ModelProviderType = (typeof MODEL_PROVIDER_TYPES)[number]
 
 export interface ModelProviderConfig {
@@ -57,6 +64,7 @@ export const PREDEFINED_MODELS: Record<
         { modelId: 'gemini-2.5-flash', displayName: 'Gemini 2.5 Flash' },
         { modelId: 'gemini-2.5-flash-lite', displayName: 'Gemini 2.5 Flash Lite' },
     ],
+    azure_foundry: [],
 }
 
 // --- Provider CRUD ---

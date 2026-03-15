@@ -49,6 +49,7 @@ from .vllm import VLLMProvider
 from .bedrock import BedrockProvider
 from .openai import OpenAIProvider
 from .gemini import GeminiProvider
+from .azure_foundry import AzureFoundryProvider
 
 
 # Factory function to create LLM providers
@@ -91,6 +92,13 @@ def create_llm_provider(provider_type: str, **kwargs) -> LLMProvider:
         model = kwargs.get("model", "gemini-2.5-flash")
         return GeminiProvider(api_key, model)
 
+    elif provider_type.lower() == "azure_foundry":
+        endpoint_url = kwargs.get("endpoint_url")
+        if not endpoint_url:
+            raise ValueError("endpoint_url is required for Azure AI Foundry provider")
+        model = kwargs.get("model", "gpt-4o")
+        return AzureFoundryProvider(endpoint_url, model)
+
     else:
         raise ValueError(f"Unknown provider type: {provider_type}")
 
@@ -102,5 +110,6 @@ __all__ = [
     "BedrockProvider",
     "OpenAIProvider",
     "GeminiProvider",
+    "AzureFoundryProvider",
     "create_llm_provider",
 ]
