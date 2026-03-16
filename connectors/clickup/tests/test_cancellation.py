@@ -1,0 +1,41 @@
+"""Integration tests: sync cancellation."""
+
+import asyncio
+
+import pytest
+import httpx
+
+from omni_connector.testing import wait_for_sync
+
+pytestmark = pytest.mark.integration
+
+
+async def test_cancel_running_sync(
+    harness, seed, source_id, mock_clickup_api, cm_client: httpx.AsyncClient
+):
+    mock_clickup_api.add_workspace("team_1", "Test Workspace")
+    mock_clickup_api.add_space("team_1", "space_1", "Engineering")
+    mock_clickup_api.add_folderless_list("space_1", "list_1", "Backlog")
+    for i in range(1, 51):
+        mock_clickup_api.add_task(
+            "team_1", task_id=f"task_{i}", name=f"Task {i}", list_id="list_1"
+        )
+
+    resp = await cm_client.post(
+        "/sync",
+        json={"source_id": source_id, "sync_type": "full"},
+    )
+    assert resp.status_code == 200
+    sync_run_id = resp.json()["sync_run_id"]
+
+    # Give the sync a moment to start processing
+    await asyncio.sleep(1)
+
+    cancel_resp = await cm_client.post(f"/sync/{sync_run_id}/cancel")
+    assert cancel_resp.status_code == 200
+
+    row = await wait_for_sync(harness.db_pool, sync_run_id, timeout=30)
+    assert row["status"] in (
+        "cancelled",
+        "failed",
+    ), f"Expected cancelled or failed, got {row['status']}"

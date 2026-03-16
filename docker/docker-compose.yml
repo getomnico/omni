@@ -241,6 +241,7 @@ services:
       HUBSPOT_CONNECTOR_URL: ${HUBSPOT_CONNECTOR_URL}
       FIREFLIES_CONNECTOR_URL: ${FIREFLIES_CONNECTOR_URL}
       IMAP_CONNECTOR_URL: ${IMAP_CONNECTOR_URL}
+      CLICKUP_CONNECTOR_URL: ${CLICKUP_CONNECTOR_URL}
       MAX_CONCURRENT_SYNCS: ${MAX_CONCURRENT_SYNCS:-10}
       MAX_CONCURRENT_SYNCS_PER_TYPE: ${MAX_CONCURRENT_SYNCS_PER_TYPE:-3}
       SCHEDULER_POLL_INTERVAL_SECONDS: ${SCHEDULER_POLL_INTERVAL_SECONDS:-60}
@@ -511,6 +512,25 @@ services:
     environment:
       <<: *otel-config
       PORT: ${MICROSOFT_CONNECTOR_PORT}
+      CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+    networks:
+      - omni-network
+    depends_on:
+      connector-manager:
+        condition: service_started
+    restart: unless-stopped
+    logging: *default-logging
+
+  clickup-connector:
+    image: ghcr.io/getomnico/omni/omni-clickup-connector:${OMNI_VERSION:-latest}
+    container_name: omni-clickup-connector
+    profiles:
+      - clickup
+    expose:
+      - "${CLICKUP_CONNECTOR_PORT:-8011}"
+    environment:
+      <<: *otel-config
+      PORT: ${CLICKUP_CONNECTOR_PORT:-8011}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
     networks:
       - omni-network

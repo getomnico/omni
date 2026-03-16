@@ -287,6 +287,7 @@ fn resolve_source_alias(alias: &str) -> Option<SourceType> {
         "outlook" => Some(SourceType::Outlook),
         "hubspot" => Some(SourceType::Hubspot),
         "fireflies" => Some(SourceType::Fireflies),
+        "clickup" | "click_up" => Some(SourceType::Clickup),
         "web" | "website" => Some(SourceType::Web),
         _ => None,
     }
@@ -738,6 +739,8 @@ mod tests {
             ("outlook", SourceType::Outlook),
             ("hubspot", SourceType::Hubspot),
             ("fireflies", SourceType::Fireflies),
+            ("clickup", SourceType::Clickup),
+            ("click_up", SourceType::Clickup),
             ("web", SourceType::Web),
             ("website", SourceType::Web),
         ];

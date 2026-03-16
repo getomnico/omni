@@ -105,6 +105,8 @@ export function getSourceIconPath(sourceType: string): string | null {
             return null // Use fallback FileText icon
         case SourceType.IMAP:
             return null // Uses Mail lucide icon
+        case SourceType.CLICKUP:
+            return null // TODO: Add ClickUp icon when available
         default:
             return null // Use fallback FileText icon
     }
@@ -210,6 +212,7 @@ export function getSourceDisplayName(sourceType: SourceType) {
         [SourceType.LOCAL_FILES]: 'Files',
         [SourceType.WEB]: 'Web',
         [SourceType.FIREFLIES]: 'Fireflies',
+        [SourceType.CLICKUP]: 'ClickUp',
     }
 
     return sourceDisplayNames[sourceType]

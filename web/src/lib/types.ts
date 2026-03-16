@@ -15,6 +15,7 @@ export enum SourceType {
     OUTLOOK_CALENDAR = 'outlook_calendar',
     FIREFLIES = 'fireflies',
     IMAP = 'imap',
+    CLICKUP = 'clickup',
 }
 
 export enum ServiceProvider {
@@ -26,6 +27,7 @@ export enum ServiceProvider {
     HUBSPOT = 'hubspot',
     FIREFLIES = 'fireflies',
     IMAP = 'imap',
+    CLICKUP = 'clickup',
 }
 
 export enum AuthType {

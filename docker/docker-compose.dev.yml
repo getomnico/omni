@@ -176,6 +176,12 @@ services:
     environment:
       RUST_LOG: debug
 
+  clickup-connector:
+    image: omni-clickup-connector:dev
+    build:
+      context: ..
+      dockerfile: connectors/clickup/Dockerfile
+
   microsoft-connector:
     image: omni-microsoft-connector:dev
     build:
