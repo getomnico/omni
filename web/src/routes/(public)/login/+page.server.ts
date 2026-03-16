@@ -42,41 +42,42 @@ export const load: PageServerLoad = async ({ cookies, locals, url }) => {
 
     // Handle OAuth error messages from URL parameters
     const error = url.searchParams.get('error')
-    const errorDetails = url.searchParams.get('details')
 
     if (error) {
-        let errorMessage = 'An error occurred during authentication.'
+        let errorMessage =
+            'An error occurred during authentication. Please try again or contact support.'
 
         switch (error) {
             case 'oauth_not_configured':
                 errorMessage =
-                    'Google Sign-in is not configured. Please contact your administrator.'
+                    'Single sign-on is not configured. Please contact your administrator.'
                 break
             case 'oauth_error':
-                errorMessage = errorDetails || 'An error occurred during Google authentication.'
+                errorMessage =
+                    'Something went wrong during authentication. Please try again or contact support.'
                 break
             case 'domain_not_approved':
-                errorMessage = errorDetails || 'Your domain is not approved for registration.'
+                errorMessage =
+                    'Your domain is not approved for registration. Please contact your administrator.'
                 break
             case 'account_already_linked':
                 errorMessage =
-                    errorDetails || 'This Google account is already linked to another user.'
+                    'This account is already linked to another user. Please contact support.'
                 break
             case 'email_mismatch':
-                errorMessage = errorDetails || 'Email addresses do not match.'
+                errorMessage = 'Email addresses do not match. Please contact support.'
                 break
             case 'rate_limit':
                 errorMessage = 'Too many authentication attempts. Please try again later.'
                 break
             case 'invalid_redirect':
-                errorMessage = 'Invalid redirect URL.'
+                errorMessage = 'Something went wrong. Please try signing in again.'
                 break
             case 'invalid_oauth_response':
-                errorMessage = 'Invalid OAuth response from Google.'
+                errorMessage = 'Something went wrong during authentication. Please try again.'
                 break
             case 'okta_not_available':
-                errorMessage =
-                    'Okta SSO requires the enterprise package. Please contact your administrator.'
+                errorMessage = 'Okta SSO is not available. Please contact your administrator.'
                 break
             case 'authentication_required':
                 errorMessage = 'Authentication required.'

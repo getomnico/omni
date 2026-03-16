@@ -172,7 +172,7 @@ export class UserOAuthCredentialsService {
             UPDATE user_oauth_credentials
             SET
                 access_token = ${tokens.access_token},
-                refresh_token = COALESCE(${tokens.refresh_token}, refresh_token),
+                refresh_token = COALESCE(${tokens.refresh_token || null}, refresh_token),
                 token_type = ${tokens.token_type},
                 expires_at = ${expiresAt},
                 updated_at = NOW()

@@ -4,6 +4,7 @@ import { ulid } from 'ulid'
 import { UserOAuthCredentialsService } from './userCredentials'
 import { isEmailFromApprovedDomain } from '../domains'
 import type { OAuthProfile, OAuthTokens } from './types'
+import { logger } from '../logger'
 
 export interface User {
     id: string
@@ -27,6 +28,7 @@ export class AccountLinkingService {
         tokens: OAuthTokens,
     ): Promise<OAuthAuthResult> {
         // First, check if this OAuth account is already linked to a user
+        logger.info(`Checking for existing OAuth credential for provider: ${provider}`)
         const existingCredential = await UserOAuthCredentialsService.findByProviderProfile(
             provider,
             profile.id,
@@ -34,6 +36,7 @@ export class AccountLinkingService {
 
         if (existingCredential) {
             // Update tokens and get the user
+            logger.info(`Updating tokens for user: ${existingCredential.user_id}`)
             await UserOAuthCredentialsService.updateTokens(
                 existingCredential.user_id,
                 provider,
@@ -41,6 +44,7 @@ export class AccountLinkingService {
                 tokens,
             )
 
+            logger.info(`Fetching user by ID: ${existingCredential.user_id}`)
             const user = await this.getUserById(existingCredential.user_id)
             return {
                 user,
@@ -50,10 +54,12 @@ export class AccountLinkingService {
         }
 
         // Check if a user exists with this email
+        logger.info(`Checking for existing user with email: ${profile.email}`)
         const existingUser = await this.findUserByEmail(profile.email)
 
         if (existingUser) {
             // Link the OAuth account to the existing user
+            logger.info(`Linking OAuth account to existing user: ${existingUser.id}`)
             await UserOAuthCredentialsService.saveCredentials(
                 existingUser.id,
                 provider,
@@ -62,6 +68,7 @@ export class AccountLinkingService {
             )
 
             // Update user profile with OAuth data if needed
+            logger.info(`Updating user profile for user: ${existingUser.id}`)
             await this.updateUserProfile(existingUser, profile)
 
             return {
@@ -72,6 +79,7 @@ export class AccountLinkingService {
         }
 
         // Check if the email domain is approved for auto-registration
+        logger.info(`Checking if domain is approved for email: ${profile.email}`)
         const isDomainApproved = await isEmailFromApprovedDomain(profile.email)
 
         if (!isDomainApproved) {
@@ -82,9 +90,11 @@ export class AccountLinkingService {
         }
 
         // Create new user with OAuth account
+        logger.info(`Creating new user from OAuth profile: ${JSON.stringify(profile)}`)
         const newUser = await this.createUserFromOAuth(profile)
 
         // Save OAuth credentials for the new user
+        logger.info(`Saving OAuth credentials for new user: ${newUser.id}`)
         await UserOAuthCredentialsService.saveCredentials(newUser.id, provider, profile, tokens)
 
         return {

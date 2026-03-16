@@ -10,18 +10,13 @@ import { logger } from '$lib/server/logger'
 
 function getErrorRedirect(error: unknown): string {
     if (error instanceof Error) {
-        let errorParam = 'oauth_error'
-        const errorMessage = error.message
-
         if (error.message.includes('domain')) {
-            errorParam = 'domain_not_approved'
+            return '/login?error=domain_not_approved'
         } else if (error.message.includes('already linked')) {
-            errorParam = 'account_already_linked'
+            return '/login?error=account_already_linked'
         } else if (error.message.includes('email address')) {
-            errorParam = 'email_mismatch'
+            return '/login?error=email_mismatch'
         }
-
-        return `/login?error=${errorParam}&details=${encodeURIComponent(errorMessage)}`
     }
 
     return '/login?error=oauth_error'
@@ -33,9 +28,9 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
     const error = url.searchParams.get('error')
 
     if (error) {
-        logger.error('Okta OAuth callback error:', error)
         const errorDescription = url.searchParams.get('error_description') || 'Unknown OAuth error'
-        redirect(302, `/login?error=oauth_error&details=${encodeURIComponent(errorDescription)}`)
+        logger.error('Okta OAuth callback error:', errorDescription)
+        redirect(302, '/login?error=oauth_error')
     }
 
     if (!code || !state) {
