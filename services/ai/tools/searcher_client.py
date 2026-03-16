@@ -43,6 +43,7 @@ class Document(BaseModel):
 class SearchResult(BaseModel):
     document: Document
     highlights: list[str]
+    source_type: str | None = None
 
 
 class SearchResponse(BaseModel):

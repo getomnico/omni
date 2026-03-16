@@ -154,21 +154,29 @@ class SearchToolHandler:
             doc_content_text_blocks = [
                 TextBlockParam(type="text", text=h) for h in result.highlights
             ]
+
+            metadata_blocks = [
+                TextBlockParam(type="text", text=f"[Document ID: {doc.id}]"),
+                TextBlockParam(type="text", text=f"[Document Name: {doc.title}]"),
+                TextBlockParam(
+                    type="text",
+                    text=f"[Source: {result.source_type or 'unknown'}]",
+                ),
+                TextBlockParam(type="text", text=f"[URL: {doc.url or '<unknown>'}]"),
+            ]
+
+            if doc.attributes:
+                attrs_str = ", ".join(f"{k}: {v}" for k, v in doc.attributes.items())
+                metadata_blocks.append(
+                    TextBlockParam(type="text", text=f"[Attributes: {attrs_str}]")
+                )
+
             content_blocks.append(
                 SearchResultBlockParam(
                     type="search_result",
                     title=doc.title,
                     source=doc.url or "<unknown>",
-                    content=[
-                        TextBlockParam(type="text", text=f"[Document ID: {doc.id}]"),
-                        TextBlockParam(
-                            type="text", text=f"[Document Name: {doc.title}]"
-                        ),
-                        TextBlockParam(
-                            type="text", text=f"[URL: {doc.url or '<unknown>'}]"
-                        ),
-                        *doc_content_text_blocks,
-                    ],
+                    content=[*metadata_blocks, *doc_content_text_blocks],
                     citations=CitationsConfigParam(enabled=True),
                 )
             )

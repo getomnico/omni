@@ -1,6 +1,7 @@
 use crate::{db::error::DatabaseError, models::Source, traits::Repository};
 use async_trait::async_trait;
 use sqlx::PgPool;
+use std::collections::HashMap;
 use time::OffsetDateTime;
 
 #[derive(Clone)]
@@ -152,6 +153,22 @@ impl SourceRepository {
                 .fetch_all(&self.pool)
                 .await?;
         Ok(results)
+    }
+
+    pub async fn fetch_source_type_map(
+        &self,
+        source_ids: &[String],
+    ) -> Result<HashMap<String, String>, DatabaseError> {
+        if source_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, source_type::text FROM sources WHERE id = ANY($1)")
+                .bind(source_ids)
+                .fetch_all(&self.pool)
+                .await?;
+
+        Ok(rows.into_iter().collect())
     }
 
     pub async fn find_due_for_sync(

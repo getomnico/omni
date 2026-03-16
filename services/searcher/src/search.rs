@@ -7,7 +7,7 @@ use crate::query_parser;
 use crate::search_repository::SearchDocumentRepository;
 use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
-use shared::db::repositories::{DocumentRepository, EmbeddingRepository};
+use shared::db::repositories::{DocumentRepository, EmbeddingRepository, SourceRepository};
 use shared::models::{ChunkResult, Document};
 use shared::utils::safe_str_slice;
 use shared::{
@@ -56,6 +56,27 @@ impl SearchEngine {
         })
     }
 
+    async fn populate_source_types(&self, results: &mut [SearchResult]) {
+        let source_ids: Vec<String> = results
+            .iter()
+            .map(|r| r.document.source_id.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        let source_repo = SourceRepository::new(self.db_pool.pool());
+        match source_repo.fetch_source_type_map(&source_ids).await {
+            Ok(type_map) => {
+                for result in results.iter_mut() {
+                    result.source_type = type_map.get(&result.document.source_id).cloned();
+                }
+            }
+            Err(e) => {
+                info!("Failed to fetch source types: {}", e);
+            }
+        }
+    }
+
     fn prepare_document_for_response(&self, mut doc: Document) -> Document {
         doc.content_id = None;
 
@@ -63,8 +84,6 @@ impl SearchEngine {
         if let Some(url_str) = &doc.url {
             if doc.content_type.is_some() {
                 let mut metadata_parts = Vec::new();
-                // Note: source_type would go here if we had it
-                // For now, we only add content_type
                 if let Some(ref ct) = doc.content_type {
                     metadata_parts.push(ct.clone());
                 }
@@ -300,6 +319,8 @@ impl SearchEngine {
         let has_more = total_count >= limit;
         let query_time = start_time.elapsed().as_millis() as u64;
 
+        self.populate_source_types(&mut results).await;
+
         info!(
             "Search completed in {}ms, found {} results",
             query_time,
@@ -383,6 +404,7 @@ impl SearchEngine {
                 highlights,
                 match_type: "fulltext".to_string(),
                 content: None,
+                source_type: None,
             });
         }
 
@@ -489,7 +511,8 @@ impl SearchEngine {
                     score: max_score,
                     highlights: all_highlights,
                     match_type: "semantic".to_string(),
-                    content: None, // Using highlights instead of single content snippet
+                    content: None,
+                    source_type: None,
                 });
             }
         }
@@ -537,7 +560,7 @@ impl SearchEngine {
             .ok_or_else(|| anyhow::anyhow!("Document not found: {}", document_id))?;
 
         // Get actual content size (extracted text, not original file)
-        let results = if let Some(content_id) = &doc.content_id {
+        let mut results = if let Some(content_id) = &doc.content_id {
             match self.content_storage.get_text(content_id).await {
                 Ok(content) => {
                     let content_size = content.len();
@@ -553,6 +576,7 @@ impl SearchEngine {
                             highlights: vec![content],
                             match_type: "full_content".to_string(),
                             content: None,
+                            source_type: None,
                         }]
                     } else {
                         // Check if specific line range is requested
@@ -614,6 +638,7 @@ impl SearchEngine {
                                     highlights: vec![selected_content],
                                     match_type: "line_range".to_string(),
                                     content: None,
+                                    source_type: None,
                                 }]
                             }
                             _ => {
@@ -640,6 +665,8 @@ impl SearchEngine {
             info!("No content_id available for document");
             vec![]
         };
+
+        self.populate_source_types(&mut results).await;
 
         let total_count = results.len() as i64;
         let query_time = start_time.elapsed().as_millis() as u64;
@@ -700,6 +727,7 @@ impl SearchEngine {
                     highlights: vec![truncated],
                     match_type: "fulltext".to_string(),
                     content: None,
+                    source_type: None,
                 }]
             } else {
                 error!(
@@ -834,6 +862,7 @@ impl SearchEngine {
                     },
                     match_type: "semantic".to_string(),
                     content: None,
+                    source_type: None,
                 });
             }
         }
@@ -914,6 +943,7 @@ impl SearchEngine {
                     highlights: result.highlights,
                     match_type: "fulltext".to_string(),
                     content: result.content,
+                    source_type: None,
                 },
             );
         }
@@ -942,6 +972,7 @@ impl SearchEngine {
                         highlights: result.highlights,
                         match_type: "semantic".to_string(),
                         content: result.content,
+                        source_type: None,
                     }
                 });
         }

@@ -87,6 +87,8 @@ pub struct SearchResult {
     pub match_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
