@@ -73,6 +73,7 @@
                 </Card.Header>
                 <Card.Content>
                     <form
+                        class="flex justify-end"
                         method="POST"
                         action="?/updatePassword"
                         use:enhance={() => {
@@ -130,7 +131,7 @@
                 </Card.Header>
                 <Card.Content>
                     {#if data.google.enabled && !showForm}
-                        <div class="flex flex-wrap gap-2">
+                        <div class="flex flex-wrap justify-end gap-2">
                             <Button
                                 variant="outline"
                                 size="sm"
@@ -229,7 +230,7 @@
                                     required={!data.google.hasClientSecret} />
                             </div>
 
-                            <div class="flex gap-2">
+                            <div class="flex justify-end gap-2">
                                 {#if data.google.enabled}
                                     <Button
                                         variant="outline"
@@ -276,7 +277,7 @@
                     </Card.Header>
                     <Card.Content>
                         {#if data.okta.enabled && !oktaShowForm}
-                            <div class="flex flex-wrap gap-2">
+                            <div class="flex flex-wrap justify-end gap-2">
                                 <Button
                                     variant="outline"
                                     size="sm"
@@ -387,7 +388,7 @@
                                         required={!data.okta.hasClientSecret} />
                                 </div>
 
-                                <div class="flex gap-2">
+                                <div class="flex justify-end gap-2">
                                     {#if data.okta.enabled}
                                         <Button
                                             variant="outline"
