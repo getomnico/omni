@@ -4,6 +4,7 @@ use crate::models::{
 use crate::operator_registry::OperatorRegistry;
 use crate::people_cache::PeopleCache;
 use crate::query_parser;
+use crate::search_repository::SearchDocumentRepository;
 use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::db::repositories::{DocumentRepository, EmbeddingRepository};
@@ -135,6 +136,10 @@ impl SearchEngine {
             || !parsed.person_boosts.is_empty();
 
         let mut request = request;
+        // Preserve the original query (with operators) for display in the response
+        request
+            .original_user_query
+            .get_or_insert(request.query.clone());
         request.query = parsed.cleaned_query;
 
         // Merge parsed attribute filters
@@ -186,6 +191,7 @@ impl SearchEngine {
         }
 
         let repo = DocumentRepository::new(self.db_pool.pool());
+        let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
         let limit = request.limit();
 
         if request.query.trim().is_empty() && !has_parsed_filters {
@@ -199,7 +205,10 @@ impl SearchEngine {
         let search_future = async {
             let start_ts = Instant::now();
             let res = match request.search_mode() {
-                SearchMode::Fulltext => self.fulltext_search(&repo, &request, &source_ids).await,
+                SearchMode::Fulltext => {
+                    self.fulltext_search(&search_repo, &request, &source_ids)
+                        .await
+                }
                 SearchMode::Semantic => self.semantic_search(&request).await,
                 SearchMode::Hybrid => self.hybrid_search(&request).await,
             };
@@ -213,7 +222,7 @@ impl SearchEngine {
                 let start_ts = Instant::now();
                 let content_types = request.content_types.as_deref();
                 let attribute_filters = request.attribute_filters.as_ref();
-                let facets = repo
+                let facets = search_repo
                     .get_facet_counts(
                         &request.query,
                         &source_ids,
@@ -221,6 +230,7 @@ impl SearchEngine {
                         attribute_filters,
                         request.user_email().map(|e| e.as_str()),
                         request.date_filter.as_ref(),
+                        request.person_filters.as_deref(),
                     )
                     .await
                     .unwrap_or_else(|e| {
@@ -301,7 +311,10 @@ impl SearchEngine {
             total_count,
             query_time_ms: query_time,
             has_more,
-            query: request.query.clone(),
+            query: request
+                .original_user_query
+                .clone()
+                .unwrap_or(request.query.clone()),
             facets: if facets.is_empty() {
                 None
             } else {
@@ -321,7 +334,7 @@ impl SearchEngine {
 
     async fn fulltext_search(
         &self,
-        repo: &DocumentRepository,
+        repo: &SearchDocumentRepository,
         request: &SearchRequest,
         source_ids: &[String],
     ) -> Result<Vec<SearchResult>> {
@@ -839,11 +852,12 @@ impl SearchEngine {
         info!("Performing hybrid search for query: '{}'", request.query);
         let start_time = Instant::now();
 
-        let repo = DocumentRepository::new(self.db_pool.pool());
-        let source_ids = repo
+        let doc_repo = DocumentRepository::new(self.db_pool.pool());
+        let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
+        let source_ids = doc_repo
             .fetch_active_source_ids(request.source_types.as_deref())
             .await?;
-        let fts_future = self.fulltext_search(&repo, request, &source_ids);
+        let fts_future = self.fulltext_search(&search_repo, request, &source_ids);
 
         // Apply timeout to semantic search
         let semantic_future = tokio::time::timeout(
@@ -1066,11 +1080,14 @@ impl SearchEngine {
     pub async fn get_rag_context(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
         info!("Generating RAG context for query: '{}'", request.query);
 
-        let repo = DocumentRepository::new(self.db_pool.pool());
-        let source_ids = repo
+        let doc_repo = DocumentRepository::new(self.db_pool.pool());
+        let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
+        let source_ids = doc_repo
             .fetch_active_source_ids(request.source_types.as_deref())
             .await?;
-        let fts_results = self.fulltext_search(&repo, request, &source_ids).await?;
+        let fts_results = self
+            .fulltext_search(&search_repo, request, &source_ids)
+            .await?;
 
         // Get semantic search results enhanced with expanded context for RAG
         let semantic_results = self.get_enhanced_semantic_results_for_rag(request).await?;

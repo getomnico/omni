@@ -4,6 +4,7 @@ pub mod operator_registry;
 pub mod people_cache;
 pub mod query_parser;
 pub mod search;
+pub mod search_repository;
 pub mod suggested_questions;
 pub mod typeahead;
 
