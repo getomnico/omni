@@ -50,6 +50,12 @@ export async function getOktaAuthConfig(): Promise<{
     }
 }
 
+export async function isPasswordAuthEnabled(): Promise<boolean> {
+    const row = await getAuthProvider('password')
+    if (!row) return true
+    return row.enabled
+}
+
 export async function updateAuthProvider(
     provider: string,
     enabled: boolean,

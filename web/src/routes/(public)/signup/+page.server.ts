@@ -5,6 +5,7 @@ import { generateSessionToken, createSession, setSessionTokenCookie } from '$lib
 import { DomainService } from '$lib/server/domains.js'
 import { userRepository } from '$lib/server/db/users'
 import { SystemFlags } from '$lib/server/system-flags'
+import { isPasswordAuthEnabled } from '$lib/server/db/auth-providers'
 import type { Actions, PageServerLoad } from './$types.js'
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -16,6 +17,13 @@ export const load: PageServerLoad = async ({ locals }) => {
     const isInitialized = await SystemFlags.isInitialized()
     const isFirstUser = !isInitialized
 
+    if (!isFirstUser) {
+        const passwordEnabled = await isPasswordAuthEnabled()
+        if (!passwordEnabled) {
+            throw redirect(302, '/login')
+        }
+    }
+
     return {
         isFirstUser,
     }
@@ -23,6 +31,17 @@ export const load: PageServerLoad = async ({ locals }) => {
 
 export const actions: Actions = {
     default: async ({ request, cookies }) => {
+        const isInitialized = await SystemFlags.isInitialized()
+        if (isInitialized) {
+            const passwordEnabled = await isPasswordAuthEnabled()
+            if (!passwordEnabled) {
+                return fail(403, {
+                    error: 'Password authentication is disabled.',
+                    email: '',
+                })
+            }
+        }
+
         const formData = await request.formData()
         const email = formData.get('email') as string
         const password = formData.get('password') as string
@@ -71,8 +90,6 @@ export const actions: Actions = {
             })
         }
 
-        // Check if this is the first user
-        const isInitialized = await SystemFlags.isInitialized()
         const isFirstUser = !isInitialized
 
         try {

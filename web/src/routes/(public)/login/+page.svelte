@@ -26,7 +26,7 @@
 
 <Card class="w-full">
     <CardHeader class="text-center">
-        <CardTitle class="text-2xl">Welcome back</CardTitle>
+        <CardTitle class="text-2xl">Login to Omni</CardTitle>
         <CardDescription>Sign in to your Omni account</CardDescription>
     </CardHeader>
     <CardContent>
@@ -66,59 +66,63 @@
                 {/if}
             </div>
 
-            <div class="relative my-6">
-                <div class="absolute inset-0 flex items-center">
-                    <span class="w-full border-t"></span>
+            {#if data?.passwordAuthEnabled}
+                <div class="relative my-6">
+                    <div class="absolute inset-0 flex items-center">
+                        <span class="w-full border-t"></span>
+                    </div>
+                    <div class="relative flex justify-center text-xs uppercase">
+                        <span class="bg-card text-muted-foreground px-2">or</span>
+                    </div>
                 </div>
-                <div class="relative flex justify-center text-xs uppercase">
-                    <span class="bg-card text-muted-foreground px-2">or</span>
-                </div>
-            </div>
+            {/if}
         {/if}
 
-        <form
-            method="POST"
-            use:enhance={() => {
-                loading = true
-                return async ({ update }) => {
-                    loading = false
-                    await update()
-                }
-            }}
-            class="space-y-4">
-            <div class="space-y-2">
-                <Label for="email">Email</Label>
-                <Input
-                    id="email"
-                    name="email"
-                    type="email"
-                    placeholder="Enter your email"
-                    value={form?.email ?? ''}
-                    required
-                    disabled={loading} />
+        {#if data?.passwordAuthEnabled}
+            <form
+                method="POST"
+                use:enhance={() => {
+                    loading = true
+                    return async ({ update }) => {
+                        loading = false
+                        await update()
+                    }
+                }}
+                class="space-y-4">
+                <div class="space-y-2">
+                    <Label for="email">Email</Label>
+                    <Input
+                        id="email"
+                        name="email"
+                        type="email"
+                        placeholder="Enter your email"
+                        value={form?.email ?? ''}
+                        required
+                        disabled={loading} />
+                </div>
+
+                <div class="space-y-2">
+                    <Label for="password">Password</Label>
+                    <Input
+                        id="password"
+                        name="password"
+                        type="password"
+                        placeholder="Enter your password"
+                        required
+                        disabled={loading} />
+                </div>
+
+                <Button type="submit" class="w-full" disabled={loading}>
+                    {loading ? 'Signing in...' : 'Sign in'}
+                </Button>
+            </form>
+
+            <div class="mt-6 text-center text-sm">
+                <span class="text-muted-foreground">Don't have an account?</span>
+                <a href="/signup" class="text-foreground hover:text-foreground/80 font-medium">
+                    Sign up
+                </a>
             </div>
-
-            <div class="space-y-2">
-                <Label for="password">Password</Label>
-                <Input
-                    id="password"
-                    name="password"
-                    type="password"
-                    placeholder="Enter your password"
-                    required
-                    disabled={loading} />
-            </div>
-
-            <Button type="submit" class="w-full" disabled={loading}>
-                {loading ? 'Signing in...' : 'Sign in'}
-            </Button>
-        </form>
-
-        <div class="mt-6 text-center text-sm">
-            <span class="text-muted-foreground">Don't have an account?</span>
-            <a href="/signup" class="text-foreground hover:text-foreground/80 font-medium">
-                Sign up
-            </a>
-        </div>
+        {/if}
     </CardContent>
 </Card>
