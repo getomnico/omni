@@ -9,7 +9,11 @@ import { sha256 } from '@oslojs/crypto/sha2'
 import { encodeHexLowerCase } from '@oslojs/encoding'
 import { userRepository } from '$lib/server/db/users'
 import { SystemFlags } from '$lib/server/system-flags'
-import { getGoogleAuthConfig, getOktaAuthConfig } from '$lib/server/db/auth-providers'
+import {
+    getGoogleAuthConfig,
+    getOktaAuthConfig,
+    isPasswordAuthEnabled,
+} from '$lib/server/db/auth-providers'
 import { loadOktaOAuthService } from '$lib/server/oauth/okta'
 import { verify } from '@node-rs/argon2'
 import type { Actions, PageServerLoad } from './$types.js'
@@ -34,6 +38,7 @@ export const load: PageServerLoad = async ({ cookies, locals, url }) => {
     const oktaConfig = await getOktaAuthConfig()
     const oktaAuthEnabled =
         (oktaConfig?.enabled && (await loadOktaOAuthService()) !== null) ?? false
+    const passwordAuthEnabled = await isPasswordAuthEnabled()
 
     // Handle OAuth error messages from URL parameters
     const error = url.searchParams.get('error')
@@ -85,6 +90,7 @@ export const load: PageServerLoad = async ({ cookies, locals, url }) => {
             error: errorMessage,
             googleAuthEnabled,
             oktaAuthEnabled,
+            passwordAuthEnabled,
         }
     }
 
@@ -97,6 +103,7 @@ export const load: PageServerLoad = async ({ cookies, locals, url }) => {
             success: 'Welcome to Omni! Your account has been created successfully.',
             googleAuthEnabled,
             oktaAuthEnabled,
+            passwordAuthEnabled,
         }
     }
 
@@ -105,14 +112,23 @@ export const load: PageServerLoad = async ({ cookies, locals, url }) => {
             success: `Your ${linked} account has been successfully linked.`,
             googleAuthEnabled,
             oktaAuthEnabled,
+            passwordAuthEnabled,
         }
     }
 
-    return { googleAuthEnabled, oktaAuthEnabled }
+    return { googleAuthEnabled, oktaAuthEnabled, passwordAuthEnabled }
 }
 
 export const actions: Actions = {
     default: async ({ request, cookies }) => {
+        const passwordEnabled = await isPasswordAuthEnabled()
+        if (!passwordEnabled) {
+            return fail(403, {
+                error: 'Password authentication is disabled. Please use an alternative sign-in method.',
+                email: '',
+            })
+        }
+
         const formData = await request.formData()
         const email = formData.get('email') as string
         const password = formData.get('password') as string

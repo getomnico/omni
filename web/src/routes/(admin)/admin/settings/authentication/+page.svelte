@@ -5,7 +5,7 @@
     import { Label } from '$lib/components/ui/label'
     import * as Card from '$lib/components/ui/card'
     import * as Alert from '$lib/components/ui/alert'
-    import { CheckCircle2, Loader2, Info, Pencil } from '@lucide/svelte'
+    import { CheckCircle2, Loader2, Info, Pencil, KeyRound } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import type { PageData } from './$types'
     import googleIcon from '$lib/images/icons/google.svg'
@@ -25,6 +25,9 @@
     let oktaClientSecret = $state('')
     let oktaIsSubmitting = $state(false)
     let oktaShowForm = $state(false)
+
+    let passwordEnabled = $state(data.passwordAuthEnabled)
+    let passwordIsSubmitting = $state(false)
 
     function handleToggle() {
         if (enabled) {
@@ -50,6 +53,86 @@
         </div>
 
         <div class="grid grid-cols-1 items-start gap-4 md:grid-cols-2">
+            <Card.Root>
+                <Card.Header class="flex flex-row items-start justify-between space-y-0 pb-2">
+                    <div class="flex items-start gap-3">
+                        <KeyRound class="text-muted-foreground h-8 w-8" />
+                        <div>
+                            <Card.Title class="text-lg">Password</Card.Title>
+                            {#if passwordEnabled}
+                                <div class="flex items-center gap-1.5 text-sm text-green-600">
+                                    <CheckCircle2 class="h-3.5 w-3.5" />
+                                    Enabled
+                                </div>
+                            {:else}
+                                <Card.Description
+                                    >Email and password authentication is disabled</Card.Description>
+                            {/if}
+                        </div>
+                    </div>
+                </Card.Header>
+                <Card.Content>
+                    {#if passwordEnabled}
+                        <form
+                            method="POST"
+                            action="?/updatePassword"
+                            use:enhance={() => {
+                                passwordIsSubmitting = true
+                                return async ({ result, update }) => {
+                                    passwordIsSubmitting = false
+                                    await update()
+                                    if (result.type === 'success') {
+                                        toast.success(
+                                            result.data?.message || 'Password auth disabled',
+                                        )
+                                        passwordEnabled = false
+                                    } else if (result.type === 'failure') {
+                                        toast.error(result.data?.error || 'Something went wrong')
+                                    }
+                                }
+                            }}>
+                            <input type="hidden" name="enabled" value="false" />
+                            <Button
+                                type="submit"
+                                variant="outline"
+                                size="sm"
+                                disabled={passwordIsSubmitting}
+                                class="cursor-pointer gap-1 text-red-600 hover:text-red-700">
+                                {passwordIsSubmitting ? 'Disabling...' : 'Disable'}
+                            </Button>
+                        </form>
+                    {:else}
+                        <form
+                            method="POST"
+                            action="?/updatePassword"
+                            use:enhance={() => {
+                                passwordIsSubmitting = true
+                                return async ({ result, update }) => {
+                                    passwordIsSubmitting = false
+                                    await update()
+                                    if (result.type === 'success') {
+                                        toast.success(
+                                            result.data?.message || 'Password auth enabled',
+                                        )
+                                        passwordEnabled = true
+                                    } else if (result.type === 'failure') {
+                                        toast.error(result.data?.error || 'Something went wrong')
+                                    }
+                                }
+                            }}>
+                            <input type="hidden" name="enabled" value="true" />
+                            <Button
+                                type="submit"
+                                size="sm"
+                                disabled={passwordIsSubmitting}
+                                class="cursor-pointer">
+                                {passwordIsSubmitting ? 'Enabling...' : 'Enable'}
+                            </Button>
+                        </form>
+                    {/if}
+                </Card.Content>
+            </Card.Root>
+
             <Card.Root>
                 <Card.Header class="flex flex-row items-start justify-between space-y-0 pb-2">
                     <div class="flex items-start gap-3">
