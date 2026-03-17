@@ -62,83 +62,121 @@ jobs:
           filters: |
             ai:
               - 'services/ai/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-service.yml'
             web:
               - 'web/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-service.yml'
             searcher:
               - 'services/searcher/**'
               - 'shared/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-service.yml'
             indexer:
               - 'services/indexer/**'
               - 'shared/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-service.yml'
             connector-manager:
               - 'services/connector-manager/**'
               - 'shared/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-service.yml'
             sandbox:
               - 'services/sandbox/**'
               - 'shared/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-service.yml'
             migrator:
               - 'services/migrations/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-service.yml'
             google-connector:
               - 'connectors/google/**'
               - 'shared/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-connector.yml'
             slack-connector:
               - 'connectors/slack/**'
               - 'shared/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-connector.yml'
             atlassian-connector:
               - 'connectors/atlassian/**'
               - 'shared/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-connector.yml'
             filesystem-connector:
               - 'connectors/filesystem/**'
               - 'shared/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-connector.yml'
             fireflies-connector:
               - 'connectors/fireflies/**'
               - 'shared/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-connector.yml'
             imap-connector:
               - 'connectors/imap/**'
               - 'shared/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-connector.yml'
             web-connector:
               - 'connectors/web/**'
               - 'shared/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-connector.yml'
             github-connector:
               - 'connectors/github/**'
               - 'sdk/python/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-connector.yml'
             hubspot-connector:
               - 'connectors/hubspot/**'
               - 'sdk/python/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-connector.yml'
             microsoft-connector:
               - 'connectors/microsoft/**'
               - 'sdk/python/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-connector.yml'
             notion-connector:
               - 'connectors/notion/**'
               - 'sdk/python/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-connector.yml'
             deployment:
               - 'docker/docker-compose.yml'
               - 'docker/docker-compose.gpu.yml'
               - '.env.example'
               - 'Caddyfile'
               - 'infra/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/package-deployment.yml'
 
   # ---------------------------------------------------------------------------
   # Core services
