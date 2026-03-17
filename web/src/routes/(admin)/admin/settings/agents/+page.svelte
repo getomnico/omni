@@ -262,9 +262,15 @@
             {/if}
 
             <div
-                class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
-                Org agent execution logs are not visible to anyone, including admins. Only status,
-                timing, and summary are shown.
+                class="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+                <p class="font-semibold">
+                    Exercise caution when creating org agents. They have read access to all data
+                    across the organization, including documents belonging to all users.
+                </p>
+                <p>
+                    Execution logs are not visible to anyone, including admins. Only status, timing,
+                    and summary are shown.
+                </p>
             </div>
 
             {#if error}

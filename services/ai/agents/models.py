@@ -3,7 +3,11 @@
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
+
+AgentType = Literal["user", "org"]
+ScheduleType = Literal["cron", "interval"]
+RunStatus = Literal["pending", "running", "completed", "failed"]
 
 
 @dataclass
@@ -12,8 +16,8 @@ class Agent:
     user_id: str
     name: str
     instructions: str
-    agent_type: str  # "user" | "org"
-    schedule_type: str  # "cron" | "interval"
+    agent_type: AgentType
+    schedule_type: ScheduleType
     schedule_value: str
     model_id: Optional[str]
     allowed_sources: list[dict]  # [{source_id, modes: ["read","write"]}]
@@ -77,7 +81,7 @@ class Agent:
 class AgentRun:
     id: str
     agent_id: str
-    status: str  # "pending" | "running" | "completed" | "failed"
+    status: RunStatus
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
     execution_log: list[dict] = field(default_factory=list)

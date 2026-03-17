@@ -4,9 +4,11 @@ from datetime import datetime, timedelta, timezone
 
 from croniter import croniter
 
+from .models import ScheduleType
+
 
 def compute_next_run(
-    schedule_type: str,
+    schedule_type: ScheduleType,
     schedule_value: str,
     from_time: datetime,
 ) -> datetime:
@@ -27,7 +29,7 @@ def compute_next_run(
         raise ValueError(f"Unknown schedule_type: {schedule_type}")
 
 
-def validate_schedule(schedule_type: str, schedule_value: str) -> bool:
+def validate_schedule(schedule_type: ScheduleType, schedule_value: str) -> bool:
     """Validate a schedule configuration."""
     if schedule_type == "cron":
         return croniter.is_valid(schedule_value)
@@ -41,7 +43,7 @@ def validate_schedule(schedule_type: str, schedule_value: str) -> bool:
 
 
 def is_due(
-    schedule_type: str,
+    schedule_type: ScheduleType,
     schedule_value: str,
     last_run_time: datetime,
     now: datetime,
