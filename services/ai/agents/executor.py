@@ -36,6 +36,7 @@ from tools import (
     DocumentToolHandler,
 )
 from tools.connector_handler import ConnectorAction
+from tools.email_handler import EmailToolHandler
 from tools.sandbox_handler import SandboxToolHandler
 
 from .models import Agent, AgentRun
@@ -140,6 +141,14 @@ async def _build_agent_registry(
     # Sandbox tools
     if SANDBOX_URL:
         registry.register(SandboxToolHandler(sandbox_url=SANDBOX_URL))
+
+    # Email tool — only for org agents with send_email in allowed_actions
+    if (
+        agent.agent_type == "org"
+        and action_whitelist
+        and "send_email" in action_whitelist
+    ):
+        registry.register(EmailToolHandler())
 
     return registry, connector_actions
 
