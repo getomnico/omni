@@ -48,6 +48,9 @@
     import * as Avatar from '$lib/components/ui/avatar'
     import type { Chat } from '$lib/server/db/schema'
 
+    import omniLogoLight from '$lib/images/icons/omni-logo-256.png'
+    import omniLogoDark from '$lib/images/icons/omni-logo-dark-256.png'
+
     interface Props {
         data: LayoutData
         children: Snippet
@@ -199,7 +202,18 @@
     <!-- Chat History Sidebar -->
     <Sidebar collapsible="icon" variant="sidebar">
         <SidebarHeader class="h-16">
-            <div class="flex flex-1 items-center justify-start gap-2">
+            <div class="flex flex-1 items-center justify-between">
+                <a href="/" class="flex items-center gap-1.5 group-data-[collapsible=icon]:hidden">
+                    <img
+                        src={omniLogoLight}
+                        alt="Omni logo"
+                        class="ml-1 h-5 w-5 rounded-sm dark:hidden" />
+                    <img
+                        src={omniLogoDark}
+                        alt="Omni logo"
+                        class="ml-1 hidden h-5 w-5 rounded-sm dark:block" />
+                    <span class="text-xl font-bold group-data-[collapsible=icon]:hidden">omni</span>
+                </a>
                 <TooltipProvider delayDuration={300}>
                     <Tooltip>
                         <TooltipTrigger>
@@ -210,9 +224,6 @@
                         </TooltipContent>
                     </Tooltip>
                 </TooltipProvider>
-                <a href="/" class="flex items-center group-data-[collapsible=icon]:hidden">
-                    <span class="text-xl font-bold group-data-[collapsible=icon]:hidden">omni</span>
-                </a>
             </div>
         </SidebarHeader>
         <SidebarContent class="flex flex-col">
@@ -222,7 +233,7 @@
                         href="/agents"
                         class="mb-1 flex w-full cursor-pointer items-center justify-start has-[>svg]:px-2"
                         variant="ghost">
-                        <Bot />
+                        <Bot class="size-5" />
                         <span class="group-data-[collapsible=icon]:hidden">Agents</span>
                     </Button>
                 {/if}
