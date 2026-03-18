@@ -355,13 +355,17 @@ async def execute_agent(
     agent: Agent,
     app_state: AppState,
     status_queue: asyncio.Queue | None = None,
+    run: AgentRun | None = None,
 ) -> AgentRun:
     """Execute a background agent run with retry support.
 
+    Args:
+        run: Optional pre-created AgentRun. If None, a new one is created.
     Retries up to MAX_RETRIES times on failure before giving up.
     """
     run_repo = AgentRunRepository()
-    run = await run_repo.create_run(agent.id)
+    if run is None:
+        run = await run_repo.create_run(agent.id)
 
     now = datetime.now(timezone.utc)
     run = await run_repo.update_run(run.id, status="running", started_at=now)

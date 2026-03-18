@@ -53,28 +53,21 @@ async def trigger_agent(
 
     app_state: AppState = request.app.state
 
-    # Create a status queue for live updates
-    status_queue: asyncio.Queue = asyncio.Queue()
+    # Create the run upfront so we can return its ID immediately
     run_repo = AgentRunRepository()
+    run = await run_repo.create_run(agent_id)
 
-    # Start execution in background
+    status_queue: asyncio.Queue = asyncio.Queue()
+
     async def _run():
         try:
-            run = await execute_agent(agent, app_state, status_queue=status_queue)
-            return run
+            await execute_agent(agent, app_state, status_queue=status_queue, run=run)
         except Exception as e:
             logger.error(f"Triggered run for agent {agent_id} failed: {e}")
 
-    task = asyncio.create_task(_run())
+    asyncio.create_task(_run())
 
-    # Wait briefly to get the run ID
-    await asyncio.sleep(0.1)
-
-    # Get the latest pending/running run
-    runs = await run_repo.list_runs(agent_id, limit=1)
-    run_id = runs[0].id if runs else None
-
-    return {"status": "started", "run_id": run_id}
+    return {"status": "started", "run_id": run.id}
 
 
 @router.get("/{agent_id}/runs/{run_id}/stream")
