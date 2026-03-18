@@ -113,9 +113,14 @@ impl SearchEngine {
             request.search_mode()
         );
 
+        let mut request = request;
+        request.document_id = request.document_id.filter(|s| !s.trim().is_empty());
+        request.user_email = request.user_email.filter(|s| !s.trim().is_empty());
+        request.user_id = request.user_id.filter(|s| !s.trim().is_empty());
+
         // In case the request contains only user_id, populate user_email for permission filtering
         let user_repo = UserRepository::new(self.db_pool.pool());
-        let request = match (&request.user_id, &request.user_email) {
+        let mut request = match (&request.user_id, &request.user_email) {
             (Some(user_id), None) => {
                 info!("Search request has user_id but no email, fetching email from DB for user ID: {}", user_id);
                 let res = user_repo.find_by_id(user_id.clone()).await;
@@ -154,7 +159,6 @@ impl SearchEngine {
             || !parsed.person_filters.is_empty()
             || !parsed.person_boosts.is_empty();
 
-        let mut request = request;
         // Preserve the original query (with operators) for display in the response
         request
             .original_user_query
