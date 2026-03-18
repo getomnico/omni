@@ -135,8 +135,11 @@
     )
 
     $effect(() => {
-        if (inputRef && value !== inputRef.textContent) {
-            inputRef.textContent = value
+        // Use innerText to match what is extracted in handleInputChange.
+        // This prevents the reactivity loop from triggering while the user is actively typing,
+        // which completely avoids disrupting both cursor positions and Korean IME composition.
+        if (inputRef && value !== inputRef.innerText) {
+            inputRef.innerText = value;
         }
     })
 
