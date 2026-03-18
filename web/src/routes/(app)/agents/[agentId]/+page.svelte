@@ -81,9 +81,9 @@
         goto('/agents')
     }
 
-    function formatDate(dateStr: string | null): string {
-        if (!dateStr) return '—'
-        return new Date(dateStr).toLocaleString()
+    function formatDate(date: Date | string | null): string {
+        if (!date) return '—'
+        return new Date(date).toLocaleString()
     }
 
     function statusColor(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
@@ -224,13 +224,13 @@
                                     <Badge variant={statusColor(run.status)}>{run.status}</Badge>
                                 </a>
                             </td>
-                            <td class="px-4 py-2">{formatDate(run.started_at)}</td>
-                            <td class="px-4 py-2">{formatDate(run.completed_at)}</td>
+                            <td class="px-4 py-2">{formatDate(run.startedAt)}</td>
+                            <td class="px-4 py-2">{formatDate(run.completedAt)}</td>
                             <td class="max-w-md truncate px-4 py-2">
                                 <a
                                     href="/agents/{data.agent.id}/runs/{run.id}"
                                     class="cursor-pointer hover:underline">
-                                    {run.summary || run.error_message || '—'}
+                                    {run.summary || run.errorMessage || '—'}
                                 </a>
                             </td>
                         </tr>

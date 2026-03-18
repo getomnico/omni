@@ -1,5 +1,5 @@
 import { db } from './index.js'
-import { agents } from './schema.js'
+import { agents, agentRuns } from './schema.js'
 import { eq, and, desc } from 'drizzle-orm'
 import { ulid } from 'ulid'
 
@@ -86,4 +86,20 @@ export async function listOrgAgents() {
         .from(agents)
         .where(and(eq(agents.agentType, 'org'), eq(agents.isDeleted, false)))
         .orderBy(desc(agents.createdAt))
+}
+
+// --- Agent Runs (read-only from omni-web, written by omni-ai) ---
+
+export async function listAgentRuns(agentId: string, limit = 50) {
+    return db
+        .select()
+        .from(agentRuns)
+        .where(eq(agentRuns.agentId, agentId))
+        .orderBy(desc(agentRuns.createdAt))
+        .limit(limit)
+}
+
+export async function getAgentRun(runId: string) {
+    const [run] = await db.select().from(agentRuns).where(eq(agentRuns.id, runId)).limit(1)
+    return run || null
 }

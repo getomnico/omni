@@ -1,7 +1,6 @@
 import { json } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
-import { getAgent } from '$lib/server/db/agents.js'
-import { getConfig } from '$lib/server/config.js'
+import { getAgent, getAgentRun } from '$lib/server/db/agents.js'
 
 export const GET: RequestHandler = async ({ params, locals }) => {
     if (!locals.user?.id) {
@@ -21,18 +20,15 @@ export const GET: RequestHandler = async ({ params, locals }) => {
         return json({ error: 'Access denied' }, { status: 403 })
     }
 
-    const config = getConfig()
-    const response = await fetch(
-        `${config.services.aiServiceUrl}/agents/${params.agentId}/runs/${params.runId}`,
-        {
-            headers: { 'x-user-id': locals.user.id },
-        },
-    )
-
-    if (!response.ok) {
-        return json({ error: 'Failed to fetch run' }, { status: response.status })
+    const run = await getAgentRun(params.runId)
+    if (!run || run.agentId !== params.agentId) {
+        return json({ error: 'Run not found' }, { status: 404 })
     }
 
-    const run = await response.json()
+    // For org agents, strip execution_log
+    if (agent.agentType === 'org') {
+        return json({ ...run, executionLog: [] })
+    }
+
     return json(run)
 }

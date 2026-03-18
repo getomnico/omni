@@ -105,11 +105,11 @@
         return entries
     }
 
-    let processedLog = $derived(processExecutionLog(data.run.execution_log || []))
+    let processedLog = $derived(processExecutionLog(data.run.executionLog || []))
 
-    function formatDate(dateStr: string | null): string {
-        if (!dateStr) return '—'
-        return new Date(dateStr).toLocaleString()
+    function formatDate(date: Date | string | null): string {
+        if (!date) return '—'
+        return new Date(date).toLocaleString()
     }
 
     function statusColor(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
@@ -137,8 +137,8 @@
             <Badge variant={statusColor(data.run.status)}>{data.run.status}</Badge>
         </div>
         <div class="text-muted-foreground mt-2 space-y-1 text-sm">
-            <p>Started: {formatDate(data.run.started_at)}</p>
-            <p>Completed: {formatDate(data.run.completed_at)}</p>
+            <p>Started: {formatDate(data.run.startedAt)}</p>
+            <p>Completed: {formatDate(data.run.completedAt)}</p>
         </div>
     </div>
 
@@ -149,11 +149,11 @@
         </div>
     {/if}
 
-    {#if data.run.error_message}
+    {#if data.run.errorMessage}
         <div
             class="mb-6 rounded-lg border border-red-200 bg-red-50 p-4 dark:border-red-900 dark:bg-red-950">
             <h3 class="mb-2 font-medium text-red-700 dark:text-red-400">Error</h3>
-            <p class="text-sm text-red-600 dark:text-red-400">{data.run.error_message}</p>
+            <p class="text-sm text-red-600 dark:text-red-400">{data.run.errorMessage}</p>
         </div>
     {/if}
 

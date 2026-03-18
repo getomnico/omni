@@ -1,9 +1,11 @@
-"""Agent API endpoints — runs, trigger, and live status streaming."""
+"""Agent API endpoints — trigger and live status streaming.
+
+Run history (list/detail) is read directly from the DB by omni-web.
+"""
 
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Path, Request
 from fastapi.responses import StreamingResponse
@@ -73,48 +75,6 @@ async def trigger_agent(
     run_id = runs[0].id if runs else None
 
     return {"status": "started", "run_id": run_id}
-
-
-@router.get("/{agent_id}/runs")
-async def list_runs(
-    request: Request,
-    agent_id: str = Path(...),
-):
-    """List run history for an agent."""
-    user_id = request.headers.get("x-user-id")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="User ID required")
-
-    agent = await _get_agent_with_auth(request, agent_id, user_id)
-
-    run_repo = AgentRunRepository()
-    runs = await run_repo.list_runs(agent_id)
-
-    # For org agents, exclude execution_log from responses
-    include_log = agent.agent_type != "org"
-    return [run.to_dict(include_execution_log=include_log) for run in runs]
-
-
-@router.get("/{agent_id}/runs/{run_id}")
-async def get_run(
-    request: Request,
-    agent_id: str = Path(...),
-    run_id: str = Path(...),
-):
-    """Get details of a specific run."""
-    user_id = request.headers.get("x-user-id")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="User ID required")
-
-    agent = await _get_agent_with_auth(request, agent_id, user_id)
-
-    run_repo = AgentRunRepository()
-    run = await run_repo.get_run(run_id)
-    if not run or run.agent_id != agent_id:
-        raise HTTPException(status_code=404, detail="Run not found")
-
-    include_log = agent.agent_type != "org"
-    return run.to_dict(include_execution_log=include_log)
 
 
 @router.get("/{agent_id}/runs/{run_id}/stream")

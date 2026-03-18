@@ -1,7 +1,6 @@
 import type { PageServerLoad } from './$types.js'
 import { requireActiveUser } from '$lib/server/authHelpers.js'
-import { getAgent } from '$lib/server/db/agents.js'
-import { getConfig } from '$lib/server/config.js'
+import { getAgent, getAgentRun } from '$lib/server/db/agents.js'
 import { error } from '@sveltejs/kit'
 
 export const load: PageServerLoad = async ({ locals, params }) => {
@@ -18,16 +17,13 @@ export const load: PageServerLoad = async ({ locals, params }) => {
         throw error(403, 'Admin access required')
     }
 
-    const config = getConfig()
-    const resp = await fetch(
-        `${config.services.aiServiceUrl}/agents/${params.agentId}/runs/${params.runId}`,
-        { headers: { 'x-user-id': user.id } },
-    )
-
-    if (!resp.ok) {
-        throw error(resp.status, 'Run not found')
+    const run = await getAgentRun(params.runId)
+    if (!run || run.agentId !== params.agentId) {
+        throw error(404, 'Run not found')
     }
 
-    const run = await resp.json()
-    return { user, agent, run }
+    // For org agents, strip execution_log from the response
+    const sanitizedRun = agent.agentType === 'org' ? { ...run, executionLog: [] } : run
+
+    return { user, agent, run: sanitizedRun }
 }

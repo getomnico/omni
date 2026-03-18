@@ -256,6 +256,20 @@ export const agents = pgTable('agents', {
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
 
+export const agentRuns = pgTable('agent_runs', {
+    id: text('id').primaryKey(),
+    agentId: text('agent_id')
+        .notNull()
+        .references(() => agents.id, { onDelete: 'cascade' }),
+    status: text('status').notNull().default('pending'),
+    startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }),
+    completedAt: timestamp('completed_at', { withTimezone: true, mode: 'date' }),
+    executionLog: jsonb('execution_log').notNull().default([]),
+    summary: text('summary'),
+    errorMessage: text('error_message'),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+})
+
 export type User = typeof user.$inferSelect
 export type Source = typeof sources.$inferSelect
 export type Document = typeof documents.$inferSelect
@@ -275,3 +289,4 @@ export type ConnectorConfig = typeof connectorConfigs.$inferSelect
 export type EmbeddingProvider = typeof embeddingProviders.$inferSelect
 export type ToolApproval = typeof toolApprovals.$inferSelect
 export type Agent = typeof agents.$inferSelect
+export type AgentRun = typeof agentRuns.$inferSelect
