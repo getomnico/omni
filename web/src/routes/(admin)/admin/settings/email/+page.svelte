@@ -6,7 +6,7 @@
     import * as Card from '$lib/components/ui/card'
     import * as AlertDialog from '$lib/components/ui/alert-dialog'
     import * as Dialog from '$lib/components/ui/dialog'
-    import { CheckCircle2, Loader2, Pencil, Trash2, Server, Zap, Mail } from '@lucide/svelte'
+    import { CheckCircle2, Loader2, Pencil, Trash2, Server, Zap, Mail, Send } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import type { PageData } from './$types'
     import { EMAIL_PROVIDER_TYPES, EMAIL_PROVIDER_LABELS, type EmailProviderType } from '$lib/types'
@@ -136,6 +136,7 @@
     }
 
     let isTesting = $state(false)
+    let isSendingTest = $state(false)
 </script>
 
 <div class="h-full overflow-y-auto p-6 py-8 pb-24">
@@ -242,6 +243,42 @@
                                             }}>
                                             <Zap class="h-3 w-3" />
                                             Set as Current
+                                        </Button>
+                                    </form>
+                                {/if}
+                                {#if provider.isCurrent}
+                                    <form
+                                        method="POST"
+                                        action="?/sendTest"
+                                        use:enhance={() => {
+                                            isSendingTest = true
+                                            return async ({ result, update }) => {
+                                                isSendingTest = false
+                                                if (result.type === 'success') {
+                                                    toast.success(
+                                                        result.data?.message || 'Test email sent',
+                                                    )
+                                                } else if (result.type === 'failure') {
+                                                    toast.error(
+                                                        result.data?.error ||
+                                                            'Failed to send test email',
+                                                    )
+                                                }
+                                            }
+                                        }}>
+                                        <Button
+                                            type="submit"
+                                            variant="outline"
+                                            size="sm"
+                                            disabled={isSendingTest}
+                                            class="cursor-pointer gap-1">
+                                            {#if isSendingTest}
+                                                <Loader2 class="h-3 w-3 animate-spin" />
+                                                Sending...
+                                            {:else}
+                                                <Send class="h-3 w-3" />
+                                                Send Test Email
+                                            {/if}
                                         </Button>
                                     </form>
                                 {/if}

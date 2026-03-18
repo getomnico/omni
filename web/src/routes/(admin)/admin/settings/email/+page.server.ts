@@ -13,7 +13,7 @@ import {
     type EmailProviderConfig,
     type EmailProviderType,
 } from '$lib/server/db/email-providers'
-import { resetEmailProvider } from '$lib/server/email/factory'
+import { getEmailProvider, resetEmailProvider } from '$lib/server/email/factory'
 import { ResendEmailProvider } from '$lib/server/email/providers/resend'
 import { SMTPEmailProvider } from '$lib/server/email/providers/smtp'
 import { ACSEmailProvider } from '$lib/server/email/providers/acs'
@@ -29,6 +29,7 @@ export const load: PageServerLoad = async ({ locals }) => {
     const providers = await listActiveProviders()
 
     return {
+        adminEmail: locals.user?.email ?? null,
         providers: providers.map((p) => {
             const config = p.config as Record<string, unknown>
             return {
@@ -137,6 +138,32 @@ export const actions: Actions = {
         } catch (err) {
             console.error('Failed to set current email provider:', err)
             return fail(500, { error: 'Failed to switch provider' })
+        }
+    },
+
+    sendTest: async ({ locals }) => {
+        requireAdmin(locals)
+
+        const adminEmail = locals.user?.email
+        if (!adminEmail) return fail(400, { error: 'Could not determine your email address' })
+
+        resetEmailProvider()
+        const provider = await getEmailProvider()
+        if (!provider) return fail(400, { error: 'No email provider configured' })
+
+        try {
+            const result = await provider.sendMagicLink(
+                adminEmail,
+                'https://example.com/test',
+                false,
+            )
+            if (result.success) {
+                return { success: true, message: `Test email sent to ${adminEmail}` }
+            }
+            return fail(500, { error: result.error || 'Failed to send test email' })
+        } catch (err) {
+            console.error('Failed to send test email:', err)
+            return fail(500, { error: 'Failed to send test email' })
         }
     },
 
