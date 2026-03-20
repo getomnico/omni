@@ -1,5 +1,6 @@
 """Repository for document-related database operations."""
 
+import json
 import logging
 from typing import Optional, List
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ class Document:
     title: Optional[str] = None
     content_type: Optional[str] = None
     embedding_status: Optional[str] = None
+    permissions: Optional[dict] = None
 
 
 @dataclass
@@ -50,11 +52,15 @@ class DocumentsRepository:
         pool = await self._get_pool()
 
         row = await pool.fetchrow(
-            "SELECT id, content_id, source_id, external_id, title, content_type, embedding_status FROM documents WHERE id = $1",
+            "SELECT id, content_id, source_id, external_id, title, content_type, embedding_status, permissions FROM documents WHERE id = $1",
             document_id,
         )
 
         if row:
+            raw_perms = row["permissions"]
+            if isinstance(raw_perms, str):
+                raw_perms = json.loads(raw_perms)
+
             return Document(
                 id=row["id"],
                 content_id=row["content_id"],
@@ -63,6 +69,7 @@ class DocumentsRepository:
                 title=row["title"],
                 content_type=row["content_type"],
                 embedding_status=row["embedding_status"],
+                permissions=raw_perms if isinstance(raw_perms, dict) else None,
             )
         return None
 

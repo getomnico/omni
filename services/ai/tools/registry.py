@@ -17,6 +17,7 @@ class ToolContext:
     user_id: str
     user_email: str | None = None
     original_user_query: str | None = None
+    skip_permission_check: bool = False
 
 
 @dataclass
