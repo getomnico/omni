@@ -1,7 +1,6 @@
 pub mod handlers;
 pub mod models;
 pub mod operator_registry;
-pub mod people_cache;
 pub mod query_parser;
 pub mod search;
 pub mod search_repository;
@@ -26,7 +25,6 @@ use tower_http::cors::CorsLayer;
 use tracing::{error, info};
 
 use crate::operator_registry::OperatorRegistry;
-use crate::people_cache::PeopleCache;
 use crate::suggested_questions::SuggestedQuestionsGenerator;
 use crate::typeahead::TitleIndex;
 
@@ -88,7 +86,6 @@ pub struct AppState {
     pub content_storage: Arc<dyn ObjectStorage>,
     pub suggested_questions_generator: Arc<SuggestedQuestionsGenerator>,
     pub title_index: Arc<TitleIndex>,
-    pub people_cache: Arc<PeopleCache>,
     pub operator_registry: Arc<OperatorRegistry>,
 }
 
@@ -99,6 +96,7 @@ pub fn create_app(state: AppState) -> Router {
         .route("/search/ai-answer", post(handlers::ai_answer))
         .route("/recent-searches", get(handlers::recent_searches))
         .route("/typeahead", get(handlers::typeahead))
+        .route("/people/search", get(handlers::people_search))
         .route("/suggested-questions", post(handlers::suggested_questions))
         .layer(
             ServiceBuilder::new()
@@ -145,13 +143,6 @@ pub async fn run_server() -> AnyhowResult<()> {
     title_index.start_background_refresh(300);
     info!("Typeahead index initialized");
 
-    let people_cache = Arc::new(PeopleCache::new(db_pool.clone()));
-    if let Err(e) = people_cache.refresh().await {
-        error!("Failed initial people cache load: {}", e);
-    }
-    people_cache.start_background_refresh(300);
-    info!("People cache initialized");
-
     let operator_registry = Arc::new(OperatorRegistry::new(redis_client.clone()));
     if let Err(e) = operator_registry.refresh().await {
         error!("Failed initial operator registry load: {}", e);
@@ -167,7 +158,6 @@ pub async fn run_server() -> AnyhowResult<()> {
         content_storage,
         suggested_questions_generator,
         title_index,
-        people_cache,
         operator_registry,
     };
 

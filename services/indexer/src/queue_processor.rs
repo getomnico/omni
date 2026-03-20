@@ -1,7 +1,10 @@
+use crate::people_extractor;
 use crate::AppState;
 use anyhow::{Context, Result};
 use futures::future::join_all;
-use shared::db::repositories::{DocumentRepository, EmbeddingRepository, SyncRunRepository};
+use shared::db::repositories::{
+    DocumentRepository, EmbeddingRepository, PersonRepository, SyncRunRepository,
+};
 use shared::embedding_queue::EmbeddingQueue;
 use shared::models::{
     ConnectorEvent, ConnectorEventQueueItem, Document, DocumentAttributes, DocumentMetadata,
@@ -10,6 +13,7 @@ use shared::models::{
 use shared::queue::EventQueue;
 use shared::storage::gc::{ContentBlobGC, GCConfig};
 use sqlx::postgres::PgListener;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
 use tokio::time::{interval, Duration, Instant};
@@ -477,6 +481,9 @@ impl QueueProcessor {
                         }
                     }
 
+                    // Extract people from the raw events and upsert into the people table
+                    self.extract_and_upsert_people(&events_clone).await;
+
                     let processed_count = batch_result.successful_event_ids.len();
                     total_processed += processed_count;
 
@@ -697,6 +704,94 @@ impl QueueProcessor {
         }
 
         Ok(result)
+    }
+
+    async fn extract_and_upsert_people(&self, events: &[ConnectorEventQueueItem]) {
+        let person_repo = PersonRepository::new(self.state.db_pool.pool());
+
+        let mut manifest_cache: HashMap<String, shared::models::ConnectorManifest> = HashMap::new();
+        let mut seen: HashMap<String, shared::PersonUpsert> = HashMap::new();
+
+        for event_item in events {
+            let event: ConnectorEvent = match serde_json::from_value(event_item.payload.clone()) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            let source_id = event.source_id().to_string();
+
+            // Look up manifest for this source's connector (cached per batch)
+            if !manifest_cache.contains_key(&source_id) {
+                if let Some(m) = self.load_manifest_for_source(&source_id).await {
+                    manifest_cache.insert(source_id.clone(), m);
+                }
+            }
+            let manifest = manifest_cache.get(&source_id);
+
+            let (extra_schema, attributes_schema, search_operators) = match manifest {
+                Some(m) => (
+                    m.extra_schema.as_ref(),
+                    m.attributes_schema.as_ref(),
+                    m.search_operators.as_slice(),
+                ),
+                None => (None, None, &[] as &[shared::models::SearchOperator]),
+            };
+
+            let people = people_extractor::extract_people(
+                extra_schema,
+                attributes_schema,
+                search_operators,
+                &event,
+            );
+
+            for person in people {
+                seen.entry(person.email.clone())
+                    .or_insert_with(|| shared::PersonUpsert {
+                        email: person.email,
+                        display_name: person.display_name,
+                    });
+            }
+        }
+
+        if seen.is_empty() {
+            return;
+        }
+
+        let people: Vec<shared::PersonUpsert> = seen.into_values().collect();
+        let count = people.len();
+
+        match person_repo.upsert_people_batch(&people).await {
+            Ok(_) => {
+                debug!("Upserted {} people from batch", count);
+            }
+            Err(e) => {
+                error!("Failed to upsert people: {}", e);
+            }
+        }
+    }
+
+    async fn load_manifest_for_source(
+        &self,
+        source_id: &str,
+    ) -> Option<shared::models::ConnectorManifest> {
+        // Look up source_type from the sources table
+        let source_type: String =
+            sqlx::query_scalar("SELECT source_type FROM sources WHERE id = $1")
+                .bind(source_id)
+                .fetch_optional(self.state.db_pool.pool())
+                .await
+                .ok()??;
+
+        // Read cached manifest from Redis: connector:manifest:{source_type}
+        let key = format!("connector:manifest:{}", source_type);
+        let mut conn = self
+            .state
+            .redis_client
+            .get_multiplexed_async_connection()
+            .await
+            .ok()?;
+        let json: String = redis::AsyncCommands::get(&mut conn, &key).await.ok()?;
+        serde_json::from_str(&json).ok()
     }
 
     // Helper methods for batch processing

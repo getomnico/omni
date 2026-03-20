@@ -104,6 +104,8 @@ class ConnectorManifest(BaseModel):
     sync_modes: list[str]
     actions: list[ActionDefinition] = Field(default_factory=list)
     search_operators: list[SearchOperator] = Field(default_factory=list)
+    extra_schema: dict | None = None
+    attributes_schema: dict | None = None
 
 
 class SyncRequest(BaseModel):

@@ -1,4 +1,5 @@
 pub mod error;
+pub mod people_extractor;
 pub mod queue_processor;
 
 pub use error::{IndexerError, Result};

@@ -65,6 +65,8 @@ async fn manifest() -> impl IntoResponse {
             value_type: "text".to_string(),
         }],
         read_only: false,
+        extra_schema: None,
+        attributes_schema: None,
     };
     Json(manifest)
 }

@@ -39,6 +39,7 @@ futures-util = "0.3"
 url = "2.5"
 regex = "1"
 time = { workspace = true, features = ["formatting", "parsing", "macros"] }
+async-trait = { workspace = true }
 shared = { path = "../../shared" }
 dashmap = { workspace = true }
 fst = "0.4"

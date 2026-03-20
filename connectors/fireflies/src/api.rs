@@ -97,6 +97,8 @@ async fn manifest() -> impl IntoResponse {
         actions: vec![],
         search_operators: vec![],
         read_only: false,
+        extra_schema: None,
+        attributes_schema: None,
     })
 }
 

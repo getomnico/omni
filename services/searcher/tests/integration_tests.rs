@@ -7,6 +7,7 @@ use axum::{
 };
 use common::SearcherTestFixture;
 use serde_json::{json, Value};
+use shared::db::repositories::{PersonRepository, PersonUpsert};
 use tower::ServiceExt;
 
 /// Extract result titles from a search response in order.
@@ -876,6 +877,112 @@ async fn test_invalid_search_mode() -> Result<()> {
 
     let response = fixture.app.clone().oneshot(request).await?;
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    Ok(())
+}
+
+async fn seed_people(pool: &sqlx::PgPool) {
+    let person_repo = PersonRepository::new(pool);
+    person_repo
+        .upsert_people_batch(&[
+            PersonUpsert {
+                email: "alice.smith@example.com".to_string(),
+                display_name: Some("Alice Smith".to_string()),
+            },
+            PersonUpsert {
+                email: "bob.jones@example.com".to_string(),
+                display_name: Some("Bob Jones".to_string()),
+            },
+            PersonUpsert {
+                email: "sam.wilson@example.com".to_string(),
+                display_name: Some("Sam Wilson".to_string()),
+            },
+            PersonUpsert {
+                email: "samantha.lee@example.com".to_string(),
+                display_name: Some("Samantha Lee".to_string()),
+            },
+        ])
+        .await
+        .expect("Failed to seed people");
+}
+
+#[tokio::test]
+async fn test_person_search_by_name() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    seed_people(pool).await;
+
+    let person_repo = PersonRepository::new(pool);
+
+    // Search for "sam" — should match Sam Wilson (via email token "sam")
+    let results = person_repo.search_people("sam", 10).await?;
+    assert!(
+        !results.is_empty(),
+        "Expected at least 1 result for 'sam', got 0",
+    );
+    let emails: Vec<&str> = results.iter().map(|r| r.email.as_str()).collect();
+    assert!(emails.contains(&"sam.wilson@example.com"));
+
+    // Search for "samantha" — should match Samantha Lee
+    let results = person_repo.search_people("samantha", 10).await?;
+    assert!(!results.is_empty(), "Expected results for 'samantha'");
+    assert_eq!(results[0].email, "samantha.lee@example.com");
+
+    // Search for "alice" — should match Alice Smith
+    let results = person_repo.search_people("alice", 10).await?;
+    assert!(!results.is_empty(), "Expected results for 'alice'");
+    assert_eq!(results[0].email, "alice.smith@example.com");
+
+    // Search for a non-existent name
+    let results = person_repo.search_people("zzzznotaperson", 10).await?;
+    assert!(results.is_empty());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_person_is_known() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    seed_people(pool).await;
+
+    let person_repo = PersonRepository::new(pool);
+
+    assert!(person_repo.is_known_person("alice").await?);
+    assert!(person_repo.is_known_person("bob").await?);
+    assert!(person_repo.is_known_person("sam").await?);
+    assert!(!person_repo.is_known_person("zzzznotaperson").await?);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_people_search_endpoint() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    seed_people(fixture.test_env.db_pool.pool()).await;
+
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("/people/search?q=sam&limit=10")
+        .body(Body::empty())?;
+
+    let response = fixture.app.clone().oneshot(request).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+    let json: Value = serde_json::from_slice(&body)?;
+
+    let people = json["people"].as_array().expect("Expected people array");
+    assert!(
+        !people.is_empty(),
+        "Expected at least 1 person for 'sam', got 0",
+    );
+
+    // Verify response structure
+    let first = &people[0];
+    assert!(first.get("id").is_some());
+    assert!(first.get("email").is_some());
+    assert!(first.get("score").is_some());
 
     Ok(())
 }

@@ -5,7 +5,7 @@ use axum::{
     Router,
 };
 use omni_searcher::{
-    create_app, operator_registry::OperatorRegistry, people_cache::PeopleCache,
+    create_app, operator_registry::OperatorRegistry,
     suggested_questions::SuggestedQuestionsGenerator, typeahead::TitleIndex, AppState,
 };
 use serde_json::{json, Value};
@@ -63,7 +63,6 @@ impl SearcherTestFixture {
             content_storage,
             suggested_questions_generator,
             title_index: title_index.clone(),
-            people_cache: Arc::new(PeopleCache::new(test_env.db_pool.clone())),
             operator_registry: Arc::new(OperatorRegistry::new(test_env.redis_client.clone())),
         };
 

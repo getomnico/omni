@@ -92,6 +92,8 @@ async fn manifest() -> impl IntoResponse {
             },
         ],
         read_only: false,
+        extra_schema: None,
+        attributes_schema: None,
     };
     Json(manifest)
 }

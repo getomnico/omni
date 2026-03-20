@@ -251,6 +251,25 @@ pub async fn list_connectors(
 
         if let Some(ref m) = manifest {
             all_operators.extend(m.search_operators.clone());
+
+            // Cache the full manifest per source type in Redis
+            if let Ok(manifest_json) = serde_json::to_string(m) {
+                // SourceType serializes as snake_case (e.g. "google_drive")
+                let type_key = serde_json::to_value(source_type)
+                    .ok()
+                    .and_then(|v| v.as_str().map(|s| s.to_string()));
+                if let Some(type_str) = type_key {
+                    match state.redis_client.get_multiplexed_async_connection().await {
+                        Ok(mut conn) => {
+                            let key = format!("connector:manifest:{}", type_str);
+                            let _: Result<(), _> = conn.set(&key, manifest_json).await;
+                        }
+                        Err(e) => {
+                            error!("Failed to cache manifest for {}: {}", type_str, e);
+                        }
+                    }
+                }
+            }
         }
 
         connectors.push(ConnectorInfo {

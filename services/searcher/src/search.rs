@@ -2,12 +2,13 @@ use crate::models::{
     RecentSearchesResponse, SearchMode, SearchRequest, SearchResponse, SearchResult,
 };
 use crate::operator_registry::OperatorRegistry;
-use crate::people_cache::PeopleCache;
 use crate::query_parser;
 use crate::search_repository::SearchDocumentRepository;
 use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
-use shared::db::repositories::{DocumentRepository, EmbeddingRepository, SourceRepository};
+use shared::db::repositories::{
+    DocumentRepository, EmbeddingRepository, PersonRepository, SourceRepository,
+};
 use shared::models::{ChunkResult, Document};
 use shared::utils::safe_str_slice;
 use shared::{
@@ -28,7 +29,7 @@ pub struct SearchEngine {
     ai_client: AIClient,
     content_storage: Arc<dyn ObjectStorage>,
     config: SearcherConfig,
-    people_cache: Arc<PeopleCache>,
+    person_repo: PersonRepository,
     operator_registry: Arc<OperatorRegistry>,
 }
 
@@ -40,10 +41,10 @@ impl SearchEngine {
         redis_client: RedisClient,
         ai_client: AIClient,
         config: SearcherConfig,
-        people_cache: Arc<PeopleCache>,
         operator_registry: Arc<OperatorRegistry>,
     ) -> Result<Self> {
         let content_storage = StorageFactory::from_env(db_pool.pool().clone()).await?;
+        let person_repo = PersonRepository::new(db_pool.pool());
 
         Ok(Self {
             db_pool,
@@ -51,7 +52,7 @@ impl SearchEngine {
             ai_client,
             content_storage,
             config,
-            people_cache,
+            person_repo,
             operator_registry,
         })
     }
@@ -148,8 +149,12 @@ impl SearchEngine {
         }
 
         // Parse query for structured operators (from:, in:, before:, etc.)
-        let parsed =
-            query_parser::parse(&request.query, &self.people_cache, &self.operator_registry).await;
+        let parsed = query_parser::parse(
+            &request.query,
+            &self.person_repo as &dyn query_parser::PersonLookup,
+            &self.operator_registry,
+        )
+        .await;
         info!("Parsed query: {:?}", parsed);
         let has_parsed_filters = !parsed.attribute_filters.is_empty()
             || !parsed.source_types.is_empty()

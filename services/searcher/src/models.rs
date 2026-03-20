@@ -143,6 +143,28 @@ pub struct TypeaheadResult {
     pub source_id: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct PersonResult {
+    pub id: String,
+    pub email: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub given_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surname: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub department: Option<String>,
+    pub score: f32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PeopleSearchResponse {
+    pub people: Vec<PersonResult>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

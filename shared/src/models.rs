@@ -329,6 +329,10 @@ pub struct ConnectorManifest {
     pub search_operators: Vec<SearchOperator>,
     #[serde(default)]
     pub read_only: bool,
+    #[serde(default)]
+    pub extra_schema: Option<JsonValue>,
+    #[serde(default)]
+    pub attributes_schema: Option<JsonValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -522,6 +526,35 @@ pub struct MagicLink {
     #[serde(with = "time::serde::iso8601")]
     pub created_at: OffsetDateTime,
     pub user_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct Person {
+    pub id: String,
+    pub email: String,
+    pub display_name: Option<String>,
+    pub given_name: Option<String>,
+    pub surname: Option<String>,
+    pub avatar_url: Option<String>,
+    pub job_title: Option<String>,
+    pub department: Option<String>,
+    pub division: Option<String>,
+    pub company_name: Option<String>,
+    pub office_location: Option<String>,
+    pub city: Option<String>,
+    pub state: Option<String>,
+    pub country: Option<String>,
+    pub employee_id: Option<String>,
+    pub employee_type: Option<String>,
+    pub cost_center: Option<String>,
+    pub manager_id: Option<String>,
+    pub is_active: bool,
+    pub metadata: JsonValue,
+    pub external_id: Option<String>,
+    #[serde(with = "time::serde::iso8601")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::iso8601")]
+    pub updated_at: OffsetDateTime,
 }
 
 #[cfg(test)]

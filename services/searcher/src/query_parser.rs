@@ -1,11 +1,24 @@
 use crate::operator_registry::OperatorRegistry;
-use crate::people_cache::PeopleCache;
+use async_trait::async_trait;
 use regex::Regex;
 use serde_json::Value as JsonValue;
+use shared::db::repositories::PersonRepository;
 use shared::models::{AttributeFilter, DateFilter};
 use shared::SourceType;
 use std::collections::HashMap;
 use time::OffsetDateTime;
+
+#[async_trait]
+pub trait PersonLookup: Send + Sync {
+    async fn is_known_person(&self, term: &str) -> bool;
+}
+
+#[async_trait]
+impl PersonLookup for PersonRepository {
+    async fn is_known_person(&self, term: &str) -> bool {
+        self.is_known_person(term).await.unwrap_or(false)
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct ParsedQuery {
@@ -23,7 +36,7 @@ pub struct ParsedQuery {
 
 pub async fn parse(
     query: &str,
-    people_cache: &PeopleCache,
+    person_lookup: &dyn PersonLookup,
     operator_registry: &OperatorRegistry,
 ) -> ParsedQuery {
     let mut result = ParsedQuery::default();
@@ -36,7 +49,7 @@ pub async fn parse(
     remaining = extract_natural_dates(&remaining, &mut result);
 
     // Phase 3: Extract natural language patterns (from/by/in)
-    remaining = extract_natural_patterns(&remaining, &mut result, people_cache).await;
+    remaining = extract_natural_patterns(&remaining, &mut result, person_lookup).await;
 
     // Phase 4: Check if any word is a known source alias
     remaining = extract_source_word(&remaining, &mut result);
@@ -199,7 +212,7 @@ fn extract_natural_dates(query: &str, result: &mut ParsedQuery) -> String {
 async fn extract_natural_patterns(
     query: &str,
     result: &mut ParsedQuery,
-    people_cache: &PeopleCache,
+    person_lookup: &dyn PersonLookup,
 ) -> String {
     let mut remaining = query.to_string();
 
@@ -207,7 +220,7 @@ async fn extract_natural_patterns(
     let from_re = Regex::new(r"(?i)\b(?:emails?\s+)?from\s+(\w+)\b").unwrap();
     if let Some(cap) = from_re.captures(&remaining) {
         let value = cap[1].to_string();
-        if people_cache.contains(&value).await {
+        if person_lookup.is_known_person(&value).await {
             result.person_boosts.push(value);
             remaining = remaining.replacen(cap.get(0).unwrap().as_str(), "", 1);
         }
@@ -217,7 +230,7 @@ async fn extract_natural_patterns(
     let by_re = Regex::new(r"(?i)\b(?:docs?\s+)?by\s+(\w+)\b").unwrap();
     if let Some(cap) = by_re.captures(&remaining) {
         let value = cap[1].to_string();
-        if people_cache.contains(&value).await {
+        if person_lookup.is_known_person(&value).await {
             result.person_boosts.push(value);
             remaining = remaining.replacen(cap.get(0).unwrap().as_str(), "", 1);
         }
@@ -378,16 +391,31 @@ fn parse_date_value(value: &str, is_before: bool) -> Option<OffsetDateTime> {
 mod tests {
     use super::*;
     use crate::operator_registry::OperatorRegistry;
-    use crate::people_cache::PeopleCache;
     use shared::models::SearchOperator;
+
     use std::collections::HashSet;
 
-    fn empty_cache() -> PeopleCache {
-        PeopleCache::with_people(HashSet::new())
+    struct MockPersonLookup {
+        known: HashSet<String>,
     }
 
-    fn cache_with(names: &[&str]) -> PeopleCache {
-        PeopleCache::with_people(names.iter().map(|s| s.to_string()).collect())
+    #[async_trait]
+    impl PersonLookup for MockPersonLookup {
+        async fn is_known_person(&self, term: &str) -> bool {
+            self.known.contains(&term.to_lowercase())
+        }
+    }
+
+    fn empty_lookup() -> MockPersonLookup {
+        MockPersonLookup {
+            known: HashSet::new(),
+        }
+    }
+
+    fn lookup_with(names: &[&str]) -> MockPersonLookup {
+        MockPersonLookup {
+            known: names.iter().map(|s| s.to_string()).collect(),
+        }
     }
 
     fn default_registry() -> OperatorRegistry {
@@ -431,25 +459,25 @@ mod tests {
     }
 
     fn test_parse(query: &str) -> ParsedQuery {
-        let cache = empty_cache();
+        let lookup = empty_lookup();
         let registry = default_registry();
         tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(parse(query, &cache, &registry))
+            .block_on(parse(query, &lookup, &registry))
     }
 
-    fn test_parse_with_cache(query: &str, cache: &PeopleCache) -> ParsedQuery {
+    fn test_parse_with_lookup(query: &str, lookup: &dyn PersonLookup) -> ParsedQuery {
         let registry = default_registry();
         tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(parse(query, cache, &registry))
+            .block_on(parse(query, lookup, &registry))
     }
 
     fn test_parse_with_registry(query: &str, registry: &OperatorRegistry) -> ParsedQuery {
-        let cache = empty_cache();
+        let lookup = empty_lookup();
         tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(parse(query, &cache, registry))
+            .block_on(parse(query, &lookup, registry))
     }
 
     #[test]
@@ -589,10 +617,9 @@ mod tests {
 
     #[test]
     fn test_natural_language_from() {
-        let cache = cache_with(&["john"]);
-        let parsed = test_parse_with_cache("emails from john", &cache);
+        let lookup = lookup_with(&["john"]);
+        let parsed = test_parse_with_lookup("emails from john", &lookup);
         assert_eq!(parsed.cleaned_query, "");
-        // Natural language "from" is a boost, not a filter
         assert!(parsed.person_boosts.contains(&"john".to_string()));
         assert!(parsed.attribute_filters.is_empty());
     }
@@ -606,10 +633,9 @@ mod tests {
 
     #[test]
     fn test_natural_language_by() {
-        let cache = cache_with(&["sarah"]);
-        let parsed = test_parse_with_cache("docs by sarah", &cache);
+        let lookup = lookup_with(&["sarah"]);
+        let parsed = test_parse_with_lookup("docs by sarah", &lookup);
         assert_eq!(parsed.cleaned_query, "");
-        // Natural language "by" is a boost, not a filter
         assert!(parsed.person_boosts.contains(&"sarah".to_string()));
         assert!(parsed.person_filters.is_empty());
     }
@@ -760,8 +786,8 @@ mod tests {
 
     #[test]
     fn test_explicit_before_natural() {
-        let cache = cache_with(&["john"]);
-        let parsed = test_parse_with_cache("from:sarah report from john", &cache);
+        let lookup = lookup_with(&["john"]);
+        let parsed = test_parse_with_lookup("from:sarah report from john", &lookup);
         // Explicit from:sarah → attribute filter (no boost)
         assert!(parsed.attribute_filters.contains_key("sender"));
         // Natural "from john" → boost (no attribute filter)

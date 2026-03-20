@@ -6,7 +6,7 @@ use common::fixtures::{create_document_request, update_document_request};
 use common::TEST_SOURCE_ID;
 use omni_indexer::{BulkDocumentOperation, BulkDocumentRequest, QueueProcessor};
 use serde_json::{json, Value};
-use shared::db::repositories::DocumentRepository;
+use shared::db::repositories::{DocumentRepository, PersonRepository};
 use shared::models::{ConnectorEvent, Document, DocumentMetadata, DocumentPermissions};
 use shared::queue::EventQueue;
 use sqlx::types::time::OffsetDateTime;
@@ -666,4 +666,184 @@ async fn test_api_document_operations() {
 
     let get_deleted = server.get(&format!("/documents/{}", doc2.id)).await;
     assert_eq!(get_deleted.status_code(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_people_extraction_from_events() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let event_queue = EventQueue::new(fixture.state.db_pool.pool().clone());
+    let repo = DocumentRepository::new(fixture.state.db_pool.pool());
+    let person_repo = PersonRepository::new(fixture.state.db_pool.pool());
+
+    let processor = QueueProcessor::new(fixture.state.clone()).with_accumulation_config(
+        Duration::from_millis(200),
+        Duration::from_secs(30),
+        Duration::from_millis(50),
+    );
+    let processor_handle = tokio::spawn(async move {
+        let _ = processor.start().await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Create a document with emails in permissions.users and metadata.author
+    let content_id = fixture
+        .state
+        .content_storage
+        .store_content("People extraction test".as_bytes(), None)
+        .await
+        .unwrap();
+
+    let create_event = ConnectorEvent::DocumentCreated {
+        sync_run_id: "sync_people".to_string(),
+        source_id: TEST_SOURCE_ID.to_string(),
+        document_id: "people_doc_1".to_string(),
+        content_id,
+        metadata: DocumentMetadata {
+            title: Some("Team Meeting Notes".to_string()),
+            author: Some("alice@example.com".to_string()),
+            created_at: Some(OffsetDateTime::now_utc()),
+            updated_at: Some(OffsetDateTime::now_utc()),
+            content_type: None,
+            mime_type: Some("text/plain".to_string()),
+            size: Some("500".to_string()),
+            url: None,
+            path: None,
+            extra: None,
+        },
+        permissions: DocumentPermissions {
+            public: false,
+            users: vec![
+                "alice@example.com".to_string(),
+                "bob@example.com".to_string(),
+                "carol@example.com".to_string(),
+            ],
+            groups: vec![],
+        },
+        attributes: None,
+    };
+
+    event_queue
+        .enqueue(TEST_SOURCE_ID, &create_event)
+        .await
+        .unwrap();
+
+    // Wait for the document to be indexed
+    common::wait_for_document_exists(
+        &repo,
+        TEST_SOURCE_ID,
+        "people_doc_1",
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("Document should be created");
+
+    // Give a moment for people extraction (runs after document upsert)
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Verify people were extracted and upserted
+    let alice = person_repo
+        .fetch_person_by_email("alice@example.com")
+        .await
+        .expect("DB query should succeed");
+    assert!(
+        alice.is_some(),
+        "alice@example.com should be in people table"
+    );
+
+    let bob = person_repo
+        .fetch_person_by_email("bob@example.com")
+        .await
+        .expect("DB query should succeed");
+    assert!(bob.is_some(), "bob@example.com should be in people table");
+
+    let carol = person_repo
+        .fetch_person_by_email("carol@example.com")
+        .await
+        .expect("DB query should succeed");
+    assert!(
+        carol.is_some(),
+        "carol@example.com should be in people table"
+    );
+
+    // Verify non-email strings were NOT extracted (e.g. the old test used "user1" without @)
+    let nobody = person_repo
+        .fetch_person_by_email("nonexistent@example.com")
+        .await
+        .expect("DB query should succeed");
+    assert!(
+        nobody.is_none(),
+        "nonexistent email should not be in people table"
+    );
+
+    // Send a second document with overlapping people — verify deduplication
+    let content_id2 = fixture
+        .state
+        .content_storage
+        .store_content("Second document".as_bytes(), None)
+        .await
+        .unwrap();
+
+    let create_event2 = ConnectorEvent::DocumentCreated {
+        sync_run_id: "sync_people".to_string(),
+        source_id: TEST_SOURCE_ID.to_string(),
+        document_id: "people_doc_2".to_string(),
+        content_id: content_id2,
+        metadata: DocumentMetadata {
+            title: Some("Project Update".to_string()),
+            author: Some("bob@example.com".to_string()),
+            ..Default::default()
+        },
+        permissions: DocumentPermissions {
+            public: false,
+            users: vec![
+                "bob@example.com".to_string(),
+                "dave@example.com".to_string(),
+            ],
+            groups: vec![],
+        },
+        attributes: None,
+    };
+
+    event_queue
+        .enqueue(TEST_SOURCE_ID, &create_event2)
+        .await
+        .unwrap();
+
+    common::wait_for_document_exists(
+        &repo,
+        TEST_SOURCE_ID,
+        "people_doc_2",
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("Second document should be created");
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // bob should still be one row (deduplication)
+    let bob_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM people WHERE lower(email) = 'bob@example.com'")
+            .fetch_one(fixture.state.db_pool.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        bob_count.0, 1,
+        "bob should appear exactly once in people table"
+    );
+
+    // dave should now exist
+    let dave = person_repo
+        .fetch_person_by_email("dave@example.com")
+        .await
+        .expect("DB query should succeed");
+    assert!(dave.is_some(), "dave@example.com should be in people table");
+
+    // Total people count should be 4 (alice, bob, carol, dave)
+    let total: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM people")
+        .fetch_one(fixture.state.db_pool.pool())
+        .await
+        .unwrap();
+    assert_eq!(total.0, 4, "Should have exactly 4 people");
+
+    processor_handle.abort();
 }
