@@ -385,8 +385,9 @@ impl GoogleAuth {
 /// Determine the required scopes based on the source type (for service accounts with admin delegation)
 pub fn get_scopes_for_source_type(source_type: SourceType) -> Vec<String> {
     let mut scopes = vec![
-        // Admin scope is always needed to list users
+        // Admin scopes needed to list users and groups
         "https://www.googleapis.com/auth/admin.directory.user.readonly".to_string(),
+        "https://www.googleapis.com/auth/admin.directory.group.readonly".to_string(),
     ];
 
     match source_type {
@@ -614,7 +615,7 @@ mod tests {
         ));
         assert!(scopes.contains(&"https://www.googleapis.com/auth/drive.readonly".to_string()));
         assert!(!scopes.contains(&"https://www.googleapis.com/auth/gmail.readonly".to_string()));
-        assert_eq!(scopes.len(), 2);
+        assert_eq!(scopes.len(), 3);
     }
 
     #[test]
@@ -624,9 +625,12 @@ mod tests {
         assert!(scopes.contains(
             &"https://www.googleapis.com/auth/admin.directory.user.readonly".to_string()
         ));
+        assert!(scopes.contains(
+            &"https://www.googleapis.com/auth/admin.directory.group.readonly".to_string()
+        ));
         assert!(scopes.contains(&"https://www.googleapis.com/auth/gmail.readonly".to_string()));
         assert!(!scopes.contains(&"https://www.googleapis.com/auth/drive.readonly".to_string()));
-        assert_eq!(scopes.len(), 2);
+        assert_eq!(scopes.len(), 3);
     }
 
     #[test]
@@ -637,9 +641,12 @@ mod tests {
         assert!(scopes.contains(
             &"https://www.googleapis.com/auth/admin.directory.user.readonly".to_string()
         ));
+        assert!(scopes.contains(
+            &"https://www.googleapis.com/auth/admin.directory.group.readonly".to_string()
+        ));
         assert!(scopes.contains(&"https://www.googleapis.com/auth/drive.readonly".to_string()));
         assert!(scopes.contains(&"https://www.googleapis.com/auth/gmail.readonly".to_string()));
-        assert_eq!(scopes.len(), 3);
+        assert_eq!(scopes.len(), 4);
     }
 
     #[test]

@@ -6,7 +6,7 @@ use common::fixtures::{create_document_request, update_document_request};
 use common::TEST_SOURCE_ID;
 use omni_indexer::{BulkDocumentOperation, BulkDocumentRequest, QueueProcessor};
 use serde_json::{json, Value};
-use shared::db::repositories::{DocumentRepository, PersonRepository};
+use shared::db::repositories::{DocumentRepository, GroupRepository, PersonRepository};
 use shared::models::{ConnectorEvent, Document, DocumentMetadata, DocumentPermissions};
 use shared::queue::EventQueue;
 use sqlx::types::time::OffsetDateTime;
@@ -844,6 +844,69 @@ async fn test_people_extraction_from_events() {
         .await
         .unwrap();
     assert_eq!(total.0, 4, "Should have exactly 4 people");
+
+    processor_handle.abort();
+}
+
+#[tokio::test]
+async fn test_group_membership_sync_event() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let event_queue = EventQueue::new(fixture.state.db_pool.pool().clone());
+    let pool = fixture.state.db_pool.pool();
+
+    let processor = QueueProcessor::new(fixture.state.clone()).with_accumulation_config(
+        Duration::from_millis(200),
+        Duration::from_secs(30),
+        Duration::from_millis(50),
+    );
+    let processor_handle = tokio::spawn(async move {
+        let _ = processor.start().await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Enqueue a group membership sync event
+    let event = ConnectorEvent::GroupMembershipSync {
+        sync_run_id: "sync_groups_1".to_string(),
+        source_id: TEST_SOURCE_ID.to_string(),
+        group_email: "engineering@test.com".to_string(),
+        group_name: Some("Engineering Team".to_string()),
+        member_emails: vec![
+            "alice@test.com".to_string(),
+            "bob@test.com".to_string(),
+            "charlie@test.com".to_string(),
+        ],
+    };
+    event_queue.enqueue(TEST_SOURCE_ID, &event).await.unwrap();
+
+    // Wait for event to be processed
+    common::wait_for_completed(pool, 1, Duration::from_secs(10)).await;
+
+    // Verify group was created
+    let group_repo = GroupRepository::new(pool);
+    let alice_groups = group_repo
+        .find_groups_for_user("alice@test.com")
+        .await
+        .unwrap();
+    assert_eq!(alice_groups, vec!["engineering@test.com"]);
+
+    let bob_groups = group_repo
+        .find_groups_for_user("bob@test.com")
+        .await
+        .unwrap();
+    assert_eq!(bob_groups, vec!["engineering@test.com"]);
+
+    let charlie_groups = group_repo
+        .find_groups_for_user("charlie@test.com")
+        .await
+        .unwrap();
+    assert_eq!(charlie_groups, vec!["engineering@test.com"]);
+
+    // Non-member should have no groups
+    let outsider_groups = group_repo
+        .find_groups_for_user("outsider@test.com")
+        .await
+        .unwrap();
+    assert!(outsider_groups.is_empty());
 
     processor_handle.abort();
 }

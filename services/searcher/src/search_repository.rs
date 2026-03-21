@@ -1,6 +1,7 @@
 use serde_json::Value as JsonValue;
 use shared::{
     db::error::DatabaseError,
+    db::repositories::document,
     models::{AttributeFilter, DateFilter, Document, Facet, FacetValue},
 };
 use sqlx::{FromRow, PgPool};
@@ -34,6 +35,7 @@ impl SearchDocumentRepository {
         limit: i64,
         offset: i64,
         user_email: Option<&str>,
+        user_groups: &[String],
         document_id: Option<&str>,
         date_filter: Option<&DateFilter>,
         person_filters: Option<&[String]>,
@@ -53,6 +55,7 @@ impl SearchDocumentRepository {
                     limit,
                     offset,
                     user_email,
+                    user_groups,
                     date_filter,
                 )
                 .await;
@@ -84,6 +87,7 @@ impl SearchDocumentRepository {
             content_types,
             attribute_filters,
             user_email,
+            user_groups,
             date_filter,
         );
 
@@ -271,6 +275,7 @@ impl SearchDocumentRepository {
         limit: i64,
         offset: i64,
         user_email: Option<&str>,
+        user_groups: &[String],
         date_filter: Option<&DateFilter>,
     ) -> Result<Vec<SearchHit>, DatabaseError> {
         let mut param_idx = 1;
@@ -282,6 +287,7 @@ impl SearchDocumentRepository {
             content_types,
             attribute_filters,
             user_email,
+            user_groups,
             date_filter,
         );
 
@@ -330,6 +336,7 @@ impl SearchDocumentRepository {
         content_types: Option<&[String]>,
         attribute_filters: Option<&HashMap<String, AttributeFilter>>,
         user_email: Option<&str>,
+        user_groups: &[String],
         date_filter: Option<&DateFilter>,
         person_filters: Option<&[String]>,
     ) -> Result<Vec<Facet>, DatabaseError> {
@@ -348,6 +355,7 @@ impl SearchDocumentRepository {
                 content_types,
                 attribute_filters,
                 user_email,
+                user_groups,
                 date_filter,
             );
             let where_clause = if filters.is_empty() {
@@ -401,6 +409,7 @@ impl SearchDocumentRepository {
             content_types,
             attribute_filters,
             user_email,
+            user_groups,
             date_filter,
         );
 
@@ -536,15 +545,8 @@ fn rows_to_facets(rows: Vec<(String, String, i64)>) -> Vec<Facet> {
         .collect()
 }
 
-fn generate_permission_filter(user_email: &str) -> String {
-    format!(
-        r#"(
-            permissions @@@ 'public:true' OR
-            permissions @@@ 'users:{}' OR
-            permissions @@@ 'groups:{}'
-        )"#,
-        user_email, user_email
-    )
+fn generate_permission_filter(user_email: &str, user_groups: &[String]) -> String {
+    document::generate_permission_filter(user_email, user_groups)
 }
 
 fn json_value_to_term_string(value: &JsonValue) -> String {
@@ -564,6 +566,7 @@ fn build_common_filters(
     content_types: Option<&[String]>,
     attribute_filters: Option<&HashMap<String, AttributeFilter>>,
     user_email: Option<&str>,
+    user_groups: &[String],
     date_filter: Option<&DateFilter>,
 ) {
     if !source_ids.is_empty() {
@@ -648,6 +651,6 @@ fn build_common_filters(
     }
 
     if let Some(email) = user_email {
-        filters.push(generate_permission_filter(email));
+        filters.push(generate_permission_filter(email, user_groups));
     }
 }

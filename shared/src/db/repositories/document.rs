@@ -25,16 +25,10 @@ impl DocumentRepository {
         Self { pool: pool.clone() }
     }
 
-    /// Generate SQL condition to check if user has permission to access document
-    fn generate_permission_filter(&self, user_email: &str) -> String {
-        format!(
-            r#"(
-                permissions @@@ 'public:true' OR
-                permissions @@@ 'users:{}' OR
-                permissions @@@ 'groups:{}'
-            )"#,
-            user_email, user_email
-        )
+    /// Generate SQL condition to check if user has permission to access document.
+    /// Checks: public access, direct user access, domain-wide access, and group membership.
+    fn generate_permission_filter(&self, user_email: &str, user_groups: &[String]) -> String {
+        generate_permission_filter(user_email, user_groups)
     }
 
     pub async fn find_by_id(&self, id: &str) -> Result<Option<Document>, DatabaseError> {
@@ -119,9 +113,10 @@ impl DocumentRepository {
     pub async fn fetch_random_documents(
         &self,
         user_email: &str,
+        user_groups: &[String],
         count: usize,
     ) -> Result<Vec<Document>, DatabaseError> {
-        let permission_filter = &self.generate_permission_filter(user_email);
+        let permission_filter = &self.generate_permission_filter(user_email, user_groups);
 
         let query = format!(
             r#"
@@ -192,6 +187,7 @@ impl DocumentRepository {
         content_types: Option<&[String]>,
         attribute_filters: Option<&HashMap<String, AttributeFilter>>,
         user_email: Option<&str>,
+        user_groups: &[String],
         date_filter: Option<&DateFilter>,
     ) {
         if !source_ids.is_empty() {
@@ -276,7 +272,7 @@ impl DocumentRepository {
         }
 
         if let Some(email) = user_email {
-            filters.push(self.generate_permission_filter(email));
+            filters.push(self.generate_permission_filter(email, user_groups));
         }
     }
 
@@ -589,6 +585,29 @@ impl DocumentRepository {
 
         Ok(result.rows_affected() as i64)
     }
+}
+
+/// Generate SQL condition to check if user has permission to access document.
+/// Checks: public access, direct user access, domain-wide access, and group membership.
+pub fn generate_permission_filter(user_email: &str, user_groups: &[String]) -> String {
+    let mut conditions = vec![
+        "permissions @@@ 'public:true'".to_string(),
+        format!("permissions @@@ 'users:{}'", user_email),
+    ];
+
+    // Domain-wide access: match user's email domain against groups array
+    if let Some(domain) = user_email.split('@').nth(1) {
+        if !domain.is_empty() {
+            conditions.push(format!("permissions @@@ 'groups:{}'", domain));
+        }
+    }
+
+    // Group membership: match each group the user belongs to
+    for group_email in user_groups {
+        conditions.push(format!("permissions @@@ 'groups:{}'", group_email));
+    }
+
+    format!("({})", conditions.join(" OR "))
 }
 
 /// Convert a JSON value to a string suitable for ParadeDB term queries

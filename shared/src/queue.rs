@@ -20,6 +20,7 @@ impl EventQueue {
             ConnectorEvent::DocumentCreated { .. } => "document_created",
             ConnectorEvent::DocumentUpdated { .. } => "document_updated",
             ConnectorEvent::DocumentDeleted { .. } => "document_deleted",
+            ConnectorEvent::GroupMembershipSync { .. } => "group_membership_sync",
         };
 
         let mut tx = self.pool.begin().await?;
