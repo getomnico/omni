@@ -10,6 +10,7 @@ export const EventType = {
   DOCUMENT_CREATED: 'document_created',
   DOCUMENT_UPDATED: 'document_updated',
   DOCUMENT_DELETED: 'document_deleted',
+  GROUP_MEMBERSHIP_SYNC: 'group_membership_sync',
 } as const;
 export type EventType = (typeof EventType)[keyof typeof EventType];
 
@@ -54,6 +55,16 @@ export const ConnectorEventSchema = z.object({
   attributes: z.record(z.unknown()).optional(),
 });
 export type ConnectorEvent = z.infer<typeof ConnectorEventSchema>;
+
+export const GroupMembershipEventSchema = z.object({
+  type: z.literal('group_membership_sync'),
+  sync_run_id: z.string(),
+  source_id: z.string(),
+  group_email: z.string(),
+  group_name: z.string().optional(),
+  member_emails: z.array(z.string()).default([]),
+});
+export type GroupMembershipEvent = z.infer<typeof GroupMembershipEventSchema>;
 
 export const ActionParameterSchema = z.object({
   type: z.string(),

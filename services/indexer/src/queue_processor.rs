@@ -3,7 +3,7 @@ use crate::AppState;
 use anyhow::{Context, Result};
 use futures::future::join_all;
 use shared::db::repositories::{
-    DocumentRepository, EmbeddingRepository, PersonRepository, SyncRunRepository,
+    DocumentRepository, EmbeddingRepository, GroupRepository, PersonRepository, SyncRunRepository,
 };
 use shared::embedding_queue::EmbeddingQueue;
 use shared::models::{
@@ -26,11 +26,21 @@ const BATCH_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 
 // Batch processing types
 #[derive(Debug)]
+struct GroupSyncEvent {
+    source_id: String,
+    group_email: String,
+    group_name: Option<String>,
+    member_emails: Vec<String>,
+    event_ids: Vec<String>,
+}
+
+#[derive(Debug)]
 struct EventBatch {
     sync_run_id: String,
     documents_created: Vec<(Document, Vec<String>)>, // (document, event_ids)
     documents_updated: Vec<(Document, Vec<String>)>, // (document, event_ids)
     documents_deleted: Vec<(String, String, Vec<String>)>, // (source_id, document_id, event_ids)
+    group_syncs: Vec<GroupSyncEvent>,
 }
 
 impl EventBatch {
@@ -40,6 +50,7 @@ impl EventBatch {
             documents_created: Vec::new(),
             documents_updated: Vec::new(),
             documents_deleted: Vec::new(),
+            group_syncs: Vec::new(),
         }
     }
 
@@ -47,6 +58,7 @@ impl EventBatch {
         self.documents_created.is_empty()
             && self.documents_updated.is_empty()
             && self.documents_deleted.is_empty()
+            && self.group_syncs.is_empty()
     }
 
     #[allow(dead_code)]
@@ -620,6 +632,33 @@ impl QueueProcessor {
                         deleted_docs.insert(key, (source_id, document_id, vec![event_id]));
                     }
                 }
+                ConnectorEvent::GroupMembershipSync {
+                    source_id,
+                    group_email,
+                    group_name,
+                    member_emails,
+                    ..
+                } => {
+                    // Dedup by source_id:group_email — last event wins
+                    let key = format!("{}:{}", source_id, group_email);
+                    if let Some(existing) = batch
+                        .group_syncs
+                        .iter_mut()
+                        .find(|g| format!("{}:{}", g.source_id, g.group_email) == key)
+                    {
+                        existing.member_emails = member_emails;
+                        existing.group_name = group_name;
+                        existing.event_ids.push(event_id);
+                    } else {
+                        batch.group_syncs.push(GroupSyncEvent {
+                            source_id,
+                            group_email,
+                            group_name,
+                            member_emails,
+                            event_ids: vec![event_id],
+                        });
+                    }
+                }
             }
         }
 
@@ -703,7 +742,62 @@ impl QueueProcessor {
             }
         }
 
+        // Process group membership syncs
+        if !batch.group_syncs.is_empty() {
+            let group_count = batch.group_syncs.len();
+            info!("Processing {} group membership sync events", group_count);
+            let group_repo = GroupRepository::new(self.state.db_pool.pool());
+
+            for group_sync in batch.group_syncs {
+                match self
+                    .process_group_membership_sync(&group_repo, &group_sync)
+                    .await
+                {
+                    Ok(()) => {
+                        result.successful_event_ids.extend(group_sync.event_ids);
+                    }
+                    Err(e) => {
+                        error!(
+                            "Group membership sync failed for {}: {}",
+                            group_sync.group_email, e
+                        );
+                        for event_id in group_sync.event_ids {
+                            result.failed_events.push((event_id, e.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(result)
+    }
+
+    async fn process_group_membership_sync(
+        &self,
+        group_repo: &GroupRepository,
+        sync_event: &GroupSyncEvent,
+    ) -> Result<()> {
+        let group = group_repo
+            .upsert_group(
+                &sync_event.source_id,
+                &sync_event.group_email,
+                sync_event.group_name.as_deref(),
+                None,
+            )
+            .await
+            .context("Failed to upsert group")?;
+
+        let member_count = group_repo
+            .sync_group_members(&group.id, &sync_event.member_emails)
+            .await
+            .context("Failed to sync group members")?;
+
+        info!(
+            "Synced group {} ({}) with {} members",
+            sync_event.group_email, group.id, member_count
+        );
+
+        Ok(())
     }
 
     async fn extract_and_upsert_people(&self, events: &[ConnectorEventQueueItem]) {
@@ -1267,6 +1361,26 @@ impl ProcessorContext {
                 document_id,
             } => {
                 self.handle_document_deleted(source_id, document_id).await?;
+            }
+            ConnectorEvent::GroupMembershipSync {
+                source_id,
+                group_email,
+                group_name,
+                member_emails,
+                ..
+            } => {
+                let group_repo = GroupRepository::new(self.state.db_pool.pool());
+                let group = group_repo
+                    .upsert_group(&source_id, &group_email, group_name.as_deref(), None)
+                    .await?;
+                group_repo
+                    .sync_group_members(&group.id, &member_emails)
+                    .await?;
+                info!(
+                    "Synced group {} with {} members",
+                    group_email,
+                    member_emails.len()
+                );
             }
         }
 

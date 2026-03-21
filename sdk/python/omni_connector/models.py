@@ -14,6 +14,7 @@ class EventType(str, Enum):
     DOCUMENT_CREATED = "document_created"
     DOCUMENT_UPDATED = "document_updated"
     DOCUMENT_DELETED = "document_deleted"
+    GROUP_MEMBERSHIP_SYNC = "group_membership_sync"
 
 
 class DocumentMetadata(BaseModel):
@@ -77,6 +78,27 @@ class ConnectorEvent(BaseModel):
         if self.attributes:
             base["attributes"] = self.attributes
         return base
+
+
+class GroupMembershipEvent(BaseModel):
+    sync_run_id: str
+    source_id: str
+    group_email: str
+    group_name: str | None = None
+    member_emails: list[str] = Field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dict format matching Rust tagged enum serialization."""
+        result: dict[str, Any] = {
+            "type": EventType.GROUP_MEMBERSHIP_SYNC.value,
+            "sync_run_id": self.sync_run_id,
+            "source_id": self.source_id,
+            "group_email": self.group_email,
+            "member_emails": self.member_emails,
+        }
+        if self.group_name:
+            result["group_name"] = self.group_name
+        return result
 
 
 class ActionParameter(BaseModel):

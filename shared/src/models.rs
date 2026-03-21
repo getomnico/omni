@@ -263,6 +263,27 @@ pub struct DocumentPermissions {
     pub groups: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct Group {
+    pub id: String,
+    pub source_id: String,
+    pub email: String,
+    pub display_name: Option<String>,
+    pub description: Option<String>,
+    #[serde(with = "time::serde::iso8601")]
+    pub synced_at: OffsetDateTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct GroupMembership {
+    pub id: String,
+    pub group_id: String,
+    pub member_email: String,
+    pub role: Option<String>,
+    #[serde(with = "time::serde::iso8601")]
+    pub synced_at: OffsetDateTime,
+}
+
 /// Structured attributes for filtering and faceting.
 /// Stored as JSONB, indexed by ParadeDB for FTS and filtering.
 /// NOT included in embeddings - only textual content is embedded.
@@ -363,6 +384,13 @@ pub enum ConnectorEvent {
         source_id: String,
         document_id: String,
     },
+    GroupMembershipSync {
+        sync_run_id: String,
+        source_id: String,
+        group_email: String,
+        group_name: Option<String>,
+        member_emails: Vec<String>,
+    },
 }
 
 impl ConnectorEvent {
@@ -371,6 +399,7 @@ impl ConnectorEvent {
             ConnectorEvent::DocumentCreated { sync_run_id, .. } => sync_run_id,
             ConnectorEvent::DocumentUpdated { sync_run_id, .. } => sync_run_id,
             ConnectorEvent::DocumentDeleted { sync_run_id, .. } => sync_run_id,
+            ConnectorEvent::GroupMembershipSync { sync_run_id, .. } => sync_run_id,
         }
     }
 
@@ -379,6 +408,7 @@ impl ConnectorEvent {
             ConnectorEvent::DocumentCreated { source_id, .. } => source_id,
             ConnectorEvent::DocumentUpdated { source_id, .. } => source_id,
             ConnectorEvent::DocumentDeleted { source_id, .. } => source_id,
+            ConnectorEvent::GroupMembershipSync { source_id, .. } => source_id,
         }
     }
 
@@ -387,6 +417,7 @@ impl ConnectorEvent {
             ConnectorEvent::DocumentCreated { document_id, .. } => document_id,
             ConnectorEvent::DocumentUpdated { document_id, .. } => document_id,
             ConnectorEvent::DocumentDeleted { document_id, .. } => document_id,
+            ConnectorEvent::GroupMembershipSync { group_email, .. } => group_email,
         }
     }
 }

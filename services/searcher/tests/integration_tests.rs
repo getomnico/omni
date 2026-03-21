@@ -7,7 +7,7 @@ use axum::{
 };
 use common::SearcherTestFixture;
 use serde_json::{json, Value};
-use shared::db::repositories::{PersonRepository, PersonUpsert};
+use shared::db::repositories::{GroupRepository, PersonRepository, PersonUpsert};
 use tower::ServiceExt;
 
 /// Extract result titles from a search response in order.
@@ -983,6 +983,161 @@ async fn test_people_search_endpoint() -> Result<()> {
     assert!(first.get("id").is_some());
     assert!(first.get("email").is_some());
     assert!(first.get("score").is_some());
+
+    Ok(())
+}
+
+// ============================================================================
+// Group Permission Tests
+// ============================================================================
+
+const TEST_SOURCE_ID: &str = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
+
+/// Insert a document with specific permissions for group permission testing
+async fn insert_group_test_document(
+    pool: &sqlx::PgPool,
+    external_id: &str,
+    title: &str,
+    content: &str,
+    permissions: serde_json::Value,
+) -> String {
+    let doc_id = ulid::Ulid::new().to_string();
+    let content_storage = shared::ContentStorage::new(pool.clone());
+    let content_id = content_storage
+        .store_text(content.to_string())
+        .await
+        .unwrap();
+
+    sqlx::query(
+        r#"
+        INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, content, metadata, permissions, attributes, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, 'document', $6, '{}', $7, '{}', NOW(), NOW())
+        "#,
+    )
+    .bind(&doc_id)
+    .bind(TEST_SOURCE_ID)
+    .bind(external_id)
+    .bind(title)
+    .bind(&content_id)
+    .bind(content)
+    .bind(&permissions)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    doc_id
+}
+
+#[tokio::test]
+async fn test_search_respects_group_permissions() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+
+    // Insert a document only accessible to the "engineering" group
+    insert_group_test_document(
+        pool,
+        "group-doc-1",
+        "Secret Engineering Architecture",
+        "This is a secret engineering architecture document about microservices",
+        json!({"public": false, "users": [], "groups": ["engineering@example.com"]}),
+    )
+    .await;
+
+    // Set up group membership: alice is in engineering, bob is not
+    let group_repo = GroupRepository::new(pool);
+    let group = group_repo
+        .upsert_group(
+            TEST_SOURCE_ID,
+            "engineering@example.com",
+            Some("Engineering"),
+            None,
+        )
+        .await?;
+    group_repo
+        .sync_group_members(&group.id, &["alice@example.com".into()])
+        .await?;
+
+    // Alice (in engineering group) should find the document
+    let (status, body) = fixture
+        .search_with_user(
+            "secret engineering architecture",
+            Some("fulltext"),
+            Some(10),
+            Some("alice@example.com"),
+        )
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let results = body["results"].as_array().unwrap();
+    assert!(
+        !results.is_empty(),
+        "alice (group member) should find the group-shared document"
+    );
+
+    // Bob (not in any group) should NOT find the document
+    let (status, body) = fixture
+        .search_with_user(
+            "secret engineering architecture",
+            Some("fulltext"),
+            Some(10),
+            Some("bob@example.com"),
+        )
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let results = body["results"].as_array().unwrap();
+    assert!(
+        results.is_empty(),
+        "bob (not in group) should NOT find the group-shared document"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_search_domain_wide_access() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+
+    // Insert a document shared with the entire example.com domain
+    insert_group_test_document(
+        pool,
+        "domain-doc-1",
+        "Company Wide Quarterly Results Announcement",
+        "This document contains company wide quarterly results announcement",
+        json!({"public": false, "users": [], "groups": ["example.com"]}),
+    )
+    .await;
+
+    // alice@example.com should find it (domain match)
+    let (status, body) = fixture
+        .search_with_user(
+            "company wide quarterly results",
+            Some("fulltext"),
+            Some(10),
+            Some("alice@example.com"),
+        )
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let results = body["results"].as_array().unwrap();
+    assert!(
+        !results.is_empty(),
+        "alice@example.com should find the domain-shared document"
+    );
+
+    // alice@other.com should NOT find it
+    let (status, body) = fixture
+        .search_with_user(
+            "company wide quarterly results",
+            Some("fulltext"),
+            Some(10),
+            Some("alice@other.com"),
+        )
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let results = body["results"].as_array().unwrap();
+    assert!(
+        results.is_empty(),
+        "alice@other.com should NOT find the domain-shared document"
+    );
 
     Ok(())
 }

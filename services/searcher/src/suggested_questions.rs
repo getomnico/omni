@@ -6,7 +6,7 @@ use futures_util::StreamExt;
 use redis::AsyncCommands;
 use redis::Client as RedisClient;
 use shared::utils::safe_str_slice;
-use shared::{AIClient, DatabasePool, DocumentRepository, ObjectStorage};
+use shared::{AIClient, DatabasePool, DocumentRepository, GroupRepository, ObjectStorage};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
@@ -145,7 +145,15 @@ impl SuggestedQuestionsGenerator {
                 attempts, MAX_RETRIES, needed
             );
 
-            match doc_repo.fetch_random_documents(user_email, needed).await {
+            let group_repo = GroupRepository::new(db_pool.pool());
+            let user_groups: Vec<String> = group_repo
+                .find_groups_for_user(user_email)
+                .await
+                .unwrap_or_default();
+            match doc_repo
+                .fetch_random_documents(user_email, &user_groups, needed)
+                .await
+            {
                 Ok(docs) => {
                     let num_docs_fetched = docs.len();
                     info!(

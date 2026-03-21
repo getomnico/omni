@@ -268,6 +268,9 @@ impl SyncManager {
             _ => SyncType::Full,
         };
 
+        // Sync group memberships (org-wide, shared between Drive and Gmail)
+        self.maybe_sync_groups(&source, &sync_run_id).await;
+
         // Run the sync
         let result = match source.source_type {
             SourceType::GoogleDrive => {
@@ -2166,5 +2169,127 @@ impl SyncManager {
         );
 
         Ok((total_processed, total_updated))
+    }
+
+    /// Sync group memberships if this is a service-account (domain-wide) source.
+    /// OAuth single-user sources don't have Admin API access, so we skip them.
+    async fn maybe_sync_groups(&self, source: &Source, sync_run_id: &str) {
+        let service_creds = match self.get_service_credentials(&source.id).await {
+            Ok(creds) => creds,
+            Err(e) => {
+                warn!("Failed to get service credentials for group sync: {}", e);
+                return;
+            }
+        };
+
+        let service_auth = match self.create_auth(&service_creds, source.source_type).await {
+            Ok(auth) => auth,
+            Err(e) => {
+                warn!("Failed to create auth for group sync: {}", e);
+                return;
+            }
+        };
+
+        // Only service-account (domain-wide) setups have Admin API access
+        if service_auth.is_oauth() {
+            debug!("Skipping group sync for OAuth source {}", source.id);
+            return;
+        }
+
+        let domain = match self.get_domain_from_credentials(&service_creds) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!("Failed to get domain for group sync: {}", e);
+                return;
+            }
+        };
+
+        let user_email = match self.get_user_email_from_source(&source.id).await {
+            Ok(email) => email,
+            Err(e) => {
+                warn!("Failed to get user email for group sync: {}", e);
+                return;
+            }
+        };
+
+        let access_token = match service_auth.get_access_token(&user_email).await {
+            Ok(token) => token,
+            Err(e) => {
+                warn!("Failed to get access token for group sync: {}", e);
+                return;
+            }
+        };
+
+        if let Err(e) = self
+            .sync_groups(&source.id, sync_run_id, &domain, &access_token)
+            .await
+        {
+            warn!(
+                "Failed to sync group memberships: {}. Continuing with document sync.",
+                e
+            );
+        }
+    }
+
+    async fn sync_groups(
+        &self,
+        source_id: &str,
+        sync_run_id: &str,
+        domain: &str,
+        access_token: &str,
+    ) -> Result<()> {
+        info!("Syncing group memberships for domain: {}", domain);
+
+        let groups = self
+            .admin_client
+            .list_all_groups(access_token, domain)
+            .await?;
+        info!("Found {} groups in domain {}", groups.len(), domain);
+
+        let mut total_members = 0;
+        for group in &groups {
+            let members = self
+                .admin_client
+                .list_all_group_members(access_token, &group.email)
+                .await
+                .unwrap_or_else(|e| {
+                    warn!("Failed to list members for group {}: {}", group.email, e);
+                    vec![]
+                });
+
+            let member_emails: Vec<String> = members
+                .into_iter()
+                .filter_map(|m| m.email)
+                .map(|e| e.to_lowercase())
+                .collect();
+
+            total_members += member_emails.len();
+
+            let event = ConnectorEvent::GroupMembershipSync {
+                sync_run_id: sync_run_id.to_string(),
+                source_id: source_id.to_string(),
+                group_email: group.email.clone(),
+                group_name: group.name.clone(),
+                member_emails,
+            };
+
+            if let Err(e) = self
+                .sdk_client
+                .emit_event(sync_run_id, source_id, event)
+                .await
+            {
+                warn!(
+                    "Failed to emit group membership event for {}: {}",
+                    group.email, e
+                );
+            }
+        }
+
+        info!(
+            "Group sync complete: {} groups, {} total memberships",
+            groups.len(),
+            total_members
+        );
+        Ok(())
     }
 }
