@@ -115,8 +115,11 @@ class DocumentToolHandler:
             )
 
         try:
-            # Look up document metadata
-            doc = await self._documents_repo.get_by_id(document_id)
+            # Look up document metadata, applying permission filter when appropriate
+            user_email = None if context.skip_permission_check else context.user_email
+            doc = await self._documents_repo.get_by_id(
+                document_id, user_email=user_email
+            )
             if doc is None:
                 return ToolResult(
                     content=[

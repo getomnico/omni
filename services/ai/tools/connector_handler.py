@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass
 import httpx
 import redis.asyncio as aioredis
 
+from db.documents import DocumentsRepository
 from db.models import Source
 from tools.registry import ToolContext, ToolResult
 
@@ -41,6 +42,7 @@ class ConnectorToolHandler:
         prefetched_sources: list[Source] | None = None,
         source_filter: dict[str, list[str]] | None = None,
         action_whitelist: list[str] | None = None,
+        documents_repo: DocumentsRepository | None = None,
     ) -> None:
         self._connector_manager_url = connector_manager_url.rstrip("/")
         self._user_id = user_id
@@ -48,6 +50,7 @@ class ConnectorToolHandler:
         self._prefetched_sources = prefetched_sources
         self._source_filter = source_filter  # {source_id: ["read","write"]}
         self._action_whitelist = action_whitelist  # ["gmail__send_email"]
+        self._documents_repo = documents_repo
         self._actions: dict[str, ConnectorAction] = {}
         self._tools: list[dict] = []
         self._search_operators: list[dict] = []
@@ -277,6 +280,24 @@ class ConnectorToolHandler:
         logger.info(
             f"Executing connector action: {action.action_name} on source {action.source_id}"
         )
+
+        # If this action references a document, check user permissions
+        document_id = tool_input.get("document_id")
+        if document_id and self._documents_repo and not context.skip_permission_check:
+            user_email = context.user_email
+            doc = await self._documents_repo.get_by_id(
+                document_id, user_email=user_email
+            )
+            if doc is None:
+                return ToolResult(
+                    content=[
+                        {
+                            "type": "text",
+                            "text": f"Document not found: {document_id}",
+                        }
+                    ],
+                    is_error=True,
+                )
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:

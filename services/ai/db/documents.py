@@ -9,6 +9,20 @@ from .connection import get_db_pool
 
 logger = logging.getLogger(__name__)
 
+_COLUMNS = (
+    "id, content_id, source_id, external_id, title, content_type, embedding_status"
+)
+
+
+def _permission_filter(user_email: str) -> str:
+    return f"""
+    AND (
+        permissions @@@ 'public:true'
+        OR permissions @@@ 'users:{user_email}'
+        OR permissions @@@ 'groups:{user_email}'
+    )
+"""
+
 
 @dataclass
 class Document:
@@ -45,14 +59,25 @@ class DocumentsRepository:
             return self.pool
         return await get_db_pool()
 
-    async def get_by_id(self, document_id: str) -> Optional[Document]:
-        """Get a document by ID"""
+    async def get_by_id(
+        self, document_id: str, user_email: str | None = None
+    ) -> Optional[Document]:
+        """Get a document by ID.
+
+        When user_email is provided, the query enforces permission checks:
+        the document is returned only if it is public, or the email appears
+        in the document's users or groups list.  This mirrors the searcher's
+        permission filter so the logic lives in one place (the DB query).
+        """
         pool = await self._get_pool()
 
-        row = await pool.fetchrow(
-            "SELECT id, content_id, source_id, external_id, title, content_type, embedding_status FROM documents WHERE id = $1",
-            document_id,
-        )
+        if user_email:
+            perm_filter = _permission_filter(user_email.lower())
+            query = f"SELECT {_COLUMNS} FROM documents WHERE id = $1 {perm_filter}"
+            row = await pool.fetchrow(query, document_id)
+        else:
+            query = f"SELECT {_COLUMNS} FROM documents WHERE id = $1"
+            row = await pool.fetchrow(query, document_id)
 
         if row:
             return Document(

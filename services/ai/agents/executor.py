@@ -24,6 +24,7 @@ from config import (
 )
 from db.documents import DocumentsRepository
 from db.models import Source
+from db.users import UsersRepository
 from providers import LLMProvider
 from prompts import build_agent_system_prompt
 from services.compaction import ConversationCompactor
@@ -108,6 +109,7 @@ async def _build_agent_registry(
             prefetched_sources=sources,
             source_filter=source_filter,
             action_whitelist=action_whitelist,
+            documents_repo=DocumentsRepository(),
         )
         await connector_handler._ensure_initialized()
         registry.register(connector_handler)
@@ -190,9 +192,19 @@ async def _run_agent_loop(
 
     # Org agents search all data (no user-scoping); personal agents are scoped to owner
     # Using run ID as chat_id — tool handlers use this to scope sandbox workspaces and cache keys
+    is_org_agent = agent.agent_type == "org"
+    agent_user_email: str | None = None
+    if not is_org_agent and agent.user_id:
+        users_repo = UsersRepository()
+        agent_user = await users_repo.find_by_id(agent.user_id)
+        if agent_user:
+            agent_user_email = agent_user.email
+
     context = ToolContext(
         chat_id=run.id,
-        user_id=None if agent.agent_type == "org" else agent.user_id,
+        user_id=None if is_org_agent else agent.user_id,
+        user_email=agent_user_email,
+        skip_permission_check=is_org_agent,
     )
 
     # Compaction support

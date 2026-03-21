@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from db import ChatsRepository, MessagesRepository
 from db.documents import DocumentsRepository
 from db.models import Chat, Source
+from db.users import UsersRepository
 from tools import (
     SearcherTool,
     ToolRegistry,
@@ -174,6 +175,7 @@ async def _build_registry(request: Request, chat: Chat) -> RegistryResult:
             user_id=chat.user_id,
             redis_client=getattr(request.app.state, "redis_client", None),
             prefetched_sources=sources,
+            documents_repo=DocumentsRepository(),
         )
         await connector_handler._ensure_initialized()
         registry.register(connector_handler)
@@ -289,6 +291,14 @@ async def stream_chat(
 
     llm_provider = _resolve_llm_provider(request.app.state, chat)
 
+    # Resolve user email for permission checks
+    user_email: str | None = None
+    if chat.user_id:
+        users_repo = UsersRepository()
+        user = await users_repo.find_by_id(chat.user_id)
+        if user:
+            user_email = user.email
+
     messages_repo = MessagesRepository()
     chat_messages = await messages_repo.get_active_path(chat_id)
     if not chat_messages:
@@ -361,7 +371,7 @@ async def stream_chat(
                 context = ToolContext(
                     chat_id=chat_id,
                     user_id=chat.user_id,
-                    user_email=None,
+                    user_email=user_email,
                 )
                 result = await registry.execute(
                     tool_call["name"], tool_call["input"], context
@@ -406,7 +416,7 @@ async def stream_chat(
             context = ToolContext(
                 chat_id=chat_id,
                 user_id=chat.user_id,
-                user_email=None,
+                user_email=user_email,
                 original_user_query=original_user_query,
             )
 
