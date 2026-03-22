@@ -7,6 +7,7 @@ import {
   createActionResponseSuccess,
   createActionResponseFailure,
   createActionResponseNotSupported,
+  getLogger,
 } from '@getomnico/connector';
 import { LinearApiClient } from './client.js';
 import {
@@ -21,6 +22,7 @@ import {
 } from './mappers.js';
 import type { LinearSyncState, LinearSourceConfig, LinearCredentials } from './types.js';
 
+const logger = getLogger('linear');
 const CHECKPOINT_INTERVAL = 100;
 
 export class LinearConnector extends Connector {
@@ -68,7 +70,7 @@ export class LinearConnector extends Connector {
 
     try {
       const userName = await client.validateApiKey();
-      console.log(`Starting Linear sync as '${userName}'`);
+      logger.info(`Starting Linear sync as '${userName}'`);
     } catch (e) {
       await ctx.fail(`Authentication failed: ${e}`);
       return;
@@ -93,7 +95,7 @@ export class LinearConnector extends Connector {
       }
 
       // Sync group memberships for each team
-      console.log('Syncing team memberships...');
+      logger.info('Syncing team memberships...');
       for (const team of filteredTeams) {
         try {
           const members = await client.fetchTeamMembers(team.id);
@@ -103,9 +105,9 @@ export class LinearConnector extends Connector {
             memberEmails,
             team.name,
           );
-          console.log(`Synced ${memberEmails.length} members for team ${team.name}`);
+          logger.info(`Synced ${memberEmails.length} members for team ${team.name}`);
         } catch (e) {
-          console.warn(`Failed to sync members for team ${team.name}: ${e}`);
+          logger.warn(`Failed to sync members for team ${team.name}: ${e}`);
         }
       }
 
@@ -115,7 +117,7 @@ export class LinearConnector extends Connector {
           await ctx.fail('Cancelled by user');
           return;
         }
-        console.log(`Syncing issues for team: ${team.name} (${team.key})`);
+        logger.info(`Syncing issues for team: ${team.name} (${team.key})`);
 
         for await (const issue of client.fetchIssues(team.id, lastSyncAt)) {
           if (ctx.isCancelled()) {
@@ -140,14 +142,14 @@ export class LinearConnector extends Connector {
             }
           } catch (e) {
             const eid = `linear:issue:${issue.id}`;
-            console.warn(`Error processing ${eid}: ${e}`);
+            logger.warn(`Error processing ${eid}: ${e}`);
             ctx.emitError(eid, String(e));
           }
         }
       }
 
       // Sync projects
-      console.log('Syncing projects...');
+      logger.info('Syncing projects...');
       for await (const project of client.fetchProjects(lastSyncAt)) {
         if (ctx.isCancelled()) {
           await ctx.fail('Cancelled by user');
@@ -187,7 +189,7 @@ export class LinearConnector extends Connector {
               docsSinceCheckpoint++;
             } catch (e) {
               const eid = `linear:project_update:${update.id}`;
-              console.warn(`Error processing ${eid}: ${e}`);
+              logger.warn(`Error processing ${eid}: ${e}`);
               ctx.emitError(eid, String(e));
             }
           }
@@ -198,13 +200,13 @@ export class LinearConnector extends Connector {
           }
         } catch (e) {
           const eid = `linear:project:${project.id}`;
-          console.warn(`Error processing ${eid}: ${e}`);
+          logger.warn(`Error processing ${eid}: ${e}`);
           ctx.emitError(eid, String(e));
         }
       }
 
       // Sync documents
-      console.log('Syncing documents...');
+      logger.info('Syncing documents...');
       for await (const doc of client.fetchDocuments(lastSyncAt)) {
         if (ctx.isCancelled()) {
           await ctx.fail('Cancelled by user');
@@ -237,16 +239,16 @@ export class LinearConnector extends Connector {
           }
         } catch (e) {
           const eid = `linear:document:${doc.id}`;
-          console.warn(`Error processing ${eid}: ${e}`);
+          logger.warn(`Error processing ${eid}: ${e}`);
           ctx.emitError(eid, String(e));
         }
       }
 
       const newState: LinearSyncState = { last_sync_at: new Date().toISOString() };
       await ctx.complete(newState as unknown as Record<string, unknown>);
-      console.log(`Sync completed: ${ctx.documentsScanned} scanned, ${ctx.documentsEmitted} emitted`);
+      logger.info(`Sync completed: ${ctx.documentsScanned} scanned, ${ctx.documentsEmitted} emitted`);
     } catch (e) {
-      console.error('Sync failed with unexpected error:', e);
+      logger.error({ err: e }, 'Sync failed with unexpected error');
       await ctx.fail(String(e));
     }
   }

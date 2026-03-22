@@ -50,3 +50,5 @@ export {
   SyncCancelledError,
   ConfigurationError,
 } from './errors.js';
+
+export { getLogger } from './logger.js';

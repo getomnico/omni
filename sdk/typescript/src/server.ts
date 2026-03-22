@@ -11,6 +11,9 @@ import {
   createSyncResponseError,
   createActionResponseFailure,
 } from './models.js';
+import { getLogger } from './logger.js';
+
+const logger = getLogger('sdk:server');
 
 export function createServer(connector: Connector): Express {
   const app = express();
@@ -43,7 +46,7 @@ export function createServer(connector: Connector): Express {
 
     const { sync_run_id: syncRunId, source_id: sourceId } = parseResult.data;
 
-    console.log(`Sync triggered for source ${sourceId} (sync_run_id: ${syncRunId})`);
+    logger.info(`Sync triggered for source ${sourceId} (sync_run_id: ${syncRunId})`);
 
     if (activeSyncs.has(sourceId)) {
       res.status(409).json(
@@ -69,7 +72,7 @@ export function createServer(connector: Connector): Express {
       if (message.includes('404')) {
         res.status(404).json(createSyncResponseError(`Source not found: ${sourceId}`));
       } else {
-        console.error('Failed to fetch source data:', error);
+        logger.error({ err: error }, 'Failed to fetch source data');
         res.status(500).json(
           createSyncResponseError(`Failed to fetch source data: ${message}`)
         );
@@ -95,11 +98,11 @@ export function createServer(connector: Connector): Express {
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`Sync ${syncRunId} failed:`, error);
+        logger.error({ err: error }, `Sync ${syncRunId} failed`);
         try {
           await ctx.fail(message);
         } catch (failError) {
-          console.error('Failed to report sync failure:', failError);
+          logger.error({ err: failError }, 'Failed to report sync failure');
         }
       } finally {
         activeSyncs.delete(sourceId);
@@ -119,7 +122,7 @@ export function createServer(connector: Connector): Express {
     }
 
     const { sync_run_id: syncRunId } = parseResult.data;
-    console.log(`Cancel requested for sync ${syncRunId}`);
+    logger.info(`Cancel requested for sync ${syncRunId}`);
 
     for (const [sourceId, ctx] of activeSyncs.entries()) {
       if (ctx.syncRunId === syncRunId) {
@@ -141,14 +144,14 @@ export function createServer(connector: Connector): Express {
     }
 
     const { action, params, credentials } = parseResult.data;
-    console.log(`Action requested: ${action}`);
+    logger.info(`Action requested: ${action}`);
 
     try {
       const response = await connector.executeAction(action, params, credentials);
       res.json(response);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`Action ${action} failed:`, error);
+      logger.error({ err: error }, `Action ${action} failed`);
       res.json(createActionResponseFailure(message));
     }
   });

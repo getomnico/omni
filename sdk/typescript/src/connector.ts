@@ -7,6 +7,7 @@ import type {
 } from './models.js';
 import { createActionResponseNotSupported } from './models.js';
 import { createServer } from './server.js';
+import { getLogger } from './logger.js';
 
 export interface ServeOptions {
   port?: number;
@@ -60,8 +61,9 @@ export abstract class Connector {
     const host = options.host ?? '0.0.0.0';
 
     const app = createServer(this);
+    const logger = getLogger(this.name);
     app.listen(port, host, () => {
-      console.log(`Connector ${this.name} v${this.version} listening on ${host}:${port}`);
+      logger.info(`Connector ${this.name} v${this.version} listening on ${host}:${port}`);
     });
   }
 }

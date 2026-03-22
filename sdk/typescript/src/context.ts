@@ -8,6 +8,9 @@ import {
   type GroupMembershipEventPayload,
 } from './models.js';
 import { ContentStorage } from './storage.js';
+import { getLogger } from './logger.js';
+
+const logger = getLogger('sdk:context');
 
 export class SyncContext {
   private readonly client: SdkClient;
@@ -118,7 +121,7 @@ export class SyncContext {
   }
 
   emitError(externalId: string, error: string): void {
-    console.warn(`Document error for ${externalId}: ${error}`);
+    logger.warn(`Document error for ${externalId}: ${error}`);
   }
 
   async incrementScanned(): Promise<void> {
