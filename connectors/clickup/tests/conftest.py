@@ -31,25 +31,39 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+_DEFAULT_MEMBERS: list[dict[str, Any]] = [
+    {"user": {"id": 1, "username": "alice", "email": "alice@test.com"}, "role": 1},
+    {"user": {"id": 2, "username": "bob", "email": "bob@test.com"}, "role": 3},
+]
+
+
 def _workspace_payload(
-    team_id: str = "team_1", name: str = "Test Workspace"
+    team_id: str = "team_1",
+    name: str = "Test Workspace",
+    members: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": team_id,
         "name": name,
         "color": "#000000",
         "avatar": None,
-        "members": [],
+        "members": members if members is not None else _DEFAULT_MEMBERS,
     }
 
 
-def _space_payload(space_id: str, name: str = "Engineering") -> dict[str, Any]:
+def _space_payload(
+    space_id: str,
+    name: str = "Engineering",
+    private: bool = False,
+    members: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     return {
         "id": space_id,
         "name": name,
         "color": "#000000",
         "avatar": None,
-        "members": [],
+        "private": private,
+        "members": members or [],
     }
 
 
@@ -147,12 +161,24 @@ class MockClickUpAPI:
         self.should_fail_auth = False
 
     def add_workspace(
-        self, team_id: str = "team_1", name: str = "Test Workspace"
+        self,
+        team_id: str = "team_1",
+        name: str = "Test Workspace",
+        members: list[dict[str, Any]] | None = None,
     ) -> None:
-        self.workspaces.append(_workspace_payload(team_id, name))
+        self.workspaces.append(_workspace_payload(team_id, name, members))
 
-    def add_space(self, team_id: str, space_id: str, name: str = "Engineering") -> None:
-        self.spaces.setdefault(team_id, []).append(_space_payload(space_id, name))
+    def add_space(
+        self,
+        team_id: str,
+        space_id: str,
+        name: str = "Engineering",
+        private: bool = False,
+        members: list[dict[str, Any]] | None = None,
+    ) -> None:
+        self.spaces.setdefault(team_id, []).append(
+            _space_payload(space_id, name, private, members)
+        )
 
     def add_folder(self, space_id: str, folder_id: str, name: str = "Sprint 1") -> None:
         self.folders.setdefault(space_id, []).append(_folder_payload(folder_id, name))

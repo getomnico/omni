@@ -12,18 +12,31 @@ from .config import MAX_CONTENT_LENGTH
 
 
 class HierarchyLookup:
-    """Resolves list_id to space/folder/list names for document path and attributes."""
+    """Resolves list_id to space/folder/list names and permission groups."""
 
     def __init__(self) -> None:
         self._lists: dict[str, dict[str, str]] = {}
+        self._space_groups: dict[str, str] = {}
+
+    def register_space(self, space_id: str, private: bool, team_id: str) -> None:
+        if private:
+            self._space_groups[space_id] = f"clickup:space:{space_id}"
+        else:
+            self._space_groups[space_id] = f"clickup:workspace:{team_id}"
 
     def register_list(
-        self, list_id: str, list_name: str, space_name: str, folder_name: str = ""
+        self,
+        list_id: str,
+        list_name: str,
+        space_name: str,
+        folder_name: str = "",
+        space_id: str = "",
     ) -> None:
         self._lists[list_id] = {
             "list_name": list_name,
             "space_name": space_name,
             "folder_name": folder_name,
+            "space_id": space_id,
         }
 
     def get(self, list_id: str) -> dict[str, str]:
@@ -33,8 +46,16 @@ class HierarchyLookup:
                 "list_name": "",
                 "space_name": "",
                 "folder_name": "",
+                "space_id": "",
             },
         )
+
+    def get_permission_group(self, list_id: str, team_id: str) -> str:
+        list_info = self.get(list_id)
+        space_id = list_info["space_id"]
+        if space_id and space_id in self._space_groups:
+            return self._space_groups[space_id]
+        return f"clickup:workspace:{team_id}"
 
 
 # ── Task → Document ────────────────────────────────────────────────
@@ -91,7 +112,11 @@ def map_task_to_document(
         ),
         permissions=DocumentPermissions(
             public=False,
-            groups=[f"clickup:workspace:{team_id}"],
+            groups=[
+                hierarchy.get_permission_group(
+                    task.get("list", {}).get("id", ""), team_id
+                )
+            ],
         ),
         attributes={
             "source_type": "clickup",
