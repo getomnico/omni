@@ -178,6 +178,7 @@ export const chatMessages = pgTable('chat_messages', {
     message: jsonb('message').$type<MessageParam>().notNull(),
     contentText: text('content_text'),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    mentiondDocumentIds: jsonb('mentioned_document_ids').$type<string[]>().default([]),
 })
 
 export const responseFeedback = pgTable('response_feedback', {

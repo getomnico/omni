@@ -3,7 +3,8 @@ import type { RequestHandler } from './$types.js'
 import { chatRepository, chatMessageRepository } from '$lib/server/db/chats'
 
 interface MessageRequest {
-    content: string
+    content: string,
+    mentionedDocumentIds: []
     parentId?: string
 }
 
@@ -114,7 +115,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
         }
 
         // Save message to database
-        const savedMessage = await chatMessageRepository.create(chatId, userMessage, parentId)
+        const savedMessage = await chatMessageRepository.create(chatId, userMessage, parentId, messageRequest.mentionedDocumentIds ?? [])
 
         logger.info('Message added successfully', {
             chatId,
