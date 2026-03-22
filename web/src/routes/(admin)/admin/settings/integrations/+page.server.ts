@@ -101,6 +101,13 @@ export const load: PageServerLoad = async ({ locals }) => {
                 connected: connectedSources.some((source) => source.sourceType === 'clickup'),
                 authType: 'api_key',
             },
+            {
+                id: 'notion',
+                name: 'Notion',
+                description: 'Connect to Notion pages and databases',
+                connected: connectedSources.some((source) => source.sourceType === 'notion'),
+                authType: 'api_key',
+            },
         ],
     }
 }

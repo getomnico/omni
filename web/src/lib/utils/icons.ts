@@ -17,6 +17,7 @@ import oneDriveIcon from '$lib/images/icons/onedrive.svg'
 import outlookIcon from '$lib/images/icons/outlook.svg'
 import sharePointIcon from '$lib/images/icons/sharepoint.svg'
 import clickupIcon from '$lib/images/icons/clickup.svg'
+import notionIcon from '$lib/images/icons/notion.svg'
 
 // Google Workspace MIME types
 const GOOGLE_DOCS_MIMETYPES = [
@@ -70,6 +71,8 @@ export function getDocumentIconPath(sourceType: string, contentType: string): st
         return firefliesIcon
     } else if (sourceType === SourceType.HUBSPOT) {
         return hubspotIcon
+    } else if (sourceType === SourceType.NOTION) {
+        return notionIcon
     }
 
     // For other source types, return null (will use fallback icon)
@@ -108,6 +111,8 @@ export function getSourceIconPath(sourceType: string): string | null {
             return null // Uses Mail lucide icon
         case SourceType.CLICKUP:
             return clickupIcon
+        case SourceType.NOTION:
+            return notionIcon
         default:
             return null // Use fallback FileText icon
     }
@@ -214,6 +219,7 @@ export function getSourceDisplayName(sourceType: SourceType) {
         [SourceType.WEB]: 'Web',
         [SourceType.FIREFLIES]: 'Fireflies',
         [SourceType.CLICKUP]: 'ClickUp',
+        [SourceType.NOTION]: 'Notion',
     }
 
     return sourceDisplayNames[sourceType]

@@ -64,13 +64,22 @@ class NotionConnector(Connector):
         bot_name = bot_user.get("name", "Unknown")
         logger.info("Starting Notion sync as bot '%s'", bot_name)
 
+        workspace_name = bot_user.get("bot", {}).get(
+            "workspace_name", "Notion Workspace"
+        )
+        permission_group = f"notion:workspace:{ctx.source_id}"
+
+        await self._sync_group_memberships(
+            client, permission_group, workspace_name, ctx
+        )
+
         state = state or {}
 
         try:
             if state.get("last_sync_at"):
-                await self._incremental_sync(client, state, ctx)
+                await self._incremental_sync(client, state, permission_group, ctx)
             else:
-                await self._full_sync(client, ctx)
+                await self._full_sync(client, permission_group, ctx)
         except AuthenticationError as e:
             logger.error("Authentication error during sync: %s", e)
             await ctx.fail(f"Authentication failed: {e}")
@@ -83,6 +92,7 @@ class NotionConnector(Connector):
     async def _full_sync(
         self,
         client: NotionClient,
+        permission_group: str,
         ctx: SyncContext,
     ) -> None:
         """Full sync: index all accessible databases and pages."""
@@ -109,10 +119,10 @@ class NotionConnector(Connector):
 
                 try:
                     docs_emitted = await self._sync_database(
-                        client, db, ctx, docs_emitted
+                        client, db, permission_group, ctx, docs_emitted
                     )
                     entry_ids = await self._sync_database_entries(
-                        client, db_id, ctx, docs_emitted
+                        client, db_id, permission_group, ctx, docs_emitted
                     )
                     database_page_ids.update(entry_ids[0])
                     docs_emitted = entry_ids[1]
@@ -146,7 +156,12 @@ class NotionConnector(Connector):
                 await ctx.increment_scanned()
                 try:
                     docs_emitted = await self._sync_page(
-                        client, page, ctx, docs_emitted, is_database_entry=False
+                        client,
+                        page,
+                        permission_group,
+                        ctx,
+                        docs_emitted,
+                        is_database_entry=False,
                     )
                 except Exception as e:
                     eid = f"notion:page:{page_id}"
@@ -173,6 +188,7 @@ class NotionConnector(Connector):
         self,
         client: NotionClient,
         state: dict[str, Any],
+        permission_group: str,
         ctx: SyncContext,
     ) -> None:
         """Incremental sync: re-index pages/databases modified since last sync."""
@@ -206,7 +222,12 @@ class NotionConnector(Connector):
 
                 try:
                     docs_emitted = await self._sync_page(
-                        client, page, ctx, docs_emitted, is_database_entry=is_db_entry
+                        client,
+                        page,
+                        permission_group,
+                        ctx,
+                        docs_emitted,
+                        is_database_entry=is_db_entry,
                     )
                 except Exception as e:
                     eid = f"notion:page:{page_id}"
@@ -241,7 +262,7 @@ class NotionConnector(Connector):
                 await ctx.increment_scanned()
                 try:
                     docs_emitted = await self._sync_database(
-                        client, db, ctx, docs_emitted
+                        client, db, permission_group, ctx, docs_emitted
                     )
                 except Exception as e:
                     db_id = db["id"]
@@ -260,17 +281,52 @@ class NotionConnector(Connector):
             ctx.documents_emitted,
         )
 
+    async def _sync_group_memberships(
+        self,
+        client: NotionClient,
+        permission_group: str,
+        workspace_name: str,
+        ctx: SyncContext,
+    ) -> None:
+        """Emit a workspace-level group membership event with all workspace members."""
+        users = await client.list_users()
+        member_emails: list[str] = []
+
+        for user in users:
+            if user.get("type") != "person":
+                continue
+            person = user.get("person", {})
+            email = person.get("email")
+            if not email:
+                logger.warning(
+                    "Workspace member %s (id=%s) has no email, skipping",
+                    user.get("name", "unknown"),
+                    user.get("id"),
+                )
+                continue
+            member_emails.append(email.lower())
+
+        if member_emails:
+            await ctx.emit_group_membership(
+                group_email=permission_group,
+                member_emails=member_emails,
+                group_name=workspace_name,
+            )
+
+        logger.info("Emitted workspace group with %d members", len(member_emails))
+
     async def _sync_database(
         self,
         client: NotionClient,
         database: dict[str, Any],
+        permission_group: str,
         ctx: SyncContext,
         docs_emitted: int,
     ) -> int:
         """Emit a document for the database itself. Returns updated docs_emitted."""
         content = generate_database_content(database)
         content_id = await ctx.content_storage.save(content, "text/plain")
-        doc = map_database_to_document(database, content_id)
+        doc = map_database_to_document(database, content_id, permission_group)
         await ctx.emit(doc)
         docs_emitted += 1
         return docs_emitted
@@ -279,6 +335,7 @@ class NotionConnector(Connector):
         self,
         client: NotionClient,
         database_id: str,
+        permission_group: str,
         ctx: SyncContext,
         docs_emitted: int,
     ) -> tuple[set[str], int]:
@@ -303,7 +360,12 @@ class NotionConnector(Connector):
 
                 try:
                     docs_emitted = await self._sync_page(
-                        client, page, ctx, docs_emitted, is_database_entry=True
+                        client,
+                        page,
+                        permission_group,
+                        ctx,
+                        docs_emitted,
+                        is_database_entry=True,
                     )
                 except Exception as e:
                     eid = f"notion:page:{page_id}"
@@ -324,6 +386,7 @@ class NotionConnector(Connector):
         self,
         client: NotionClient,
         page: dict[str, Any],
+        permission_group: str,
         ctx: SyncContext,
         docs_emitted: int,
         is_database_entry: bool,
@@ -335,7 +398,10 @@ class NotionConnector(Connector):
         content = generate_page_content(page, blocks, properties)
         content_id = await ctx.content_storage.save(content, "text/plain")
         doc = map_page_to_document(
-            page, content_id, is_database_entry=is_database_entry
+            page,
+            content_id,
+            permission_group,
+            is_database_entry=is_database_entry,
         )
         await ctx.emit(doc)
         docs_emitted += 1

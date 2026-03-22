@@ -129,6 +129,7 @@ class MockNotionAPI:
         self.databases: dict[str, dict[str, Any]] = {}
         self.database_pages: dict[str, list[dict[str, Any]]] = {}
         self.blocks: dict[str, list[dict[str, Any]]] = {}
+        self.users: list[dict[str, Any]] = []
         self.should_fail_auth: bool = False
 
     def reset(self) -> None:
@@ -136,6 +137,7 @@ class MockNotionAPI:
         self.databases.clear()
         self.database_pages.clear()
         self.blocks.clear()
+        self.users.clear()
         self.should_fail_auth = False
 
     def add_page(
@@ -158,6 +160,25 @@ class MockNotionAPI:
         self.databases[db_id] = _database_payload(
             db_id, title, properties_schema, description
         )
+
+    def add_user(
+        self,
+        user_id: str,
+        name: str,
+        email: str | None = None,
+        user_type: str = "person",
+    ) -> None:
+        user: dict[str, Any] = {
+            "object": "user",
+            "id": user_id,
+            "type": user_type,
+            "name": name,
+        }
+        if user_type == "person":
+            user["person"] = {"email": email}
+        elif user_type == "bot":
+            user["bot"] = {}
+        self.users.append(user)
 
     def add_database_entry(
         self,
@@ -192,7 +213,31 @@ class MockNotionAPI:
                     "id": "bot-001",
                     "type": "bot",
                     "name": "Test Integration",
-                    "bot": {"owner": {"type": "workspace", "workspace": True}},
+                    "bot": {
+                        "owner": {"type": "workspace", "workspace": True},
+                        "workspace_name": "Test Workspace",
+                    },
+                }
+            )
+
+        async def list_users(request: Request) -> JSONResponse:
+            if mock.should_fail_auth:
+                return JSONResponse(
+                    {
+                        "object": "error",
+                        "status": 401,
+                        "code": "unauthorized",
+                        "message": "API token is invalid.",
+                    },
+                    status_code=401,
+                )
+            return JSONResponse(
+                {
+                    "object": "list",
+                    "results": mock.users,
+                    "has_more": False,
+                    "next_cursor": None,
+                    "type": "user",
                 }
             )
 
@@ -275,6 +320,7 @@ class MockNotionAPI:
 
         routes = [
             Route("/v1/users/me", users_me),
+            Route("/v1/users", list_users),
             Route("/v1/search", search, methods=["POST"]),
             Route(
                 "/v1/databases/{database_id}/query", query_database, methods=["POST"]

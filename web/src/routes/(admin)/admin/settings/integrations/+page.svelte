@@ -16,6 +16,7 @@
     import firefliesLogo from '$lib/images/icons/fireflies.svg'
     import microsoftLogo from '$lib/images/icons/microsoft.svg'
     import clickupLogo from '$lib/images/icons/clickup.svg'
+    import notionLogo from '$lib/images/icons/notion.svg'
     import { getSourceIconPath } from '$lib/utils/icons'
     import { Globe, HardDrive, Loader2, Mail } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
@@ -29,6 +30,7 @@
     import WebConnectorSetupDialog from '$lib/components/web-connector-setup-dialog.svelte'
     import FilesystemConnectorSetupDialog from '$lib/components/filesystem-connector-setup-dialog.svelte'
     import ClickupConnectorSetup from '$lib/components/clickup-connector-setup.svelte'
+    import NotionConnectorSetup from '$lib/components/notion-connector-setup.svelte'
     import { SourceType } from '$lib/types'
     import { invalidateAll } from '$app/navigation'
     import { onMount, onDestroy } from 'svelte'
@@ -106,6 +108,7 @@
     let showImapSetup = $state(false)
     let showMicrosoftSetup = $state(false)
     let showClickupSetup = $state(false)
+    let showNotionSetup = $state(false)
 
     function handleConnect(integrationId: string) {
         if (integrationId === 'google') {
@@ -128,6 +131,8 @@
             showMicrosoftSetup = true
         } else if (integrationId === 'clickup') {
             showClickupSetup = true
+        } else if (integrationId === 'notion') {
+            showNotionSetup = true
         }
     }
 
@@ -181,6 +186,11 @@
         window.location.reload()
     }
 
+    function handleNotionSetupSuccess() {
+        showNotionSetup = false
+        window.location.reload()
+    }
+
     function getSourceIcon(sourceType: string) {
         return getSourceIconPath(sourceType)
     }
@@ -201,6 +211,8 @@
                 return microsoftLogo
             case 'clickup':
                 return clickupLogo
+            case 'notion':
+                return notionLogo
             default:
                 return null
         }
@@ -249,6 +261,8 @@
                 return 'files'
             case SourceType.CLICKUP:
                 return 'tasks'
+            case SourceType.NOTION:
+                return 'pages'
             default:
                 return 'documents'
         }
@@ -283,6 +297,8 @@
                 return `/admin/settings/integrations/microsoft/${sourceId}`
             case SourceType.CLICKUP:
                 return `/admin/settings/integrations/clickup/${sourceId}`
+            case SourceType.NOTION:
+                return `/admin/settings/integrations/notion/${sourceId}`
             default:
                 return '#'
         }
@@ -494,3 +510,8 @@
     bind:open={showClickupSetup}
     onSuccess={handleClickupSetupSuccess}
     onCancel={() => (showClickupSetup = false)} />
+
+<NotionConnectorSetup
+    bind:open={showNotionSetup}
+    onSuccess={handleNotionSetupSuccess}
+    onCancel={() => (showNotionSetup = false)} />
