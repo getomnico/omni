@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv
-ADD https://astral.sh/uv/0.10.2/install.sh /uv-installer.sh
+ADD https://astral.sh/uv/0.10.9/install.sh /uv-installer.sh
 RUN sh /uv-installer.sh && rm /uv-installer.sh && mv /root/.local/bin/uv /bin/uv && mv /root/.local/bin/uvx /bin/uvx
 
 WORKDIR /app
