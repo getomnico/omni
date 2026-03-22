@@ -158,8 +158,8 @@ export function createActionResponseNotSupported(action: string): ActionResponse
   return { status: 'error', error: `Action not supported: ${action}` };
 }
 
-export interface ConnectorEventPayload {
-  type: EventType;
+export interface DocumentEventPayload {
+  type: typeof EventType.DOCUMENT_CREATED | typeof EventType.DOCUMENT_UPDATED | typeof EventType.DOCUMENT_DELETED;
   sync_run_id: string;
   source_id: string;
   document_id: string;
@@ -169,7 +169,29 @@ export interface ConnectorEventPayload {
   attributes?: Record<string, unknown>;
 }
 
+export interface GroupMembershipEventPayload {
+  type: typeof EventType.GROUP_MEMBERSHIP_SYNC;
+  sync_run_id: string;
+  source_id: string;
+  group_email: string;
+  group_name?: string;
+  member_emails: string[];
+}
+
+export type ConnectorEventPayload = DocumentEventPayload | GroupMembershipEventPayload;
+
 export function serializeConnectorEvent(event: ConnectorEventPayload): Record<string, unknown> {
+  if (event.type === EventType.GROUP_MEMBERSHIP_SYNC) {
+    return {
+      type: event.type,
+      sync_run_id: event.sync_run_id,
+      source_id: event.source_id,
+      group_email: event.group_email,
+      group_name: event.group_name,
+      member_emails: event.member_emails,
+    };
+  }
+
   const base: Record<string, unknown> = {
     type: event.type,
     sync_run_id: event.sync_run_id,

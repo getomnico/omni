@@ -86,6 +86,29 @@ export class LinearConnector extends Connector {
         ? teams.filter(t => teamFilter.includes(t.key))
         : teams;
 
+      // Build team ID → key lookup
+      const teamIdToKey = new Map<string, string>();
+      for (const team of filteredTeams) {
+        teamIdToKey.set(team.id, team.key);
+      }
+
+      // Sync group memberships for each team
+      console.log('Syncing team memberships...');
+      for (const team of filteredTeams) {
+        try {
+          const members = await client.fetchTeamMembers(team.id);
+          const memberEmails = members.map(m => m.email);
+          await ctx.emitGroupMembership(
+            `linear-team:${team.key}`,
+            memberEmails,
+            team.name,
+          );
+          console.log(`Synced ${memberEmails.length} members for team ${team.name}`);
+        } catch (e) {
+          console.warn(`Failed to sync members for team ${team.name}: ${e}`);
+        }
+      }
+
       // Sync issues per team
       for (const team of filteredTeams) {
         if (ctx.isCancelled()) {
@@ -104,7 +127,7 @@ export class LinearConnector extends Connector {
             const comments = await client.fetchIssueComments(issue.id);
             const content = await generateIssueContent(issue, comments);
             const contentId = await ctx.contentStorage.save(content, 'text/markdown');
-            const doc = await mapIssueToDocument(issue, comments, contentId);
+            const doc = await mapIssueToDocument(issue, comments, contentId, team.key);
             if (isIncremental) {
               await ctx.emitUpdated(doc);
             } else {
@@ -132,10 +155,15 @@ export class LinearConnector extends Connector {
         }
         await ctx.incrementScanned();
         try {
+          const projectTeams = await project.teams();
+          const projectTeamKeys = projectTeams.nodes
+            .map(t => teamIdToKey.get(t.id))
+            .filter((k): k is string => k !== undefined);
+
           const updates = await client.fetchProjectUpdates(project.id);
           const content = await generateProjectContent(project, updates);
           const contentId = await ctx.contentStorage.save(content, 'text/markdown');
-          const doc = await mapProjectToDocument(project, updates, contentId);
+          const doc = await mapProjectToDocument(project, updates, contentId, projectTeamKeys);
           if (isIncremental) {
             await ctx.emitUpdated(doc);
           } else {
@@ -150,7 +178,7 @@ export class LinearConnector extends Connector {
             try {
               const updateContent = await generateProjectUpdateContent(update, project.name);
               const updateContentId = await ctx.contentStorage.save(updateContent, 'text/markdown');
-              const updateDoc = await mapProjectUpdateToDocument(update, project.name, updateContentId);
+              const updateDoc = await mapProjectUpdateToDocument(update, project.name, updateContentId, projectTeamKeys);
               if (isIncremental) {
                 await ctx.emitUpdated(updateDoc);
               } else {
@@ -184,9 +212,19 @@ export class LinearConnector extends Connector {
         }
         await ctx.incrementScanned();
         try {
+          // Resolve team keys from the document's project (if any)
+          const docProject = await doc.project;
+          let docTeamKeys: string[] = [];
+          if (docProject) {
+            const docProjectTeams = await docProject.teams();
+            docTeamKeys = docProjectTeams.nodes
+              .map(t => teamIdToKey.get(t.id))
+              .filter((k): k is string => k !== undefined);
+          }
+
           const content = await generateDocumentContent(doc);
           const contentId = await ctx.contentStorage.save(content, 'text/markdown');
-          const omniDoc = await mapLinearDocumentToDocument(doc, contentId);
+          const omniDoc = await mapLinearDocumentToDocument(doc, contentId, docTeamKeys);
           if (isIncremental) {
             await ctx.emitUpdated(omniDoc);
           } else {

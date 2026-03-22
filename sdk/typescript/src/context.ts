@@ -5,6 +5,7 @@ import {
   type DocumentMetadata,
   type DocumentPermissions,
   type ConnectorEventPayload,
+  type GroupMembershipEventPayload,
 } from './models.js';
 import { ContentStorage } from './storage.js';
 
@@ -94,6 +95,23 @@ export class SyncContext {
       sync_run_id: this._syncRunId,
       source_id: this._sourceId,
       document_id: externalId,
+    };
+
+    await this.client.emitEvent(this._syncRunId, this._sourceId, event);
+  }
+
+  async emitGroupMembership(
+    groupEmail: string,
+    memberEmails: string[],
+    groupName?: string,
+  ): Promise<void> {
+    const event: GroupMembershipEventPayload = {
+      type: EventType.GROUP_MEMBERSHIP_SYNC,
+      sync_run_id: this._syncRunId,
+      source_id: this._sourceId,
+      group_email: groupEmail,
+      group_name: groupName,
+      member_emails: memberEmails,
     };
 
     await this.client.emitEvent(this._syncRunId, this._sourceId, event);

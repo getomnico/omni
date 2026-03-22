@@ -1,5 +1,14 @@
 import type { Issue, Project, Document as LinearDocument, ProjectUpdate, Comment, Team } from '@linear/sdk';
-import type { Document, DocumentMetadata } from '@getomnico/connector';
+import type { Document, DocumentMetadata, DocumentPermissions } from '@getomnico/connector';
+
+const GROUP_PREFIX = 'linear-team:';
+
+function teamPermissions(teamKeys: string[]): DocumentPermissions {
+  if (teamKeys.length === 0) {
+    return { public: true, users: [], groups: [] };
+  }
+  return { public: false, users: [], groups: teamKeys.map(k => `${GROUP_PREFIX}${k}`) };
+}
 
 const MAX_CONTENT_LENGTH = 100_000;
 
@@ -21,6 +30,7 @@ export async function mapIssueToDocument(
   issue: Issue,
   comments: Comment[],
   contentId: string,
+  teamKey: string,
 ): Promise<Document> {
   const state = await issue.state;
   const assignee = await issue.assignee;
@@ -68,7 +78,7 @@ export async function mapIssueToDocument(
     title: `${issue.identifier} - ${issue.title}`,
     content_id: contentId,
     metadata,
-    permissions: { public: false, users: [], groups: [] },
+    permissions: teamPermissions([teamKey]),
     attributes,
   };
 }
@@ -124,6 +134,7 @@ export async function mapProjectToDocument(
   project: Project,
   recentUpdates: ProjectUpdate[],
   contentId: string,
+  teamKeys: string[],
 ): Promise<Document> {
   const lead = await project.lead;
   const creator = await project.creator;
@@ -155,7 +166,7 @@ export async function mapProjectToDocument(
     title: project.name,
     content_id: contentId,
     metadata,
-    permissions: { public: false, users: [], groups: [] },
+    permissions: teamPermissions(teamKeys),
     attributes,
   };
 }
@@ -204,6 +215,7 @@ export async function generateProjectContent(
 export async function mapLinearDocumentToDocument(
   doc: LinearDocument,
   contentId: string,
+  teamKeys: string[],
 ): Promise<Document> {
   const creator = await doc.creator;
   const project = await doc.project;
@@ -232,7 +244,7 @@ export async function mapLinearDocumentToDocument(
     title: doc.title,
     content_id: contentId,
     metadata,
-    permissions: { public: false, users: [], groups: [] },
+    permissions: teamPermissions(teamKeys),
     attributes,
   };
 }
@@ -257,6 +269,7 @@ export async function mapProjectUpdateToDocument(
   update: ProjectUpdate,
   projectName: string,
   contentId: string,
+  teamKeys: string[],
 ): Promise<Document> {
   const user = await update.user;
   const project = await update.project;
@@ -283,7 +296,7 @@ export async function mapProjectUpdateToDocument(
     title: `Project Update: ${projectName} - ${dateStr}`,
     content_id: contentId,
     metadata,
-    permissions: { public: false, users: [], groups: [] },
+    permissions: teamPermissions(teamKeys),
     attributes,
   };
 }
