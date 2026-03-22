@@ -55,16 +55,33 @@ def map_drive_item_to_document(
 
 def map_message_to_document(
     message: dict[str, Any],
-    user_id: str,
-    user_email: str | None,
     content_id: str,
 ) -> Document:
-    """Map an Outlook message to an Omni Document."""
+    """Map an Outlook message to an Omni Document.
+
+    Uses internetMessageId as external_id to deduplicate the same message
+    across multiple users' mailboxes. Permissions include all participants.
+    """
     msg_id = message["id"]
-    external_id = f"mail:{user_id}:{msg_id}"
+    internet_msg_id = message.get("internetMessageId") or msg_id
+    external_id = f"mail:{internet_msg_id}"
 
     sender = message.get("from", {}).get("emailAddress", {})
     sender_name = sender.get("name") or sender.get("address")
+
+    # Collect all participant emails for permissions
+    participants: set[str] = set()
+    sender_email = sender.get("address")
+    if sender_email:
+        participants.add(sender_email.lower())
+    for recipient in message.get("toRecipients", []):
+        addr = recipient.get("emailAddress", {}).get("address")
+        if addr:
+            participants.add(addr.lower())
+    for recipient in message.get("ccRecipients", []):
+        addr = recipient.get("emailAddress", {}).get("address")
+        if addr:
+            participants.add(addr.lower())
 
     return Document(
         external_id=external_id,
@@ -84,7 +101,7 @@ def map_message_to_document(
         ),
         permissions=DocumentPermissions(
             public=False,
-            users=[user_email] if user_email else [],
+            users=sorted(participants),
         ),
         attributes={
             "source_type": "outlook",

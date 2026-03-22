@@ -35,7 +35,8 @@ class MailSyncer(BaseSyncer):
                 delta_token=delta_token,
                 params={
                     "$select": "id,subject,bodyPreview,body,from,toRecipients,"
-                    "ccRecipients,receivedDateTime,sentDateTime,webLink,hasAttachments"
+                    "ccRecipients,receivedDateTime,sentDateTime,webLink,"
+                    "hasAttachments,internetMessageId"
                 },
             )
         except GraphAPIError as e:
@@ -44,17 +45,15 @@ class MailSyncer(BaseSyncer):
             )
             return delta_token
 
-        user_email = user.get("mail") or user.get("userPrincipalName")
-
         for item in items:
             if ctx.is_cancelled():
                 return delta_token
 
             await ctx.increment_scanned()
 
+            # Skip deletions: a message deleted from one user's inbox
+            # shouldn't disappear from search for all participants.
             if item.get("deleted") or item.get("@removed"):
-                external_id = f"mail:{user_id}:{item['id']}"
-                await ctx.emit_deleted(external_id)
                 continue
 
             try:
@@ -67,15 +66,15 @@ class MailSyncer(BaseSyncer):
                 content_id = await ctx.content_storage.save(content, "text/plain")
                 doc = map_message_to_document(
                     message=item,
-                    user_id=user_id,
-                    user_email=user_email,
                     content_id=content_id,
                 )
                 await ctx.emit(doc)
             except Exception as e:
-                external_id = f"mail:{user_id}:{item.get('id', 'unknown')}"
-                logger.warning("[mail] Error processing %s: %s", external_id, e)
-                await ctx.emit_error(external_id, str(e))
+                internet_msg_id = item.get("internetMessageId") or item.get(
+                    "id", "unknown"
+                )
+                logger.warning("[mail] Error processing %s: %s", internet_msg_id, e)
+                await ctx.emit_error(internet_msg_id, str(e))
 
         return new_token
 

@@ -89,6 +89,7 @@ async def test_outlook_sync(
         USER_ID,
         {
             "id": MSG_ID,
+            "internetMessageId": "<msg001@contoso.com>",
             "subject": "Project Update",
             "bodyPreview": "Here is the latest update...",
             "body": {
