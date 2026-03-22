@@ -17,6 +17,7 @@
     import microsoftLogo from '$lib/images/icons/microsoft.svg'
     import clickupLogo from '$lib/images/icons/clickup.svg'
     import notionLogo from '$lib/images/icons/notion.svg'
+    import linearLogo from '$lib/images/icons/linear.svg'
     import { getSourceIconPath } from '$lib/utils/icons'
     import { Globe, HardDrive, Loader2, Mail } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
@@ -31,6 +32,7 @@
     import FilesystemConnectorSetupDialog from '$lib/components/filesystem-connector-setup-dialog.svelte'
     import ClickupConnectorSetup from '$lib/components/clickup-connector-setup.svelte'
     import NotionConnectorSetup from '$lib/components/notion-connector-setup.svelte'
+    import LinearConnectorSetup from '$lib/components/linear-connector-setup.svelte'
     import { SourceType } from '$lib/types'
     import { invalidateAll } from '$app/navigation'
     import { onMount, onDestroy } from 'svelte'
@@ -109,6 +111,7 @@
     let showMicrosoftSetup = $state(false)
     let showClickupSetup = $state(false)
     let showNotionSetup = $state(false)
+    let showLinearSetup = $state(false)
 
     function handleConnect(integrationId: string) {
         if (integrationId === 'google') {
@@ -133,6 +136,8 @@
             showClickupSetup = true
         } else if (integrationId === 'notion') {
             showNotionSetup = true
+        } else if (integrationId === 'linear') {
+            showLinearSetup = true
         }
     }
 
@@ -191,6 +196,11 @@
         window.location.reload()
     }
 
+    function handleLinearSetupSuccess() {
+        showLinearSetup = false
+        window.location.reload()
+    }
+
     function getSourceIcon(sourceType: string) {
         return getSourceIconPath(sourceType)
     }
@@ -213,6 +223,8 @@
                 return clickupLogo
             case 'notion':
                 return notionLogo
+            case 'linear':
+                return linearLogo
             default:
                 return null
         }
@@ -257,6 +269,8 @@
                 return 'documents'
             case SourceType.WEB:
                 return 'pages'
+            case SourceType.LINEAR:
+                return 'items'
             case SourceType.LOCAL_FILES:
                 return 'files'
             case SourceType.CLICKUP:
@@ -290,6 +304,8 @@
                 return `/admin/settings/integrations/web/${sourceId}`
             case SourceType.LOCAL_FILES:
                 return `/admin/settings/integrations/filesystem/${sourceId}`
+            case SourceType.LINEAR:
+                return `/admin/settings/integrations/linear/${sourceId}`
             case SourceType.ONE_DRIVE:
             case SourceType.OUTLOOK:
             case SourceType.OUTLOOK_CALENDAR:
@@ -515,3 +531,8 @@
     bind:open={showNotionSetup}
     onSuccess={handleNotionSetupSuccess}
     onCancel={() => (showNotionSetup = false)} />
+
+<LinearConnectorSetup
+    bind:open={showLinearSetup}
+    onSuccess={handleLinearSetupSuccess}
+    onCancel={() => (showLinearSetup = false)} />

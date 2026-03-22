@@ -16,6 +16,7 @@ export enum SourceType {
     FIREFLIES = 'fireflies',
     IMAP = 'imap',
     CLICKUP = 'clickup',
+    LINEAR = 'linear',
 }
 
 export enum ServiceProvider {
@@ -28,6 +29,7 @@ export enum ServiceProvider {
     FIREFLIES = 'fireflies',
     IMAP = 'imap',
     CLICKUP = 'clickup',
+    LINEAR = 'linear',
 }
 
 export enum AuthType {
@@ -79,6 +81,10 @@ export interface HubspotSourceConfig {
     portal_id?: string
 }
 
+export interface LinearSourceConfig {
+    team_keys?: string[]
+}
+
 export interface ImapSourceConfig {
     display_name?: string
     host: string
@@ -107,6 +113,7 @@ export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.OUTLOOK_CALENDAR]: 3600,
     [SourceType.FIREFLIES]: 3600,
     [SourceType.IMAP]: 3600,
+    [SourceType.LINEAR]: 3600,
     [SourceType.LOCAL_FILES]: 86400,
     [SourceType.WEB]: 86400,
     [SourceType.CLICKUP]: 3600,

@@ -18,6 +18,7 @@ import outlookIcon from '$lib/images/icons/outlook.svg'
 import sharePointIcon from '$lib/images/icons/sharepoint.svg'
 import clickupIcon from '$lib/images/icons/clickup.svg'
 import notionIcon from '$lib/images/icons/notion.svg'
+import linearIcon from '$lib/images/icons/linear.svg'
 
 // Google Workspace MIME types
 const GOOGLE_DOCS_MIMETYPES = [
@@ -73,6 +74,8 @@ export function getDocumentIconPath(sourceType: string, contentType: string): st
         return hubspotIcon
     } else if (sourceType === SourceType.NOTION) {
         return notionIcon
+    } else if (sourceType === SourceType.LINEAR) {
+        return linearIcon
     }
 
     // For other source types, return null (will use fallback icon)
@@ -103,6 +106,8 @@ export function getSourceIconPath(sourceType: string): string | null {
             return outlookIcon
         case SourceType.SHARE_POINT:
             return sharePointIcon
+        case SourceType.LINEAR:
+            return linearIcon
         case SourceType.GITHUB:
             return null // TODO: Add github icon when available
         case SourceType.LOCAL_FILES:
@@ -172,6 +177,7 @@ export function inferSourceFromUrl(url: string): SourceType | null {
     if (urlLower.includes('atlassian.net/jira')) return SourceType.JIRA
     if (urlLower.includes('github.com')) return SourceType.GITHUB
     if (urlLower.includes('fireflies.ai')) return SourceType.FIREFLIES
+    if (urlLower.includes('linear.app')) return SourceType.LINEAR
 
     return null
 }
@@ -220,6 +226,7 @@ export function getSourceDisplayName(sourceType: SourceType) {
         [SourceType.FIREFLIES]: 'Fireflies',
         [SourceType.CLICKUP]: 'ClickUp',
         [SourceType.NOTION]: 'Notion',
+        [SourceType.LINEAR]: 'Linear',
     }
 
     return sourceDisplayNames[sourceType]

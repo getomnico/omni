@@ -108,6 +108,13 @@ export const load: PageServerLoad = async ({ locals }) => {
                 connected: connectedSources.some((source) => source.sourceType === 'notion'),
                 authType: 'api_key',
             },
+            {
+                id: 'linear',
+                name: 'Linear',
+                description: 'Connect to Linear issues, projects, and documents',
+                connected: connectedSources.some((source) => source.sourceType === 'linear'),
+                authType: 'api_key',
+            },
         ],
     }
 }
