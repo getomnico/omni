@@ -42,6 +42,8 @@ class MockGraphAPI:
         self.sites: list[dict[str, Any]] = []
         self.site_drive_items: dict[str, list[dict[str, Any]]] = {}
         self.file_contents: dict[str, bytes] = {}
+        self.groups: list[dict[str, Any]] = []
+        self.group_members: dict[str, list[dict[str, Any]]] = {}
 
     def reset(self) -> None:
         self.users.clear()
@@ -51,6 +53,8 @@ class MockGraphAPI:
         self.sites.clear()
         self.site_drive_items.clear()
         self.file_contents.clear()
+        self.groups.clear()
+        self.group_members.clear()
 
     def add_user(self, user: dict[str, Any]) -> None:
         self.users.append(user)
@@ -72,6 +76,12 @@ class MockGraphAPI:
 
     def set_file_content(self, drive_id: str, item_id: str, content: bytes) -> None:
         self.file_contents[f"{drive_id}:{item_id}"] = content
+
+    def add_group(self, group: dict[str, Any]) -> None:
+        self.groups.append(group)
+
+    def add_group_member(self, group_id: str, member: dict[str, Any]) -> None:
+        self.group_members.setdefault(group_id, []).append(member)
 
     def create_app(self, base_url: str) -> Starlette:
         mock = self
@@ -112,6 +122,14 @@ class MockGraphAPI:
             delta_link = f"{base_url}/users/{uid}/calendarView/delta?deltatoken=latest"
             return JSONResponse({"value": events, "@odata.deltaLink": delta_link})
 
+        async def list_groups(request: Request) -> JSONResponse:
+            return JSONResponse({"value": mock.groups})
+
+        async def group_members(request: Request) -> JSONResponse:
+            gid = request.path_params["gid"]
+            members = mock.group_members.get(gid, [])
+            return JSONResponse({"value": members})
+
         async def list_sites(request: Request) -> JSONResponse:
             return JSONResponse({"value": mock.sites})
 
@@ -131,6 +149,8 @@ class MockGraphAPI:
                 mail_delta,
             ),
             Route("/v1.0/users/{uid}/calendarView/delta", calendar_delta),
+            Route("/v1.0/groups", list_groups),
+            Route("/v1.0/groups/{gid}/members", group_members),
             Route("/v1.0/sites", list_sites),
             Route("/v1.0/sites/{sid}/drive/root/delta", site_drive_delta),
         ]

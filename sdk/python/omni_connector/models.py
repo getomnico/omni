@@ -1,8 +1,8 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Discriminator, Field, Tag
 
 
 class SyncMode(str, Enum):
@@ -45,8 +45,10 @@ class Document(BaseModel):
     attributes: dict[str, Any] | None = None
 
 
-class ConnectorEvent(BaseModel):
-    type: EventType
+class DocumentEvent(BaseModel):
+    """Document create/update/delete event — mirrors Rust ConnectorEvent::Document* variants."""
+
+    type: Literal["document_created", "document_updated", "document_deleted"]
     sync_run_id: str
     source_id: str
     document_id: str
@@ -58,12 +60,12 @@ class ConnectorEvent(BaseModel):
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict format matching Rust tagged enum serialization."""
         base: dict[str, Any] = {
-            "type": self.type.value,
+            "type": self.type,
             "sync_run_id": self.sync_run_id,
             "source_id": self.source_id,
             "document_id": self.document_id,
         }
-        if self.type == EventType.DOCUMENT_DELETED:
+        if self.type == EventType.DOCUMENT_DELETED.value:
             return base
 
         base["content_id"] = self.content_id
@@ -80,7 +82,10 @@ class ConnectorEvent(BaseModel):
         return base
 
 
-class GroupMembershipEvent(BaseModel):
+class GroupMembershipSyncEvent(BaseModel):
+    """Group membership sync event — mirrors Rust ConnectorEvent::GroupMembershipSync."""
+
+    type: Literal["group_membership_sync"] = "group_membership_sync"
     sync_run_id: str
     source_id: str
     group_email: str
@@ -90,7 +95,7 @@ class GroupMembershipEvent(BaseModel):
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict format matching Rust tagged enum serialization."""
         result: dict[str, Any] = {
-            "type": EventType.GROUP_MEMBERSHIP_SYNC.value,
+            "type": self.type,
             "sync_run_id": self.sync_run_id,
             "source_id": self.source_id,
             "group_email": self.group_email,
@@ -99,6 +104,22 @@ class GroupMembershipEvent(BaseModel):
         if self.group_name:
             result["group_name"] = self.group_name
         return result
+
+
+def _event_discriminator(v: Any) -> str:
+    raw_type = v.get("type", "") if isinstance(v, dict) else getattr(v, "type", "")
+    if raw_type == "group_membership_sync":
+        return "group"
+    return "document"
+
+
+ConnectorEvent = Annotated[
+    Union[
+        Annotated[DocumentEvent, Tag("document")],
+        Annotated[GroupMembershipSyncEvent, Tag("group")],
+    ],
+    Discriminator(_event_discriminator),
+]
 
 
 class ActionParameter(BaseModel):

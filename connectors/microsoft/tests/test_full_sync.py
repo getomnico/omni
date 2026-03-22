@@ -5,6 +5,8 @@ import httpx
 
 from omni_connector.testing import count_events, get_events, wait_for_sync
 
+GROUP_ID = "grp-eng-001"
+
 pytestmark = pytest.mark.integration
 
 USER_ID = "user-001"
@@ -263,3 +265,79 @@ async def test_sharepoint_sync(
 
     state = await seed.get_connector_state(sharepoint_source_id)
     assert state is not None, "connector_state should be saved after sync"
+
+
+async def test_group_membership_sync(
+    harness, seed, onedrive_source_id, mock_graph_api, cm_client: httpx.AsyncClient
+):
+    mock_graph_api.add_user(_make_user())
+    mock_graph_api.add_group(
+        {
+            "id": GROUP_ID,
+            "displayName": "Engineering",
+            "mail": "engineering@contoso.com",
+            "mailEnabled": True,
+            "securityEnabled": True,
+        }
+    )
+    mock_graph_api.add_group_member(
+        GROUP_ID,
+        {
+            "id": "user-001",
+            "displayName": "Alice Smith",
+            "mail": "alice@contoso.com",
+            "userPrincipalName": "alice@contoso.com",
+        },
+    )
+    mock_graph_api.add_group_member(
+        GROUP_ID,
+        {
+            "id": "user-002",
+            "displayName": "Bob Jones",
+            "mail": "bob@contoso.com",
+            "userPrincipalName": "bob@contoso.com",
+        },
+    )
+
+    # Add a drive item so the sync has something to process
+    mock_graph_api.add_drive_item(
+        USER_ID,
+        {
+            "id": ITEM_ID,
+            "name": "doc.txt",
+            "file": {"mimeType": "text/plain"},
+            "size": 100,
+            "webUrl": "https://contoso.com/doc.txt",
+            "createdDateTime": "2024-01-01T00:00:00Z",
+            "lastModifiedDateTime": "2024-01-01T00:00:00Z",
+            "parentReference": {"driveId": DRIVE_ID, "path": "/drive/root:/"},
+        },
+    )
+    mock_graph_api.set_file_content(DRIVE_ID, ITEM_ID, b"test content")
+
+    resp = await cm_client.post(
+        "/sync",
+        json={"source_id": onedrive_source_id, "sync_type": "full"},
+    )
+    assert resp.status_code == 200, resp.text
+    sync_run_id = resp.json()["sync_run_id"]
+
+    row = await wait_for_sync(harness.db_pool, sync_run_id, timeout=60)
+    assert (
+        row["status"] == "completed"
+    ), f"Sync ended with status={row['status']}, error={row.get('error_message')}"
+
+    # Verify group membership sync events were emitted
+    n_group_events = await count_events(
+        harness.db_pool, onedrive_source_id, "group_membership_sync"
+    )
+    assert (
+        n_group_events >= 1
+    ), f"Expected at least 1 group_membership_sync event, got {n_group_events}"
+
+    events = await get_events(harness.db_pool, onedrive_source_id)
+    group_events = [e for e in events if e["event_type"] == "group_membership_sync"]
+    assert len(group_events) >= 1
+    payload = group_events[0]["payload"]
+    assert payload["group_email"] == "engineering@contoso.com"
+    assert set(payload["member_emails"]) == {"alice@contoso.com", "bob@contoso.com"}

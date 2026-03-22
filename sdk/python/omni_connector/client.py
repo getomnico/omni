@@ -51,7 +51,7 @@ class SdkClient:
         source_id: str,
         event: ConnectorEvent,
     ) -> None:
-        """Emit a document event to the queue."""
+        """Emit a connector event (document or group membership) to the queue."""
         logger.debug("SDK: Emitting event for sync_run=%s", sync_run_id)
 
         payload = {

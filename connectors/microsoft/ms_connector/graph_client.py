@@ -225,6 +225,29 @@ class GraphClient:
         )
         return data.get("value", [])
 
+    async def list_groups(self) -> list[dict[str, Any]]:
+        """Enumerate all groups in the tenant."""
+        groups: list[dict[str, Any]] = []
+        async for group in self.get_paginated(
+            "/groups",
+            params={
+                "$select": "id,displayName,mail,mailEnabled,securityEnabled",
+                "$top": "999",
+            },
+        ):
+            groups.append(group)
+        return groups
+
+    async def list_group_members(self, group_id: str) -> list[dict[str, Any]]:
+        """Enumerate all members of a group."""
+        members: list[dict[str, Any]] = []
+        async for member in self.get_paginated(
+            f"/groups/{group_id}/members",
+            params={"$select": "id,displayName,mail,userPrincipalName"},
+        ):
+            members.append(member)
+        return members
+
     async def test_connection(self) -> None:
         """Validate credentials by calling /organization."""
         await self.get("/organization", params={"$select": "id,displayName"})

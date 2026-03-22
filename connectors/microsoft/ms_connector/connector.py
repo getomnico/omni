@@ -129,6 +129,9 @@ class MicrosoftConnector(Connector):
             await ctx.fail(f"Unknown source type: {ctx.source_type}")
             return
 
+        # Sync group memberships before document sync
+        await self._sync_groups(client, ctx)
+
         syncer = self._create_syncer(syncer_key, source_config)
         state = state or {}
 
@@ -152,6 +155,60 @@ class MicrosoftConnector(Connector):
             await ctx.fail(str(e))
         finally:
             await client.close()
+
+    async def _sync_groups(self, client: GraphClient, ctx: SyncContext) -> None:
+        """Sync Entra ID group memberships. Non-fatal — logs and continues on errors."""
+        try:
+            groups = await client.list_groups()
+        except Exception as e:
+            logger.warning("Failed to list groups: %s. Skipping group sync.", e)
+            return
+
+        logger.info("Found %d groups, syncing memberships", len(groups))
+        total_members = 0
+
+        for group in groups:
+            group_id = group["id"]
+            group_email = (group.get("mail") or "").lower()
+            group_name = group.get("displayName")
+
+            if not group_email:
+                continue
+
+            try:
+                members = await client.list_group_members(group_id)
+            except Exception as e:
+                logger.warning(
+                    "Failed to list members for group %s: %s", group_email, e
+                )
+                continue
+
+            member_emails = [
+                (m.get("mail") or m.get("userPrincipalName") or "").lower()
+                for m in members
+            ]
+            member_emails = [e for e in member_emails if e]
+
+            total_members += len(member_emails)
+
+            try:
+                await ctx.emit_group_membership(
+                    group_email=group_email,
+                    member_emails=member_emails,
+                    group_name=group_name,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to emit group membership event for %s: %s",
+                    group_email,
+                    e,
+                )
+
+        logger.info(
+            "Group sync complete: %d groups, %d total memberships",
+            len(groups),
+            total_members,
+        )
 
     def _create_syncer(self, syncer_key: str, source_config: dict[str, Any]) -> Any:
         if syncer_key == "onedrive":

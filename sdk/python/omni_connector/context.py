@@ -3,7 +3,7 @@ import logging
 from typing import Any
 
 from .client import SdkClient
-from .models import ConnectorEvent, Document, EventType
+from .models import DocumentEvent, Document, EventType, GroupMembershipSyncEvent
 from .storage import ContentStorage
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ class SyncContext:
 
     async def emit(self, doc: Document) -> None:
         """Push document to queue. Implicitly heartbeats (updates last_activity_at)."""
-        event = ConnectorEvent(
+        event = DocumentEvent(
             type=EventType.DOCUMENT_CREATED,
             sync_run_id=self._sync_run_id,
             source_id=self._source_id,
@@ -80,7 +80,7 @@ class SyncContext:
 
     async def emit_updated(self, doc: Document) -> None:
         """Push document update to queue."""
-        event = ConnectorEvent(
+        event = DocumentEvent(
             type=EventType.DOCUMENT_UPDATED,
             sync_run_id=self._sync_run_id,
             source_id=self._source_id,
@@ -100,11 +100,32 @@ class SyncContext:
 
     async def emit_deleted(self, external_id: str) -> None:
         """Mark document as deleted in source."""
-        event = ConnectorEvent(
+        event = DocumentEvent(
             type=EventType.DOCUMENT_DELETED,
             sync_run_id=self._sync_run_id,
             source_id=self._source_id,
             document_id=external_id,
+        )
+
+        await self._client.emit_event(
+            self._sync_run_id,
+            self._source_id,
+            event,
+        )
+
+    async def emit_group_membership(
+        self,
+        group_email: str,
+        member_emails: list[str],
+        group_name: str | None = None,
+    ) -> None:
+        """Emit a group membership sync event."""
+        event = GroupMembershipSyncEvent(
+            sync_run_id=self._sync_run_id,
+            source_id=self._source_id,
+            group_email=group_email,
+            group_name=group_name,
+            member_emails=member_emails,
         )
 
         await self._client.emit_event(
