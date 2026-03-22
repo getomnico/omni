@@ -29,7 +29,12 @@ class SharePointSyncer:
         ctx: SyncContext,
         state: dict[str, Any],
         source_config: dict[str, Any] | None = None,
+        user_cache: dict[str, str] | None = None,
+        group_cache: dict[str, str] | None = None,
     ) -> dict[str, Any]:
+        self._user_cache = user_cache or {}
+        self._group_cache = group_cache or {}
+
         delta_tokens: dict[str, str] = state.get("delta_tokens", {})
         new_tokens: dict[str, str] = {}
 
@@ -128,11 +133,24 @@ class SharePointSyncer:
         else:
             content = generate_drive_item_content(item, {})
 
+        drive_id = item.get("parentReference", {}).get("driveId", "unknown")
+        item_id = item["id"]
+        try:
+            graph_permissions = await client.list_item_permissions(drive_id, item_id)
+        except Exception as e:
+            logger.warning(
+                "[sharepoint] Failed to fetch permissions for %s: %s", item_id, e
+            )
+            graph_permissions = []
+
         content_id = await ctx.content_storage.save(content, "text/plain")
         doc = map_drive_item_to_document(
             item=item,
             content_id=content_id,
             source_type="share_point",
+            graph_permissions=graph_permissions,
+            user_cache=self._user_cache,
+            group_cache=self._group_cache,
             site_id=site["id"],
         )
         await ctx.emit(doc)

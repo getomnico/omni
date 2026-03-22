@@ -45,6 +45,8 @@ class OneDriveSyncer(BaseSyncer):
         user: dict[str, Any],
         ctx: SyncContext,
         delta_token: str | None,
+        user_cache: dict[str, str] | None = None,
+        group_cache: dict[str, str] | None = None,
     ) -> str | None:
         user_id = user["id"]
         display_name = user.get("displayName", user_id)
@@ -83,7 +85,9 @@ class OneDriveSyncer(BaseSyncer):
                 continue
 
             try:
-                await self._process_item(client, user, item, ctx)
+                await self._process_item(
+                    client, user, item, ctx, user_cache, group_cache
+                )
             except Exception as e:
                 drive_id = item.get("parentReference", {}).get("driveId", "unknown")
                 external_id = f"onedrive:{drive_id}:{item['id']}"
@@ -98,6 +102,8 @@ class OneDriveSyncer(BaseSyncer):
         user: dict[str, Any],
         item: dict[str, Any],
         ctx: SyncContext,
+        user_cache: dict[str, str] | None = None,
+        group_cache: dict[str, str] | None = None,
     ) -> None:
         file_info = item.get("file", {})
         mime_type = file_info.get("mimeType", "")
@@ -109,11 +115,24 @@ class OneDriveSyncer(BaseSyncer):
         else:
             content = generate_drive_item_content(item, user)
 
+        drive_id = item.get("parentReference", {}).get("driveId", "unknown")
+        item_id = item["id"]
+        try:
+            graph_permissions = await client.list_item_permissions(drive_id, item_id)
+        except Exception as e:
+            logger.warning(
+                "[onedrive] Failed to fetch permissions for %s: %s", item_id, e
+            )
+            graph_permissions = []
+
         content_id = await ctx.content_storage.save(content, "text/plain")
         doc = map_drive_item_to_document(
             item=item,
             content_id=content_id,
             source_type="one_drive",
+            graph_permissions=graph_permissions,
+            user_cache=user_cache,
+            group_cache=group_cache,
             owner_email=user.get("mail") or user.get("userPrincipalName"),
         )
         await ctx.emit(doc)

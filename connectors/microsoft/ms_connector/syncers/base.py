@@ -46,6 +46,8 @@ class BaseSyncer(abc.ABC):
         user: dict[str, Any],
         ctx: SyncContext,
         delta_token: str | None,
+        user_cache: dict[str, str] | None = None,
+        group_cache: dict[str, str] | None = None,
     ) -> str | None:
         """Sync data for a single user. Returns new delta token or None."""
         ...
@@ -56,6 +58,8 @@ class BaseSyncer(abc.ABC):
         ctx: SyncContext,
         state: dict[str, Any],
         source_config: dict[str, Any] | None = None,
+        user_cache: dict[str, str] | None = None,
+        group_cache: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Run sync across all users. Returns updated state dict."""
         source_config = source_config or {}
@@ -76,7 +80,14 @@ class BaseSyncer(abc.ABC):
             user_id = user["id"]
             token = delta_tokens.get(user_id)
 
-            new_token = await self.sync_for_user(client, user, ctx, token)
+            new_token = await self.sync_for_user(
+                client,
+                user,
+                ctx,
+                token,
+                user_cache=user_cache,
+                group_cache=group_cache,
+            )
             if new_token:
                 new_tokens[user_id] = new_token
 

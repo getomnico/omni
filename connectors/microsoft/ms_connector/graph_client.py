@@ -248,6 +248,17 @@ class GraphClient:
             members.append(member)
         return members
 
+    async def list_item_permissions(
+        self, drive_id: str, item_id: str
+    ) -> list[dict[str, Any]]:
+        """List sharing permissions on a driveItem."""
+        permissions: list[dict[str, Any]] = []
+        async for perm in self.get_paginated(
+            f"/drives/{drive_id}/items/{item_id}/permissions",
+        ):
+            permissions.append(perm)
+        return permissions
+
     async def test_connection(self) -> None:
         """Validate credentials by calling /organization."""
         await self.get("/organization", params={"$select": "id,displayName"})

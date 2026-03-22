@@ -118,6 +118,34 @@ async def test_list_group_members(graph_client, mock_router):
     assert members[0]["mail"] == "alice@contoso.com"
 
 
+async def test_list_item_permissions(graph_client, mock_router):
+    mock_router.get(url__regex=r".*/drives/d1/items/i1/permissions(\?.*)?$").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "value": [
+                    {
+                        "id": "perm-1",
+                        "roles": ["write"],
+                        "grantedToV2": {
+                            "user": {"id": "u1", "displayName": "Alice"},
+                        },
+                    },
+                    {
+                        "id": "perm-2",
+                        "roles": ["read"],
+                        "link": {"scope": "organization", "type": "view"},
+                    },
+                ]
+            },
+        )
+    )
+    perms = await graph_client.list_item_permissions("d1", "i1")
+    assert len(perms) == 2
+    assert perms[0]["grantedToV2"]["user"]["id"] == "u1"
+    assert perms[1]["link"]["scope"] == "organization"
+
+
 async def test_delta_query_with_pagination(graph_client, mock_router):
     page2_url = f"{GRAPH_BASE_URL}/delta?page=2"
 

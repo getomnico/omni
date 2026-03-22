@@ -129,8 +129,24 @@ class MicrosoftConnector(Connector):
             await ctx.fail(f"Unknown source type: {ctx.source_type}")
             return
 
-        # Sync group memberships before document sync
-        await self._sync_groups(client, ctx)
+        # Sync group memberships and build ID→email caches for permission resolution
+        fetched_groups = await self._sync_groups(client, ctx)
+        group_cache = {
+            g["id"]: (g.get("mail") or "").lower()
+            for g in fetched_groups
+            if g.get("mail")
+        }
+
+        try:
+            all_users = await client.list_users()
+        except Exception as e:
+            logger.warning("Failed to list users for cache: %s", e)
+            all_users = []
+        user_cache = {
+            u["id"]: (u.get("mail") or u.get("userPrincipalName") or "").lower()
+            for u in all_users
+            if u.get("mail") or u.get("userPrincipalName")
+        }
 
         syncer = self._create_syncer(syncer_key, source_config)
         state = state or {}
@@ -139,7 +155,12 @@ class MicrosoftConnector(Connector):
 
         try:
             result_state = await syncer.sync(
-                client, ctx, state, source_config=source_config
+                client,
+                ctx,
+                state,
+                source_config=source_config,
+                user_cache=user_cache,
+                group_cache=group_cache,
             )
             await ctx.complete(new_state=result_state)
             logger.info(
@@ -156,13 +177,15 @@ class MicrosoftConnector(Connector):
         finally:
             await client.close()
 
-    async def _sync_groups(self, client: GraphClient, ctx: SyncContext) -> None:
-        """Sync Entra ID group memberships. Non-fatal — logs and continues on errors."""
+    async def _sync_groups(
+        self, client: GraphClient, ctx: SyncContext
+    ) -> list[dict[str, Any]]:
+        """Sync Entra ID group memberships. Returns fetched groups for cache building."""
         try:
             groups = await client.list_groups()
         except Exception as e:
             logger.warning("Failed to list groups: %s. Skipping group sync.", e)
-            return
+            return []
 
         logger.info("Found %d groups, syncing memberships", len(groups))
         total_members = 0
@@ -209,6 +232,7 @@ class MicrosoftConnector(Connector):
             len(groups),
             total_members,
         )
+        return groups
 
     def _create_syncer(self, syncer_key: str, source_config: dict[str, Any]) -> Any:
         if syncer_key == "onedrive":
