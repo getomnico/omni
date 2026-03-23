@@ -20,7 +20,7 @@
     import linearLogo from '$lib/images/icons/linear.svg'
     import githubLogo from '$lib/images/icons/github.svg'
     import { getSourceIconPath } from '$lib/utils/icons'
-    import { Globe, HardDrive, Loader2, Mail } from '@lucide/svelte'
+    import { Globe, HardDrive, Mail } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import GoogleWorkspaceSetup from '$lib/components/google-workspace-setup.svelte'
     import AtlassianConnectorSetup from '$lib/components/atlassian-connector-setup.svelte'
@@ -102,144 +102,36 @@
         }
     }
 
-    let showGoogleSetup = $state(false)
-    let showAtlassianSetup = $state(false)
-    let showSlackSetup = $state(false)
-    let showWebSetup = $state(false)
-    let showFilesystemSetup = $state(false)
-    let showHubspotSetup = $state(false)
-    let showFirefliesSetup = $state(false)
-    let showImapSetup = $state(false)
-    let showMicrosoftSetup = $state(false)
-    let showClickupSetup = $state(false)
-    let showNotionSetup = $state(false)
-    let showLinearSetup = $state(false)
-    let showGithubSetup = $state(false)
+    let activeSetup = $state<string | null>(null)
 
     function handleConnect(integrationId: string) {
-        if (integrationId === 'google') {
-            showGoogleSetup = true
-        } else if (integrationId === 'atlassian') {
-            showAtlassianSetup = true
-        } else if (integrationId === 'slack') {
-            showSlackSetup = true
-        } else if (integrationId === 'web') {
-            showWebSetup = true
-        } else if (integrationId === 'filesystem') {
-            showFilesystemSetup = true
-        } else if (integrationId === 'hubspot') {
-            showHubspotSetup = true
-        } else if (integrationId === 'fireflies') {
-            showFirefliesSetup = true
-        } else if (integrationId === 'imap') {
-            showImapSetup = true
-        } else if (integrationId === 'microsoft') {
-            showMicrosoftSetup = true
-        } else if (integrationId === 'clickup') {
-            showClickupSetup = true
-        } else if (integrationId === 'notion') {
-            showNotionSetup = true
-        } else if (integrationId === 'linear') {
-            showLinearSetup = true
-        } else if (integrationId === 'github') {
-            showGithubSetup = true
-        }
+        activeSetup = integrationId
     }
 
-    function handleGoogleSetupSuccess() {
-        showGoogleSetup = false
+    function handleSetupSuccess() {
+        activeSetup = null
         window.location.reload()
     }
 
-    function handleAtlassianSetupSuccess() {
-        showAtlassianSetup = false
-        window.location.reload()
+    function closeSetup() {
+        activeSetup = null
     }
 
-    function handleSlackSetupSuccess() {
-        showSlackSetup = false
-        window.location.reload()
+    const integrationIcons: Record<string, string> = {
+        google: googleLogo,
+        slack: slackLogo,
+        atlassian: atlassianLogo,
+        hubspot: hubspotLogo,
+        fireflies: firefliesLogo,
+        microsoft: microsoftLogo,
+        clickup: clickupLogo,
+        notion: notionLogo,
+        linear: linearLogo,
+        github: githubLogo,
     }
 
-    function handleWebSetupSuccess() {
-        showWebSetup = false
-        window.location.reload()
-    }
-
-    function handleFilesystemSetupSuccess() {
-        showFilesystemSetup = false
-        window.location.reload()
-    }
-
-    function handleHubspotSetupSuccess() {
-        showHubspotSetup = false
-        window.location.reload()
-    }
-
-    function handleFirefliesSetupSuccess() {
-        showFirefliesSetup = false
-        window.location.reload()
-    }
-
-    function handleImapSetupSuccess() {
-        showImapSetup = false
-        window.location.reload()
-    }
-
-    function handleMicrosoftSetupSuccess() {
-        showMicrosoftSetup = false
-        window.location.reload()
-    }
-
-    function handleClickupSetupSuccess() {
-        showClickupSetup = false
-        window.location.reload()
-    }
-
-    function handleNotionSetupSuccess() {
-        showNotionSetup = false
-        window.location.reload()
-    }
-
-    function handleLinearSetupSuccess() {
-        showLinearSetup = false
-        window.location.reload()
-    }
-
-    function handleGithubSetupSuccess() {
-        showGithubSetup = false
-        window.location.reload()
-    }
-
-    function getSourceIcon(sourceType: string) {
-        return getSourceIconPath(sourceType)
-    }
-
-    function getIntegrationIcon(integrationId: string) {
-        switch (integrationId) {
-            case 'google':
-                return googleLogo
-            case 'slack':
-                return slackLogo
-            case 'atlassian':
-                return atlassianLogo
-            case 'hubspot':
-                return hubspotLogo
-            case 'fireflies':
-                return firefliesLogo
-            case 'microsoft':
-                return microsoftLogo
-            case 'clickup':
-                return clickupLogo
-            case 'notion':
-                return notionLogo
-            case 'linear':
-                return linearLogo
-            case 'github':
-                return githubLogo
-            default:
-                return null
-        }
+    function getIntegrationIcon(integrationId: string): string | null {
+        return integrationIcons[integrationId] ?? null
     }
 
     function formatDate(date: Date | null) {
@@ -253,87 +145,44 @@
             : 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300'
     }
 
+    const sourceNouns: Record<string, string> = {
+        [SourceType.GOOGLE_DRIVE]: 'documents',
+        [SourceType.GMAIL]: 'threads',
+        [SourceType.SLACK]: 'messages',
+        [SourceType.CONFLUENCE]: 'pages',
+        [SourceType.JIRA]: 'issues',
+        [SourceType.HUBSPOT]: 'records',
+        [SourceType.FIREFLIES]: 'transcripts',
+        [SourceType.IMAP]: 'emails',
+        [SourceType.ONE_DRIVE]: 'files',
+        [SourceType.OUTLOOK]: 'emails',
+        [SourceType.OUTLOOK_CALENDAR]: 'events',
+        [SourceType.SHARE_POINT]: 'documents',
+        [SourceType.WEB]: 'pages',
+        [SourceType.LINEAR]: 'items',
+        [SourceType.LOCAL_FILES]: 'files',
+        [SourceType.CLICKUP]: 'tasks',
+        [SourceType.NOTION]: 'pages',
+        [SourceType.GITHUB]: 'documents',
+    }
+
     function getSourceNoun(sourceType: SourceType): string {
-        switch (sourceType) {
-            case SourceType.GOOGLE_DRIVE:
-                return 'documents'
-            case SourceType.GMAIL:
-                return 'threads'
-            case SourceType.SLACK:
-                return 'messages'
-            case SourceType.CONFLUENCE:
-                return 'pages'
-            case SourceType.JIRA:
-                return 'issues'
-            case SourceType.HUBSPOT:
-                return 'records'
-            case SourceType.FIREFLIES:
-                return 'transcripts'
-            case SourceType.IMAP:
-                return 'emails'
-            case SourceType.ONE_DRIVE:
-                return 'files'
-            case SourceType.OUTLOOK:
-                return 'emails'
-            case SourceType.OUTLOOK_CALENDAR:
-                return 'events'
-            case SourceType.SHARE_POINT:
-                return 'documents'
-            case SourceType.WEB:
-                return 'pages'
-            case SourceType.LINEAR:
-                return 'items'
-            case SourceType.LOCAL_FILES:
-                return 'files'
-            case SourceType.CLICKUP:
-                return 'tasks'
-            case SourceType.NOTION:
-                return 'pages'
-            case SourceType.GITHUB:
-                return 'documents'
-            default:
-                return 'documents'
-        }
+        return sourceNouns[sourceType] ?? 'documents'
+    }
+
+    const sourceTypeSlug: Record<string, string> = {
+        [SourceType.GOOGLE_DRIVE]: 'drive',
+        [SourceType.GMAIL]: 'gmail',
+        [SourceType.LOCAL_FILES]: 'filesystem',
+        [SourceType.ONE_DRIVE]: 'microsoft',
+        [SourceType.OUTLOOK]: 'microsoft',
+        [SourceType.OUTLOOK_CALENDAR]: 'microsoft',
+        [SourceType.SHARE_POINT]: 'microsoft',
     }
 
     function getConfigureUrl(sourceType: SourceType, sourceId: string): string {
-        switch (sourceType) {
-            case SourceType.GOOGLE_DRIVE:
-                return `/admin/settings/integrations/drive/${sourceId}`
-            case SourceType.GMAIL:
-                return `/admin/settings/integrations/gmail/${sourceId}`
-            case SourceType.CONFLUENCE:
-                return `/admin/settings/integrations/confluence/${sourceId}`
-            case SourceType.JIRA:
-                return `/admin/settings/integrations/jira/${sourceId}`
-            case SourceType.SLACK:
-                return `/admin/settings/integrations/slack/${sourceId}`
-            case SourceType.HUBSPOT:
-                return `/admin/settings/integrations/hubspot/${sourceId}`
-            case SourceType.FIREFLIES:
-                return `/admin/settings/integrations/fireflies/${sourceId}`
-            case SourceType.IMAP:
-                return `/admin/settings/integrations/imap/${sourceId}`
-            case SourceType.WEB:
-                return `/admin/settings/integrations/web/${sourceId}`
-            case SourceType.LOCAL_FILES:
-                return `/admin/settings/integrations/filesystem/${sourceId}`
-            case SourceType.LINEAR:
-                return `/admin/settings/integrations/linear/${sourceId}`
-            case SourceType.ONE_DRIVE:
-            case SourceType.OUTLOOK:
-            case SourceType.OUTLOOK_CALENDAR:
-            case SourceType.SHARE_POINT:
-                return `/admin/settings/integrations/microsoft/${sourceId}`
-            case SourceType.CLICKUP:
-                return `/admin/settings/integrations/clickup/${sourceId}`
-            case SourceType.NOTION:
-                return `/admin/settings/integrations/notion/${sourceId}`
-            case SourceType.GITHUB:
-                return `/admin/settings/integrations/github/${sourceId}`
-            default:
-                return '#'
-        }
+        const slug = sourceTypeSlug[sourceType] ?? sourceType
+        return `/admin/settings/integrations/${slug}/${sourceId}`
     }
 </script>
 
@@ -364,9 +213,9 @@
                         <div
                             class="flex items-center justify-between gap-4 rounded-lg border px-4 py-3">
                             <div class="flex flex-1 items-start gap-3">
-                                {#if getSourceIcon(source.sourceType as SourceType)}
+                                {#if getSourceIconPath(source.sourceType as SourceType)}
                                     <img
-                                        src={getSourceIcon(source.sourceType as SourceType)}
+                                        src={getSourceIconPath(source.sourceType as SourceType)}
                                         alt={source.name}
                                         class="h-6 w-6" />
                                 {:else if source.sourceType === 'web'}
@@ -493,67 +342,67 @@
 </div>
 
 <GoogleWorkspaceSetup
-    bind:open={showGoogleSetup}
+    open={activeSetup === 'google'}
     googleOAuthConfigured={data.googleOAuthConfigured}
-    onSuccess={handleGoogleSetupSuccess}
-    onCancel={() => (showGoogleSetup = false)} />
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
 
 <AtlassianConnectorSetup
-    bind:open={showAtlassianSetup}
-    onSuccess={handleAtlassianSetupSuccess}
-    onCancel={() => (showAtlassianSetup = false)} />
+    open={activeSetup === 'atlassian'}
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
 
 <SlackConnectorSetup
-    bind:open={showSlackSetup}
-    onSuccess={handleSlackSetupSuccess}
-    onCancel={() => (showSlackSetup = false)} />
+    open={activeSetup === 'slack'}
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
 
 <WebConnectorSetupDialog
-    bind:open={showWebSetup}
-    onSuccess={handleWebSetupSuccess}
-    onCancel={() => (showWebSetup = false)} />
+    open={activeSetup === 'web'}
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
 
 <FilesystemConnectorSetupDialog
-    bind:open={showFilesystemSetup}
-    onSuccess={handleFilesystemSetupSuccess}
-    onCancel={() => (showFilesystemSetup = false)} />
+    open={activeSetup === 'filesystem'}
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
 
 <HubspotConnectorSetup
-    bind:open={showHubspotSetup}
-    onSuccess={handleHubspotSetupSuccess}
-    onCancel={() => (showHubspotSetup = false)} />
+    open={activeSetup === 'hubspot'}
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
 
 <FirefliesConnectorSetup
-    bind:open={showFirefliesSetup}
-    onSuccess={handleFirefliesSetupSuccess}
-    onCancel={() => (showFirefliesSetup = false)} />
+    open={activeSetup === 'fireflies'}
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
 
 <ImapConnectorSetup
-    bind:open={showImapSetup}
-    onSuccess={handleImapSetupSuccess}
-    onCancel={() => (showImapSetup = false)} />
+    open={activeSetup === 'imap'}
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
 
 <MicrosoftConnectorSetup
-    bind:open={showMicrosoftSetup}
-    onSuccess={handleMicrosoftSetupSuccess}
-    onCancel={() => (showMicrosoftSetup = false)} />
+    open={activeSetup === 'microsoft'}
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
 
 <ClickupConnectorSetup
-    bind:open={showClickupSetup}
-    onSuccess={handleClickupSetupSuccess}
-    onCancel={() => (showClickupSetup = false)} />
+    open={activeSetup === 'clickup'}
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
 
 <NotionConnectorSetup
-    bind:open={showNotionSetup}
-    onSuccess={handleNotionSetupSuccess}
-    onCancel={() => (showNotionSetup = false)} />
+    open={activeSetup === 'notion'}
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
 
 <LinearConnectorSetup
-    bind:open={showLinearSetup}
-    onSuccess={handleLinearSetupSuccess}
-    onCancel={() => (showLinearSetup = false)} />
+    open={activeSetup === 'linear'}
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
 
 <GithubConnectorSetup
-    bind:open={showGithubSetup}
-    onSuccess={handleGithubSetupSuccess}
-    onCancel={() => (showGithubSetup = false)} />
+    open={activeSetup === 'github'}
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
