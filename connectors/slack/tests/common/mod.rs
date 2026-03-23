@@ -8,7 +8,6 @@ use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
 use shared::{DatabaseConfig, RedisConfig, SdkClient};
 use sqlx::PgPool;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
@@ -43,20 +42,26 @@ impl SlackConnectorTestFixture {
                 redis_url: "redis://localhost".to_string(),
             },
             port: 0,
-            connector_urls: HashMap::new(),
             max_concurrent_syncs: 10,
             max_concurrent_syncs_per_type: 3,
             scheduler_interval_seconds: 30,
             stale_sync_timeout_minutes: 10,
         };
 
-        let cm_sync_manager = Arc::new(CMSyncManager::new(&test_env.db_pool, cm_config.clone()));
+        let redis_client = redis::Client::open(cm_config.redis.redis_url.clone())?;
+
+        let cm_sync_manager = Arc::new(CMSyncManager::new(
+            &test_env.db_pool,
+            cm_config.clone(),
+            redis_client.clone(),
+        ));
 
         let content_storage: Arc<dyn shared::ObjectStorage> =
             Arc::new(PostgresStorage::new(test_env.db_pool.pool().clone()));
 
         let cm_state = CMAppState {
             db_pool: test_env.db_pool.clone(),
+            redis_client,
             config: cm_config,
             sync_manager: cm_sync_manager,
             content_storage,

@@ -242,7 +242,7 @@ pub async fn list_connectors(
     let mut connectors = Vec::new();
 
     for manifest in manifests {
-        let url = manifest.connector_url.clone().unwrap_or_default();
+        let url = manifest.connector_url.clone();
         let healthy = if !url.is_empty() {
             client.health_check(&url).await
         } else {
@@ -486,12 +486,30 @@ pub async fn sdk_register(
     State(state): State<AppState>,
     Json(manifest): Json<ConnectorManifest>,
 ) -> Result<Json<SdkStatusResponse>, ApiError> {
-    let connector_id = manifest.connector_id.as_deref().ok_or_else(|| {
-        ApiError::BadRequest("connector_id is required for registration".to_string())
-    })?;
+    if manifest.connector_id.is_empty() {
+        return Err(ApiError::BadRequest(
+            "connector_id is required for registration".to_string(),
+        ));
+    }
+    if manifest.connector_url.is_empty() {
+        return Err(ApiError::BadRequest(
+            "connector_url is required for registration".to_string(),
+        ));
+    }
+
+    // Validate the connector is reachable before accepting registration
+    let client = ConnectorClient::new();
+    if !client.health_check(&manifest.connector_url).await {
+        return Err(ApiError::BadRequest(format!(
+            "Connector health check failed at {}. Registration rejected.",
+            manifest.connector_url
+        )));
+    }
+
+    let connector_id = &manifest.connector_id;
 
     info!(
-        "SDK: Registering connector '{}' (source_types: {:?}, url: {:?})",
+        "SDK: Registered connector '{}' (source_types: {:?}, url: {})",
         connector_id, manifest.source_types, manifest.connector_url
     );
 
@@ -571,7 +589,7 @@ pub async fn get_connector_url_for_source(
     let manifests = get_registered_manifests(redis_client).await;
     for manifest in manifests {
         if manifest.source_types.contains(&source_type) {
-            return manifest.connector_url;
+            return Some(manifest.connector_url);
         }
     }
     None

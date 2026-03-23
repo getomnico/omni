@@ -92,13 +92,13 @@ async fn health() -> impl IntoResponse {
     }))
 }
 
-pub fn build_manifest(connector_url: Option<String>) -> ConnectorManifest {
+pub fn build_manifest(connector_url: String) -> ConnectorManifest {
     ConnectorManifest {
         name: "imap".to_string(),
         display_name: "IMAP".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         sync_modes: vec!["full".to_string(), "incremental".to_string()],
-        connector_id: Some("imap".to_string()),
+        connector_id: "imap".to_string(),
         connector_url,
         source_types: vec![SourceType::Imap],
         description: Some("Index emails from any IMAP-compatible mailbox".to_string()),

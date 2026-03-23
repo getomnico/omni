@@ -42,11 +42,16 @@ class ConnectorServer:
         return self._sdk_client
 
 
-def _build_connector_url() -> str | None:
+def _build_connector_url() -> str:
     hostname = os.environ.get("CONNECTOR_HOST_NAME")
     if not hostname:
-        return None
-    port = os.environ.get("PORT", "8000")
+        raise RuntimeError(
+            "CONNECTOR_HOST_NAME environment variable is required. "
+            "Set it to this connector's hostname (e.g. the Docker service name)."
+        )
+    port = os.environ.get("PORT")
+    if not port:
+        raise RuntimeError("PORT environment variable is required.")
     return f"http://{hostname}:{port}"
 
 
@@ -54,30 +59,30 @@ def create_app(connector: "Connector") -> FastAPI:
     """Create FastAPI app for a connector."""
 
     server = ConnectorServer(connector)
+    connector_url = _build_connector_url()
+
+    if not os.environ.get("CONNECTOR_MANAGER_URL"):
+        raise RuntimeError(
+            "CONNECTOR_MANAGER_URL environment variable is required for connector registration."
+        )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):  # noqa: ARG001
-        connector_url = _build_connector_url()
-        registration_task = None
+        async def registration_loop() -> None:
+            while True:
+                try:
+                    manifest = connector.get_manifest(connector_url=connector_url)
+                    await server.sdk_client.register(manifest.model_dump())
+                    logger.info("Registered with connector manager")
+                except Exception as e:
+                    logger.warning("Registration failed: %s", e)
+                await asyncio.sleep(REGISTRATION_INTERVAL_SECONDS)
 
-        if connector_url and os.environ.get("CONNECTOR_MANAGER_URL"):
-
-            async def registration_loop() -> None:
-                while True:
-                    try:
-                        manifest = connector.get_manifest(connector_url=connector_url)
-                        await server.sdk_client.register(manifest.model_dump())
-                        logger.info("Registered with connector manager")
-                    except Exception as e:
-                        logger.warning("Registration failed: %s", e)
-                    await asyncio.sleep(REGISTRATION_INTERVAL_SECONDS)
-
-            registration_task = asyncio.create_task(registration_loop())
+        registration_task = asyncio.create_task(registration_loop())
 
         yield
 
-        if registration_task:
-            registration_task.cancel()
+        registration_task.cancel()
 
     app = FastAPI(
         title=f"Omni {connector.name} Connector",
@@ -91,7 +96,7 @@ def create_app(connector: "Connector") -> FastAPI:
 
     @app.get("/manifest")
     async def manifest() -> dict[str, Any]:
-        return connector.get_manifest().model_dump()
+        return connector.get_manifest(connector_url=connector_url).model_dump()
 
     @app.post("/sync")
     async def trigger_sync(request: SyncRequest) -> JSONResponse:

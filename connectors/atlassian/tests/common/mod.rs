@@ -9,7 +9,6 @@ use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
 use shared::{ObjectStorage, SdkClient};
 use sqlx::PgPool;
-use std::collections::HashMap;
 use std::sync::Arc;
 use time::OffsetDateTime;
 use tokio::net::TcpListener;
@@ -40,21 +39,10 @@ pub async fn setup_test_fixture(source_type: SourceType) -> Result<TestFixture> 
     // Seed Atlassian source and credentials
     seed_atlassian_source(test_env.db_pool.pool(), source_type).await?;
 
-    let mut connector_urls = HashMap::new();
-    connector_urls.insert(
-        shared::models::SourceType::Confluence,
-        "http://127.0.0.1:1/atlassian".to_string(),
-    );
-    connector_urls.insert(
-        shared::models::SourceType::Jira,
-        "http://127.0.0.1:1/atlassian".to_string(),
-    );
-
     let config = ConnectorManagerConfig {
         database: test_env.database_config(),
         redis: test_env.redis_config(),
         port: 0,
-        connector_urls,
         max_concurrent_syncs: 2,
         max_concurrent_syncs_per_type: 3,
         scheduler_interval_seconds: 600,
@@ -64,13 +52,17 @@ pub async fn setup_test_fixture(source_type: SourceType) -> Result<TestFixture> 
     let content_storage: Arc<dyn ObjectStorage> =
         Arc::new(PostgresStorage::new(test_env.db_pool.pool().clone()));
 
+    let redis_client = redis::Client::open(config.redis.redis_url.clone())?;
+
     let sync_manager = Arc::new(omni_connector_manager::sync_manager::SyncManager::new(
         &test_env.db_pool,
         config.clone(),
+        redis_client.clone(),
     ));
 
     let app_state = AppState {
         db_pool: test_env.db_pool.clone(),
+        redis_client,
         config,
         sync_manager,
         content_storage,

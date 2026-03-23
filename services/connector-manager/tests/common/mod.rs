@@ -5,11 +5,10 @@ use mock_connector::MockConnector;
 use omni_connector_manager::{
     config::ConnectorManagerConfig, create_app, sync_manager::SyncManager, AppState,
 };
-use shared::models::SourceType;
+use redis::Client as RedisClient;
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
 use shared::ObjectStorage;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 pub const TEST_SOURCE_ID: &str = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
@@ -32,27 +31,30 @@ pub async fn setup_test_fixture() -> Result<TestFixture> {
     let test_env = TestEnvironment::new().await?;
     let mock_connector = MockConnector::start().await?;
 
-    let mut connector_urls = HashMap::new();
-    connector_urls.insert(SourceType::LocalFiles, mock_connector.base_url.clone());
-
     let config = ConnectorManagerConfig {
         database: test_env.database_config(),
         redis: test_env.redis_config(),
         port: 0,
-        connector_urls,
         max_concurrent_syncs: 2,
         max_concurrent_syncs_per_type: 3,
         scheduler_interval_seconds: 600,
         stale_sync_timeout_minutes: 1,
     };
 
+    let redis_client = RedisClient::open(config.redis.redis_url.clone())?;
+
     let content_storage: Arc<dyn ObjectStorage> =
         Arc::new(PostgresStorage::new(test_env.db_pool.pool().clone()));
 
-    let sync_manager = Arc::new(SyncManager::new(&test_env.db_pool, config.clone()));
+    let sync_manager = Arc::new(SyncManager::new(
+        &test_env.db_pool,
+        config.clone(),
+        redis_client.clone(),
+    ));
 
     let app_state = AppState {
         db_pool: test_env.db_pool.clone(),
+        redis_client,
         config,
         sync_manager,
         content_storage,

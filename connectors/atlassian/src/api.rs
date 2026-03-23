@@ -88,13 +88,13 @@ async fn health() -> impl IntoResponse {
     }))
 }
 
-pub fn build_manifest(connector_url: Option<String>) -> ConnectorManifest {
+pub fn build_manifest(connector_url: String) -> ConnectorManifest {
     ConnectorManifest {
         name: "atlassian".to_string(),
         display_name: "Atlassian".to_string(),
         version: "1.0.0".to_string(),
         sync_modes: vec!["full".to_string(), "incremental".to_string()],
-        connector_id: Some("atlassian".to_string()),
+        connector_id: "atlassian".to_string(),
         connector_url,
         source_types: vec![SourceType::Confluence, SourceType::Jira],
         description: Some("Connect to Confluence and Jira using an API token".to_string()),

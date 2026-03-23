@@ -40,4 +40,5 @@ futures-util = { workspace = true }
 testcontainers = { workspace = true }
 testcontainers-modules = { workspace = true, features = ["postgres", "redis"] }
 omni-connector-manager = { path = "../../services/connector-manager" }
+redis = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio-rustls", "postgres"] }

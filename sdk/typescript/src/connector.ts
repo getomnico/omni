@@ -37,7 +37,7 @@ export abstract class Connector<
   readonly extraSchema?: Record<string, unknown>;
   readonly attributesSchema?: Record<string, unknown>;
 
-  getManifest(connectorUrl?: string): ConnectorManifest {
+  getManifest(connectorUrl: string): ConnectorManifest {
     return {
       name: this.name,
       display_name: this.displayName,

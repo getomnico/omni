@@ -1,15 +1,12 @@
 use anyhow::Result;
-use axum::{routing::post, Json, Router};
 use omni_connector_manager::{config::ConnectorManagerConfig, create_app, AppState};
 use omni_google_connector::sync::SyncManager;
 use redis::Client as RedisClient;
 use shared::db::repositories::SyncRunRepository;
-use shared::models::{SourceType, SyncResponse};
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
 use shared::{ObjectStorage, SdkClient};
 use sqlx::PgPool;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
@@ -20,7 +17,6 @@ pub struct GoogleConnectorTestFixture {
     pub test_env: TestEnvironment,
     pub sync_manager: Arc<SyncManager>,
     _cm_server_handle: tokio::task::JoinHandle<()>,
-    _mock_connector_handle: tokio::task::JoinHandle<()>,
 }
 
 impl GoogleConnectorTestFixture {
@@ -37,36 +33,11 @@ impl GoogleConnectorTestFixture {
         // Update the seeded source to be a Google Drive source
         seed_google_drive_source(test_env.db_pool.pool()).await?;
 
-        // Start a mock Google connector that accepts /sync requests
-        let mock_connector_app = Router::new().route(
-            "/sync",
-            post(|| async {
-                Json(SyncResponse {
-                    status: "accepted".to_string(),
-                    message: None,
-                })
-            }),
-        );
-        let mock_connector_listener = TcpListener::bind("127.0.0.1:0").await?;
-        let mock_connector_port = mock_connector_listener.local_addr()?.port();
-        let mock_connector_handle = tokio::spawn(async move {
-            axum::serve(mock_connector_listener, mock_connector_app)
-                .await
-                .unwrap();
-        });
-
         // Set up connector-manager server
-        let mut connector_urls = HashMap::new();
-        connector_urls.insert(
-            SourceType::GoogleDrive,
-            format!("http://127.0.0.1:{}", mock_connector_port),
-        );
-
         let config = ConnectorManagerConfig {
             database: test_env.database_config(),
             redis: test_env.redis_config(),
             port: 0,
-            connector_urls,
             max_concurrent_syncs: 2,
             max_concurrent_syncs_per_type: 3,
             scheduler_interval_seconds: 600,
@@ -76,13 +47,17 @@ impl GoogleConnectorTestFixture {
         let content_storage: Arc<dyn ObjectStorage> =
             Arc::new(PostgresStorage::new(test_env.db_pool.pool().clone()));
 
+        let redis_client = redis::Client::open(config.redis.redis_url.clone())?;
+
         let cm_sync_manager = Arc::new(omni_connector_manager::sync_manager::SyncManager::new(
             &test_env.db_pool,
             config.clone(),
+            redis_client.clone(),
         ));
 
         let app_state = AppState {
             db_pool: test_env.db_pool.clone(),
+            redis_client,
             config,
             sync_manager: cm_sync_manager,
             content_storage,
@@ -112,7 +87,6 @@ impl GoogleConnectorTestFixture {
             test_env,
             sync_manager,
             _cm_server_handle: cm_server_handle,
-            _mock_connector_handle: mock_connector_handle,
         })
     }
 

@@ -57,7 +57,7 @@ class Connector(ABC):
         """Search operators this connector supports. Override to declare operators."""
         return []
 
-    def get_manifest(self, connector_url: str | None = None) -> ConnectorManifest:
+    def get_manifest(self, connector_url: str) -> ConnectorManifest:
         """Return connector manifest."""
         return ConnectorManifest(
             name=self.name,

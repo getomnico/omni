@@ -348,10 +348,8 @@ pub struct ConnectorManifest {
     pub display_name: String,
     pub version: String,
     pub sync_modes: Vec<String>,
-    #[serde(default)]
-    pub connector_id: Option<String>,
-    #[serde(default)]
-    pub connector_url: Option<String>,
+    pub connector_id: String,
+    pub connector_url: String,
     #[serde(default)]
     pub source_types: Vec<SourceType>,
     #[serde(default)]

@@ -52,13 +52,13 @@ async fn health() -> impl IntoResponse {
     }))
 }
 
-pub fn build_manifest(connector_url: Option<String>) -> ConnectorManifest {
+pub fn build_manifest(connector_url: String) -> ConnectorManifest {
     ConnectorManifest {
         name: "slack".to_string(),
         display_name: "Slack".to_string(),
         version: "1.0.0".to_string(),
         sync_modes: vec!["full".to_string(), "incremental".to_string()],
-        connector_id: Some("slack".to_string()),
+        connector_id: "slack".to_string(),
         connector_url,
         source_types: vec![SourceType::Slack],
         description: Some("Connect to Slack messages and files".to_string()),

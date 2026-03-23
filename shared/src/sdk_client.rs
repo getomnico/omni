@@ -567,17 +567,24 @@ impl SdkClient {
 }
 
 /// Build the connector's own URL from CONNECTOR_HOST_NAME and PORT env vars.
-pub fn build_connector_url() -> Option<String> {
-    let hostname = std::env::var("CONNECTOR_HOST_NAME").ok()?;
-    let port = std::env::var("PORT").unwrap_or_else(|_| "8000".to_string());
-    Some(format!("http://{}:{}", hostname, port))
+/// Panics if CONNECTOR_HOST_NAME is not set — connectors cannot operate without
+/// being reachable by the connector manager.
+pub fn build_connector_url() -> String {
+    let hostname = std::env::var("CONNECTOR_HOST_NAME").unwrap_or_else(|_| {
+        panic!("CONNECTOR_HOST_NAME environment variable is required. Set it to this connector's hostname (e.g. the Docker service name).")
+    });
+    let port =
+        std::env::var("PORT").unwrap_or_else(|_| panic!("PORT environment variable is required."));
+    format!("http://{}:{}", hostname, port)
 }
 
 /// Spawn a background registration loop that re-registers with the connector
-/// manager every 30 seconds. The manifest should already have `connector_url`
-/// set. Returns None if CONNECTOR_MANAGER_URL is not set.
-pub fn start_registration_loop(manifest: ConnectorManifest) -> Option<tokio::task::JoinHandle<()>> {
-    let sdk_client = SdkClient::from_env().ok()?;
+/// manager every 30 seconds. The manifest should already have `connector_url` set.
+/// Panics if CONNECTOR_MANAGER_URL is not set.
+pub fn start_registration_loop(manifest: ConnectorManifest) -> tokio::task::JoinHandle<()> {
+    let sdk_client = SdkClient::from_env().unwrap_or_else(|_| {
+        panic!("CONNECTOR_MANAGER_URL environment variable is required for connector registration.")
+    });
 
     let handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(30));
@@ -592,5 +599,5 @@ pub fn start_registration_loop(manifest: ConnectorManifest) -> Option<tokio::tas
     });
 
     info!("Registration loop started");
-    Some(handle)
+    handle
 }
