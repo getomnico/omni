@@ -450,7 +450,13 @@ impl SyncManager {
         match source_type {
             SourceType::Confluence => {
                 self.confluence_processor
-                    .sync_all_spaces(credentials, source_id, sync_run_id, cancelled, space_filters)
+                    .sync_all_spaces(
+                        credentials,
+                        source_id,
+                        sync_run_id,
+                        cancelled,
+                        space_filters,
+                    )
                     .await
             }
             SourceType::Jira => {

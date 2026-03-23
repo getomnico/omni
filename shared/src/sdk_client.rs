@@ -574,16 +574,13 @@ pub fn build_connector_url() -> Option<String> {
 }
 
 /// Spawn a background registration loop that re-registers with the connector
-/// manager every 30 seconds. Returns the JoinHandle if started, None if
-/// CONNECTOR_HOST_NAME or CONNECTOR_MANAGER_URL is not set.
+/// manager every 30 seconds. The manifest should already have `connector_url`
+/// set. Returns None if CONNECTOR_MANAGER_URL is not set.
 pub fn start_registration_loop(manifest: ConnectorManifest) -> Option<tokio::task::JoinHandle<()>> {
-    let connector_url = build_connector_url()?;
     let sdk_client = SdkClient::from_env().ok()?;
 
     let handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(30));
-        let mut manifest = manifest;
-        manifest.connector_url = Some(connector_url);
 
         loop {
             interval.tick().await;

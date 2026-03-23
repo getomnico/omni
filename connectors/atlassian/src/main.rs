@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
         sync_manager: Arc::clone(&sync_manager),
     };
 
-    shared::start_registration_loop(build_manifest(None));
+    shared::start_registration_loop(build_manifest(shared::build_connector_url()));
 
     let app = create_router(api_state);
     let port = std::env::var("PORT")?.parse::<u16>()?;

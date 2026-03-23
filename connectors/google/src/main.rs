@@ -88,7 +88,7 @@ async fn main() -> Result<()> {
     }
 
     // Spawn registration loop
-    shared::start_registration_loop(build_manifest(None));
+    shared::start_registration_loop(build_manifest(shared::build_connector_url()));
 
     // Create API state with shared services
     let api_state = ApiState {

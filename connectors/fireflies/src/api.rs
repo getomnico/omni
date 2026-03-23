@@ -107,7 +107,7 @@ pub fn build_manifest(connector_url: Option<String>) -> ConnectorManifest {
 }
 
 async fn manifest() -> impl IntoResponse {
-    Json(build_manifest(None))
+    Json(build_manifest(shared::build_connector_url()))
 }
 
 async fn trigger_sync(

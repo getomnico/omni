@@ -45,7 +45,9 @@ impl ConfluenceProcessor {
             "Starting incremental Confluence sync for source: {} since {}{} (sync_run_id: {})",
             source_id,
             last_sync.format("%Y-%m-%d %H:%M"),
-            space_filters.as_ref().map_or(String::new(), |f| format!(" (spaces: {:?})", f)),
+            space_filters
+                .as_ref()
+                .map_or(String::new(), |f| format!(" (spaces: {:?})", f)),
             sync_run_id
         );
 
