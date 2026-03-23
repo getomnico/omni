@@ -37,6 +37,14 @@ class GitHubConnector(Connector):
         return "1.0.0"
 
     @property
+    def source_types(self) -> list[str]:
+        return ["github"]
+
+    @property
+    def description(self) -> str:
+        return "Connect to GitHub repositories, issues, PRs, and discussions"
+
+    @property
     def sync_modes(self) -> list[str]:
         return ["full", "incremental"]
 

@@ -27,9 +27,20 @@ class Connector(ABC):
         pass
 
     @property
+    @abstractmethod
+    def source_types(self) -> list[str]:
+        """Source type slugs this connector handles (e.g., ['google_drive', 'gmail'])."""
+        pass
+
+    @property
     def display_name(self) -> str:
         """Human-readable display name. Override to customize."""
         return self.name
+
+    @property
+    def description(self) -> str:
+        """Short description for the UI. Override to customize."""
+        return ""
 
     @property
     def sync_modes(self) -> list[str]:
@@ -46,13 +57,17 @@ class Connector(ABC):
         """Search operators this connector supports. Override to declare operators."""
         return []
 
-    def get_manifest(self) -> ConnectorManifest:
+    def get_manifest(self, connector_url: str | None = None) -> ConnectorManifest:
         """Return connector manifest."""
         return ConnectorManifest(
             name=self.name,
             display_name=self.display_name,
             version=self.version,
             sync_modes=self.sync_modes,
+            connector_id=self.name,
+            connector_url=connector_url,
+            source_types=self.source_types,
+            description=self.description,
             actions=self.actions,
             search_operators=self.search_operators,
         )

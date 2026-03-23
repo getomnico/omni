@@ -171,6 +171,21 @@ class SdkClient:
                 f"Failed to mark as failed: {response.status_code} - {response.text}"
             )
 
+    async def register(self, manifest: dict) -> None:
+        """Register this connector with the connector manager."""
+        logger.debug("SDK: Registering connector")
+
+        client = await self._get_client()
+        response = await client.post(
+            f"{self.base_url}/sdk/register",
+            json=manifest,
+        )
+
+        if not response.is_success:
+            raise SdkClientError(
+                f"Failed to register: {response.status_code} - {response.text}"
+            )
+
     async def close(self) -> None:
         """Close the HTTP client."""
         if self._client is not None:

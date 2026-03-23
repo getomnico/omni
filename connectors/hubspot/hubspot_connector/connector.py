@@ -25,6 +25,14 @@ class HubSpotConnector(Connector):
         return "1.0.0"
 
     @property
+    def source_types(self) -> list[str]:
+        return ["hubspot"]
+
+    @property
+    def description(self) -> str:
+        return "Connect to HubSpot CRM contacts, companies, deals, and more"
+
+    @property
     def sync_modes(self) -> list[str]:
         return ["full"]
 

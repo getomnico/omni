@@ -13,6 +13,8 @@ use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tracing::{error, info};
 
+use shared::models::SourceType;
+
 use crate::models::{
     ActionRequest, ActionResponse, CancelRequest, CancelResponse, ConnectorManifest, SyncRequest,
     SyncResponse, SyncResponseExt,
@@ -43,19 +45,26 @@ async fn health() -> impl IntoResponse {
     Json(json!({ "status": "healthy", "service": "web-connector" }))
 }
 
-async fn manifest() -> impl IntoResponse {
-    let manifest = ConnectorManifest {
+pub fn build_manifest(connector_url: Option<String>) -> ConnectorManifest {
+    ConnectorManifest {
         name: "web".to_string(),
         display_name: "Web".to_string(),
         version: "1.0.0".to_string(),
         sync_modes: vec!["full".to_string(), "incremental".to_string()],
+        connector_id: Some("web".to_string()),
+        connector_url,
+        source_types: vec![SourceType::Web],
+        description: Some("Index content from websites and documentation sites".to_string()),
         actions: vec![],
         search_operators: vec![],
         read_only: false,
         extra_schema: None,
         attributes_schema: None,
-    };
-    Json(manifest)
+    }
+}
+
+async fn manifest() -> impl IntoResponse {
+    Json(build_manifest(None))
 }
 
 async fn trigger_sync(

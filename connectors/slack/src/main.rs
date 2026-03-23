@@ -8,7 +8,7 @@ use tracing::{info, warn};
 mod api;
 mod socket;
 
-use api::{create_router, maybe_start_socket_with_sync, ApiState};
+use api::{build_manifest, create_router, maybe_start_socket_with_sync, ApiState};
 use omni_slack_connector::models::SlackConnectorState;
 use omni_slack_connector::sync::SyncManager;
 use shared::SdkClient;
@@ -46,6 +46,9 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         reconnect_existing_sources(&startup_sdk, &startup_sm, &startup_sync).await;
     });
+
+    // Spawn registration loop
+    shared::start_registration_loop(build_manifest(None));
 
     // Create HTTP server
     let app = create_router(api_state);

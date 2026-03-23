@@ -35,6 +35,14 @@ class ClickUpConnector(Connector):
         return "1.0.0"
 
     @property
+    def source_types(self) -> list[str]:
+        return ["clickup"]
+
+    @property
+    def description(self) -> str:
+        return "Connect to ClickUp tasks and docs"
+
+    @property
     def sync_modes(self) -> list[str]:
         return ["full", "incremental"]
 

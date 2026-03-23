@@ -61,12 +61,18 @@ async fn health_check() -> impl IntoResponse {
     }))
 }
 
-async fn manifest() -> impl IntoResponse {
-    let manifest = ConnectorManifest {
+pub fn build_manifest(connector_url: Option<String>) -> ConnectorManifest {
+    ConnectorManifest {
         name: "google".to_string(),
-        display_name: "Google".to_string(),
+        display_name: "Google Workspace".to_string(),
         version: "1.0.0".to_string(),
         sync_modes: vec!["full".to_string(), "incremental".to_string()],
+        connector_id: Some("google".to_string()),
+        connector_url,
+        source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
+        description: Some(
+            "Connect to Google Drive, Docs, Gmail, and more".to_string(),
+        ),
         actions: vec![ActionDefinition {
             name: "fetch_file".to_string(),
             description: "Download a file from Google Drive. Exports Google Workspace files to Office format.".to_string(),
@@ -94,8 +100,11 @@ async fn manifest() -> impl IntoResponse {
         read_only: false,
         extra_schema: None,
         attributes_schema: None,
-    };
-    Json(manifest)
+    }
+}
+
+async fn manifest() -> impl IntoResponse {
+    Json(build_manifest(None))
 }
 
 async fn trigger_sync(

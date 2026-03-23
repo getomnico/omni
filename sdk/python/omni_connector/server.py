@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, status
@@ -22,6 +24,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+REGISTRATION_INTERVAL_SECONDS = 30
+
 
 class ConnectorServer:
     """HTTP server wrapper for a connector."""
@@ -38,14 +42,48 @@ class ConnectorServer:
         return self._sdk_client
 
 
+def _build_connector_url() -> str | None:
+    hostname = os.environ.get("CONNECTOR_HOST_NAME")
+    if not hostname:
+        return None
+    port = os.environ.get("PORT", "8000")
+    return f"http://{hostname}:{port}"
+
+
 def create_app(connector: "Connector") -> FastAPI:
     """Create FastAPI app for a connector."""
+
+    server = ConnectorServer(connector)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):  # noqa: ARG001
+        connector_url = _build_connector_url()
+        registration_task = None
+
+        if connector_url and os.environ.get("CONNECTOR_MANAGER_URL"):
+
+            async def registration_loop() -> None:
+                while True:
+                    try:
+                        manifest = connector.get_manifest(connector_url=connector_url)
+                        await server.sdk_client.register(manifest.model_dump())
+                        logger.info("Registered with connector manager")
+                    except Exception as e:
+                        logger.warning("Registration failed: %s", e)
+                    await asyncio.sleep(REGISTRATION_INTERVAL_SECONDS)
+
+            registration_task = asyncio.create_task(registration_loop())
+
+        yield
+
+        if registration_task:
+            registration_task.cancel()
 
     app = FastAPI(
         title=f"Omni {connector.name} Connector",
         version=connector.version,
+        lifespan=lifespan,
     )
-    server = ConnectorServer(connector)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

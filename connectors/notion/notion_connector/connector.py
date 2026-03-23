@@ -30,6 +30,14 @@ class NotionConnector(Connector):
         return "1.0.0"
 
     @property
+    def source_types(self) -> list[str]:
+        return ["notion"]
+
+    @property
+    def description(self) -> str:
+        return "Connect to Notion pages and databases"
+
+    @property
     def sync_modes(self) -> list[str]:
         return ["full", "incremental"]
 

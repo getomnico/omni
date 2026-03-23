@@ -121,6 +121,17 @@ export class SdkClient {
     }
   }
 
+  async register(manifest: Record<string, unknown>): Promise<void> {
+    const response = await this.post('/sdk/register', manifest);
+    if (!response.ok) {
+      const text = await response.text();
+      throw new SdkClientError(
+        `Failed to register: ${response.status} - ${text}`,
+        response.status
+      );
+    }
+  }
+
   async fetchSourceConfig(sourceId: string): Promise<{
     config: Record<string, unknown>;
     credentials: Record<string, unknown>;

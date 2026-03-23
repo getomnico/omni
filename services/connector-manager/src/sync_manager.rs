@@ -1,6 +1,8 @@
 use crate::config::ConnectorManagerConfig;
 use crate::connector_client::{ClientError, ConnectorClient};
+use crate::handlers::get_connector_url_for_source;
 use crate::models::{SyncRequest, TriggerType};
+use redis::Client as RedisClient;
 use shared::db::repositories::SyncRunRepository;
 use shared::models::{SourceType, SyncStatus, SyncType};
 use shared::{DatabasePool, Repository, SourceRepository};
@@ -13,15 +15,21 @@ use tracing::{error, info, warn};
 pub struct SyncManager {
     pool: PgPool,
     config: ConnectorManagerConfig,
+    redis_client: RedisClient,
     connector_client: ConnectorClient,
     sync_run_repo: SyncRunRepository,
 }
 
 impl SyncManager {
-    pub fn new(db_pool: &DatabasePool, config: ConnectorManagerConfig) -> Self {
+    pub fn new(
+        db_pool: &DatabasePool,
+        config: ConnectorManagerConfig,
+        redis_client: RedisClient,
+    ) -> Self {
         Self {
             pool: db_pool.pool().clone(),
             config,
+            redis_client,
             connector_client: ConnectorClient::new(),
             sync_run_repo: SyncRunRepository::new(db_pool.pool()),
         }
@@ -53,12 +61,12 @@ impl SyncManager {
             return Err(SyncError::SourceInactive(source_id.to_string()));
         }
 
-        // Get connector URL
-        let connector_url = self
-            .config
-            .get_connector_url(source.source_type)
-            .ok_or_else(|| SyncError::ConnectorNotConfigured(format!("{:?}", source.source_type)))?
-            .clone();
+        // Get connector URL from registry
+        let connector_url = get_connector_url_for_source(&self.redis_client, source.source_type)
+            .await
+            .ok_or_else(|| {
+                SyncError::ConnectorNotConfigured(format!("{:?}", source.source_type))
+            })?;
 
         // Check last completed sync to determine effective sync type and last_sync_at
         let last_completed = self
@@ -143,11 +151,11 @@ impl SyncManager {
             .map_err(|e| SyncError::DatabaseError(e.to_string()))?
             .ok_or_else(|| SyncError::SourceNotFound(sync_run.source_id.clone()))?;
 
-        let connector_url = self
-            .config
-            .get_connector_url(source.source_type)
-            .ok_or_else(|| SyncError::ConnectorNotConfigured(format!("{:?}", source.source_type)))?
-            .clone();
+        let connector_url = get_connector_url_for_source(&self.redis_client, source.source_type)
+            .await
+            .ok_or_else(|| {
+                SyncError::ConnectorNotConfigured(format!("{:?}", source.source_type))
+            })?;
 
         if let Err(e) = self
             .connector_client
@@ -210,10 +218,12 @@ impl SyncManager {
                 sync_run_id, source_id
             );
 
-            if let Some(connector_url) = self.config.get_connector_url(source_type) {
+            if let Some(connector_url) =
+                get_connector_url_for_source(&self.redis_client, source_type).await
+            {
                 if let Err(e) = self
                     .connector_client
-                    .cancel_sync(connector_url, &sync_run_id)
+                    .cancel_sync(&connector_url, &sync_run_id)
                     .await
                 {
                     warn!(

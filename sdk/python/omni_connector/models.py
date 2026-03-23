@@ -145,6 +145,10 @@ class ConnectorManifest(BaseModel):
     display_name: str
     version: str
     sync_modes: list[str]
+    connector_id: str | None = None
+    connector_url: str | None = None
+    source_types: list[str] = Field(default_factory=list)
+    description: str | None = None
     actions: list[ActionDefinition] = Field(default_factory=list)
     search_operators: list[SearchOperator] = Field(default_factory=list)
     extra_schema: dict | None = None

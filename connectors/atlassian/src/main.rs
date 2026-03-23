@@ -17,7 +17,7 @@ mod sync;
 use config::AtlassianConnectorConfig;
 use shared::SdkClient;
 
-use api::{create_router, ApiState};
+use api::{build_manifest, create_router, ApiState};
 use sync::SyncManager;
 
 const WEBHOOK_RENEWAL_INTERVAL_SECS: u64 = 3600;
@@ -62,6 +62,8 @@ async fn main() -> Result<()> {
     let api_state = ApiState {
         sync_manager: Arc::clone(&sync_manager),
     };
+
+    shared::start_registration_loop(build_manifest(None));
 
     let app = create_router(api_state);
     let port = std::env::var("PORT")?.parse::<u16>()?;

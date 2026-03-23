@@ -18,7 +18,7 @@ use futures::stream::Stream;
 use redis::AsyncCommands;
 use serde_json::json;
 use shared::db::repositories::SyncRunRepository;
-use shared::models::{SearchOperator, SourceType, SyncType};
+use shared::models::{ConnectorManifest, SearchOperator, SourceType, SyncType};
 use shared::queue::EventQueue;
 use shared::utils;
 use shared::{DocumentRepository, Repository, ServiceCredentialsRepo, SourceRepository};
@@ -237,57 +237,25 @@ pub async fn list_sources(
 pub async fn list_connectors(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ConnectorInfo>>, ApiError> {
+    let manifests = get_registered_manifests(&state.redis_client).await;
     let client = ConnectorClient::new();
     let mut connectors = Vec::new();
-    let mut all_operators: Vec<SearchOperator> = Vec::new();
 
-    for (source_type, url) in &state.config.connector_urls {
-        let healthy = client.health_check(url).await;
-        let manifest = if healthy {
-            client.get_manifest(url).await.ok()
+    for manifest in manifests {
+        let url = manifest.connector_url.clone().unwrap_or_default();
+        let healthy = if !url.is_empty() {
+            client.health_check(&url).await
         } else {
-            None
+            false
         };
 
-        if let Some(ref m) = manifest {
-            all_operators.extend(m.search_operators.clone());
-
-            // Cache the full manifest per source type in Redis
-            if let Ok(manifest_json) = serde_json::to_string(m) {
-                // SourceType serializes as snake_case (e.g. "google_drive")
-                let type_key = serde_json::to_value(source_type)
-                    .ok()
-                    .and_then(|v| v.as_str().map(|s| s.to_string()));
-                if let Some(type_str) = type_key {
-                    match state.redis_client.get_multiplexed_async_connection().await {
-                        Ok(mut conn) => {
-                            let key = format!("connector:manifest:{}", type_str);
-                            let _: Result<(), _> = conn.set(&key, manifest_json).await;
-                        }
-                        Err(e) => {
-                            error!("Failed to cache manifest for {}: {}", type_str, e);
-                        }
-                    }
-                }
-            }
-        }
-
-        connectors.push(ConnectorInfo {
-            source_type: source_type.clone(),
-            url: url.clone(),
-            healthy,
-            manifest,
-        });
-    }
-
-    if let Ok(json) = serde_json::to_string(&all_operators) {
-        match state.redis_client.get_multiplexed_async_connection().await {
-            Ok(mut conn) => {
-                let _: Result<(), _> = conn.set("search:operators", json).await;
-            }
-            Err(e) => {
-                error!("Failed to write search operators to Redis: {}", e);
-            }
+        for source_type in &manifest.source_types {
+            connectors.push(ConnectorInfo {
+                source_type: source_type.clone(),
+                url: url.clone(),
+                healthy,
+                manifest: Some(manifest.clone()),
+            });
         }
     }
 
@@ -315,12 +283,14 @@ pub async fn execute_action(
         .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?
         .0;
 
-    let connector_url = state.config.get_connector_url(source_type).ok_or_else(|| {
-        ApiError::NotFound(format!(
-            "Connector not configured for type: {:?}",
-            source_type
-        ))
-    })?;
+    let connector_url = get_connector_url_for_source(&state.redis_client, source_type)
+        .await
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "Connector not registered for type: {:?}",
+                source_type
+            ))
+        })?;
 
     // Get credentials
     let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
@@ -373,7 +343,7 @@ pub async fn execute_action(
 
     // Use raw response to support binary passthrough
     let response = client
-        .execute_action_raw(connector_url, &action_request)
+        .execute_action_raw(&connector_url, &action_request)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
@@ -428,12 +398,12 @@ pub async fn execute_action(
 pub async fn list_actions(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let client = ConnectorClient::new();
+    let manifests = get_registered_manifests(&state.redis_client).await;
     let mut all_actions = Vec::new();
 
-    for (source_type, url) in &state.config.connector_urls {
-        if let Ok(manifest) = client.get_manifest(url).await {
-            for action in manifest.actions {
+    for manifest in manifests {
+        for source_type in &manifest.source_types {
+            for action in &manifest.actions {
                 all_actions.push(json!({
                     "source_type": source_type,
                     "name": action.name,
@@ -504,6 +474,107 @@ impl IntoResponse for ApiError {
         let body = json!({ "error": message });
         (status, Json(body)).into_response()
     }
+}
+
+// ============================================================================
+// Connector Registration
+// ============================================================================
+
+const REGISTRATION_TTL_SECONDS: u64 = 90;
+
+pub async fn sdk_register(
+    State(state): State<AppState>,
+    Json(manifest): Json<ConnectorManifest>,
+) -> Result<Json<SdkStatusResponse>, ApiError> {
+    let connector_id = manifest.connector_id.as_deref().ok_or_else(|| {
+        ApiError::BadRequest("connector_id is required for registration".to_string())
+    })?;
+
+    info!(
+        "SDK: Registering connector '{}' (source_types: {:?}, url: {:?})",
+        connector_id, manifest.source_types, manifest.connector_url
+    );
+
+    let manifest_json = serde_json::to_string(&manifest)
+        .map_err(|e| ApiError::Internal(format!("Failed to serialize manifest: {}", e)))?;
+
+    let key = format!("connector:manifest:{}", connector_id);
+
+    let mut conn = state
+        .redis_client
+        .get_multiplexed_async_connection()
+        .await
+        .map_err(|e| ApiError::Internal(format!("Redis connection error: {}", e)))?;
+
+    let _: () = conn
+        .set_ex(&key, &manifest_json, REGISTRATION_TTL_SECONDS)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to store registration: {}", e)))?;
+
+    // Aggregate search operators from all registered connectors
+    let keys: Vec<String> = redis::cmd("KEYS")
+        .arg("connector:manifest:*")
+        .query_async(&mut conn)
+        .await
+        .unwrap_or_default();
+
+    let mut all_operators: Vec<SearchOperator> = Vec::new();
+    for k in &keys {
+        if let Ok(val) = conn.get::<_, String>(k).await {
+            if let Ok(m) = serde_json::from_str::<ConnectorManifest>(&val) {
+                all_operators.extend(m.search_operators);
+            }
+        }
+    }
+
+    if let Ok(json) = serde_json::to_string(&all_operators) {
+        let _: Result<(), _> = conn.set("search:operators", json).await;
+    }
+
+    Ok(Json(SdkStatusResponse {
+        status: "ok".to_string(),
+    }))
+}
+
+/// Scan Redis for all registered connector manifests.
+pub async fn get_registered_manifests(redis_client: &redis::Client) -> Vec<ConnectorManifest> {
+    let mut conn = match redis_client.get_multiplexed_async_connection().await {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Redis connection error: {}", e);
+            return Vec::new();
+        }
+    };
+
+    let keys: Vec<String> = redis::cmd("KEYS")
+        .arg("connector:manifest:*")
+        .query_async(&mut conn)
+        .await
+        .unwrap_or_default();
+
+    let mut manifests = Vec::new();
+    for key in &keys {
+        if let Ok(val) = conn.get::<_, String>(key).await {
+            if let Ok(m) = serde_json::from_str::<ConnectorManifest>(&val) {
+                manifests.push(m);
+            }
+        }
+    }
+    manifests
+}
+
+/// Look up the connector URL for a given source type from the Redis registry.
+pub async fn get_connector_url_for_source(
+    redis_client: &redis::Client,
+    source_type: SourceType,
+) -> Option<String> {
+    let manifests = get_registered_manifests(redis_client).await;
+    for manifest in manifests {
+        if manifest.source_types.contains(&source_type) {
+            return manifest.connector_url;
+        }
+    }
+    None
 }
 
 // ============================================================================

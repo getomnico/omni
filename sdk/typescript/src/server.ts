@@ -15,6 +15,15 @@ import { getLogger } from './logger.js';
 
 const logger = getLogger('sdk:server');
 
+const REGISTRATION_INTERVAL_MS = 30_000;
+
+function buildConnectorUrl(): string | null {
+  const hostname = process.env.CONNECTOR_HOST_NAME;
+  if (!hostname) return null;
+  const port = process.env.PORT ?? '8000';
+  return `http://${hostname}:${port}`;
+}
+
 export function createServer(connector: Connector): Express {
   const app = express();
   app.use(express.json());
@@ -27,6 +36,24 @@ export function createServer(connector: Connector): Express {
       sdkClient = SdkClient.fromEnv();
     }
     return sdkClient;
+  }
+
+  // Start registration loop
+  const connectorUrl = buildConnectorUrl();
+  if (connectorUrl && process.env.CONNECTOR_MANAGER_URL) {
+    const registerOnce = async () => {
+      try {
+        const manifest = connector.getManifest(connectorUrl);
+        await getSdkClient().register(manifest as unknown as Record<string, unknown>);
+        logger.info('Registered with connector manager');
+      } catch (err) {
+        logger.warn({ err }, 'Registration failed');
+      }
+    };
+
+    // Register immediately, then on interval
+    registerOnce();
+    setInterval(registerOnce, REGISTRATION_INTERVAL_MS);
   }
 
   app.get('/health', (_req: Request, res: Response) => {

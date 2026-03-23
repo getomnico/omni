@@ -1,9 +1,10 @@
 use anyhow::{Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tracing::debug;
+use std::time::Duration;
+use tracing::{debug, info, warn};
 
-use crate::models::{ConnectorEvent, ServiceCredentials, Source, SyncType};
+use crate::models::{ConnectorEvent, ConnectorManifest, ServiceCredentials, Source, SyncType};
 
 /// HTTP client for communicating with connector-manager SDK endpoints.
 /// This is the standard way for connectors to interact with the connector-manager
@@ -516,6 +517,27 @@ impl SdkClient {
         Ok(config)
     }
 
+    /// Register this connector with the connector manager
+    pub async fn register(&self, manifest: &ConnectorManifest) -> Result<()> {
+        debug!("SDK: Registering connector");
+
+        let response = self
+            .client
+            .post(format!("{}/sdk/register", self.base_url))
+            .json(manifest)
+            .send()
+            .await
+            .context("Failed to send register request")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("Failed to register: {} - {}", status, body);
+        }
+
+        Ok(())
+    }
+
     /// Get all active sources of a given type
     pub async fn get_sources_by_type(&self, source_type: &str) -> Result<Vec<Source>> {
         debug!("SDK: Getting sources by type={}", source_type);
@@ -542,4 +564,36 @@ impl SdkClient {
             .context("Failed to parse sources response")?;
         Ok(result)
     }
+}
+
+/// Build the connector's own URL from CONNECTOR_HOST_NAME and PORT env vars.
+pub fn build_connector_url() -> Option<String> {
+    let hostname = std::env::var("CONNECTOR_HOST_NAME").ok()?;
+    let port = std::env::var("PORT").unwrap_or_else(|_| "8000".to_string());
+    Some(format!("http://{}:{}", hostname, port))
+}
+
+/// Spawn a background registration loop that re-registers with the connector
+/// manager every 30 seconds. Returns the JoinHandle if started, None if
+/// CONNECTOR_HOST_NAME or CONNECTOR_MANAGER_URL is not set.
+pub fn start_registration_loop(manifest: ConnectorManifest) -> Option<tokio::task::JoinHandle<()>> {
+    let connector_url = build_connector_url()?;
+    let sdk_client = SdkClient::from_env().ok()?;
+
+    let handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        let mut manifest = manifest;
+        manifest.connector_url = Some(connector_url);
+
+        loop {
+            interval.tick().await;
+            match sdk_client.register(&manifest).await {
+                Ok(()) => info!("Registered with connector manager"),
+                Err(e) => warn!("Registration failed: {}", e),
+            }
+        }
+    });
+
+    info!("Registration loop started");
+    Some(handle)
 }

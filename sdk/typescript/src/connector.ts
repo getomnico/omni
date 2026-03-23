@@ -21,9 +21,14 @@ export abstract class Connector<
 > {
   abstract readonly name: string;
   abstract readonly version: string;
+  abstract readonly sourceTypes: string[];
 
   get displayName(): string {
     return this.name;
+  }
+
+  get description(): string {
+    return '';
   }
 
   readonly syncModes: string[] = ['full'];
@@ -32,12 +37,16 @@ export abstract class Connector<
   readonly extraSchema?: Record<string, unknown>;
   readonly attributesSchema?: Record<string, unknown>;
 
-  getManifest(): ConnectorManifest {
+  getManifest(connectorUrl?: string): ConnectorManifest {
     return {
       name: this.name,
       display_name: this.displayName,
       version: this.version,
       sync_modes: this.syncModes,
+      connector_id: this.name,
+      connector_url: connectorUrl,
+      source_types: this.sourceTypes,
+      description: this.description,
       actions: this.actions,
       search_operators: this.searchOperators,
       extra_schema: this.extraSchema,

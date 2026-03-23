@@ -9,7 +9,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use shared::models::SyncRequest;
+use shared::models::{SourceType, SyncRequest};
 use shared::telemetry;
 use std::sync::Arc;
 use tower::ServiceBuilder;
@@ -92,18 +92,26 @@ async fn health() -> impl IntoResponse {
     }))
 }
 
-async fn manifest() -> impl IntoResponse {
-    Json(ConnectorManifest {
+pub fn build_manifest(connector_url: Option<String>) -> ConnectorManifest {
+    ConnectorManifest {
         name: "imap".to_string(),
         display_name: "IMAP".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         sync_modes: vec!["full".to_string(), "incremental".to_string()],
+        connector_id: Some("imap".to_string()),
+        connector_url,
+        source_types: vec![SourceType::Imap],
+        description: Some("Index emails from any IMAP-compatible mailbox".to_string()),
         actions: vec![],
         search_operators: vec![],
         read_only: true,
         extra_schema: None,
         attributes_schema: None,
-    })
+    }
+}
+
+async fn manifest() -> impl IntoResponse {
+    Json(build_manifest(None))
 }
 
 async fn trigger_sync(

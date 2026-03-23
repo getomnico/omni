@@ -28,6 +28,11 @@ const CHECKPOINT_INTERVAL = 100;
 export class LinearConnector extends Connector<LinearSourceConfig, LinearCredentials, LinearSyncState> {
   readonly name = 'linear';
   readonly version = '1.0.0';
+  readonly sourceTypes = ['linear'];
+
+  get description(): string {
+    return 'Connect to Linear issues, projects, and documents';
+  }
 
   get displayName(): string {
     return 'Linear';

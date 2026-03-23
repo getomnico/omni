@@ -231,18 +231,6 @@ services:
       PORT: ${CONNECTOR_MANAGER_PORT}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       ENCRYPTION_SALT: ${ENCRYPTION_SALT}
-      GOOGLE_CONNECTOR_URL: ${GOOGLE_CONNECTOR_URL}
-      SLACK_CONNECTOR_URL: ${SLACK_CONNECTOR_URL}
-      ATLASSIAN_CONNECTOR_URL: ${ATLASSIAN_CONNECTOR_URL}
-      WEB_CONNECTOR_URL: ${WEB_CONNECTOR_URL}
-      MICROSOFT_CONNECTOR_URL: ${MICROSOFT_CONNECTOR_URL}
-      GITHUB_CONNECTOR_URL: ${GITHUB_CONNECTOR_URL}
-      NOTION_CONNECTOR_URL: ${NOTION_CONNECTOR_URL}
-      HUBSPOT_CONNECTOR_URL: ${HUBSPOT_CONNECTOR_URL}
-      FIREFLIES_CONNECTOR_URL: ${FIREFLIES_CONNECTOR_URL}
-      IMAP_CONNECTOR_URL: ${IMAP_CONNECTOR_URL}
-      CLICKUP_CONNECTOR_URL: ${CLICKUP_CONNECTOR_URL}
-      LINEAR_CONNECTOR_URL: ${LINEAR_CONNECTOR_URL}
       MAX_CONCURRENT_SYNCS: ${MAX_CONCURRENT_SYNCS:-10}
       MAX_CONCURRENT_SYNCS_PER_TYPE: ${MAX_CONCURRENT_SYNCS_PER_TYPE:-3}
       SCHEDULER_POLL_INTERVAL_SECONDS: ${SCHEDULER_POLL_INTERVAL_SECONDS:-60}
@@ -329,6 +317,7 @@ services:
       PORT: ${GOOGLE_CONNECTOR_PORT}
       AI_SERVICE_URL: ${AI_SERVICE_URL}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      CONNECTOR_HOST_NAME: omni-google-connector
       GOOGLE_MAX_AGE_DAYS: ${GOOGLE_MAX_AGE_DAYS:-730}
       OMNI_DOMAIN: ${OMNI_DOMAIN}
       WEBHOOK_RENEWAL_CHECK_INTERVAL_SECONDS: ${WEBHOOK_RENEWAL_CHECK_INTERVAL_SECONDS:-3600}
@@ -356,6 +345,7 @@ services:
       RUST_LOG: ${RUST_LOG}
       PORT: ${SLACK_CONNECTOR_PORT}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      CONNECTOR_HOST_NAME: omni-slack-connector
     networks:
       - omni-network
     depends_on:
@@ -376,6 +366,7 @@ services:
       RUST_LOG: ${RUST_LOG}
       PORT: ${ATLASSIAN_CONNECTOR_PORT}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      CONNECTOR_HOST_NAME: omni-atlassian-connector
     networks:
       - omni-network
     depends_on:
@@ -398,6 +389,7 @@ services:
       RUST_LOG: ${RUST_LOG}
       PORT: ${WEB_CONNECTOR_PORT}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      CONNECTOR_HOST_NAME: omni-web-connector
     networks:
       - omni-network
     depends_on:
@@ -419,6 +411,7 @@ services:
       <<: *otel-config
       PORT: ${GITHUB_CONNECTOR_PORT:-8010}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      CONNECTOR_HOST_NAME: omni-github-connector
     networks:
       - omni-network
     depends_on:
@@ -438,6 +431,7 @@ services:
       <<: *otel-config
       PORT: ${NOTION_CONNECTOR_PORT}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      CONNECTOR_HOST_NAME: omni-notion-connector
     networks:
       - omni-network
     depends_on:
@@ -457,6 +451,7 @@ services:
       <<: *otel-config
       PORT: ${HUBSPOT_CONNECTOR_PORT}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      CONNECTOR_HOST_NAME: omni-hubspot-connector
     networks:
       - omni-network
     depends_on:
@@ -476,6 +471,7 @@ services:
       <<: *otel-config
       PORT: ${FIREFLIES_CONNECTOR_PORT}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      CONNECTOR_HOST_NAME: omni-fireflies-connector
     networks:
       - omni-network
     depends_on:
@@ -495,6 +491,7 @@ services:
       <<: *otel-config
       PORT: ${IMAP_CONNECTOR_PORT}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      CONNECTOR_HOST_NAME: omni-imap-connector
     networks:
       - omni-network
     depends_on:
@@ -514,6 +511,7 @@ services:
       <<: *otel-config
       PORT: ${LINEAR_CONNECTOR_PORT}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      CONNECTOR_HOST_NAME: omni-linear-connector
     networks:
       - omni-network
     depends_on:
@@ -533,6 +531,7 @@ services:
       <<: *otel-config
       PORT: ${MICROSOFT_CONNECTOR_PORT}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      CONNECTOR_HOST_NAME: omni-microsoft-connector
     networks:
       - omni-network
     depends_on:
@@ -552,6 +551,7 @@ services:
       <<: *otel-config
       PORT: ${CLICKUP_CONNECTOR_PORT:-8011}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      CONNECTOR_HOST_NAME: omni-clickup-connector
     networks:
       - omni-network
     depends_on:
@@ -572,10 +572,6 @@ services:
       INDEXER_URL: ${INDEXER_URL}
       AI_SERVICE_URL: ${AI_SERVICE_URL}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
-      GOOGLE_CONNECTOR_URL: ${GOOGLE_CONNECTOR_URL}
-      SLACK_CONNECTOR_URL: ${SLACK_CONNECTOR_URL}
-      ATLASSIAN_CONNECTOR_URL: ${ATLASSIAN_CONNECTOR_URL}
-      WEB_CONNECTOR_URL: ${WEB_CONNECTOR_URL}
       SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME}
       SESSION_DURATION_DAYS: ${SESSION_DURATION_DAYS}
       APP_URL: ${APP_URL}

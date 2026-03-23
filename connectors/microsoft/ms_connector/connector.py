@@ -44,6 +44,14 @@ class MicrosoftConnector(Connector):
         return "1.0.0"
 
     @property
+    def source_types(self) -> list[str]:
+        return ["one_drive", "share_point", "outlook", "outlook_calendar"]
+
+    @property
+    def description(self) -> str:
+        return "Connect to OneDrive, SharePoint, Outlook mail and calendar"
+
+    @property
     def sync_modes(self) -> list[str]:
         return ["full", "incremental"]
 

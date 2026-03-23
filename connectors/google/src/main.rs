@@ -24,7 +24,7 @@ use config::GoogleConnectorConfig;
 use shared::SdkClient;
 
 use admin::AdminClient;
-use api::{create_router, ApiState};
+use api::{build_manifest, create_router, ApiState};
 use shared::RateLimiter;
 use sync::SyncManager;
 
@@ -86,6 +86,9 @@ async fn main() -> Result<()> {
         });
         info!("Webhook debounce processor started");
     }
+
+    // Spawn registration loop
+    shared::start_registration_loop(build_manifest(None));
 
     // Create API state with shared services
     let api_state = ApiState {

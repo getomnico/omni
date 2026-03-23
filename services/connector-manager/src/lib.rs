@@ -48,6 +48,7 @@ pub fn create_app(state: AppState) -> Router {
         .route("/action", post(handlers::execute_action))
         .route("/actions", get(handlers::list_actions))
         // SDK endpoints - called by connectors
+        .route("/sdk/register", post(handlers::sdk_register))
         .route("/sdk/events", post(handlers::sdk_emit_event))
         .route("/sdk/content", post(handlers::sdk_store_content))
         .route("/sdk/sync/:id/heartbeat", post(handlers::sdk_heartbeat))
@@ -108,10 +109,6 @@ pub async fn run_server() -> AnyhowResult<()> {
 
     let config = ConnectorManagerConfig::from_env();
     info!("Configuration loaded");
-    info!(
-        "Registered connectors: {:?}",
-        config.connector_urls.keys().collect::<Vec<_>>()
-    );
 
     let db_pool = DatabasePool::from_config(&config.database)
         .await
@@ -126,7 +123,11 @@ pub async fn run_server() -> AnyhowResult<()> {
         .map_err(|e| anyhow::anyhow!("Failed to create content storage: {}", e))?;
     info!("Content storage initialized");
 
-    let sync_manager = Arc::new(SyncManager::new(&db_pool, config.clone()));
+    let sync_manager = Arc::new(SyncManager::new(
+        &db_pool,
+        config.clone(),
+        redis_client.clone(),
+    ));
 
     let app_state = AppState {
         db_pool: db_pool.clone(),

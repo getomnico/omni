@@ -1,7 +1,20 @@
 import { requireAdmin } from '$lib/server/authHelpers'
+import { getConfig } from '$lib/server/config'
 import { sourcesRepository } from '$lib/server/repositories/sources'
 import { getConnectorConfigPublic } from '$lib/server/db/connector-configs'
 import type { PageServerLoad } from './$types'
+
+interface ConnectorInfo {
+    source_type: string
+    url: string
+    healthy: boolean
+    manifest?: {
+        connector_id?: string
+        display_name?: string
+        description?: string
+        source_types?: string[]
+    }
+}
 
 export const load: PageServerLoad = async ({ locals }) => {
     requireAdmin(locals)
@@ -10,118 +23,54 @@ export const load: PageServerLoad = async ({ locals }) => {
     const latestSyncRuns = await sourcesRepository.getLatestSyncRuns()
     const googleConnectorConfig = await getConnectorConfigPublic('google')
 
+    // Fetch registered connectors from connector manager
+    const config = getConfig()
+    let availableIntegrations: {
+        id: string
+        name: string
+        description: string
+        connected: boolean
+    }[] = []
+
+    try {
+        const response = await fetch(`${config.services.connectorManagerUrl}/connectors`)
+        if (response.ok) {
+            const connectors: ConnectorInfo[] = await response.json()
+
+            // Group by connector_id to build integration list
+            const integrationMap = new Map<
+                string,
+                { id: string; name: string; description: string; connected: boolean }
+            >()
+
+            for (const connector of connectors) {
+                const connectorId = connector.manifest?.connector_id ?? connector.source_type
+                if (!integrationMap.has(connectorId)) {
+                    integrationMap.set(connectorId, {
+                        id: connectorId,
+                        name: connector.manifest?.display_name ?? connectorId,
+                        description: connector.manifest?.description ?? '',
+                        connected: false,
+                    })
+                }
+                const integration = integrationMap.get(connectorId)!
+                if (connectedSources.some((s) => s.sourceType === connector.source_type)) {
+                    integration.connected = true
+                }
+            }
+
+            availableIntegrations = Array.from(integrationMap.values())
+        }
+    } catch (error) {
+        locals.logger.error('Failed to fetch connectors from connector manager', error)
+    }
+
     return {
         connectedSources,
         latestSyncRuns,
         googleOAuthConfigured: !!(
             googleConnectorConfig && googleConnectorConfig.config.oauth_client_id
         ),
-        availableIntegrations: [
-            {
-                id: 'google',
-                name: 'Google Workspace',
-                description:
-                    'Connect to Google Drive, Docs, Gmail, and more using a service account',
-                connected: connectedSources.some(
-                    (source) =>
-                        source.sourceType === 'google_drive' || source.sourceType === 'gmail',
-                ),
-                authType: 'service_account',
-            },
-            {
-                id: 'microsoft',
-                name: 'Microsoft 365',
-                description: 'Connect to OneDrive, SharePoint, Outlook mail and calendar',
-                connected: connectedSources.some(
-                    (source) =>
-                        source.sourceType === 'one_drive' ||
-                        source.sourceType === 'share_point' ||
-                        source.sourceType === 'outlook' ||
-                        source.sourceType === 'outlook_calendar',
-                ),
-                authType: 'access_token',
-            },
-            {
-                id: 'atlassian',
-                name: 'Atlassian',
-                description: 'Connect to Confluence and Jira using an API token',
-                connected: connectedSources.some(
-                    (source) => source.sourceType === 'confluence' || source.sourceType === 'jira',
-                ),
-                authType: 'api_token',
-            },
-            {
-                id: 'web',
-                name: 'Web',
-                description: 'Index content from websites and documentation sites',
-                connected: connectedSources.some((source) => source.sourceType === 'web'),
-                authType: 'config_based',
-            },
-            {
-                id: 'slack',
-                name: 'Slack',
-                description: 'Connect to Slack messages and files using a bot token',
-                connected: connectedSources.some((source) => source.sourceType === 'slack'),
-                authType: 'bot_token',
-            },
-            {
-                id: 'filesystem',
-                name: 'Filesystem',
-                description: 'Index local files and directories',
-                connected: connectedSources.some((source) => source.sourceType === 'local_files'),
-                authType: 'config_based',
-            },
-            {
-                id: 'hubspot',
-                name: 'HubSpot',
-                description: 'Connect to HubSpot CRM contacts, companies, deals, and more',
-                connected: connectedSources.some((source) => source.sourceType === 'hubspot'),
-                authType: 'access_token',
-            },
-            {
-                id: 'fireflies',
-                name: 'Fireflies',
-                description:
-                    'Index meeting transcripts, summaries, and action items from Fireflies.ai',
-                connected: connectedSources.some((source) => source.sourceType === 'fireflies'),
-                authType: 'api_key',
-            },
-            {
-                id: 'imap',
-                name: 'IMAP Email',
-                description:
-                    'Index emails from any IMAP-compatible mailbox (Gmail, Outlook, Fastmail, etc.)',
-                connected: connectedSources.some((source) => source.sourceType === 'imap'),
-                authType: 'basic_auth',
-            },
-            {
-                id: 'clickup',
-                name: 'ClickUp',
-                description: 'Connect to ClickUp tasks and docs',
-                connected: connectedSources.some((source) => source.sourceType === 'clickup'),
-                authType: 'api_key',
-            },
-            {
-                id: 'notion',
-                name: 'Notion',
-                description: 'Connect to Notion pages and databases',
-                connected: connectedSources.some((source) => source.sourceType === 'notion'),
-                authType: 'api_key',
-            },
-            {
-                id: 'linear',
-                name: 'Linear',
-                description: 'Connect to Linear issues, projects, and documents',
-                connected: connectedSources.some((source) => source.sourceType === 'linear'),
-                authType: 'api_key',
-            },
-            {
-                id: 'github',
-                name: 'GitHub',
-                description: 'Connect to GitHub repositories, issues, PRs, and discussions',
-                connected: connectedSources.some((source) => source.sourceType === 'github'),
-                authType: 'bearer_token',
-            },
-        ],
+        availableIntegrations,
     }
 }
