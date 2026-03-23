@@ -339,6 +339,8 @@ class MockGitHubAPI:
         self.issue_comments: dict[str, list[dict[str, Any]]] = {}
         self.review_comments: dict[str, list[dict[str, Any]]] = {}
         self.readmes: dict[str, str] = {}
+        self.collaborators: dict[str, list[dict[str, Any]]] = {}
+        self.user_emails: dict[str, str | None] = {}
         self.should_fail_auth: bool = False
         self.authenticated_user: str = "testbot"
 
@@ -350,6 +352,8 @@ class MockGitHubAPI:
         self.issue_comments.clear()
         self.review_comments.clear()
         self.readmes.clear()
+        self.collaborators.clear()
+        self.user_emails.clear()
         self.should_fail_auth = False
 
     def add_repo(
@@ -428,6 +432,25 @@ class MockGitHubAPI:
                 "comments": {"nodes": []},
             }
         )
+
+    def add_collaborator(self, owner: str, name: str, login: str, uid: int = 1) -> None:
+        full_name = f"{owner}/{name}"
+        self.collaborators.setdefault(full_name, []).append(
+            {
+                **_owner_payload(login, uid),
+                "permissions": {
+                    "admin": False,
+                    "maintain": False,
+                    "push": True,
+                    "triage": True,
+                    "pull": True,
+                },
+                "role_name": "write",
+            }
+        )
+
+    def set_user_email(self, login: str, email: str | None) -> None:
+        self.user_emails[login] = email
 
     def add_readme(self, owner: str, name: str, content: str) -> None:
         self.readmes[f"{owner}/{name}"] = content
@@ -524,6 +547,23 @@ class MockGitHubAPI:
             key = f"{owner}/{repo}#{number}"
             return _paginated(request, mock.review_comments.get(key, []))
 
+        async def list_collaborators(request: Request) -> JSONResponse:
+            if mock.should_fail_auth:
+                return JSONResponse({"message": "Bad credentials"}, status_code=401)
+            owner = request.path_params["owner"]
+            repo = request.path_params["repo"]
+            full_name = f"{owner}/{repo}"
+            return _paginated(request, mock.collaborators.get(full_name, []))
+
+        async def get_user_by_username(request: Request) -> JSONResponse:
+            if mock.should_fail_auth:
+                return JSONResponse({"message": "Bad credentials"}, status_code=401)
+            username = request.path_params["username"]
+            payload = _user_payload(username)
+            if username in mock.user_emails:
+                payload["email"] = mock.user_emails[username]
+            return JSONResponse(payload)
+
         async def graphql(request: Request) -> JSONResponse:
             if mock.should_fail_auth:
                 return JSONResponse({"message": "Bad credentials"}, status_code=401)
@@ -549,7 +589,9 @@ class MockGitHubAPI:
         routes = [
             Route("/user", get_user),
             Route("/users/{username}/repos", list_repos_for_user),
+            Route("/users/{username}", get_user_by_username),
             Route("/user/repos", list_repos_for_user),
+            Route("/repos/{owner}/{repo}/collaborators", list_collaborators),
             Route("/repos/{owner}/{repo}", get_repo),
             Route("/repos/{owner}/{repo}/readme", get_readme),
             Route("/repos/{owner}/{repo}/issues", list_issues),

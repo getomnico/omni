@@ -3,13 +3,20 @@
 from datetime import datetime
 from typing import Any
 
+from githubkit.versions.latest.models import (
+    Issue,
+    IssueComment,
+    PullRequestReviewComment,
+    PullRequestSimple,
+)
 from omni_connector import Document, DocumentMetadata, DocumentPermissions
 
+from .client import GitHubRepo
 from .config import MAX_CONTENT_LENGTH
 
 
 def map_repo_to_document(
-    repo: Any,
+    repo: GitHubRepo,
     readme_content: str | None,
     content_id: str,
 ) -> Document:
@@ -47,8 +54,8 @@ def map_repo_to_document(
 
 
 def map_issue_to_document(
-    issue: Any,
-    comments: list[Any],
+    issue: Issue,
+    comments: list[IssueComment],
     content_id: str,
     repo_full_name: str,
     is_private: bool,
@@ -82,9 +89,9 @@ def map_issue_to_document(
 
 
 def map_pr_to_document(
-    pr: Any,
-    issue_comments: list[Any],
-    review_comments: list[Any],
+    pr: PullRequestSimple,
+    issue_comments: list[IssueComment],
+    review_comments: list[PullRequestReviewComment],
     content_id: str,
     repo_full_name: str,
     is_private: bool,
@@ -151,7 +158,7 @@ def map_discussion_to_document(
     )
 
 
-def generate_repo_content(repo: Any, readme_content: str | None) -> str:
+def generate_repo_content(repo: GitHubRepo, readme_content: str | None) -> str:
     """Generate searchable text content from a repository."""
     lines: list[str] = []
     lines.append(f"Repository: {repo.full_name}")
@@ -168,7 +175,7 @@ def generate_repo_content(repo: Any, readme_content: str | None) -> str:
     return _truncate("\n".join(lines))
 
 
-def generate_issue_content(issue: Any, comments: list[Any]) -> str:
+def generate_issue_content(issue: Issue, comments: list[IssueComment]) -> str:
     """Generate searchable text content from an issue and its comments."""
     lines: list[str] = []
     lines.append(f"Issue #{issue.number}: {issue.title}")
@@ -190,7 +197,9 @@ def generate_issue_content(issue: Any, comments: list[Any]) -> str:
 
 
 def generate_pr_content(
-    pr: Any, issue_comments: list[Any], review_comments: list[Any]
+    pr: PullRequestSimple,
+    issue_comments: list[IssueComment],
+    review_comments: list[PullRequestReviewComment],
 ) -> str:
     """Generate searchable text content from a pull request and its comments."""
     lines: list[str] = []
@@ -260,7 +269,7 @@ def _build_permissions(is_private: bool, repo_full_name: str) -> DocumentPermiss
     return DocumentPermissions(public=True)
 
 
-def _to_datetime(value: Any) -> datetime | None:
+def _to_datetime(value: datetime | str | None) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, datetime):

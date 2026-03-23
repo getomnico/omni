@@ -5,7 +5,7 @@ from typing import Any
 
 from omni_connector import Connector, SearchOperator, SyncContext
 
-from .client import AuthenticationError, GitHubClient, GitHubError
+from .client import AuthenticationError, GitHubClient, GitHubError, GitHubRepo
 from .config import CHECKPOINT_INTERVAL
 from .mappers import (
     generate_discussion_content,
@@ -93,6 +93,8 @@ class GitHubConnector(Connector):
             repos = await self._resolve_repos(
                 client, source_config, username, include_forks
             )
+
+            await self._sync_permissions(client, repos, ctx)
 
             for repo in repos:
                 if ctx.is_cancelled():
@@ -267,7 +269,7 @@ class GitHubConnector(Connector):
     async def _sync_repo(
         self,
         client: GitHubClient,
-        repo: Any,
+        repo: GitHubRepo,
         owner: str,
         name: str,
         ctx: SyncContext,
@@ -289,15 +291,66 @@ class GitHubConnector(Connector):
             await ctx.emit_error(eid, str(e))
         return docs_since_checkpoint
 
+    async def _sync_permissions(
+        self,
+        client: GitHubClient,
+        repos: list[GitHubRepo],
+        ctx: SyncContext,
+    ) -> None:
+        """Emit group membership events for private repos based on collaborators."""
+        repo_collaborators: dict[str, list[str]] = {}
+        all_logins: set[str] = set()
+
+        for repo in repos:
+            if not repo.private:
+                continue
+            owner, name = repo.full_name.split("/", 1)
+            logins: list[str] = []
+            try:
+                async for collab in client.list_collaborators(owner, name):
+                    logins.append(collab.login)
+                    all_logins.add(collab.login)
+            except GitHubError as e:
+                logger.warning(
+                    "Failed to fetch collaborators for %s: %s", repo.full_name, e
+                )
+                continue
+            repo_collaborators[repo.full_name] = logins
+
+        # Resolve login → email (deduplicated)
+        login_to_email: dict[str, str] = {}
+        for login in all_logins:
+            email = await client.get_user_email(login)
+            if email:
+                login_to_email[login] = email.lower()
+            else:
+                logger.warning(
+                    "No public email for GitHub user '%s', skipping from permissions",
+                    login,
+                )
+
+        for repo_full_name, logins in repo_collaborators.items():
+            emails = [login_to_email[l] for l in logins if l in login_to_email]
+            if emails:
+                await ctx.emit_group_membership(
+                    group_email=f"github:repo:{repo_full_name}",
+                    member_emails=emails,
+                    group_name=repo_full_name,
+                )
+            else:
+                logger.warning(
+                    "No resolvable emails for any collaborator of %s", repo_full_name
+                )
+
     async def _resolve_repos(
         self,
         client: GitHubClient,
         source_config: dict[str, Any],
         username: str,
         include_forks: bool,
-    ) -> list[Any]:
+    ) -> list[GitHubRepo]:
         """Determine which repos to sync based on source_config."""
-        repos: list[Any] = []
+        repos: list[GitHubRepo] = []
         seen: set[str] = set()
 
         explicit_repos = source_config.get("repos", [])

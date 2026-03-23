@@ -115,6 +115,13 @@ export const load: PageServerLoad = async ({ locals }) => {
                 connected: connectedSources.some((source) => source.sourceType === 'linear'),
                 authType: 'api_key',
             },
+            {
+                id: 'github',
+                name: 'GitHub',
+                description: 'Connect to GitHub repositories, issues, PRs, and discussions',
+                connected: connectedSources.some((source) => source.sourceType === 'github'),
+                authType: 'bearer_token',
+            },
         ],
     }
 }

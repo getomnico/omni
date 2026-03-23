@@ -19,6 +19,7 @@ import sharePointIcon from '$lib/images/icons/sharepoint.svg'
 import clickupIcon from '$lib/images/icons/clickup.svg'
 import notionIcon from '$lib/images/icons/notion.svg'
 import linearIcon from '$lib/images/icons/linear.svg'
+import githubIcon from '$lib/images/icons/github.svg'
 
 // Google Workspace MIME types
 const GOOGLE_DOCS_MIMETYPES = [
@@ -109,7 +110,7 @@ export function getSourceIconPath(sourceType: string): string | null {
         case SourceType.LINEAR:
             return linearIcon
         case SourceType.GITHUB:
-            return null // TODO: Add github icon when available
+            return githubIcon
         case SourceType.LOCAL_FILES:
             return null // Use fallback FileText icon
         case SourceType.IMAP:

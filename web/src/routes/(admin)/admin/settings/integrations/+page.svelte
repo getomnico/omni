@@ -18,6 +18,7 @@
     import clickupLogo from '$lib/images/icons/clickup.svg'
     import notionLogo from '$lib/images/icons/notion.svg'
     import linearLogo from '$lib/images/icons/linear.svg'
+    import githubLogo from '$lib/images/icons/github.svg'
     import { getSourceIconPath } from '$lib/utils/icons'
     import { Globe, HardDrive, Loader2, Mail } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
@@ -33,6 +34,7 @@
     import ClickupConnectorSetup from '$lib/components/clickup-connector-setup.svelte'
     import NotionConnectorSetup from '$lib/components/notion-connector-setup.svelte'
     import LinearConnectorSetup from '$lib/components/linear-connector-setup.svelte'
+    import GithubConnectorSetup from '$lib/components/github-connector-setup.svelte'
     import { SourceType } from '$lib/types'
     import { invalidateAll } from '$app/navigation'
     import { onMount, onDestroy } from 'svelte'
@@ -112,6 +114,7 @@
     let showClickupSetup = $state(false)
     let showNotionSetup = $state(false)
     let showLinearSetup = $state(false)
+    let showGithubSetup = $state(false)
 
     function handleConnect(integrationId: string) {
         if (integrationId === 'google') {
@@ -138,6 +141,8 @@
             showNotionSetup = true
         } else if (integrationId === 'linear') {
             showLinearSetup = true
+        } else if (integrationId === 'github') {
+            showGithubSetup = true
         }
     }
 
@@ -201,6 +206,11 @@
         window.location.reload()
     }
 
+    function handleGithubSetupSuccess() {
+        showGithubSetup = false
+        window.location.reload()
+    }
+
     function getSourceIcon(sourceType: string) {
         return getSourceIconPath(sourceType)
     }
@@ -225,6 +235,8 @@
                 return notionLogo
             case 'linear':
                 return linearLogo
+            case 'github':
+                return githubLogo
             default:
                 return null
         }
@@ -277,6 +289,8 @@
                 return 'tasks'
             case SourceType.NOTION:
                 return 'pages'
+            case SourceType.GITHUB:
+                return 'documents'
             default:
                 return 'documents'
         }
@@ -315,6 +329,8 @@
                 return `/admin/settings/integrations/clickup/${sourceId}`
             case SourceType.NOTION:
                 return `/admin/settings/integrations/notion/${sourceId}`
+            case SourceType.GITHUB:
+                return `/admin/settings/integrations/github/${sourceId}`
             default:
                 return '#'
         }
@@ -536,3 +552,8 @@
     bind:open={showLinearSetup}
     onSuccess={handleLinearSetupSuccess}
     onCancel={() => (showLinearSetup = false)} />
+
+<GithubConnectorSetup
+    bind:open={showGithubSetup}
+    onSuccess={handleGithubSetupSuccess}
+    onCancel={() => (showGithubSetup = false)} />

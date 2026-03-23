@@ -6,8 +6,20 @@ from typing import Any
 
 from githubkit import GitHub, TokenAuthStrategy
 from githubkit.exception import RequestError, RequestFailed
+from githubkit.versions.latest.models import (
+    Collaborator,
+    FullRepository,
+    Issue,
+    IssueComment,
+    MinimalRepository,
+    PullRequestReviewComment,
+    PullRequestSimple,
+    Repository,
+)
 
 from .config import DISCUSSIONS_QUERY, ITEMS_PER_PAGE, MAX_COMMENT_COUNT
+
+GitHubRepo = Repository | MinimalRepository | FullRepository
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +57,7 @@ class GitHubClient:
         except RequestError as e:
             raise GitHubError(f"Token validation failed: {e}") from e
 
-    async def list_repos_for_org(self, org: str) -> AsyncIterator[Any]:
+    async def list_repos_for_org(self, org: str) -> AsyncIterator[MinimalRepository]:
         """List all repositories for an organization."""
         try:
             async for repo in self._github.paginate(
@@ -58,7 +70,9 @@ class GitHubClient:
         except RequestFailed as e:
             raise GitHubError(f"Failed to list repos for org {org}: {e}") from e
 
-    async def list_repos_for_user(self, username: str) -> AsyncIterator[Any]:
+    async def list_repos_for_user(
+        self, username: str
+    ) -> AsyncIterator[MinimalRepository]:
         """List all repositories for a user."""
         try:
             async for repo in self._github.paginate(
@@ -71,7 +85,7 @@ class GitHubClient:
         except RequestFailed as e:
             raise GitHubError(f"Failed to list repos for user {username}: {e}") from e
 
-    async def list_repos_for_authenticated_user(self) -> AsyncIterator[Any]:
+    async def list_repos_for_authenticated_user(self) -> AsyncIterator[Repository]:
         """List all repositories accessible to the authenticated user."""
         try:
             async for repo in self._github.paginate(
@@ -85,7 +99,7 @@ class GitHubClient:
                 f"Failed to list repos for authenticated user: {e}"
             ) from e
 
-    async def get_repo(self, owner: str, repo: str) -> Any:
+    async def get_repo(self, owner: str, repo: str) -> FullRepository:
         """Get a single repository by owner/name."""
         try:
             resp = await self._github.rest.repos.async_get(owner=owner, repo=repo)
@@ -110,7 +124,7 @@ class GitHubClient:
 
     async def list_issues(
         self, owner: str, repo: str, since: str | None = None
-    ) -> AsyncIterator[Any]:
+    ) -> AsyncIterator[Issue]:
         """List issues (excluding PRs) for a repository."""
         kwargs: dict[str, Any] = {
             "owner": owner,
@@ -135,9 +149,9 @@ class GitHubClient:
 
     async def list_issue_comments(
         self, owner: str, repo: str, number: int
-    ) -> list[Any]:
+    ) -> list[IssueComment]:
         """List comments on an issue, capped at MAX_COMMENT_COUNT."""
-        comments: list[Any] = []
+        comments: list[IssueComment] = []
         try:
             async for comment in self._github.paginate(
                 self._github.rest.issues.async_list_comments,
@@ -156,7 +170,7 @@ class GitHubClient:
 
     async def list_pull_requests(
         self, owner: str, repo: str, since: str | None = None
-    ) -> AsyncIterator[Any]:
+    ) -> AsyncIterator[PullRequestSimple]:
         """List pull requests for a repository."""
         kwargs: dict[str, Any] = {
             "owner": owner,
@@ -180,9 +194,9 @@ class GitHubClient:
 
     async def list_pr_review_comments(
         self, owner: str, repo: str, number: int
-    ) -> list[Any]:
+    ) -> list[PullRequestReviewComment]:
         """List review comments on a pull request, capped at MAX_COMMENT_COUNT."""
-        comments: list[Any] = []
+        comments: list[PullRequestReviewComment] = []
         try:
             async for comment in self._github.paginate(
                 self._github.rest.pulls.async_list_review_comments,
@@ -201,9 +215,9 @@ class GitHubClient:
 
     async def list_pr_issue_comments(
         self, owner: str, repo: str, number: int
-    ) -> list[Any]:
+    ) -> list[IssueComment]:
         """List issue-style comments on a pull request (conversation comments)."""
-        comments: list[Any] = []
+        comments: list[IssueComment] = []
         try:
             async for comment in self._github.paginate(
                 self._github.rest.issues.async_list_comments,
@@ -252,6 +266,35 @@ class GitHubClient:
             if not page_info.get("hasNextPage"):
                 return
             cursor = page_info.get("endCursor")
+
+    async def list_collaborators(
+        self, owner: str, repo: str
+    ) -> AsyncIterator[Collaborator]:
+        """List collaborators for a repository (effective access from org/teams/direct)."""
+        try:
+            async for collab in self._github.paginate(
+                self._github.rest.repos.async_list_collaborators,
+                owner=owner,
+                repo=repo,
+                per_page=ITEMS_PER_PAGE,
+                map_func=lambda r: r.parsed_data,
+            ):
+                yield collab
+        except RequestFailed as e:
+            raise GitHubError(
+                f"Failed to list collaborators for {owner}/{repo}: {e}"
+            ) from e
+
+    async def get_user_email(self, username: str) -> str | None:
+        """Get a user's public email address. Returns None if not public."""
+        try:
+            resp = await self._github.rest.users.async_get_by_username(
+                username=username
+            )
+            return resp.parsed_data.email
+        except RequestFailed as e:
+            logger.warning("Failed to fetch user %s: %s", username, e)
+            return None
 
     async def close(self) -> None:
         """No-op: githubkit manages its own httpx client lifecycle internally."""
