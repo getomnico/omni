@@ -4,6 +4,33 @@ import { sourcesRepository } from '$lib/server/repositories/sources'
 import { getConnectorConfigPublic } from '$lib/server/db/connector-configs'
 import type { PageServerLoad } from './$types'
 
+const CONNECTOR_DISPLAY_ORDER: string[] = [
+    // Productivity suites
+    'google',
+    'microsoft',
+    'atlassian',
+    // Communication
+    'slack',
+    'gmail',
+    'imap',
+    // Knowledge & docs
+    'notion',
+    'confluence',
+    // Project management
+    'linear',
+    'jira',
+    'clickup',
+    // Dev tools
+    'github',
+    // CRM & sales
+    'hubspot',
+    // Meetings
+    'fireflies',
+    // Other
+    'web',
+    'filesystem',
+]
+
 interface ConnectorInfo {
     source_type: string
     url: string
@@ -59,7 +86,13 @@ export const load: PageServerLoad = async ({ locals }) => {
                 }
             }
 
-            availableIntegrations = Array.from(integrationMap.values())
+            availableIntegrations = Array.from(integrationMap.values()).sort((a, b) => {
+                const idxA = CONNECTOR_DISPLAY_ORDER.indexOf(a.id)
+                const idxB = CONNECTOR_DISPLAY_ORDER.indexOf(b.id)
+                const orderA = idxA === -1 ? CONNECTOR_DISPLAY_ORDER.length : idxA
+                const orderB = idxB === -1 ? CONNECTOR_DISPLAY_ORDER.length : idxB
+                return orderA !== orderB ? orderA - orderB : a.id.localeCompare(b.id)
+            })
         }
     } catch (error) {
         locals.logger.error('Failed to fetch connectors from connector manager', error)
