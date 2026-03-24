@@ -35,8 +35,6 @@ custom_domain  = "omni.acme-corp.com"
 # stale_sync_timeout_minutes      = "10"
 
 # Optional: Google Connector Configuration
-# google_webhook_url                     = ""
-# google_sync_interval_seconds           = ""
 # google_max_age_days                    = "730"
 # webhook_renewal_check_interval_seconds = "3600"
 

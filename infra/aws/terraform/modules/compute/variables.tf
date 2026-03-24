@@ -259,18 +259,6 @@ variable "stale_sync_timeout_minutes" {
 }
 
 # Google Connector Configuration
-variable "google_webhook_url" {
-  description = "Google webhook URL for push notifications"
-  type        = string
-  default     = ""
-}
-
-variable "google_sync_interval_seconds" {
-  description = "Google connector sync interval in seconds"
-  type        = string
-  default     = ""
-}
-
 variable "google_max_age_days" {
   description = "Maximum age in days for Google documents"
   type        = string

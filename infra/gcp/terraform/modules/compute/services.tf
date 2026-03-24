@@ -38,6 +38,7 @@ locals {
   common_env = merge(local.db_env, local.redis_env)
 
   otel_env = {
+    RUST_LOG                    = var.rust_log
     OTEL_EXPORTER_OTLP_ENDPOINT = var.otel_endpoint
     OTEL_DEPLOYMENT_ID          = var.customer_name
     OTEL_DEPLOYMENT_ENVIRONMENT = "production"
@@ -184,7 +185,6 @@ resource "google_cloud_run_v2_service" "searcher" {
           AI_SERVICE_URL             = local.service_url["ai"]
           SEMANTIC_SEARCH_TIMEOUT_MS = var.semantic_search_timeout_ms
           RAG_CONTEXT_WINDOW         = var.rag_context_window
-          RUST_LOG                   = var.rust_log
         })
         content {
           name  = env.key
@@ -256,7 +256,6 @@ resource "google_cloud_run_v2_service" "indexer" {
         for_each = merge(local.common_env, local.storage_env, local.otel_env, {
           PORT           = "3002"
           AI_SERVICE_URL = local.service_url["ai"]
-          RUST_LOG       = var.rust_log
         })
         content {
           name  = env.key
@@ -440,7 +439,6 @@ resource "google_cloud_run_v2_service" "connector_manager" {
           MAX_CONCURRENT_SYNCS_PER_TYPE   = var.max_concurrent_syncs_per_type
           SCHEDULER_POLL_INTERVAL_SECONDS = var.scheduler_poll_interval_seconds
           STALE_SYNC_TIMEOUT_MINUTES      = var.stale_sync_timeout_minutes
-          RUST_LOG                        = var.rust_log
         })
         content {
           name  = env.key
@@ -535,10 +533,7 @@ resource "google_cloud_run_v2_service" "google_connector" {
           PORT                                   = "4001"
           CONNECTOR_HOST_NAME                    = "google-connector"
           CONNECTOR_MANAGER_URL                  = local.service_url["connector-mgr"]
-          RUST_LOG                               = var.rust_log
           AI_SERVICE_URL                         = local.service_url["ai"]
-          GOOGLE_WEBHOOK_URL                     = var.google_webhook_url
-          GOOGLE_SYNC_INTERVAL_SECONDS           = var.google_sync_interval_seconds
           GOOGLE_MAX_AGE_DAYS                    = var.google_max_age_days
           OMNI_DOMAIN                            = var.custom_domain
           WEBHOOK_RENEWAL_CHECK_INTERVAL_SECONDS = var.webhook_renewal_check_interval_seconds
@@ -628,7 +623,6 @@ resource "google_cloud_run_v2_service" "atlassian_connector" {
           PORT                  = "4003"
           CONNECTOR_HOST_NAME   = "atlassian-connector"
           CONNECTOR_MANAGER_URL = local.service_url["connector-mgr"]
-          RUST_LOG              = var.rust_log
         })
         content {
           name  = env.key
@@ -691,7 +685,6 @@ resource "google_cloud_run_v2_service" "web_connector" {
           PORT                  = "4004"
           CONNECTOR_HOST_NAME   = "web-connector"
           CONNECTOR_MANAGER_URL = local.service_url["connector-mgr"]
-          RUST_LOG              = var.rust_log
         })
         content {
           name  = env.key
@@ -754,7 +747,6 @@ resource "google_cloud_run_v2_service" "connectors" {
           PORT                  = tostring(each.value.port)
           CONNECTOR_HOST_NAME   = "${each.key}-connector"
           CONNECTOR_MANAGER_URL = local.service_url["connector-mgr"]
-          RUST_LOG              = var.rust_log
         })
         content {
           name  = env.key

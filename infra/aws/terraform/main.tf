@@ -184,8 +184,6 @@ module "compute" {
   stale_sync_timeout_minutes      = var.stale_sync_timeout_minutes
 
   # Google connector configuration
-  google_webhook_url                     = var.google_webhook_url
-  google_sync_interval_seconds           = var.google_sync_interval_seconds
   google_max_age_days                    = var.google_max_age_days
   webhook_renewal_check_interval_seconds = var.webhook_renewal_check_interval_seconds
 
