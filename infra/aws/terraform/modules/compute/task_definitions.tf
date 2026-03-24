@@ -113,7 +113,10 @@ resource "aws_ecs_task_definition" "web" {
       { name = "AGENTS_ENABLED", value = var.agents_enabled }
     ])
 
-    secrets = local.common_secrets
+    secrets = concat(local.common_secrets, [
+      { name = "ENCRYPTION_KEY", valueFrom = "${var.encryption_key_arn}:key::" },
+      { name = "ENCRYPTION_SALT", valueFrom = "${var.encryption_salt_arn}:salt::" }
+    ])
   }])
 
   tags = merge(local.common_tags, {
@@ -275,7 +278,10 @@ resource "aws_ecs_task_definition" "ai" {
       { name = "AGENTS_ENABLED", value = var.agents_enabled }
     ])
 
-    secrets = local.common_secrets
+    secrets = concat(local.common_secrets, [
+      { name = "ENCRYPTION_KEY", valueFrom = "${var.encryption_key_arn}:key::" },
+      { name = "ENCRYPTION_SALT", valueFrom = "${var.encryption_salt_arn}:salt::" }
+    ])
   }])
 
   tags = merge(local.common_tags, {

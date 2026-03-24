@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm'
 import { db } from './index'
 import { authProviders } from './schema'
 import type { AuthProvider } from './schema'
+import { encryptConfig, decryptConfig } from '$lib/server/crypto/encryption'
 
 export interface GoogleAuthConfig {
     clientId: string
@@ -14,7 +15,8 @@ export async function getAuthProvider(provider: string): Promise<AuthProvider | 
         .from(authProviders)
         .where(eq(authProviders.provider, provider))
         .limit(1)
-    return row || null
+    if (!row) return null
+    return { ...row, config: decryptConfig(row.config) }
 }
 
 export async function getGoogleAuthConfig(): Promise<{
@@ -62,12 +64,13 @@ export async function updateAuthProvider(
     config: Record<string, unknown>,
     updatedBy: string,
 ): Promise<AuthProvider> {
+    const encryptedConfig = encryptConfig(config)
     const [row] = await db
         .insert(authProviders)
         .values({
             provider,
             enabled,
-            config,
+            config: encryptedConfig,
             updatedBy,
             updatedAt: new Date(),
         })
@@ -75,12 +78,12 @@ export async function updateAuthProvider(
             target: authProviders.provider,
             set: {
                 enabled,
-                config,
+                config: encryptedConfig,
                 updatedBy,
                 updatedAt: new Date(),
             },
         })
         .returning()
 
-    return row
+    return { ...row, config: decryptConfig(row.config) }
 }

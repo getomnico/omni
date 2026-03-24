@@ -3,6 +3,7 @@ import { db } from './index'
 import { modelProviders, models } from './schema'
 import type { ModelProvider, Model } from './schema'
 import { ulid } from 'ulid'
+import { encryptConfig, decryptConfig } from '$lib/server/crypto/encryption'
 
 export const MODEL_PROVIDER_TYPES = [
     'vllm',
@@ -77,11 +78,12 @@ export const PREDEFINED_MODELS: Record<
 // --- Provider CRUD ---
 
 export async function listActiveProviders(): Promise<ModelProvider[]> {
-    return await db
+    const rows = await db
         .select()
         .from(modelProviders)
         .where(eq(modelProviders.isDeleted, false))
         .orderBy(modelProviders.createdAt)
+    return rows.map((row) => ({ ...row, config: decryptConfig(row.config) }))
 }
 
 export async function getProvider(id: string): Promise<ModelProvider | null> {
@@ -90,7 +92,8 @@ export async function getProvider(id: string): Promise<ModelProvider | null> {
         .from(modelProviders)
         .where(eq(modelProviders.id, id))
         .limit(1)
-    return provider || null
+    if (!provider) return null
+    return { ...provider, config: decryptConfig(provider.config) }
 }
 
 export async function createProvider(input: CreateProviderInput): Promise<ModelProvider> {
@@ -100,11 +103,11 @@ export async function createProvider(input: CreateProviderInput): Promise<ModelP
             id: ulid(),
             name: input.name,
             providerType: input.providerType,
-            config: input.config,
+            config: encryptConfig(input.config as Record<string, unknown>),
         })
         .returning()
 
-    return provider
+    return { ...provider, config: decryptConfig(provider.config) }
 }
 
 export async function updateProvider(
@@ -113,7 +116,8 @@ export async function updateProvider(
 ): Promise<ModelProvider | null> {
     const values: Record<string, unknown> = { updatedAt: new Date() }
     if (input.name !== undefined) values.name = input.name
-    if (input.config !== undefined) values.config = input.config
+    if (input.config !== undefined)
+        values.config = encryptConfig(input.config as Record<string, unknown>)
 
     const [updated] = await db
         .update(modelProviders)
@@ -121,7 +125,8 @@ export async function updateProvider(
         .where(eq(modelProviders.id, id))
         .returning()
 
-    return updated || null
+    if (!updated) return null
+    return { ...updated, config: decryptConfig(updated.config) }
 }
 
 export async function deleteProvider(id: string): Promise<boolean> {

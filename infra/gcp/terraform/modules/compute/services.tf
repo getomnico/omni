@@ -128,6 +128,26 @@ resource "google_cloud_run_v2_service" "web" {
         }
       }
 
+      env {
+        name = "ENCRYPTION_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = var.encryption_key_secret_id
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name = "ENCRYPTION_SALT"
+        value_source {
+          secret_key_ref {
+            secret  = var.encryption_salt_secret_id
+            version = "latest"
+          }
+        }
+      }
+
     }
   }
 
@@ -375,6 +395,26 @@ resource "google_cloud_run_v2_service" "ai" {
         value_source {
           secret_key_ref {
             secret  = var.database_password_secret_id
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name = "ENCRYPTION_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = var.encryption_key_secret_id
+            version = "latest"
+          }
+        }
+      }
+
+      env {
+        name = "ENCRYPTION_SALT"
+        value_source {
+          secret_key_ref {
+            secret  = var.encryption_salt_secret_id
             version = "latest"
           }
         }

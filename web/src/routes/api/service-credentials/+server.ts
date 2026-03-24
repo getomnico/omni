@@ -5,7 +5,7 @@ import { serviceCredentials, sources } from '$lib/server/db/schema'
 import { eq } from 'drizzle-orm'
 import { ServiceProvider, AuthType } from '$lib/types'
 import { ulid } from 'ulid'
-import { env } from '$env/dynamic/private'
+import { encryptConfig } from '$lib/server/crypto/encryption'
 
 export const POST: RequestHandler = async ({ request, locals, fetch }) => {
     if (!locals.user) {
@@ -33,7 +33,7 @@ export const POST: RequestHandler = async ({ request, locals, fetch }) => {
         throw error(400, 'Invalid auth type')
     }
 
-    // Check if source exists and is owned by requesting user or user is admin
+    // Check if source exists
     const source = await db.query.sources.findFirst({
         where: eq(sources.id, sourceId),
     })
@@ -43,34 +43,25 @@ export const POST: RequestHandler = async ({ request, locals, fetch }) => {
     }
 
     try {
-        // Call indexer service to create encrypted credentials
-        const indexerResponse = await fetch(`${env.INDEXER_URL}/service-credentials`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                source_id: sourceId,
-                provider: provider,
-                auth_type: authType,
-                principal_email: principalEmail || null,
-                credentials: credentials,
+        // Delete existing credentials for this source
+        await db.delete(serviceCredentials).where(eq(serviceCredentials.sourceId, sourceId))
+
+        // Encrypt and insert new credentials directly
+        const id = ulid()
+        const encryptedCredentials = encryptConfig(credentials)
+
+        const [created] = await db
+            .insert(serviceCredentials)
+            .values({
+                id,
+                sourceId,
+                provider,
+                authType,
+                principalEmail: principalEmail || null,
+                credentials: encryptedCredentials,
                 config: config || {},
-            }),
-        })
-
-        if (!indexerResponse.ok) {
-            const errorText = await indexerResponse.text()
-            console.error('Indexer service error:', errorText)
-            throw error(500, 'Failed to create service credentials')
-        }
-
-        const indexerResult = await indexerResponse.json()
-
-        if (!indexerResult.success) {
-            console.error('Indexer service failed:', indexerResult.message)
-            throw error(500, indexerResult.message || 'Failed to create service credentials')
-        }
+            })
+            .returning()
 
         // Trigger initial sync after credentials are saved
         try {
@@ -91,17 +82,16 @@ export const POST: RequestHandler = async ({ request, locals, fetch }) => {
         return json({
             success: true,
             credentials: {
-                id: ulid(), // Generate a temporary ID for response
-                sourceId: sourceId,
-                provider: provider,
-                authType: authType,
-                principalEmail: principalEmail || null,
-                config: config || {},
-                expiresAt: null,
-                lastValidatedAt: null,
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-                // Don't return sensitive credentials
+                id: created.id,
+                sourceId: created.sourceId,
+                provider: created.provider,
+                authType: created.authType,
+                principalEmail: created.principalEmail,
+                config: created.config,
+                expiresAt: created.expiresAt,
+                lastValidatedAt: created.lastValidatedAt,
+                createdAt: created.createdAt,
+                updatedAt: created.updatedAt,
             },
         })
     } catch (err) {

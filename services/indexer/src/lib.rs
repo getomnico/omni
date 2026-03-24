@@ -12,7 +12,6 @@ pub use serde::{Deserialize, Serialize};
 pub use serde_json::Value;
 pub use shared::db::pool::DatabasePool;
 pub use shared::AIClient;
-use shared::ServiceCredentialsRepo;
 use std::sync::Arc;
 
 use axum::{
@@ -44,7 +43,6 @@ pub struct AppState {
     pub ai_client: AIClient,
     pub content_storage: Arc<dyn shared::ObjectStorage>,
     pub embedding_queue: shared::embedding_queue::EmbeddingQueue,
-    pub service_credentials_repo: Arc<ServiceCredentialsRepo>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -85,22 +83,6 @@ pub struct BulkDocumentResponse {
     pub errors: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct CreateServiceCredentialsRequest {
-    pub source_id: String,
-    pub provider: shared::models::ServiceProvider,
-    pub auth_type: shared::models::AuthType,
-    pub principal_email: Option<String>,
-    pub credentials: Value,
-    pub config: Value,
-}
-
-#[derive(Debug, Serialize)]
-pub struct CreateServiceCredentialsResponse {
-    pub success: bool,
-    pub message: String,
-}
-
 pub fn create_app(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health_check))
@@ -110,7 +92,6 @@ pub fn create_app(state: AppState) -> Router {
         .route("/documents/:id", get(get_document))
         .route("/documents/:id", put(update_document))
         .route("/documents/:id", delete(delete_document))
-        .route("/service-credentials", post(create_service_credentials))
         .route("/admin/gc/run", post(run_gc))
         .route("/admin/gc/stats", get(gc_stats))
         .route("/admin/reindex-embeddings", post(reindex_embeddings))
@@ -400,66 +381,6 @@ async fn process_delete_operation(state: &AppState, id: String) -> anyhow::Resul
     Ok(())
 }
 
-async fn create_service_credentials(
-    State(state): State<AppState>,
-    Json(request): Json<CreateServiceCredentialsRequest>,
-) -> IndexerResult<Json<CreateServiceCredentialsResponse>> {
-    let service_credentials = shared::models::ServiceCredentials {
-        id: Ulid::new().to_string(),
-        source_id: request.source_id.clone(),
-        provider: request.provider,
-        auth_type: request.auth_type,
-        principal_email: request.principal_email,
-        credentials: request.credentials,
-        config: request.config,
-        expires_at: None,
-        last_validated_at: None,
-        created_at: OffsetDateTime::now_utc(),
-        updated_at: OffsetDateTime::now_utc(),
-    };
-
-    // Delete existing credentials for this source first
-    match state
-        .service_credentials_repo
-        .delete_by_source_id(&request.source_id)
-        .await
-    {
-        Ok(_) => info!(
-            "Deleted existing credentials for source: {}",
-            request.source_id
-        ),
-        Err(e) => info!(
-            "No existing credentials to delete for source {}: {}",
-            request.source_id, e
-        ),
-    }
-
-    // Create new credentials (this will automatically encrypt them)
-    match state
-        .service_credentials_repo
-        .create(service_credentials)
-        .await
-    {
-        Ok(_) => {
-            info!(
-                "Created encrypted service credentials for source: {}",
-                request.source_id
-            );
-            Ok(Json(CreateServiceCredentialsResponse {
-                success: true,
-                message: "Service credentials created successfully".to_string(),
-            }))
-        }
-        Err(e) => {
-            error!("Failed to create service credentials: {}", e);
-            Ok(Json(CreateServiceCredentialsResponse {
-                success: false,
-                message: format!("Failed to create service credentials: {}", e),
-            }))
-        }
-    }
-}
-
 async fn reindex_embeddings(State(state): State<AppState>) -> IndexerResult<Json<Value>> {
     let repo = DocumentRepository::new(state.db_pool.pool());
 
@@ -540,9 +461,6 @@ pub async fn run_server() -> anyhow::Result<()> {
     let embedding_queue = shared::embedding_queue::EmbeddingQueue::new(db_pool.pool().clone());
     info!("Embedding queue initialized");
 
-    let service_credentials_repo = Arc::new(ServiceCredentialsRepo::new(db_pool.pool().clone())?);
-    info!("Service credentials repository initialized");
-
     let content_storage = shared::StorageFactory::from_env(db_pool.pool().clone()).await?;
     info!("Content storage initialized");
 
@@ -552,7 +470,6 @@ pub async fn run_server() -> anyhow::Result<()> {
         ai_client,
         content_storage,
         embedding_queue,
-        service_credentials_repo,
     };
 
     let app = create_app(app_state.clone());

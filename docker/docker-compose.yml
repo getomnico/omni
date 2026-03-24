@@ -166,6 +166,8 @@ services:
       AGENT_MAX_ITERATIONS: ${AGENT_MAX_ITERATIONS:-15}
       APPROVAL_TIMEOUT_SECONDS: ${APPROVAL_TIMEOUT_SECONDS:-600}
       AGENTS_ENABLED: ${AGENTS_ENABLED:-false}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      ENCRYPTION_SALT: ${ENCRYPTION_SALT}
     networks:
       - omni-network
       - sandbox-net
@@ -597,6 +599,8 @@ services:
       APP_URL: ${APP_URL}
       AI_ANSWER_ENABLED: ${AI_ANSWER_ENABLED}
       AGENTS_ENABLED: ${AGENTS_ENABLED:-false}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      ENCRYPTION_SALT: ${ENCRYPTION_SALT}
     networks:
       - omni-network
     depends_on:

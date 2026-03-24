@@ -7,6 +7,7 @@ from typing import Literal, Optional, Union
 
 from asyncpg import Pool
 
+from crypto import decrypt_config
 from db.connection import get_db_pool
 
 logger = logging.getLogger(__name__)
@@ -88,5 +89,6 @@ async def get_current_email_provider(
     config = row["config"]
     if isinstance(config, str):
         config = json.loads(config)
+    config = decrypt_config(config)
 
     return _parse_config(row["provider_type"], config)

@@ -4,6 +4,8 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 from enum import Enum
 
+from crypto import decrypt_config
+
 
 @dataclass
 class User:
@@ -88,6 +90,7 @@ class ModelRecord:
         config = row["config"]
         if isinstance(config, str):
             config = json.loads(config)
+        config = decrypt_config(config)
         return cls(
             id=row["id"].strip(),
             model_provider_id=row["model_provider_id"].strip(),

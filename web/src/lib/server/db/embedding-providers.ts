@@ -3,6 +3,7 @@ import { db } from './index'
 import { embeddingProviders } from './schema'
 import type { EmbeddingProvider } from './schema'
 import { ulid } from 'ulid'
+import { encryptConfig, decryptConfig } from '$lib/server/crypto/encryption'
 
 export { EMBEDDING_PROVIDER_TYPES, type EmbeddingProviderType, PROVIDER_LABELS } from '$lib/types'
 import { type EmbeddingProviderType } from '$lib/types'
@@ -27,11 +28,12 @@ export interface UpdateEmbeddingProviderInput {
 }
 
 export async function listActiveProviders(): Promise<EmbeddingProvider[]> {
-    return await db
+    const rows = await db
         .select()
         .from(embeddingProviders)
         .where(eq(embeddingProviders.isDeleted, false))
         .orderBy(embeddingProviders.createdAt)
+    return rows.map((row) => ({ ...row, config: decryptConfig(row.config) }))
 }
 
 export async function getProvider(id: string): Promise<EmbeddingProvider | null> {
@@ -40,7 +42,8 @@ export async function getProvider(id: string): Promise<EmbeddingProvider | null>
         .from(embeddingProviders)
         .where(eq(embeddingProviders.id, id))
         .limit(1)
-    return provider || null
+    if (!provider) return null
+    return { ...provider, config: decryptConfig(provider.config) }
 }
 
 export async function getCurrentProvider(): Promise<EmbeddingProvider | null> {
@@ -49,7 +52,8 @@ export async function getCurrentProvider(): Promise<EmbeddingProvider | null> {
         .from(embeddingProviders)
         .where(and(eq(embeddingProviders.isCurrent, true), eq(embeddingProviders.isDeleted, false)))
         .limit(1)
-    return provider || null
+    if (!provider) return null
+    return { ...provider, config: decryptConfig(provider.config) }
 }
 
 export async function createProvider(
@@ -64,12 +68,12 @@ export async function createProvider(
             id: ulid(),
             name: input.name,
             providerType: input.providerType,
-            config: input.config,
+            config: encryptConfig(input.config as Record<string, unknown>),
             isCurrent: shouldBeCurrent,
         })
         .returning()
 
-    return provider
+    return { ...provider, config: decryptConfig(provider.config) }
 }
 
 export async function updateProvider(
@@ -78,7 +82,8 @@ export async function updateProvider(
 ): Promise<EmbeddingProvider | null> {
     const values: Record<string, unknown> = { updatedAt: new Date() }
     if (input.name !== undefined) values.name = input.name
-    if (input.config !== undefined) values.config = input.config
+    if (input.config !== undefined)
+        values.config = encryptConfig(input.config as Record<string, unknown>)
 
     const [updated] = await db
         .update(embeddingProviders)
@@ -86,7 +91,8 @@ export async function updateProvider(
         .where(eq(embeddingProviders.id, id))
         .returning()
 
-    return updated || null
+    if (!updated) return null
+    return { ...updated, config: decryptConfig(updated.config) }
 }
 
 export async function deleteProvider(id: string): Promise<boolean> {

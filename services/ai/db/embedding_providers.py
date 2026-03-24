@@ -6,6 +6,7 @@ from typing import Optional
 
 from asyncpg import Pool
 
+from crypto import decrypt_config
 from .connection import get_db_pool
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,7 @@ class EmbeddingProviderRecord:
         config = row["config"]
         if isinstance(config, str):
             config = json.loads(config)
+        config = decrypt_config(config)
         return cls(
             id=row["id"].strip(),
             name=row["name"],

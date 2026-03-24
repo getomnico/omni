@@ -3,6 +3,7 @@ import { db } from './index'
 import { emailProviders } from './schema'
 import type { EmailProvider } from './schema'
 import { ulid } from 'ulid'
+import { encryptConfig, decryptConfig } from '$lib/server/crypto/encryption'
 
 export { EMAIL_PROVIDER_TYPES, EMAIL_PROVIDER_LABELS, type EmailProviderType } from '$lib/types'
 
@@ -45,11 +46,12 @@ export interface UpdateEmailProviderInput {
 }
 
 export async function listActiveProviders(): Promise<EmailProvider[]> {
-    return await db
+    const rows = await db
         .select()
         .from(emailProviders)
         .where(eq(emailProviders.isDeleted, false))
         .orderBy(emailProviders.createdAt)
+    return rows.map((row) => ({ ...row, config: decryptConfig(row.config) }))
 }
 
 export async function getProvider(id: string): Promise<EmailProvider | null> {
@@ -58,7 +60,8 @@ export async function getProvider(id: string): Promise<EmailProvider | null> {
         .from(emailProviders)
         .where(eq(emailProviders.id, id))
         .limit(1)
-    return provider || null
+    if (!provider) return null
+    return { ...provider, config: decryptConfig(provider.config) }
 }
 
 export async function getCurrentProvider(): Promise<EmailProvider | null> {
@@ -67,7 +70,8 @@ export async function getCurrentProvider(): Promise<EmailProvider | null> {
         .from(emailProviders)
         .where(and(eq(emailProviders.isCurrent, true), eq(emailProviders.isDeleted, false)))
         .limit(1)
-    return provider || null
+    if (!provider) return null
+    return { ...provider, config: decryptConfig(provider.config) }
 }
 
 export async function createProvider(input: CreateEmailProviderInput): Promise<EmailProvider> {
@@ -80,12 +84,12 @@ export async function createProvider(input: CreateEmailProviderInput): Promise<E
             id: ulid(),
             name: input.name,
             providerType: input.providerType,
-            config: input.config,
+            config: encryptConfig(input.config as Record<string, unknown>),
             isCurrent: shouldBeCurrent,
         })
         .returning()
 
-    return provider
+    return { ...provider, config: decryptConfig(provider.config) }
 }
 
 export async function updateProvider(
@@ -94,7 +98,8 @@ export async function updateProvider(
 ): Promise<EmailProvider | null> {
     const values: Record<string, unknown> = { updatedAt: new Date() }
     if (input.name !== undefined) values.name = input.name
-    if (input.config !== undefined) values.config = input.config
+    if (input.config !== undefined)
+        values.config = encryptConfig(input.config as Record<string, unknown>)
 
     const [updated] = await db
         .update(emailProviders)
@@ -102,7 +107,8 @@ export async function updateProvider(
         .where(eq(emailProviders.id, id))
         .returning()
 
-    return updated || null
+    if (!updated) return null
+    return { ...updated, config: decryptConfig(updated.config) }
 }
 
 export async function deleteProvider(id: string): Promise<boolean> {
