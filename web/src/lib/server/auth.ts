@@ -1,4 +1,4 @@
-import type { RequestEvent } from '@sveltejs/kit'
+import type { RequestEvent, Cookies } from '@sveltejs/kit'
 import { eq } from 'drizzle-orm'
 import { sha256 } from '@oslojs/crypto/sha2'
 import { encodeBase64url, encodeHexLowerCase } from '@oslojs/encoding'
@@ -96,7 +96,7 @@ export async function invalidateSession(sessionId: string) {
     await redis.del(`session:${sessionId}`)
 }
 
-export function setSessionTokenCookie(cookies: any, token: string, expiresAt: Date) {
+export function setSessionTokenCookie(cookies: Cookies, token: string, expiresAt: Date) {
     cookies.set(sessionCookieName, token, {
         expires: expiresAt,
         path: '/',
@@ -104,7 +104,7 @@ export function setSessionTokenCookie(cookies: any, token: string, expiresAt: Da
     })
 }
 
-export function deleteSessionTokenCookie(cookies: any) {
+export function deleteSessionTokenCookie(cookies: Cookies) {
     cookies.delete(sessionCookieName, {
         path: '/',
     })

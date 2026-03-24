@@ -125,7 +125,7 @@ export function getSourceIconPath(sourceType: string): string | null {
 }
 
 // Get source type from source ID using sources lookup
-export function getSourceTypeFromId(sourceId: string, sources: any[]): string | null {
+export function getSourceTypeFromId(sourceId: string, sources: { id: string; sourceType?: string }[]): string | null {
     if (!sources) return null
     const source = sources.find((s) => s.id === sourceId)
     return source?.sourceType || null
