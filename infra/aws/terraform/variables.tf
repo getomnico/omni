@@ -215,18 +215,6 @@ variable "stale_sync_timeout_minutes" {
 }
 
 # Google Connector Configuration
-variable "google_webhook_url" {
-  description = "Google webhook URL for push notifications"
-  type        = string
-  default     = ""
-}
-
-variable "google_sync_interval_seconds" {
-  description = "Google connector sync interval in seconds"
-  type        = string
-  default     = ""
-}
-
 variable "google_max_age_days" {
   description = "Maximum age in days for Google documents"
   type        = string
@@ -287,4 +275,28 @@ variable "vpc_cidr" {
   description = "CIDR block for VPC"
   type        = string
   default     = "10.0.0.0/16"
+}
+
+variable "enabled_connectors" {
+  description = "List of connectors to deploy (e.g. [\"google\", \"slack\", \"web\"])"
+  type        = list(string)
+  default     = ["web"]
+}
+
+variable "sandbox_url" {
+  description = "URL of the sandbox service for code execution (leave empty to disable)"
+  type        = string
+  default     = ""
+}
+
+variable "agent_max_iterations" {
+  description = "Maximum iterations for AI agent loops"
+  type        = string
+  default     = "15"
+}
+
+variable "approval_timeout_seconds" {
+  description = "Timeout in seconds for agent approval requests"
+  type        = string
+  default     = "600"
 }

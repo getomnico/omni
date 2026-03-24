@@ -9,6 +9,7 @@ locals {
     "web", "searcher", "indexer", "ai", "connector-mgr",
     "google-conn", "slack-conn", "atlassian-conn", "web-conn",
     "github-conn", "hubspot-conn", "microsoft-conn", "notion-conn", "fireflies-conn",
+    "imap-conn", "clickup-conn", "linear-conn", "filesystem-conn",
   ] : name => "https://omni-${var.customer_name}-${name}-${local.project_number}.${var.region}.run.app" }
 
   db_env = {
@@ -36,15 +37,29 @@ locals {
 
   common_env = merge(local.db_env, local.redis_env)
 
-  # Connectors with only basic env vars (CONNECTOR_MANAGER_URL, PORT, RUST_LOG)
-  simple_connectors = {
-    slack     = { port = 4002, image = "omni-slack-connector" }
-    github    = { port = 4005, image = "omni-github-connector" }
-    hubspot   = { port = 4006, image = "omni-hubspot-connector" }
-    microsoft = { port = 4007, image = "omni-microsoft-connector" }
-    notion    = { port = 4008, image = "omni-notion-connector" }
-    fireflies = { port = 4009, image = "omni-fireflies-connector" }
+  otel_env = {
+    RUST_LOG                    = var.rust_log
+    OTEL_EXPORTER_OTLP_ENDPOINT = var.otel_endpoint
+    OTEL_DEPLOYMENT_ID          = var.customer_name
+    OTEL_DEPLOYMENT_ENVIRONMENT = "production"
+    SERVICE_VERSION             = var.service_version
   }
+
+  # Connectors with only basic env vars (CONNECTOR_MANAGER_URL, PORT, RUST_LOG)
+  all_simple_connectors = {
+    slack      = { port = 4002, image = "omni-slack-connector" }
+    github     = { port = 4005, image = "omni-github-connector" }
+    hubspot    = { port = 4006, image = "omni-hubspot-connector" }
+    microsoft  = { port = 4007, image = "omni-microsoft-connector" }
+    notion     = { port = 4008, image = "omni-notion-connector" }
+    fireflies  = { port = 4009, image = "omni-fireflies-connector" }
+    imap       = { port = 4010, image = "omni-imap-connector" }
+    clickup    = { port = 4011, image = "omni-clickup-connector" }
+    linear     = { port = 4012, image = "omni-linear-connector" }
+    filesystem = { port = 4013, image = "omni-filesystem-connector" }
+  }
+
+  simple_connectors = { for k, v in local.all_simple_connectors : k => v if contains(var.enabled_connectors, k) }
 }
 
 # ============================================================================
@@ -84,22 +99,18 @@ resource "google_cloud_run_v2_service" "web" {
       }
 
       dynamic "env" {
-        for_each = merge(local.common_env, {
-          SEARCHER_URL            = local.service_url["searcher"]
-          INDEXER_URL             = local.service_url["indexer"]
-          AI_SERVICE_URL          = local.service_url["ai"]
-          CONNECTOR_MANAGER_URL   = local.service_url["connector-mgr"]
-          GOOGLE_CONNECTOR_URL    = local.service_url["google-conn"]
-          SLACK_CONNECTOR_URL     = local.service_url["slack-conn"]
-          ATLASSIAN_CONNECTOR_URL = local.service_url["atlassian-conn"]
-          WEB_CONNECTOR_URL       = local.service_url["web-conn"]
-          SESSION_COOKIE_NAME     = var.session_cookie_name
-          SESSION_DURATION_DAYS   = var.session_duration_days
-          OMNI_DOMAIN             = var.custom_domain
-          ORIGIN                  = local.app_url
-          APP_URL                 = local.app_url
-          AI_ANSWER_ENABLED       = var.ai_answer_enabled
-          AGENTS_ENABLED          = var.agents_enabled
+        for_each = merge(local.common_env, local.otel_env, {
+          SEARCHER_URL          = local.service_url["searcher"]
+          INDEXER_URL           = local.service_url["indexer"]
+          AI_SERVICE_URL        = local.service_url["ai"]
+          CONNECTOR_MANAGER_URL = local.service_url["connector-mgr"]
+          SESSION_COOKIE_NAME   = var.session_cookie_name
+          SESSION_DURATION_DAYS = var.session_duration_days
+          OMNI_DOMAIN           = var.custom_domain
+          ORIGIN                = local.app_url
+          APP_URL               = local.app_url
+          AI_ANSWER_ENABLED     = var.ai_answer_enabled
+          AGENTS_ENABLED        = var.agents_enabled
         })
         content {
           name  = env.key
@@ -117,7 +128,7 @@ resource "google_cloud_run_v2_service" "web" {
         }
       }
 
-}
+    }
   }
 
   depends_on = [
@@ -169,12 +180,11 @@ resource "google_cloud_run_v2_service" "searcher" {
       }
 
       dynamic "env" {
-        for_each = merge(local.common_env, local.storage_env, {
+        for_each = merge(local.common_env, local.storage_env, local.otel_env, {
           PORT                       = "3001"
           AI_SERVICE_URL             = local.service_url["ai"]
           SEMANTIC_SEARCH_TIMEOUT_MS = var.semantic_search_timeout_ms
           RAG_CONTEXT_WINDOW         = var.rag_context_window
-          RUST_LOG                   = var.rust_log
         })
         content {
           name  = env.key
@@ -243,10 +253,9 @@ resource "google_cloud_run_v2_service" "indexer" {
       }
 
       dynamic "env" {
-        for_each = merge(local.common_env, local.storage_env, {
+        for_each = merge(local.common_env, local.storage_env, local.otel_env, {
           PORT           = "3002"
           AI_SERVICE_URL = local.service_url["ai"]
-          RUST_LOG       = var.rust_log
         })
         content {
           name  = env.key
@@ -336,20 +345,24 @@ resource "google_cloud_run_v2_service" "ai" {
       }
 
       dynamic "env" {
-        for_each = merge(local.common_env, local.storage_env, {
-          PORT                             = "3003"
-          SEARCHER_URL                     = local.service_url["searcher"]
-          MODEL_PATH                       = "/models"
-          EMBEDDING_MODEL                                 = var.embedding_model
-          AI_WORKERS                                      = var.ai_workers
-          EMBEDDING_MAX_MODEL_LEN                         = var.embedding_max_model_len
-          EMBEDDING_BATCH_S3_BUCKET                       = var.batch_bucket_name
-          EMBEDDING_BATCH_MIN_DOCUMENTS                   = var.embedding_batch_min_documents
-          EMBEDDING_BATCH_MAX_DOCUMENTS                   = var.embedding_batch_max_documents
-          EMBEDDING_BATCH_ACCUMULATION_TIMEOUT_SECONDS    = var.embedding_batch_accumulation_timeout_seconds
-          EMBEDDING_BATCH_ACCUMULATION_POLL_INTERVAL      = var.embedding_batch_accumulation_poll_interval
-          EMBEDDING_BATCH_MONITOR_POLL_INTERVAL           = var.embedding_batch_monitor_poll_interval
-          AGENTS_ENABLED                                  = var.agents_enabled
+        for_each = merge(local.common_env, local.storage_env, local.otel_env, {
+          PORT                                         = "3003"
+          SEARCHER_URL                                 = local.service_url["searcher"]
+          CONNECTOR_MANAGER_URL                        = local.service_url["connector-mgr"]
+          SANDBOX_URL                                  = var.sandbox_url
+          MODEL_PATH                                   = "/models"
+          EMBEDDING_MODEL                              = var.embedding_model
+          AI_WORKERS                                   = var.ai_workers
+          EMBEDDING_MAX_MODEL_LEN                      = var.embedding_max_model_len
+          EMBEDDING_BATCH_S3_BUCKET                    = var.batch_bucket_name
+          EMBEDDING_BATCH_MIN_DOCUMENTS                = var.embedding_batch_min_documents
+          EMBEDDING_BATCH_MAX_DOCUMENTS                = var.embedding_batch_max_documents
+          EMBEDDING_BATCH_ACCUMULATION_TIMEOUT_SECONDS = var.embedding_batch_accumulation_timeout_seconds
+          EMBEDDING_BATCH_ACCUMULATION_POLL_INTERVAL   = var.embedding_batch_accumulation_poll_interval
+          EMBEDDING_BATCH_MONITOR_POLL_INTERVAL        = var.embedding_batch_monitor_poll_interval
+          AGENT_MAX_ITERATIONS                         = var.agent_max_iterations
+          APPROVAL_TIMEOUT_SECONDS                     = var.approval_timeout_seconds
+          AGENTS_ENABLED                               = var.agents_enabled
         })
         content {
           name  = env.key
@@ -420,22 +433,12 @@ resource "google_cloud_run_v2_service" "connector_manager" {
       }
 
       dynamic "env" {
-        for_each = merge(local.common_env, local.storage_env, {
+        for_each = merge(local.common_env, local.storage_env, local.otel_env, {
           PORT                            = "3004"
-          GOOGLE_CONNECTOR_URL            = local.service_url["google-conn"]
-          SLACK_CONNECTOR_URL             = local.service_url["slack-conn"]
-          ATLASSIAN_CONNECTOR_URL         = local.service_url["atlassian-conn"]
-          WEB_CONNECTOR_URL               = local.service_url["web-conn"]
-          GITHUB_CONNECTOR_URL            = local.service_url["github-conn"]
-          HUBSPOT_CONNECTOR_URL           = local.service_url["hubspot-conn"]
-          MICROSOFT_CONNECTOR_URL         = local.service_url["microsoft-conn"]
-          NOTION_CONNECTOR_URL            = local.service_url["notion-conn"]
-          FIREFLIES_CONNECTOR_URL         = local.service_url["fireflies-conn"]
           MAX_CONCURRENT_SYNCS            = var.max_concurrent_syncs
           MAX_CONCURRENT_SYNCS_PER_TYPE   = var.max_concurrent_syncs_per_type
           SCHEDULER_POLL_INTERVAL_SECONDS = var.scheduler_poll_interval_seconds
           STALE_SYNC_TIMEOUT_MINUTES      = var.stale_sync_timeout_minutes
-          RUST_LOG                        = var.rust_log
         })
         content {
           name  = env.key
@@ -492,6 +495,8 @@ resource "google_cloud_run_v2_service_iam_member" "connector_manager_invoker" {
 # ============================================================================
 
 resource "google_cloud_run_v2_service" "google_connector" {
+  count = contains(var.enabled_connectors, "google") ? 1 : 0
+
   name     = "omni-${var.customer_name}-google-conn"
   location = var.region
   ingress  = "INGRESS_TRAFFIC_INTERNAL_ONLY"
@@ -524,14 +529,13 @@ resource "google_cloud_run_v2_service" "google_connector" {
       }
 
       dynamic "env" {
-        for_each = merge(local.redis_env, {
+        for_each = merge(local.redis_env, local.otel_env, {
           PORT                                   = "4001"
+          CONNECTOR_HOST_NAME                    = "google-connector"
           CONNECTOR_MANAGER_URL                  = local.service_url["connector-mgr"]
-          RUST_LOG                               = var.rust_log
           AI_SERVICE_URL                         = local.service_url["ai"]
-          GOOGLE_WEBHOOK_URL                     = var.google_webhook_url
-          GOOGLE_SYNC_INTERVAL_SECONDS           = var.google_sync_interval_seconds
           GOOGLE_MAX_AGE_DAYS                    = var.google_max_age_days
+          OMNI_DOMAIN                            = var.custom_domain
           WEBHOOK_RENEWAL_CHECK_INTERVAL_SECONDS = var.webhook_renewal_check_interval_seconds
         })
         content {
@@ -568,7 +572,9 @@ resource "google_cloud_run_v2_service" "google_connector" {
 }
 
 resource "google_cloud_run_v2_service_iam_member" "google_connector_invoker" {
-  name     = google_cloud_run_v2_service.google_connector.name
+  count = contains(var.enabled_connectors, "google") ? 1 : 0
+
+  name     = google_cloud_run_v2_service.google_connector[0].name
   location = var.region
   role     = "roles/run.invoker"
   member   = "serviceAccount:${var.cloud_run_sa_email}"
@@ -579,6 +585,8 @@ resource "google_cloud_run_v2_service_iam_member" "google_connector_invoker" {
 # ============================================================================
 
 resource "google_cloud_run_v2_service" "atlassian_connector" {
+  count = contains(var.enabled_connectors, "atlassian") ? 1 : 0
+
   name     = "omni-${var.customer_name}-atlassian-conn"
   location = var.region
   ingress  = "INGRESS_TRAFFIC_INTERNAL_ONLY"
@@ -611,10 +619,10 @@ resource "google_cloud_run_v2_service" "atlassian_connector" {
       }
 
       dynamic "env" {
-        for_each = merge(local.redis_env, {
+        for_each = merge(local.redis_env, local.otel_env, {
           PORT                  = "4003"
+          CONNECTOR_HOST_NAME   = "atlassian-connector"
           CONNECTOR_MANAGER_URL = local.service_url["connector-mgr"]
-          RUST_LOG              = var.rust_log
         })
         content {
           name  = env.key
@@ -626,7 +634,9 @@ resource "google_cloud_run_v2_service" "atlassian_connector" {
 }
 
 resource "google_cloud_run_v2_service_iam_member" "atlassian_connector_invoker" {
-  name     = google_cloud_run_v2_service.atlassian_connector.name
+  count = contains(var.enabled_connectors, "atlassian") ? 1 : 0
+
+  name     = google_cloud_run_v2_service.atlassian_connector[0].name
   location = var.region
   role     = "roles/run.invoker"
   member   = "serviceAccount:${var.cloud_run_sa_email}"
@@ -637,6 +647,8 @@ resource "google_cloud_run_v2_service_iam_member" "atlassian_connector_invoker" 
 # ============================================================================
 
 resource "google_cloud_run_v2_service" "web_connector" {
+  count = contains(var.enabled_connectors, "web") ? 1 : 0
+
   name     = "omni-${var.customer_name}-web-conn"
   location = var.region
   ingress  = "INGRESS_TRAFFIC_INTERNAL_ONLY"
@@ -669,10 +681,10 @@ resource "google_cloud_run_v2_service" "web_connector" {
       }
 
       dynamic "env" {
-        for_each = merge(local.redis_env, {
+        for_each = merge(local.redis_env, local.otel_env, {
           PORT                  = "4004"
+          CONNECTOR_HOST_NAME   = "web-connector"
           CONNECTOR_MANAGER_URL = local.service_url["connector-mgr"]
-          RUST_LOG              = var.rust_log
         })
         content {
           name  = env.key
@@ -684,7 +696,9 @@ resource "google_cloud_run_v2_service" "web_connector" {
 }
 
 resource "google_cloud_run_v2_service_iam_member" "web_connector_invoker" {
-  name     = google_cloud_run_v2_service.web_connector.name
+  count = contains(var.enabled_connectors, "web") ? 1 : 0
+
+  name     = google_cloud_run_v2_service.web_connector[0].name
   location = var.region
   role     = "roles/run.invoker"
   member   = "serviceAccount:${var.cloud_run_sa_email}"
@@ -729,11 +743,11 @@ resource "google_cloud_run_v2_service" "connectors" {
       }
 
       dynamic "env" {
-        for_each = {
+        for_each = merge(local.otel_env, {
           PORT                  = tostring(each.value.port)
+          CONNECTOR_HOST_NAME   = "${each.key}-connector"
           CONNECTOR_MANAGER_URL = local.service_url["connector-mgr"]
-          RUST_LOG              = var.rust_log
-        }
+        })
         content {
           name  = env.key
           value = env.value

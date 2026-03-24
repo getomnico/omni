@@ -30,7 +30,7 @@ output "ai_service_name" {
 
 output "google_connector_service_name" {
   description = "Google connector service name"
-  value       = aws_ecs_service.google_connector.name
+  value       = try(aws_ecs_service.google_connector[0].name, null)
 }
 
 output "migrator_task_definition_arn" {
@@ -60,40 +60,60 @@ output "connector_manager_service_name" {
 
 output "slack_connector_service_name" {
   description = "Slack connector service name"
-  value       = aws_ecs_service.slack_connector.name
+  value       = try(aws_ecs_service.slack_connector[0].name, null)
 }
 
 output "atlassian_connector_service_name" {
   description = "Atlassian connector service name"
-  value       = aws_ecs_service.atlassian_connector.name
+  value       = try(aws_ecs_service.atlassian_connector[0].name, null)
 }
 
 output "web_connector_service_name" {
   description = "Web connector service name"
-  value       = aws_ecs_service.web_connector.name
+  value       = try(aws_ecs_service.web_connector[0].name, null)
 }
 
 output "github_connector_service_name" {
   description = "GitHub connector service name"
-  value       = aws_ecs_service.github_connector.name
+  value       = try(aws_ecs_service.github_connector[0].name, null)
 }
 
 output "hubspot_connector_service_name" {
   description = "HubSpot connector service name"
-  value       = aws_ecs_service.hubspot_connector.name
+  value       = try(aws_ecs_service.hubspot_connector[0].name, null)
 }
 
 output "microsoft_connector_service_name" {
   description = "Microsoft connector service name"
-  value       = aws_ecs_service.microsoft_connector.name
+  value       = try(aws_ecs_service.microsoft_connector[0].name, null)
 }
 
 output "notion_connector_service_name" {
   description = "Notion connector service name"
-  value       = aws_ecs_service.notion_connector.name
+  value       = try(aws_ecs_service.notion_connector[0].name, null)
 }
 
 output "fireflies_connector_service_name" {
   description = "Fireflies connector service name"
-  value       = aws_ecs_service.fireflies_connector.name
+  value       = try(aws_ecs_service.fireflies_connector[0].name, null)
+}
+
+output "imap_connector_service_name" {
+  description = "IMAP connector service name"
+  value       = try(aws_ecs_service.imap_connector[0].name, null)
+}
+
+output "linear_connector_service_name" {
+  description = "Linear connector service name"
+  value       = try(aws_ecs_service.linear_connector[0].name, null)
+}
+
+output "clickup_connector_service_name" {
+  description = "ClickUp connector service name"
+  value       = try(aws_ecs_service.clickup_connector[0].name, null)
+}
+
+output "filesystem_connector_service_name" {
+  description = "Filesystem connector service name"
+  value       = try(aws_ecs_service.filesystem_connector[0].name, null)
 }

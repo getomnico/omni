@@ -32,11 +32,9 @@ output "connector_service_uris" {
   description = "Map of connector name to Cloud Run URI"
   value = merge(
     { for k, _ in local.simple_connectors : k => local.service_url["${k}-conn"] },
-    {
-      google    = local.service_url["google-conn"]
-      atlassian = local.service_url["atlassian-conn"]
-      web       = local.service_url["web-conn"]
-    }
+    contains(var.enabled_connectors, "google") ? { google = local.service_url["google-conn"] } : {},
+    contains(var.enabled_connectors, "atlassian") ? { atlassian = local.service_url["atlassian-conn"] } : {},
+    contains(var.enabled_connectors, "web") ? { web = local.service_url["web-conn"] } : {},
   )
 }
 

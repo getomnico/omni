@@ -149,8 +149,6 @@ module "compute" {
   stale_sync_timeout_minutes      = var.stale_sync_timeout_minutes
 
   # Google connector configuration
-  google_webhook_url                     = var.google_webhook_url
-  google_sync_interval_seconds           = var.google_sync_interval_seconds
   google_max_age_days                    = var.google_max_age_days
   webhook_renewal_check_interval_seconds = var.webhook_renewal_check_interval_seconds
 
@@ -162,6 +160,12 @@ module "compute" {
   session_duration_days      = var.session_duration_days
   ai_answer_enabled          = var.ai_answer_enabled
   agents_enabled             = var.agents_enabled
+  enabled_connectors         = var.enabled_connectors
+  sandbox_url                = var.sandbox_url
+  agent_max_iterations       = var.agent_max_iterations
+  approval_timeout_seconds   = var.approval_timeout_seconds
+  otel_endpoint              = var.otel_endpoint
+  service_version            = var.service_version
 
   content_bucket_name = module.storage.content_bucket_name
   batch_bucket_name   = module.storage.batch_bucket_name
