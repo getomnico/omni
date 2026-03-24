@@ -5,7 +5,7 @@ COPY sdk/typescript/ /sdk/typescript/
 RUN cd /sdk/typescript && npm ci && npm run build
 
 COPY connectors/linear/package.json connectors/linear/tsconfig.json /build/
-RUN npm install
+RUN npm install --install-links
 COPY connectors/linear/src/ /build/src/
 RUN npm run build
 
