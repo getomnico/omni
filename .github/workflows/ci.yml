@@ -41,6 +41,8 @@ jobs:
       imap-connector: ${{ steps.filter.outputs.imap-connector }}
       notion-connector: ${{ steps.filter.outputs.notion-connector }}
       web-connector: ${{ steps.filter.outputs.web-connector }}
+      clickup-connector: ${{ steps.filter.outputs.clickup-connector }}
+      linear-connector: ${{ steps.filter.outputs.linear-connector }}
       deployment: ${{ steps.filter.outputs.deployment }}
     steps:
       - uses: actions/checkout@v6
@@ -167,6 +169,16 @@ jobs:
             notion-connector:
               - 'connectors/notion/**'
               - 'sdk/python/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-connector.yml'
+            clickup-connector:
+              - 'connectors/clickup/**'
+              - 'sdk/python/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-connector.yml'
+            linear-connector:
+              - 'connectors/linear/**'
+              - 'sdk/typescript/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/build-connector.yml'
             deployment:
@@ -357,6 +369,24 @@ jobs:
       connector-type: python
     secrets: inherit
 
+  build-clickup-connector:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.is-tag != 'true' && needs.detect-changes.outputs.clickup-connector == 'true'
+    uses: ./.github/workflows/build-connector.yml
+    with:
+      connector-name: clickup
+      connector-type: python
+    secrets: inherit
+
+  build-linear-connector:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.is-tag != 'true' && needs.detect-changes.outputs.linear-connector == 'true'
+    uses: ./.github/workflows/build-connector.yml
+    with:
+      connector-name: linear
+      connector-type: typescript
+    secrets: inherit
+
   # ---------------------------------------------------------------------------
   # Release: retag existing master images with version tags
   # ---------------------------------------------------------------------------
@@ -409,6 +439,8 @@ jobs:
             omni-imap-connector
             omni-notion-connector
             omni-web-connector
+            omni-clickup-connector
+            omni-linear-connector
           )
 
           TAGS=("$VERSION" "$MINOR" "$MAJOR" "latest")
