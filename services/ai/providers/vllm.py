@@ -4,10 +4,22 @@ VLLM Provider for OpenAI-compatible API.
 
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
+from anthropic.types import (
+    Message,
+    Usage,
+    RawMessageStartEvent,
+    RawContentBlockStartEvent,
+    RawContentBlockDeltaEvent,
+    RawContentBlockStopEvent,
+    RawMessageStopEvent,
+    TextBlock,
+    TextDelta,
+)
 from anthropic.types.message_stream_event import MessageStreamEvent
 
 from . import LLMProvider
@@ -55,6 +67,24 @@ class VLLMProvider(LLMProvider):
         }
 
         try:
+            yield RawMessageStartEvent(
+                type="message_start",
+                message=Message(
+                    id=str(time.time_ns()),
+                    type="message",
+                    role="assistant",
+                    content=[],
+                    model="vllm",
+                    usage=Usage(input_tokens=0, output_tokens=0),
+                ),
+            )
+
+            yield RawContentBlockStartEvent(
+                type="content_block_start",
+                index=0,
+                content_block=TextBlock(type="text", text=""),
+            )
+
             async with self.client.stream(
                 "POST",
                 f"{self.vllm_url}/v1/chat/completions",
@@ -78,12 +108,18 @@ class VLLMProvider(LLMProvider):
                                     delta = choices[0].get("delta", {})
                                     content = delta.get("content", "")
                                     if content:
-                                        # Create a compatible ContentBlockDeltaEvent-like structure
-                                        # For now, we'll need to create compatible events in the orchestrator
-                                        # as vLLM doesn't natively support Anthropic event format
-                                        pass
+                                        yield RawContentBlockDeltaEvent(
+                                            type="content_block_delta",
+                                            index=0,
+                                            delta=TextDelta(
+                                                type="text_delta", text=content
+                                            ),
+                                        )
                             except json.JSONDecodeError:
                                 continue
+
+            yield RawContentBlockStopEvent(type="content_block_stop", index=0)
+            yield RawMessageStopEvent(type="message_stop")
 
         except httpx.TimeoutException:
             logger.error("Timeout while calling vLLM service")
@@ -91,12 +127,6 @@ class VLLMProvider(LLMProvider):
             logger.error(f"HTTP error from vLLM service: {e.response.status_code}")
         except Exception as e:
             logger.error(f"Failed to stream from vLLM: {str(e)}")
-
-        # For now, raise NotImplementedError for vLLM with tools
-        # We'll implement this later if needed
-        raise NotImplementedError(
-            "vLLM provider MessageStreamEvent compatibility not yet implemented"
-        )
 
     async def generate_response(
         self,

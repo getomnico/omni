@@ -53,7 +53,7 @@ async def generate_response(request: Request, body: PromptRequest):
                         yield event.delta.text
         except Exception as e:
             logger.error(f"Failed to generate streaming response: {str(e)}")
-            yield f"Error: {str(e)}"
+            return
 
     return StreamingResponse(
         stream_generator(),
