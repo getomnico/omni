@@ -15,6 +15,8 @@ from .models import (
     ActionResponse,
     CancelRequest,
     CancelResponse,
+    PromptRequest,
+    ResourceRequest,
     SyncRequest,
     SyncResponse,
 )
@@ -71,7 +73,7 @@ def create_app(connector: "Connector") -> FastAPI:
         async def registration_loop() -> None:
             while True:
                 try:
-                    manifest = connector.get_manifest(connector_url=connector_url)
+                    manifest = await connector.get_manifest(connector_url=connector_url)
                     await server.sdk_client.register(manifest.model_dump())
                     logger.info("Registered with connector manager")
                 except Exception as e:
@@ -96,7 +98,8 @@ def create_app(connector: "Connector") -> FastAPI:
 
     @app.get("/manifest")
     async def manifest() -> dict[str, Any]:
-        return connector.get_manifest(connector_url=connector_url).model_dump()
+        m = await connector.get_manifest(connector_url=connector_url)
+        return m.model_dump()
 
     @app.post("/sync")
     async def trigger_sync(request: SyncRequest) -> JSONResponse:
@@ -203,5 +206,45 @@ def create_app(connector: "Connector") -> FastAPI:
         except Exception as e:
             logger.error("Action %s failed: %s", request.action, e)
             return ActionResponse.failure(str(e)).model_dump()
+
+    @app.post("/resource")
+    async def read_resource(request: ResourceRequest) -> JSONResponse:
+        adapter = connector.mcp_adapter
+        if adapter is None:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"error": "MCP not enabled for this connector"},
+            )
+        logger.info("Resource requested: %s", request.uri)
+        try:
+            connector.prepare_mcp_env(request.credentials)
+            result = await adapter.read_resource(request.uri)
+            return JSONResponse(status_code=status.HTTP_200_OK, content=result)
+        except Exception as e:
+            logger.error("Resource read failed for %s: %s", request.uri, e)
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={"error": str(e)},
+            )
+
+    @app.post("/prompt")
+    async def get_prompt(request: PromptRequest) -> JSONResponse:
+        adapter = connector.mcp_adapter
+        if adapter is None:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"error": "MCP not enabled for this connector"},
+            )
+        logger.info("Prompt requested: %s", request.name)
+        try:
+            connector.prepare_mcp_env(request.credentials)
+            result = await adapter.get_prompt(request.name, request.arguments)
+            return JSONResponse(status_code=status.HTTP_200_OK, content=result)
+        except Exception as e:
+            logger.error("Prompt get failed for %s: %s", request.name, e)
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={"error": str(e)},
+            )
 
     return app

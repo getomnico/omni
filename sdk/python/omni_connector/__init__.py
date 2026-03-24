@@ -22,6 +22,9 @@ from .models import (
     DocumentPermissions,
     EventType,
     GroupMembershipSyncEvent,
+    McpPromptArgument,
+    McpPromptDefinition,
+    McpResourceDefinition,
     SearchOperator,
     SyncMode,
     SyncRequest,
@@ -56,6 +59,10 @@ __all__ = [
     "SyncResponse",
     "CancelRequest",
     "CancelResponse",
+    # MCP models
+    "McpResourceDefinition",
+    "McpPromptDefinition",
+    "McpPromptArgument",
     # Exceptions
     "ConnectorError",
     "SdkClientError",

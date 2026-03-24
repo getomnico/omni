@@ -1,9 +1,15 @@
 """Main GitHubConnector class."""
 
+from __future__ import annotations
+
 import logging
-from typing import Any
+import os
+from typing import TYPE_CHECKING, Any
 
 from omni_connector import Connector, SearchOperator, SyncContext
+
+if TYPE_CHECKING:
+    from mcp.server.fastmcp import FastMCP
 
 from .client import AuthenticationError, GitHubClient, GitHubError, GitHubRepo
 from .config import CHECKPOINT_INTERVAL
@@ -62,6 +68,18 @@ class GitHubConnector(Connector):
                 operator="assignee", attribute_key="assignee", value_type="person"
             ),
         ]
+
+    @property
+    def mcp_server(self) -> FastMCP:
+        from mcp_github.server import mcp
+
+        return mcp
+
+    def prepare_mcp_env(self, credentials: dict[str, Any]) -> None:
+        # mcp-github reads GITHUB_TOKEN from the environment
+        creds = credentials.get("credentials", credentials)
+        token = creds.get("token", "")
+        os.environ["GITHUB_TOKEN"] = token
 
     async def sync(
         self,

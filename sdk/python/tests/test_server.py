@@ -37,6 +37,10 @@ class MockConnector(Connector):
         return "1.2.3"
 
     @property
+    def source_types(self) -> list[str]:
+        return ["test"]
+
+    @property
     def sync_modes(self) -> list[str]:
         return ["full", "incremental"]
 
@@ -295,9 +299,9 @@ class TestSyncEndpoint:
 
 
 class TestConnectorBaseClass:
-    def test_connector_get_manifest(self, mock_connector):
+    async def test_connector_get_manifest(self, mock_connector):
         """Verify get_manifest() returns proper structure."""
-        manifest = mock_connector.get_manifest()
+        manifest = await mock_connector.get_manifest(connector_url="http://test:8000")
 
         assert manifest.name == "test-connector"
         assert manifest.version == "1.2.3"
@@ -322,6 +326,10 @@ class TestConnectorBaseClass:
             @property
             def version(self) -> str:
                 return "0.0.1"
+
+            @property
+            def source_types(self) -> list[str]:
+                return ["minimal"]
 
             async def sync(self, *args, **kwargs) -> None:
                 pass

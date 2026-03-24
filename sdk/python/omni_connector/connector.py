@@ -1,9 +1,16 @@
+from __future__ import annotations
+
 import logging
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .context import SyncContext
 from .models import ActionDefinition, ActionResponse, ConnectorManifest, SearchOperator
+
+if TYPE_CHECKING:
+    from mcp.server.fastmcp import FastMCP
+
+    from .mcp_adapter import McpAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +20,7 @@ class Connector(ABC):
 
     def __init__(self) -> None:
         self._cancelled_syncs: set[str] = set()
+        self._mcp_adapter: McpAdapter | None = None
 
     @property
     @abstractmethod
@@ -57,8 +65,45 @@ class Connector(ABC):
         """Search operators this connector supports. Override to declare operators."""
         return []
 
-    def get_manifest(self, connector_url: str) -> ConnectorManifest:
+    @property
+    def mcp_server(self) -> FastMCP | None:
+        """Return an MCP FastMCP server instance if this connector supports MCP.
+
+        Override this property to enable MCP support. The SDK will automatically
+        introspect the server's tools, resources, and prompts and expose them
+        through the Omni protocol.
+        """
+        return None
+
+    @property
+    def mcp_adapter(self) -> McpAdapter | None:
+        if self._mcp_adapter is not None:
+            return self._mcp_adapter
+        server = self.mcp_server
+        if server is None:
+            return None
+        from .mcp_adapter import McpAdapter
+
+        self._mcp_adapter = McpAdapter(server)
+        return self._mcp_adapter
+
+    async def _get_all_actions(self) -> list[ActionDefinition]:
+        """Merge manually-defined actions with MCP-derived actions."""
+        manual_actions = self.actions
+        adapter = self.mcp_adapter
+        if adapter is None:
+            return manual_actions
+        mcp_actions = await adapter.get_action_definitions()
+        manual_names = {a.name for a in manual_actions}
+        merged = list(manual_actions)
+        for action in mcp_actions:
+            if action.name not in manual_names:
+                merged.append(action)
+        return merged
+
+    async def get_manifest(self, connector_url: str) -> ConnectorManifest:
         """Return connector manifest."""
+        adapter = self.mcp_adapter
         return ConnectorManifest(
             name=self.name,
             display_name=self.display_name,
@@ -68,8 +113,11 @@ class Connector(ABC):
             connector_url=connector_url,
             source_types=self.source_types,
             description=self.description,
-            actions=self.actions,
+            actions=await self._get_all_actions(),
             search_operators=self.search_operators,
+            mcp_enabled=adapter is not None,
+            resources=await adapter.get_resource_definitions() if adapter else [],
+            prompts=await adapter.get_prompt_definitions() if adapter else [],
         )
 
     @abstractmethod
@@ -100,6 +148,18 @@ class Connector(ABC):
         self._cancelled_syncs.add(sync_run_id)
         return True
 
+    def prepare_mcp_env(self, credentials: dict[str, Any]) -> None:
+        """Set up environment for MCP tool/resource/prompt calls.
+
+        Override this to bridge Omni credentials to the env vars your MCP
+        server expects. Called before every MCP dispatch.
+
+        Example::
+
+            def prepare_mcp_env(self, credentials):
+                os.environ["GITHUB_TOKEN"] = credentials.get("token", "")
+        """
+
     async def execute_action(
         self,
         action: str,
@@ -110,8 +170,15 @@ class Connector(ABC):
         Execute a connector action.
 
         Override this method to implement connector-specific actions.
-        Default implementation returns not_supported.
+        If MCP is enabled and the action matches an MCP tool, it is
+        dispatched to the MCP server automatically.
         """
+        adapter = self.mcp_adapter
+        if adapter is not None:
+            mcp_tool_names = {a.name for a in await adapter.get_action_definitions()}
+            if action in mcp_tool_names:
+                self.prepare_mcp_env(credentials)
+                return await adapter.execute_tool(action, params)
         return ActionResponse.not_supported(action)
 
     def serve(self, port: int = 8000, host: str = "0.0.0.0") -> None:

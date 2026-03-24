@@ -47,6 +47,10 @@ testing = [
 examples = [
     "feedparser>=6.0.0",
 ]
+mcp = [
+    "mcp>=1.0",
+    "mcp-server-git>=2026.1.14",
+]
 
 [project.urls]
 Homepage = "https://github.com/getomnico/omni"

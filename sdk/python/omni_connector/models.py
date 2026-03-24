@@ -140,6 +140,25 @@ class SearchOperator(BaseModel):
     value_type: str = "text"  # "person", "text", "datetime"
 
 
+class McpResourceDefinition(BaseModel):
+    uri_template: str
+    name: str
+    description: str | None = None
+    mime_type: str | None = None
+
+
+class McpPromptArgument(BaseModel):
+    name: str
+    description: str | None = None
+    required: bool = False
+
+
+class McpPromptDefinition(BaseModel):
+    name: str
+    description: str | None = None
+    arguments: list[McpPromptArgument] = Field(default_factory=list)
+
+
 class ConnectorManifest(BaseModel):
     name: str
     display_name: str
@@ -153,6 +172,9 @@ class ConnectorManifest(BaseModel):
     search_operators: list[SearchOperator] = Field(default_factory=list)
     extra_schema: dict | None = None
     attributes_schema: dict | None = None
+    mcp_enabled: bool = False
+    resources: list[McpResourceDefinition] = Field(default_factory=list)
+    prompts: list[McpPromptDefinition] = Field(default_factory=list)
 
 
 class SyncRequest(BaseModel):
@@ -204,3 +226,14 @@ class ActionResponse(BaseModel):
     @classmethod
     def not_supported(cls, action: str) -> "ActionResponse":
         return cls(status="error", error=f"Action not supported: {action}")
+
+
+class ResourceRequest(BaseModel):
+    uri: str
+    credentials: dict[str, Any] = Field(default_factory=dict)
+
+
+class PromptRequest(BaseModel):
+    name: str
+    arguments: dict[str, Any] | None = None
+    credentials: dict[str, Any] = Field(default_factory=dict)

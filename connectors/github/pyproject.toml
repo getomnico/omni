@@ -12,8 +12,9 @@ authors = [
     { name = "Omni Team" }
 ]
 dependencies = [
-    "omni-connector",
+    "omni-connector[mcp]",
     "githubkit>=0.14.0",
+    "mcp-github>=0.0.3",
 ]
 
 [tool.uv.sources]

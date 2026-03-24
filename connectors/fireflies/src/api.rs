@@ -103,6 +103,9 @@ pub fn build_manifest(connector_url: String) -> ConnectorManifest {
         read_only: false,
         extra_schema: None,
         attributes_schema: None,
+        mcp_enabled: false,
+        resources: vec![],
+        prompts: vec![],
     }
 }
 

@@ -1,4 +1,7 @@
-use crate::models::{ActionRequest, ActionResponse, ConnectorManifest, SyncRequest, SyncResponse};
+use crate::models::{
+    ActionRequest, ActionResponse, ConnectorManifest, PromptRequest, ResourceRequest, SyncRequest,
+    SyncResponse,
+};
 use reqwest::Client;
 use std::time::Duration;
 use tracing::{debug, error, warn};
@@ -173,6 +176,70 @@ impl ConnectorClient {
         }
 
         Ok(response)
+    }
+
+    pub async fn read_resource(
+        &self,
+        connector_url: &str,
+        request: &ResourceRequest,
+    ) -> Result<serde_json::Value, ClientError> {
+        let url = format!("{}/resource", connector_url);
+        debug!("Reading resource {} at {}", request.uri, url);
+
+        let response = self
+            .client
+            .post(&url)
+            .json(request)
+            .send()
+            .await
+            .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            error!("Failed to read resource: {} - {}", status, body);
+            return Err(ClientError::ConnectorError {
+                status: status.as_u16(),
+                message: body,
+            });
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| ClientError::InvalidResponse(e.to_string()))
+    }
+
+    pub async fn get_prompt(
+        &self,
+        connector_url: &str,
+        request: &PromptRequest,
+    ) -> Result<serde_json::Value, ClientError> {
+        let url = format!("{}/prompt", connector_url);
+        debug!("Getting prompt {} at {}", request.name, url);
+
+        let response = self
+            .client
+            .post(&url)
+            .json(request)
+            .send()
+            .await
+            .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            error!("Failed to get prompt: {} - {}", status, body);
+            return Err(ClientError::ConnectorError {
+                status: status.as_u16(),
+                message: body,
+            });
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| ClientError::InvalidResponse(e.to_string()))
     }
 
     pub async fn health_check(&self, connector_url: &str) -> bool {

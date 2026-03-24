@@ -1,6 +1,7 @@
 use crate::connector_client::ConnectorClient;
 use crate::models::{
-    ActionRequest, ConnectorInfo, ExecuteActionRequest, ScheduleInfo, SyncProgress,
+    ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
+    ExecuteResourceRequest, PromptRequest, ResourceRequest, ScheduleInfo, SyncProgress,
     TriggerSyncRequest, TriggerSyncResponse, TriggerType,
 };
 use crate::sync_manager::SyncError;
@@ -415,6 +416,178 @@ pub async fn list_actions(
     }
 
     Ok(Json(json!({ "actions": all_actions })))
+}
+
+pub async fn list_resources(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let manifests = get_registered_manifests(&state.redis_client).await;
+    let mut all_resources = Vec::new();
+
+    for manifest in manifests {
+        if !manifest.mcp_enabled {
+            continue;
+        }
+        for source_type in &manifest.source_types {
+            for resource in &manifest.resources {
+                all_resources.push(json!({
+                    "source_type": source_type,
+                    "uri_template": resource.uri_template,
+                    "name": resource.name,
+                    "description": resource.description,
+                    "mime_type": resource.mime_type,
+                }));
+            }
+        }
+    }
+
+    Ok(Json(json!({ "resources": all_resources })))
+}
+
+pub async fn list_prompts(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let manifests = get_registered_manifests(&state.redis_client).await;
+    let mut all_prompts = Vec::new();
+
+    for manifest in manifests {
+        if !manifest.mcp_enabled {
+            continue;
+        }
+        for source_type in &manifest.source_types {
+            for prompt in &manifest.prompts {
+                all_prompts.push(json!({
+                    "source_type": source_type,
+                    "name": prompt.name,
+                    "description": prompt.description,
+                    "arguments": prompt.arguments,
+                }));
+            }
+        }
+    }
+
+    Ok(Json(json!({ "prompts": all_prompts })))
+}
+
+pub async fn read_resource(
+    State(state): State<AppState>,
+    Json(request): Json<ExecuteResourceRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    info!(
+        "Reading resource {} for source {}",
+        request.uri, request.source_id
+    );
+
+    let source: Option<(SourceType,)> =
+        sqlx::query_as("SELECT source_type FROM sources WHERE id = $1")
+            .bind(&request.source_id)
+            .fetch_optional(state.db_pool.pool())
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    let source_type = source
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?
+        .0;
+
+    let connector_url = get_connector_url_for_source(&state.redis_client, source_type)
+        .await
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "Connector not registered for type: {:?}",
+                source_type
+            ))
+        })?;
+
+    let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let creds = creds_repo
+        .get_by_source_id(&request.source_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "Credentials not found for source: {}",
+                request.source_id
+            ))
+        })?;
+
+    let client = ConnectorClient::new();
+    let resource_request = ResourceRequest {
+        uri: request.uri,
+        credentials: json!({
+            "credentials": creds.credentials,
+            "config": creds.config,
+            "principal_email": creds.principal_email,
+        }),
+    };
+
+    let result = client
+        .read_resource(&connector_url, &resource_request)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    Ok(Json(result))
+}
+
+pub async fn get_prompt(
+    State(state): State<AppState>,
+    Json(request): Json<ExecutePromptRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    info!(
+        "Getting prompt {} for source {}",
+        request.name, request.source_id
+    );
+
+    let source: Option<(SourceType,)> =
+        sqlx::query_as("SELECT source_type FROM sources WHERE id = $1")
+            .bind(&request.source_id)
+            .fetch_optional(state.db_pool.pool())
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    let source_type = source
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?
+        .0;
+
+    let connector_url = get_connector_url_for_source(&state.redis_client, source_type)
+        .await
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "Connector not registered for type: {:?}",
+                source_type
+            ))
+        })?;
+
+    let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let creds = creds_repo
+        .get_by_source_id(&request.source_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "Credentials not found for source: {}",
+                request.source_id
+            ))
+        })?;
+
+    let client = ConnectorClient::new();
+    let prompt_request = PromptRequest {
+        name: request.name,
+        arguments: request.arguments,
+        credentials: json!({
+            "credentials": creds.credentials,
+            "config": creds.config,
+            "principal_email": creds.principal_email,
+        }),
+    };
+
+    let result = client
+        .get_prompt(&connector_url, &prompt_request)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    Ok(Json(result))
 }
 
 #[derive(Debug, thiserror::Error)]

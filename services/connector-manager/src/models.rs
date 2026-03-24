@@ -3,7 +3,8 @@ use serde_json::Value as JsonValue;
 use shared::models::SourceType;
 
 pub use shared::models::{
-    ActionDefinition, ConnectorManifest, SearchOperator, SyncRequest, SyncResponse,
+    ActionDefinition, ConnectorManifest, McpPromptDefinition, McpResourceDefinition,
+    SearchOperator, SyncRequest, SyncResponse,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,4 +220,38 @@ pub struct SdkWebhookNotification {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SdkWebhookResponse {
     pub sync_run_id: String,
+}
+
+// ============================================================================
+// MCP Resource & Prompt forwarding
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceRequest {
+    pub uri: String,
+    #[serde(default)]
+    pub credentials: JsonValue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptRequest {
+    pub name: String,
+    #[serde(default)]
+    pub arguments: Option<JsonValue>,
+    #[serde(default)]
+    pub credentials: JsonValue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecuteResourceRequest {
+    pub source_id: String,
+    pub uri: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutePromptRequest {
+    pub source_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub arguments: Option<JsonValue>,
 }

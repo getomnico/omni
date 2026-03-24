@@ -7,6 +7,8 @@ import {
   SyncRequestSchema,
   CancelRequestSchema,
   ActionRequestSchema,
+  ResourceRequestSchema,
+  PromptRequestSchema,
   createSyncResponseStarted,
   createSyncResponseError,
   createActionResponseFailure,
@@ -50,7 +52,7 @@ export function createServer(connector: Connector): Express {
   const connectorUrl = buildConnectorUrl();
   const registerOnce = async () => {
     try {
-      const manifest = connector.getManifest(connectorUrl);
+      const manifest = await connector.getManifest(connectorUrl);
       await getSdkClient().register(manifest as unknown as Record<string, unknown>);
       logger.info('Registered with connector manager');
     } catch (err) {
@@ -65,8 +67,9 @@ export function createServer(connector: Connector): Express {
     res.json({ status: 'healthy', service: connector.name });
   });
 
-  app.get('/manifest', (_req: Request, res: Response) => {
-    res.json(connector.getManifest(connectorUrl));
+  app.get('/manifest', async (_req: Request, res: Response) => {
+    const manifest = await connector.getManifest(connectorUrl);
+    res.json(manifest);
   });
 
   app.post('/sync', async (req: Request, res: Response) => {
@@ -185,6 +188,60 @@ export function createServer(connector: Connector): Express {
       const message = error instanceof Error ? error.message : String(error);
       logger.error({ err: error }, `Action ${action} failed`);
       res.json(createActionResponseFailure(message));
+    }
+  });
+
+  app.post('/resource', async (req: Request, res: Response) => {
+    const adapter = connector.mcpAdapter;
+    if (!adapter) {
+      res.status(404).json({ error: 'MCP not enabled for this connector' });
+      return;
+    }
+
+    const parseResult = ResourceRequestSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({ error: 'Invalid request body' });
+      return;
+    }
+
+    const { uri, credentials } = parseResult.data;
+    logger.info(`Resource requested: ${uri}`);
+
+    try {
+      connector.prepareMcpEnv(credentials as any);
+      const result = await adapter.readResource(uri);
+      res.json(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error({ err }, `Resource read failed for ${uri}`);
+      res.status(500).json({ error: message });
+    }
+  });
+
+  app.post('/prompt', async (req: Request, res: Response) => {
+    const adapter = connector.mcpAdapter;
+    if (!adapter) {
+      res.status(404).json({ error: 'MCP not enabled for this connector' });
+      return;
+    }
+
+    const parseResult = PromptRequestSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({ error: 'Invalid request body' });
+      return;
+    }
+
+    const { name, arguments: args, credentials } = parseResult.data;
+    logger.info(`Prompt requested: ${name}`);
+
+    try {
+      connector.prepareMcpEnv(credentials as any);
+      const result = await adapter.getPrompt(name, args as Record<string, unknown> | undefined);
+      res.json(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error({ err }, `Prompt get failed for ${name}`);
+      res.status(500).json({ error: message });
     }
   });
 

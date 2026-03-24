@@ -103,6 +103,8 @@ describe('ConnectorManifestSchema', () => {
       display_name: 'My Connector',
       version: '1.0.0',
       sync_modes: ['full', 'incremental'],
+      connector_id: 'my-connector',
+      connector_url: 'http://my-connector:8000',
       actions: [],
     };
 

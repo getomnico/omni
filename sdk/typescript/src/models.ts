@@ -89,6 +89,28 @@ export const SearchOperatorSchema = z.object({
 });
 export type SearchOperator = z.infer<typeof SearchOperatorSchema>;
 
+export const McpResourceDefinitionSchema = z.object({
+  uri_template: z.string(),
+  name: z.string(),
+  description: z.string().optional(),
+  mime_type: z.string().optional(),
+});
+export type McpResourceDefinition = z.infer<typeof McpResourceDefinitionSchema>;
+
+export const McpPromptArgumentSchema = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+  required: z.boolean().default(false),
+});
+export type McpPromptArgument = z.infer<typeof McpPromptArgumentSchema>;
+
+export const McpPromptDefinitionSchema = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+  arguments: z.array(McpPromptArgumentSchema).default([]),
+});
+export type McpPromptDefinition = z.infer<typeof McpPromptDefinitionSchema>;
+
 export const ConnectorManifestSchema = z.object({
   name: z.string(),
   display_name: z.string(),
@@ -102,6 +124,9 @@ export const ConnectorManifestSchema = z.object({
   search_operators: z.array(SearchOperatorSchema).default([]),
   extra_schema: z.record(z.unknown()).optional(),
   attributes_schema: z.record(z.unknown()).optional(),
+  mcp_enabled: z.boolean().default(false),
+  resources: z.array(McpResourceDefinitionSchema).default([]),
+  prompts: z.array(McpPromptDefinitionSchema).default([]),
 });
 export type ConnectorManifest = z.infer<typeof ConnectorManifestSchema>;
 
@@ -163,6 +188,19 @@ export function createActionResponseFailure(error: string): ActionResponse {
 export function createActionResponseNotSupported(action: string): ActionResponse {
   return { status: 'error', error: `Action not supported: ${action}` };
 }
+
+export const ResourceRequestSchema = z.object({
+  uri: z.string(),
+  credentials: z.record(z.unknown()).default({}),
+});
+export type ResourceRequest = z.infer<typeof ResourceRequestSchema>;
+
+export const PromptRequestSchema = z.object({
+  name: z.string(),
+  arguments: z.record(z.unknown()).optional(),
+  credentials: z.record(z.unknown()).default({}),
+});
+export type PromptRequest = z.infer<typeof PromptRequestSchema>;
 
 export interface DocumentEventPayload {
   type: typeof EventType.DOCUMENT_CREATED | typeof EventType.DOCUMENT_UPDATED | typeof EventType.DOCUMENT_DELETED;

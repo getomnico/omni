@@ -47,6 +47,10 @@ pub fn create_app(state: AppState) -> Router {
         .route("/connectors", get(handlers::list_connectors))
         .route("/action", post(handlers::execute_action))
         .route("/actions", get(handlers::list_actions))
+        .route("/resource", post(handlers::read_resource))
+        .route("/resources", get(handlers::list_resources))
+        .route("/prompt", post(handlers::get_prompt))
+        .route("/prompts", get(handlers::list_prompts))
         // SDK endpoints - called by connectors
         .route("/sdk/register", post(handlers::sdk_register))
         .route("/sdk/events", post(handlers::sdk_emit_event))

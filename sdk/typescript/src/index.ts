@@ -2,6 +2,7 @@ export { Connector, type ServeOptions } from './connector.js';
 export { SyncContext } from './context.js';
 export { ContentStorage } from './storage.js';
 export { SdkClient } from './client.js';
+export { McpAdapter } from './mcp-adapter.js';
 export { createServer } from './server.js';
 
 export {
@@ -14,6 +15,9 @@ export {
   ActionParameterSchema,
   ActionDefinitionSchema,
   SearchOperatorSchema,
+  McpResourceDefinitionSchema,
+  McpPromptArgumentSchema,
+  McpPromptDefinitionSchema,
   ConnectorManifestSchema,
   SyncRequestSchema,
   SyncResponseSchema,
@@ -34,6 +38,9 @@ export {
   type ActionParameter,
   type ActionDefinition,
   type SearchOperator,
+  type McpResourceDefinition,
+  type McpPromptArgument,
+  type McpPromptDefinition,
   type ConnectorManifest,
   type SyncRequest,
   type SyncResponse,
