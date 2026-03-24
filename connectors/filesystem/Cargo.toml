@@ -34,12 +34,7 @@ nonzero_ext = { workspace = true }
 notify = "6.0"
 walkdir = "2.3"
 mime_guess = "2.0"
-# Office document parsing dependencies
-docx-rs = "0.4"
-calamine = "0.22"
-zip = "0.6"
-quick-xml = "0.31"
-pdf-extract = "0.7"
 
 [dev-dependencies]
 tempfile = "3"
+docx-rs = "0.4"

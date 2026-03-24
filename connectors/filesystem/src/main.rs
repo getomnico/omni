@@ -5,7 +5,6 @@ use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod config;
-mod content_extractor;
 mod models;
 mod scanner;
 mod sync;

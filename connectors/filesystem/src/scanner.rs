@@ -1,8 +1,7 @@
-use crate::content_extractor;
 use crate::models::{FileSystemFile, FileSystemPermissions, FileSystemSource};
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
@@ -228,7 +227,18 @@ impl FileSystemScanner {
             return Ok(String::new());
         }
 
-        match content_extractor::extract_text_content(&file.path, &file.mime_type) {
+        // Source code and config files should not be indexed
+        if is_source_code_or_config(&file.path) {
+            debug!("Skipping source/config file: {}", file.path.display());
+            return Ok(String::new());
+        }
+
+        let data = std::fs::read(&file.path)
+            .with_context(|| format!("Failed to read file: {}", file.path.display()))?;
+
+        let filename = file.path.file_name().and_then(|n| n.to_str());
+
+        match shared::content_extractor::extract_text(&data, &file.mime_type, filename) {
             Ok(content) => {
                 if !content.is_empty() {
                     debug!(
@@ -249,6 +259,73 @@ impl FileSystemScanner {
             }
         }
     }
+}
+
+/// Returns true for source code and config file extensions that should not be indexed.
+fn is_source_code_or_config(path: &Path) -> bool {
+    let ext = match path.extension().and_then(|e| e.to_str()) {
+        Some(e) => e.to_lowercase(),
+        None => return false,
+    };
+
+    matches!(
+        ext.as_str(),
+        "rs" | "py"
+            | "js"
+            | "ts"
+            | "jsx"
+            | "tsx"
+            | "go"
+            | "java"
+            | "c"
+            | "cpp"
+            | "h"
+            | "hpp"
+            | "rb"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "fish"
+            | "pl"
+            | "pm"
+            | "php"
+            | "swift"
+            | "kt"
+            | "scala"
+            | "clj"
+            | "ex"
+            | "exs"
+            | "erl"
+            | "hs"
+            | "lua"
+            | "r"
+            | "m"
+            | "mm"
+            | "cs"
+            | "fs"
+            | "vb"
+            | "dart"
+            | "zig"
+            | "nim"
+            | "v"
+            | "sql"
+            | "xml"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "json"
+            | "ini"
+            | "conf"
+            | "cfg"
+            | "hocon"
+            | "properties"
+            | "html"
+            | "htm"
+            | "css"
+            | "scss"
+            | "sass"
+            | "less"
+    )
 }
 
 #[cfg(test)]

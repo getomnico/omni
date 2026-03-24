@@ -128,13 +128,17 @@ class SharePointSyncer:
         file_name = item.get("name", "")
         extension = _get_extension(file_name)
 
-        if _is_indexable(mime_type, extension):
-            content = await self._download_content(client, item)
-        else:
-            content = generate_drive_item_content(item, {})
-
         drive_id = item.get("parentReference", {}).get("driveId", "unknown")
         item_id = item["id"]
+
+        if _is_indexable(mime_type, extension):
+            content_id = await self._extract_file_content(
+                client, item, mime_type, file_name, ctx
+            )
+        else:
+            content = generate_drive_item_content(item, {})
+            content_id = await ctx.content_storage.save(content, "text/plain")
+
         try:
             graph_permissions = await client.list_item_permissions(drive_id, item_id)
         except Exception as e:
@@ -142,8 +146,6 @@ class SharePointSyncer:
                 "[sharepoint] Failed to fetch permissions for %s: %s", item_id, e
             )
             graph_permissions = []
-
-        content_id = await ctx.content_storage.save(content, "text/plain")
         doc = map_drive_item_to_document(
             item=item,
             content_id=content_id,
@@ -155,21 +157,32 @@ class SharePointSyncer:
         )
         await ctx.emit(doc)
 
-    async def _download_content(
+    async def _extract_file_content(
         self,
         client: GraphClient,
         item: dict[str, Any],
+        mime_type: str,
+        file_name: str,
+        ctx: SyncContext,
     ) -> str:
+        """Download file and extract text via connector manager. Returns content_id."""
         drive_id = item.get("parentReference", {}).get("driveId")
         item_id = item["id"]
 
         if not drive_id:
-            return generate_drive_item_content(item, {})
+            content = generate_drive_item_content(item, {})
+            return await ctx.content_storage.save(content, "text/plain")
 
         try:
             data = await client.get_binary(
                 f"/drives/{drive_id}/items/{item_id}/content"
             )
-            return data.decode("utf-8", errors="replace")
-        except Exception:
-            return generate_drive_item_content(item, {})
+            return await ctx.content_storage.extract_and_store(
+                data, mime_type, file_name
+            )
+        except Exception as e:
+            logger.warning(
+                "[sharepoint] Failed to extract content for %s: %s", item_id, e
+            )
+            content = generate_drive_item_content(item, {})
+            return await ctx.content_storage.save(content, "text/plain")

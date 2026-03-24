@@ -21,8 +21,8 @@ use crate::models::{
 use shared::models::{
     AuthType, ConnectorEvent, ServiceCredentials, ServiceProvider, Source, SourceType, SyncType,
 };
+use shared::RateLimiter;
 use shared::SdkClient;
-use shared::{AIClient, RateLimiter};
 
 struct ActiveSync {
     cancelled: AtomicBool,
@@ -218,8 +218,7 @@ impl SyncManager {
             .unwrap_or(5);
 
         let rate_limiter = Arc::new(RateLimiter::new(api_rate_limit, max_retries));
-        let ai_client = AIClient::new(ai_service_url);
-        let drive_client = DriveClient::with_rate_limiter(rate_limiter.clone(), ai_client.clone());
+        let drive_client = DriveClient::with_rate_limiter(rate_limiter.clone());
         let gmail_client = GmailClient::with_rate_limiter(rate_limiter);
 
         Self {

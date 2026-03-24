@@ -528,7 +528,7 @@ fn is_file_attachment(mail: &ParsedMail) -> bool {
 const HTML_TEXT_WIDTH: usize = 100;
 
 fn html_to_text(html: &str) -> String {
-    html2text::from_read(html.as_bytes(), HTML_TEXT_WIDTH)
+    html2text::from_read(html.as_bytes(), HTML_TEXT_WIDTH).unwrap_or_default()
 }
 
 fn parse_address_list(value: &str) -> Vec<String> {

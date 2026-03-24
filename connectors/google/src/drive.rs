@@ -5,20 +5,14 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tracing::{debug, warn};
 
-// Office document parsing imports
-use docx_rs::read_docx;
-use quick_xml::events::Event;
-use quick_xml::Reader as XmlReader;
 use std::collections::HashMap;
-use std::io::Cursor;
-use zip::ZipArchive;
 
 use crate::auth::{execute_with_auth_retry, is_auth_error, ApiResult, GoogleAuth};
 use crate::models::{
     DriveChangesResponse, GoogleDriveFile, GooglePresentation, WebhookChannel,
     WebhookChannelResponse,
 };
-use shared::{AIClient, RateLimiter};
+use shared::RateLimiter;
 
 const DRIVE_API_BASE: &str = "https://www.googleapis.com/drive/v3";
 const DOCS_API_BASE: &str = "https://docs.googleapis.com/v1";
@@ -30,7 +24,6 @@ pub struct DriveClient {
     client: Client,
     // This rate limiter is for Drive APIs (rate limit: 12k req/min)
     rate_limiter: Arc<RateLimiter>,
-    ai_client: Option<AIClient>,
     // These rate limiters, one per user, are for Docs/Sheets etc. APIs,
     // which have a rate limit per user of 300 req/min
     user_rate_limiters: Arc<RwLock<HashMap<String, Arc<RateLimiter>>>>,
@@ -53,12 +46,11 @@ impl DriveClient {
         Self {
             client,
             rate_limiter,
-            ai_client: None,
             user_rate_limiters,
         }
     }
 
-    pub fn with_rate_limiter(rate_limiter: Arc<RateLimiter>, ai_client: AIClient) -> Self {
+    pub fn with_rate_limiter(rate_limiter: Arc<RateLimiter>) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(60)) // 60 second timeout for all requests
             .connect_timeout(Duration::from_secs(10)) // 10 second connection timeout
@@ -71,7 +63,6 @@ impl DriveClient {
         Self {
             client,
             rate_limiter,
-            ai_client: Some(ai_client),
             user_rate_limiters: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -167,20 +158,19 @@ impl DriveClient {
             "text/plain" | "text/html" | "text/csv" => {
                 self.download_file_content(auth, user_email, &file.id).await
             }
-            "application/pdf" => self.get_pdf_content(auth, user_email, &file.id).await,
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
-                self.get_docx_content(auth, user_email, &file.id).await
-            }
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => {
-                self.get_excel_content(auth, user_email, &file.id).await
-            }
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation" => {
-                self.get_powerpoint_content(auth, user_email, &file.id)
-                    .await
-            }
-            "application/msword" | "application/vnd.ms-excel" | "application/vnd.ms-powerpoint" => {
-                self.get_legacy_office_content(auth, user_email, &file.id, &file.mime_type)
-                    .await
+            // Binary document formats — download and extract via shared extractor
+            "application/pdf"
+            | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            | "application/msword"
+            | "application/vnd.ms-excel"
+            | "application/vnd.ms-powerpoint" => {
+                let binary_data = self
+                    .download_file_binary(auth, user_email, &file.id)
+                    .await?;
+                let filename = Some(file.name.as_str());
+                shared::content_extractor::extract_text(&binary_data, &file.mime_type, filename)
             }
             _ => {
                 debug!("Unsupported file type: {}", file.mime_type);
@@ -605,212 +595,6 @@ impl DriveClient {
         .await
     }
 
-    async fn get_pdf_content(
-        &self,
-        auth: &GoogleAuth,
-        user_email: &str,
-        file_id: &str,
-    ) -> Result<String> {
-        // Check if AI client is available
-        let ai_client = match &self.ai_client {
-            Some(client) => client,
-            None => {
-                warn!("AI client not configured, cannot extract PDF text");
-                return Ok(String::new());
-            }
-        };
-
-        let file_id = file_id.to_string();
-        let ai_client = ai_client.clone();
-
-        let rate_limiter = self.get_or_create_user_rate_limiter(user_email)?;
-        execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
-            let file_id = file_id.clone();
-            let ai_client = ai_client.clone();
-            async move {
-                let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, &file_id);
-
-                debug!("Downloading PDF file: {}", file_id);
-                let response = self
-                    .client
-                    .get(&url)
-                    .bearer_auth(&token)
-                    .send()
-                    .await
-                    .with_context(|| format!("Failed to send request for PDF file {}", file_id))?;
-
-                let status = response.status();
-                debug!("Download file {} response status: {}", file_id, status);
-                if is_auth_error(status) {
-                    return Ok(ApiResult::AuthError);
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Failed to download PDF {}: HTTP {} - {}",
-                        file_id,
-                        status,
-                        error_text
-                    )));
-                }
-
-                // Check content length to warn about large files
-                if let Some(content_length) =
-                    response.headers().get(reqwest::header::CONTENT_LENGTH)
-                {
-                    if let Ok(length_str) = content_length.to_str() {
-                        if let Ok(length) = length_str.parse::<u64>() {
-                            let mb = length as f64 / (1024.0 * 1024.0);
-                            if mb > 10.0 {
-                                warn!("Downloading large PDF file {} ({:.2} MB)", file_id, mb);
-                            } else {
-                                debug!("PDF file {} size: {:.2} MB", file_id, mb);
-                            }
-                        }
-                    }
-                }
-
-                let pdf_bytes = response
-                    .bytes()
-                    .await
-                    .with_context(|| format!("Failed to read PDF content for file {}", file_id))?;
-
-                debug!("Sending PDF to AI service for text extraction: {}", file_id);
-
-                // Use AI service to extract text from PDF
-                match ai_client.extract_pdf_text(pdf_bytes.to_vec()).await {
-                    Ok(extraction_result) => {
-                        if let Some(error) = extraction_result.error {
-                            debug!(
-                                "PDF extraction completed with error for file {}: {}",
-                                file_id, error
-                            );
-                            // Return empty string if extraction failed
-                            Ok(ApiResult::Success(String::new()))
-                        } else {
-                            debug!(
-                                "Successfully extracted text from PDF {}: {} pages, {} characters",
-                                file_id,
-                                extraction_result.page_count,
-                                extraction_result.text.len()
-                            );
-                            Ok(ApiResult::Success(extraction_result.text))
-                        }
-                    }
-                    Err(e) => {
-                        warn!("Failed to extract text from PDF {}: {:#}", file_id, e);
-                        // Return empty string if extraction failed
-                        Ok(ApiResult::Success(String::new()))
-                    }
-                }
-            }
-        })
-        .await
-    }
-
-    async fn get_docx_content(
-        &self,
-        auth: &GoogleAuth,
-        user_email: &str,
-        file_id: &str,
-    ) -> Result<String> {
-        debug!("Extracting DOCX content for file: {}", file_id);
-        let binary_data = self.download_file_binary(auth, user_email, file_id).await?;
-        let text =
-            extract_docx_text(binary_data).context("Failed to extract text from DOCX file")?;
-        debug!(
-            "Successfully extracted {} characters from DOCX file: {}",
-            text.len(),
-            file_id
-        );
-        Ok(text)
-    }
-
-    async fn get_excel_content(
-        &self,
-        auth: &GoogleAuth,
-        user_email: &str,
-        file_id: &str,
-    ) -> Result<String> {
-        debug!("Extracting Excel content for file: {}", file_id);
-        let binary_data = self.download_file_binary(auth, user_email, file_id).await?;
-        let text =
-            extract_excel_text(binary_data).context("Failed to extract text from Excel file")?;
-        debug!(
-            "Successfully extracted {} characters from Excel file: {}",
-            text.len(),
-            file_id
-        );
-        Ok(text)
-    }
-
-    async fn get_powerpoint_content(
-        &self,
-        auth: &GoogleAuth,
-        user_email: &str,
-        file_id: &str,
-    ) -> Result<String> {
-        debug!("Extracting PowerPoint content for file: {}", file_id);
-        let binary_data = self.download_file_binary(auth, user_email, file_id).await?;
-        let text = extract_pptx_text(binary_data)
-            .context("Failed to extract text from PowerPoint file")?;
-        debug!(
-            "Successfully extracted {} characters from PowerPoint file: {}",
-            text.len(),
-            file_id
-        );
-        Ok(text)
-    }
-
-    async fn get_legacy_office_content(
-        &self,
-        auth: &GoogleAuth,
-        user_email: &str,
-        file_id: &str,
-        mime_type: &str,
-    ) -> Result<String> {
-        debug!(
-            "Attempting to extract legacy Office content for file: {} ({})",
-            file_id, mime_type
-        );
-        let binary_data = self.download_file_binary(auth, user_email, file_id).await?;
-
-        // Try to extract based on detected format
-        let result = match mime_type {
-            "application/msword" => {
-                // Try DOCX extraction (sometimes works for legacy DOC files)
-                extract_docx_text(binary_data)
-                    .context("Failed to extract text from legacy DOC file")
-            }
-            "application/vnd.ms-excel" => {
-                // Try Excel extraction (calamine supports legacy XLS)
-                extract_excel_text(binary_data)
-                    .context("Failed to extract text from legacy Excel file")
-            }
-            "application/vnd.ms-powerpoint" => {
-                Err(anyhow!("Legacy PowerPoint format not fully supported"))
-            }
-            _ => Err(anyhow!("Unknown legacy Office format: {}", mime_type)),
-        };
-
-        match result {
-            Ok(text) => {
-                debug!(
-                    "Successfully extracted {} characters from legacy Office file: {}",
-                    text.len(),
-                    file_id
-                );
-                Ok(text)
-            }
-            Err(e) => {
-                debug!(
-                    "Failed to extract text from legacy Office file {}: {}",
-                    file_id, e
-                );
-                Err(e)
-            }
-        }
-    }
-
     pub async fn register_changes_webhook(
         &self,
         token: &str,
@@ -1190,134 +974,4 @@ fn extract_text_from_presentation(presentation: &GooglePresentation) -> String {
     }
 
     text.trim().to_string()
-}
-
-// Office document text extraction functions
-
-fn extract_docx_text(binary_data: Vec<u8>) -> Result<String> {
-    let docx = read_docx(&binary_data).context("Failed to read DOCX file")?;
-
-    let mut text = String::new();
-
-    // Extract text from document children - focus on paragraphs for now
-    for child in &docx.document.children {
-        match child {
-            docx_rs::DocumentChild::Paragraph(paragraph) => {
-                for para_child in &paragraph.children {
-                    if let docx_rs::ParagraphChild::Run(run) = para_child {
-                        for run_child in &run.children {
-                            if let docx_rs::RunChild::Text(text_element) = run_child {
-                                text.push_str(&text_element.text);
-                            }
-                        }
-                    }
-                }
-                text.push('\n');
-            }
-            // Skip tables for now - they have a complex structure
-            // TODO: Add table support once we figure out the correct API
-            _ => {} // Skip other types like Table, SectionProperty
-        }
-    }
-
-    Ok(text.trim().to_string())
-}
-
-fn extract_excel_text(binary_data: Vec<u8>) -> Result<String> {
-    use calamine::{open_workbook_auto_from_rs, Reader};
-
-    let cursor = Cursor::new(binary_data);
-    let mut workbook =
-        open_workbook_auto_from_rs(cursor).context("Failed to open Excel file from binary data")?;
-
-    let mut text = String::new();
-    let sheet_names = workbook.sheet_names().to_owned();
-
-    for sheet_name in &sheet_names {
-        text.push_str(&format!("Sheet: {}\n", sheet_name));
-
-        if let Some(Ok(range)) = workbook.worksheet_range(sheet_name) {
-            for row in range.rows() {
-                let row_text: Vec<String> = row.iter().map(|cell| cell.to_string()).collect();
-                text.push_str(&row_text.join("\t"));
-                text.push('\n');
-            }
-        }
-        text.push('\n'); // Separate sheets with newline
-    }
-
-    Ok(text.trim().to_string())
-}
-
-fn extract_pptx_text(binary_data: Vec<u8>) -> Result<String> {
-    let cursor = Cursor::new(binary_data);
-    let mut archive = ZipArchive::new(cursor).context("Failed to read PPTX as ZIP archive")?;
-
-    let mut text = String::new();
-    let mut slide_counter = 0;
-
-    // Look for slide files in the archive
-    for i in 0..archive.len() {
-        let mut file = archive
-            .by_index(i)
-            .context("Failed to read file from PPTX archive")?;
-        let file_name = file.name().to_string();
-
-        // Process slide content files
-        if file_name.starts_with("ppt/slides/slide") && file_name.ends_with(".xml") {
-            slide_counter += 1;
-            text.push_str(&format!("Slide {}\n", slide_counter));
-
-            let mut slide_content = String::new();
-            std::io::Read::read_to_string(&mut file, &mut slide_content)
-                .context("Failed to read slide XML content")?;
-
-            // Parse XML to extract text content
-            let slide_text = extract_text_from_pptx_xml(&slide_content)?;
-            text.push_str(&slide_text);
-            text.push_str("\n\n");
-        }
-    }
-
-    Ok(text.trim().to_string())
-}
-
-fn extract_text_from_pptx_xml(xml_content: &str) -> Result<String> {
-    let mut reader = XmlReader::from_str(xml_content);
-    reader.trim_text(true);
-
-    let mut text = String::new();
-    let mut buf = Vec::new();
-    let mut inside_text = false;
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                match e.name().as_ref() {
-                    b"a:t" => inside_text = true, // Text element in PowerPoint XML
-                    _ => {}
-                }
-            }
-            Ok(Event::Text(e)) => {
-                if inside_text {
-                    let content = e.unescape().context("Failed to unescape XML text")?;
-                    text.push_str(&content);
-                    text.push(' ');
-                }
-            }
-            Ok(Event::End(ref e)) => {
-                match e.name().as_ref() {
-                    b"a:t" => inside_text = false,
-                    b"a:p" => text.push('\n'), // New line for paragraphs
-                    _ => {}
-                }
-            }
-            Ok(Event::Eof) => break,
-            Err(e) => return Err(anyhow!("Error reading PowerPoint XML: {}", e)),
-            _ => {}
-        }
-        buf.clear();
-    }
-
-    Ok(text.trim().to_string())
 }

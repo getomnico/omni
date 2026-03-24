@@ -601,9 +601,10 @@ pub async fn get_connector_url_for_source(
 
 use crate::models::{
     SdkCancelSyncRequest, SdkCancelSyncResponse, SdkCompleteRequest, SdkCreateSyncRequest,
-    SdkCreateSyncResponse, SdkEmitEventRequest, SdkFailRequest, SdkIncrementScannedRequest,
-    SdkSourceSyncConfigResponse, SdkStatusResponse, SdkStoreContentRequest,
-    SdkStoreContentResponse, SdkUserEmailResponse, SdkWebhookNotification, SdkWebhookResponse,
+    SdkCreateSyncResponse, SdkEmitEventRequest, SdkExtractContentResponse, SdkFailRequest,
+    SdkIncrementScannedRequest, SdkSourceSyncConfigResponse, SdkStatusResponse,
+    SdkStoreContentRequest, SdkStoreContentResponse, SdkUserEmailResponse, SdkWebhookNotification,
+    SdkWebhookResponse,
 };
 
 pub async fn sdk_emit_event(
@@ -633,6 +634,105 @@ pub async fn sdk_emit_event(
     Ok(Json(SdkStatusResponse {
         status: "ok".to_string(),
     }))
+}
+
+// TODO: Merge this with sdk_store_content into a single unified content API
+// that accepts both text and binary, deciding extraction based on mime type.
+pub async fn sdk_extract_content(
+    State(state): State<AppState>,
+    mut multipart: axum::extract::Multipart,
+) -> Result<Json<SdkExtractContentResponse>, ApiError> {
+    let mut sync_run_id: Option<String> = None;
+    let mut mime_type: Option<String> = None;
+    let mut filename: Option<String> = None;
+    let mut data: Option<Vec<u8>> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("Failed to read multipart field: {}", e)))?
+    {
+        match field.name() {
+            Some("sync_run_id") => {
+                sync_run_id =
+                    Some(field.text().await.map_err(|e| {
+                        ApiError::BadRequest(format!("Invalid sync_run_id: {}", e))
+                    })?);
+            }
+            Some("mime_type") => {
+                mime_type = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| ApiError::BadRequest(format!("Invalid mime_type: {}", e)))?,
+                );
+            }
+            Some("filename") => {
+                filename = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| ApiError::BadRequest(format!("Invalid filename: {}", e)))?,
+                );
+            }
+            Some("data") => {
+                data = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|e| ApiError::BadRequest(format!("Failed to read data: {}", e)))?
+                        .to_vec(),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    let sync_run_id =
+        sync_run_id.ok_or_else(|| ApiError::BadRequest("Missing sync_run_id".to_string()))?;
+    let mime_type =
+        mime_type.ok_or_else(|| ApiError::BadRequest("Missing mime_type".to_string()))?;
+    let data = data.ok_or_else(|| ApiError::BadRequest("Missing data".to_string()))?;
+
+    debug!(
+        "SDK: Extracting content for sync_run={}, mime={}, filename={:?}, size={}",
+        sync_run_id,
+        mime_type,
+        filename,
+        data.len()
+    );
+
+    let extracted_text =
+        shared::content_extractor::extract_text(&data, &mime_type, filename.as_deref())
+            .unwrap_or_else(|e| {
+                tracing::warn!("Content extraction failed: {}", e);
+                String::new()
+            });
+
+    let content_storage = state.content_storage.clone();
+    let today = time::OffsetDateTime::now_utc();
+    let prefix = format!(
+        "{:04}-{:02}-{:02}/{}",
+        today.year(),
+        today.month() as u8,
+        today.day(),
+        sync_run_id
+    );
+
+    let content = utils::normalize_whitespace(&extracted_text);
+    let content_id = content_storage
+        .store_text(&content, Some(&prefix))
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to store content: {}", e)))?;
+
+    // Update heartbeat
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+    sync_run_repo
+        .update_activity(&sync_run_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to update activity: {}", e)))?;
+
+    Ok(Json(SdkExtractContentResponse { content_id }))
 }
 
 pub async fn sdk_store_content(

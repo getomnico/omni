@@ -2,6 +2,7 @@ pub mod clients;
 pub mod config;
 pub mod constants;
 pub mod content_chunker;
+pub mod content_extractor;
 pub mod content_storage;
 pub mod db;
 pub mod embedding_queue;

@@ -40,6 +40,14 @@ aws-config = { version = "1.8.11", features = ["behavior-version-latest"] }
 aws-sdk-s3 = "1.108.0"
 bytes = "1.5"
 
+# Content extraction
+docx-rs = "0.4"
+calamine = "0.34"
+zip = "8.4"
+quick-xml = "0.39"
+pdf_oxide = "0.3"
+html2text = "0.16"
+
 # OpenTelemetry
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }

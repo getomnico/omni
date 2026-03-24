@@ -30,6 +30,23 @@ class ContentStorage:
             content_type,
         )
 
+    async def extract_and_store(
+        self,
+        data: bytes,
+        mime_type: str,
+        filename: str | None = None,
+    ) -> str:
+        """Extract text from binary file content and store it, returning content_id.
+
+        The connector manager handles extraction based on MIME type.
+        """
+        return await self._client.extract_and_store(
+            self._sync_run_id,
+            data,
+            mime_type,
+            filename,
+        )
+
     async def save_binary(
         self,
         content: bytes,

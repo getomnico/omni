@@ -37,11 +37,6 @@ governor = { workspace = true }
 nonzero_ext = { workspace = true }
 rand = { workspace = true }
 regex = "1.10"
-# Office document parsing dependencies
-docx-rs = "0.4"
-calamine = "0.22"
-zip = "0.6"
-quick-xml = "0.31"
 # HTTP server dependencies
 dashmap = { workspace = true }
 tower = { workspace = true }
