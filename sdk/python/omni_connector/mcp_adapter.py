@@ -45,15 +45,18 @@ class McpAdapter:
         If *env* differs from the current subprocess environment, the old
         process is torn down and a new one is spawned with the updated env.
         """
-        if self._session is not None and env == self._current_env:
+        # Reuse session if env matches, or if no env was requested (don't
+        # downgrade a credentialed session to a credential-less one).
+        if self._session is not None and (env is None or env == self._current_env):
             return self._session
 
         await self.disconnect()
 
+        merged_env = {**(self._base_params.env or {}), **(env or {})}
         params = StdioServerParameters(
             command=self._base_params.command,
             args=self._base_params.args,
-            env={**(self._base_params.env or {}), **(env or {})},
+            env=merged_env or None,
             cwd=self._base_params.cwd,
         )
 
@@ -89,6 +92,9 @@ class McpAdapter:
     async def get_action_definitions(
         self, env: dict[str, str] | None = None
     ) -> list[ActionDefinition]:
+        # Without credentials (env), return cache or empty — don't spawn the server
+        if env is None and self._session is None:
+            return self._cached_actions or []
         try:
             session = await self.ensure_connected(env)
             result = await session.list_tools()
@@ -123,6 +129,8 @@ class McpAdapter:
     async def get_resource_definitions(
         self, env: dict[str, str] | None = None
     ) -> list[McpResourceDefinition]:
+        if env is None and self._session is None:
+            return self._cached_resources or []
         try:
             session = await self.ensure_connected(env)
             definitions: list[McpResourceDefinition] = []
@@ -159,6 +167,8 @@ class McpAdapter:
     async def get_prompt_definitions(
         self, env: dict[str, str] | None = None
     ) -> list[McpPromptDefinition]:
+        if env is None and self._session is None:
+            return self._cached_prompts or []
         try:
             session = await self.ensure_connected(env)
             result = await session.list_prompts()

@@ -13,18 +13,20 @@ from omni_connector.mcp_adapter import McpAdapter
 # Path to the test MCP server script
 TEST_SERVER = os.path.join(os.path.dirname(__file__), "test_mcp_server.py")
 TEST_PARAMS = StdioServerParameters(command=sys.executable, args=[TEST_SERVER])
+# Dummy env to simulate having credentials (test server doesn't need real ones)
+TEST_ENV: dict[str, str] = {"TEST_MODE": "1"}
 
 
 class TestMcpAdapter:
     @pytest.fixture
     async def adapter(self):
         adapter = McpAdapter(TEST_PARAMS)
-        await adapter.ensure_connected()
+        await adapter.ensure_connected(TEST_ENV)
         yield adapter
         await adapter.disconnect()
 
     async def test_get_action_definitions(self, adapter: McpAdapter):
-        actions = await adapter.get_action_definitions()
+        actions = await adapter.get_action_definitions(TEST_ENV)
         assert len(actions) == 2
         names = {a.name for a in actions}
         assert names == {"greet", "add"}
@@ -43,13 +45,13 @@ class TestMcpAdapter:
         assert add_action.mode == "write"
 
     async def test_get_resource_definitions(self, adapter: McpAdapter):
-        resources = await adapter.get_resource_definitions()
+        resources = await adapter.get_resource_definitions(TEST_ENV)
         assert len(resources) == 1
         assert resources[0].name == "get_item"
         assert resources[0].uri_template == "test://item/{item_id}"
 
     async def test_get_prompt_definitions(self, adapter: McpAdapter):
-        prompts = await adapter.get_prompt_definitions()
+        prompts = await adapter.get_prompt_definitions(TEST_ENV)
         assert len(prompts) == 1
         assert prompts[0].name == "summarize"
         assert prompts[0].description == "Summarize the given text."
@@ -58,23 +60,25 @@ class TestMcpAdapter:
         assert prompts[0].arguments[0].required is True
 
     async def test_execute_tool(self, adapter: McpAdapter):
-        result = await adapter.execute_tool("greet", {"name": "World"})
+        result = await adapter.execute_tool("greet", {"name": "World"}, env=TEST_ENV)
         assert result.status == "success"
         assert result.result is not None
         assert "Hello, World!" in result.result.get("content", "")
 
     async def test_execute_tool_error(self, adapter: McpAdapter):
-        result = await adapter.execute_tool("nonexistent", {})
+        result = await adapter.execute_tool("nonexistent", {}, env=TEST_ENV)
         assert result.status == "error"
 
     async def test_read_resource(self, adapter: McpAdapter):
-        result = await adapter.read_resource("test://item/42")
+        result = await adapter.read_resource("test://item/42", env=TEST_ENV)
         assert "contents" in result
         contents = result["contents"]
         assert len(contents) >= 1
 
     async def test_get_prompt(self, adapter: McpAdapter):
-        result = await adapter.get_prompt("summarize", {"text": "hello world"})
+        result = await adapter.get_prompt(
+            "summarize", {"text": "hello world"}, env=TEST_ENV
+        )
         assert "messages" in result
         assert len(result["messages"]) >= 1
         msg = result["messages"][0]
@@ -83,25 +87,25 @@ class TestMcpAdapter:
 
     async def test_reconnect_with_new_env(self, adapter: McpAdapter):
         """Calling ensure_connected with different env restarts the subprocess."""
-        actions1 = await adapter.get_action_definitions()
+        actions1 = await adapter.get_action_definitions(TEST_ENV)
         assert len(actions1) == 2
 
         # Reconnect with different env — should restart
         await adapter.ensure_connected(env={"SOME_VAR": "value"})
-        actions2 = await adapter.get_action_definitions()
+        actions2 = await adapter.get_action_definitions(env={"SOME_VAR": "value"})
         assert len(actions2) == 2
 
     async def test_disconnect_and_reconnect(self, adapter: McpAdapter):
         await adapter.disconnect()
-        # Should reconnect on next call
-        actions = await adapter.get_action_definitions()
+        # Should reconnect on next call with env
+        actions = await adapter.get_action_definitions(TEST_ENV)
         assert len(actions) == 2
 
     async def test_cache_survives_connection_failure(self):
         """After successful discovery, cache is returned if subprocess can't start."""
         adapter = McpAdapter(TEST_PARAMS)
         # First: connect and populate cache
-        actions = await adapter.get_action_definitions()
+        actions = await adapter.get_action_definitions(TEST_ENV)
         assert len(actions) == 2
         await adapter.disconnect()
 
@@ -151,6 +155,7 @@ class TestConnectorMcpIntegration:
     async def test_manifest_includes_mcp_tools_as_actions(
         self, mcp_connector: Connector
     ):
+        await mcp_connector.bootstrap_mcp({"token": "test"})
         manifest = await mcp_connector.get_manifest(connector_url="http://test:8000")
         assert manifest.mcp_enabled is True
         action_names = {a.name for a in manifest.actions}
@@ -159,12 +164,14 @@ class TestConnectorMcpIntegration:
         await mcp_connector.stop_mcp()
 
     async def test_manifest_includes_resources(self, mcp_connector: Connector):
+        await mcp_connector.bootstrap_mcp({"token": "test"})
         manifest = await mcp_connector.get_manifest(connector_url="http://test:8000")
         assert len(manifest.resources) == 1
         assert manifest.resources[0].uri_template == "test://item/{item_id}"
         await mcp_connector.stop_mcp()
 
     async def test_manifest_includes_prompts(self, mcp_connector: Connector):
+        await mcp_connector.bootstrap_mcp({"token": "test"})
         manifest = await mcp_connector.get_manifest(connector_url="http://test:8000")
         assert len(manifest.prompts) == 1
         assert manifest.prompts[0].name == "summarize"
