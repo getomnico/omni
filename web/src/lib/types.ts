@@ -85,6 +85,20 @@ export interface LinearSourceConfig {
     team_keys?: string[]
 }
 
+export interface GitHubSourceConfig {
+    api_url?: string
+    include_discussions?: boolean
+    include_forks?: boolean
+    repos?: string[]
+    orgs?: string[]
+    users?: string[]
+    read_only?: boolean
+}
+
+export interface GitHubCredentials {
+    token: string
+}
+
 export interface ImapSourceConfig {
     display_name?: string
     host: string

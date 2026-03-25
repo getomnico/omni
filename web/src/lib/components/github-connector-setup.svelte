@@ -4,7 +4,7 @@
     import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
     import { Checkbox } from '$lib/components/ui/checkbox'
-    import { AuthType } from '$lib/types'
+    import { AuthType, type GitHubSourceConfig, type GitHubCredentials } from '$lib/types'
     import { toast } from 'svelte-sonner'
 
     interface Props {
@@ -28,12 +28,10 @@
                 throw new Error('Personal access token is required')
             }
 
-            const config: Record<string, any> = {
+            const config: GitHubSourceConfig = {
                 include_discussions: includeDiscussions,
                 include_forks: includeForks,
-            }
-            if (apiUrl.trim()) {
-                config.api_url = apiUrl.trim()
+                ...(apiUrl.trim() ? { api_url: apiUrl.trim() } : {}),
             }
 
             const sourceResponse = await fetch('/api/sources', {
@@ -59,7 +57,7 @@
                     sourceId: source.id,
                     provider: 'github',
                     authType: AuthType.BEARER_TOKEN,
-                    credentials: { token },
+                    credentials: { token } satisfies GitHubCredentials,
                 }),
             })
 
