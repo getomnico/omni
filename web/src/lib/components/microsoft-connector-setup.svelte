@@ -24,6 +24,7 @@
         { name: 'Outlook', sourceType: 'outlook' },
         { name: 'Outlook Calendar', sourceType: 'outlook_calendar' },
         { name: 'SharePoint', sourceType: 'share_point' },
+        { name: 'Teams', sourceType: 'ms_teams' },
     ] as const
 
     async function createSourceWithCredentials(
@@ -121,7 +122,7 @@
             <Dialog.Title>Connect Microsoft 365</Dialog.Title>
             <Dialog.Description>
                 Set up your Microsoft 365 integration using an Azure AD app registration. This will
-                connect OneDrive, Outlook, Outlook Calendar, and SharePoint.
+                connect OneDrive, Outlook, Outlook Calendar, SharePoint, and Teams.
             </Dialog.Description>
         </Dialog.Header>
 

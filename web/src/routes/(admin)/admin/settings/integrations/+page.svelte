@@ -178,6 +178,7 @@
         [SourceType.OUTLOOK]: 'microsoft',
         [SourceType.OUTLOOK_CALENDAR]: 'microsoft',
         [SourceType.SHARE_POINT]: 'microsoft',
+        [SourceType.MS_TEAMS]: 'microsoft',
     }
 
     function getConfigureUrl(sourceType: SourceType, sourceId: string): string {

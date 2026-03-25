@@ -294,16 +294,27 @@ class GraphClient:
         return members
 
     async def get_channel_messages_delta(
-        self, team_id: str, channel_id: str, delta_token: str | None = None
+        self,
+        team_id: str,
+        channel_id: str,
+        delta_token: str | None = None,
+        filter_from: str | None = None,
     ) -> tuple[list[dict[str, Any]], str | None]:
-        """Fetch channel messages using delta query for incremental sync."""
+        """Fetch channel messages using delta query for incremental sync.
+
+        If filter_from is set (ISO datetime) and delta_token is None,
+        adds $filter=lastModifiedDateTime gt <date> to scope the query.
+        """
+        params: dict[str, str] = {
+            "$select": "id,body,from,createdDateTime,lastModifiedDateTime,"
+            "replyToId,attachments,mentions,reactions,messageType",
+        }
+        if filter_from and delta_token is None:
+            params["$filter"] = f"lastModifiedDateTime gt {filter_from}"
         return await self.get_delta(
             f"/teams/{team_id}/channels/{channel_id}/messages/delta",
             delta_token=delta_token,
-            params={
-                "$select": "id,body,from,createdDateTime,lastModifiedDateTime,"
-                "replyToId,attachments,mentions,reactions,messageType",
-            },
+            params=params,
         )
 
     async def list_message_replies(

@@ -16,6 +16,7 @@ import microsoftIcon from '$lib/images/icons/microsoft.svg'
 import oneDriveIcon from '$lib/images/icons/onedrive.svg'
 import outlookIcon from '$lib/images/icons/outlook.svg'
 import sharePointIcon from '$lib/images/icons/sharepoint.svg'
+import teamsIcon from '$lib/images/icons/teams.svg'
 import clickupIcon from '$lib/images/icons/clickup.svg'
 import notionIcon from '$lib/images/icons/notion.svg'
 import linearIcon from '$lib/images/icons/linear.svg'
@@ -107,6 +108,8 @@ export function getSourceIconPath(sourceType: string): string | null {
             return outlookIcon
         case SourceType.SHARE_POINT:
             return sharePointIcon
+        case SourceType.MS_TEAMS:
+            return teamsIcon
         case SourceType.LINEAR:
             return linearIcon
         case SourceType.GITHUB:
@@ -228,6 +231,7 @@ export function getSourceDisplayName(sourceType: SourceType) {
         [SourceType.CLICKUP]: 'ClickUp',
         [SourceType.NOTION]: 'Notion',
         [SourceType.LINEAR]: 'Linear',
+        [SourceType.MS_TEAMS]: 'Teams',
     }
 
     return sourceDisplayNames[sourceType]

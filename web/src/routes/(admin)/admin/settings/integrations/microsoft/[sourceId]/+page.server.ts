@@ -10,6 +10,7 @@ const MICROSOFT_SOURCE_TYPES = new Set([
     SourceType.OUTLOOK,
     SourceType.OUTLOOK_CALENDAR,
     SourceType.SHARE_POINT,
+    SourceType.MS_TEAMS,
 ])
 
 export const load: PageServerLoad = async ({ params, locals }) => {

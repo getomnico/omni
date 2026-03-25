@@ -169,6 +169,7 @@ pub enum SourceType {
     Imap,
     Clickup,
     Linear,
+    MsTeams,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]

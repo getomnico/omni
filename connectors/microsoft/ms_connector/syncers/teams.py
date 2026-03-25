@@ -220,10 +220,13 @@ class TeamsSyncer:
         user_cache = user_cache or {}
         group_cache = group_cache or {}
         delta_tokens: dict[str, str] = state.get("delta_tokens", {})
+        last_sync_ts: dict[str, str] = state.get("last_sync_ts", {})
         new_tokens: dict[str, str] = {}
+        new_sync_ts: dict[str, str] = {}
 
         past_months = source_config.get("teams_past_months", DEFAULT_PAST_MONTHS)
         cutoff = datetime.now(timezone.utc) - timedelta(days=30 * past_months)
+        now_iso = datetime.now(timezone.utc).isoformat()
 
         teams = await self._list_teams(client)
         logger.info("[teams] Found %d teams", len(teams))
@@ -256,6 +259,7 @@ class TeamsSyncer:
                 channel_name = channel.get("displayName", channel_id)
                 token_key = f"{team_id}:{channel_id}"
                 delta_token = delta_tokens.get(token_key)
+                channel_last_sync = last_sync_ts.get(token_key)
 
                 try:
                     permissions = await self._resolve_channel_permissions(
@@ -279,11 +283,13 @@ class TeamsSyncer:
                     cutoff=cutoff,
                     user_cache=user_cache,
                     permissions=permissions,
+                    last_sync_ts=channel_last_sync,
                 )
                 if new_token:
                     new_tokens[token_key] = new_token
+                    new_sync_ts[token_key] = now_iso
 
-        return {"delta_tokens": new_tokens}
+        return {"delta_tokens": new_tokens, "last_sync_ts": new_sync_ts}
 
     async def _list_teams(self, client: GraphClient) -> list[dict[str, Any]]:
         try:
@@ -302,7 +308,16 @@ class TeamsSyncer:
         cutoff: datetime,
         user_cache: dict[str, str],
         permissions: DocumentPermissions,
+        last_sync_ts: str | None = None,
     ) -> str | None:
+        """Sync a single channel's messages.
+
+        Two-phase incremental approach:
+        1. Call delta with stored token to detect changes and get new token
+        2. If changes exist and this is incremental (has last_sync_ts):
+           re-fetch all messages from start-of-day(last_sync_ts) to get
+           complete daily/thread docs, not just the changed fragments
+        """
         team_id = team["id"]
         team_name = team.get("displayName", team_id)
         channel_id = channel["id"]
@@ -311,8 +326,9 @@ class TeamsSyncer:
 
         logger.info("[teams] Syncing channel %s/%s", team_name, channel_name)
 
+        # Phase 1: detect changes via delta
         try:
-            messages, new_token = await client.get_channel_messages_delta(
+            delta_items, new_token = await client.get_channel_messages_delta(
                 team_id, channel_id, delta_token
             )
         except GraphAPIError as e:
@@ -323,7 +339,7 @@ class TeamsSyncer:
                     channel_name,
                 )
                 try:
-                    messages, new_token = await client.get_channel_messages_delta(
+                    delta_items, new_token = await client.get_channel_messages_delta(
                         team_id, channel_id, None
                     )
                     is_first_sync = True
@@ -344,7 +360,43 @@ class TeamsSyncer:
                 )
                 return delta_token
 
-        # Filter to real messages only
+        # No changes detected — nothing to do
+        if not delta_items:
+            return new_token
+
+        # Phase 2: determine which messages to process
+        if is_first_sync:
+            # First sync: use the delta items directly
+            messages = delta_items
+        elif last_sync_ts:
+            # Incremental sync: re-fetch from start of the day of last sync
+            # to get complete daily/thread documents
+            resync_from = self._start_of_day_iso(last_sync_ts)
+            logger.info(
+                "[teams] Incremental: re-fetching messages from %s for %s/%s",
+                resync_from,
+                team_name,
+                channel_name,
+            )
+            try:
+                messages, _ = await client.get_channel_messages_delta(
+                    team_id, channel_id, None, filter_from=resync_from
+                )
+            except GraphAPIError as e:
+                logger.warning(
+                    "[teams] Failed to re-fetch messages for %s/%s: %s",
+                    team_name,
+                    channel_name,
+                    e,
+                )
+                # Fall back to using the delta items
+                messages = delta_items
+        else:
+            # Has a delta token but no last_sync_ts (shouldn't happen normally,
+            # but handle gracefully by using delta items)
+            messages = delta_items
+
+        # Filter to real top-level messages only
         top_level_messages = [
             m
             for m in messages
@@ -360,13 +412,12 @@ class TeamsSyncer:
         if not top_level_messages:
             return new_token
 
-        # Fetch replies for messages that might have threads
+        # Fetch replies for top-level messages
         replies_by_msg: dict[str, list[dict[str, Any]]] = {}
         for msg in top_level_messages:
             msg_id = msg.get("id", "")
             try:
                 replies = await client.list_message_replies(team_id, channel_id, msg_id)
-                # Filter to real message replies
                 replies = [r for r in replies if r.get("messageType") == "message"]
                 if replies:
                     replies_by_msg[msg_id] = replies
@@ -389,7 +440,7 @@ class TeamsSyncer:
             permissions=permissions,
         )
 
-        # Emit message documents
+        # Emit message documents (upserts on incremental since external IDs match)
         for group in groups:
             if ctx.is_cancelled():
                 return delta_token
@@ -422,6 +473,15 @@ class TeamsSyncer:
         )
 
         return new_token
+
+    @staticmethod
+    def _start_of_day_iso(iso_ts: str) -> str:
+        """Truncate an ISO timestamp to the start of its day."""
+        dt = _parse_iso(iso_ts)
+        if dt is None:
+            return iso_ts
+        start = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        return start.isoformat()
 
     async def _process_file_attachments(
         self,
