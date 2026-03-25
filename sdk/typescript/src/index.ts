@@ -2,7 +2,8 @@ export { Connector, type ServeOptions } from './connector.js';
 export { SyncContext } from './context.js';
 export { ContentStorage } from './storage.js';
 export { SdkClient } from './client.js';
-export { McpAdapter } from './mcp-adapter.js';
+// McpAdapter is not re-exported here to avoid requiring @modelcontextprotocol/sdk
+// as a mandatory dependency. Import directly from './mcp-adapter.js' when needed.
 export { createServer } from './server.js';
 
 export {

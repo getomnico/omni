@@ -1,5 +1,3 @@
-import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-
 import type { SyncContext } from './context.js';
 import type {
   ConnectorManifest,
@@ -8,7 +6,6 @@ import type {
   SearchOperator,
 } from './models.js';
 import { createActionResponseNotSupported } from './models.js';
-import { McpAdapter } from './mcp-adapter.js';
 import { createServer } from './server.js';
 import { getLogger } from './logger.js';
 
@@ -26,7 +23,7 @@ export abstract class Connector<
   abstract readonly version: string;
   abstract readonly sourceTypes: string[];
 
-  private _mcpAdapter: McpAdapter | null = null;
+  private _mcpAdapter: unknown | null = null;
 
   get displayName(): string {
     return this.name;
@@ -45,26 +42,28 @@ export abstract class Connector<
   /**
    * Return an MCP McpServer instance if this connector supports MCP.
    * Override this getter to enable MCP support.
+   * Requires @modelcontextprotocol/sdk as a dependency.
    */
-  get mcpServer(): McpServer | undefined {
+  get mcpServer(): unknown | undefined {
     return undefined;
   }
 
-  get mcpAdapter(): McpAdapter | undefined {
+  async getMcpAdapter(): Promise<{ getActionDefinitions(): Promise<ActionDefinition[]>; getResourceDefinitions(): Promise<unknown[]>; getPromptDefinitions(): Promise<unknown[]>; executeTool(name: string, params: Record<string, unknown>): Promise<ActionResponse>; readResource(uri: string): Promise<unknown>; getPrompt(name: string, args?: Record<string, string>): Promise<unknown> } | undefined> {
     if (this._mcpAdapter !== null) {
-      return this._mcpAdapter;
+      return this._mcpAdapter as ReturnType<typeof this.getMcpAdapter> extends Promise<infer T> ? T : never;
     }
     const server = this.mcpServer;
     if (!server) {
       return undefined;
     }
-    this._mcpAdapter = new McpAdapter(server);
-    return this._mcpAdapter;
+    const { McpAdapter } = await import('./mcp-adapter.js');
+    this._mcpAdapter = new McpAdapter(server as any);
+    return this._mcpAdapter as any;
   }
 
   private async getAllActions(): Promise<ActionDefinition[]> {
     const manualActions = this.actions;
-    const adapter = this.mcpAdapter;
+    const adapter = await this.getMcpAdapter();
     if (!adapter) {
       return manualActions;
     }
@@ -74,7 +73,7 @@ export abstract class Connector<
   }
 
   async getManifest(connectorUrl: string): Promise<ConnectorManifest> {
-    const adapter = this.mcpAdapter;
+    const adapter = await this.getMcpAdapter();
     return {
       name: this.name,
       display_name: this.displayName,
@@ -89,8 +88,8 @@ export abstract class Connector<
       extra_schema: this.extraSchema,
       attributes_schema: this.attributesSchema,
       mcp_enabled: adapter !== undefined,
-      resources: adapter ? await adapter.getResourceDefinitions() : [],
-      prompts: adapter ? await adapter.getPromptDefinitions() : [],
+      resources: adapter ? await adapter.getResourceDefinitions() as any[] : [],
+      prompts: adapter ? await adapter.getPromptDefinitions() as any[] : [],
     };
   }
 
@@ -118,7 +117,7 @@ export abstract class Connector<
     params: Record<string, unknown>,
     credentials: TCredentials
   ): Promise<ActionResponse> {
-    const adapter = this.mcpAdapter;
+    const adapter = await this.getMcpAdapter();
     if (adapter) {
       const mcpActions = await adapter.getActionDefinitions();
       const mcpToolNames = new Set(mcpActions.map((a) => a.name));

@@ -192,7 +192,7 @@ export function createServer(connector: Connector): Express {
   });
 
   app.post('/resource', async (req: Request, res: Response) => {
-    const adapter = connector.mcpAdapter;
+    const adapter = await connector.getMcpAdapter();
     if (!adapter) {
       res.status(404).json({ error: 'MCP not enabled for this connector' });
       return;
@@ -219,7 +219,7 @@ export function createServer(connector: Connector): Express {
   });
 
   app.post('/prompt', async (req: Request, res: Response) => {
-    const adapter = connector.mcpAdapter;
+    const adapter = await connector.getMcpAdapter();
     if (!adapter) {
       res.status(404).json({ error: 'MCP not enabled for this connector' });
       return;
@@ -236,7 +236,7 @@ export function createServer(connector: Connector): Express {
 
     try {
       connector.prepareMcpEnv(credentials as any);
-      const result = await adapter.getPrompt(name, args as Record<string, unknown> | undefined);
+      const result = await adapter.getPrompt(name, args as Record<string, string> | undefined);
       res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
