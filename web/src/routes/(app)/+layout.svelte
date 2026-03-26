@@ -233,7 +233,7 @@
                         href="/agents"
                         class="mb-1 flex w-full cursor-pointer items-center justify-start has-[>svg]:px-2"
                         variant="ghost">
-                        <Bot class="size-5" />
+                        <Bot />
                         <span class="group-data-[collapsible=icon]:hidden">Agents</span>
                     </Button>
                 {/if}

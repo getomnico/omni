@@ -9,6 +9,7 @@ For OpenAI models, uses the v1 API (no dated api-version required):
   https://learn.microsoft.com/en-us/azure/foundry/openai/api-version-lifecycle
 """
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
@@ -47,7 +48,9 @@ class AzureFoundryProvider(LLMProvider):
         credential = DefaultAzureCredential()
 
         if _is_anthropic_model(model):
-            token_provider = get_bearer_token_provider(credential, ANTHROPIC_TOKEN_SCOPE)
+            token_provider = get_bearer_token_provider(
+                credential, ANTHROPIC_TOKEN_SCOPE
+            )
             client = AsyncAnthropicFoundry(
                 azure_ad_token_provider=token_provider,
                 base_url=f"{self.endpoint_url}/anthropic/",
@@ -55,9 +58,15 @@ class AzureFoundryProvider(LLMProvider):
             self._delegate = AnthropicProvider(api_key="unused", model=model)
             self._delegate.client = client
         else:
-            token_provider = get_bearer_token_provider(credential, OPENAI_TOKEN_SCOPE)
+            sync_token_provider = get_bearer_token_provider(
+                credential, OPENAI_TOKEN_SCOPE
+            )
+
+            async def _async_token_provider() -> str:
+                return await asyncio.to_thread(sync_token_provider)
+
             client = AsyncOpenAI(
-                api_key=token_provider,
+                api_key=_async_token_provider,
                 base_url=f"{self.endpoint_url}/openai/v1/",
             )
             self._delegate = OpenAIProvider(api_key="unused", model=model)
