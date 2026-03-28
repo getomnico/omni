@@ -80,7 +80,7 @@ export interface SearchResult {
 
 export interface FacetValue {
     value: string
-    count: number
+    count?: number
 }
 
 export interface Facet {

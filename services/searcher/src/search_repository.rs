@@ -534,10 +534,10 @@ impl SearchDocumentRepository {
 fn rows_to_facets(rows: Vec<(String, String, i64)>) -> Vec<Facet> {
     let mut facets_map: HashMap<String, Vec<FacetValue>> = HashMap::new();
     for (facet_name, value, count) in rows {
-        facets_map
-            .entry(facet_name)
-            .or_default()
-            .push(FacetValue { value, count });
+        facets_map.entry(facet_name).or_default().push(FacetValue {
+            value,
+            count: Some(count),
+        });
     }
     facets_map
         .into_iter()

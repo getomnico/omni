@@ -374,7 +374,7 @@ impl SearchEngine {
         }
         let total_count: i64 = filtered_facets
             .iter()
-            .flat_map(|f| f.values.iter().map(|fv| fv.count))
+            .flat_map(|f| f.values.iter().filter_map(|fv| fv.count))
             .sum();
         let has_more = total_count >= limit;
         let query_time = start_time.elapsed().as_millis() as u64;
@@ -1323,7 +1323,7 @@ fn build_active_filters(request: &SearchRequest) -> Vec<Facet> {
                     .iter()
                     .map(|st| FacetValue {
                         value: source_type_to_string(st),
-                        count: 0,
+                        count: None,
                     })
                     .collect(),
             });
@@ -1335,13 +1335,13 @@ fn build_active_filters(request: &SearchRequest) -> Vec<Facet> {
         if let Some(after) = date_filter.after {
             values.push(FacetValue {
                 value: format!("after:{}", after.date()),
-                count: 0,
+                count: None,
             });
         }
         if let Some(before) = date_filter.before {
             values.push(FacetValue {
                 value: format!("before:{}", before.date()),
-                count: 0,
+                count: None,
             });
         }
         if !values.is_empty() {
@@ -1360,7 +1360,7 @@ fn build_active_filters(request: &SearchRequest) -> Vec<Facet> {
                     .iter()
                     .map(|p| FacetValue {
                         value: p.clone(),
-                        count: 0,
+                        count: None,
                     })
                     .collect(),
             });
@@ -1375,7 +1375,7 @@ fn build_active_filters(request: &SearchRequest) -> Vec<Facet> {
                     .iter()
                     .map(|ct| FacetValue {
                         value: ct.clone(),
-                        count: 0,
+                        count: None,
                     })
                     .collect(),
             });
@@ -1387,7 +1387,7 @@ fn build_active_filters(request: &SearchRequest) -> Vec<Facet> {
             let value = serde_json::to_string(filter).unwrap_or_default();
             filters.push(Facet {
                 name: format!("attribute:{}", key),
-                values: vec![FacetValue { value, count: 0 }],
+                values: vec![FacetValue { value, count: None }],
             });
         }
     }

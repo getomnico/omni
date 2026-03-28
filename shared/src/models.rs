@@ -479,7 +479,8 @@ pub struct DocumentChunk {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FacetValue {
     pub value: String,
-    pub count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
