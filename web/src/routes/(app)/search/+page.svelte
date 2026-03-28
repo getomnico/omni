@@ -25,6 +25,18 @@
     // Get selected source types from server data (parsed from URL params)
     let selectedSourceTypes = $derived(new Set(data.selectedSourceTypes || []))
 
+    // Active source types from both URL params and in-query operators (e.g. in:drive)
+    let activeFilterFacets = $derived(data.searchResults?.active_filters || [])
+    let activeSourceTypes = $derived(
+        new Set([
+            ...(data.selectedSourceTypes || []),
+            ...(activeFilterFacets
+                .find((f) => f.name === 'source_type')
+                ?.values.map((v) => v.value) || []),
+        ]),
+    )
+    let hasActiveFilters = $derived(activeFilterFacets.length > 0)
+
     const facetDisplayNames: Record<string, string> = {
         source_type: 'Source Type',
     }
@@ -88,7 +100,7 @@
     }
 
     function getTotalSelectedFilters(): number {
-        return selectedSourceTypes.size
+        return activeSourceTypes.size
     }
 
     let totalPages = $derived(
@@ -320,7 +332,7 @@
                             <div class="flex-1">Filter by Source</div>
                             <Funnel class="h-4 w-4" />
                         </h3>
-                        {#if selectedSourceTypes.size > 0}
+                        {#if activeSourceTypes.size > 0}
                             <Button
                                 variant="ghost"
                                 size="sm"
@@ -333,31 +345,41 @@
                     <div class="flex flex-col space-y-2">
                         {#each sourceFacet.values as facetValue}
                             {@const sourceIcon = getSourceIconPath(facetValue.value)}
-                            {@const isSelected = selectedSourceTypes.has(facetValue.value)}
+                            {@const isActive = activeSourceTypes.has(facetValue.value)}
+                            {@const isDisabled = activeSourceTypes.size > 0 && !isActive}
                             <Button
                                 variant="ghost"
-                                class="flex cursor-pointer justify-between rounded-full {isSelected
-                                    ? 'bg-blue-50 hover:bg-blue-100'
-                                    : 'hover:bg-gray-200'}"
-                                onclick={() => toggleFilter('source_type', facetValue.value)}>
+                                disabled={isDisabled}
+                                class="flex justify-between rounded-full {isActive
+                                    ? 'cursor-pointer bg-blue-50 hover:bg-blue-100'
+                                    : isDisabled
+                                      ? 'cursor-default opacity-50'
+                                      : 'cursor-pointer hover:bg-gray-200'}"
+                                onclick={() =>
+                                    !isDisabled && toggleFilter('source_type', facetValue.value)}>
                                 <div class="flex items-center gap-2">
                                     {#if sourceIcon}
                                         <img
                                             src={sourceIcon}
                                             alt="{facetValue.value} icon"
-                                            class="h-4 w-4" />
+                                            class="h-4 w-4 {isDisabled ? 'grayscale' : ''}" />
                                     {:else}
-                                        <FileText class="h-4 w-4 text-gray-400" />
+                                        <FileText
+                                            class="h-4 w-4 {isDisabled
+                                                ? 'text-gray-300'
+                                                : 'text-gray-400'}" />
                                     {/if}
                                     <span
-                                        class="text-sm font-medium {isSelected
+                                        class="text-sm font-medium {isActive
                                             ? 'text-blue-700'
-                                            : 'text-gray-700'}">
+                                            : isDisabled
+                                              ? 'text-gray-400'
+                                              : 'text-gray-700'}">
                                         {getDisplayValue('source_type', facetValue.value)}
                                     </span>
                                 </div>
                                 <span
-                                    class="rounded-full px-2 py-0.5 text-xs {isSelected
+                                    class="rounded-full px-2 py-0.5 text-xs {isActive
                                         ? 'bg-blue-100 text-blue-700'
                                         : 'bg-gray-100 text-gray-500'}">
                                     {facetValue.count}

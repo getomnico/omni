@@ -95,6 +95,7 @@ export interface SearchResponse {
     has_more: boolean
     query: string
     facets?: Facet[]
+    active_filters?: Facet[]
 }
 
 export interface SearchRequest {

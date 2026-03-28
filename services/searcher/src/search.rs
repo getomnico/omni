@@ -9,8 +9,9 @@ use redis::{AsyncCommands, Client as RedisClient};
 use shared::db::repositories::{
     DocumentRepository, EmbeddingRepository, GroupRepository, PersonRepository, SourceRepository,
 };
-use shared::models::{ChunkResult, Document};
+use shared::models::{ChunkResult, Document, Facet, FacetValue};
 use shared::utils::safe_str_slice;
+use shared::SourceType;
 use shared::{
     AIClient, DatabasePool, ObjectStorage, Repository, SearcherConfig, StorageFactory,
     UserRepository,
@@ -237,15 +238,23 @@ impl SearchEngine {
             return Err(anyhow::anyhow!("Search query cannot be empty"));
         }
 
-        let source_ids = repo
-            .fetch_active_source_ids(request.source_types.as_deref())
-            .await?;
+        let all_sources = repo.fetch_active_sources().await?;
+        let all_source_ids: Vec<String> = all_sources.iter().map(|(id, _)| id.clone()).collect();
+        let filtered_source_ids: Vec<String> = if let Some(ref st) = request.source_types {
+            all_sources
+                .iter()
+                .filter(|(_, source_type)| st.contains(source_type))
+                .map(|(id, _)| id.clone())
+                .collect()
+        } else {
+            all_source_ids.clone()
+        };
 
         let search_future = async {
             let start_ts = Instant::now();
             let res = match request.search_mode() {
                 SearchMode::Fulltext => {
-                    self.fulltext_search(&search_repo, &request, &source_ids, &user_groups)
+                    self.fulltext_search(&search_repo, &request, &filtered_source_ids, &user_groups)
                         .await
                 }
                 SearchMode::Semantic => self.semantic_search(&request).await,
@@ -256,17 +265,44 @@ impl SearchEngine {
             res
         };
 
-        let facets_future = async {
+        // Unfiltered facets: query + permissions only, no source_type/date/person/content filters
+        let unfiltered_facets_future = async {
             if request.include_facets() {
                 let start_ts = Instant::now();
-                let content_types = request.content_types.as_deref();
-                let attribute_filters = request.attribute_filters.as_ref();
                 let facets = search_repo
                     .get_facet_counts(
                         &request.query,
-                        &source_ids,
-                        content_types,
-                        attribute_filters,
+                        &all_source_ids,
+                        None,
+                        None,
+                        request.user_email().map(|e| e.as_str()),
+                        &user_groups,
+                        None,
+                        None,
+                    )
+                    .await
+                    .unwrap_or_else(|e| {
+                        info!("Failed to get unfiltered facet counts: {}", e);
+                        vec![]
+                    });
+
+                debug!("Unfiltered facets fetched in {:?}", start_ts.elapsed());
+                facets
+            } else {
+                vec![]
+            }
+        };
+
+        // Filtered facets: used only for total_count (pagination)
+        let filtered_facets_future = async {
+            if request.include_facets() {
+                let start_ts = Instant::now();
+                let facets = search_repo
+                    .get_facet_counts(
+                        &request.query,
+                        &filtered_source_ids,
+                        request.content_types.as_deref(),
+                        request.attribute_filters.as_ref(),
                         request.user_email().map(|e| e.as_str()),
                         &user_groups,
                         request.date_filter.as_ref(),
@@ -274,27 +310,31 @@ impl SearchEngine {
                     )
                     .await
                     .unwrap_or_else(|e| {
-                        info!("Failed to get facet counts: {}", e);
+                        info!("Failed to get filtered facet counts: {}", e);
                         vec![]
                     });
 
-                debug!("Facets fetched in {:?}", start_ts.elapsed());
+                debug!("Filtered facets fetched in {:?}", start_ts.elapsed());
                 facets
             } else {
-                debug!("Facets not requested, returning empty array.");
                 vec![]
             }
         };
 
-        let (search_result, facets) = tokio::join!(search_future, facets_future);
+        let (search_result, facets, filtered_facets) = tokio::join!(
+            search_future,
+            unfiltered_facets_future,
+            filtered_facets_future
+        );
         let mut results = search_result?;
 
         // Apply source boost for implicit source words (e.g. "standup slack")
         if !parsed.boosted_source_types.is_empty() {
-            let boosted_source_ids = repo
-                .fetch_active_source_ids(Some(&parsed.boosted_source_types))
-                .await
-                .unwrap_or_default();
+            let boosted_source_ids: Vec<String> = all_sources
+                .iter()
+                .filter(|(_, st)| parsed.boosted_source_types.contains(st))
+                .map(|(id, _)| id.clone())
+                .collect();
             if !boosted_source_ids.is_empty() {
                 const SOURCE_BOOST_MULTIPLIER: f32 = 1.5;
                 for result in &mut results {
@@ -332,8 +372,7 @@ impl SearchEngine {
         if !parsed.boosted_source_types.is_empty() || !parsed.person_boosts.is_empty() {
             results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
         }
-        // TODO: this will need to change once we introduce more facets beyond just source_type
-        let total_count = facets
+        let total_count: i64 = filtered_facets
             .iter()
             .flat_map(|f| f.values.iter().map(|fv| fv.count))
             .sum();
@@ -341,6 +380,9 @@ impl SearchEngine {
         let query_time = start_time.elapsed().as_millis() as u64;
 
         self.populate_source_types(&mut results).await;
+
+        // Build active_filters from merged request state
+        let active_filters = build_active_filters(&request);
 
         info!(
             "Search completed in {}ms, found {} results",
@@ -361,6 +403,11 @@ impl SearchEngine {
                 None
             } else {
                 Some(facets)
+            },
+            active_filters: if active_filters.is_empty() {
+                None
+            } else {
+                Some(active_filters)
             },
         };
 
@@ -707,6 +754,7 @@ impl SearchEngine {
             has_more: false,
             query: request.query.clone(),
             facets: None,
+            active_filters: None,
         })
     }
 
@@ -1255,4 +1303,94 @@ impl SearchEngine {
 
         prompt
     }
+}
+
+fn source_type_to_string(st: &SourceType) -> String {
+    serde_json::to_value(st)
+        .ok()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default()
+}
+
+fn build_active_filters(request: &SearchRequest) -> Vec<Facet> {
+    let mut filters = Vec::new();
+
+    if let Some(ref source_types) = request.source_types {
+        if !source_types.is_empty() {
+            filters.push(Facet {
+                name: "source_type".to_string(),
+                values: source_types
+                    .iter()
+                    .map(|st| FacetValue {
+                        value: source_type_to_string(st),
+                        count: 0,
+                    })
+                    .collect(),
+            });
+        }
+    }
+
+    if let Some(ref date_filter) = request.date_filter {
+        let mut values = Vec::new();
+        if let Some(after) = date_filter.after {
+            values.push(FacetValue {
+                value: format!("after:{}", after.date()),
+                count: 0,
+            });
+        }
+        if let Some(before) = date_filter.before {
+            values.push(FacetValue {
+                value: format!("before:{}", before.date()),
+                count: 0,
+            });
+        }
+        if !values.is_empty() {
+            filters.push(Facet {
+                name: "date_filter".to_string(),
+                values,
+            });
+        }
+    }
+
+    if let Some(ref person_filters) = request.person_filters {
+        if !person_filters.is_empty() {
+            filters.push(Facet {
+                name: "person_filter".to_string(),
+                values: person_filters
+                    .iter()
+                    .map(|p| FacetValue {
+                        value: p.clone(),
+                        count: 0,
+                    })
+                    .collect(),
+            });
+        }
+    }
+
+    if let Some(ref content_types) = request.content_types {
+        if !content_types.is_empty() {
+            filters.push(Facet {
+                name: "content_type".to_string(),
+                values: content_types
+                    .iter()
+                    .map(|ct| FacetValue {
+                        value: ct.clone(),
+                        count: 0,
+                    })
+                    .collect(),
+            });
+        }
+    }
+
+    if let Some(ref attribute_filters) = request.attribute_filters {
+        for (key, filter) in attribute_filters {
+            let value = serde_json::to_string(filter).unwrap_or_default();
+            filters.push(Facet {
+                name: format!("attribute:{}", key),
+                values: vec![FacetValue { value, count: 0 }],
+            });
+        }
+    }
+
+    filters
 }

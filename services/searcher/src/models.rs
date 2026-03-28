@@ -77,6 +77,8 @@ pub struct SearchResponse {
     pub query: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub facets: Option<Vec<Facet>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_filters: Option<Vec<Facet>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -158,6 +158,15 @@ impl DocumentRepository {
         Ok(source_ids)
     }
 
+    pub async fn fetch_active_sources(&self) -> Result<Vec<(String, SourceType)>, DatabaseError> {
+        let rows: Vec<(String, SourceType)> =
+            sqlx::query_as(r#"SELECT id, source_type FROM sources WHERE NOT is_deleted"#)
+                .fetch_all(&self.pool)
+                .await?;
+
+        Ok(rows)
+    }
+
     pub async fn fetch_all_permission_users(&self) -> Result<Vec<String>, DatabaseError> {
         let users: Vec<String> = sqlx::query_scalar(
             r#"SELECT DISTINCT lower(elem)
