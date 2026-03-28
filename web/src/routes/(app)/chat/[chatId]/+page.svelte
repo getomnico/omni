@@ -72,6 +72,7 @@
     let userMessage = $state('')
     let chatContainerRef: HTMLDivElement
     let lastUserMessageRef: HTMLDivElement | null = $state(null)
+    let userInputRef: ReturnType<typeof UserInput>
 
     let isStreaming = $state(false)
     let error = $state<string | null>(null)
@@ -86,6 +87,7 @@
     // Tracks user's branch choices: parentId -> chosen childId
     let branchSelections = $state<Record<string, string>>({})
     let userHasScrolled = $state(false)
+    let bottomPadding = $state(80)
 
     let processedMessages = $derived(processMessages(chatMessages))
 
@@ -131,6 +133,8 @@
             eventSource = null
         }
         isStreaming = false
+        requestAnimationFrame(() => recalcBottomPadding())
+        userInputRef?.focus()
     }
 
     async function handleFeedback(messageId: string, feedbackType: 'upvote' | 'downvote') {
@@ -576,12 +580,31 @@
         })
     }
 
+    function recalcBottomPadding() {
+        if (!lastUserMessageRef || !chatContainerRef) return
+        const containerHeight = chatContainerRef.clientHeight
+        // Content from the user message top to the bottom of all content
+        const contentBelowMessage =
+            chatContainerRef.scrollHeight -
+            (lastUserMessageRef.offsetTop - chatContainerRef.offsetTop)
+        bottomPadding = Math.max(80, containerHeight - contentBelowMessage)
+    }
+
     function scrollUserMessageToTop() {
         requestAnimationFrame(() => {
             if (lastUserMessageRef && chatContainerRef) {
-                // Scroll so the user message appears at the top of the viewport
-                const messageTop = lastUserMessageRef.offsetTop - chatContainerRef.offsetTop
-                chatContainerRef.scrollTo({ top: messageTop, behavior: 'smooth' })
+                // Before the assistant response exists, pad so user msg can reach the top
+                const containerHeight = chatContainerRef.clientHeight
+                const messageHeight = lastUserMessageRef.offsetHeight
+                bottomPadding = Math.max(80, containerHeight - messageHeight - 24)
+
+                requestAnimationFrame(() => {
+                    if (lastUserMessageRef && chatContainerRef) {
+                        const messageTop =
+                            lastUserMessageRef.offsetTop - chatContainerRef.offsetTop - 24
+                        chatContainerRef.scrollTo({ top: messageTop, behavior: 'smooth' })
+                    }
+                })
             }
         })
     }
@@ -600,7 +623,14 @@
             userHasScrolled = !isNearBottom
         }
         chatContainerRef?.addEventListener('scroll', handleScroll)
-        return () => chatContainerRef?.removeEventListener('scroll', handleScroll)
+
+        const resizeObserver = new ResizeObserver(() => recalcBottomPadding())
+        if (chatContainerRef) resizeObserver.observe(chatContainerRef)
+
+        return () => {
+            chatContainerRef?.removeEventListener('scroll', handleScroll)
+            resizeObserver.disconnect()
+        }
     })
 
     function streamResponse(chatId: string) {
@@ -810,6 +840,7 @@
                 const approvalData: ApprovalRequiredEvent = JSON.parse(event.data)
                 pendingApproval = approvalData
                 isStreaming = false
+                requestAnimationFrame(() => recalcBottomPadding())
             } catch (err) {
                 console.error('Failed to parse approval_required event:', err)
             }
@@ -818,6 +849,8 @@
         eventSource.addEventListener('end_of_stream', () => {
             streamCompleted = true
             isStreaming = false
+            requestAnimationFrame(() => recalcBottomPadding())
+            userInputRef?.focus()
             eventSource?.close()
             eventSource = null
 
@@ -829,6 +862,8 @@
         eventSource.addEventListener('error', (event) => {
             error = 'Failed to generate response. Please try again.'
             isStreaming = false
+            requestAnimationFrame(() => recalcBottomPadding())
+            userInputRef?.focus()
             eventSource?.close()
             eventSource = null
         })
@@ -1056,11 +1091,11 @@
             </div>
         </div>
     {:else}
-        <div class="max-w-[80%]">
-            <div class="text-foreground rounded-2xl bg-gray-200 px-6 py-4">
+        <div class="relative max-w-[80%]">
+            <div class="text-foreground w-fit rounded-2xl bg-gray-200 px-6 py-4">
                 {@html marked.parse((message.content[0] as TextMessageContent).text)}
             </div>
-            <div class="mx-0.5 mt-1 flex items-center justify-end gap-1">
+            <div class="absolute right-0 mx-0.5 mt-1 flex items-center justify-end gap-1">
                 {@render messageTimestamp(message)}
                 {#if message.siblingIds && message.siblingIds.length > 1}
                     {@render branchNavigation(message)}
@@ -1231,7 +1266,9 @@
 <div class="flex h-full flex-col">
     <!-- Chat Container -->
     <div bind:this={chatContainerRef} class="flex w-full flex-1 flex-col overflow-y-auto px-4 pt-6">
-        <div class="mx-auto mb-20 flex w-full max-w-4xl flex-1 flex-col gap-1">
+        <div
+            class="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-1"
+            style:padding-bottom="{bottomPadding}px">
             {#if data.modelDisplayName}
                 <div class="flex justify-center">
                     <span class="text-muted-foreground rounded-full border px-3 py-0.5 text-xs">
@@ -1256,7 +1293,7 @@
                     {/if}
                 {:else if message.role === 'assistant'}
                     <!-- Assistant Message -->
-                    <div class="group flex flex-col gap-1">
+                    <div class="group mt-8 flex flex-col gap-1">
                         <div class="prose prose-p:my-3 max-w-none">
                             <ToolCallsGroup
                                 content={message.content}
@@ -1346,6 +1383,7 @@
         <!-- Input -->
         <div class="bg-background sticky bottom-0 flex justify-center pb-4">
             <UserInput
+                bind:this={userInputRef}
                 bind:value={userMessage}
                 inputMode="chat"
                 onSubmit={handleSubmit}

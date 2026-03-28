@@ -93,6 +93,10 @@
         ),
     )
 
+    export function focus() {
+        inputRef?.focus()
+    }
+
     let inputRef: HTMLDivElement
     let popoverContainer: HTMLDivElement | undefined = $state()
     let placeholder = $derived(placeholders[inputMode])

@@ -15,29 +15,37 @@
     let { content, isStreaming, stripThinkingContent }: Props = $props()
     let expanded = $state(false)
 
-    $effect(() => {
-        if (isStreaming) expanded = false
-    })
-
     let toolBlocks = $derived(content.filter((b): b is ToolMessageContent => b.type === 'tool'))
-    let hiddenToolCount = $derived(
-        expanded ? 0 : Math.max(0, toolBlocks.length - MAX_VISIBLE_TOOLS),
-    )
+    let collapsibleCount = $derived(Math.max(0, toolBlocks.length - MAX_VISIBLE_TOOLS))
     let visibleToolIds = $derived.by(() => {
         if (expanded || toolBlocks.length <= MAX_VISIBLE_TOOLS) {
             return new Set(toolBlocks.map((b) => b.id))
         }
         return new Set(toolBlocks.slice(-MAX_VISIBLE_TOOLS).map((b) => b.id))
     })
+
+    function fadeIn(node: HTMLElement) {
+        node.style.opacity = '0'
+        node.style.transform = 'translateY(4px)'
+        requestAnimationFrame(() => {
+            node.style.transition = 'opacity 300ms ease-out, transform 300ms ease-out'
+            node.style.opacity = '1'
+            node.style.transform = 'translateY(0)'
+        })
+    }
 </script>
 
-{#if hiddenToolCount > 0 && !isStreaming}
+{#if collapsibleCount > 0}
     <button
         class="text-muted-foreground hover:text-foreground mb-1 flex cursor-pointer items-center gap-1 text-xs transition-colors"
         onclick={() => (expanded = !expanded)}>
         <ChevronRight
             class="h-3 w-3 transition-transform duration-200 {expanded ? 'rotate-90' : ''}" />
-        {hiddenToolCount} more tool call{hiddenToolCount > 1 ? 's' : ''}
+        {#if expanded}
+            hide {collapsibleCount} tool call{collapsibleCount > 1 ? 's' : ''}
+        {:else}
+            {collapsibleCount} more tool call{collapsibleCount > 1 ? 's' : ''}
+        {/if}
     </button>
 {/if}
 
@@ -48,6 +56,7 @@
             citations={block.citations} />
     {:else if block.type === 'tool'}
         <div
+            use:fadeIn
             class="transition-all duration-300 ease-in-out"
             class:max-h-0={!visibleToolIds.has(block.id)}
             class:opacity-0={!visibleToolIds.has(block.id)}
