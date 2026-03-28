@@ -37,6 +37,7 @@
         ApprovalRequiredEvent,
     } from '$lib/types/message'
     import ToolMessage from '$lib/components/tool-message.svelte'
+    import ToolCallsGroup from '$lib/components/tool-calls-group.svelte'
     import { cn } from '$lib/utils'
     import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources'
     import { page } from '$app/state'
@@ -84,6 +85,7 @@
     let editingContent = $state('')
     // Tracks user's branch choices: parentId -> chosen childId
     let branchSelections = $state<Record<string, string>>({})
+    let userHasScrolled = $state(false)
 
     let processedMessages = $derived(processMessages(chatMessages))
 
@@ -590,6 +592,15 @@
         if ((page.state as any).stream) {
             streamResponse(data.chat.id)
         }
+
+        const handleScroll = () => {
+            if (!chatContainerRef) return
+            const { scrollTop, scrollHeight, clientHeight } = chatContainerRef
+            const isNearBottom = scrollTop + clientHeight >= scrollHeight - 100
+            userHasScrolled = !isNearBottom
+        }
+        chatContainerRef?.addEventListener('scroll', handleScroll)
+        return () => chatContainerRef?.removeEventListener('scroll', handleScroll)
     })
 
     function streamResponse(chatId: string) {
@@ -786,7 +797,7 @@
                     collectStreamingResponse(data)
                 }
 
-                scrollToBottom()
+                if (!userHasScrolled) scrollToBottom()
             } catch (err) {
                 console.error('Failed to parse SSE data:', event.data, err)
             } finally {
@@ -893,6 +904,7 @@
             chatMessages.push(newUserMessage)
 
             userMessage = ''
+            userHasScrolled = false
 
             // Scroll to show the new user message at the top
             scrollUserMessageToTop()
@@ -1233,12 +1245,12 @@
                     <!-- User Message -->
                     {#if i === processedMessages.length - 1}
                         <div
-                            class="group mt-8 flex flex-col items-start"
+                            class="group mt-8 flex flex-col items-end"
                             bind:this={lastUserMessageRef}>
                             {@render userMessageContent(message)}
                         </div>
                     {:else}
-                        <div class="group mt-8 flex flex-col items-start">
+                        <div class="group mt-8 flex flex-col items-end">
                             {@render userMessageContent(message)}
                         </div>
                     {/if}
@@ -1246,17 +1258,10 @@
                     <!-- Assistant Message -->
                     <div class="group flex flex-col gap-1">
                         <div class="prose prose-p:my-3 max-w-none">
-                            {#each message.content as block (block.id)}
-                                {#if block.type === 'text'}
-                                    <MarkdownMessage
-                                        content={stripThinkingContent(block.text, 'thinking')}
-                                        citations={block.citations} />
-                                {:else if block.type === 'tool'}
-                                    <div class="mb-1">
-                                        <ToolMessage message={block} />
-                                    </div>
-                                {/if}
-                            {/each}
+                            <ToolCallsGroup
+                                content={message.content}
+                                isStreaming={isStreaming && i === processedMessages.length - 1}
+                                {stripThinkingContent} />
                         </div>
                         {#if !isStreaming}
                             {@render sourcesSection(collectSources(message))}
