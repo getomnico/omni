@@ -3,10 +3,12 @@
     import { Button } from '$lib/components/ui/button'
     import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
+    import { Checkbox } from '$lib/components/ui/checkbox'
+    import { Badge } from '$lib/components/ui/badge'
     import * as Card from '$lib/components/ui/card'
     import * as AlertDialog from '$lib/components/ui/alert-dialog'
     import * as Dialog from '$lib/components/ui/dialog'
-    import { CheckCircle2, Loader2, Pencil, Trash2, Server, Zap, Mail, Send } from '@lucide/svelte'
+    import { Loader2, Pencil, Trash2, Server, Zap, Mail, Send } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import type { PageData } from './$types'
     import { EMAIL_PROVIDER_TYPES, EMAIL_PROVIDER_LABELS, type EmailProviderType } from '$lib/types'
@@ -105,6 +107,16 @@
         ) as Record<EmailProviderType, (typeof data.providers)[0] | null>,
     )
 
+    let connectedProviders = $derived(
+        EMAIL_PROVIDER_TYPES.filter((t) => providerByType[t] !== null).map((t) => ({
+            type: t,
+            provider: providerByType[t]!,
+            meta: providerMeta[t],
+        })),
+    )
+
+    let unconfiguredTypes = $derived(EMAIL_PROVIDER_TYPES.filter((t) => providerByType[t] === null))
+
     function openSetupDialog(type: EmailProviderType) {
         editMode = false
         editingHasSecret = false
@@ -135,7 +147,6 @@
         dialogOpen = true
     }
 
-    let isTesting = $state(false)
     let isSendingTest = $state(false)
 </script>
 
@@ -149,52 +160,85 @@
             </p>
         </div>
 
-        <!-- Provider Cards -->
-        <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-            {#each EMAIL_PROVIDER_TYPES as type}
-                {@const provider = providerByType[type]}
-                {@const meta = providerMeta[type]}
-                <Card.Root>
-                    <Card.Header class="flex flex-row items-start justify-between space-y-0 pb-2">
-                        <div class="flex items-start gap-3">
-                            {#if meta.icon}
-                                <img
-                                    src={meta.icon}
-                                    alt={EMAIL_PROVIDER_LABELS[type]}
-                                    class="h-8 w-8" />
-                            {:else if type === 'smtp'}
-                                <Server class="text-muted-foreground h-8 w-8" />
-                            {:else}
-                                <Mail class="text-muted-foreground h-8 w-8" />
-                            {/if}
-                            <div>
-                                <Card.Title class="text-lg">
-                                    {EMAIL_PROVIDER_LABELS[type]}
-                                </Card.Title>
-                                {#if provider}
-                                    <div class="flex items-center gap-1.5 text-sm text-green-600">
-                                        <CheckCircle2 class="h-3.5 w-3.5" />
-                                        Connected
-                                        {#if provider.isCurrent}
+        <!-- Connected Provider Cards -->
+        {#if connectedProviders.length > 0}
+            <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                {#each connectedProviders as { type, provider, meta } (provider.id)}
+                    <Card.Root class="group/card">
+                        <Card.Header class="pb-2">
+                            <div class="flex items-start gap-3">
+                                {#if meta.icon}
+                                    <img
+                                        src={meta.icon}
+                                        alt={EMAIL_PROVIDER_LABELS[type]}
+                                        class="h-8 w-8" />
+                                {:else if type === 'smtp'}
+                                    <Server class="text-muted-foreground h-8 w-8" />
+                                {:else}
+                                    <Mail class="text-muted-foreground h-8 w-8" />
+                                {/if}
+                                <div>
+                                    <div class="text-base leading-tight font-semibold">
+                                        {EMAIL_PROVIDER_LABELS[type]}
+                                    </div>
+                                    <div class="mt-1 flex items-center gap-1.5">
+                                        <Badge
+                                            class="border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-400">
                                             <span
-                                                class="bg-primary/10 text-primary ml-1 rounded-full px-1.5 py-0.5 text-xs">
-                                                Current
-                                            </span>
+                                                class="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-green-500"
+                                            ></span>
+                                            Connected
+                                        </Badge>
+                                        {#if provider.isCurrent}
+                                            <Badge variant="default">Current</Badge>
                                         {/if}
                                     </div>
-                                {:else}
-                                    <Card.Description>{meta.description}</Card.Description>
-                                {/if}
+                                </div>
                             </div>
-                        </div>
-                    </Card.Header>
-                    <Card.Content>
-                        {#if provider}
+                            <Card.Action>
+                                <div
+                                    class="flex items-center gap-1 opacity-0 transition-opacity group-hover/card:opacity-100">
+                                    <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        class="h-8 w-8 cursor-pointer"
+                                        title="Edit provider"
+                                        onclick={() => openEditDialog(provider)}>
+                                        <Pencil class="h-4 w-4" />
+                                    </Button>
+                                    <form
+                                        method="POST"
+                                        action="?/delete"
+                                        use:enhance={enhanceWithToast}>
+                                        <input type="hidden" name="id" value={provider.id} />
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            class="hover:text-destructive h-8 w-8 cursor-pointer"
+                                            title="Remove provider"
+                                            onclick={(e) => {
+                                                const form = (
+                                                    e.currentTarget as HTMLElement
+                                                ).closest('form')!
+                                                requestConfirm(
+                                                    'Remove Provider',
+                                                    `Are you sure you want to remove "${EMAIL_PROVIDER_LABELS[type]}"?${provider.isCurrent ? ' This is the current provider — removing it will disable email sending until another provider is configured.' : ''}`,
+                                                    form as HTMLFormElement,
+                                                )
+                                            }}>
+                                            <Trash2 class="h-4 w-4" />
+                                        </Button>
+                                    </form>
+                                </div>
+                            </Card.Action>
+                        </Card.Header>
+                        <Card.Content>
                             {@const config = provider.config as Record<string, string>}
-                            <div class="mb-3 space-y-1">
-                                <p class="text-muted-foreground text-xs font-medium uppercase">
+                            <div class="space-y-1">
+                                <span
+                                    class="text-muted-foreground text-xs font-semibold tracking-wider uppercase">
                                     Configuration
-                                </p>
+                                </span>
                                 {#if type === 'acs'}
                                     <div class="text-sm">
                                         <span class="text-muted-foreground">Sender:</span>
@@ -217,7 +261,7 @@
                                 {/if}
                             </div>
 
-                            <div class="flex flex-wrap gap-2">
+                            <div class="mt-3 flex flex-wrap gap-2">
                                 {#if !provider.isCurrent}
                                     <form
                                         method="POST"
@@ -282,50 +326,54 @@
                                         </Button>
                                     </form>
                                 {/if}
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    class="cursor-pointer gap-1"
-                                    onclick={() => openEditDialog(provider)}>
-                                    <Pencil class="h-3 w-3" />
-                                    Edit
-                                </Button>
-                                <form
-                                    method="POST"
-                                    action="?/delete"
-                                    use:enhance={enhanceWithToast}>
-                                    <input type="hidden" name="id" value={provider.id} />
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="sm"
-                                        class="cursor-pointer gap-1 text-red-600 hover:text-red-700"
-                                        onclick={(e) => {
-                                            const form = (e.currentTarget as HTMLElement).closest(
-                                                'form',
-                                            )!
-                                            requestConfirm(
-                                                'Remove Provider',
-                                                `Are you sure you want to remove "${EMAIL_PROVIDER_LABELS[type]}"?${provider.isCurrent ? ' This is the current provider — removing it will disable email sending until another provider is configured.' : ''}`,
-                                                form as HTMLFormElement,
-                                            )
-                                        }}>
-                                        <Trash2 class="h-3 w-3" />
-                                        Remove
-                                    </Button>
-                                </form>
                             </div>
-                        {:else}
-                            <Button
-                                class="mt-1 cursor-pointer gap-2"
-                                onclick={() => openSetupDialog(type)}>
-                                Connect
-                            </Button>
-                        {/if}
-                    </Card.Content>
-                </Card.Root>
-            {/each}
-        </div>
+                        </Card.Content>
+                    </Card.Root>
+                {/each}
+            </div>
+        {/if}
+
+        <!-- Connect a Provider -->
+        {#if unconfiguredTypes.length > 0}
+            <div class="space-y-3">
+                <h2 class="text-lg font-semibold">Connect a Provider</h2>
+                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {#each unconfiguredTypes as type}
+                        {@const meta = providerMeta[type]}
+                        <button
+                            type="button"
+                            class="cursor-pointer text-left"
+                            onclick={() => openSetupDialog(type)}>
+                            <Card.Root
+                                class="hover:border-foreground/20 hover:bg-accent/50 h-full transition-colors">
+                                <Card.Header>
+                                    <div class="flex items-center gap-3">
+                                        {#if meta.icon}
+                                            <img
+                                                src={meta.icon}
+                                                alt={EMAIL_PROVIDER_LABELS[type]}
+                                                class="h-8 w-8" />
+                                        {:else if type === 'smtp'}
+                                            <Server class="text-muted-foreground h-8 w-8" />
+                                        {:else}
+                                            <Mail class="text-muted-foreground h-8 w-8" />
+                                        {/if}
+                                        <div>
+                                            <Card.Title class="text-sm">
+                                                {EMAIL_PROVIDER_LABELS[type]}
+                                            </Card.Title>
+                                            <Card.Description class="text-xs">
+                                                {meta.description}
+                                            </Card.Description>
+                                        </div>
+                                    </div>
+                                </Card.Header>
+                            </Card.Root>
+                        </button>
+                    {/each}
+                </div>
+            </div>
+        {/if}
 
         <!-- Provider Setup / Edit Dialog -->
         <Dialog.Root bind:open={dialogOpen}>
@@ -469,15 +517,15 @@
                                 required={!editMode} />
                         </div>
                         <div class="flex items-center gap-2">
-                            <input
-                                type="checkbox"
+                            <Checkbox
                                 id="secure"
                                 name="secure"
-                                value="true"
                                 checked={formState.secure}
-                                onchange={(e) =>
-                                    (formState.secure = (e.target as HTMLInputElement).checked)}
-                                class="h-4 w-4" />
+                                onCheckedChange={(v) => (formState.secure = v === true)} />
+                            <input
+                                type="hidden"
+                                name="secure"
+                                value={formState.secure ? 'true' : ''} />
                             <Label for="secure" class="font-normal">Use TLS/SSL</Label>
                         </div>
                         <div class="space-y-2">
@@ -523,7 +571,7 @@
                     <AlertDialog.Cancel class="cursor-pointer">Cancel</AlertDialog.Cancel>
                     <AlertDialog.Action
                         class="cursor-pointer {confirmDestructive
-                            ? 'bg-red-600 text-white hover:bg-red-700'
+                            ? 'bg-destructive text-destructive-foreground hover:bg-destructive/90'
                             : ''}"
                         onclick={() => {
                             confirmFormRef?.requestSubmit()
