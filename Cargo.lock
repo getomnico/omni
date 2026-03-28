@@ -4258,12 +4258,12 @@ dependencies = [
  "dotenvy",
  "futures",
  "governor",
+ "html2text",
  "jsonwebtoken",
  "nonzero_ext",
  "omni-connector-manager",
  "rand 0.8.5",
  "redis",
- "regex",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -4276,6 +4276,7 @@ dependencies = [
  "tower-http 0.6.8",
  "tracing",
  "tracing-subscriber",
+ "urlencoding",
  "uuid",
 ]
 

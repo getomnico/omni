@@ -268,7 +268,7 @@ impl SyncManager {
         };
 
         // Sync group memberships (org-wide, shared between Drive and Gmail)
-        self.maybe_sync_groups(&source, &sync_run_id).await;
+        let known_groups = self.maybe_sync_groups(&source, &sync_run_id).await;
 
         // Run the sync
         let result = match source.source_type {
@@ -277,7 +277,7 @@ impl SyncManager {
                     .await
             }
             SourceType::Gmail => {
-                self.sync_gmail_source_internal(&source, &sync_run_id, sync_type)
+                self.sync_gmail_source_internal(&source, &sync_run_id, sync_type, known_groups)
                     .await
             }
             _ => Err(anyhow!("Unsupported source type: {:?}", source.source_type)),
@@ -1068,6 +1068,7 @@ impl SyncManager {
         source: &Source,
         sync_run_id: &str,
         sync_type: SyncType,
+        known_groups: HashSet<String>,
     ) -> Result<(usize, usize, usize)> {
         let service_creds = self.get_service_credentials(&source.id).await?;
         let service_auth = Arc::new(self.create_auth(&service_creds, source.source_type).await?);
@@ -1126,6 +1127,7 @@ impl SyncManager {
         let mut new_history_ids: HashMap<String, String> = HashMap::new();
 
         let processed_threads = Arc::new(std::sync::Mutex::new(HashSet::<String>::new()));
+        let known_groups = Arc::new(known_groups);
 
         info!(
             "Starting sequential user processing for {} users (Gmail, incremental={})",
@@ -1178,6 +1180,7 @@ impl SyncManager {
                                 sync_run_id,
                                 start_id,
                                 processed_threads.clone(),
+                                known_groups.clone(),
                             )
                             .await
                         {
@@ -1196,6 +1199,7 @@ impl SyncManager {
                                         sync_run_id,
                                         processed_threads.clone(),
                                         Some(&gmail_cutoff_date),
+                                        known_groups.clone(),
                                     )
                                     .await
                                 } else {
@@ -1211,6 +1215,7 @@ impl SyncManager {
                             sync_run_id,
                             processed_threads.clone(),
                             Some(&gmail_cutoff_date),
+                            known_groups.clone(),
                         )
                         .await
                     };
@@ -1825,6 +1830,7 @@ impl SyncManager {
         sync_run_id: &str,
         processed_threads: Arc<std::sync::Mutex<HashSet<String>>>,
         created_after: Option<&str>,
+        known_groups: Arc<HashSet<String>>,
     ) -> Result<(usize, usize)> {
         info!("Processing Gmail for user: {}", user_email);
 
@@ -1906,6 +1912,7 @@ impl SyncManager {
             source_id,
             sync_run_id,
             processed_threads,
+            known_groups,
         )
         .await
     }
@@ -1918,6 +1925,7 @@ impl SyncManager {
         sync_run_id: &str,
         start_history_id: &str,
         processed_threads: Arc<std::sync::Mutex<HashSet<String>>>,
+        known_groups: Arc<HashSet<String>>,
     ) -> Result<(usize, usize)> {
         info!(
             "Processing incremental Gmail sync for user {} from historyId {}",
@@ -2001,6 +2009,7 @@ impl SyncManager {
             source_id,
             sync_run_id,
             processed_threads,
+            known_groups,
         )
         .await
     }
@@ -2013,6 +2022,7 @@ impl SyncManager {
         source_id: &str,
         sync_run_id: &str,
         processed_threads: Arc<std::sync::Mutex<HashSet<String>>>,
+        known_groups: Arc<HashSet<String>>,
     ) -> Result<(usize, usize)> {
         let mut total_processed = 0;
         let mut total_updated = 0;
@@ -2133,8 +2143,38 @@ impl SyncManager {
                     }
                 }
 
-                if gmail_thread.total_messages > 0 {
-                    match gmail_thread.aggregate_content(&self.gmail_client) {
+                if gmail_thread.total_messages == 0 {
+                    // Thread has no messages — emit deletion if previously synced
+                    if sync_state
+                        .get_thread_sync_state(source_id, thread_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_some()
+                    {
+                        let event = ConnectorEvent::DocumentDeleted {
+                            sync_run_id: sync_run_id.to_string(),
+                            source_id: source_id.to_string(),
+                            document_id: thread_id.clone(),
+                        };
+                        if let Err(e) = self
+                            .sdk_client
+                            .emit_event(sync_run_id, source_id, event)
+                            .await
+                        {
+                            error!(
+                                "Failed to emit deletion for empty thread {}: {}",
+                                thread_id, e
+                            );
+                        }
+                    } else {
+                        debug!("Gmail thread {} has no messages, skipping", thread_id);
+                    }
+                } else {
+                    match gmail_thread
+                        .aggregate_content(&self.gmail_client, &service_auth, user_email)
+                        .await
+                    {
                         Ok(content) => {
                             if !content.trim().is_empty() {
                                 match self.sdk_client.store_content(sync_run_id, &content).await {
@@ -2143,7 +2183,7 @@ impl SyncManager {
                                             sync_run_id,
                                             source_id,
                                             &content_id,
-                                            &self.gmail_client,
+                                            &known_groups,
                                         ) {
                                             Ok(event) => {
                                                 match self
@@ -2197,8 +2237,6 @@ impl SyncManager {
                             );
                         }
                     }
-                } else {
-                    debug!("Gmail thread {} has no messages, skipping", thread_id);
                 }
 
                 drop(gmail_thread);
@@ -2217,12 +2255,12 @@ impl SyncManager {
 
     /// Sync group memberships if this is a service-account (domain-wide) source.
     /// OAuth single-user sources don't have Admin API access, so we skip them.
-    async fn maybe_sync_groups(&self, source: &Source, sync_run_id: &str) {
+    async fn maybe_sync_groups(&self, source: &Source, sync_run_id: &str) -> HashSet<String> {
         let service_creds = match self.get_service_credentials(&source.id).await {
             Ok(creds) => creds,
             Err(e) => {
                 warn!("Failed to get service credentials for group sync: {}", e);
-                return;
+                return HashSet::new();
             }
         };
 
@@ -2230,21 +2268,21 @@ impl SyncManager {
             Ok(auth) => auth,
             Err(e) => {
                 warn!("Failed to create auth for group sync: {}", e);
-                return;
+                return HashSet::new();
             }
         };
 
         // Only service-account (domain-wide) setups have Admin API access
         if service_auth.is_oauth() {
             debug!("Skipping group sync for OAuth source {}", source.id);
-            return;
+            return HashSet::new();
         }
 
         let domain = match self.get_domain_from_credentials(&service_creds) {
             Ok(d) => d,
             Err(e) => {
                 warn!("Failed to get domain for group sync: {}", e);
-                return;
+                return HashSet::new();
             }
         };
 
@@ -2252,7 +2290,7 @@ impl SyncManager {
             Ok(email) => email,
             Err(e) => {
                 warn!("Failed to get user email for group sync: {}", e);
-                return;
+                return HashSet::new();
             }
         };
 
@@ -2260,18 +2298,22 @@ impl SyncManager {
             Ok(token) => token,
             Err(e) => {
                 warn!("Failed to get access token for group sync: {}", e);
-                return;
+                return HashSet::new();
             }
         };
 
-        if let Err(e) = self
+        match self
             .sync_groups(&source.id, sync_run_id, &domain, &access_token)
             .await
         {
-            warn!(
-                "Failed to sync group memberships: {}. Continuing with document sync.",
-                e
-            );
+            Ok(group_emails) => group_emails,
+            Err(e) => {
+                warn!(
+                    "Failed to sync group memberships: {}. Continuing with document sync.",
+                    e
+                );
+                HashSet::new()
+            }
         }
     }
 
@@ -2281,7 +2323,7 @@ impl SyncManager {
         sync_run_id: &str,
         domain: &str,
         access_token: &str,
-    ) -> Result<()> {
+    ) -> Result<HashSet<String>> {
         info!("Syncing group memberships for domain: {}", domain);
 
         let groups = self
@@ -2290,8 +2332,11 @@ impl SyncManager {
             .await?;
         info!("Found {} groups in domain {}", groups.len(), domain);
 
+        let mut group_emails: HashSet<String> = HashSet::new();
         let mut total_members = 0;
         for group in &groups {
+            group_emails.insert(group.email.to_lowercase());
+
             let members = self
                 .admin_client
                 .list_all_group_members(access_token, &group.email)
@@ -2334,6 +2379,6 @@ impl SyncManager {
             groups.len(),
             total_members
         );
-        Ok(())
+        Ok(group_emails)
     }
 }

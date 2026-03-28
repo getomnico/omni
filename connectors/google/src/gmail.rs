@@ -645,33 +645,100 @@ impl GmailClient {
 
     pub fn extract_message_content(&self, message: &GmailMessage) -> Result<String> {
         if let Some(ref payload) = message.payload {
-            self.extract_text_from_payload(payload)
+            let mut plain_parts: Vec<String> = Vec::new();
+            let mut html_parts: Vec<String> = Vec::new();
+            Self::collect_text_parts(payload, &mut plain_parts, &mut html_parts);
+
+            let body = if !plain_parts.is_empty() {
+                plain_parts.join("\n\n")
+            } else if !html_parts.is_empty() {
+                let combined = html_parts.join("\n\n");
+                html_to_text(&combined)
+            } else {
+                String::new()
+            };
+
+            Ok(body)
         } else {
             Ok(String::new())
         }
     }
 
-    fn extract_text_from_payload(&self, payload: &MessagePart) -> Result<String> {
-        let mut content = String::new();
+    /// Extract message content including text from supported attachments.
+    pub async fn extract_message_content_with_attachments(
+        &self,
+        message: &GmailMessage,
+        auth: &GoogleAuth,
+        user_email: &str,
+    ) -> Result<String> {
+        let mut body = self.extract_message_content(message)?;
 
-        // If this part has a body with data, extract it
-        if let Some(ref body) = payload.body {
-            if let Some(ref data) = body.data {
-                if let Some(mime_type) = &payload.mime_type {
-                    if mime_type.starts_with("text/") {
-                        match URL_SAFE_NO_PAD.decode(data) {
-                            Ok(decoded) => {
-                                if let Ok(text) = String::from_utf8(decoded) {
-                                    if mime_type == "text/html" {
-                                        // Simple HTML to text conversion
-                                        content.push_str(&self.html_to_text(&text));
-                                    } else {
-                                        content.push_str(&text);
-                                    }
-                                }
+        if let Some(ref payload) = message.payload {
+            let mut attachment_parts: Vec<AttachmentInfo> = Vec::new();
+            Self::collect_attachment_parts(payload, &mut attachment_parts);
+
+            for att in attachment_parts {
+                match self
+                    .download_attachment(auth, user_email, &message.id, &att.attachment_id)
+                    .await
+                {
+                    Ok(data) => {
+                        match shared::content_extractor::extract_content(
+                            &data,
+                            &att.mime_type,
+                            Some(&att.filename),
+                        ) {
+                            Ok(text) if !text.trim().is_empty() => {
+                                body.push_str(&format!(
+                                    "\n\n[Attachment: {}]\n{}",
+                                    att.filename, text
+                                ));
+                            }
+                            Ok(_) => {
+                                body.push_str(&format!("\n\n[Attachment: {}]", att.filename));
                             }
                             Err(e) => {
-                                debug!("Failed to decode message part: {}", e);
+                                debug!(
+                                    "Failed to extract content from attachment {}: {}",
+                                    att.filename, e
+                                );
+                                body.push_str(&format!("\n\n[Attachment: {}]", att.filename));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        debug!(
+                            "Failed to download attachment {} ({}): {}",
+                            att.filename, att.attachment_id, e
+                        );
+                        body.push_str(&format!("\n\n[Attachment: {}]", att.filename));
+                    }
+                }
+            }
+        }
+
+        Ok(body)
+    }
+
+    /// Recursively collect text/plain and text/html parts separately,
+    /// skipping parts that are file attachments.
+    fn collect_text_parts(part: &MessagePart, plain: &mut Vec<String>, html: &mut Vec<String>) {
+        // Skip file attachments
+        if is_file_attachment(part) {
+            return;
+        }
+
+        if let Some(ref body) = part.body {
+            if let Some(ref data) = body.data {
+                if let Some(ref mime_type) = part.mime_type {
+                    if let Ok(decoded) = URL_SAFE_NO_PAD.decode(data) {
+                        if let Ok(text) = String::from_utf8(decoded) {
+                            if !text.trim().is_empty() {
+                                if mime_type == "text/plain" {
+                                    plain.push(text);
+                                } else if mime_type == "text/html" {
+                                    html.push(text);
+                                }
                             }
                         }
                     }
@@ -679,33 +746,113 @@ impl GmailClient {
             }
         }
 
-        // Recursively process parts
-        if let Some(ref parts) = payload.parts {
-            for part in parts {
-                if let Ok(part_content) = self.extract_text_from_payload(part) {
-                    if !part_content.is_empty() {
-                        content.push_str(&part_content);
-                        content.push('\n');
+        if let Some(ref parts) = part.parts {
+            for sub in parts {
+                Self::collect_text_parts(sub, plain, html);
+            }
+        }
+    }
+
+    /// Recursively collect attachment parts that have a supported MIME type.
+    fn collect_attachment_parts(part: &MessagePart, attachments: &mut Vec<AttachmentInfo>) {
+        if is_file_attachment(part) {
+            if let Some(ref body) = part.body {
+                if let Some(ref attachment_id) = body.attachment_id {
+                    let mime_type = part
+                        .mime_type
+                        .as_deref()
+                        .unwrap_or("application/octet-stream");
+                    let filename = part.filename.as_deref().unwrap_or("attachment");
+
+                    // Infer MIME type from extension if declared as octet-stream
+                    let effective_mime = if mime_type == "application/octet-stream" {
+                        mime_type_from_extension(filename).unwrap_or(mime_type)
+                    } else {
+                        mime_type
+                    };
+
+                    if is_supported_attachment_type(effective_mime) {
+                        // Skip very large attachments (>10MB)
+                        let too_large = body.size.map_or(false, |s| s > 10 * 1024 * 1024);
+                        if !too_large {
+                            attachments.push(AttachmentInfo {
+                                attachment_id: attachment_id.clone(),
+                                filename: filename.to_string(),
+                                mime_type: effective_mime.to_string(),
+                            });
+                        }
                     }
                 }
             }
         }
 
-        Ok(content)
+        if let Some(ref parts) = part.parts {
+            for sub in parts {
+                Self::collect_attachment_parts(sub, attachments);
+            }
+        }
     }
 
-    fn html_to_text(&self, html: &str) -> String {
-        // Simple HTML tag removal - in production, consider using a proper HTML parser
-        let re = regex::Regex::new(r"<[^>]*>").unwrap();
-        let text = re.replace_all(html, " ");
+    pub async fn download_attachment(
+        &self,
+        auth: &GoogleAuth,
+        user_email: &str,
+        message_id: &str,
+        attachment_id: &str,
+    ) -> Result<Vec<u8>> {
+        let message_id = message_id.to_string();
+        let attachment_id = attachment_id.to_string();
 
-        // Decode common HTML entities
-        text.replace("&nbsp;", " ")
-            .replace("&amp;", "&")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&#39;", "'")
+        let rate_limiter = self.get_or_create_user_rate_limiter(user_email)?;
+        execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
+            let message_id = message_id.clone();
+            let attachment_id = attachment_id.clone();
+            async move {
+                let url = format!(
+                    "{}/users/{}/messages/{}/attachments/{}",
+                    GMAIL_API_BASE, user_email, message_id, attachment_id
+                );
+
+                let response = self
+                    .client
+                    .get(&url)
+                    .bearer_auth(&token)
+                    .send()
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to download attachment {} for message {}",
+                            attachment_id, message_id
+                        )
+                    })?;
+
+                let status = response.status();
+                if is_auth_error(status) {
+                    return Ok(ApiResult::AuthError);
+                } else if !status.is_success() {
+                    let error_text = response.text().await?;
+                    return Ok(ApiResult::OtherError(anyhow!(
+                        "Gmail API attachment download error: HTTP {} - {}",
+                        status,
+                        error_text
+                    )));
+                }
+
+                let body: AttachmentResponse = response.json().await.with_context(|| {
+                    format!(
+                        "Failed to parse attachment response for {} in message {}",
+                        attachment_id, message_id
+                    )
+                })?;
+
+                let decoded = URL_SAFE_NO_PAD
+                    .decode(&body.data)
+                    .with_context(|| "Failed to decode attachment data")?;
+
+                Ok(ApiResult::Success(decoded))
+            }
+        })
+        .await
     }
 
     pub fn get_header_value(&self, message: &GmailMessage, header_name: &str) -> Option<String> {
@@ -876,4 +1023,62 @@ pub struct GmailThreadResponse {
     #[serde(rename = "historyId")]
     pub history_id: Option<String>,
     pub messages: Vec<GmailMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AttachmentResponse {
+    data: String,
+}
+
+#[derive(Debug)]
+pub struct AttachmentInfo {
+    pub attachment_id: String,
+    pub filename: String,
+    pub mime_type: String,
+}
+
+const SUPPORTED_ATTACHMENT_TYPES: &[&str] = &[
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.ms-excel",
+    "text/plain",
+    "text/html",
+    "text/csv",
+    "text/markdown",
+];
+
+fn is_supported_attachment_type(mime_type: &str) -> bool {
+    SUPPORTED_ATTACHMENT_TYPES.iter().any(|&t| t == mime_type)
+}
+
+fn is_file_attachment(part: &MessagePart) -> bool {
+    part.filename.as_ref().is_some_and(|f| !f.is_empty())
+        || part
+            .body
+            .as_ref()
+            .is_some_and(|b| b.attachment_id.is_some())
+}
+
+const HTML_TEXT_WIDTH: usize = 100;
+
+fn html_to_text(html: &str) -> String {
+    html2text::from_read(html.as_bytes(), HTML_TEXT_WIDTH).unwrap_or_default()
+}
+
+fn mime_type_from_extension(filename: &str) -> Option<&'static str> {
+    let ext = filename.rsplit('.').next()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "pdf" => Some("application/pdf"),
+        "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        "pptx" => Some("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+        "xls" => Some("application/vnd.ms-excel"),
+        "txt" => Some("text/plain"),
+        "html" | "htm" => Some("text/html"),
+        "csv" => Some("text/csv"),
+        "md" | "markdown" => Some("text/markdown"),
+        _ => None,
+    }
 }
