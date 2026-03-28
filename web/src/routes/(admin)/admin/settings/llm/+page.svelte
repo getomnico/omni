@@ -3,11 +3,13 @@
     import { Button } from '$lib/components/ui/button'
     import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
+    import { Checkbox } from '$lib/components/ui/checkbox'
+    import { Badge } from '$lib/components/ui/badge'
     import * as Card from '$lib/components/ui/card'
     import * as Alert from '$lib/components/ui/alert'
     import * as AlertDialog from '$lib/components/ui/alert-dialog'
     import * as Dialog from '$lib/components/ui/dialog'
-    import { Loader2, Info, Pencil, Trash2, Server, X } from '@lucide/svelte'
+    import { Loader2, Info, Pencil, Trash2, Server } from '@lucide/svelte'
     import { cn } from '$lib/utils'
     import { toast } from 'svelte-sonner'
     import type { PageData } from './$types'
@@ -207,11 +209,6 @@
         }
         modelDialogOpen = true
     }
-
-    function handleRoleCycle(model: { id: string; isDefault: boolean; isSecondary: boolean }) {
-        const key = model.isDefault ? `secondary-${model.id}` : `default-${model.id}`
-        roleForms[key]?.requestSubmit()
-    }
 </script>
 
 <div class="h-full overflow-y-auto p-6 py-8 pb-24">
@@ -225,9 +222,9 @@
 
         <!-- Connected Provider Cards -->
         {#if connectedProviders.length > 0}
-            <div class="space-y-4">
+            <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
                 {#each connectedProviders as { type, provider, meta } (provider.id)}
-                    <Card.Root>
+                    <Card.Root class="group/card">
                         <Card.Header class="pb-2">
                             <div class="flex items-center gap-3">
                                 {#if meta.icon}
@@ -235,36 +232,39 @@
                                 {:else}
                                     <Server class="text-muted-foreground h-8 w-8" />
                                 {/if}
-                                <div>
-                                    <div class="text-base leading-tight font-semibold">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-base leading-tight font-semibold">
                                         {provider.name}
-                                    </div>
-                                    <div
-                                        class="mt-0.5 flex items-center gap-1.5 text-xs font-medium text-green-600">
+                                    </span>
+                                    <Badge
+                                        class="border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-400">
                                         <span
-                                            class="inline-block h-1.5 w-1.5 rounded-full bg-green-500"
+                                            class="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-green-500"
                                         ></span>
                                         Connected
-                                    </div>
+                                    </Badge>
                                 </div>
                             </div>
                             <Card.Action>
-                                <div class="flex items-center gap-1">
-                                    <button
-                                        type="button"
-                                        class="text-muted-foreground hover:bg-accent hover:text-foreground cursor-pointer rounded-md p-1.5 transition-colors"
+                                <div
+                                    class="flex items-center gap-1 opacity-0 transition-opacity group-hover/card:opacity-100">
+                                    <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        class="h-8 w-8 cursor-pointer"
                                         title="Edit provider"
                                         onclick={() => openEditDialog(provider)}>
                                         <Pencil class="h-4 w-4" />
-                                    </button>
+                                    </Button>
                                     <form
                                         method="POST"
                                         action="?/delete"
                                         use:enhance={enhanceWithToast}>
                                         <input type="hidden" name="id" value={provider.id} />
-                                        <button
-                                            type="button"
-                                            class="text-muted-foreground hover:bg-accent cursor-pointer rounded-md p-1.5 transition-colors hover:text-red-500"
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            class="hover:text-destructive h-8 w-8 cursor-pointer"
                                             title="Remove provider"
                                             onclick={(e) => {
                                                 const form = (
@@ -277,7 +277,7 @@
                                                 )
                                             }}>
                                             <Trash2 class="h-4 w-4" />
-                                        </button>
+                                        </Button>
                                     </form>
                                 </div>
                             </Card.Action>
@@ -287,22 +287,23 @@
                             <!-- Models section header -->
                             <div class="flex items-center justify-between px-1">
                                 <span
-                                    class="text-muted-foreground text-[11px] font-semibold tracking-wider uppercase">
+                                    class="text-muted-foreground text-xs font-semibold tracking-wider uppercase">
                                     Models
                                 </span>
                                 {#if provider.models.length > 0}
-                                    <button
-                                        type="button"
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
                                         class={cn(
-                                            'cursor-pointer text-xs font-medium transition-colors',
+                                            'h-auto cursor-pointer px-1.5 py-0.5 text-xs font-medium transition-opacity',
                                             manageMode[provider.id]
                                                 ? 'text-primary'
-                                                : 'text-muted-foreground hover:text-foreground',
+                                                : 'text-muted-foreground opacity-0 group-hover/card:opacity-100',
                                         )}
                                         onclick={() =>
                                             (manageMode[provider.id] = !manageMode[provider.id])}>
                                         {manageMode[provider.id] ? 'Done' : 'Manage'}
-                                    </button>
+                                    </Button>
                                 {/if}
                             </div>
 
@@ -329,95 +330,104 @@
                                         </form>
 
                                         <div
-                                            class="flex items-center justify-between rounded-md px-1 py-2">
-                                            <div class="flex items-start gap-3">
-                                                <!-- Role dot -->
-                                                {#if manageMode[provider.id]}
-                                                    <button
-                                                        type="button"
-                                                        class="mt-1 cursor-pointer p-0.5"
-                                                        title="Cycle role"
-                                                        onclick={() => handleRoleCycle(model)}>
-                                                        <span
-                                                            class={cn(
-                                                                'block h-2.5 w-2.5 rounded-full ring-2 transition-all',
-                                                                model.isDefault
-                                                                    ? 'bg-amber-400 ring-amber-100 dark:ring-amber-400/20'
-                                                                    : model.isSecondary
-                                                                      ? 'bg-blue-500 ring-blue-100 dark:ring-blue-500/20'
-                                                                      : 'bg-zinc-300 ring-zinc-100 dark:bg-zinc-600 dark:ring-zinc-600/20',
-                                                            )}></span>
-                                                    </button>
-                                                {:else}
-                                                    <span
-                                                        class={cn(
-                                                            'mt-1.5 block h-2.5 w-2.5 rounded-full',
-                                                            model.isDefault
-                                                                ? 'bg-amber-400'
-                                                                : model.isSecondary
-                                                                  ? 'bg-blue-500'
-                                                                  : 'bg-zinc-300 dark:bg-zinc-600',
-                                                        )}></span>
-                                                {/if}
+                                            class="flex min-h-8 items-center justify-between rounded-md px-1">
+                                            <div class="flex items-center gap-2.5">
+                                                <span
+                                                    class={cn(
+                                                        'block h-2.5 w-2.5 shrink-0 rounded-full',
+                                                        model.isDefault
+                                                            ? 'bg-amber-400'
+                                                            : model.isSecondary
+                                                              ? 'bg-blue-500'
+                                                              : 'bg-muted-foreground/40',
+                                                    )}></span>
 
-                                                <div>
-                                                    <div class="text-sm font-medium">
+                                                <div class="flex items-baseline gap-2">
+                                                    <span class="text-sm font-medium">
                                                         {model.displayName}
-                                                    </div>
+                                                    </span>
                                                     {#if model.isDefault}
-                                                        <div
-                                                            class="text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                                                        <span
+                                                            class="text-xs font-medium text-amber-600 dark:text-amber-400">
                                                             Default
-                                                        </div>
+                                                        </span>
                                                     {:else if model.isSecondary}
-                                                        <div
-                                                            class="text-[11px] font-medium text-blue-600 dark:text-blue-400">
+                                                        <span
+                                                            class="text-xs font-medium text-blue-600 dark:text-blue-400">
                                                             Secondary
-                                                        </div>
+                                                        </span>
                                                     {/if}
                                                 </div>
                                             </div>
 
-                                            <!-- Delete button in manage mode -->
                                             {#if manageMode[provider.id]}
-                                                <form
-                                                    method="POST"
-                                                    action="?/deleteModel"
-                                                    use:enhance={enhanceWithToast}>
-                                                    <input
-                                                        type="hidden"
-                                                        name="id"
-                                                        value={model.id} />
-                                                    <button
-                                                        type="button"
-                                                        class="text-muted-foreground cursor-pointer rounded-full p-1 transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950"
-                                                        title="Remove model"
-                                                        onclick={(e) => {
-                                                            const form = (
-                                                                e.currentTarget as HTMLElement
-                                                            ).closest('form')!
-                                                            requestConfirm(
-                                                                'Remove Model',
-                                                                `Are you sure you want to remove "${model.displayName}"? Existing chats using this model will fall back to the default.`,
-                                                                form as HTMLFormElement,
-                                                            )
-                                                        }}>
-                                                        <X class="h-3.5 w-3.5" />
-                                                    </button>
-                                                </form>
+                                                <div class="flex items-center gap-1">
+                                                    {#if !model.isDefault}
+                                                        <Button
+                                                            variant="outline"
+                                                            size="sm"
+                                                            class="h-6 cursor-pointer px-2 text-xs"
+                                                            onclick={() =>
+                                                                roleForms[
+                                                                    `default-${model.id}`
+                                                                ]?.requestSubmit()}>
+                                                            Set default
+                                                        </Button>
+                                                    {/if}
+                                                    {#if !model.isSecondary}
+                                                        <Button
+                                                            variant="outline"
+                                                            size="sm"
+                                                            class="h-6 cursor-pointer px-2 text-xs"
+                                                            onclick={() =>
+                                                                roleForms[
+                                                                    `secondary-${model.id}`
+                                                                ]?.requestSubmit()}>
+                                                            Set secondary
+                                                        </Button>
+                                                    {/if}
+                                                    <form
+                                                        method="POST"
+                                                        action="?/deleteModel"
+                                                        use:enhance={enhanceWithToast}
+                                                        class="flex items-center">
+                                                        <input
+                                                            type="hidden"
+                                                            name="id"
+                                                            value={model.id} />
+                                                        <Button
+                                                            variant="outline"
+                                                            size="icon"
+                                                            class="hover:text-destructive h-6 w-6 cursor-pointer"
+                                                            title="Remove model"
+                                                            onclick={(e) => {
+                                                                const form = (
+                                                                    e.currentTarget as HTMLElement
+                                                                ).closest('form')!
+                                                                requestConfirm(
+                                                                    'Remove Model',
+                                                                    `Are you sure you want to remove "${model.displayName}"? Existing chats using this model will fall back to the default.`,
+                                                                    form as HTMLFormElement,
+                                                                )
+                                                            }}>
+                                                            <Trash2 class="h-3.5 w-3.5" />
+                                                        </Button>
+                                                    </form>
+                                                </div>
                                             {/if}
                                         </div>
                                     {/each}
                                 </div>
                             {/if}
 
-                            <button
-                                type="button"
-                                class="text-muted-foreground hover:text-foreground mt-1 inline-flex cursor-pointer items-center gap-1.5 px-1 text-sm font-medium transition-colors"
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                class="text-muted-foreground hover:text-foreground mt-1 cursor-pointer gap-1.5 text-sm font-medium"
                                 onclick={() => openAddModelDialog(provider.id)}>
                                 <span class="text-base leading-none">+</span>
                                 Add model
-                            </button>
+                            </Button>
                         </Card.Content>
                     </Card.Root>
                 {/each}
@@ -433,17 +443,26 @@
                         {@const meta = providerMeta[type]}
                         <button
                             type="button"
-                            class="border-border hover:border-foreground/20 hover:bg-accent/50 flex cursor-pointer items-center gap-3 rounded-xl border border-dashed p-4 text-left transition-colors"
+                            class="cursor-pointer text-left"
                             onclick={() => openSetupDialog(type)}>
-                            {#if meta.icon}
-                                <img src={meta.icon} alt={meta.label} class="h-8 w-8" />
-                            {:else}
-                                <Server class="text-muted-foreground h-8 w-8" />
-                            {/if}
-                            <div>
-                                <div class="text-sm font-medium">{meta.label}</div>
-                                <div class="text-muted-foreground text-xs">{meta.description}</div>
-                            </div>
+                            <Card.Root
+                                class="hover:border-foreground/20 hover:bg-accent/50 h-full transition-colors">
+                                <Card.Header>
+                                    <div class="flex items-start gap-3">
+                                        {#if meta.icon}
+                                            <img src={meta.icon} alt={meta.label} class="h-8 w-8" />
+                                        {:else}
+                                            <Server class="text-muted-foreground h-8 w-8" />
+                                        {/if}
+                                        <div>
+                                            <Card.Title class="text-sm">{meta.label}</Card.Title>
+                                            <Card.Description class="text-xs">
+                                                {meta.description}
+                                            </Card.Description>
+                                        </div>
+                                    </div>
+                                </Card.Header>
+                            </Card.Root>
                         </button>
                     {/each}
                 </div>
@@ -631,7 +650,7 @@
                 <AlertDialog.Footer>
                     <AlertDialog.Cancel class="cursor-pointer">Cancel</AlertDialog.Cancel>
                     <AlertDialog.Action
-                        class="cursor-pointer bg-red-600 text-white hover:bg-red-700"
+                        class="bg-destructive text-destructive-foreground hover:bg-destructive/90 cursor-pointer"
                         onclick={() => {
                             confirmFormRef?.requestSubmit()
                         }}>
@@ -689,30 +708,28 @@
                     </div>
 
                     <div class="flex items-center gap-2">
-                        <input
-                            type="checkbox"
+                        <Checkbox
                             id="isDefaultModel"
                             name="isDefault"
-                            value="true"
                             checked={modelFormState.isDefault}
-                            onchange={(e) =>
-                                (modelFormState.isDefault = (e.target as HTMLInputElement).checked)}
-                            class="h-4 w-4" />
+                            onCheckedChange={(v) => (modelFormState.isDefault = v === true)} />
+                        <input
+                            type="hidden"
+                            name="isDefault"
+                            value={modelFormState.isDefault ? 'true' : ''} />
                         <Label for="isDefaultModel" class="font-normal">Set as default model</Label>
                     </div>
 
                     <div class="flex items-center gap-2">
-                        <input
-                            type="checkbox"
+                        <Checkbox
                             id="isSecondaryModel"
                             name="isSecondary"
-                            value="true"
                             checked={modelFormState.isSecondary}
-                            onchange={(e) =>
-                                (modelFormState.isSecondary = (
-                                    e.target as HTMLInputElement
-                                ).checked)}
-                            class="h-4 w-4" />
+                            onCheckedChange={(v) => (modelFormState.isSecondary = v === true)} />
+                        <input
+                            type="hidden"
+                            name="isSecondary"
+                            value={modelFormState.isSecondary ? 'true' : ''} />
                         <Label for="isSecondaryModel" class="font-normal">
                             Set as secondary (lightweight) model
                         </Label>
