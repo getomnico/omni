@@ -664,60 +664,56 @@ impl GmailClient {
         }
     }
 
-    /// Extract message content including text from supported attachments.
-    pub async fn extract_message_content_with_attachments(
+    /// Download and extract text from all supported attachments in a message.
+    /// Returns structured attachment data for separate document indexing.
+    pub async fn extract_attachments(
         &self,
         message: &GmailMessage,
         auth: &GoogleAuth,
         user_email: &str,
-    ) -> Result<String> {
-        let mut body = self.extract_message_content(message)?;
+    ) -> Vec<ExtractedAttachment> {
+        let mut results = Vec::new();
 
-        if let Some(ref payload) = message.payload {
-            let mut attachment_parts: Vec<AttachmentInfo> = Vec::new();
-            Self::collect_attachment_parts(payload, &mut attachment_parts);
+        let Some(ref payload) = message.payload else {
+            return results;
+        };
 
-            for att in attachment_parts {
-                match self
-                    .download_attachment(auth, user_email, &message.id, &att.attachment_id)
-                    .await
-                {
-                    Ok(data) => {
-                        match shared::content_extractor::extract_content(
-                            &data,
-                            &att.mime_type,
-                            Some(&att.filename),
-                        ) {
-                            Ok(text) if !text.trim().is_empty() => {
-                                body.push_str(&format!(
-                                    "\n\n[Attachment: {}]\n{}",
-                                    att.filename, text
-                                ));
-                            }
-                            Ok(_) => {
-                                body.push_str(&format!("\n\n[Attachment: {}]", att.filename));
-                            }
-                            Err(e) => {
-                                debug!(
-                                    "Failed to extract content from attachment {}: {}",
-                                    att.filename, e
-                                );
-                                body.push_str(&format!("\n\n[Attachment: {}]", att.filename));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        debug!(
-                            "Failed to download attachment {} ({}): {}",
-                            att.filename, att.attachment_id, e
-                        );
-                        body.push_str(&format!("\n\n[Attachment: {}]", att.filename));
-                    }
+        let mut attachment_parts: Vec<AttachmentInfo> = Vec::new();
+        Self::collect_attachment_parts(payload, &mut attachment_parts);
+
+        for att in attachment_parts {
+            match self
+                .download_attachment(auth, user_email, &message.id, &att.attachment_id)
+                .await
+            {
+                Ok(data) => {
+                    let size = data.len() as u64;
+                    let extracted_text = shared::content_extractor::extract_content(
+                        &data,
+                        &att.mime_type,
+                        Some(&att.filename),
+                    )
+                    .unwrap_or_default();
+
+                    results.push(ExtractedAttachment {
+                        message_id: message.id.clone(),
+                        attachment_id: att.attachment_id,
+                        filename: att.filename,
+                        mime_type: att.mime_type,
+                        size,
+                        extracted_text,
+                    });
+                }
+                Err(e) => {
+                    debug!(
+                        "Failed to download attachment {} ({}): {}",
+                        att.filename, att.attachment_id, e
+                    );
                 }
             }
         }
 
-        Ok(body)
+        results
     }
 
     /// Recursively collect text/plain and text/html parts separately,
@@ -1035,6 +1031,16 @@ pub struct AttachmentInfo {
     pub attachment_id: String,
     pub filename: String,
     pub mime_type: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExtractedAttachment {
+    pub message_id: String,
+    pub attachment_id: String,
+    pub filename: String,
+    pub mime_type: String,
+    pub size: u64,
+    pub extracted_text: String,
 }
 
 const SUPPORTED_ATTACHMENT_TYPES: &[&str] = &[

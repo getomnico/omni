@@ -79,7 +79,7 @@ impl From<GoogleDriveFile> for FolderMetadata {
     }
 }
 
-fn mime_type_to_content_type(mime_type: &str) -> Option<String> {
+pub fn mime_type_to_content_type(mime_type: &str) -> Option<String> {
     match mime_type {
         "application/vnd.google-apps.document" => Some("document".to_string()),
         "application/vnd.google-apps.spreadsheet" => Some("spreadsheet".to_string()),
@@ -462,11 +462,9 @@ impl GmailThread {
             .map(|h| h.value.clone())
     }
 
-    pub async fn aggregate_content(
+    pub fn aggregate_content(
         &self,
         gmail_client: &crate::gmail::GmailClient,
-        auth: &crate::auth::GoogleAuth,
-        user_email: &str,
     ) -> Result<String, anyhow::Error> {
         let mut content_parts = Vec::new();
 
@@ -476,7 +474,7 @@ impl GmailThread {
             content_parts.push(String::new());
         }
 
-        // Add each message content
+        // Add each message's text content (attachments are indexed as separate documents)
         for (i, message) in self.messages.iter().enumerate() {
             content_parts.push(format!("=== Message {} ===", i + 1));
 
@@ -489,10 +487,7 @@ impl GmailThread {
 
             content_parts.push(String::new());
 
-            match gmail_client
-                .extract_message_content_with_attachments(message, auth, user_email)
-                .await
-            {
+            match gmail_client.extract_message_content(message) {
                 Ok(message_content) => {
                     if !message_content.trim().is_empty() {
                         content_parts.push(message_content.trim().to_string());
