@@ -1266,7 +1266,12 @@
                         {#if !isStreaming}
                             {@render sourcesSection(collectSources(message))}
                         {/if}
-                        <div class="flex items-center gap-1">
+                        <div
+                            class={cn(
+                                'flex items-center gap-1',
+                                i !== processedMessages.length - 1 &&
+                                    'opacity-0 transition-opacity group-hover:opacity-100',
+                            )}>
                             {#if message.siblingIds && message.siblingIds.length > 1}
                                 {@render branchNavigation(message)}
                             {/if}
