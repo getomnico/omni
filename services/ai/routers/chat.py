@@ -22,7 +22,7 @@ from tools import (
     DocumentToolHandler,
     PeopleSearchHandler,
 )
-from tools.connector_handler import ConnectorAction
+from tools.connector_handler import ConnectorAction, SearchOperator
 from tools.sandbox_handler import SandboxToolHandler
 from tools.search_handler import fetch_operator_values
 from config import (
@@ -160,7 +160,7 @@ class RegistryResult:
     registry: ToolRegistry
     connector_actions: list[ConnectorAction] | None
     sources: list[Source] | None
-    search_operators: list[dict] | None
+    search_operators: list[SearchOperator] | None
 
 
 async def _fetch_sources_from_connector_manager() -> list[Source] | None:
@@ -185,7 +185,7 @@ async def _build_registry(request: Request, chat: Chat) -> RegistryResult:
     sources = await _fetch_sources_from_connector_manager()
 
     connector_actions: list[ConnectorAction] | None = None
-    search_operators: list[dict] | None = None
+    search_operators: list[SearchOperator] | None = None
 
     # Register connector tools if connector-manager is configured
     if CONNECTOR_MANAGER_URL:

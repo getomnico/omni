@@ -22,6 +22,7 @@ from tools.searcher_client import (
     SearchResponse,
     SearchResult,
 )
+from tools.connector_handler import SearchOperator
 from tools.registry import ToolContext, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -30,24 +31,6 @@ _TOOL_NAMES = {"search_documents"}
 
 # Operators already documented as universal — exclude from connector-specific lists
 _UNIVERSAL_OPERATORS = {"by", "in", "from", "type", "before", "after"}
-
-# Maps source_type (as stored in db) to the aliases accepted by the in: operator
-SOURCE_TYPE_IN_ALIASES: dict[str, list[str]] = {
-    "google_drive": ["drive", "gdrive"],
-    "gmail": ["gmail", "email"],
-    "slack": ["slack"],
-    "confluence": ["confluence", "wiki"],
-    "jira": ["jira"],
-    "github": ["github", "gh"],
-    "notion": ["notion"],
-    "one_drive": ["onedrive"],
-    "share_point": ["sharepoint"],
-    "outlook": ["outlook"],
-    "hubspot": ["hubspot"],
-    "fireflies": ["fireflies"],
-    "clickup": ["clickup"],
-    "web": ["web"],
-}
 
 TYPE_VALID_VALUES = [
     "sheet",
@@ -72,7 +55,7 @@ _operator_values_mem_ts: float = 0
 
 async def fetch_operator_values(
     searcher_client: SearcherClient,
-    search_operators: list[dict],
+    search_operators: list[SearchOperator],
     redis_client: aioredis.Redis | None = None,
 ) -> dict[str, list[str]]:
     """Fetch and cache distinct values for dynamic search operators.
@@ -99,9 +82,9 @@ async def fetch_operator_values(
             logger.warning(f"Failed to read operator values cache: {e}")
 
     attribute_keys = [
-        op["attribute_key"]
+        op.attribute_key
         for op in search_operators
-        if op["operator"] not in _UNIVERSAL_OPERATORS and op.get("attribute_key")
+        if op.operator not in _UNIVERSAL_OPERATORS and op.attribute_key
     ]
     if not attribute_keys:
         return {}
@@ -129,21 +112,14 @@ async def fetch_operator_values(
 
 
 def _build_query_description(
-    search_operators: list[dict],
+    search_operators: list[SearchOperator],
     connected_source_types: list[str] | None = None,
     operator_values: dict[str, list[str]] | None = None,
 ) -> str:
     """Build a rich description for the query parameter with operator syntax."""
-    # Build in: values filtered to connected sources
+    # Build in: values from connected source types (the searcher accepts source_type values directly)
     if connected_source_types:
-        in_aliases = []
-        for st in connected_source_types:
-            aliases = SOURCE_TYPE_IN_ALIASES.get(st)
-            if aliases:
-                in_aliases.append(aliases[0])  # primary alias
-        in_values_str = (
-            f". Values: {', '.join(sorted(in_aliases))}" if in_aliases else ""
-        )
+        in_values_str = f". Values: {', '.join(sorted(connected_source_types))}"
     else:
         in_values_str = ""
 
@@ -163,18 +139,13 @@ def _build_query_description(
 
     # Group connector-specific operators by source_type
     ops_by_source: dict[str, list[str]] = {}
-    # Build a lookup from attribute_key to operator name for value mapping
-    attr_key_to_operator: dict[str, str] = {}
     for op in search_operators:
-        if op["operator"] in _UNIVERSAL_OPERATORS:
+        if op.operator in _UNIVERSAL_OPERATORS:
             continue
-        display_name = op.get("display_name", op.get("source_type", ""))
-        attr_key = op.get("attribute_key", "")
-        operator_name = op["operator"]
-        attr_key_to_operator[attr_key] = operator_name
+        display_name = op.display_name or op.source_type
 
         # Build operator text with values if available
-        values = (operator_values or {}).get(attr_key, []) if attr_key else []
+        values = (operator_values or {}).get(op.attribute_key, [])
         if values:
             displayed = values[:_MAX_DISPLAYED_VALUES]
             suffix = ", ..." if len(values) > _MAX_DISPLAYED_VALUES else ""
@@ -182,7 +153,7 @@ def _build_query_description(
         else:
             values_str = ""
         ops_by_source.setdefault(display_name, []).append(
-            f"{operator_name}:<value>{values_str}"
+            f"{op.operator}:<value>{values_str}"
         )
 
     if ops_by_source:
@@ -206,7 +177,7 @@ def _build_query_description(
 
 
 def _build_search_tools(
-    search_operators: list[dict] | None = None,
+    search_operators: list[SearchOperator] | None = None,
     connected_source_types: list[str] | None = None,
     operator_values: dict[str, list[str]] | None = None,
 ) -> list[dict]:
@@ -249,7 +220,7 @@ class SearchToolHandler:
     def __init__(
         self,
         searcher_tool: SearcherTool,
-        search_operators: list[dict] | None = None,
+        search_operators: list[SearchOperator] | None = None,
         connected_source_types: list[str] | None = None,
         operator_values: dict[str, list[str]] | None = None,
     ) -> None:

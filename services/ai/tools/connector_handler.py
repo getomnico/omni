@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict, dataclass
+from typing import Literal
 
 import httpx
 import redis.asyncio as aioredis
@@ -16,6 +17,17 @@ from tools.registry import ToolContext, ToolResult
 logger = logging.getLogger(__name__)
 
 ACTIONS_CACHE_TTL = 60  # seconds
+
+
+@dataclass
+class SearchOperator:
+    """A search operator declared by a connector."""
+
+    operator: str
+    attribute_key: str
+    value_type: Literal["text", "person", "datetime"]
+    source_type: str
+    display_name: str
 
 
 @dataclass
@@ -53,7 +65,7 @@ class ConnectorToolHandler:
         self._documents_repo = documents_repo
         self._actions: dict[str, ConnectorAction] = {}
         self._tools: list[dict] = []
-        self._search_operators: list[dict] = []
+        self._search_operators: list[SearchOperator] = []
         self._initialized = False
 
     async def _ensure_initialized(self) -> None:
@@ -130,7 +142,7 @@ class ConnectorToolHandler:
                 source_by_type.setdefault(st, []).append(source)
 
         # Extract search operators from connector manifests
-        search_operators: list[dict] = []
+        search_operators: list[SearchOperator] = []
         for connector in connectors:
             source_type = connector.get("source_type", "")
             manifest = connector.get("manifest")
@@ -139,14 +151,18 @@ class ConnectorToolHandler:
 
             display_name = manifest.get("display_name", source_type)
             for op in manifest.get("search_operators", []):
+                operator = op.get("operator")
+                attribute_key = op.get("attribute_key")
+                if not operator or not attribute_key:
+                    continue
                 search_operators.append(
-                    {
-                        "operator": op.get("operator", ""),
-                        "attribute_key": op.get("attribute_key", ""),
-                        "value_type": op.get("value_type", "text"),
-                        "source_type": source_type,
-                        "display_name": display_name,
-                    }
+                    SearchOperator(
+                        operator=operator,
+                        attribute_key=attribute_key,
+                        value_type=op.get("value_type", "text"),
+                        source_type=source_type,
+                        display_name=display_name,
+                    )
                 )
 
         self._search_operators = search_operators
@@ -231,7 +247,7 @@ class ConnectorToolHandler:
             )
 
     @property
-    def search_operators(self) -> list[dict]:
+    def search_operators(self) -> list[SearchOperator]:
         return self._search_operators
 
     def get_tools(self) -> list[dict]:
