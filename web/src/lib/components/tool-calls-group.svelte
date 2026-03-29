@@ -3,6 +3,7 @@
     import ToolMessage from './tool-message.svelte'
     import MarkdownMessage from './markdown-message.svelte'
     import { ChevronRight } from '@lucide/svelte'
+    import { fly } from 'svelte/transition'
 
     type Props = {
         content: MessageContent
@@ -23,16 +24,6 @@
         }
         return new Set(toolBlocks.slice(-MAX_VISIBLE_TOOLS).map((b) => b.id))
     })
-
-    function fadeIn(node: HTMLElement) {
-        node.style.opacity = '0'
-        node.style.transform = 'translateY(4px)'
-        requestAnimationFrame(() => {
-            node.style.transition = 'opacity 300ms ease-out, transform 300ms ease-out'
-            node.style.opacity = '1'
-            node.style.transform = 'translateY(0)'
-        })
-    }
 </script>
 
 {#if collapsibleCount > 0}
@@ -56,7 +47,7 @@
             citations={block.citations} />
     {:else if block.type === 'tool'}
         <div
-            use:fadeIn
+            in:fly={{ y: 4, duration: 300 }}
             class="transition-all duration-300 ease-in-out"
             class:max-h-0={!visibleToolIds.has(block.id)}
             class:opacity-0={!visibleToolIds.has(block.id)}
