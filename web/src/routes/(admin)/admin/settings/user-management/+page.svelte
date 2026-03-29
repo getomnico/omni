@@ -10,7 +10,7 @@
     import { Badge } from '$lib/components/ui/badge'
     import { toast } from 'svelte-sonner'
     import type { PageData, ActionData } from './$types'
-    import { Plus, Pencil, Key, Power, Trash2 } from '@lucide/svelte'
+    import { Plus, Pencil, Key, Power, Trash2, Search } from '@lucide/svelte'
 
     let { data, form }: { data: PageData; form: ActionData } = $props()
 
@@ -121,174 +121,177 @@
             </Button>
         </div>
 
-        <div class="flex items-center gap-4">
-            <form method="GET" class="flex-1">
+        <div class="space-y-3">
+            <form method="GET" class="relative max-w-md">
+                <Search
+                    class="text-muted-foreground pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
                 <Input
                     type="search"
                     name="search"
                     placeholder="Search users by email..."
                     value={searchQuery}
-                    class="bg-card max-w-md" />
+                    class="bg-card pl-9" />
             </form>
-        </div>
 
-        <div class="ring-border overflow-hidden rounded-lg shadow ring-1">
-            <table class="divide-border min-w-full divide-y">
-                <thead class="bg-muted/50">
-                    <tr>
-                        <th class="text-foreground px-6 py-3 text-left text-sm font-semibold"
-                            >Email</th>
-                        <th class="text-foreground px-6 py-3 text-left text-sm font-semibold"
-                            >Role</th>
-                        <th class="text-foreground px-6 py-3 text-left text-sm font-semibold"
-                            >Status</th>
-                        <th class="text-foreground px-6 py-3 text-left text-sm font-semibold"
-                            >Created</th>
-                        <th class="text-foreground px-6 py-3 text-right text-sm font-semibold"
-                            >Actions</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-border bg-card divide-y">
-                    {#each data.users as user}
+            <div class="ring-border overflow-hidden rounded-lg shadow ring-1">
+                <table class="divide-border min-w-full divide-y">
+                    <thead class="bg-muted/50">
                         <tr>
-                            <td class="px-6 py-4">
-                                <div class="text-foreground text-sm font-medium">
-                                    {user.email}
-                                </div>
-                                {#if user.mustChangePassword}
-                                    <Badge variant="outline" class="mt-1 text-xs"
-                                        >Must change password</Badge>
-                                {/if}
-                            </td>
-                            <td class="text-muted-foreground px-6 py-4 text-sm capitalize">
-                                {user.role}
-                            </td>
-                            <td class="px-6 py-4 text-sm">
-                                <Badge
-                                    variant={user.isActive ? 'default' : 'destructive'}
-                                    class={user.isActive
-                                        ? 'border-green-200 bg-green-100 text-green-800 dark:border-green-800 dark:bg-green-900/20 dark:text-green-400'
-                                        : ''}>
-                                    {user.isActive ? 'Active' : 'Inactive'}
-                                </Badge>
-                            </td>
-                            <td class="text-muted-foreground px-6 py-4 text-sm">
-                                {formatDate(user.createdAt)}
-                            </td>
-                            <td class="px-6 py-4 text-right text-sm">
-                                <div class="flex justify-end gap-1">
-                                    <Tooltip.Provider delayDuration={300}>
-                                        <Tooltip.Root>
-                                            <Tooltip.Trigger>
-                                                <Button
-                                                    variant="ghost"
-                                                    size="icon"
-                                                    class="h-8 w-8 cursor-pointer"
-                                                    onclick={() => openEditDialog(user)}>
-                                                    <Pencil class="h-4 w-4" />
-                                                </Button>
-                                            </Tooltip.Trigger>
-                                            <Tooltip.Content>
-                                                <p>Edit user</p>
-                                            </Tooltip.Content>
-                                        </Tooltip.Root>
-                                    </Tooltip.Provider>
-
-                                    <Tooltip.Provider delayDuration={300}>
-                                        <Tooltip.Root>
-                                            <Tooltip.Trigger>
-                                                <form
-                                                    method="POST"
-                                                    action="?/resetPassword"
-                                                    use:enhance={() => {
-                                                        isSubmitting = true
-                                                        return async ({ update }) => {
-                                                            await update()
-                                                        }
-                                                    }}>
-                                                    <input
-                                                        type="hidden"
-                                                        name="userId"
-                                                        value={user.id} />
+                            <th class="text-foreground px-6 py-3 text-left text-sm font-semibold"
+                                >Email</th>
+                            <th class="text-foreground px-6 py-3 text-left text-sm font-semibold"
+                                >Role</th>
+                            <th class="text-foreground px-6 py-3 text-left text-sm font-semibold"
+                                >Status</th>
+                            <th class="text-foreground px-6 py-3 text-left text-sm font-semibold"
+                                >Created</th>
+                            <th class="text-foreground px-6 py-3 text-right text-sm font-semibold"
+                            ></th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-border bg-card divide-y">
+                        {#each data.users as user}
+                            <tr class="group">
+                                <td class="px-6 py-4">
+                                    <div class="text-foreground text-sm font-medium">
+                                        {user.email}
+                                    </div>
+                                    {#if user.mustChangePassword}
+                                        <Badge variant="outline" class="mt-1 text-xs"
+                                            >Must change password</Badge>
+                                    {/if}
+                                </td>
+                                <td class="text-muted-foreground px-6 py-4 text-sm capitalize">
+                                    {user.role}
+                                </td>
+                                <td class="px-6 py-4 text-sm">
+                                    <Badge
+                                        variant={user.isActive ? 'secondary' : 'destructive'}
+                                        class={user.isActive
+                                            ? 'border-green-200 bg-green-100 text-green-800 dark:border-green-800 dark:bg-green-900/20 dark:text-green-400'
+                                            : ''}>
+                                        {user.isActive ? 'Active' : 'Inactive'}
+                                    </Badge>
+                                </td>
+                                <td class="text-muted-foreground px-6 py-4 text-sm">
+                                    {formatDate(user.createdAt)}
+                                </td>
+                                <td class="px-6 py-4 text-right text-sm">
+                                    <div
+                                        class="flex justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                                        <Tooltip.Provider delayDuration={300}>
+                                            <Tooltip.Root>
+                                                <Tooltip.Trigger>
                                                     <Button
-                                                        type="submit"
                                                         variant="ghost"
                                                         size="icon"
                                                         class="h-8 w-8 cursor-pointer"
-                                                        disabled={isSubmitting}>
-                                                        <Key class="h-4 w-4" />
+                                                        onclick={() => openEditDialog(user)}>
+                                                        <Pencil class="h-4 w-4" />
                                                     </Button>
-                                                </form>
-                                            </Tooltip.Trigger>
-                                            <Tooltip.Content>
-                                                <p>Reset password</p>
-                                            </Tooltip.Content>
-                                        </Tooltip.Root>
-                                    </Tooltip.Provider>
+                                                </Tooltip.Trigger>
+                                                <Tooltip.Content>
+                                                    <p>Edit user</p>
+                                                </Tooltip.Content>
+                                            </Tooltip.Root>
+                                        </Tooltip.Provider>
 
-                                    <Tooltip.Provider delayDuration={300}>
-                                        <Tooltip.Root>
-                                            <Tooltip.Trigger>
-                                                <form
-                                                    method="POST"
-                                                    action="?/toggleActive"
-                                                    use:enhance={() => {
-                                                        isSubmitting = true
-                                                        return async ({ update }) => {
-                                                            await update()
-                                                        }
-                                                    }}>
-                                                    <input
-                                                        type="hidden"
-                                                        name="userId"
-                                                        value={user.id} />
+                                        <Tooltip.Provider delayDuration={300}>
+                                            <Tooltip.Root>
+                                                <Tooltip.Trigger>
+                                                    <form
+                                                        method="POST"
+                                                        action="?/resetPassword"
+                                                        use:enhance={() => {
+                                                            isSubmitting = true
+                                                            return async ({ update }) => {
+                                                                await update()
+                                                            }
+                                                        }}>
+                                                        <input
+                                                            type="hidden"
+                                                            name="userId"
+                                                            value={user.id} />
+                                                        <Button
+                                                            type="submit"
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            class="h-8 w-8 cursor-pointer"
+                                                            disabled={isSubmitting}>
+                                                            <Key class="h-4 w-4" />
+                                                        </Button>
+                                                    </form>
+                                                </Tooltip.Trigger>
+                                                <Tooltip.Content>
+                                                    <p>Reset password</p>
+                                                </Tooltip.Content>
+                                            </Tooltip.Root>
+                                        </Tooltip.Provider>
+
+                                        <Tooltip.Provider delayDuration={300}>
+                                            <Tooltip.Root>
+                                                <Tooltip.Trigger>
+                                                    <form
+                                                        method="POST"
+                                                        action="?/toggleActive"
+                                                        use:enhance={() => {
+                                                            isSubmitting = true
+                                                            return async ({ update }) => {
+                                                                await update()
+                                                            }
+                                                        }}>
+                                                        <input
+                                                            type="hidden"
+                                                            name="userId"
+                                                            value={user.id} />
+                                                        <Button
+                                                            type="submit"
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            class="h-8 w-8 cursor-pointer"
+                                                            disabled={isSubmitting}>
+                                                            <Power class="h-4 w-4" />
+                                                        </Button>
+                                                    </form>
+                                                </Tooltip.Trigger>
+                                                <Tooltip.Content>
+                                                    <p>
+                                                        {user.isActive ? 'Deactivate' : 'Activate'} user
+                                                    </p>
+                                                </Tooltip.Content>
+                                            </Tooltip.Root>
+                                        </Tooltip.Provider>
+
+                                        <Tooltip.Provider delayDuration={300}>
+                                            <Tooltip.Root>
+                                                <Tooltip.Trigger>
                                                     <Button
-                                                        type="submit"
                                                         variant="ghost"
                                                         size="icon"
-                                                        class="h-8 w-8 cursor-pointer"
-                                                        disabled={isSubmitting}>
-                                                        <Power class="h-4 w-4" />
+                                                        class="text-destructive hover:text-destructive h-8 w-8 cursor-pointer"
+                                                        onclick={() => openDeleteDialog(user)}>
+                                                        <Trash2 class="h-4 w-4" />
                                                     </Button>
-                                                </form>
-                                            </Tooltip.Trigger>
-                                            <Tooltip.Content>
-                                                <p>
-                                                    {user.isActive ? 'Deactivate' : 'Activate'} user
-                                                </p>
-                                            </Tooltip.Content>
-                                        </Tooltip.Root>
-                                    </Tooltip.Provider>
-
-                                    <Tooltip.Provider delayDuration={300}>
-                                        <Tooltip.Root>
-                                            <Tooltip.Trigger>
-                                                <Button
-                                                    variant="ghost"
-                                                    size="icon"
-                                                    class="text-destructive hover:text-destructive h-8 w-8 cursor-pointer"
-                                                    onclick={() => openDeleteDialog(user)}>
-                                                    <Trash2 class="h-4 w-4" />
-                                                </Button>
-                                            </Tooltip.Trigger>
-                                            <Tooltip.Content>
-                                                <p>Delete user</p>
-                                            </Tooltip.Content>
-                                        </Tooltip.Root>
-                                    </Tooltip.Provider>
-                                </div>
-                            </td>
-                        </tr>
-                    {/each}
-                    {#if data.users.length === 0}
-                        <tr>
-                            <td colspan="5" class="text-muted-foreground px-6 py-8 text-center">
-                                No users found
-                            </td>
-                        </tr>
-                    {/if}
-                </tbody>
-            </table>
+                                                </Tooltip.Trigger>
+                                                <Tooltip.Content>
+                                                    <p>Delete user</p>
+                                                </Tooltip.Content>
+                                            </Tooltip.Root>
+                                        </Tooltip.Provider>
+                                    </div>
+                                </td>
+                            </tr>
+                        {/each}
+                        {#if data.users.length === 0}
+                            <tr>
+                                <td colspan="5" class="text-muted-foreground px-6 py-8 text-center">
+                                    No users found
+                                </td>
+                            </tr>
+                        {/if}
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
 </div>
