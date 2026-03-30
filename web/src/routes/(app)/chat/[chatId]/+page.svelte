@@ -71,6 +71,7 @@
 
     let userMessage = $state('')
     let chatContainerRef: HTMLDivElement
+    let chatContentRef: HTMLDivElement
     let lastUserMessageRef: HTMLDivElement | null = $state(null)
     let userInputRef: ReturnType<typeof UserInput>
 
@@ -618,7 +619,7 @@
         chatContainerRef?.addEventListener('scroll', handleScroll)
 
         const resizeObserver = new ResizeObserver(() => recalcBottomPadding())
-        if (chatContainerRef) resizeObserver.observe(chatContainerRef)
+        if (chatContentRef) resizeObserver.observe(chatContentRef)
 
         return () => {
             chatContainerRef?.removeEventListener('scroll', handleScroll)
@@ -1260,6 +1261,7 @@
     <!-- Chat Container -->
     <div bind:this={chatContainerRef} class="flex w-full flex-1 flex-col overflow-y-auto px-4 pt-6">
         <div
+            bind:this={chatContentRef}
             class="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-1"
             style:padding-bottom="{bottomPadding}px">
             {#if data.modelDisplayName}
