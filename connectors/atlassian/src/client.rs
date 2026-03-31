@@ -13,8 +13,8 @@ use crate::models::{
     AtlassianWebhookRegistration, AtlassianWebhookRegistrationResponse, ConfluenceCqlPage,
     ConfluenceCqlSearchResponse, ConfluenceGetPagesResponse, ConfluenceGetSpacesResponse,
     ConfluenceGroupMembersResponse, ConfluencePage, ConfluenceSpace, ConfluenceSpacePermission,
-    ConfluenceSpacePermissionsResponse, JiraField, JiraIssue, JiraRoleActorsResponse,
-    JiraSearchResponse,
+    ConfluenceSpacePermissionsResponse, JiraField, JiraIssue, JiraProjectRolesResponse,
+    JiraRoleActorsResponse, JiraSearchResponse,
 };
 
 #[async_trait]
@@ -100,7 +100,7 @@ pub trait AtlassianApi: Send + Sync {
         &self,
         creds: &AtlassianCredentials,
         project_key: &str,
-    ) -> Result<std::collections::HashMap<String, String>>;
+    ) -> Result<JiraProjectRolesResponse>;
 
     async fn get_jira_users_bulk(
         &self,
@@ -696,47 +696,62 @@ impl AtlassianApi for AtlassianClient {
     ) -> Result<Vec<String>> {
         let auth_header = creds.get_basic_auth_header();
         let url = format!("{}/wiki/rest/api/group/{}/member", creds.base_url, group_id);
-        let params = vec![("limit", "200".to_string())];
+        let page_size: i64 = 200;
+        let mut start: i64 = 0;
+        let mut all_emails = Vec::new();
 
-        debug!("Fetching Confluence group {} members", group_id);
+        loop {
+            let params = vec![
+                ("limit", page_size.to_string()),
+                ("start", start.to_string()),
+            ];
 
-        let client = self.client.clone();
-        let resp: ConfluenceGroupMembersResponse = self
-            .make_request(|| {
-                client
-                    .get(&url)
-                    .query(&params)
-                    .header("Authorization", &auth_header)
-                    .header("Accept", "application/json")
-            })
-            .await?;
+            debug!(
+                "Fetching Confluence group {} members (start={})",
+                group_id, start
+            );
 
-        let emails: Vec<String> = resp.results.into_iter().filter_map(|m| m.email).collect();
+            let client = self.client.clone();
+            let resp: ConfluenceGroupMembersResponse = self
+                .make_request(|| {
+                    client
+                        .get(&url)
+                        .query(&params)
+                        .header("Authorization", &auth_header)
+                        .header("Accept", "application/json")
+                })
+                .await?;
 
-        Ok(emails)
+            let result_count = resp.results.len() as i64;
+            all_emails.extend(resp.results.into_iter().filter_map(|m| m.email));
+
+            if result_count < resp.limit {
+                break;
+            }
+            start += result_count;
+        }
+
+        Ok(all_emails)
     }
 
     async fn get_jira_project_roles(
         &self,
         creds: &AtlassianCredentials,
         project_key: &str,
-    ) -> Result<std::collections::HashMap<String, String>> {
+    ) -> Result<JiraProjectRolesResponse> {
         let auth_header = creds.get_basic_auth_header();
         let url = format!("{}/rest/api/3/project/{}/role", creds.base_url, project_key);
 
         debug!("Fetching JIRA project {} roles", project_key);
 
         let client = self.client.clone();
-        let resp: std::collections::HashMap<String, String> = self
-            .make_request(move || {
-                client
-                    .get(&url)
-                    .header("Authorization", &auth_header)
-                    .header("Accept", "application/json")
-            })
-            .await?;
-
-        Ok(resp)
+        self.make_request(move || {
+            client
+                .get(&url)
+                .header("Authorization", &auth_header)
+                .header("Accept", "application/json")
+        })
+        .await
     }
 
     async fn get_jira_project_role_actors(

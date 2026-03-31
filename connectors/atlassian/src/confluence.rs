@@ -80,6 +80,8 @@ impl ConfluenceProcessor {
             .filter(|p| p.operation.key == "read" && p.operation.target == "space")
             .collect();
 
+        // If no explicit read permissions are returned, the space is likely open to all
+        // org members (Confluence Cloud default). Safer to over-expose than silently hide.
         if read_perms.is_empty() {
             debug!(
                 "No read permissions found for space {}, marking as public",
@@ -128,7 +130,6 @@ impl ConfluenceProcessor {
         }
 
         // Resolve group IDs to member emails
-        let mut group_names = Vec::new();
         for group_id in &group_ids {
             match self
                 .client
@@ -140,10 +141,9 @@ impl ConfluenceProcessor {
                 }
                 Err(e) => {
                     warn!(
-                        "Failed to fetch members for group {}: {}, adding group name",
-                        group_id, e
+                        "Failed to fetch members for group {} in space {}: {}",
+                        group_id, space_id, e
                     );
-                    group_names.push(group_id.clone());
                 }
             }
         }
@@ -154,7 +154,7 @@ impl ConfluenceProcessor {
         Ok(DocumentPermissions {
             public: false,
             users: user_emails,
-            groups: group_names,
+            groups: vec![],
         })
     }
 
