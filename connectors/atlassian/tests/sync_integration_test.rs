@@ -683,7 +683,7 @@ async fn test_confluence_sync_fetches_and_caches_space_permissions() -> Result<(
 
     let creds = test_credentials();
     let count = processor
-        .sync_all_spaces(&creds, SOURCE_ID, &sync_run_id, &cancelled)
+        .sync_all_spaces(&creds, SOURCE_ID, &sync_run_id, &cancelled, &None)
         .await?;
 
     assert_eq!(count, 3);
@@ -788,7 +788,7 @@ async fn test_jira_sync_fetches_and_caches_project_permissions() -> Result<()> {
 
     let creds = test_credentials();
     let count = processor
-        .sync_all_projects(&creds, SOURCE_ID, &sync_run_id, &cancelled)
+        .sync_all_projects(&creds, SOURCE_ID, &sync_run_id, &cancelled, &None)
         .await?;
 
     assert_eq!(count, 3);

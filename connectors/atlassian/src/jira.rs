@@ -90,8 +90,11 @@ impl JiraProcessor {
         creds: &AtlassianCredentials,
         project_key: &str,
     ) -> Result<DocumentPermissions> {
-        // Get all roles for the project
-        let roles = self
+        // Collect all users/groups that have any role in the project. This is an
+        // approximation — not all roles grant "Browse Projects", and some users may
+        // browse without a role (via permission schemes). Permission-scheme-based
+        // resolution is a follow-up.
+        let role_response = self
             .client
             .get_jira_project_roles(creds, project_key)
             .await?;
@@ -100,7 +103,7 @@ impl JiraProcessor {
         let mut group_names = Vec::new();
 
         // Fetch actors for each role
-        for (_role_name, role_url) in &roles {
+        for (_role_name, role_url) in &role_response.roles {
             // Extract role ID from URL (e.g., ".../role/10002")
             let role_id = role_url.rsplit('/').next().unwrap_or_default();
 
