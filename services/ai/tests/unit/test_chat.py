@@ -1,10 +1,10 @@
-"""Unit tests for synthetic citation logic (non-Anthropic providers)."""
+"""Unit tests for citation logic."""
 
-from routers.chat import (
-    _build_citable_index,
-    _prepare_messages_for_non_citation_provider,
-    _extract_synthetic_citations,
-    _build_synthetic_citation_event,
+from services.citations import (
+    build_citable_index,
+    prepare_messages_for_non_citation_provider,
+    extract_synthetic_citations,
+    build_synthetic_citation_event,
 )
 
 
@@ -45,7 +45,7 @@ def test_synthetic_citations_end_to_end():
     ]
 
     # 1. Build index
-    index = _build_citable_index(messages)
+    index = build_citable_index(messages)
     assert len(index) == 2
     assert index[1].title == "Q3 Report"
     assert index[1].ref_type == "search_result"
@@ -53,7 +53,7 @@ def test_synthetic_citations_end_to_end():
     assert index[2].ref_type == "document"
 
     # 2. Transform messages for non-citation provider
-    transformed = _prepare_messages_for_non_citation_provider(messages, index)
+    transformed = prepare_messages_for_non_citation_provider(messages, index)
     # Original should be untouched
     assert messages[0]["content"][0]["content"][0]["type"] == "search_result"
     # Transformed should have numbered text
@@ -67,7 +67,7 @@ def test_synthetic_citations_end_to_end():
 
     # 3. Extract synthetic citations from model output
     text = "Revenue grew 15% [citation:1] and the board approved [citation:2] a new strategy."
-    cleaned, citations = _extract_synthetic_citations(text, index)
+    cleaned, citations = extract_synthetic_citations(text, index)
     assert "[citation:" not in cleaned
     assert "Revenue grew 15%" in cleaned
     assert len(citations) == 2
@@ -78,16 +78,16 @@ def test_synthetic_citations_end_to_end():
 
     # Duplicate references should be deduplicated
     text_dup = "A [citation:1] and B [citation:1]."
-    _, cits_dup = _extract_synthetic_citations(text_dup, index)
+    _, cits_dup = extract_synthetic_citations(text_dup, index)
     assert len(cits_dup) == 1
 
     # Unknown references should be ignored
     text_unknown = "Something [citation:99]."
-    _, cits_unknown = _extract_synthetic_citations(text_unknown, index)
+    _, cits_unknown = extract_synthetic_citations(text_unknown, index)
     assert len(cits_unknown) == 0
 
     # 4. Build SSE events
-    event = _build_synthetic_citation_event(0, citations[0])
+    event = build_synthetic_citation_event(0, citations[0])
     event_json = event.to_json()
     assert "citations_delta" in event_json
     assert "search_result_location" in event_json
