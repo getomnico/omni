@@ -7,7 +7,7 @@ use std::sync::Mutex;
 
 use omni_atlassian_connector::models::{
     ConfluenceCqlPage, ConfluencePage, ConfluenceSpace, ConfluenceSpacePermission, JiraField,
-    JiraIssue, JiraRoleActorsResponse, JiraSearchResponse,
+    JiraIssue, JiraProjectRolesResponse, JiraRoleActorsResponse, JiraSearchResponse,
 };
 use omni_atlassian_connector::AtlassianApi;
 use omni_atlassian_connector::AtlassianCredentials;
@@ -227,9 +227,11 @@ impl AtlassianApi for MockAtlassianApi {
         &self,
         _creds: &AtlassianCredentials,
         project_key: &str,
-    ) -> Result<HashMap<String, String>> {
+    ) -> Result<JiraProjectRolesResponse> {
         self.record_call("get_jira_project_roles", vec![project_key.to_string()]);
-        Ok(self.project_roles.lock().unwrap().clone())
+        Ok(JiraProjectRolesResponse {
+            roles: self.project_roles.lock().unwrap().clone(),
+        })
     }
 
     async fn get_jira_project_role_actors(
