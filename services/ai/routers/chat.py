@@ -1,7 +1,8 @@
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from typing import cast
 
 import httpx
@@ -51,6 +52,9 @@ from anthropic.types import (
     CitationSearchResultLocationParam,
     CitationWebSearchResultLocationParam,
     CitationsDelta,
+    CitationsSearchResultLocation,
+    CitationCharLocation,
+    RawContentBlockDeltaEvent,
     ToolResultBlockParam,
     SearchResultBlockParam,
     CitationsConfigParam,
@@ -161,6 +165,261 @@ class RegistryResult:
     connector_actions: list[ConnectorAction] | None
     sources: list[Source] | None
     search_operators: list[SearchOperator] | None
+
+
+# ---------------------------------------------------------------------------
+# Synthetic citations for non-Anthropic providers
+# ---------------------------------------------------------------------------
+
+_CITATION_PATTERN = re.compile(r"\[citation:(\d{1,3})\]")
+
+CITATION_INSTRUCTION = (
+    "\n\n# Citing sources\n"
+    "When referencing information from search results or documents, you MUST cite the source "
+    "using the exact format [citation:n] where n is the source number. For example: "
+    '"The quarterly revenue increased by 15% [citation:1] while expenses decreased [citation:3]." '
+    "Always place the citation immediately after the relevant claim."
+)
+
+
+@dataclass
+class CitableRef:
+    """Tracks a citable content block (search result or document) for synthetic citation generation."""
+
+    index: int
+    title: str
+    source: str
+    cited_text: str
+    ref_type: str  # "search_result" or "document"
+
+
+def _build_citable_index(
+    messages: list[MessageParam],
+) -> dict[int, CitableRef]:
+    """Scan all messages for search_result and document blocks in tool results.
+
+    Returns a 1-based index mapping to CitableRef metadata.
+    """
+    index_map: dict[int, CitableRef] = {}
+    counter = 1
+    for msg in messages:
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            for sub_block in block.get("content", []):
+                if not isinstance(sub_block, dict):
+                    continue
+                block_type = sub_block.get("type")
+
+                if block_type == "search_result":
+                    inner_texts = [
+                        ib.get("text", "")
+                        for ib in sub_block.get("content", [])
+                        if isinstance(ib, dict) and ib.get("type") == "text"
+                    ]
+                    index_map[counter] = CitableRef(
+                        index=counter,
+                        title=sub_block.get("title", ""),
+                        source=sub_block.get("source", ""),
+                        cited_text="\n".join(inner_texts)[:500],
+                        ref_type="search_result",
+                    )
+                    counter += 1
+
+                elif block_type == "document":
+                    source_obj = sub_block.get("source", {})
+                    data = (
+                        source_obj.get("data", "")
+                        if isinstance(source_obj, dict)
+                        else ""
+                    )
+                    index_map[counter] = CitableRef(
+                        index=counter,
+                        title=sub_block.get("title", ""),
+                        source=sub_block.get("title", ""),
+                        cited_text=data[:500],
+                        ref_type="document",
+                    )
+                    counter += 1
+
+    return index_map
+
+
+def _prepare_messages_for_non_citation_provider(
+    messages: list[MessageParam],
+    citable_index: dict[int, CitableRef],
+) -> list[MessageParam]:
+    """Create a copy of messages with search_result/document blocks replaced by numbered text.
+
+    Does not mutate the original messages.
+    """
+    if not citable_index:
+        return messages
+
+    transformed: list[MessageParam] = []
+    counter = 1
+    for msg in messages:
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            transformed.append(msg)
+            continue
+
+        new_content = []
+        has_changes = False
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                new_content.append(block)
+                continue
+
+            sub_blocks = block.get("content", [])
+            has_citable = any(
+                isinstance(sb, dict) and sb.get("type") in ("search_result", "document")
+                for sb in sub_blocks
+            )
+
+            if not has_citable:
+                new_content.append(block)
+                continue
+
+            has_changes = True
+            new_sub_blocks = []
+            for sb in sub_blocks:
+                if not isinstance(sb, dict):
+                    new_sub_blocks.append(sb)
+                    continue
+
+                sb_type = sb.get("type")
+                if sb_type == "search_result":
+                    ref = citable_index.get(counter)
+                    if ref:
+                        inner_texts = [
+                            ib.get("text", "")
+                            for ib in sb.get("content", [])
+                            if isinstance(ib, dict) and ib.get("type") == "text"
+                        ]
+                        new_sub_blocks.append(
+                            {
+                                "type": "text",
+                                "text": f"[{counter}] {ref.title} ({ref.source})\n"
+                                + "\n".join(inner_texts),
+                            }
+                        )
+                    counter += 1
+
+                elif sb_type == "document":
+                    ref = citable_index.get(counter)
+                    if ref:
+                        source_obj = sb.get("source", {})
+                        data = (
+                            source_obj.get("data", "")
+                            if isinstance(source_obj, dict)
+                            else ""
+                        )
+                        new_sub_blocks.append(
+                            {
+                                "type": "text",
+                                "text": f"[{counter}] Document: {ref.title}\n{data}",
+                            }
+                        )
+                    counter += 1
+
+                else:
+                    new_sub_blocks.append(sb)
+
+            new_block = {**block, "content": new_sub_blocks}
+            new_content.append(new_block)
+
+        if has_changes:
+            transformed.append({**msg, "content": new_content})
+        else:
+            transformed.append(msg)
+
+    return transformed
+
+
+def _extract_synthetic_citations(
+    text: str,
+    citable_index: dict[int, CitableRef],
+) -> tuple[str, list[TextCitationParam]]:
+    """Extract [citation:n] references from text and create synthetic citation objects.
+
+    Returns (cleaned_text, citations) where cleaned_text has markers stripped.
+    """
+    citations: list[TextCitationParam] = []
+    seen: set[int] = set()
+
+    for match in _CITATION_PATTERN.finditer(text):
+        ref_num = int(match.group(1))
+        if ref_num in seen:
+            continue
+        seen.add(ref_num)
+
+        ref = citable_index.get(ref_num)
+        if ref is None:
+            continue
+
+        if ref.ref_type == "search_result":
+            citations.append(
+                CitationSearchResultLocationParam(
+                    type="search_result_location",
+                    start_block_index=0,
+                    end_block_index=0,
+                    search_result_index=ref.index - 1,  # 0-based
+                    title=ref.title,
+                    source=ref.source,
+                    cited_text=ref.cited_text[:200],
+                )
+            )
+        elif ref.ref_type == "document":
+            citations.append(
+                CitationCharLocationParam(
+                    type="char_location",
+                    document_index=ref.index - 1,  # 0-based
+                    document_title=ref.title,
+                    start_char_index=0,
+                    end_char_index=0,
+                    cited_text=ref.cited_text[:200],
+                )
+            )
+
+    cleaned_text = _CITATION_PATTERN.sub("", text) if citations else text
+    return cleaned_text, citations
+
+
+def _build_synthetic_citation_event(
+    block_idx: int,
+    citation_param: TextCitationParam,
+) -> RawContentBlockDeltaEvent:
+    """Build an Anthropic-compatible citation delta event from a synthetic citation."""
+    param = cast(dict, citation_param)
+    if param["type"] == "search_result_location":
+        citation_obj = CitationsSearchResultLocation(
+            type="search_result_location",
+            search_result_index=param["search_result_index"],
+            start_block_index=param["start_block_index"],
+            end_block_index=param["end_block_index"],
+            title=param["title"],
+            source=param["source"],
+            cited_text=param["cited_text"],
+        )
+    else:
+        citation_obj = CitationCharLocation(
+            type="char_location",
+            document_index=param["document_index"],
+            document_title=param.get("document_title"),
+            start_char_index=param["start_char_index"],
+            end_char_index=param["end_char_index"],
+            cited_text=param["cited_text"],
+        )
+
+    return RawContentBlockDeltaEvent(
+        type="content_block_delta",
+        index=block_idx,
+        delta=CitationsDelta(type="citations_delta", citation=citation_obj),
+    )
 
 
 async def _fetch_sources_from_connector_manager() -> list[Source] | None:
@@ -469,20 +728,37 @@ async def stream_chat(
                 logger.info(f"Iteration {iteration + 1}/{AGENT_MAX_ITERATIONS}")
                 content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
 
+                # For non-citation providers, number search results/documents
+                # and build an index for synthetic citation extraction
+                citable_index: dict[int, CitableRef] = {}
+                if llm_provider.supports_citations:
+                    provider_messages = conversation_messages
+                    provider_system_prompt = system_prompt
+                else:
+                    citable_index = _build_citable_index(conversation_messages)
+                    provider_messages = _prepare_messages_for_non_citation_provider(
+                        conversation_messages, citable_index
+                    )
+                    provider_system_prompt = (
+                        (system_prompt or "") + CITATION_INSTRUCTION
+                        if citable_index
+                        else system_prompt
+                    )
+
                 logger.info(f"Sending request to LLM provider")
                 logger.debug(
-                    f"Messages being sent: {json.dumps(conversation_messages, indent=2)}"
+                    f"Messages being sent: {json.dumps(provider_messages, indent=2)}"
                 )
                 logger.debug(f"Tools available: {[tool['name'] for tool in all_tools]}")
 
                 stream: AsyncStream[MessageStreamEvent] = llm_provider.stream_response(
                     prompt="",  # Not used when messages provided
-                    messages=conversation_messages,
+                    messages=provider_messages,
                     tools=all_tools,
                     max_tokens=DEFAULT_MAX_TOKENS,
                     temperature=DEFAULT_TEMPERATURE,
                     top_p=DEFAULT_TOP_P,
-                    system_prompt=system_prompt,
+                    system_prompt=provider_system_prompt,
                 )
 
                 event_index = 0
@@ -580,6 +856,25 @@ async def stream_chat(
 
                     if message_stop_received:
                         break
+
+                # Synthesize citations for non-citation providers
+                if not llm_provider.supports_citations and citable_index:
+                    for block_idx, block in enumerate(content_blocks):
+                        if block.get("type") != "text":
+                            continue
+                        cleaned_text, synthetic_citations = (
+                            _extract_synthetic_citations(
+                                block.get("text", ""), citable_index
+                            )
+                        )
+                        if synthetic_citations:
+                            block["text"] = cleaned_text
+                            block["citations"] = synthetic_citations
+                            for cit in synthetic_citations:
+                                synth_event = _build_synthetic_citation_event(
+                                    block_idx, cit
+                                )
+                                yield f"event: message\ndata: {synth_event.to_json(indent=None)}\n\n"
 
                 # Parse tool call inputs. Convert to JSON.
                 tool_calls = [b for b in content_blocks if b["type"] == "tool_use"]

@@ -85,6 +85,10 @@ class BedrockProvider(LLMProvider):
 
     MODEL_FAMILIES = ["anthropic", "amazon"]
 
+    @property
+    def supports_citations(self) -> bool:
+        return self.model_family == "anthropic"
+
     def __init__(self, model_id: str, region_name: str | None = None):
         self.model_id = model_id
         self.model_family = self._determine_model_family(model_id)
@@ -161,6 +165,26 @@ class BedrockProvider(LLMProvider):
                                                     "citations": {
                                                         "enabled": False  # Citations are not supported on tool result documents on Amazon models yet
                                                     },
+                                                }
+                                            }
+                                        )
+                                    elif content_block["type"] == "document":
+                                        source = content_block.get("source", {})
+                                        data = (
+                                            source.get("data", "")
+                                            if isinstance(source, dict)
+                                            else ""
+                                        )
+                                        title = content_block.get("title", "")
+                                        search_result_blocks.append(
+                                            {
+                                                "document": {
+                                                    "format": "txt",
+                                                    "name": sanitize_document_name(
+                                                        title or "document"
+                                                    ),
+                                                    "source": {"bytes": data},
+                                                    "citations": {"enabled": False},
                                                 }
                                             }
                                         )

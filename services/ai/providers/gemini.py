@@ -105,6 +105,15 @@ def _convert_messages_to_gemini(
                                     if isinstance(ib, dict) and ib.get("type") == "text"
                                 )
                                 text_parts.append(f"[{title}]({source})\n{inner_text}")
+                            elif rb.get("type") == "document":
+                                title = rb.get("title", "")
+                                source = rb.get("source", {})
+                                data = (
+                                    source.get("data", "")
+                                    if isinstance(source, dict)
+                                    else ""
+                                )
+                                text_parts.append(f"[{title}]\n{data}")
                     result_content = "\n\n".join(text_parts)
 
                 tool_name = block.get("tool_use_id", "unknown")

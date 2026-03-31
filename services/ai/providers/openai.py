@@ -249,6 +249,15 @@ class OpenAIProvider(LLMProvider):
                                         and ib.get("type") == "text"
                                     )
                                     parts.append(f"[{title}]({source})\n{inner_text}")
+                                elif rb.get("type") == "document":
+                                    title = rb.get("title", "")
+                                    source = rb.get("source", {})
+                                    data = (
+                                        source.get("data", "")
+                                        if isinstance(source, dict)
+                                        else ""
+                                    )
+                                    parts.append(f"[{title}]\n{data}")
                         result_content = "\n\n".join(parts)
                     tool_results.append(
                         {
