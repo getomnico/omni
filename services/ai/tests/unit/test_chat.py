@@ -130,7 +130,18 @@ def test_synthetic_citations_end_to_end():
     assert "search_result_location" in event_json
 
 
-def test_citation_stream_processor():
+async def _collect(stream) -> list:
+    """Helper to collect an async iterator into a list."""
+    return [event async for event in stream]
+
+
+async def _async_iter(events):
+    """Helper to turn a list into an async iterator."""
+    for e in events:
+        yield e
+
+
+async def test_citation_stream_processor():
     """CitationStreamProcessor strips markers from text deltas and emits citation events inline."""
     citable_index = {
         1: CitableRef(
@@ -148,76 +159,64 @@ def test_citation_stream_processor():
             ref_type="document",
         ),
     }
-    proc = CitationStreamProcessor(citable_index)
 
-    def make_text_delta(index: int, text: str) -> RawContentBlockDeltaEvent:
+    def td(index: int, text: str) -> RawContentBlockDeltaEvent:
         return RawContentBlockDeltaEvent(
             type="content_block_delta",
             index=index,
             delta=TextDelta(type="text_delta", text=text),
         )
 
-    def make_block_stop(index: int) -> RawContentBlockStopEvent:
+    def stop(index: int) -> RawContentBlockStopEvent:
         return RawContentBlockStopEvent(type="content_block_stop", index=index)
 
-    # Simulate streaming: "Hello [citation:1] world"
-    # Arrives as: "Hello ", "[citation:1]", " world"
-    out1 = proc.process(make_text_delta(0, "Hello "))
-    assert len(out1) == 1
-    assert out1[0].delta.type == "text_delta"
-    assert out1[0].delta.text == "Hello "
-
-    out2 = proc.process(make_text_delta(0, "[citation:1]"))
-    # The marker is swallowed; a citation event is emitted instead
-    citation_events = [e for e in out2 if e.delta.type == "citations_delta"]
-    text_events = [e for e in out2 if e.delta.type == "text_delta"]
-    assert len(citation_events) == 1
-    assert citation_events[0].delta.citation.type == "search_result_location"
-    # No text should leak
-    for te in text_events:
-        assert "[citation:" not in te.delta.text
-
-    out3 = proc.process(make_text_delta(0, " world"))
-    assert any(e.delta.type == "text_delta" and " world" in e.delta.text for e in out3)
-
-    # Test partial marker across chunks: "[cit" + "ation:2] done"
-    proc2 = CitationStreamProcessor(citable_index)
-    out_a = proc2.process(make_text_delta(0, "start [cit"))
-    # "start " should be emitted, "[cit" buffered
-    text_so_far = "".join(e.delta.text for e in out_a if e.delta.type == "text_delta")
-    assert "start " in text_so_far
-    assert "[cit" not in text_so_far
-
-    out_b = proc2.process(make_text_delta(0, "ation:2] done"))
-    citation_events_b = [e for e in out_b if e.delta.type == "citations_delta"]
-    text_events_b = [e for e in out_b if e.delta.type == "text_delta"]
-    assert len(citation_events_b) == 1
-    assert citation_events_b[0].delta.citation.type == "char_location"
-    all_text_b = "".join(e.delta.text for e in text_events_b)
-    assert "[citation:" not in all_text_b
-    assert "done" in all_text_b
-
-    # Test whitespace around citation markers is consumed
-    proc_ws = CitationStreamProcessor(citable_index)
-    out_ws = proc_ws.process(make_text_delta(0, "version 10.0 [citation:1] is stable"))
-    ws_text = "".join(e.delta.text for e in out_ws if e.delta.type == "text_delta")
-    assert ws_text == "version 10.0 is stable"  # no double space
-
-    # Citation marker before punctuation — no extra space left behind
-    proc_punct = CitationStreamProcessor(citable_index)
-    out_punct = proc_punct.process(
-        make_text_delta(0, "The software version is 10.0 [citation: 1].")
+    # Full marker in one chunk: "Hello [citation:1] world"
+    out = await _collect(
+        CitationStreamProcessor(citable_index).process(
+            _async_iter([td(0, "Hello [citation:1] world")])
+        )
     )
-    punct_text = "".join(
-        e.delta.text for e in out_punct if e.delta.type == "text_delta"
-    )
-    assert punct_text == "The software version is 10.0."
+    text = "".join(e.delta.text for e in out if e.delta.type == "text_delta")
+    cites = [e for e in out if e.delta.type == "citations_delta"]
+    assert text == "Hello world"
+    assert len(cites) == 1
+    assert cites[0].delta.citation.type == "search_result_location"
 
-    # Test flush emits buffered non-citation text
-    proc3 = CitationStreamProcessor(citable_index)
-    proc3.process(make_text_delta(0, "text ["))
-    flush_events = proc3.flush()
-    flush_text = "".join(
-        e.delta.text for e in flush_events if e.delta.type == "text_delta"
+    # Partial marker across chunks: "start [cit" + "ation:2] done"
+    out2 = await _collect(
+        CitationStreamProcessor(citable_index).process(
+            _async_iter([td(0, "start [cit"), td(0, "ation:2] done")])
+        )
     )
-    assert "[" in flush_text  # incomplete bracket flushed as-is
+    text2 = "".join(e.delta.text for e in out2 if e.delta.type == "text_delta")
+    cites2 = [e for e in out2 if e.delta.type == "citations_delta"]
+    assert "[citation:" not in text2
+    assert "start" in text2
+    assert "done" in text2
+    assert len(cites2) == 1
+    assert cites2[0].delta.citation.type == "char_location"
+
+    # Whitespace consumed: "version 10.0 [citation:1] is stable"
+    out3 = await _collect(
+        CitationStreamProcessor(citable_index).process(
+            _async_iter([td(0, "version 10.0 [citation:1] is stable")])
+        )
+    )
+    text3 = "".join(e.delta.text for e in out3 if e.delta.type == "text_delta")
+    assert text3 == "version 10.0 is stable"
+
+    # Before punctuation: "The software version is 10.0 [citation: 1]."
+    out4 = await _collect(
+        CitationStreamProcessor(citable_index).process(
+            _async_iter([td(0, "The software version is 10.0 [citation: 1].")])
+        )
+    )
+    text4 = "".join(e.delta.text for e in out4 if e.delta.type == "text_delta")
+    assert text4 == "The software version is 10.0."
+
+    # Flush: incomplete bracket emitted after stream ends
+    out5 = await _collect(
+        CitationStreamProcessor(citable_index).process(_async_iter([td(0, "text [")]))
+    )
+    text5 = "".join(e.delta.text for e in out5 if e.delta.type == "text_delta")
+    assert "[" in text5

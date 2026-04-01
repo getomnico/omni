@@ -6,6 +6,7 @@ non-Anthropic providers via the CitationProcessor class.
 
 import re
 from dataclasses import dataclass
+from collections.abc import AsyncIterator
 from typing import cast
 
 from services.stream import StreamProcessor
@@ -387,26 +388,29 @@ class CitationStreamProcessor(StreamProcessor):
     def __init__(self, citable_index: dict[int, CitableRef]) -> None:
         self._citable_index = citable_index
         self._buf = ""
-        self._current_index = 0  # tracks the content block index for emitting events
+        self._current_index = 0
 
-    def process(
+    async def process(
         self,
-        event: MessageStreamEvent,
-    ) -> list[MessageStreamEvent]:
+        stream: AsyncIterator[MessageStreamEvent],
+    ) -> AsyncIterator[MessageStreamEvent]:
+        async for event in stream:
+            if event.type == "content_block_delta" and event.delta.type == "text_delta":
+                self._current_index = event.index
+                for out in self._process_text_delta(event):
+                    yield out
 
-        if event.type == "content_block_delta" and event.delta.type == "text_delta":
-            self._current_index = event.index
-            return self._process_text_delta(event)
+            elif event.type == "content_block_stop":
+                for out in self._flush_buffer(event.index):
+                    yield out
+                yield event
 
-        if event.type == "content_block_stop":
-            # Flush remaining buffer before the block closes
-            flush_events = self._flush_buffer(event.index)
-            return [*flush_events, event]
+            else:
+                yield event
 
-        return [event]
-
-    def flush(self) -> list["MessageStreamEvent"]:
-        return self._flush_buffer(self._current_index)
+        # Flush any remaining buffered text after stream ends
+        for out in self._flush_buffer(self._current_index):
+            yield out
 
     # ------------------------------------------------------------------
 
