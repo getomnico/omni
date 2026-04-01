@@ -11,6 +11,7 @@ from typing import cast
 from services.stream import StreamProcessor
 
 from anthropic.types import (
+    MessageStreamEvent,
     MessageParam,
     TextBlockParam,
     TextCitationParam,
@@ -390,9 +391,8 @@ class CitationStreamProcessor(StreamProcessor):
 
     def process(
         self,
-        event: "MessageStreamEvent",
-    ) -> list["MessageStreamEvent"]:
-        from anthropic.types.message_stream_event import MessageStreamEvent as _MSE
+        event: MessageStreamEvent,
+    ) -> list[MessageStreamEvent]:
 
         if event.type == "content_block_delta" and event.delta.type == "text_delta":
             self._current_index = event.index
