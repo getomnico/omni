@@ -416,49 +416,56 @@ class CitationStreamProcessor(StreamProcessor):
 
     def _process_text_delta(
         self,
-        event: "MessageStreamEvent",
-    ) -> list["MessageStreamEvent"]:
-        """Buffer text, emit clean text deltas and citation events."""
+        event: MessageStreamEvent,
+    ) -> list[MessageStreamEvent]:
+        """Buffer text, emit interleaved text deltas and citation events."""
         self._buf += event.delta.text
-        results: list["MessageStreamEvent"] = []
+        results: list[MessageStreamEvent] = []
 
-        clean_text, citation_markers = self._consume_buffer()
-
-        if clean_text:
-            results.append(
-                RawContentBlockDeltaEvent(
-                    type="content_block_delta",
-                    index=event.index,
-                    delta=TextDelta(type="text_delta", text=clean_text),
-                )
-            )
-
-        for marker_text in citation_markers:
-            ref_nums = [int(n) for n in _NUM_PATTERN.findall(marker_text)]
-            for ref_num in ref_nums:
-                citation_event = self._build_citation_event(event.index, ref_num)
-                if citation_event:
-                    results.append(citation_event)
+        for segment in self._consume_buffer():
+            if isinstance(segment, str):
+                if segment:
+                    results.append(
+                        RawContentBlockDeltaEvent(
+                            type="content_block_delta",
+                            index=event.index,
+                            delta=TextDelta(type="text_delta", text=segment),
+                        )
+                    )
+            else:
+                # segment is a list of ref numbers from a citation marker
+                for ref_num in segment:
+                    citation_event = self._build_citation_event(event.index, ref_num)
+                    if citation_event:
+                        results.append(citation_event)
 
         return results
 
-    def _consume_buffer(self) -> tuple[str, list[str]]:
-        """Parse the buffer, returning (clean_text, list_of_swallowed_marker_contents).
+    def _consume_buffer(self) -> list[str | list[int]]:
+        """Parse the buffer, returning interleaved segments in order.
 
-        Leaves any incomplete potential marker in self._buf.
+        Each segment is either a str (text to emit) or a list[int] (citation
+        ref numbers from a swallowed marker). Leaves any incomplete potential
+        marker in self._buf.
         """
-        out: list[str] = []
-        markers: list[str] = []
+        segments: list[str | list[int]] = []
+        text_acc: list[str] = []
+
+        def _flush_text() -> None:
+            text = "".join(text_acc)
+            text_acc.clear()
+            if text:
+                segments.append(text)
 
         while self._buf:
             bracket = self._buf.find("[")
             if bracket == -1:
-                out.append(self._buf)
+                text_acc.append(self._buf)
                 self._buf = ""
                 break
 
             if bracket > 0:
-                out.append(self._buf[:bracket])
+                text_acc.append(self._buf[:bracket])
                 self._buf = self._buf[bracket:]
 
             prefix = self._PREFIX
@@ -466,12 +473,12 @@ class CitationStreamProcessor(StreamProcessor):
                 if prefix.startswith(self._buf):
                     break  # could still become a citation, keep buffering
                 else:
-                    out.append(self._buf[0])
+                    text_acc.append(self._buf[0])
                     self._buf = self._buf[1:]
                     continue
 
             if not self._buf.startswith(prefix):
-                out.append(self._buf[0])
+                text_acc.append(self._buf[0])
                 self._buf = self._buf[1:]
                 continue
 
@@ -481,26 +488,26 @@ class CitationStreamProcessor(StreamProcessor):
                 if all(c in "0123456789, " for c in rest):
                     break  # keep buffering
                 else:
-                    out.append(self._buf[0])
+                    text_acc.append(self._buf[0])
                     self._buf = self._buf[1:]
                     continue
 
             candidate = self._buf[: close + 1]
             m = _CITATION_PATTERN.match(candidate)
             if m:
-                markers.append(m.group(1))
                 self._buf = self._buf[close + 1 :]
-                # Consume surrounding whitespace so "text [citation:1] more"
-                # becomes "text more" instead of "text  more".
-                # Strip space before the marker; the space after (if any)
-                # naturally becomes the single separator.
-                if out and out[-1].endswith(" "):
-                    out[-1] = out[-1][:-1]
+                # Strip trailing space before the marker
+                if text_acc and text_acc[-1].endswith(" "):
+                    text_acc[-1] = text_acc[-1][:-1]
+                _flush_text()
+                ref_nums = [int(n) for n in _NUM_PATTERN.findall(m.group(1))]
+                segments.append(ref_nums)
             else:
-                out.append(self._buf[0])
+                text_acc.append(self._buf[0])
                 self._buf = self._buf[1:]
 
-        return "".join(out), markers
+        _flush_text()
+        return segments
 
     def _flush_buffer(self, block_index: int) -> list["MessageStreamEvent"]:
         """Emit any remaining buffered text as a text_delta event."""

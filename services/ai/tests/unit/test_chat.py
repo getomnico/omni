@@ -171,6 +171,7 @@ async def test_citation_stream_processor():
         return RawContentBlockStopEvent(type="content_block_stop", index=index)
 
     # Full marker in one chunk: "Hello [citation:1] world"
+    # Citation events should be interleaved between text chunks
     out = await _collect(
         CitationStreamProcessor(citable_index).process(
             _async_iter([td(0, "Hello [citation:1] world")])
@@ -181,6 +182,9 @@ async def test_citation_stream_processor():
     assert text == "Hello world"
     assert len(cites) == 1
     assert cites[0].delta.citation.type == "search_result_location"
+    # Verify ordering: text "Hello" before citation, then text " world" after
+    delta_types = [e.delta.type for e in out]
+    assert delta_types == ["text_delta", "citations_delta", "text_delta"]
 
     # Partial marker across chunks: "start [cit" + "ation:2] done"
     out2 = await _collect(
