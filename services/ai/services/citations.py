@@ -27,14 +27,18 @@ from anthropic.types import (
     ToolResultBlockParam,
 )
 
-_CITATION_PATTERN = re.compile(r"\[citation:(\d{1,3})\]")
+# Matches [citation:1], [citation:9, 3, 4], [citation:1,2], etc.
+_CITATION_PATTERN = re.compile(r"\[citation:([\d,\s]+)\]")
+_NUM_PATTERN = re.compile(r"\d+")
 
 CITATION_INSTRUCTION = (
     "\n\n# Citing sources\n"
     "When referencing information from search results or documents, you MUST cite the source "
     "using the exact format [citation:n] where n is the source number. For example: "
     '"The quarterly revenue increased by 15% [citation:1] while expenses decreased [citation:3]." '
-    "Always place the citation immediately after the relevant claim."
+    "Always place the citation immediately after the relevant claim. "
+    "For multiple citations, separate them with spaces: [citation:1] [citation:2]. "
+    "You may also combine them: [citation:1, 2]."
 )
 
 
@@ -290,38 +294,40 @@ class CitationProcessor:
         seen: set[int] = set()
 
         for match in _CITATION_PATTERN.finditer(text):
-            ref_num = int(match.group(1))
-            if ref_num in seen:
-                continue
-            seen.add(ref_num)
+            # Parse all numbers from the match (handles "1", "9, 3, 4", "1,2", etc.)
+            ref_nums = [int(n) for n in _NUM_PATTERN.findall(match.group(1))]
+            for ref_num in ref_nums:
+                if ref_num in seen:
+                    continue
+                seen.add(ref_num)
 
-            ref = citable_index.get(ref_num)
-            if ref is None:
-                continue
+                ref = citable_index.get(ref_num)
+                if ref is None:
+                    continue
 
-            if ref.ref_type == "search_result":
-                citations.append(
-                    CitationSearchResultLocationParam(
-                        type="search_result_location",
-                        start_block_index=0,
-                        end_block_index=0,
-                        search_result_index=ref.index - 1,  # 0-based
-                        title=ref.title,
-                        source=ref.source,
-                        cited_text=ref.cited_text[:200],
+                if ref.ref_type == "search_result":
+                    citations.append(
+                        CitationSearchResultLocationParam(
+                            type="search_result_location",
+                            start_block_index=0,
+                            end_block_index=0,
+                            search_result_index=ref.index - 1,  # 0-based
+                            title=ref.title,
+                            source=ref.source,
+                            cited_text=ref.cited_text[:200],
+                        )
                     )
-                )
-            elif ref.ref_type == "document":
-                citations.append(
-                    CitationCharLocationParam(
-                        type="char_location",
-                        document_index=ref.index - 1,  # 0-based
-                        document_title=ref.title,
-                        start_char_index=0,
-                        end_char_index=0,
-                        cited_text=ref.cited_text[:200],
+                elif ref.ref_type == "document":
+                    citations.append(
+                        CitationCharLocationParam(
+                            type="char_location",
+                            document_index=ref.index - 1,  # 0-based
+                            document_title=ref.title,
+                            start_char_index=0,
+                            end_char_index=0,
+                            cited_text=ref.cited_text[:200],
+                        )
                     )
-                )
 
         cleaned_text = _CITATION_PATTERN.sub("", text) if citations else text
         return cleaned_text, citations
