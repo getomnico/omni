@@ -12,7 +12,9 @@ use crate::auth::AtlassianCredentials;
 use crate::models::{
     AtlassianWebhookRegistration, AtlassianWebhookRegistrationResponse, ConfluenceCqlPage,
     ConfluenceCqlSearchResponse, ConfluenceGetPagesResponse, ConfluenceGetSpacesResponse,
-    ConfluencePage, ConfluenceSpace, JiraField, JiraIssue, JiraSearchResponse,
+    ConfluenceGroupMembersResponse, ConfluencePage, ConfluenceSpace, ConfluenceSpacePermission,
+    ConfluenceSpacePermissionsResponse, JiraField, JiraIssue, JiraProjectRolesResponse,
+    JiraRoleActorsResponse, JiraSearchResponse,
 };
 
 #[async_trait]
@@ -74,6 +76,37 @@ pub trait AtlassianApi: Send + Sync {
     async fn delete_webhook(&self, creds: &AtlassianCredentials, webhook_id: u64) -> Result<()>;
 
     async fn get_webhook(&self, creds: &AtlassianCredentials, webhook_id: u64) -> Result<bool>;
+
+    async fn get_confluence_space_permissions(
+        &self,
+        creds: &AtlassianCredentials,
+        space_id: &str,
+    ) -> Result<Vec<ConfluenceSpacePermission>>;
+
+    async fn get_confluence_group_members(
+        &self,
+        creds: &AtlassianCredentials,
+        group_id: &str,
+    ) -> Result<Vec<String>>;
+
+    async fn get_jira_project_role_actors(
+        &self,
+        creds: &AtlassianCredentials,
+        project_key: &str,
+        role_id: &str,
+    ) -> Result<JiraRoleActorsResponse>;
+
+    async fn get_jira_project_roles(
+        &self,
+        creds: &AtlassianCredentials,
+        project_key: &str,
+    ) -> Result<JiraProjectRolesResponse>;
+
+    async fn get_jira_users_bulk(
+        &self,
+        creds: &AtlassianCredentials,
+        account_ids: &[String],
+    ) -> Result<Vec<(String, String)>>;
 }
 
 pub struct AtlassianClient {
@@ -608,5 +641,184 @@ impl AtlassianApi for AtlassianClient {
                 }
             }
         }
+    }
+
+    async fn get_confluence_space_permissions(
+        &self,
+        creds: &AtlassianCredentials,
+        space_id: &str,
+    ) -> Result<Vec<ConfluenceSpacePermission>> {
+        let auth_header = creds.get_basic_auth_header();
+        let mut all_permissions = Vec::new();
+        let mut url = format!(
+            "{}/wiki/api/v2/spaces/{}/permissions",
+            creds.base_url, space_id
+        );
+        let params = vec![("limit", "100".to_string())];
+
+        loop {
+            debug!(
+                "Fetching Confluence space {} permissions: {}",
+                space_id, url
+            );
+
+            let client = self.client.clone();
+            let resp: ConfluenceSpacePermissionsResponse = self
+                .make_request(|| {
+                    client
+                        .get(&url)
+                        .query(&params)
+                        .header("Authorization", &auth_header)
+                        .header("Accept", "application/json")
+                })
+                .await?;
+
+            all_permissions.extend(resp.results);
+
+            if let Some(links) = resp.links {
+                if let Some(next) = links.next {
+                    url = format!("{}{}", links.base, next);
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        Ok(all_permissions)
+    }
+
+    async fn get_confluence_group_members(
+        &self,
+        creds: &AtlassianCredentials,
+        group_id: &str,
+    ) -> Result<Vec<String>> {
+        let auth_header = creds.get_basic_auth_header();
+        let url = format!("{}/wiki/rest/api/group/{}/member", creds.base_url, group_id);
+        let page_size: i64 = 200;
+        let mut start: i64 = 0;
+        let mut all_emails = Vec::new();
+
+        loop {
+            let params = vec![
+                ("limit", page_size.to_string()),
+                ("start", start.to_string()),
+            ];
+
+            debug!(
+                "Fetching Confluence group {} members (start={})",
+                group_id, start
+            );
+
+            let client = self.client.clone();
+            let resp: ConfluenceGroupMembersResponse = self
+                .make_request(|| {
+                    client
+                        .get(&url)
+                        .query(&params)
+                        .header("Authorization", &auth_header)
+                        .header("Accept", "application/json")
+                })
+                .await?;
+
+            let result_count = resp.results.len() as i64;
+            all_emails.extend(resp.results.into_iter().filter_map(|m| m.email));
+
+            if result_count < resp.limit {
+                break;
+            }
+            start += result_count;
+        }
+
+        Ok(all_emails)
+    }
+
+    async fn get_jira_project_roles(
+        &self,
+        creds: &AtlassianCredentials,
+        project_key: &str,
+    ) -> Result<JiraProjectRolesResponse> {
+        let auth_header = creds.get_basic_auth_header();
+        let url = format!("{}/rest/api/3/project/{}/role", creds.base_url, project_key);
+
+        debug!("Fetching JIRA project {} roles", project_key);
+
+        let client = self.client.clone();
+        self.make_request(move || {
+            client
+                .get(&url)
+                .header("Authorization", &auth_header)
+                .header("Accept", "application/json")
+        })
+        .await
+    }
+
+    async fn get_jira_project_role_actors(
+        &self,
+        creds: &AtlassianCredentials,
+        project_key: &str,
+        role_id: &str,
+    ) -> Result<JiraRoleActorsResponse> {
+        let auth_header = creds.get_basic_auth_header();
+        let url = format!(
+            "{}/rest/api/3/project/{}/role/{}",
+            creds.base_url, project_key, role_id
+        );
+
+        debug!(
+            "Fetching JIRA project {} role {} actors",
+            project_key, role_id
+        );
+
+        let client = self.client.clone();
+        self.make_request(move || {
+            client
+                .get(&url)
+                .header("Authorization", &auth_header)
+                .header("Accept", "application/json")
+        })
+        .await
+    }
+
+    async fn get_jira_users_bulk(
+        &self,
+        creds: &AtlassianCredentials,
+        account_ids: &[String],
+    ) -> Result<Vec<(String, String)>> {
+        if account_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let auth_header = creds.get_basic_auth_header();
+        let mut results = Vec::new();
+
+        // Jira bulk user API accepts up to 10 accountIds per request
+        for chunk in account_ids.chunks(10) {
+            let url = format!("{}/rest/api/3/user/bulk", creds.base_url);
+            let params: Vec<(&str, String)> =
+                chunk.iter().map(|id| ("accountId", id.clone())).collect();
+
+            debug!("Fetching {} users in bulk", chunk.len());
+
+            let client = self.client.clone();
+            let resp: crate::models::AtlassianUserBulkResponse = self
+                .make_request(|| {
+                    client
+                        .get(&url)
+                        .query(&params)
+                        .header("Authorization", &auth_header)
+                        .header("Accept", "application/json")
+                })
+                .await?;
+
+            for user in resp.values {
+                if let Some(email) = user.email_address {
+                    results.push((user.account_id, email));
+                }
+            }
+        }
+
+        Ok(results)
     }
 }

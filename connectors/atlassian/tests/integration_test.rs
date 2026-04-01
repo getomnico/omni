@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::Utc;
-use shared::models::ConnectorEvent;
+use shared::models::{ConnectorEvent, DocumentPermissions};
 use shared::test_environment::TestEnvironment;
 use std::collections::HashMap;
 use time::OffsetDateTime;
@@ -89,11 +89,18 @@ async fn test_sync_state_operations() -> Result<()> {
 async fn test_confluence_page_to_connector_event() {
     let page = make_test_confluence_page();
 
+    let permissions = DocumentPermissions {
+        public: false,
+        users: vec!["user@example.com".to_string()],
+        groups: vec![],
+    };
+
     let event = page.to_connector_event(
         "sync-run-1".to_string(),
         "source-123".to_string(),
         TEST_BASE_URL,
         "content-abc".to_string(),
+        permissions,
     );
 
     match event {
@@ -103,6 +110,7 @@ async fn test_confluence_page_to_connector_event() {
             document_id,
             content_id,
             metadata,
+            permissions,
             ..
         } => {
             assert_eq!(sync_run_id, "sync-run-1");
@@ -111,6 +119,8 @@ async fn test_confluence_page_to_connector_event() {
             assert_eq!(content_id, "content-abc");
             assert_eq!(metadata.title, Some("Test Page".to_string()));
             assert!(metadata.url.unwrap().contains("/wiki"));
+            assert!(!permissions.public);
+            assert_eq!(permissions.users, vec!["user@example.com"]);
         }
         _ => panic!("Expected DocumentCreated event"),
     }
@@ -120,23 +130,34 @@ async fn test_confluence_page_to_connector_event() {
 async fn test_jira_issue_to_connector_event() {
     let issue = make_test_jira_issue();
 
+    let permissions = DocumentPermissions {
+        public: false,
+        users: vec!["dev@example.com".to_string()],
+        groups: vec!["developers".to_string()],
+    };
+
     let event = issue.to_connector_event(
         "sync-run-2".to_string(),
         "source-456".to_string(),
         TEST_BASE_URL,
         "content-def".to_string(),
+        permissions,
     );
 
     match event {
         ConnectorEvent::DocumentCreated {
             document_id,
             metadata,
+            permissions,
             attributes,
             ..
         } => {
             assert_eq!(document_id, "jira_issue_PROJ_PROJ-123");
             assert_eq!(metadata.title, Some("PROJ-123 - Test Issue".to_string()));
             assert!(metadata.url.unwrap().contains("/browse/PROJ-123"));
+            assert!(!permissions.public);
+            assert_eq!(permissions.users, vec!["dev@example.com"]);
+            assert_eq!(permissions.groups, vec!["developers"]);
 
             let attrs = attributes.unwrap();
             assert_eq!(attrs.get("issue_type").unwrap(), "Bug");

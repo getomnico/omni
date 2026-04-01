@@ -2,7 +2,8 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use futures::stream::StreamExt;
 use redis::Client as RedisClient;
-use shared::models::{ConnectorEvent, SyncType};
+use shared::models::{ConnectorEvent, DocumentPermissions, SyncType};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -17,6 +18,7 @@ pub struct ConfluenceProcessor {
     client: Arc<dyn AtlassianApi>,
     sdk_client: SdkClient,
     sync_state: SyncState,
+    space_permissions_cache: HashMap<String, DocumentPermissions>,
 }
 
 impl ConfluenceProcessor {
@@ -29,7 +31,131 @@ impl ConfluenceProcessor {
             client,
             sdk_client,
             sync_state: SyncState::new(redis_client),
+            space_permissions_cache: HashMap::new(),
         }
+    }
+
+    async fn get_space_permissions(
+        &mut self,
+        creds: &AtlassianCredentials,
+        space_id: &str,
+    ) -> DocumentPermissions {
+        if let Some(cached) = self.space_permissions_cache.get(space_id) {
+            return cached.clone();
+        }
+
+        let perms = match self.fetch_space_permissions(creds, space_id).await {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(
+                    "Failed to fetch permissions for space {}, defaulting to public: {}",
+                    space_id, e
+                );
+                DocumentPermissions {
+                    public: true,
+                    users: vec![],
+                    groups: vec![],
+                }
+            }
+        };
+
+        self.space_permissions_cache
+            .insert(space_id.to_string(), perms.clone());
+        perms
+    }
+
+    async fn fetch_space_permissions(
+        &self,
+        creds: &AtlassianCredentials,
+        space_id: &str,
+    ) -> Result<DocumentPermissions> {
+        let permissions = self
+            .client
+            .get_confluence_space_permissions(creds, space_id)
+            .await?;
+
+        // Filter for read permissions on the space
+        let read_perms: Vec<_> = permissions
+            .iter()
+            .filter(|p| p.operation.key == "read" && p.operation.target == "space")
+            .collect();
+
+        // If no explicit read permissions are returned, the space is likely open to all
+        // org members (Confluence Cloud default). Safer to over-expose than silently hide.
+        if read_perms.is_empty() {
+            debug!(
+                "No read permissions found for space {}, marking as public",
+                space_id
+            );
+            return Ok(DocumentPermissions {
+                public: true,
+                users: vec![],
+                groups: vec![],
+            });
+        }
+
+        let mut user_account_ids = Vec::new();
+        let mut group_ids = Vec::new();
+
+        for perm in &read_perms {
+            match perm.principal.principal_type.as_str() {
+                "user" => {
+                    user_account_ids.push(perm.principal.id.clone());
+                }
+                "group" => {
+                    group_ids.push(perm.principal.id.clone());
+                }
+                _ => {}
+            }
+        }
+
+        // Resolve user accountIds to emails via bulk API
+        let mut user_emails = Vec::new();
+        if !user_account_ids.is_empty() {
+            match self
+                .client
+                .get_jira_users_bulk(creds, &user_account_ids)
+                .await
+            {
+                Ok(id_email_pairs) => {
+                    user_emails.extend(id_email_pairs.into_iter().map(|(_, email)| email));
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to resolve user emails for space {}: {}",
+                        space_id, e
+                    );
+                }
+            }
+        }
+
+        // Resolve group IDs to member emails
+        for group_id in &group_ids {
+            match self
+                .client
+                .get_confluence_group_members(creds, group_id)
+                .await
+            {
+                Ok(member_emails) => {
+                    user_emails.extend(member_emails);
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to fetch members for group {} in space {}: {}",
+                        group_id, space_id, e
+                    );
+                }
+            }
+        }
+
+        user_emails.sort();
+        user_emails.dedup();
+
+        Ok(DocumentPermissions {
+            public: false,
+            users: user_emails,
+            groups: vec![],
+        })
     }
 
     pub async fn sync_all_spaces_incremental(
@@ -67,43 +193,36 @@ impl ConfluenceProcessor {
         }
 
         let mut total_pages_processed = 0;
-        let mut pages_batch = Vec::with_capacity(100);
 
-        let mut stream = self.client.search_confluence_pages_by_cql(creds, &cql);
-
-        while let Some(result) = stream.next().await {
-            if cancelled.load(Ordering::SeqCst) {
-                info!(
-                    "Confluence incremental sync {} cancelled after {} pages",
-                    sync_run_id, total_pages_processed
-                );
-                return Ok(total_pages_processed);
-            }
-
-            let cql_page = result?;
-            if let Some(page) = cql_page.into_confluence_page() {
-                pages_batch.push(page);
-            }
-
-            if pages_batch.len() >= 100 {
-                let count = self
-                    .process_pages(pages_batch, source_id, sync_run_id, &creds.base_url)
-                    .await?;
-                total_pages_processed += count;
-                if let Err(e) = self
-                    .sdk_client
-                    .increment_scanned(sync_run_id, count as i32)
-                    .await
-                {
-                    error!("Failed to increment scanned count: {}", e);
+        // Collect all pages first to avoid borrow conflicts with process_pages
+        let mut all_pages = Vec::new();
+        {
+            let mut stream = self.client.search_confluence_pages_by_cql(creds, &cql);
+            while let Some(result) = stream.next().await {
+                if cancelled.load(Ordering::SeqCst) {
+                    info!(
+                        "Confluence incremental sync {} cancelled after {} pages",
+                        sync_run_id, total_pages_processed
+                    );
+                    return Ok(total_pages_processed);
                 }
-                pages_batch = Vec::with_capacity(100);
+
+                let cql_page = result?;
+                if let Some(page) = cql_page.into_confluence_page() {
+                    all_pages.push(page);
+                }
             }
         }
 
-        if !pages_batch.is_empty() {
+        for batch in all_pages.chunks(100) {
             let count = self
-                .process_pages(pages_batch, source_id, sync_run_id, &creds.base_url)
+                .process_pages(
+                    batch.to_vec(),
+                    source_id,
+                    sync_run_id,
+                    &creds.base_url,
+                    creds,
+                )
                 .await?;
             total_pages_processed += count;
             if let Err(e) = self
@@ -204,34 +323,34 @@ impl ConfluenceProcessor {
         cancelled: &AtomicBool,
     ) -> Result<u32> {
         let mut total_pages = 0;
-        let mut pages_batch = Vec::with_capacity(100);
 
         info!("Fetching pages for Confluence space {}", space_id);
-        let mut pages_stream = self.client.get_confluence_pages(creds, space_id);
 
-        while let Some(page_result) = pages_stream.next().await {
-            if cancelled.load(Ordering::SeqCst) {
-                info!(
-                    "Confluence sync cancelled during space {} page streaming",
-                    space_id
-                );
-                return Ok(total_pages);
-            }
-            let page = page_result?;
-            pages_batch.push(page);
-
-            if pages_batch.len() >= 100 {
-                let count = self
-                    .process_pages(pages_batch, source_id, sync_run_id, &creds.base_url)
-                    .await?;
-                total_pages += count;
-                pages_batch = Vec::with_capacity(100);
+        // Collect all pages first to avoid borrow conflicts with process_pages
+        let mut all_pages = Vec::new();
+        {
+            let mut pages_stream = self.client.get_confluence_pages(creds, space_id);
+            while let Some(page_result) = pages_stream.next().await {
+                if cancelled.load(Ordering::SeqCst) {
+                    info!(
+                        "Confluence sync cancelled during space {} page streaming",
+                        space_id
+                    );
+                    return Ok(total_pages);
+                }
+                all_pages.push(page_result?);
             }
         }
 
-        if !pages_batch.is_empty() {
+        for batch in all_pages.chunks(100) {
             let count = self
-                .process_pages(pages_batch, source_id, sync_run_id, &creds.base_url)
+                .process_pages(
+                    batch.to_vec(),
+                    source_id,
+                    sync_run_id,
+                    &creds.base_url,
+                    creds,
+                )
                 .await?;
             total_pages += count;
         }
@@ -256,11 +375,12 @@ impl ConfluenceProcessor {
     }
 
     async fn process_pages(
-        &self,
+        &mut self,
         pages: Vec<ConfluencePage>,
         source_id: &str,
         sync_run_id: &str,
         base_url: &str,
+        creds: &AtlassianCredentials,
     ) -> Result<u32> {
         let mut count = 0;
 
@@ -336,11 +456,14 @@ impl ConfluenceProcessor {
                 }
             };
 
+            let permissions = self.get_space_permissions(creds, &page.space_id).await;
+
             let event = page.to_connector_event(
                 sync_run_id.to_string(),
                 source_id.to_string(),
                 base_url,
                 content_id,
+                permissions,
             );
 
             // Emit event via SDK
@@ -413,6 +536,8 @@ impl ConfluenceProcessor {
             .await
             .map_err(|e| anyhow!("Failed to create sync run via SDK: {}", e))?;
 
+        let permissions = self.get_space_permissions(creds, &page.space_id).await;
+
         let result: Result<()> = async {
             let content_id = self
                 .sdk_client
@@ -431,6 +556,7 @@ impl ConfluenceProcessor {
                 source_id.to_string(),
                 &creds.base_url,
                 content_id,
+                permissions,
             );
             self.sdk_client
                 .emit_event(&sync_run_id, source_id, event)
