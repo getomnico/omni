@@ -400,7 +400,7 @@
 <div class={cn('w-full', maxWidth, containerClass)} bind:this={popoverContainer}>
     <div
         class={cn(
-            'bg-card flex max-h-96 min-h-[1.5rem] w-full cursor-text flex-col gap-2 border border-gray-200 p-3 shadow-sm',
+            'bg-card flex max-h-96 min-h-[1.5rem] w-full cursor-text flex-col gap-2 border border-gray-200 p-4 shadow-sm',
             effectiveShowPopover && effectivePopoverItems.length > 0
                 ? 'rounded-t-xl'
                 : 'rounded-xl',

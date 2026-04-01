@@ -44,7 +44,7 @@
     import type { Snippet } from 'svelte'
     import { cn } from '$lib/utils'
     import { page } from '$app/state'
-    import { invalidate, goto } from '$app/navigation'
+    import { invalidate, goto, afterNavigate } from '$app/navigation'
     import * as Avatar from '$lib/components/ui/avatar'
     import type { Chat } from '$lib/server/db/schema'
 
@@ -66,6 +66,34 @@
     let deleteTargetChat = $state<Chat | null>(null)
     let renameTargetChat = $state<Chat | null>(null)
     let renameValue = $state('')
+
+    let isEditingHeaderTitle = $state(false)
+    let headerTitleValue = $state('')
+    let headerTitleInputRef: HTMLInputElement | undefined = $state()
+
+    let currentChatTitle = $derived(
+        page.url.pathname.startsWith('/chat') ? (page.data as any).chat?.title : null,
+    )
+
+    afterNavigate(() => {
+        isEditingHeaderTitle = false
+    })
+
+    async function saveHeaderTitle() {
+        const trimmed = headerTitleValue.trim()
+        if (!trimmed || !page.params.chatId) {
+            isEditingHeaderTitle = false
+            return
+        }
+        await fetch(`/api/chat/${page.params.chatId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: trimmed }),
+        })
+        isEditingHeaderTitle = false
+        invalidate('app:recent_chats')
+        invalidate(`/chat/${page.params.chatId}`)
+    }
 
     async function logout() {
         await fetch('/logout', {
@@ -400,15 +428,41 @@
     <div class="flex max-h-[100vh] w-full min-w-0 flex-1 flex-col">
         <header class={cn('bg-background sticky top-0 z-50 transition-shadow')}>
             <div class="prose flex h-16 items-center px-6">
-                <h2 class="px-4">
-                    {page.url.pathname === '/search'
-                        ? 'Search'
-                        : page.url.pathname.startsWith('/chat')
-                          ? 'Chat'
-                          : page.url.pathname.startsWith('/agents')
-                            ? 'Agents'
-                            : ''}
-                </h2>
+                <div class="px-4 text-base font-medium">
+                    {#if page.url.pathname === '/search'}
+                        Search
+                    {:else if page.url.pathname.startsWith('/chat') && currentChatTitle}
+                        {#if isEditingHeaderTitle}
+                            <input
+                                bind:this={headerTitleInputRef}
+                                bind:value={headerTitleValue}
+                                class="border-border w-full border-b bg-transparent outline-none"
+                                onkeydown={(e) => {
+                                    if (e.key === 'Enter') saveHeaderTitle()
+                                    if (e.key === 'Escape') {
+                                        isEditingHeaderTitle = false
+                                    }
+                                }}
+                                onblur={() => saveHeaderTitle()} />
+                        {:else}
+                            <button
+                                class="cursor-pointer text-left transition-opacity hover:opacity-70"
+                                onclick={() => {
+                                    isEditingHeaderTitle = true
+                                    headerTitleValue = currentChatTitle || ''
+                                    requestAnimationFrame(() => headerTitleInputRef?.focus())
+                                }}>
+                                {currentChatTitle}
+                            </button>
+                        {/if}
+                    {:else if page.url.pathname.startsWith('/chat')}
+                        Chat
+                    {:else if page.url.pathname.startsWith('/agents')}
+                        Agents
+                    {:else}
+                        <!-- empty -->
+                    {/if}
+                </div>
             </div>
         </header>
 

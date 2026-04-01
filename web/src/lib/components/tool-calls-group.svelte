@@ -54,7 +54,7 @@
             class:overflow-hidden={!visibleToolIds.has(block.id)}
             class:mb-0={!visibleToolIds.has(block.id)}
             class:pointer-events-none={!visibleToolIds.has(block.id)}
-            class:max-h-[200px]={visibleToolIds.has(block.id)}
+            class:max-h-none={visibleToolIds.has(block.id)}
             class:opacity-100={visibleToolIds.has(block.id)}
             class:mb-1={visibleToolIds.has(block.id)}>
             <ToolMessage message={block} />
