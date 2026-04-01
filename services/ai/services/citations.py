@@ -8,6 +8,8 @@ import re
 from dataclasses import dataclass
 from typing import cast
 
+from services.stream import StreamProcessor
+
 from anthropic.types import (
     MessageParam,
     TextBlockParam,
@@ -20,6 +22,7 @@ from anthropic.types import (
     CitationsDelta,
     CitationsSearchResultLocation,
     CitationCharLocation,
+    TextDelta,
     DocumentBlockParam,
     PlainTextSourceParam,
     RawContentBlockDeltaEvent,
@@ -366,6 +369,173 @@ class CitationProcessor:
         return RawContentBlockDeltaEvent(
             type="content_block_delta",
             index=block_idx,
+            delta=CitationsDelta(type="citations_delta", citation=citation_obj),
+        )
+
+
+class CitationStreamProcessor(StreamProcessor):
+    """StreamProcessor that strips [citation:...] markers from text deltas and emits
+    synthetic citation_delta events inline.
+
+    Buffers text when a potential citation marker start is detected. When a complete
+    marker is found, it's swallowed and a citation_delta event is emitted instead.
+    """
+
+    _PREFIX = "[citation:"
+
+    def __init__(self, citable_index: dict[int, CitableRef]) -> None:
+        self._citable_index = citable_index
+        self._buf = ""
+        self._current_index = 0  # tracks the content block index for emitting events
+
+    def process(
+        self,
+        event: "MessageStreamEvent",
+    ) -> list["MessageStreamEvent"]:
+        from anthropic.types.message_stream_event import MessageStreamEvent as _MSE
+
+        if event.type == "content_block_delta" and event.delta.type == "text_delta":
+            self._current_index = event.index
+            return self._process_text_delta(event)
+
+        if event.type == "content_block_stop":
+            # Flush remaining buffer before the block closes
+            flush_events = self._flush_buffer(event.index)
+            return [*flush_events, event]
+
+        return [event]
+
+    def flush(self) -> list["MessageStreamEvent"]:
+        return self._flush_buffer(self._current_index)
+
+    # ------------------------------------------------------------------
+
+    def _process_text_delta(
+        self,
+        event: "MessageStreamEvent",
+    ) -> list["MessageStreamEvent"]:
+        """Buffer text, emit clean text deltas and citation events."""
+        self._buf += event.delta.text
+        results: list["MessageStreamEvent"] = []
+
+        clean_text, citation_markers = self._consume_buffer()
+
+        if clean_text:
+            results.append(
+                RawContentBlockDeltaEvent(
+                    type="content_block_delta",
+                    index=event.index,
+                    delta=TextDelta(type="text_delta", text=clean_text),
+                )
+            )
+
+        for marker_text in citation_markers:
+            ref_nums = [int(n) for n in _NUM_PATTERN.findall(marker_text)]
+            for ref_num in ref_nums:
+                citation_event = self._build_citation_event(event.index, ref_num)
+                if citation_event:
+                    results.append(citation_event)
+
+        return results
+
+    def _consume_buffer(self) -> tuple[str, list[str]]:
+        """Parse the buffer, returning (clean_text, list_of_swallowed_marker_contents).
+
+        Leaves any incomplete potential marker in self._buf.
+        """
+        out: list[str] = []
+        markers: list[str] = []
+
+        while self._buf:
+            bracket = self._buf.find("[")
+            if bracket == -1:
+                out.append(self._buf)
+                self._buf = ""
+                break
+
+            if bracket > 0:
+                out.append(self._buf[:bracket])
+                self._buf = self._buf[bracket:]
+
+            prefix = self._PREFIX
+            if len(self._buf) < len(prefix):
+                if prefix.startswith(self._buf):
+                    break  # could still become a citation, keep buffering
+                else:
+                    out.append(self._buf[0])
+                    self._buf = self._buf[1:]
+                    continue
+
+            if not self._buf.startswith(prefix):
+                out.append(self._buf[0])
+                self._buf = self._buf[1:]
+                continue
+
+            close = self._buf.find("]", len(prefix))
+            if close == -1:
+                rest = self._buf[len(prefix) :]
+                if all(c in "0123456789, " for c in rest):
+                    break  # keep buffering
+                else:
+                    out.append(self._buf[0])
+                    self._buf = self._buf[1:]
+                    continue
+
+            candidate = self._buf[: close + 1]
+            m = _CITATION_PATTERN.match(candidate)
+            if m:
+                markers.append(m.group(1))
+                self._buf = self._buf[close + 1 :]
+            else:
+                out.append(self._buf[0])
+                self._buf = self._buf[1:]
+
+        return "".join(out), markers
+
+    def _flush_buffer(self, block_index: int) -> list["MessageStreamEvent"]:
+        """Emit any remaining buffered text as a text_delta event."""
+        if not self._buf:
+            return []
+        text = self._buf
+        self._buf = ""
+        return [
+            RawContentBlockDeltaEvent(
+                type="content_block_delta",
+                index=block_index,
+                delta=TextDelta(type="text_delta", text=text),
+            )
+        ]
+
+    def _build_citation_event(
+        self, block_index: int, ref_num: int
+    ) -> RawContentBlockDeltaEvent | None:
+        ref = self._citable_index.get(ref_num)
+        if ref is None:
+            return None
+
+        if ref.ref_type == "search_result":
+            citation_obj = CitationsSearchResultLocation(
+                type="search_result_location",
+                search_result_index=ref.index - 1,
+                start_block_index=0,
+                end_block_index=0,
+                title=ref.title,
+                source=ref.source,
+                cited_text=ref.cited_text[:200],
+            )
+        else:
+            citation_obj = CitationCharLocation(
+                type="char_location",
+                document_index=ref.index - 1,
+                document_title=ref.title,
+                start_char_index=0,
+                end_char_index=0,
+                cited_text=ref.cited_text[:200],
+            )
+
+        return RawContentBlockDeltaEvent(
+            type="content_block_delta",
+            index=block_index,
             delta=CitationsDelta(type="citations_delta", citation=citation_obj),
         )
 
