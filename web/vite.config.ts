@@ -6,7 +6,7 @@ export default defineConfig({
     plugins: [tailwindcss(), sveltekit()],
     build: {
         rollupOptions: {
-            external: ['@getomnico/okta-sso'],
+            external: ['@getomnico/okta-sso', '@getomnico/entra-sso'],
         },
     },
 })
