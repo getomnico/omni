@@ -486,6 +486,12 @@ class CitationStreamProcessor(StreamProcessor):
             if m:
                 markers.append(m.group(1))
                 self._buf = self._buf[close + 1 :]
+                # Consume surrounding whitespace so "text [citation:1] more"
+                # becomes "text more" instead of "text  more".
+                # Strip space before the marker; the space after (if any)
+                # naturally becomes the single separator.
+                if out and out[-1].endswith(" "):
+                    out[-1] = out[-1][:-1]
             else:
                 out.append(self._buf[0])
                 self._buf = self._buf[1:]

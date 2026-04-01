@@ -195,7 +195,23 @@ def test_citation_stream_processor():
     assert citation_events_b[0].delta.citation.type == "char_location"
     all_text_b = "".join(e.delta.text for e in text_events_b)
     assert "[citation:" not in all_text_b
-    assert " done" in all_text_b
+    assert "done" in all_text_b
+
+    # Test whitespace around citation markers is consumed
+    proc_ws = CitationStreamProcessor(citable_index)
+    out_ws = proc_ws.process(make_text_delta(0, "version 10.0 [citation:1] is stable"))
+    ws_text = "".join(e.delta.text for e in out_ws if e.delta.type == "text_delta")
+    assert ws_text == "version 10.0 is stable"  # no double space
+
+    # Citation marker before punctuation — no extra space left behind
+    proc_punct = CitationStreamProcessor(citable_index)
+    out_punct = proc_punct.process(
+        make_text_delta(0, "The software version is 10.0 [citation: 1].")
+    )
+    punct_text = "".join(
+        e.delta.text for e in out_punct if e.delta.type == "text_delta"
+    )
+    assert punct_text == "The software version is 10.0."
 
     # Test flush emits buffered non-citation text
     proc3 = CitationStreamProcessor(citable_index)
