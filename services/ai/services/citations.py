@@ -10,6 +10,7 @@ from typing import cast
 
 from anthropic.types import (
     MessageParam,
+    TextBlockParam,
     TextCitationParam,
     CitationCharLocationParam,
     CitationPageLocationParam,
@@ -19,7 +20,11 @@ from anthropic.types import (
     CitationsDelta,
     CitationsSearchResultLocation,
     CitationCharLocation,
+    DocumentBlockParam,
+    PlainTextSourceParam,
     RawContentBlockDeltaEvent,
+    SearchResultBlockParam,
+    ToolResultBlockParam,
 )
 
 # ---------------------------------------------------------------------------
@@ -105,6 +110,19 @@ class CitableRef:
     ref_type: str  # "search_result" or "document"
 
 
+def _extract_text_from_search_result(block: SearchResultBlockParam) -> str:
+    """Join text content blocks inside a search result."""
+    return "\n".join(tb["text"] for tb in block["content"] if tb["type"] == "text")
+
+
+def _extract_data_from_document(block: DocumentBlockParam) -> str:
+    """Extract the plain-text data from a document block's source, if available."""
+    source = block["source"]
+    if source["type"] == "text":
+        return cast(PlainTextSourceParam, source)["data"]
+    return ""
+
+
 def build_citable_index(
     messages: list[MessageParam],
 ) -> dict[int, CitableRef]:
@@ -115,44 +133,38 @@ def build_citable_index(
     index_map: dict[int, CitableRef] = {}
     counter = 1
     for msg in messages:
-        content = msg.get("content", [])
-        if not isinstance(content, list):
+        content = msg["content"]
+        if isinstance(content, str):
             continue
         for block in content:
             if not isinstance(block, dict) or block.get("type") != "tool_result":
                 continue
-            for sub_block in block.get("content", []):
+            tool_block = cast(ToolResultBlockParam, block)
+            tool_content = tool_block.get("content", [])
+            if isinstance(tool_content, str):
+                continue
+            for sub_block in tool_content:
                 if not isinstance(sub_block, dict):
                     continue
-                block_type = sub_block.get("type")
 
-                if block_type == "search_result":
-                    inner_texts = [
-                        ib.get("text", "")
-                        for ib in sub_block.get("content", [])
-                        if isinstance(ib, dict) and ib.get("type") == "text"
-                    ]
+                if sub_block.get("type") == "search_result":
+                    sr = cast(SearchResultBlockParam, sub_block)
                     index_map[counter] = CitableRef(
                         index=counter,
-                        title=sub_block.get("title", ""),
-                        source=sub_block.get("source", ""),
-                        cited_text="\n".join(inner_texts)[:500],
+                        title=sr["title"],
+                        source=sr["source"],
+                        cited_text=_extract_text_from_search_result(sr)[:500],
                         ref_type="search_result",
                     )
                     counter += 1
 
-                elif block_type == "document":
-                    source_obj = sub_block.get("source", {})
-                    data = (
-                        source_obj.get("data", "")
-                        if isinstance(source_obj, dict)
-                        else ""
-                    )
+                elif sub_block.get("type") == "document":
+                    doc = cast(DocumentBlockParam, sub_block)
                     index_map[counter] = CitableRef(
                         index=counter,
-                        title=sub_block.get("title", ""),
-                        source=sub_block.get("title", ""),
-                        cited_text=data[:500],
+                        title=doc.get("title", ""),
+                        source=doc.get("title", ""),
+                        cited_text=_extract_data_from_document(doc)[:500],
                         ref_type="document",
                     )
                     counter += 1
@@ -160,11 +172,19 @@ def build_citable_index(
     return index_map
 
 
+def _strip_citations(block: TextBlockParam) -> TextBlockParam:
+    """Return a text block without the citations field."""
+    if "citations" not in block:
+        return block
+    return TextBlockParam(type="text", text=block["text"])
+
+
 def prepare_messages_for_non_citation_provider(
     messages: list[MessageParam],
     citable_index: dict[int, CitableRef],
 ) -> list[MessageParam]:
-    """Create a copy of messages with search_result/document blocks replaced by numbered text.
+    """Create a copy of messages with search_result/document blocks replaced by numbered text
+    and citations stripped from assistant text blocks.
 
     Does not mutate the original messages.
     """
@@ -174,22 +194,43 @@ def prepare_messages_for_non_citation_provider(
     transformed: list[MessageParam] = []
     counter = 1
     for msg in messages:
-        content = msg.get("content", [])
-        if not isinstance(content, list):
+        content = msg["content"]
+        if isinstance(content, str):
             transformed.append(msg)
             continue
 
         new_content = []
         has_changes = False
         for block in content:
-            if not isinstance(block, dict) or block.get("type") != "tool_result":
+            if not isinstance(block, dict):
                 new_content.append(block)
                 continue
 
-            sub_blocks = block.get("content", [])
+            block_type = block["type"]
+
+            # Strip citations from text blocks (prior assistant responses)
+            if block_type == "text":
+                text_block = cast(TextBlockParam, block)
+                if "citations" in text_block:
+                    has_changes = True
+                    new_content.append(_strip_citations(text_block))
+                else:
+                    new_content.append(block)
+                continue
+
+            if block_type != "tool_result":
+                new_content.append(block)
+                continue
+
+            tool_block = cast(ToolResultBlockParam, block)
+            tool_content = tool_block.get("content", [])
+            if isinstance(tool_content, str):
+                new_content.append(block)
+                continue
+
             has_citable = any(
-                isinstance(sb, dict) and sb.get("type") in ("search_result", "document")
-                for sb in sub_blocks
+                isinstance(sb, dict) and sb["type"] in ("search_result", "document")
+                for sb in tool_content
             )
 
             if not has_citable:
@@ -197,55 +238,49 @@ def prepare_messages_for_non_citation_provider(
                 continue
 
             has_changes = True
-            new_sub_blocks = []
-            for sb in sub_blocks:
+            new_sub_blocks: list[TextBlockParam] = []
+            for sb in tool_content:
                 if not isinstance(sb, dict):
-                    new_sub_blocks.append(sb)
                     continue
 
-                sb_type = sb.get("type")
+                sb_type = sb["type"]
                 if sb_type == "search_result":
+                    sr = cast(SearchResultBlockParam, sb)
                     ref = citable_index.get(counter)
                     if ref:
-                        inner_texts = [
-                            ib.get("text", "")
-                            for ib in sb.get("content", [])
-                            if isinstance(ib, dict) and ib.get("type") == "text"
-                        ]
+                        inner_text = _extract_text_from_search_result(sr)
                         new_sub_blocks.append(
-                            {
-                                "type": "text",
-                                "text": f"[{counter}] {ref.title} ({ref.source})\n"
-                                + "\n".join(inner_texts),
-                            }
+                            TextBlockParam(
+                                type="text",
+                                text=f"[{counter}] {ref.title} ({ref.source})\n{inner_text}",
+                            )
                         )
                     counter += 1
 
                 elif sb_type == "document":
+                    doc = cast(DocumentBlockParam, sb)
                     ref = citable_index.get(counter)
                     if ref:
-                        source_obj = sb.get("source", {})
-                        data = (
-                            source_obj.get("data", "")
-                            if isinstance(source_obj, dict)
-                            else ""
-                        )
+                        data = _extract_data_from_document(doc)
                         new_sub_blocks.append(
-                            {
-                                "type": "text",
-                                "text": f"[{counter}] Document: {ref.title}\n{data}",
-                            }
+                            TextBlockParam(
+                                type="text",
+                                text=f"[{counter}] Document: {ref.title}\n{data}",
+                            )
                         )
                     counter += 1
 
                 else:
-                    new_sub_blocks.append(sb)
+                    new_sub_blocks.append(cast(TextBlockParam, sb))
 
-            new_block = {**block, "content": new_sub_blocks}
+            new_block: ToolResultBlockParam = {
+                **tool_block,
+                "content": new_sub_blocks,
+            }
             new_content.append(new_block)
 
         if has_changes:
-            transformed.append({**msg, "content": new_content})
+            transformed.append(MessageParam(role=msg["role"], content=new_content))
         else:
             transformed.append(msg)
 

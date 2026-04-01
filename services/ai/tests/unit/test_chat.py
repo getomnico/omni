@@ -65,6 +65,38 @@ def test_synthetic_citations_end_to_end():
     assert "[2]" in sub_blocks[1]["text"]
     assert "Board Minutes" in sub_blocks[1]["text"]
 
+    # 2b. Citations on prior assistant text blocks should be stripped
+    messages_with_assistant = messages + [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Revenue grew 15%",
+                    "citations": [
+                        {
+                            "type": "search_result_location",
+                            "search_result_index": 0,
+                            "start_block_index": 0,
+                            "end_block_index": 0,
+                            "title": "Q3 Report",
+                            "source": "http://example.com/q3",
+                            "cited_text": "Revenue grew 15%.",
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+    index2 = build_citable_index(messages_with_assistant)
+    transformed2 = prepare_messages_for_non_citation_provider(
+        messages_with_assistant, index2
+    )
+    assistant_block = transformed2[1]["content"][0]
+    assert assistant_block["type"] == "text"
+    assert assistant_block["text"] == "Revenue grew 15%"
+    assert "citations" not in assistant_block
+
     # 3. Extract synthetic citations from model output
     text = "Revenue grew 15% [citation:1] and the board approved [citation:2] a new strategy."
     cleaned, citations = extract_synthetic_citations(text, index)
