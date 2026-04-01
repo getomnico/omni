@@ -50,15 +50,7 @@ from anthropic.types import (
     SearchResultBlockParam,
     CitationsConfigParam,
 )
-from services.citations import (
-    convert_citation_to_param,
-    CitableRef,
-    CITATION_INSTRUCTION,
-    build_citable_index,
-    prepare_messages_for_non_citation_provider,
-    extract_synthetic_citations,
-    build_synthetic_citation_event,
-)
+from services.citations import CitationProcessor, CitableRef, CITATION_INSTRUCTION
 
 router = APIRouter(tags=["chat"])
 logger = logging.getLogger(__name__)
@@ -429,8 +421,10 @@ async def stream_chat(
                     provider_messages = conversation_messages
                     provider_system_prompt = system_prompt
                 else:
-                    citable_index = build_citable_index(conversation_messages)
-                    provider_messages = prepare_messages_for_non_citation_provider(
+                    citable_index = CitationProcessor.build_citable_index(
+                        conversation_messages
+                    )
+                    provider_messages = CitationProcessor.prepare_messages(
                         conversation_messages, citable_index
                     )
                     provider_system_prompt = (
@@ -516,7 +510,9 @@ async def stream_chat(
                             citations = cast(
                                 list[TextCitationParam], text_block["citations"]
                             )
-                            citations.append(convert_citation_to_param(event.delta))
+                            citations.append(
+                                CitationProcessor.convert_delta_to_param(event.delta)
+                            )
                     elif event.type == "content_block_start":
                         if event.content_block.type == "text":
                             logger.info(f"Text block start: {event.content_block.text}")
@@ -556,14 +552,16 @@ async def stream_chat(
                     for block_idx, block in enumerate(content_blocks):
                         if block.get("type") != "text":
                             continue
-                        cleaned_text, synthetic_citations = extract_synthetic_citations(
-                            block.get("text", ""), citable_index
+                        cleaned_text, synthetic_citations = (
+                            CitationProcessor.extract_citations(
+                                block.get("text", ""), citable_index
+                            )
                         )
                         if synthetic_citations:
                             block["text"] = cleaned_text
                             block["citations"] = synthetic_citations
                             for cit in synthetic_citations:
-                                synth_event = build_synthetic_citation_event(
+                                synth_event = CitationProcessor.build_event(
                                     block_idx, cit
                                 )
                                 yield f"event: message\ndata: {synth_event.to_json(indent=None)}\n\n"
