@@ -111,6 +111,12 @@ def test_synthetic_citations_end_to_end():
     _, cits_unknown = CitationProcessor.extract_citations(text_unknown, index)
     assert len(cits_unknown) == 0
 
+    # Comma-separated citations should be parsed
+    text_multi = "Details here [citation:1, 2] and more."
+    cleaned_multi, cits_multi = CitationProcessor.extract_citations(text_multi, index)
+    assert len(cits_multi) == 2
+    assert "[citation:" not in cleaned_multi
+
     # 4. Build SSE events
     event = CitationProcessor.build_event(0, citations[0])
     event_json = event.to_json()
