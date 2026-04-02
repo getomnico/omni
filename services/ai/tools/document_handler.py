@@ -242,7 +242,18 @@ class DocumentToolHandler:
         # Size check: return directly or write to sandbox
         if len(content) <= DIRECT_RETURN_THRESHOLD:
             return ToolResult(
-                content=[{"type": "text", "text": content}],
+                content=[
+                    {
+                        "type": "document",
+                        "source": {
+                            "type": "text",
+                            "media_type": "text/plain",
+                            "data": content,
+                        },
+                        "title": doc.title or document_name,
+                        "citations": {"enabled": True},
+                    }
+                ],
             )
 
         # Large text: write to sandbox
