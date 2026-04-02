@@ -156,6 +156,23 @@ def _resolve_identity(
             users.add(user_cache[user_id].lower())
 
 
+def _collect_message_participants(message: dict[str, Any]) -> set[str]:
+    """Collect all participant emails (from, to, cc) from a message."""
+    participants: set[str] = set()
+    sender_email = message.get("from", {}).get("emailAddress", {}).get("address")
+    if sender_email:
+        participants.add(sender_email.lower())
+    for recipient in message.get("toRecipients", []):
+        addr = recipient.get("emailAddress", {}).get("address")
+        if addr:
+            participants.add(addr.lower())
+    for recipient in message.get("ccRecipients", []):
+        addr = recipient.get("emailAddress", {}).get("address")
+        if addr:
+            participants.add(addr.lower())
+    return participants
+
+
 def map_message_to_document(
     message: dict[str, Any],
     content_id: str,
@@ -171,20 +188,7 @@ def map_message_to_document(
 
     sender = message.get("from", {}).get("emailAddress", {})
     sender_name = sender.get("name") or sender.get("address")
-
-    # Collect all participant emails for permissions
-    participants: set[str] = set()
-    sender_email = sender.get("address")
-    if sender_email:
-        participants.add(sender_email.lower())
-    for recipient in message.get("toRecipients", []):
-        addr = recipient.get("emailAddress", {}).get("address")
-        if addr:
-            participants.add(addr.lower())
-    for recipient in message.get("ccRecipients", []):
-        addr = recipient.get("emailAddress", {}).get("address")
-        if addr:
-            participants.add(addr.lower())
+    participants = _collect_message_participants(message)
 
     return Document(
         external_id=external_id,
@@ -200,6 +204,49 @@ def map_message_to_document(
             extra={
                 "message_id": msg_id,
                 "has_attachments": message.get("hasAttachments", False),
+            },
+        ),
+        permissions=DocumentPermissions(
+            public=False,
+            users=sorted(participants),
+        ),
+        attributes={
+            "source_type": "outlook",
+        },
+    )
+
+
+def map_attachment_to_document(
+    attachment: dict[str, Any],
+    message: dict[str, Any],
+    content_id: str,
+) -> Document:
+    """Map an Outlook mail attachment to an Omni Document.
+
+    Each attachment is indexed as a separate document. Permissions
+    are inherited from the parent message participants.
+    """
+    internet_msg_id = message.get("internetMessageId") or message["id"]
+    att_id = attachment["id"]
+    external_id = f"mail:{internet_msg_id}:att:{att_id}"
+
+    filename = attachment.get("name", "Untitled Attachment")
+    participants = _collect_message_participants(message)
+
+    return Document(
+        external_id=external_id,
+        title=filename,
+        content_id=content_id,
+        metadata=DocumentMetadata(
+            created_at=_parse_iso(message.get("receivedDateTime")),
+            updated_at=_parse_iso(message.get("receivedDateTime")),
+            url=message.get("webLink"),
+            content_type=attachment.get("contentType"),
+            mime_type=attachment.get("contentType"),
+            size=str(attachment["size"]) if attachment.get("size") else None,
+            extra={
+                "parent_message_id": internet_msg_id,
+                "attachment_id": att_id,
             },
         ),
         permissions=DocumentPermissions(

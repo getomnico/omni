@@ -19,6 +19,7 @@ from ..mappers import (
     strip_html,
     _parse_iso,
 )
+from .base import DEFAULT_MAX_AGE_DAYS
 from .onedrive import (
     INDEXABLE_EXTENSIONS,
     INDEXABLE_MIME_PREFIXES,
@@ -27,8 +28,6 @@ from .onedrive import (
 )
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_PAST_MONTHS = 6
 
 MAX_MESSAGES_PER_GROUP = 100
 MAX_CONTENT_BYTES_PER_GROUP = 50_000
@@ -224,8 +223,7 @@ class TeamsSyncer:
         new_tokens: dict[str, str] = {}
         new_sync_ts: dict[str, str] = {}
 
-        past_months = source_config.get("teams_past_months", DEFAULT_PAST_MONTHS)
-        cutoff = datetime.now(timezone.utc) - timedelta(days=30 * past_months)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=DEFAULT_MAX_AGE_DAYS)
         now_iso = datetime.now(timezone.utc).isoformat()
 
         teams = await self._list_teams(client)

@@ -60,6 +60,8 @@ class SyncContext:
 
     async def emit(self, doc: Document) -> None:
         """Push document to queue. Implicitly heartbeats (updates last_activity_at)."""
+        if doc.metadata and not doc.metadata.title:
+            doc.metadata.title = doc.title
         event = DocumentEvent(
             type=EventType.DOCUMENT_CREATED,
             sync_run_id=self._sync_run_id,
@@ -80,6 +82,8 @@ class SyncContext:
 
     async def emit_updated(self, doc: Document) -> None:
         """Push document update to queue."""
+        if doc.metadata and not doc.metadata.title:
+            doc.metadata.title = doc.title
         event = DocumentEvent(
             type=EventType.DOCUMENT_UPDATED,
             sync_run_id=self._sync_run_id,

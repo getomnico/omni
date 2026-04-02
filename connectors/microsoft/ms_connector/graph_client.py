@@ -293,6 +293,26 @@ class GraphClient:
             members.append(member)
         return members
 
+    async def list_message_attachments(
+        self, user_id: str, message_id: str
+    ) -> list[dict[str, Any]]:
+        """Fetch file attachments for an Outlook message.
+
+        Returns only file attachments (not item or reference attachments),
+        excluding inline attachments (embedded images).
+        """
+        attachments: list[dict[str, Any]] = []
+        async for att in self.get_paginated(
+            f"/users/{user_id}/messages/{message_id}/attachments",
+            params={"$select": "id,name,contentType,size,contentBytes,isInline"},
+        ):
+            if att.get("@odata.type") != "#microsoft.graph.fileAttachment":
+                continue
+            if att.get("isInline", False):
+                continue
+            attachments.append(att)
+        return attachments
+
     async def get_channel_messages_delta(
         self,
         team_id: str,

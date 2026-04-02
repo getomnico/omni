@@ -52,6 +52,7 @@ class MockGraphAPI:
         self.message_replies: dict[str, list[dict[str, Any]]] = {}
         self.channel_members: dict[str, list[dict[str, Any]]] = {}
         self.share_drive_items: dict[str, dict[str, Any]] = {}
+        self.message_attachments: dict[str, list[dict[str, Any]]] = {}
 
     def reset(self) -> None:
         self.users.clear()
@@ -70,6 +71,7 @@ class MockGraphAPI:
         self.message_replies.clear()
         self.channel_members.clear()
         self.share_drive_items.clear()
+        self.message_attachments.clear()
 
     def add_user(self, user: dict[str, Any]) -> None:
         self.users.append(user)
@@ -127,6 +129,12 @@ class MockGraphAPI:
         key = f"{team_id}:{channel_id}"
         self.channel_members.setdefault(key, []).append(member)
 
+    def add_message_attachment(
+        self, user_id: str, message_id: str, attachment: dict[str, Any]
+    ) -> None:
+        key = f"{user_id}:{message_id}"
+        self.message_attachments.setdefault(key, []).append(attachment)
+
     def set_share_drive_item(
         self, share_token: str, drive_item: dict[str, Any]
     ) -> None:
@@ -159,6 +167,13 @@ class MockGraphAPI:
         async def mail_delta(request: Request) -> JSONResponse:
             uid = request.path_params["uid"]
             messages = mock.mail_messages.get(uid, [])
+            # Respect $filter on receivedDateTime for max-age testing
+            filter_param = request.query_params.get("$filter", "")
+            if "receivedDateTime ge " in filter_param:
+                cutoff_str = filter_param.split("receivedDateTime ge ")[1].strip()
+                messages = [
+                    m for m in messages if m.get("receivedDateTime", "") >= cutoff_str
+                ]
             delta_link = (
                 f"{base_url}/users/{uid}/mailFolders/inbox/messages/delta"
                 f"?deltatoken=latest"
@@ -229,6 +244,13 @@ class MockGraphAPI:
             members = mock.channel_members.get(key, [])
             return JSONResponse({"value": members})
 
+        async def mail_attachments(request: Request) -> JSONResponse:
+            uid = request.path_params["uid"]
+            mid = request.path_params["mid"]
+            key = f"{uid}:{mid}"
+            attachments = mock.message_attachments.get(key, [])
+            return JSONResponse({"value": attachments})
+
         async def resolve_share(request: Request) -> JSONResponse:
             token = request.path_params["token"]
             drive_item = mock.share_drive_items.get(token)
@@ -247,6 +269,10 @@ class MockGraphAPI:
             Route(
                 "/v1.0/users/{uid}/mailFolders/inbox/messages/delta",
                 mail_delta,
+            ),
+            Route(
+                "/v1.0/users/{uid}/messages/{mid}/attachments",
+                mail_attachments,
             ),
             Route("/v1.0/users/{uid}/calendarView/delta", calendar_delta),
             Route("/v1.0/groups", list_groups),
