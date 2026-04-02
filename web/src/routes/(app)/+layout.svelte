@@ -288,7 +288,9 @@
                                                 {...props}
                                                 onclick={clearSearch}>
                                                 <div class="flex items-center gap-1.5 truncate">
-                                                    {#if chat.isStarred}
+                                                    {#if chat.agentId}
+                                                        <Bot class="text-muted-foreground h-3.5 w-3.5 shrink-0" />
+                                                    {:else if chat.isStarred}
                                                         <Star
                                                             class="h-3 w-3 shrink-0 fill-current" />
                                                     {/if}
@@ -426,8 +428,11 @@
             )}>
             {#snippet child({ props })}
                 <a href="/chat/{chat.id}" {...props}>
-                    <div class="truncate">
-                        {chat.title || 'Untitled'}
+                    <div class="flex items-center gap-1.5 truncate">
+                        {#if chat.agentId}
+                            <Bot class="text-muted-foreground h-3.5 w-3.5 shrink-0" />
+                        {/if}
+                        <span class="truncate">{chat.title || 'Untitled'}</span>
                     </div>
                 </a>
             {/snippet}

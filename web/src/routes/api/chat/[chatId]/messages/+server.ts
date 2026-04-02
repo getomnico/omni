@@ -1,6 +1,7 @@
-import { json } from '@sveltejs/kit'
+import { json, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
 import { chatRepository, chatMessageRepository } from '$lib/server/db/chats'
+import { getAgent } from '$lib/server/db/agents.js'
 
 interface MessageRequest {
     content: string
@@ -24,6 +25,14 @@ export const GET: RequestHandler = async ({ params, locals }) => {
         if (!chat) {
             logger.warn('Chat not found', { chatId })
             return json({ error: 'Chat not found' }, { status: 404 })
+        }
+
+        // Agent chats require admin access
+        if (chat.agentId) {
+            const agent = await getAgent(chat.agentId)
+            if (agent?.agentType === 'org' && locals.user?.role !== 'admin') {
+                throw error(403, 'Admin access required for agent chats')
+            }
         }
 
         // Get messages for the chat
@@ -96,6 +105,14 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
         if (!chat) {
             logger.warn('Chat not found', { chatId })
             return json({ error: 'Chat not found' }, { status: 404 })
+        }
+
+        // Agent chats require admin access
+        if (chat.agentId) {
+            const agent = await getAgent(chat.agentId)
+            if (agent?.agentType === 'org' && locals.user?.role !== 'admin') {
+                throw error(403, 'Admin access required for agent chats')
+            }
         }
 
         // Create the user message in MessageParam format

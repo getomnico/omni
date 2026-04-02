@@ -165,6 +165,7 @@ export const chats = pgTable('chats', {
     modelId: text('model_id').references(() => models.id, {
         onDelete: 'set null',
     }),
+    agentId: text('agent_id').references(() => agents.id, { onDelete: 'set null' }),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })

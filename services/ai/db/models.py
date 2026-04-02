@@ -44,6 +44,7 @@ class Chat:
     model_id: Optional[str]
     created_at: datetime
     updated_at: datetime
+    agent_id: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: dict) -> "Chat":
@@ -58,6 +59,7 @@ class Chat:
             model_id=model_id,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            agent_id=row.get("agent_id"),
         )
 
     def to_dict(self) -> dict:
@@ -67,6 +69,7 @@ class Chat:
             "user_id": self.user_id,
             "title": self.title,
             "model_id": self.model_id,
+            "agent_id": self.agent_id,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }

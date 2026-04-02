@@ -26,7 +26,7 @@ export class ChatRepository {
         this.db = dbInstance
     }
 
-    async create(userId: string, title?: string, modelId?: string): Promise<Chat> {
+    async create(userId: string, title?: string, modelId?: string, agentId?: string): Promise<Chat> {
         const chatId = ulid()
         const [newChat] = await this.db
             .insert(chats)
@@ -35,6 +35,7 @@ export class ChatRepository {
                 userId,
                 title,
                 modelId: modelId || null,
+                agentId: agentId || null,
             })
             .returning()
 
@@ -108,7 +109,7 @@ export class ChatRepository {
     async search(userId: string, query: string): Promise<Chat[]> {
         const results = await this.db.execute(sql`
             WITH title_matches AS (
-                SELECT c.id, c.user_id, c.title, c.is_starred, c.model_id, c.created_at, c.updated_at,
+                SELECT c.id, c.user_id, c.title, c.is_starred, c.model_id, c.agent_id, c.created_at, c.updated_at,
                        pdb.score(c.id) AS score
                 FROM chats c
                 WHERE c.title ||| ${query}
@@ -127,23 +128,23 @@ export class ChatRepository {
             ),
             message_matches AS (
                 SELECT DISTINCT ON (c.id)
-                       c.id, c.user_id, c.title, c.is_starred, c.model_id, c.created_at, c.updated_at,
+                       c.id, c.user_id, c.title, c.is_starred, c.model_id, c.agent_id, c.created_at, c.updated_at,
                        tmm.score
                 FROM top_message_matches tmm
                 JOIN chats c ON c.id = tmm.chat_id
                 ORDER BY c.id, tmm.score DESC
             ),
             combined AS (
-                SELECT id, user_id, title, is_starred, model_id, created_at, updated_at,
+                SELECT id, user_id, title, is_starred, model_id, agent_id, created_at, updated_at,
                        MAX(score) AS max_score
                 FROM (
                     SELECT * FROM title_matches
                     UNION ALL
                     SELECT * FROM message_matches
                 ) AS all_matches
-                GROUP BY id, user_id, title, is_starred, model_id, created_at, updated_at
+                GROUP BY id, user_id, title, is_starred, model_id, agent_id, created_at, updated_at
             )
-            SELECT id, user_id, title, is_starred, model_id, created_at, updated_at
+            SELECT id, user_id, title, is_starred, model_id, agent_id, created_at, updated_at
             FROM combined
             ORDER BY max_score DESC
             LIMIT 20
@@ -155,6 +156,7 @@ export class ChatRepository {
             title: row.title,
             isStarred: row.is_starred,
             modelId: row.model_id,
+            agentId: row.agent_id,
             createdAt: row.created_at,
             updatedAt: row.updated_at,
         }))

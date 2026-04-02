@@ -90,6 +90,34 @@ Current date and time: {current_datetime} (UTC)
 - Focus on completing the task efficiently."""
 
 
+AGENT_CHAT_SYSTEM_PROMPT_TEMPLATE = """You are Omni AI, assisting an admin who wants to understand the activity of an automated agent.
+
+Agent name: {agent_name}
+Agent instructions: {agent_instructions}
+Agent schedule: {agent_schedule_type} — {agent_schedule_value}
+
+{run_history_section}
+
+Current date and time: {current_datetime} (UTC)
+{user_line}Connected apps: {connected_apps}
+
+# Your role
+- Answer questions about the agent's previous runs, outcomes, and patterns.
+- Use the run history provided above as your primary source of information.
+- You can use search and read tools to look up additional context when needed (e.g., to verify what documents the agent referenced).
+- Be specific: cite run dates, statuses, and summaries when answering.
+- If the admin asks about data the agent processed, refer to the execution logs rather than re-searching (unless the admin explicitly asks you to look something up).
+- This is a read-only session. No write actions are available.
+
+# Searching
+- Use inline query operators for efficient filtering: in:slack, type:pdf, status:done, by:sarah, before:2024-06, after:2024-01.
+- Use multiple targeted searches rather than one broad search.
+
+# Response style
+- Be direct. Lead with the answer.
+- When citing information, reference specific runs by date."""
+
+
 def _format_datetime(dt: datetime | None = None) -> str:
     if dt is None:
         dt = datetime.now(timezone.utc)
@@ -215,4 +243,146 @@ def build_chat_system_prompt(
         user_line=user_line,
         connected_apps=connected_apps,
         actions_section=actions_section,
+    )
+
+
+def _format_execution_log(execution_log: list[dict], max_chars: int = 5000) -> str:
+    """Format an agent run's execution log into a condensed summary of tool calls."""
+    if not execution_log:
+        return "  (no execution log)"
+
+    lines = []
+    total_chars = 0
+
+    for msg in execution_log:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+
+        if role == "assistant" and isinstance(content, list):
+            for block in content:
+                if block.get("type") == "tool_use":
+                    tool_line = f"  Tool call: {block.get('name', '?')}"
+                    tool_input = block.get("input", {})
+                    if isinstance(tool_input, dict):
+                        # Show key params concisely
+                        params = ", ".join(
+                            f"{k}={repr(v)[:100]}" for k, v in tool_input.items()
+                        )
+                        if params:
+                            tool_line += f"({params})"
+                    lines.append(tool_line)
+                elif block.get("type") == "text" and block.get("text"):
+                    text = block["text"][:500]
+                    lines.append(f"  Agent said: {text}")
+
+        elif role == "user" and isinstance(content, list):
+            for block in content:
+                if block.get("type") == "tool_result":
+                    result_content = block.get("content", "")
+                    is_error = block.get("is_error", False)
+                    prefix = "  Tool error:" if is_error else "  Tool result:"
+                    if isinstance(result_content, list):
+                        # Extract text from content blocks
+                        texts = [
+                            b.get("text", "")[:300]
+                            for b in result_content
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        ]
+                        if texts:
+                            lines.append(f"{prefix} {'; '.join(texts)}")
+                        else:
+                            # Count search results etc.
+                            search_count = sum(
+                                1 for b in result_content
+                                if isinstance(b, dict) and b.get("type") == "search_result"
+                            )
+                            if search_count:
+                                lines.append(f"{prefix} {search_count} search results")
+                    elif isinstance(result_content, str):
+                        lines.append(f"{prefix} {result_content[:300]}")
+
+        total_chars += sum(len(l) for l in lines) - total_chars
+        if total_chars > max_chars:
+            lines.append("  ... (log truncated)")
+            break
+
+    return "\n".join(lines) if lines else "  (no tool activity)"
+
+
+def format_run_history(runs: list, max_detailed: int = 3) -> str:
+    """Format agent run history for injection into the system prompt.
+
+    Args:
+        runs: list of AgentRun objects, ordered most recent first.
+        max_detailed: number of most recent runs to include detailed execution logs for.
+
+    Returns:
+        Formatted string summarizing the run history.
+    """
+    if not runs:
+        return "No runs recorded yet."
+
+    max_total_chars = 30000
+    sections = []
+    total_chars = 0
+
+    sections.append(f"## Agent Run History ({len(runs)} most recent runs)\n")
+
+    for i, run in enumerate(runs):
+        started = run.started_at.strftime("%Y-%m-%d %H:%M UTC") if run.started_at else "N/A"
+        completed = run.completed_at.strftime("%Y-%m-%d %H:%M UTC") if run.completed_at else "N/A"
+
+        header = f"### Run {i+1} — {started}"
+        header += f"\n- Status: {run.status}"
+        header += f"\n- Completed: {completed}"
+
+        if run.summary:
+            header += f"\n- Summary: {run.summary}"
+        if run.error_message:
+            header += f"\n- Error: {run.error_message}"
+
+        if i < max_detailed and run.execution_log:
+            header += "\n- Execution details:\n"
+            header += _format_execution_log(run.execution_log)
+
+        sections.append(header)
+        total_chars += len(header)
+
+        if total_chars > max_total_chars:
+            sections.append(f"\n... ({len(runs) - i - 1} older runs omitted)")
+            break
+
+    return "\n\n".join(sections)
+
+
+def build_agent_chat_system_prompt(
+    agent,
+    runs: list,
+    sources: list,
+    user_name: str | None = None,
+    user_email: str | None = None,
+) -> str:
+    """Build system prompt for an interactive chat session with an agent."""
+    seen = set()
+    display_names = []
+    for source in sources:
+        source_type = source.source_type
+        if source_type not in seen:
+            seen.add(source_type)
+            name = SOURCE_DISPLAY_NAMES.get(source_type, source_type)
+            display_names.append(name)
+
+    connected_apps = ", ".join(display_names) if display_names else "None"
+    user_line = _format_user_line(user_name, user_email)
+    run_history_section = format_run_history(runs)
+
+    return AGENT_CHAT_SYSTEM_PROMPT_TEMPLATE.format(
+        agent_name=agent.name,
+        agent_instructions=agent.instructions,
+        agent_schedule_type=agent.schedule_type,
+        agent_schedule_value=agent.schedule_value,
+        run_history_section=run_history_section,
+        current_datetime=_format_datetime(),
+        user_line=user_line,
+        connected_apps=connected_apps,
     )

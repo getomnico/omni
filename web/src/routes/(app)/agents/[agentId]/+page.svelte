@@ -5,7 +5,7 @@
     import { Textarea } from '$lib/components/ui/textarea/index.js'
     import { Label } from '$lib/components/ui/label/index.js'
     import * as Switch from '$lib/components/ui/switch/index.js'
-    import { Play, Trash2, Save } from '@lucide/svelte'
+    import { Play, Trash2, Save, MessageSquare } from '@lucide/svelte'
     import { goto, invalidateAll } from '$app/navigation'
     import { formatSchedule } from '$lib/utils/schedule.js'
     import * as Select from '$lib/components/ui/select/index.js'
@@ -31,6 +31,20 @@
     let editModelId = $state<string | undefined>(data.agent.modelId ?? undefined)
     let showDelete = $state(false)
     let saving = $state(false)
+    let startingChat = $state(false)
+
+    async function startChat() {
+        startingChat = true
+        try {
+            const res = await fetch(`/api/agents/${data.agent.id}/chat`, { method: 'POST' })
+            if (res.ok) {
+                const { chatId } = await res.json()
+                goto(`/chat/${chatId}`)
+            }
+        } finally {
+            startingChat = false
+        }
+    }
 
     async function save() {
         saving = true
@@ -115,6 +129,17 @@
             </Badge>
         </div>
         <div class="flex items-center gap-2">
+            {#if data.agent.agentType === 'org'}
+                <Button
+                    variant="outline"
+                    size="sm"
+                    class="cursor-pointer"
+                    onclick={startChat}
+                    disabled={startingChat}>
+                    <MessageSquare class="mr-1 h-3 w-3" />
+                    {startingChat ? 'Starting...' : 'Chat with Agent'}
+                </Button>
+            {/if}
             <Button variant="outline" size="sm" class="cursor-pointer" onclick={triggerRun}>
                 <Play class="mr-1 h-3 w-3" /> Run Now
             </Button>

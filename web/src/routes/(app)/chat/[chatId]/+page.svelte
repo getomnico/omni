@@ -1264,6 +1264,17 @@
             bind:this={chatContentRef}
             class="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-1"
             style:padding-bottom="{bottomPadding}px">
+            {#if data.agent}
+                <div class="bg-muted/50 mb-4 flex items-center justify-between rounded-lg border px-4 py-2">
+                    <div class="flex items-center gap-2 text-sm">
+                        <span class="text-muted-foreground">Chatting with agent:</span>
+                        <a href="/agents/{data.agent.id}" class="font-medium hover:underline cursor-pointer">
+                            {data.agent.name}
+                        </a>
+                    </div>
+                    <span class="text-muted-foreground text-xs">Read-only session</span>
+                </div>
+            {/if}
             {#if data.modelDisplayName}
                 <div class="flex justify-center">
                     <span class="text-muted-foreground rounded-full border px-3 py-0.5 text-xs">
