@@ -56,9 +56,10 @@ pub struct DoclingClient {
 impl DoclingClient {
     /// Create a new Docling client with the given base URL.
     pub fn new(base_url: impl Into<String>) -> Self {
+        let url = base_url.into();
         Self {
             client: Client::new(),
-            base_url: base_url.into(),
+            base_url: url.trim_end_matches('/').to_string(),
             timeout: DEFAULT_TIMEOUT,
         }
     }
@@ -223,15 +224,15 @@ impl DoclingClient {
     }
 }
 
-/// Check if Docling conversion is enabled.
+/// Check if Docling conversion is enabled via environment variable.
 ///
-/// This checks the DOCLING_ENABLED environment variable.
-/// The actual runtime setting from Redis should be checked separately
-/// by the service that has access to Redis.
-pub fn is_docling_enabled_env() -> bool {
-    std::env::var("DOCLING_ENABLED")
-        .map(|v| v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+/// Returns `Some(true)` or `Some(false)` if the env var is set to a non-empty value,
+/// or `None` if unset or empty (meaning the caller should check Redis / UI setting).
+pub fn docling_enabled_from_env() -> Option<bool> {
+    match std::env::var("DOCLING_ENABLED") {
+        Ok(v) if !v.is_empty() => Some(v.eq_ignore_ascii_case("true")),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -239,22 +240,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_docling_enabled_env() {
+    fn test_docling_enabled_from_env() {
         // Test with no env var set
         std::env::remove_var("DOCLING_ENABLED");
-        assert!(!is_docling_enabled_env());
+        assert_eq!(docling_enabled_from_env(), None);
+
+        // Test with empty string (treated as unset)
+        std::env::set_var("DOCLING_ENABLED", "");
+        assert_eq!(docling_enabled_from_env(), None);
 
         // Test with false
         std::env::set_var("DOCLING_ENABLED", "false");
-        assert!(!is_docling_enabled_env());
+        assert_eq!(docling_enabled_from_env(), Some(false));
 
         // Test with true
         std::env::set_var("DOCLING_ENABLED", "true");
-        assert!(is_docling_enabled_env());
+        assert_eq!(docling_enabled_from_env(), Some(true));
 
         // Test with TRUE (case insensitive)
         std::env::set_var("DOCLING_ENABLED", "TRUE");
-        assert!(is_docling_enabled_env());
+        assert_eq!(docling_enabled_from_env(), Some(true));
 
         // Clean up
         std::env::remove_var("DOCLING_ENABLED");

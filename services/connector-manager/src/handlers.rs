@@ -817,10 +817,13 @@ pub async fn get_connector_url_for_source(
 
 /// Check if Docling document conversion is enabled.
 /// Environment variable DOCLING_ENABLED takes precedence over Redis setting.
+/// An empty value is treated as unset (defers to Redis / UI setting).
 async fn is_docling_enabled(redis_client: &redis::Client) -> bool {
-    // Environment variable takes precedence
+    // Environment variable takes precedence (non-empty values only)
     if let Ok(env_value) = std::env::var("DOCLING_ENABLED") {
-        return env_value.eq_ignore_ascii_case("true");
+        if !env_value.is_empty() {
+            return env_value.eq_ignore_ascii_case("true");
+        }
     }
 
     // Check Redis setting

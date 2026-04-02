@@ -62,11 +62,12 @@ export class SystemSettings {
     /**
      * Check if Docling-based document conversion is enabled.
      * Environment variable DOCLING_ENABLED takes precedence over Redis setting.
+     * An empty value is treated as unset (defers to Redis / UI setting).
      */
     static async isDoclingEnabled(): Promise<boolean> {
-        // Environment variable takes precedence
+        // Environment variable takes precedence (non-empty values only)
         const envValue = process.env.DOCLING_ENABLED
-        if (envValue !== undefined) {
+        if (envValue !== undefined && envValue !== '') {
             return envValue.toLowerCase() === 'true'
         }
 
@@ -98,9 +99,11 @@ export class SystemSettings {
 
     /**
      * Check if Docling setting is overridden by environment variable.
+     * An empty value is treated as unset.
      */
     static isDoclingOverriddenByEnv(): boolean {
-        return process.env.DOCLING_ENABLED !== undefined
+        const val = process.env.DOCLING_ENABLED
+        return val !== undefined && val !== ''
     }
 
     /**
