@@ -1,10 +1,9 @@
 <script lang="ts">
     import { enhance } from '$app/forms'
-    import { Button } from '$lib/components/ui/button'
     import * as Card from '$lib/components/ui/card'
     import * as Alert from '$lib/components/ui/alert'
     import { Switch } from '$lib/components/ui/switch'
-    import { Loader2, Info, FileText, Sparkles, AlertTriangle } from '@lucide/svelte'
+    import { Info, FileText, Sparkles, AlertTriangle } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import type { PageData } from './$types'
 
