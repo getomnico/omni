@@ -5,9 +5,9 @@
 --   "Quartalsbericht_Q3_2024_Entwurf.docx" correctly across any language.
 --
 -- Content fields use pdb.icu: Unicode word-boundary segmentation — handles CJK,
---   Thai, and other scripts that don't use spaces between words. For space-
---   separated languages (English, German, etc.) it produces the same result as
---   simple.
+--   Thai, and other scripts that don't use spaces between words. For running
+--   prose in space-separated languages it behaves similarly to simple, though
+--   it differs on underscores and some punctuation (UAX #29 ExtendNumLet).
 --
 -- English aliases (title_en, content_en): same base tokenizer + Snowball English
 --   stemmer. Preserves English morphological matching ("reports" → "report")
