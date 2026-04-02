@@ -1,13 +1,18 @@
 """OneDrive file syncer using delta queries."""
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from omni_connector import SyncContext
 
 from ..graph_client import GraphClient, GraphAPIError
-from ..mappers import map_drive_item_to_document, generate_drive_item_content
-from .base import BaseSyncer
+from ..mappers import (
+    map_drive_item_to_document,
+    generate_drive_item_content,
+    _parse_iso,
+)
+from .base import BaseSyncer, DEFAULT_MAX_AGE_DAYS
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +72,12 @@ class OneDriveSyncer(BaseSyncer):
             )
             return delta_token
 
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=DEFAULT_MAX_AGE_DAYS)
+            if delta_token is None
+            else None
+        )
+
         for item in items:
             if ctx.is_cancelled():
                 return delta_token
@@ -83,6 +94,12 @@ class OneDriveSyncer(BaseSyncer):
             # Skip folders
             if "folder" in item:
                 continue
+
+            # On initial sync, skip files older than the max age cutoff
+            if cutoff:
+                modified = _parse_iso(item.get("lastModifiedDateTime"))
+                if modified and modified < cutoff:
+                    continue
 
             try:
                 await self._process_item(

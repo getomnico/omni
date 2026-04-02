@@ -252,7 +252,7 @@ class MicrosoftConnector(Connector):
         elif syncer_key == "mail":
             return MailSyncer()
         elif syncer_key == "calendar":
-            return CalendarSyncer(source_config)
+            return CalendarSyncer()
         elif syncer_key == "sharepoint":
             return SharePointSyncer()
         elif syncer_key == "teams":

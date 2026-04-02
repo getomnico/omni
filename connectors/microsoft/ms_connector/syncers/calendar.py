@@ -8,21 +8,14 @@ from omni_connector import SyncContext
 
 from ..graph_client import GraphClient, GraphAPIError
 from ..mappers import map_event_to_document, generate_event_content
-from .base import BaseSyncer
+from .base import BaseSyncer, DEFAULT_MAX_AGE_DAYS
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PAST_MONTHS = 6
 DEFAULT_FUTURE_MONTHS = 6
 
 
 class CalendarSyncer(BaseSyncer):
-    def __init__(self, source_config: dict[str, Any] | None = None):
-        config = source_config or {}
-        self._past_months = config.get("calendar_past_months", DEFAULT_PAST_MONTHS)
-        self._future_months = config.get(
-            "calendar_future_months", DEFAULT_FUTURE_MONTHS
-        )
 
     @property
     def name(self) -> str:
@@ -42,8 +35,8 @@ class CalendarSyncer(BaseSyncer):
         logger.info("[calendar] Syncing events for user %s", display_name)
 
         now = datetime.now(timezone.utc)
-        start = (now - timedelta(days=30 * self._past_months)).isoformat()
-        end = (now + timedelta(days=30 * self._future_months)).isoformat()
+        start = (now - timedelta(days=DEFAULT_MAX_AGE_DAYS)).isoformat()
+        end = (now + timedelta(days=30 * DEFAULT_FUTURE_MONTHS)).isoformat()
 
         try:
             items, new_token = await client.get_delta(

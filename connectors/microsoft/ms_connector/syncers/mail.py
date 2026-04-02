@@ -1,13 +1,14 @@
 """Outlook Mail syncer using delta queries."""
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from omni_connector import SyncContext
 
 from ..graph_client import GraphClient, GraphAPIError
 from ..mappers import map_message_to_document, generate_message_content, strip_html
-from .base import BaseSyncer
+from .base import BaseSyncer, DEFAULT_MAX_AGE_DAYS
 
 logger = logging.getLogger(__name__)
 
@@ -31,14 +32,20 @@ class MailSyncer(BaseSyncer):
         logger.info("[mail] Syncing inbox for user %s", display_name)
 
         try:
+            params: dict[str, str] = {
+                "$select": "id,subject,bodyPreview,body,from,toRecipients,"
+                "ccRecipients,receivedDateTime,sentDateTime,webLink,"
+                "hasAttachments,internetMessageId"
+            }
+            if delta_token is None:
+                cutoff = (
+                    datetime.now(timezone.utc) - timedelta(days=DEFAULT_MAX_AGE_DAYS)
+                ).strftime("%Y-%m-%dT%H:%M:%SZ")
+                params["$filter"] = f"receivedDateTime ge {cutoff}"
             items, new_token = await client.get_delta(
                 f"/users/{user_id}/mailFolders/inbox/messages/delta",
                 delta_token=delta_token,
-                params={
-                    "$select": "id,subject,bodyPreview,body,from,toRecipients,"
-                    "ccRecipients,receivedDateTime,sentDateTime,webLink,"
-                    "hasAttachments,internetMessageId"
-                },
+                params=params,
             )
         except GraphAPIError as e:
             logger.warning(

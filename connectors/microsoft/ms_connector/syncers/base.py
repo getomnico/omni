@@ -2,6 +2,7 @@
 
 import abc
 import logging
+import os
 from typing import Any
 
 from omni_connector import SyncContext
@@ -9,6 +10,8 @@ from omni_connector import SyncContext
 from ..graph_client import GraphClient
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_MAX_AGE_DAYS = int(os.environ.get("MS_365_MAX_AGE_DAYS", "730"))
 
 
 def _should_index_user(user: dict[str, Any], source_config: dict[str, Any]) -> bool:
