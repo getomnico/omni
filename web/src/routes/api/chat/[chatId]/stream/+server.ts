@@ -68,7 +68,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
     const abortController = new AbortController()
 
     try {
-        const response = await fetch(`${env.AI_SERVICE_URL}/chat/${chatId}/stream`, {
+        const streamUrl = chat.agentId
+            ? `${env.AI_SERVICE_URL}/chat/${chatId}/stream?auto_start=true`
+            : `${env.AI_SERVICE_URL}/chat/${chatId}/stream`
+        const response = await fetch(streamUrl, {
             signal: abortController.signal,
         })
 

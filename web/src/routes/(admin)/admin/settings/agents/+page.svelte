@@ -168,7 +168,7 @@
         const res = await fetch(`/api/agents/${agentId}/chat`, { method: 'POST' })
         if (res.ok) {
             const { chatId } = await res.json()
-            goto(`/chat/${chatId}`)
+            goto(`/chat/${chatId}`, { state: { stream: true } })
         }
     }
 </script>

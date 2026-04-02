@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import cast
 
 import httpx
-from fastapi import APIRouter, HTTPException, Path, Request
+from fastapi import APIRouter, HTTPException, Path, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import ValidationError
 
@@ -374,7 +374,7 @@ async def _clear_pending_approval(redis_client, chat_id: str) -> None:
 
 
 async def _stream_agent_chat(
-    request: Request, chat: Chat, chat_id: str
+    request: Request, chat: Chat, chat_id: str, auto_start: bool = False
 ) -> StreamingResponse:
     """Handle streaming for agent chat sessions (admin chatting with an org agent)."""
 
@@ -382,7 +382,9 @@ async def _stream_agent_chat(
     users_repo = UsersRepository()
     admin_user = await users_repo.find_by_id(chat.user_id)
     if not admin_user or admin_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required for agent chats")
+        raise HTTPException(
+            status_code=403, detail="Admin access required for agent chats"
+        )
 
     # Fetch the agent
     agent_repo = AgentRepository()
@@ -396,19 +398,27 @@ async def _stream_agent_chat(
     # Fetch messages
     messages_repo = MessagesRepository()
     chat_messages = await messages_repo.get_active_path(chat_id)
-    if not chat_messages:
-        raise HTTPException(status_code=404, detail="No messages found for chat")
 
-    # Check if we need to process
-    last_message = chat_messages[-1]
-    if last_message.message.get("role") != "user":
-        async def empty_generator():
-            yield b"event: end_of_stream\ndata: No new user message to process.\n\n"
-        return StreamingResponse(
-            empty_generator(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-        )
+    # auto_start: inject a transient user message to prompt the LLM when no messages exist
+    inject_start_message = False
+    if not chat_messages:
+        if auto_start:
+            inject_start_message = True
+        else:
+            raise HTTPException(status_code=404, detail="No messages found for chat")
+    elif chat_messages[-1].message.get("role") != "user":
+        if auto_start:
+            inject_start_message = True
+        else:
+
+            async def empty_generator():
+                yield b"event: end_of_stream\ndata: No new user message to process.\n\n"
+
+            return StreamingResponse(
+                empty_generator(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            )
 
     # Build read-only tool registry (no connector/write actions)
     build_result = await _build_agent_chat_registry(request)
@@ -432,8 +442,12 @@ async def _stream_agent_chat(
     )
 
     messages: list[MessageParam] = [
-        MessageParam(**msg.message) for msg in chat_messages
+        MessageParam(**msg.message) for msg in (chat_messages or [])
     ]
+
+    # Auto-start: inject a transient user message (not persisted)
+    if inject_start_message:
+        messages.append(MessageParam(role="user", content="Go."))
 
     # Compaction
     redis_client = getattr(request.app.state, "redis_client", None)
@@ -502,30 +516,50 @@ async def _stream_agent_chat(
                     if event.type == "content_block_delta":
                         if event.delta.type == "text_delta":
                             if event.index >= len(content_blocks):
-                                content_blocks.append(TextBlockParam(type="text", text=""))
-                            text_block = cast(TextBlockParam, content_blocks[event.index])
+                                content_blocks.append(
+                                    TextBlockParam(type="text", text="")
+                                )
+                            text_block = cast(
+                                TextBlockParam, content_blocks[event.index]
+                            )
                             text_block["text"] += event.delta.text
                         elif event.delta.type == "input_json_delta":
                             if event.index >= len(content_blocks):
                                 content_blocks.append(
-                                    ToolUseBlockParam(type="tool_use", id="", name="", input="")
+                                    ToolUseBlockParam(
+                                        type="tool_use", id="", name="", input=""
+                                    )
                                 )
-                            tool_use_block = cast(ToolUseBlockParam, content_blocks[event.index])
+                            tool_use_block = cast(
+                                ToolUseBlockParam, content_blocks[event.index]
+                            )
                             tool_use_block["input"] = (
-                                cast(str, tool_use_block["input"]) + event.delta.partial_json
+                                cast(str, tool_use_block["input"])
+                                + event.delta.partial_json
                             )
                         elif event.delta.type == "citations_delta":
                             if event.index >= len(content_blocks):
-                                content_blocks.append(TextBlockParam(type="text", text="", citations=[]))
-                            text_block = cast(TextBlockParam, content_blocks[event.index])
-                            if "citations" not in text_block or not text_block["citations"]:
+                                content_blocks.append(
+                                    TextBlockParam(type="text", text="", citations=[])
+                                )
+                            text_block = cast(
+                                TextBlockParam, content_blocks[event.index]
+                            )
+                            if (
+                                "citations" not in text_block
+                                or not text_block["citations"]
+                            ):
                                 text_block["citations"] = []
-                            citations = cast(list[TextCitationParam], text_block["citations"])
+                            citations = cast(
+                                list[TextCitationParam], text_block["citations"]
+                            )
                             citations.append(convert_citation_to_param(event.delta))
                     elif event.type == "content_block_start":
                         if event.content_block.type == "text":
                             content_blocks.append(
-                                TextBlockParam(type="text", text=event.content_block.text)
+                                TextBlockParam(
+                                    type="text", text=event.content_block.text
+                                )
                             )
                         elif event.content_block.type == "tool_use":
                             content_blocks.append(
@@ -552,7 +586,9 @@ async def _stream_agent_chat(
                     except json.JSONDecodeError:
                         tool_call["input"] = {}
 
-                assistant_message = MessageParam(role="assistant", content=content_blocks)
+                assistant_message = MessageParam(
+                    role="assistant", content=content_blocks
+                )
                 conversation_messages.append(assistant_message)
                 yield f"event: save_message\ndata: {json.dumps(assistant_message)}\n\n"
 
@@ -599,7 +635,11 @@ async def _stream_agent_chat(
 
 @router.get("/chat/{chat_id}/stream")
 async def stream_chat(
-    request: Request, chat_id: str = Path(..., description="Chat thread ID")
+    request: Request,
+    chat_id: str = Path(..., description="Chat thread ID"),
+    auto_start: bool = Query(
+        False, description="Auto-inject initial message for agent chats"
+    ),
 ):
     """Stream AI response for a chat thread using Server-Sent Events"""
     if not request.app.state.searcher_tool:
@@ -613,7 +653,7 @@ async def stream_chat(
 
     # Agent chat: verify admin access, use agent-specific prompt and read-only tools
     if chat.agent_id:
-        return await _stream_agent_chat(request, chat, chat_id)
+        return await _stream_agent_chat(request, chat, chat_id, auto_start=auto_start)
 
     llm_provider = _resolve_llm_provider(request.app.state, chat)
 
