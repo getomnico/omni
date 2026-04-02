@@ -1,5 +1,8 @@
 """Integration tests: each Microsoft 365 source type syncs independently."""
 
+import os
+from unittest.mock import patch
+
 import pytest
 import httpx
 
@@ -309,8 +312,8 @@ async def test_group_membership_sync(
             "file": {"mimeType": "text/plain"},
             "size": 100,
             "webUrl": "https://contoso.com/doc.txt",
-            "createdDateTime": "2024-01-01T00:00:00Z",
-            "lastModifiedDateTime": "2024-01-01T00:00:00Z",
+            "createdDateTime": "2026-01-01T00:00:00Z",
+            "lastModifiedDateTime": "2026-01-01T00:00:00Z",
             "parentReference": {"driveId": DRIVE_ID, "path": "/drive/root:/"},
         },
     )
@@ -742,3 +745,179 @@ async def test_teams_file_attachment(
     assert any(
         did.startswith("sharepoint:") for did in doc_ids
     ), f"No sharepoint file doc (attachment) in {doc_ids}"
+
+
+# ---------------------------------------------------------------------------
+# Max age filtering tests
+# ---------------------------------------------------------------------------
+
+
+async def test_mail_max_age_filters_old_messages(
+    harness, seed, mock_graph_server, mock_graph_api, cm_client: httpx.AsyncClient
+):
+    """Messages older than MS_365_MAX_AGE_DAYS are excluded on initial sync."""
+    source_id = await _create_ms_source(
+        seed, mock_graph_server, mock_graph_api, "outlook"
+    )
+    mock_graph_api.add_user(_make_user())
+    # Recent message — should be indexed
+    mock_graph_api.add_mail_message(
+        USER_ID,
+        {
+            "id": "msg-recent",
+            "internetMessageId": "<recent@contoso.com>",
+            "subject": "Recent Update",
+            "bodyPreview": "Recent content",
+            "body": {"contentType": "text", "content": "Recent content"},
+            "from": {
+                "emailAddress": {"name": "Bob Jones", "address": "bob@contoso.com"}
+            },
+            "toRecipients": [
+                {
+                    "emailAddress": {
+                        "name": "Alice Smith",
+                        "address": "alice@contoso.com",
+                    }
+                }
+            ],
+            "ccRecipients": [],
+            "receivedDateTime": "2026-03-01T09:00:00Z",
+            "sentDateTime": "2026-03-01T08:55:00Z",
+            "webLink": "https://outlook.office365.com/mail/inbox/msg-recent",
+            "hasAttachments": False,
+        },
+    )
+    # Old message — should be filtered out
+    mock_graph_api.add_mail_message(
+        USER_ID,
+        {
+            "id": "msg-old",
+            "internetMessageId": "<old@contoso.com>",
+            "subject": "Ancient Update",
+            "bodyPreview": "Old content",
+            "body": {"contentType": "text", "content": "Old content"},
+            "from": {
+                "emailAddress": {"name": "Bob Jones", "address": "bob@contoso.com"}
+            },
+            "toRecipients": [
+                {
+                    "emailAddress": {
+                        "name": "Alice Smith",
+                        "address": "alice@contoso.com",
+                    }
+                }
+            ],
+            "ccRecipients": [],
+            "receivedDateTime": "2020-01-01T09:00:00Z",
+            "sentDateTime": "2020-01-01T08:55:00Z",
+            "webLink": "https://outlook.office365.com/mail/inbox/msg-old",
+            "hasAttachments": False,
+        },
+    )
+
+    with patch.dict(os.environ, {"MS_365_MAX_AGE_DAYS": "365"}):
+        import ms_connector.syncers.base as base_mod
+
+        original = base_mod.DEFAULT_MAX_AGE_DAYS
+        base_mod.DEFAULT_MAX_AGE_DAYS = 365
+        try:
+            resp = await cm_client.post(
+                "/sync",
+                json={"source_id": source_id, "sync_type": "full"},
+            )
+            assert resp.status_code == 200, resp.text
+            sync_run_id = resp.json()["sync_run_id"]
+
+            row = await wait_for_sync(harness.db_pool, sync_run_id, timeout=60)
+            assert row["status"] == "completed", (
+                f"Sync ended with status={row['status']}, "
+                f"error={row.get('error_message')}"
+            )
+
+            events = await get_events(harness.db_pool, source_id)
+            doc_ids = {
+                e["payload"]["document_id"]
+                for e in events
+                if e["event_type"] == "document_created"
+            }
+            assert any(
+                "recent@contoso.com" in did for did in doc_ids
+            ), f"Recent message should be indexed, got {doc_ids}"
+            assert not any(
+                "old@contoso.com" in did for did in doc_ids
+            ), f"Old message should be filtered out, got {doc_ids}"
+        finally:
+            base_mod.DEFAULT_MAX_AGE_DAYS = original
+
+
+async def test_onedrive_max_age_filters_old_files(
+    harness, seed, mock_graph_server, mock_graph_api, cm_client: httpx.AsyncClient
+):
+    """Files older than MS_365_MAX_AGE_DAYS are excluded on initial sync."""
+    source_id = await _create_ms_source(
+        seed, mock_graph_server, mock_graph_api, "one_drive"
+    )
+    mock_graph_api.add_user(_make_user())
+    # Recent file — should be indexed
+    mock_graph_api.add_drive_item(
+        USER_ID,
+        {
+            "id": "item-recent",
+            "name": "recent.txt",
+            "file": {"mimeType": "text/plain"},
+            "size": 100,
+            "webUrl": "https://contoso.com/recent.txt",
+            "createdDateTime": "2026-03-01T08:00:00Z",
+            "lastModifiedDateTime": "2026-03-01T12:00:00Z",
+            "parentReference": {"driveId": DRIVE_ID, "path": "/drive/root:/"},
+        },
+    )
+    mock_graph_api.set_file_content(DRIVE_ID, "item-recent", b"recent content")
+    # Old file — should be filtered out
+    mock_graph_api.add_drive_item(
+        USER_ID,
+        {
+            "id": "item-old",
+            "name": "old.txt",
+            "file": {"mimeType": "text/plain"},
+            "size": 100,
+            "webUrl": "https://contoso.com/old.txt",
+            "createdDateTime": "2020-01-01T08:00:00Z",
+            "lastModifiedDateTime": "2020-01-01T12:00:00Z",
+            "parentReference": {"driveId": DRIVE_ID, "path": "/drive/root:/"},
+        },
+    )
+    mock_graph_api.set_file_content(DRIVE_ID, "item-old", b"old content")
+
+    import ms_connector.syncers.base as base_mod
+
+    original = base_mod.DEFAULT_MAX_AGE_DAYS
+    base_mod.DEFAULT_MAX_AGE_DAYS = 365
+    try:
+        resp = await cm_client.post(
+            "/sync",
+            json={"source_id": source_id, "sync_type": "full"},
+        )
+        assert resp.status_code == 200, resp.text
+        sync_run_id = resp.json()["sync_run_id"]
+
+        row = await wait_for_sync(harness.db_pool, sync_run_id, timeout=60)
+        assert row["status"] == "completed", (
+            f"Sync ended with status={row['status']}, "
+            f"error={row.get('error_message')}"
+        )
+
+        events = await get_events(harness.db_pool, source_id)
+        doc_ids = {
+            e["payload"]["document_id"]
+            for e in events
+            if e["event_type"] == "document_created"
+        }
+        assert any(
+            "item-recent" in did for did in doc_ids
+        ), f"Recent file should be indexed, got {doc_ids}"
+        assert not any(
+            "item-old" in did for did in doc_ids
+        ), f"Old file should be filtered out, got {doc_ids}"
+    finally:
+        base_mod.DEFAULT_MAX_AGE_DAYS = original

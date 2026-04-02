@@ -159,6 +159,13 @@ class MockGraphAPI:
         async def mail_delta(request: Request) -> JSONResponse:
             uid = request.path_params["uid"]
             messages = mock.mail_messages.get(uid, [])
+            # Respect $filter on receivedDateTime for max-age testing
+            filter_param = request.query_params.get("$filter", "")
+            if "receivedDateTime ge " in filter_param:
+                cutoff_str = filter_param.split("receivedDateTime ge ")[1].strip()
+                messages = [
+                    m for m in messages if m.get("receivedDateTime", "") >= cutoff_str
+                ]
             delta_link = (
                 f"{base_url}/users/{uid}/mailFolders/inbox/messages/delta"
                 f"?deltatoken=latest"
