@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import datetime, timezone
 
 import redis.asyncio as aioredis
 from pydantic import ValidationError
@@ -289,6 +290,33 @@ class SearchToolHandler:
                 ),
                 TextBlockParam(type="text", text=f"[URL: {doc.url or '<unknown>'}]"),
             ]
+
+            # Extract a human-readable date for the LLM. Prefer metadata updated_at
+            # (original content date) over created_at, falling back to a unix timestamp
+            # in attributes when present.
+            date_str: str | None = None
+            if doc.metadata:
+                raw_date = doc.metadata.get("updated_at") or doc.metadata.get("created_at")
+                if raw_date and isinstance(raw_date, str):
+                    try:
+                        dt = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+                        # Normalize to UTC so the label is always correct
+                        dt = dt.astimezone(timezone.utc)
+                        date_str = dt.strftime("%Y-%m-%d %H:%M UTC")
+                    except (ValueError, AttributeError):
+                        date_str = raw_date
+            if not date_str and doc.attributes:
+                raw_ts = doc.attributes.get("updated_at") or doc.attributes.get("created_at")
+                if raw_ts and isinstance(raw_ts, (int, float)):
+                    try:
+                        dt = datetime.fromtimestamp(raw_ts, tz=timezone.utc)
+                        date_str = dt.strftime("%Y-%m-%d %H:%M UTC")
+                    except (OSError, OverflowError, ValueError):
+                        pass
+            if date_str:
+                metadata_blocks.append(
+                    TextBlockParam(type="text", text=f"[Date: {date_str}]")
+                )
 
             if doc.attributes:
                 attrs_str = ", ".join(f"{k}: {v}" for k, v in doc.attributes.items())
