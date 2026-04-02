@@ -61,19 +61,25 @@ impl SearchDocumentRepository {
                 .await;
         }
 
-        // Tokenize query via ParadeDB: stems, removes stopwords, ASCII-folds
+        // Tokenize query via ParadeDB: splits on non-alphanumeric, ASCII-folds.
+        // No stemming or stopwords — the index aliases apply their own stemmer
+        // at query time via the ||| operator, and dropping stopwords would remove
+        // valid words in non-English languages (e.g. German "die", "in", "was").
         let raw_terms: Vec<String> = sqlx::query_scalar(
-            "SELECT unnest($1::pdb.simple('stemmer=english', 'stopwords_language=english', 'ascii_folding=true')::text[])"
+            "SELECT unnest($1::pdb.simple('ascii_folding=true')::text[])"
         )
         .bind(query)
         .fetch_all(&self.pool)
         .await?;
 
         let mut seen = HashSet::new();
+        // Cap at 12 terms. Without stopword removal longer queries produce more
+        // tokens than before. Each unique term adds 5 UNION ALL branches plus one
+        // bind parameter, so this keeps query size and planner overhead bounded.
         let terms: Vec<String> = raw_terms
             .into_iter()
             .filter(|t| seen.insert(t.clone()))
-            .take(8)
+            .take(12)
             .collect();
 
         // Bind params: $1 = full query, $2..$(1+N) = individual terms, then filters
@@ -116,8 +122,13 @@ impl SearchDocumentRepository {
             format!(" AND {}", filters.join(" AND "))
         };
 
-        // Per-term: best of title (default tokenizer), title (source_code tokenizer to handle
-        // CamelCase), and content
+        // Per-term: best score across all tokenizer paths.
+        // - title (simple): exact match on filenames/titles split by underscores etc.
+        // - title_secondary (source_code): CamelCase splitting for code identifiers
+        // - title_en (simple+stemmer): English morphological matching ("reports"→"report")
+        // - content (icu): Unicode word-boundary segmentation for any language
+        // - content_en (icu+stemmer): English morphological matching on content
+        // MAX(score) picks the best path per document — no language detection needed.
         let mut term_branches = Vec::new();
         for (i, _term) in terms.iter().enumerate() {
             let term_param = format!("${}", 2 + i);
@@ -130,7 +141,13 @@ impl SearchDocumentRepository {
                     WHERE title::pdb.alias('title_secondary') ||| {term_param}::pdb.boost(2){common_where} \
                     UNION ALL \
                     SELECT id, pdb.score(id) as score FROM documents \
-                    WHERE content ||| {term_param}{common_where}\
+                    WHERE title::pdb.alias('title_en') ||| {term_param}::pdb.boost(2){common_where} \
+                    UNION ALL \
+                    SELECT id, pdb.score(id) as score FROM documents \
+                    WHERE content ||| {term_param}{common_where} \
+                    UNION ALL \
+                    SELECT id, pdb.score(id) as score FROM documents \
+                    WHERE content::pdb.alias('content_en') ||| {term_param}{common_where}\
                 ) t{i} GROUP BY id"
             ));
         }
@@ -146,8 +163,8 @@ impl SearchDocumentRepository {
             ) p GROUP BY id"
         );
 
-        // When all query terms are stopwords, terms is empty — skip term_scores,
-        // rank by phrase scoring only.
+        // When the query tokenizes to zero terms (e.g. pure punctuation), fall
+        // back to phrase scoring only.
         let weight_idx = param_idx + 2;
         let half_life_idx = param_idx + 3;
 
@@ -385,17 +402,18 @@ impl SearchDocumentRepository {
 
         // Tokenize query via ParadeDB — same pipeline as search()
         let raw_terms: Vec<String> = sqlx::query_scalar(
-            "SELECT unnest($1::pdb.simple('stemmer=english', 'stopwords_language=english', 'ascii_folding=true')::text[])"
+            "SELECT unnest($1::pdb.simple('ascii_folding=true')::text[])"
         )
         .bind(query)
         .fetch_all(&self.pool)
         .await?;
 
         let mut seen = HashSet::new();
+        // Cap at 12 terms — same reasoning as search().
         let terms: Vec<String> = raw_terms
             .into_iter()
             .filter(|t| seen.insert(t.clone()))
-            .take(8)
+            .take(12)
             .collect();
 
         // Bind params: $1 = full query, $2..$(1+N) = individual terms, then filters
@@ -432,7 +450,7 @@ impl SearchDocumentRepository {
             format!(" AND {}", filters.join(" AND "))
         };
 
-        // Per-term: best of title, title_secondary, and content
+        // Per-term: best of title, title_secondary, title_en, content, content_en
         let mut term_branches = Vec::new();
         for (i, _term) in terms.iter().enumerate() {
             let term_param = format!("${}", 2 + i);
@@ -445,7 +463,13 @@ impl SearchDocumentRepository {
                     WHERE title::pdb.alias('title_secondary') ||| {term_param}::pdb.boost(2){common_where} \
                     UNION ALL \
                     SELECT id, pdb.score(id) as score FROM documents \
-                    WHERE content ||| {term_param}{common_where}\
+                    WHERE title::pdb.alias('title_en') ||| {term_param}::pdb.boost(2){common_where} \
+                    UNION ALL \
+                    SELECT id, pdb.score(id) as score FROM documents \
+                    WHERE content ||| {term_param}{common_where} \
+                    UNION ALL \
+                    SELECT id, pdb.score(id) as score FROM documents \
+                    WHERE content::pdb.alias('content_en') ||| {term_param}{common_where}\
                 ) t{i} GROUP BY id"
             ));
         }
@@ -461,7 +485,7 @@ impl SearchDocumentRepository {
         );
 
         let query_str = if terms.is_empty() {
-            // All stopwords — phrase-only scoring
+            // No terms after tokenization — phrase-only scoring
             format!(
                 r#"
                 WITH phrase_scores AS (
