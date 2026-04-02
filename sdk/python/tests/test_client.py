@@ -213,10 +213,12 @@ async def test_store_content_raises_on_error(mock_connector_manager, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_fetch_source_config_sends_correct_request(
+async def test_fetch_source_sync_data_returns_typed_model(
     sdk_client, mock_connector_manager
 ):
-    """Verify fetch_source_config calls the right endpoint and parses response."""
+    """Verify fetch_source_sync_data calls the right endpoint and returns SdkSourceSyncData."""
+    from omni_connector import SdkSourceSyncData, UserFilterMode
+
     mock_connector_manager.get("/sdk/source/source-123/sync-config").mock(
         return_value=Response(
             200,
@@ -224,15 +226,24 @@ async def test_fetch_source_config_sends_correct_request(
                 "config": {"folder_id": "abc"},
                 "credentials": {"access_token": "token"},
                 "connector_state": {"cursor": "xyz"},
+                "source_type": "one_drive",
+                "user_filter_mode": "whitelist",
+                "user_whitelist": ["alice@example.com"],
+                "user_blacklist": None,
             },
         )
     )
 
-    result = await sdk_client.fetch_source_config("source-123")
+    result = await sdk_client.fetch_source_sync_data("source-123")
 
-    assert result["config"] == {"folder_id": "abc"}
-    assert result["credentials"] == {"access_token": "token"}
-    assert result["connector_state"] == {"cursor": "xyz"}
+    assert isinstance(result, SdkSourceSyncData)
+    assert result.config == {"folder_id": "abc"}
+    assert result.credentials == {"access_token": "token"}
+    assert result.connector_state == {"cursor": "xyz"}
+    assert result.source_type == "one_drive"
+    assert result.user_filter_mode == UserFilterMode.WHITELIST
+    assert result.user_whitelist == ["alice@example.com"]
+    assert result.user_blacklist is None
 
     call = mock_connector_manager.calls[-1]
     assert (
@@ -242,7 +253,32 @@ async def test_fetch_source_config_sends_correct_request(
 
 
 @pytest.mark.asyncio
-async def test_fetch_source_config_raises_on_404(mock_connector_manager, monkeypatch):
+async def test_fetch_source_sync_data_defaults_filter_to_all(
+    sdk_client, mock_connector_manager
+):
+    """Verify missing filter fields default safely to ALL."""
+    from omni_connector import UserFilterMode
+
+    mock_connector_manager.get("/sdk/source/source-123/sync-config").mock(
+        return_value=Response(
+            200,
+            json={
+                "config": {},
+                "credentials": {},
+            },
+        )
+    )
+
+    result = await sdk_client.fetch_source_sync_data("source-123")
+    assert result.user_filter_mode == UserFilterMode.ALL
+    assert result.user_whitelist is None
+    assert result.user_blacklist is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_source_sync_data_raises_on_404(
+    mock_connector_manager, monkeypatch
+):
     """Verify proper error handling when source is not found."""
     monkeypatch.setenv("CONNECTOR_MANAGER_URL", "http://localhost:9000")
 
@@ -255,9 +291,25 @@ async def test_fetch_source_config_raises_on_404(mock_connector_manager, monkeyp
     client = SdkClient.from_env()
 
     with pytest.raises(SdkClientError) as exc_info:
-        await client.fetch_source_config("nonexistent-source")
+        await client.fetch_source_sync_data("nonexistent-source")
 
     assert "404" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_fetch_source_sync_data_raises_on_invalid_response(
+    sdk_client, mock_connector_manager
+):
+    """Verify deserialization failure raises SdkClientError."""
+    mock_connector_manager.get("/sdk/source/source-123/sync-config").mock(
+        return_value=Response(
+            200,
+            json={"unexpected": "shape"},
+        )
+    )
+
+    with pytest.raises(SdkClientError, match="Invalid source sync data"):
+        await sdk_client.fetch_source_sync_data("source-123")
 
 
 def test_client_requires_url(monkeypatch):

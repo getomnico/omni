@@ -2,7 +2,13 @@ import json
 
 import pytest
 
-from omni_connector import Document, DocumentMetadata, DocumentPermissions, SyncContext
+from omni_connector import (
+    Document,
+    DocumentMetadata,
+    DocumentPermissions,
+    SyncContext,
+    UserFilterMode,
+)
 
 
 @pytest.mark.asyncio
@@ -286,3 +292,64 @@ async def test_multiple_emits_increment_counter(sdk_client, mock_connector_manag
     # emit_deleted does NOT increment documents_emitted
     await ctx.emit_deleted("old-doc")
     assert ctx.documents_emitted == 3
+
+
+class TestShouldIndexUser:
+    def _make_ctx(
+        self,
+        mode: UserFilterMode = UserFilterMode.ALL,
+        whitelist: list[str] | None = None,
+        blacklist: list[str] | None = None,
+    ) -> SyncContext:
+        class MockClient:
+            base_url = "http://test"
+
+        return SyncContext(
+            sdk_client=MockClient(),  # type: ignore
+            sync_run_id="sync-123",
+            source_id="source-456",
+            user_filter_mode=mode,
+            user_whitelist=whitelist,
+            user_blacklist=blacklist,
+        )
+
+    def test_all_mode_indexes_everyone(self):
+        ctx = self._make_ctx(UserFilterMode.ALL)
+        assert ctx.should_index_user("alice@example.com") is True
+        assert ctx.should_index_user("bob@example.com") is True
+
+    def test_whitelist_mode_includes_only_listed(self):
+        ctx = self._make_ctx(
+            UserFilterMode.WHITELIST,
+            whitelist=["alice@example.com", "bob@example.com"],
+        )
+        assert ctx.should_index_user("alice@example.com") is True
+        assert ctx.should_index_user("bob@example.com") is True
+        assert ctx.should_index_user("charlie@example.com") is False
+
+    def test_blacklist_mode_excludes_listed(self):
+        ctx = self._make_ctx(
+            UserFilterMode.BLACKLIST,
+            blacklist=["alice@example.com"],
+        )
+        assert ctx.should_index_user("alice@example.com") is False
+        assert ctx.should_index_user("bob@example.com") is True
+
+    def test_case_insensitive(self):
+        ctx = self._make_ctx(
+            UserFilterMode.WHITELIST,
+            whitelist=["Alice@Example.COM"],
+        )
+        assert ctx.should_index_user("alice@example.com") is True
+        assert ctx.should_index_user("ALICE@EXAMPLE.COM") is True
+
+    def test_empty_email_excluded_when_filtering(self):
+        ctx = self._make_ctx(
+            UserFilterMode.WHITELIST,
+            whitelist=["alice@example.com"],
+        )
+        assert ctx.should_index_user("") is False
+
+    def test_defaults_to_all_when_no_filter_specified(self):
+        ctx = self._make_ctx()
+        assert ctx.should_index_user("anyone@example.com") is True

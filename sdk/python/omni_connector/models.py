@@ -10,6 +10,12 @@ class SyncMode(str, Enum):
     INCREMENTAL = "incremental"
 
 
+class UserFilterMode(str, Enum):
+    ALL = "all"
+    WHITELIST = "whitelist"
+    BLACKLIST = "blacklist"
+
+
 class EventType(str, Enum):
     DOCUMENT_CREATED = "document_created"
     DOCUMENT_UPDATED = "document_updated"
@@ -234,3 +240,18 @@ class PromptRequest(BaseModel):
     name: str
     arguments: dict[str, Any] | None = None
     credentials: dict[str, Any] = Field(default_factory=dict)
+
+
+class SdkSourceSyncData(BaseModel):
+    """Typed envelope for the connector-manager /sdk/source/{id}/sync-config response.
+
+    Matches the Rust SdkSourceSyncConfigResponse struct.
+    """
+
+    config: dict[str, Any]
+    credentials: dict[str, Any]
+    connector_state: dict[str, Any] | None = None
+    source_type: str | None = None
+    user_filter_mode: UserFilterMode = UserFilterMode.ALL
+    user_whitelist: list[str] | None = None
+    user_blacklist: list[str] | None = None

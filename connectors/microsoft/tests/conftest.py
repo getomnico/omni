@@ -321,11 +321,17 @@ async def _create_ms_source(
     mock_graph_server: str,
     mock_graph_api: MockGraphAPI,
     source_type: str,
+    user_filter_mode: str = "all",
+    user_whitelist: list[str] | None = None,
+    user_blacklist: list[str] | None = None,
 ) -> str:
     mock_graph_api.reset()
     sid = await seed.create_source(
         source_type=source_type,
         config={"graph_base_url": f"{mock_graph_server}/v1.0"},
+        user_filter_mode=user_filter_mode,
+        user_whitelist=user_whitelist,
+        user_blacklist=user_blacklist,
     )
     await seed.create_credentials(sid, {"token": "test-token"}, provider="microsoft")
     return sid

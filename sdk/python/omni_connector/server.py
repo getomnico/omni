@@ -121,11 +121,11 @@ def create_app(connector: "Connector") -> FastAPI:
             )
 
         try:
-            data = await server.sdk_client.fetch_source_config(source_id)
-            source_config = data["config"]
-            credentials = data["credentials"]
-            state = data.get("connector_state")
-            source_type = data.get("source_type")
+            sync_data = await server.sdk_client.fetch_source_sync_data(source_id)
+            source_config = sync_data.config
+            credentials = sync_data.credentials
+            state = sync_data.connector_state
+            source_type = sync_data.source_type
         except SdkClientError as e:
             error_msg = str(e)
             if "404" in error_msg:
@@ -160,6 +160,9 @@ def create_app(connector: "Connector") -> FastAPI:
             source_id=source_id,
             source_type=source_type,
             state=state,
+            user_filter_mode=sync_data.user_filter_mode,
+            user_whitelist=sync_data.user_whitelist,
+            user_blacklist=sync_data.user_blacklist,
         )
         server.active_syncs[source_id] = ctx
 

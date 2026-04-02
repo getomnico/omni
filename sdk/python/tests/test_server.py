@@ -12,6 +12,7 @@ from omni_connector import (
     Connector,
     Document,
     DocumentMetadata,
+    SdkSourceSyncData,
     SyncContext,
 )
 from omni_connector.server import create_app
@@ -99,7 +100,10 @@ def mock_connector():
 
 
 @pytest.fixture
-def client(mock_connector):
+def client(mock_connector, monkeypatch):
+    monkeypatch.setenv("CONNECTOR_MANAGER_URL", "http://localhost:9000")
+    monkeypatch.setenv("CONNECTOR_HOST_NAME", "localhost")
+    monkeypatch.setenv("PORT", "8000")
     app = create_app(mock_connector)
     return TestClient(app)
 
@@ -191,18 +195,18 @@ class TestActionEndpoint:
 
 
 class TestSyncEndpoint:
-    @patch("omni_connector.client.SdkClient.fetch_source_config")
+    @patch("omni_connector.client.SdkClient.fetch_source_sync_data")
     def test_sync_returns_started(
         self, mock_fetch, client, mock_connector, monkeypatch
     ):
         """Verify sync endpoint returns immediately with 'started' status."""
         monkeypatch.setenv("CONNECTOR_MANAGER_URL", "http://localhost:9000")
 
-        mock_fetch.return_value = {
-            "config": {"folder_id": "123"},
-            "credentials": {"access_token": "token"},
-            "connector_state": {"cursor": "abc"},
-        }
+        mock_fetch.return_value = SdkSourceSyncData(
+            config={"folder_id": "123"},
+            credentials={"access_token": "token"},
+            connector_state={"cursor": "abc"},
+        )
 
         response = client.post(
             "/sync",
@@ -217,7 +221,7 @@ class TestSyncEndpoint:
         data = response.json()
         assert data["status"] == "started"
 
-    @patch("omni_connector.client.SdkClient.fetch_source_config")
+    @patch("omni_connector.client.SdkClient.fetch_source_sync_data")
     def test_sync_conflict_when_already_running(self, mock_fetch, monkeypatch):
         """Verify 409 when sync is already in progress for source."""
         import asyncio
@@ -243,11 +247,11 @@ class TestSyncEndpoint:
                     await asyncio.sleep(0.01)
                 await ctx.complete()
 
-        mock_fetch.return_value = {
-            "config": {},
-            "credentials": {},
-            "connector_state": None,
-        }
+        mock_fetch.return_value = SdkSourceSyncData(
+            config={},
+            credentials={},
+            connector_state=None,
+        )
 
         app = create_app(BlockingConnector())
 
@@ -277,7 +281,7 @@ class TestSyncEndpoint:
 
             sync_can_finish.set()
 
-    @patch("omni_connector.client.SdkClient.fetch_source_config")
+    @patch("omni_connector.client.SdkClient.fetch_source_sync_data")
     def test_sync_error_when_source_not_found(self, mock_fetch, client, monkeypatch):
         """Verify error when source doesn't exist."""
         from omni_connector.exceptions import SdkClientError

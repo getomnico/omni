@@ -44,16 +44,29 @@ class SeedHelper:
         source_id: str | None = None,
         name: str | None = None,
         created_by: str | None = None,
+        user_filter_mode: str = "all",
+        user_whitelist: list[str] | None = None,
+        user_blacklist: list[str] | None = None,
     ) -> str:
         source_id = source_id or _new_ulid()
         name = name or f"Test {source_type} source"
         if created_by is None:
             created_by = await self.create_user()
         config_json = json.dumps(config or {})
+        whitelist_json = json.dumps(user_whitelist) if user_whitelist else None
+        blacklist_json = json.dumps(user_blacklist) if user_blacklist else None
         await self._pool.execute(
             """
-            INSERT INTO sources (id, name, source_type, config, created_by, created_at, updated_at)
-            VALUES ($1::char(26), $2, $3, $4::jsonb, $5::char(26), NOW(), NOW())
+            INSERT INTO sources (
+                id, name, source_type, config, created_by,
+                user_filter_mode, user_whitelist, user_blacklist,
+                created_at, updated_at
+            )
+            VALUES (
+                $1::char(26), $2, $3, $4::jsonb, $5::char(26),
+                $6, $7::jsonb, $8::jsonb,
+                NOW(), NOW()
+            )
             ON CONFLICT (id) DO NOTHING
             """,
             source_id,
@@ -61,6 +74,9 @@ class SeedHelper:
             source_type,
             config_json,
             created_by,
+            user_filter_mode,
+            whitelist_json,
+            blacklist_json,
         )
         return source_id
 

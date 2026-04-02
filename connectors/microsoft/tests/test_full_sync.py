@@ -1002,3 +1002,145 @@ async def test_onedrive_max_age_filters_old_files(
         ), f"Old file should be filtered out, got {doc_ids}"
     finally:
         base_mod.DEFAULT_MAX_AGE_DAYS = original
+
+
+USER_BOB = "user-002"
+
+
+def _make_bob() -> dict:
+    return {
+        "id": USER_BOB,
+        "displayName": "Bob Jones",
+        "mail": "bob@contoso.com",
+        "userPrincipalName": "bob@contoso.com",
+    }
+
+
+async def test_whitelist_filters_users(
+    harness, seed, mock_graph_server, mock_graph_api, cm_client: httpx.AsyncClient
+):
+    """Only whitelisted users should have their data synced."""
+    source_id = await _create_ms_source(
+        seed,
+        mock_graph_server,
+        mock_graph_api,
+        "outlook",
+        user_filter_mode="whitelist",
+        user_whitelist=["alice@contoso.com"],
+    )
+    mock_graph_api.add_user(_make_user())  # alice — whitelisted
+    mock_graph_api.add_user(_make_bob())  # bob — not whitelisted
+
+    mock_graph_api.add_mail_message(
+        USER_ID,
+        {
+            "id": "msg-alice",
+            "internetMessageId": "<alice-msg@contoso.com>",
+            "subject": "Alice's email",
+            "bodyPreview": "From Alice",
+            "receivedDateTime": "2026-03-01T10:00:00Z",
+            "from": {"emailAddress": {"address": "alice@contoso.com"}},
+            "toRecipients": [],
+        },
+    )
+    mock_graph_api.add_mail_message(
+        USER_BOB,
+        {
+            "id": "msg-bob",
+            "internetMessageId": "<bob-msg@contoso.com>",
+            "subject": "Bob's email",
+            "bodyPreview": "From Bob",
+            "receivedDateTime": "2026-03-01T10:00:00Z",
+            "from": {"emailAddress": {"address": "bob@contoso.com"}},
+            "toRecipients": [],
+        },
+    )
+
+    resp = await cm_client.post(
+        "/sync", json={"source_id": source_id, "sync_type": "full"}
+    )
+    assert resp.status_code == 200, resp.text
+    sync_run_id = resp.json()["sync_run_id"]
+
+    row = await wait_for_sync(harness.db_pool, sync_run_id, timeout=60)
+    assert (
+        row["status"] == "completed"
+    ), f"Sync ended with status={row['status']}, error={row.get('error_message')}"
+
+    events = await get_events(harness.db_pool, source_id)
+    doc_ids = {
+        e["payload"]["document_id"]
+        for e in events
+        if e["event_type"] == "document_created"
+    }
+    assert any(
+        "msg-alice" in did for did in doc_ids
+    ), f"Alice's message should be indexed, got {doc_ids}"
+    assert not any(
+        "msg-bob" in did for did in doc_ids
+    ), f"Bob's message should NOT be indexed, got {doc_ids}"
+
+
+async def test_blacklist_filters_users(
+    harness, seed, mock_graph_server, mock_graph_api, cm_client: httpx.AsyncClient
+):
+    """Blacklisted users should be excluded from sync."""
+    source_id = await _create_ms_source(
+        seed,
+        mock_graph_server,
+        mock_graph_api,
+        "outlook",
+        user_filter_mode="blacklist",
+        user_blacklist=["bob@contoso.com"],
+    )
+    mock_graph_api.add_user(_make_user())  # alice — not blacklisted
+    mock_graph_api.add_user(_make_bob())  # bob — blacklisted
+
+    mock_graph_api.add_mail_message(
+        USER_ID,
+        {
+            "id": "msg-alice-bl",
+            "internetMessageId": "<alice-bl@contoso.com>",
+            "subject": "Alice's email",
+            "bodyPreview": "From Alice",
+            "receivedDateTime": "2026-03-01T10:00:00Z",
+            "from": {"emailAddress": {"address": "alice@contoso.com"}},
+            "toRecipients": [],
+        },
+    )
+    mock_graph_api.add_mail_message(
+        USER_BOB,
+        {
+            "id": "msg-bob-bl",
+            "internetMessageId": "<bob-bl@contoso.com>",
+            "subject": "Bob's email",
+            "bodyPreview": "From Bob",
+            "receivedDateTime": "2026-03-01T10:00:00Z",
+            "from": {"emailAddress": {"address": "bob@contoso.com"}},
+            "toRecipients": [],
+        },
+    )
+
+    resp = await cm_client.post(
+        "/sync", json={"source_id": source_id, "sync_type": "full"}
+    )
+    assert resp.status_code == 200, resp.text
+    sync_run_id = resp.json()["sync_run_id"]
+
+    row = await wait_for_sync(harness.db_pool, sync_run_id, timeout=60)
+    assert (
+        row["status"] == "completed"
+    ), f"Sync ended with status={row['status']}, error={row.get('error_message')}"
+
+    events = await get_events(harness.db_pool, source_id)
+    doc_ids = {
+        e["payload"]["document_id"]
+        for e in events
+        if e["event_type"] == "document_created"
+    }
+    assert any(
+        "msg-alice-bl" in did for did in doc_ids
+    ), f"Alice's message should be indexed, got {doc_ids}"
+    assert not any(
+        "msg-bob-bl" in did for did in doc_ids
+    ), f"Bob's message should NOT be indexed, got {doc_ids}"
