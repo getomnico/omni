@@ -1,0 +1,1 @@
+ALTER TABLE chat_messages ADD COLUMN mentioned_document_ids JSONB NOT NULL DEFAULT '[]';

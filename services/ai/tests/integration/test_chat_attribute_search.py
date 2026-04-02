@@ -17,6 +17,8 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from ulid import ULID
 
+from .llm_helpers import create_mock_llm, parse_sse_events
+
 from db import UsersRepository, ChatsRepository, MessagesRepository
 import db.connection
 from routers import chat_router
@@ -65,33 +67,6 @@ def create_mock_searcher():
     searcher = AsyncMock()
     searcher.handle.return_value = MOCK_SEARCH_RESPONSE
     return searcher
-
-
-# ---------------------------------------------------------------------------
-# SSE parsing
-# ---------------------------------------------------------------------------
-
-
-def parse_sse_events(body: str) -> list[tuple[str, str]]:
-    """Parse SSE text into list of (event_type, data) tuples."""
-    events = []
-    current_event = None
-    current_data_lines: list[str] = []
-
-    for line in body.split("\n"):
-        if line.startswith("event: "):
-            current_event = line[len("event: ") :]
-        elif line.startswith("data: "):
-            current_data_lines.append(line[len("data: ") :])
-        elif line == "" and current_event is not None:
-            events.append((current_event, "\n".join(current_data_lines)))
-            current_event = None
-            current_data_lines = []
-
-    if current_event is not None:
-        events.append((current_event, "\n".join(current_data_lines)))
-
-    return events
 
 
 # ---------------------------------------------------------------------------

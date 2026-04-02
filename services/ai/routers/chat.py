@@ -13,6 +13,7 @@ from db import ChatsRepository, MessagesRepository
 from db.documents import DocumentsRepository
 from db.models import Chat, Source
 from db.users import UsersRepository
+from models.chat import MentionedDocumentContext
 from tools import (
     SearcherTool,
     ToolRegistry,
@@ -379,6 +380,40 @@ async def stream_chat(
     if compactor.needs_compaction(messages, all_tools):
         logger.info(f"Compacting conversation for chat {chat_id}")
         messages = await compactor.compact_conversation(chat_id, messages)
+
+    # Inject mentioned document content into the last user message
+    last_msg = chat_messages[-1]
+    if last_msg.mentioned_document_ids:
+        doc_handler = DocumentToolHandler(
+            content_storage=getattr(request.app.state, "content_storage", None),
+            documents_repo=DocumentsRepository(),
+            sandbox_url=SANDBOX_URL or None
+        )
+        tool_context = ToolContext(chat_id=chat_id, user_id=chat.user_id, user_email=None)
+
+        mentioned_doc_context: list[MentionedDocumentContext] = []
+        for doc_id in last_msg.mentioned_document_ids:
+            try:
+                context = await doc_handler.fetch_document_for_context(doc_id, tool_context)
+                if context:
+                    mentioned_doc_context.append(context)
+            except Exception as e: 
+                logger.warning(f"Failed to fetch mentioned document {doc_id}: {e}")
+
+        if mentioned_doc_context:
+            context_blocks = []
+            for doc in mentioned_doc_context:
+                context_blocks.append(f'<document doc_id="{doc.doc_id}" doc_title="{doc.title}">\n{doc.content}\n</document>')
+
+            mentioned_docs = "\n\n".join(context_blocks)
+
+            last_user_msg = messages[-1]
+            original_text = last_user_msg.get("content", "")
+            if isinstance(original_text, str):
+              messages[-1] = MessageParam(
+                role="user",
+                content=f"{original_text}\n\n<mentioned_documents>\n{mentioned_docs}\n</mentioned_documents>"
+              )
 
     # Build system prompt from active sources
     active_sources = [

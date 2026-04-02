@@ -751,6 +751,8 @@
                         },
                         messageSeqNum: chatMessages.length + 1,
                         createdAt: new Date(),
+                        contentText: null,
+                        mentiondDocumentIds: null
                     })
                 }
             }
@@ -786,6 +788,8 @@
                         },
                         messageSeqNum: chatMessages.length + 1,
                         createdAt: new Date(),
+                        contentText: null,
+                        mentiondDocumentIds: null
                     })
                 } else if (data.type === 'content_block_start') {
                     if (data.content_block.type === 'tool_use') {
@@ -892,7 +896,7 @@
         }
     }
 
-    async function handleSubmit() {
+    async function handleSubmit(mentionedDocumentIds: string[] = []) {
         const userMsg = userMessage.trim()
         if (userMsg) {
             // Determine parentId: last message in current display path
@@ -909,6 +913,7 @@
                     content: userMsg,
                     role: 'user',
                     parentId,
+                    mentionedDocumentIds
                 }),
             })
 
@@ -929,6 +934,8 @@
                 },
                 messageSeqNum: chatMessages.length + 1,
                 createdAt: new Date(),
+                mentiondDocumentIds: null,
+                contentText: null
             }
             chatMessages.push(newUserMessage)
 

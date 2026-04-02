@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass
 import logging
 from typing import Union
 
 import httpx
 
 from db.documents import DocumentsRepository
+from models.chat import MentionedDocumentContext
 from storage import ContentStorage, PostgresContentStorage
 from tools.registry import ToolContext, ToolResult
 
@@ -66,7 +68,6 @@ DOCUMENT_TOOL = {
 }
 
 _TOOL_NAMES = {"read_document"}
-
 
 class DocumentToolHandler:
     """Unified handler for reading text documents and fetching binary files."""
@@ -283,3 +284,18 @@ class DocumentToolHandler:
                 }
             ],
         )
+
+    async def fetch_document_for_context(self, document_id: str, context: ToolContext) -> MentionedDocumentContext | None:
+        doc = await self._documents_repo.get_by_id(document_id)
+        if not doc:
+            logger.warning(f"Mentioned document {document_id} not found")
+            return None
+
+        if doc.content_type in BINARY_CONTENT_TYPES:
+            # skip binary content types for now - this will need implementation later
+            logger.info(f"Skipping mentioned document '{doc.title}' - unsupported content type:{doc.content_type}")
+            return None
+
+        result = await self._read_text(doc, doc.title or document_id, None, None, context)
+        content = result.content[0].get("text", "") if result.content else ""
+        return MentionedDocumentContext(doc_id=doc.id, title=doc.title or document_id, content=content)
