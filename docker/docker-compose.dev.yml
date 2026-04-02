@@ -194,6 +194,12 @@ services:
       context: ..
       dockerfile: connectors/microsoft/Dockerfile
 
+  docling:
+    image: omni-docling:dev
+    build:
+      context: ../services/docling
+      dockerfile: Dockerfile
+
   vllm:
     profiles:
       - production

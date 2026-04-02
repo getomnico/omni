@@ -18,6 +18,7 @@ use axum::{
 use futures::stream::Stream;
 use redis::AsyncCommands;
 use serde_json::json;
+use shared::clients::docling::DoclingClient;
 use shared::db::repositories::SyncRunRepository;
 use shared::models::{ConnectorManifest, SearchOperator, SourceType, SyncType};
 use shared::queue::EventQueue;
@@ -26,7 +27,7 @@ use shared::{DocumentRepository, Repository, ServiceCredentialsRepo, SourceRepos
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::time::Duration;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 pub async fn health_check() -> impl IntoResponse {
     Json(json!({ "status": "healthy" }))
@@ -814,6 +815,47 @@ pub async fn get_connector_url_for_source(
     None
 }
 
+/// Check if Docling document conversion is enabled.
+/// Environment variable DOCLING_ENABLED takes precedence over Redis setting.
+async fn is_docling_enabled(redis_client: &redis::Client) -> bool {
+    // Environment variable takes precedence
+    if let Ok(env_value) = std::env::var("DOCLING_ENABLED") {
+        return env_value.eq_ignore_ascii_case("true");
+    }
+
+    // Check Redis setting
+    let mut conn = match redis_client.get_multiplexed_async_connection().await {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Failed to connect to Redis for docling check: {}", e);
+            return false;
+        }
+    };
+
+    let value: Option<String> = conn.hget("system:settings", "docling_enabled").await.ok();
+    value.as_deref() == Some("true")
+}
+
+/// MIME types that Docling can process (typically richer formats that benefit from AI extraction).
+fn is_docling_supported_mime(mime_type: &str) -> bool {
+    matches!(
+        mime_type,
+        "application/pdf"
+            | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            | "application/vnd.ms-excel"
+            | "application/msword"
+            | "application/vnd.ms-powerpoint"
+            | "text/html"
+            | "image/png"
+            | "image/jpeg"
+            | "image/tiff"
+            | "image/bmp"
+            | "image/webp"
+    )
+}
+
 // ============================================================================
 // SDK Handlers - Called by connectors
 // ============================================================================
@@ -921,12 +963,47 @@ pub async fn sdk_extract_content(
         data.len()
     );
 
-    let extracted_text =
+    // Try Docling extraction if enabled and supported for this mime type
+    let extracted_text = if is_docling_enabled(&state.redis_client).await
+        && is_docling_supported_mime(&mime_type)
+    {
+        // Attempt Docling extraction
+        let docling_result = if let Some(client) = DoclingClient::from_env() {
+            let file_name = filename.as_deref().unwrap_or("document");
+            match client.convert(&data, file_name).await {
+                Ok(markdown) => {
+                    debug!(
+                        "Docling extraction succeeded: {} chars",
+                        markdown.len()
+                    );
+                    Some(markdown)
+                }
+                Err(e) => {
+                    warn!("Docling extraction failed, falling back to built-in: {}", e);
+                    None
+                }
+            }
+        } else {
+            warn!("Docling enabled but DOCLING_URL not set, falling back to built-in extraction");
+            None
+        };
+
+        // Use Docling result or fall back to built-in extraction
+        docling_result.unwrap_or_else(|| {
+            shared::content_extractor::extract_content(&data, &mime_type, filename.as_deref())
+                .unwrap_or_else(|e| {
+                    warn!("Built-in content extraction failed: {}", e);
+                    String::new()
+                })
+        })
+    } else {
+        // Use built-in extraction
         shared::content_extractor::extract_content(&data, &mime_type, filename.as_deref())
             .unwrap_or_else(|e| {
-                tracing::warn!("Content extraction failed: {}", e);
+                warn!("Content extraction failed: {}", e);
                 String::new()
-            });
+            })
+    };
 
     let today = time::OffsetDateTime::now_utc();
     let prefix = format!(
