@@ -598,22 +598,30 @@ impl DocumentRepository {
 
 /// Generate SQL condition to check if user has permission to access document.
 /// Checks: public access, direct user access, domain-wide access, and group membership.
+///
+/// Uses JSONB operators (`@>`, `?`) for exact matching instead of BM25 `@@@`
+/// because BM25 tokenizes emails (e.g. "alice@example.com" → ["alice", "example", "com"]),
+/// causing false positives when different addresses share tokens.
 pub fn generate_permission_filter(user_email: &str, user_groups: &[String]) -> String {
+    let escaped_email = user_email.replace('\'', "''");
+
     let mut conditions = vec![
-        "permissions @@@ 'public:true'".to_string(),
-        format!("permissions @@@ 'users:{}'", user_email),
+        "permissions @> '{\"public\": true}'::jsonb".to_string(),
+        format!("permissions->'users' ? '{}'", escaped_email),
     ];
 
     // Domain-wide access: match user's email domain against groups array
     if let Some(domain) = user_email.split('@').nth(1) {
         if !domain.is_empty() {
-            conditions.push(format!("permissions @@@ 'groups:{}'", domain));
+            let escaped_domain = domain.replace('\'', "''");
+            conditions.push(format!("permissions->'groups' ? '{}'", escaped_domain));
         }
     }
 
     // Group membership: match each group the user belongs to
     for group_email in user_groups {
-        conditions.push(format!("permissions @@@ 'groups:{}'", group_email));
+        let escaped_group = group_email.replace('\'', "''");
+        conditions.push(format!("permissions->'groups' ? '{}'", escaped_group));
     }
 
     format!("({})", conditions.join(" OR "))

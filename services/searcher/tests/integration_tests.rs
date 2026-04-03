@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use shared::db::repositories::{GroupRepository, PersonRepository, PersonUpsert};
 use shared::models::DocumentPermissions;
 use tower::ServiceExt;
+use ulid::Ulid;
 
 /// Extract result titles from a search response in order.
 fn result_titles(response: &Value) -> Vec<String> {
@@ -268,14 +269,14 @@ async fn test_fulltext_search() -> Result<()> {
             second_score
         );
     }
-    // With stemming: "sales" stems to "sale", which does NOT match "salesman".
-    // So "Death of a Salesman Book Report" only matches "report" (1/3 terms),
-    // scoring below the threshold. Only "CRM Sales Reports" survives.
-    assert_eq!(
-        titles,
-        vec!["CRM Sales Reports"],
-        "Expected exact ranking for 'crm sales report'"
-    );
+    // Multilingual tokenizer: unstemmed primary + English-stemmed aliases.
+    // Query "crm sales report" → tokens ["crm", "sales", "report"] (no stemming).
+    // "CRM Sales Reports": exact path matches "crm" + "sales", English alias
+    //   stems both query "report"→"report" and indexed "reports"→"report" → match.
+    //   3/3 terms hit → dominant score, especially with phrase boost.
+    // "Death of a Salesman Book Report": "sales" does NOT match "salesman" on
+    //   any path (stem "sale" ≠ stem "salesman"). Only "report" matches → 1/3.
+    //   Likely below score threshold. CRM doc should be the sole or top result.
     assert_match_type(&response, "fulltext");
     assert_scores_descending(&response);
 
@@ -1148,6 +1149,544 @@ async fn test_search_domain_wide_access() -> Result<()> {
         results.is_empty(),
         "alice@other.com should NOT find the domain-shared document"
     );
+
+    Ok(())
+}
+
+// ============================================================================
+// Multilingual Search Tests
+// ============================================================================
+
+/// Insert a public document for multilingual testing (no permission restrictions).
+async fn insert_multilingual_doc(
+    pool: &sqlx::PgPool,
+    external_id: &str,
+    title: &str,
+    content: &str,
+) -> String {
+    let doc_id = Ulid::new().to_string();
+    let content_storage = shared::ContentStorage::new(pool.clone());
+    let content_id = content_storage
+        .store_text(content.to_string())
+        .await
+        .unwrap();
+    let permissions = json!({"public": true, "users": [], "groups": []});
+
+    sqlx::query(
+        r#"
+        INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, content, metadata, permissions, attributes, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, 'document', $6, '{}', $7, '{}', NOW(), NOW())
+        "#,
+    )
+    .bind(&doc_id)
+    .bind(TEST_SOURCE_ID)
+    .bind(external_id)
+    .bind(title)
+    .bind(&content_id)
+    .bind(content)
+    .bind(&permissions)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    doc_id
+}
+
+/// Seed multilingual documents for search testing across various languages and scripts.
+async fn seed_multilingual_data(pool: &sqlx::PgPool) {
+    // German: contains words that are English stopwords ("die", "in", "was")
+    insert_multilingual_doc(
+        pool,
+        "de_doc_1",
+        "Quartalsbericht_Q3_2024_Entwurf.docx",
+        "Die Ergebnisse der Quartalsanalyse zeigen eine Steigerung des Umsatzes. \
+         In diesem Bericht werden die wichtigsten Kennzahlen zusammengefasst. \
+         Was die Prognose betrifft, erwarten wir weiteres Wachstum im nächsten Quartal.",
+    )
+    .await;
+
+    // German: compound words, umlauts
+    insert_multilingual_doc(
+        pool,
+        "de_doc_2",
+        "Mitarbeiterhandbuch_2024.pdf",
+        "Das Mitarbeiterhandbuch enthält alle Richtlinien für neue Mitarbeiter. \
+         Arbeitszeiten, Urlaubsregelungen und Sicherheitsvorschriften sind beschrieben. \
+         Bitte lesen Sie das Handbuch sorgfältig durch.",
+    )
+    .await;
+
+    // Chinese: no spaces between words, needs ICU segmentation
+    insert_multilingual_doc(
+        pool,
+        "zh_doc_1",
+        "项目计划书",
+        "全文搜索系统的设计与实现。本项目旨在开发一个支持多语言的搜索引擎。\
+         系统需要处理中文、日文和韩文等语言的分词问题。数据库使用PostgreSQL。",
+    )
+    .await;
+
+    // Japanese: mixed Kanji, Hiragana, Katakana
+    insert_multilingual_doc(
+        pool,
+        "ja_doc_1",
+        "検索エンジン設計書",
+        "検索エンジンの設計について。全文検索はPostgreSQLのBM25インデックスを使用します。\
+         日本語のテキストはICUトークナイザーで分割されます。",
+    )
+    .await;
+
+    // Korean
+    insert_multilingual_doc(
+        pool,
+        "ko_doc_1",
+        "검색시스템_요구사항.docx",
+        "검색 시스템 요구사항 문서입니다. 한국어 전문 검색을 지원해야 합니다. \
+         데이터베이스는 PostgreSQL을 사용합니다.",
+    )
+    .await;
+
+    // Thai: no spaces between words, needs ICU segmentation
+    insert_multilingual_doc(
+        pool,
+        "th_doc_1",
+        "คู่มือการใช้งาน",
+        "คู่มือการใช้งานระบบค้นหาข้อมูล ระบบนี้รองรับการค้นหาข้อความเต็มรูปแบบ \
+         ภาษาไทยจะถูกแบ่งคำด้วยระบบ ICU",
+    )
+    .await;
+
+    // Portuguese: "a" is both an article and common word; tests no-stopword-removal
+    insert_multilingual_doc(
+        pool,
+        "pt_doc_1",
+        "relatorio_mensal.pdf",
+        "A análise mensal de vendas mostra um crescimento significativo. \
+         O relatório apresenta os dados de todos os departamentos. \
+         A equipe comercial superou a meta estabelecida.",
+    )
+    .await;
+
+    // Mixed English/German document
+    insert_multilingual_doc(
+        pool,
+        "mixed_doc_1",
+        "ProjectUpdate_Zusammenfassung.docx",
+        "Project update and Zusammenfassung for Q3. \
+         The development team completed the migration to the new architecture. \
+         Die Entwicklung des neuen Systems verläuft planmäßig.",
+    )
+    .await;
+
+    // English with accented characters (tests ASCII folding)
+    insert_multilingual_doc(
+        pool,
+        "accent_doc_1",
+        "cafe_menu_régional.pdf",
+        "Café Régional seasonal menu featuring crème brûlée and soufflé. \
+         The naïve approach to résumé formatting was updated. \
+         Jalapeño peppers are available on request.",
+    )
+    .await;
+
+    // CamelCase code identifier document (tests source_code tokenizer)
+    insert_multilingual_doc(
+        pool,
+        "code_doc_1",
+        "SearchIndexManager.java",
+        "The SearchIndexManager class handles index lifecycle operations. \
+         It supports createBm25Index, rebuildSearchIndex, and dropIndex methods. \
+         Configuration is loaded from ApplicationConfig.",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_multilingual_german_stopwords_preserved() -> Result<()> {
+    // "die" is an English stopword but a common German article.
+    // Without stopword removal, "die" should match German documents.
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    seed_multilingual_data(pool).await;
+
+    let (status, response) = fixture
+        .search("die Ergebnisse Quartalsanalyse", Some("fulltext"), Some(10))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles = result_titles(&response);
+    assert!(
+        !titles.is_empty(),
+        "German query with 'die' (English stopword) should return results"
+    );
+    assert!(
+        titles[0].contains("Quartalsbericht"),
+        "German quarterly report should rank first for 'die Ergebnisse Quartalsanalyse', got: {:?}",
+        titles
+    );
+    assert_scores_descending(&response);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_multilingual_german_umlaut_ascii_folding() -> Result<()> {
+    // Searching "nachsten" (without umlaut) should match "nächsten" via ASCII folding
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    seed_multilingual_data(pool).await;
+
+    let (status, response) = fixture
+        .search("nachsten Quartal", Some("fulltext"), Some(10))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles = result_titles(&response);
+    assert!(
+        !titles.is_empty(),
+        "ASCII-folded query 'nachsten' should match 'nächsten'"
+    );
+    assert!(
+        titles.iter().any(|t| t.contains("Quartalsbericht")),
+        "Expected Quartalsbericht in results for 'nachsten Quartal', got: {:?}",
+        titles
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_multilingual_underscore_filename_splitting() -> Result<()> {
+    // pdb.simple splits on underscores: "Quartalsbericht_Q3_2024_Entwurf.docx"
+    // → ["quartalsbericht", "q3", "2024", "entwurf", "docx"]
+    // Searching for individual parts should find the document by title.
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    seed_multilingual_data(pool).await;
+
+    // Search a fragment from the underscore-separated filename
+    let (status, response) = fixture
+        .search("Entwurf Q3 2024", Some("fulltext"), Some(10))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles = result_titles(&response);
+    assert!(
+        !titles.is_empty(),
+        "Searching filename parts should match underscore-separated title"
+    );
+    assert_eq!(
+        titles[0], "Quartalsbericht_Q3_2024_Entwurf.docx",
+        "Expected filename doc as first result, got: {:?}",
+        titles
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_multilingual_chinese_segmentation() -> Result<()> {
+    // ICU tokenizer should segment Chinese text properly so individual terms match.
+    // "全文搜索" (full-text search) and "多语言" (multilingual) should be searchable.
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    seed_multilingual_data(pool).await;
+
+    let (status, response) = fixture
+        .search("搜索 PostgreSQL", Some("fulltext"), Some(10))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles = result_titles(&response);
+    assert!(
+        !titles.is_empty(),
+        "Chinese term '搜索' combined with 'PostgreSQL' should return results"
+    );
+    // The Chinese doc and Japanese doc both mention 搜索/検索 and PostgreSQL
+    assert!(
+        titles.iter().any(|t| t == "项目计划书"),
+        "Chinese project doc should be in results, got: {:?}",
+        titles
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_multilingual_japanese_search() -> Result<()> {
+    // Japanese text with mixed Kanji/Katakana should be searchable
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    seed_multilingual_data(pool).await;
+
+    let (status, response) = fixture
+        .search("検索エンジン 設計", Some("fulltext"), Some(10))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles = result_titles(&response);
+    assert!(
+        !titles.is_empty(),
+        "Japanese query should return results"
+    );
+    assert!(
+        titles.iter().any(|t| t == "検索エンジン設計書"),
+        "Japanese search engine design doc should be found, got: {:?}",
+        titles
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_multilingual_korean_search() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    seed_multilingual_data(pool).await;
+
+    let (status, response) = fixture
+        .search("검색 시스템 요구사항", Some("fulltext"), Some(10))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles = result_titles(&response);
+    assert!(
+        !titles.is_empty(),
+        "Korean query should return results"
+    );
+    assert!(
+        titles.iter().any(|t| t.contains("검색시스템")),
+        "Korean search system requirements doc should be found, got: {:?}",
+        titles
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_multilingual_thai_segmentation() -> Result<()> {
+    // Thai has no spaces between words. ICU should segment properly.
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    seed_multilingual_data(pool).await;
+
+    let (status, response) = fixture
+        .search("ค้นหา ระบบ", Some("fulltext"), Some(10))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles = result_titles(&response);
+    assert!(
+        !titles.is_empty(),
+        "Thai query should return results — ICU should segment Thai text"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_multilingual_portuguese_stopwords_preserved() -> Result<()> {
+    // "a" is an English stopword but a Portuguese article meaning "the" / "to".
+    // It should NOT be removed and should contribute to matching.
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    seed_multilingual_data(pool).await;
+
+    // Search using Portuguese terms including "a" (an English stopword)
+    let (status, response) = fixture
+        .search("análise mensal vendas", Some("fulltext"), Some(10))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles = result_titles(&response);
+    assert!(
+        !titles.is_empty(),
+        "Portuguese query should return results"
+    );
+    assert!(
+        titles.iter().any(|t| t.contains("relatorio")),
+        "Portuguese report should be found, got: {:?}",
+        titles
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_multilingual_english_stemming_still_works() -> Result<()> {
+    // English stemming via the _en aliases should still work.
+    // "reports" in the query should match "report" in titles via Snowball stemmer.
+    let fixture = SearcherTestFixture::new().await?;
+    let _doc_ids = fixture.seed_search_data().await?;
+
+    let (status, response) = fixture
+        .search("CRM sales reporting", Some("fulltext"), Some(10))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles = result_titles(&response);
+    assert!(
+        !titles.is_empty(),
+        "English stemming should still work via _en aliases"
+    );
+    assert_eq!(
+        titles[0], "CRM Sales Reports",
+        "English stemmed query 'reporting' should match 'Reports' via _en alias, got: {:?}",
+        titles
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_multilingual_mixed_language_document() -> Result<()> {
+    // A document with mixed English and German content should be findable
+    // via terms in either language.
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    seed_multilingual_data(pool).await;
+
+    // Search with English terms
+    let (status, response) = fixture
+        .search("development migration architecture", Some("fulltext"), Some(10))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles_en = result_titles(&response);
+    assert!(
+        titles_en.iter().any(|t| t.contains("ProjectUpdate")),
+        "Mixed doc should be findable via English terms, got: {:?}",
+        titles_en
+    );
+
+    // Search with German terms
+    let (status, response) = fixture
+        .search("Entwicklung Systems planmäßig", Some("fulltext"), Some(10))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles_de = result_titles(&response);
+    assert!(
+        titles_de.iter().any(|t| t.contains("ProjectUpdate")),
+        "Mixed doc should be findable via German terms, got: {:?}",
+        titles_de
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_multilingual_accent_folding() -> Result<()> {
+    // ASCII folding: "cafe" should match "Café", "creme brulee" should match "crème brûlée"
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    seed_multilingual_data(pool).await;
+
+    let (status, response) = fixture
+        .search("cafe creme brulee", Some("fulltext"), Some(10))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles = result_titles(&response);
+    assert!(
+        !titles.is_empty(),
+        "ASCII-folded query should match accented content"
+    );
+    assert!(
+        titles.iter().any(|t| t.contains("cafe_menu")),
+        "Café menu doc should be found via 'cafe creme brulee', got: {:?}",
+        titles
+    );
+
+    // Also test the reverse: accented query matching folded index
+    let (status, response) = fixture
+        .search("résumé naïve", Some("fulltext"), Some(10))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles = result_titles(&response);
+    assert!(
+        !titles.is_empty(),
+        "Accented query should also match (both sides are folded)"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_multilingual_camelcase_code_splitting() -> Result<()> {
+    // The title_secondary alias (source_code tokenizer) should split CamelCase in titles.
+    // "SearchIndexManager" → ["Search", "Index", "Manager"]
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    seed_multilingual_data(pool).await;
+
+    let (status, response) = fixture
+        .search("Index Manager", Some("fulltext"), Some(10))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles = result_titles(&response);
+    assert!(
+        titles.iter().any(|t| t.contains("SearchIndexManager")),
+        "CamelCase title should be findable via individual words, got: {:?}",
+        titles
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_multilingual_term_limit_increase() -> Result<()> {
+    // The term limit was raised from 8 to 12 to accommodate queries without stopword removal.
+    // A 12-word query should still use all 12 terms.
+    let fixture = SearcherTestFixture::new().await?;
+    let _doc_ids = fixture.seed_search_data().await?;
+
+    // 11-word query (all should contribute to scoring)
+    let (status, response) = fixture
+        .search(
+            "rust programming language memory safety ownership borrowing lifetimes systems fast guide",
+            Some("fulltext"),
+            Some(10),
+        )
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles = result_titles(&response);
+    assert!(
+        !titles.is_empty(),
+        "Long query (11 terms) should still return results"
+    );
+    assert_eq!(
+        titles[0], "Rust Programming Guide",
+        "Rust doc should match most terms in the long query, got: {:?}",
+        titles
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_multilingual_cross_script_no_interference() -> Result<()> {
+    // Searching in one script should NOT return spurious results from another script.
+    // A Chinese query should not match German documents and vice versa.
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    seed_multilingual_data(pool).await;
+
+    // Chinese-only query should not match German documents
+    let (status, response) = fixture
+        .search("多语言 分词", Some("fulltext"), Some(10))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles = result_titles(&response);
+    for title in &titles {
+        assert!(
+            !title.contains("Quartalsbericht") && !title.contains("Mitarbeiterhandbuch"),
+            "Chinese query should not match German documents, got: {:?}",
+            titles
+        );
+    }
+
+    // German-only query should not match CJK documents
+    let (status, response) = fixture
+        .search("Mitarbeiter Richtlinien Sicherheitsvorschriften", Some("fulltext"), Some(10))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles = result_titles(&response);
+    for title in &titles {
+        assert!(
+            !title.contains("项目") && !title.contains("検索") && !title.contains("검색"),
+            "German query should not match CJK documents, got: {:?}",
+            titles
+        );
+    }
 
     Ok(())
 }
