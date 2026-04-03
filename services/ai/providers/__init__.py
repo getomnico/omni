@@ -60,7 +60,8 @@ def create_llm_provider(provider_type: str, **kwargs) -> LLMProvider:
         vllm_url = kwargs.get("vllm_url")
         if not vllm_url:
             raise ValueError("vllm_url is required for vLLM provider")
-        return VLLMProvider(vllm_url)
+        model = kwargs.get("model", "default")
+        return VLLMProvider(vllm_url, model=model)
 
     elif provider_type.lower() == "anthropic":
         api_key = kwargs.get("api_key")

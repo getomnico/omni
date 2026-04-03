@@ -33,7 +33,10 @@ def _create_provider_from_model_record(record: ModelRecord) -> LLMProvider:
     model_id = record.model_id
 
     if provider_type == "vllm":
-        return create_llm_provider("vllm", vllm_url=config.get("apiUrl", ""))
+        vllm_url = config.get("apiUrl")
+        if not vllm_url:
+            raise ValueError("apiUrl is required in vLLM provider config")
+        return create_llm_provider("vllm", vllm_url=vllm_url, model=model_id)
 
     elif provider_type == "anthropic":
         return create_llm_provider(
