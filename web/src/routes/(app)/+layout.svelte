@@ -44,7 +44,7 @@
     import type { Snippet } from 'svelte'
     import { cn } from '$lib/utils'
     import { page } from '$app/state'
-    import { invalidate, goto, afterNavigate } from '$app/navigation'
+    import { invalidate, invalidateAll, goto, afterNavigate } from '$app/navigation'
     import * as Avatar from '$lib/components/ui/avatar'
     import type { Chat } from '$lib/server/db/schema'
 
@@ -91,8 +91,7 @@
             body: JSON.stringify({ title: trimmed }),
         })
         isEditingHeaderTitle = false
-        invalidate('app:recent_chats')
-        invalidate(`/chat/${page.params.chatId}`)
+        invalidateAll()
     }
 
     async function logout() {
