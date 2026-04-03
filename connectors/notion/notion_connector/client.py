@@ -78,7 +78,7 @@ class NotionClient:
     ) -> dict[str, Any]:
         """Search for all databases in the workspace."""
         kwargs: dict[str, Any] = {
-            "filter": {"value": "database", "property": "object"},
+            "filter": {"value": "data_source", "property": "object"},
             "page_size": page_size,
         }
         if start_cursor:
@@ -195,7 +195,7 @@ class NotionClient:
                     raise RateLimitError(
                         f"Rate limited after {max_retries} retries", retry_after
                     ) from e
-                raise NotionError(f"Notion API error ({e.status}): {e.message}") from e
+                raise NotionError(f"Notion API error ({e.status}): {e}") from e
             except Exception as e:
                 raise NotionError(f"Notion API call failed: {e}") from e
         raise NotionError("Unexpected retry loop exit")
