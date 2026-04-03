@@ -597,8 +597,9 @@
             recalcBottomPadding()
             requestAnimationFrame(() => {
                 if (lastUserMessageRef && chatContainerRef) {
-                    const messageTop = lastUserMessageRef.offsetTop - chatContainerRef.offsetTop
-                    chatContainerRef.scrollTo({ top: messageTop, behavior: 'smooth' })
+                    const messageTop =
+                        lastUserMessageRef.offsetTop - chatContainerRef.offsetTop - 24
+                    chatContainerRef.scrollTo({ top: Math.max(0, messageTop), behavior: 'smooth' })
                 }
             })
         })
