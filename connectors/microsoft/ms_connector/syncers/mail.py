@@ -20,12 +20,59 @@ from .onedrive import _is_indexable, _get_extension
 logger = logging.getLogger(__name__)
 
 MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024  # 10 MB
+MAIL_FOLDERS = ["inbox", "sentitems", "archive"]
 
 
 class MailSyncer(BaseSyncer):
     @property
     def name(self) -> str:
         return "mail"
+
+    async def sync(
+        self,
+        client: GraphClient,
+        ctx: SyncContext,
+        state: dict[str, Any],
+        source_config: dict[str, Any] | None = None,
+        user_cache: dict[str, str] | None = None,
+        group_cache: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Run mail sync across all users and mail folders."""
+        source_config = source_config or {}
+        delta_tokens: dict[str, str] = state.get("delta_tokens", {})
+        new_tokens: dict[str, str] = {}
+
+        users = await client.list_users()
+        logger.info("[mail] Syncing across %d users", len(users))
+
+        users = [
+            u
+            for u in users
+            if ctx.should_index_user(u.get("mail") or u.get("userPrincipalName") or "")
+        ]
+        logger.info("[mail] %d users after filtering", len(users))
+
+        for user in users:
+            if ctx.is_cancelled():
+                logger.info("[mail] Cancelled")
+                return state
+
+            user_id = user["id"]
+
+            for folder in MAIL_FOLDERS:
+                if ctx.is_cancelled():
+                    break
+
+                token_key = f"{user_id}:{folder}"
+                token = delta_tokens.get(token_key)
+
+                new_token = await self._sync_folder_for_user(
+                    client, user, ctx, folder, token
+                )
+                if new_token:
+                    new_tokens[token_key] = new_token
+
+        return {"delta_tokens": new_tokens}
 
     async def sync_for_user(
         self,
@@ -36,9 +83,21 @@ class MailSyncer(BaseSyncer):
         user_cache: dict[str, str] | None = None,
         group_cache: dict[str, str] | None = None,
     ) -> str | None:
+        # Not used — sync() is overridden to handle multi-folder logic.
+        # Kept to satisfy the abstract base class.
+        return await self._sync_folder_for_user(client, user, ctx, "inbox", delta_token)
+
+    async def _sync_folder_for_user(
+        self,
+        client: GraphClient,
+        user: dict[str, Any],
+        ctx: SyncContext,
+        folder: str,
+        delta_token: str | None,
+    ) -> str | None:
         user_id = user["id"]
         display_name = user.get("displayName", user_id)
-        logger.info("[mail] Syncing inbox for user %s", display_name)
+        logger.info("[mail] Syncing %s for user %s", folder, display_name)
 
         try:
             params: dict[str, str] = {
@@ -52,13 +111,16 @@ class MailSyncer(BaseSyncer):
                 ).strftime("%Y-%m-%dT%H:%M:%SZ")
                 params["$filter"] = f"receivedDateTime ge {cutoff}"
             items, new_token = await client.get_delta(
-                f"/users/{user_id}/mailFolders/inbox/messages/delta",
+                f"/users/{user_id}/mailFolders/{folder}/messages/delta",
                 delta_token=delta_token,
                 params=params,
             )
         except GraphAPIError as e:
             logger.warning(
-                "[mail] Failed to fetch delta for user %s: %s", display_name, e
+                "[mail] Failed to fetch delta for %s/%s: %s",
+                display_name,
+                folder,
+                e,
             )
             return delta_token
 
