@@ -14,27 +14,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_AGE_DAYS = int(os.environ.get("MS_365_MAX_AGE_DAYS", "730"))
 
 
-def _should_index_user(user: dict[str, Any], source_config: dict[str, Any]) -> bool:
-    """Check if a user should be indexed based on user filter settings."""
-    mode = source_config.get("user_filter_mode", "all")
-    if mode == "all":
-        return True
-
-    user_email = (user.get("mail") or user.get("userPrincipalName") or "").lower()
-    if not user_email:
-        return False
-
-    if mode == "whitelist":
-        whitelist = source_config.get("user_whitelist") or []
-        return user_email in [e.lower() for e in whitelist]
-
-    if mode == "blacklist":
-        blacklist = source_config.get("user_blacklist") or []
-        return user_email not in [e.lower() for e in blacklist]
-
-    return True
-
-
 class BaseSyncer(abc.ABC):
     """Abstract syncer that iterates over users and runs delta queries."""
 
@@ -72,7 +51,11 @@ class BaseSyncer(abc.ABC):
         users = await client.list_users()
         logger.info("[%s] Syncing across %d users", self.name, len(users))
 
-        users = [u for u in users if _should_index_user(u, source_config)]
+        users = [
+            u
+            for u in users
+            if ctx.should_index_user(u.get("mail") or u.get("userPrincipalName") or "")
+        ]
         logger.info("[%s] %d users after filtering", self.name, len(users))
 
         for user in users:

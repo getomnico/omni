@@ -188,7 +188,33 @@ def map_message_to_document(
 
     sender = message.get("from", {}).get("emailAddress", {})
     sender_name = sender.get("name") or sender.get("address")
+    sender_email = sender.get("address", "").lower()
     participants = _collect_message_participants(message)
+
+    to_addrs = [
+        r.get("emailAddress", {}).get("address", "").lower()
+        for r in message.get("toRecipients", [])
+        if r.get("emailAddress", {}).get("address")
+    ]
+    cc_addrs = [
+        r.get("emailAddress", {}).get("address", "").lower()
+        for r in message.get("ccRecipients", [])
+        if r.get("emailAddress", {}).get("address")
+    ]
+
+    attributes: dict[str, Any] = {
+        "source_type": "outlook",
+    }
+    if sender_email:
+        attributes["sender"] = sender_email
+    if to_addrs:
+        attributes["to"] = to_addrs
+    if cc_addrs:
+        attributes["cc"] = cc_addrs
+    sent_dt = message.get("sentDateTime")
+    if sent_dt:
+        date_str = sent_dt[:10] if len(sent_dt) >= 10 else sent_dt
+        attributes["date"] = date_str
 
     return Document(
         external_id=external_id,
@@ -210,9 +236,7 @@ def map_message_to_document(
             public=False,
             users=sorted(participants),
         ),
-        attributes={
-            "source_type": "outlook",
-        },
+        attributes=attributes,
     )
 
 
@@ -283,6 +307,17 @@ def map_event_to_document(
     start_dt = _parse_graph_datetime(event.get("start"))
     end_dt = _parse_graph_datetime(event.get("end"))
 
+    attributes: dict[str, Any] = {
+        "source_type": "outlook_calendar",
+    }
+    org_addr = organizer.get("address", "").lower()
+    if org_addr:
+        attributes["organizer"] = org_addr
+    if attendee_emails:
+        attributes["attendees"] = [e.lower() for e in attendee_emails]
+    if start_dt:
+        attributes["date"] = start_dt.strftime("%Y-%m-%d")
+
     return Document(
         external_id=external_id,
         title=event.get("subject") or "Untitled Event",
@@ -304,9 +339,7 @@ def map_event_to_document(
             public=False,
             users=attendee_emails,
         ),
-        attributes={
-            "source_type": "outlook_calendar",
-        },
+        attributes=attributes,
     )
 
 

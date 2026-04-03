@@ -302,15 +302,18 @@ class GraphClient:
         excluding inline attachments (embedded images).
         """
         attachments: list[dict[str, Any]] = []
+        base = f"/users/{user_id}/messages/{message_id}/attachments"
         async for att in self.get_paginated(
-            f"/users/{user_id}/messages/{message_id}/attachments",
-            params={"$select": "id,name,contentType,size,contentBytes,isInline"},
+            base,
+            params={"$select": "id,name,contentType,size,isInline"},
         ):
             if att.get("@odata.type") != "#microsoft.graph.fileAttachment":
                 continue
             if att.get("isInline", False):
                 continue
-            attachments.append(att)
+            # Fetch individually to get contentBytes (excluded from list responses)
+            full = await self.get(f"{base}/{att['id']}")
+            attachments.append(full)
         return attachments
 
     async def get_channel_messages_delta(

@@ -63,6 +63,8 @@ class MicrosoftConnector(Connector):
             SearchOperator(
                 operator="from", attribute_key="sender", value_type="person"
             ),
+            SearchOperator(operator="to", attribute_key="to", value_type="person"),
+            SearchOperator(operator="cc", attribute_key="cc", value_type="person"),
         ]
 
     @property

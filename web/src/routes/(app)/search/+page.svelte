@@ -50,6 +50,17 @@
         github: 'GitHub',
         local_files: 'Files',
         web: 'Web',
+        notion: 'Notion',
+        hubspot: 'HubSpot',
+        one_drive: 'OneDrive',
+        share_point: 'SharePoint',
+        outlook: 'Outlook',
+        outlook_calendar: 'Outlook Calendar',
+        ms_teams: 'Microsoft Teams',
+        fireflies: 'Fireflies',
+        imap: 'Email',
+        clickup: 'ClickUp',
+        linear: 'Linear',
     }
 
     let allFacets = $derived(data.searchResults?.facets || [])

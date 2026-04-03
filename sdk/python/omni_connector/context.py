@@ -3,7 +3,13 @@ import logging
 from typing import Any
 
 from .client import SdkClient
-from .models import DocumentEvent, Document, EventType, GroupMembershipSyncEvent
+from .models import (
+    DocumentEvent,
+    Document,
+    EventType,
+    GroupMembershipSyncEvent,
+    UserFilterMode,
+)
 from .storage import ContentStorage
 
 logger = logging.getLogger(__name__)
@@ -19,6 +25,9 @@ class SyncContext:
         source_id: str,
         source_type: str | None = None,
         state: dict[str, Any] | None = None,
+        user_filter_mode: UserFilterMode = UserFilterMode.ALL,
+        user_whitelist: list[str] | None = None,
+        user_blacklist: list[str] | None = None,
     ):
         self._client = sdk_client
         self._sync_run_id = sync_run_id
@@ -29,6 +38,9 @@ class SyncContext:
         self._documents_emitted = 0
         self._documents_scanned = 0
         self._content_storage = ContentStorage(sdk_client, sync_run_id)
+        self._user_filter_mode = user_filter_mode
+        self._user_whitelist = {e.lower() for e in (user_whitelist or [])}
+        self._user_blacklist = {e.lower() for e in (user_blacklist or [])}
 
     @property
     def sync_run_id(self) -> str:
@@ -57,6 +69,19 @@ class SyncContext:
     @property
     def documents_scanned(self) -> int:
         return self._documents_scanned
+
+    def should_index_user(self, user_email: str) -> bool:
+        """Check if a user should be indexed based on filter settings."""
+        if self._user_filter_mode == UserFilterMode.ALL:
+            return True
+        email = user_email.lower()
+        if not email:
+            return False
+        if self._user_filter_mode == UserFilterMode.WHITELIST:
+            return email in self._user_whitelist
+        if self._user_filter_mode == UserFilterMode.BLACKLIST:
+            return email not in self._user_blacklist
+        return True
 
     async def emit(self, doc: Document) -> None:
         """Push document to queue. Implicitly heartbeats (updates last_activity_at)."""

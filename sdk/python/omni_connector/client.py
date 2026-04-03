@@ -4,8 +4,10 @@ from typing import Any
 
 import httpx
 
+from pydantic import ValidationError
+
 from .exceptions import SdkClientError
-from .models import ConnectorEvent
+from .models import ConnectorEvent, SdkSourceSyncData
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +33,8 @@ class SdkClient:
             self._client = httpx.AsyncClient(timeout=self._timeout)
         return self._client
 
-    async def fetch_source_config(self, source_id: str) -> dict[str, Any]:
-        """Fetch source config, credentials, and state from connector-manager."""
+    async def fetch_source_sync_data(self, source_id: str) -> SdkSourceSyncData:
+        """Fetch source sync data (config, credentials, state, filters) from connector-manager."""
         client = await self._get_client()
         response = await client.get(
             f"{self.base_url}/sdk/source/{source_id}/sync-config"
@@ -40,10 +42,18 @@ class SdkClient:
 
         if not response.is_success:
             raise SdkClientError(
-                f"Failed to fetch source config: {response.status_code} - {response.text}"
+                f"Failed to fetch source sync data: {response.status_code} - {response.text}"
             )
 
-        return response.json()
+        try:
+            return SdkSourceSyncData.model_validate(response.json())
+        except ValidationError as e:
+            logger.error(
+                "Failed to deserialize source sync data for %s: %s",
+                source_id,
+                e,
+            )
+            raise SdkClientError(f"Invalid source sync data response: {e}") from e
 
     async def emit_event(
         self,

@@ -24,10 +24,12 @@ from .models import (
     McpPromptArgument,
     McpPromptDefinition,
     McpResourceDefinition,
+    SdkSourceSyncData,
     SearchOperator,
     SyncMode,
     SyncRequest,
     SyncResponse,
+    UserFilterMode,
 )
 from .storage import ContentStorage
 
@@ -53,8 +55,10 @@ __all__ = [
     "ConnectorManifest",
     "SearchOperator",
     "SyncMode",
+    "SdkSourceSyncData",
     "SyncRequest",
     "SyncResponse",
+    "UserFilterMode",
     "CancelRequest",
     "CancelResponse",
     # MCP models
