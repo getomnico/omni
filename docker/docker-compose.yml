@@ -24,6 +24,10 @@ x-storage-config: &storage-config
   S3_BUCKET: ${S3_BUCKET}
   S3_REGION: ${S3_REGION}
 
+x-docling-config: &docling-config
+  DOCLING_URL: ${DOCLING_URL:-http://docling:8003}
+  DOCLING_ENABLED: ${DOCLING_ENABLED}
+
 x-logging: &default-logging
   driver: "json-file"
   options:
@@ -228,7 +232,7 @@ services:
     expose:
       - "${CONNECTOR_MANAGER_PORT}"
     environment:
-      <<: [*db-config, *db-pool-config, *redis-config, *otel-config]
+      <<: [*db-config, *db-pool-config, *redis-config, *otel-config, *docling-config]
       RUST_LOG: ${RUST_LOG}
       PORT: ${CONNECTOR_MANAGER_PORT}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
@@ -303,6 +307,31 @@ services:
       retries: 3
     profiles:
       - local-embeddings  # Only start when local-embeddings profile is active
+    logging: *default-logging
+
+  # Docling Service - AI-based document to Markdown conversion
+  # Provides superior PDF extraction, OCR, and structure-aware output
+  # This service is opt-in and must be enabled via DOCLING_ENABLED=true
+  docling:
+    image: ghcr.io/getomnico/omni/omni-docling:${OMNI_VERSION:-latest}
+    container_name: omni-docling
+    expose:
+      - "${DOCLING_PORT:-8003}"
+    environment:
+      MAX_CONCURRENT_CONVERSIONS: ${DOCLING_MAX_CONCURRENT_CONVERSIONS:-1}
+    networks:
+      - omni-network
+    volumes:
+      - docling_models:/root/.cache
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${DOCLING_PORT:-8003}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s  # Models take time to load on first start
+    profiles:
+      - docling  # Only start when docling profile is active
     logging: *default-logging
 
   # Connector Services
@@ -599,6 +628,7 @@ services:
       APP_URL: ${APP_URL}
       AI_ANSWER_ENABLED: ${AI_ANSWER_ENABLED}
       AGENTS_ENABLED: ${AGENTS_ENABLED:-false}
+      DOCLING_ENABLED: ${DOCLING_ENABLED}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       ENCRYPTION_SALT: ${ENCRYPTION_SALT}
     networks:
@@ -662,6 +692,8 @@ volumes:
     name: omni-vllm-models
   tei_models:
     name: omni-tei-models
+  docling_models:
+    name: omni-docling-models
   caddy_data:
     name: omni-caddy-data
   caddy_config:
