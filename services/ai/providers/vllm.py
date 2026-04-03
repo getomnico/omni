@@ -9,13 +9,28 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from openai import AsyncOpenAI
-from openai.types.chat import ChatCompletionChunk
+from openai.types.chat import (
+    ChatCompletionAssistantMessageParam,
+    ChatCompletionChunk,
+    ChatCompletionMessageParam,
+    ChatCompletionMessageToolCallParam,
+    ChatCompletionSystemMessageParam,
+    ChatCompletionToolMessageParam,
+    ChatCompletionToolParam,
+    ChatCompletionUserMessageParam,
+)
+from openai.types.chat.chat_completion_message_tool_call_param import Function
 from anthropic.types import (
     Message,
+    MessageParam,
+    TextBlockParam,
+    ToolParam,
+    ToolResultBlockParam,
+    ToolUseBlockParam,
     Usage,
     RawMessageStartEvent,
     RawContentBlockStartEvent,
@@ -34,107 +49,138 @@ from . import LLMProvider
 logger = logging.getLogger(__name__)
 
 
-def _convert_tools_to_openai(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _convert_tools_to_openai(tools: list[ToolParam]) -> list[ChatCompletionToolParam]:
     """Convert Anthropic tool schema to OpenAI Chat Completions function-calling format."""
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": tool["name"],
-                "description": tool.get("description", ""),
-                "parameters": tool["input_schema"],
-            },
-        }
-        for tool in tools
-    ]
+    result: list[ChatCompletionToolParam] = []
+    for tool in tools:
+        result.append(
+            ChatCompletionToolParam(
+                type="function",
+                function={
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": cast(dict[str, object], tool["input_schema"]),
+                },
+            )
+        )
+    return result
 
 
 def _convert_messages_to_openai(
-    messages: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+    messages: list[MessageParam],
+) -> list[ChatCompletionMessageParam]:
     """Convert Anthropic-style messages to OpenAI Chat Completions format."""
-    result: list[dict[str, Any]] = []
+    result: list[ChatCompletionMessageParam] = []
 
     for msg in messages:
         role = msg["role"]
         content = msg.get("content", "")
 
         if isinstance(content, str):
-            result.append({"role": role, "content": content})
+            if role == "assistant":
+                result.append(
+                    ChatCompletionAssistantMessageParam(
+                        role="assistant", content=content
+                    )
+                )
+            else:
+                result.append(
+                    ChatCompletionUserMessageParam(role="user", content=content)
+                )
             continue
 
         if not isinstance(content, list):
-            result.append({"role": role, "content": str(content)})
+            if role == "assistant":
+                result.append(
+                    ChatCompletionAssistantMessageParam(
+                        role="assistant", content=str(content)
+                    )
+                )
+            else:
+                result.append(
+                    ChatCompletionUserMessageParam(role="user", content=str(content))
+                )
             continue
 
         # Handle block-based content (Anthropic format)
         text_parts: list[str] = []
-        tool_calls: list[dict[str, Any]] = []
-        tool_results: list[dict[str, Any]] = []
+        tool_calls: list[ChatCompletionMessageToolCallParam] = []
+        tool_results: list[ChatCompletionToolMessageParam] = []
 
         for block in content:
             if not isinstance(block, dict):
                 continue
-            block_type = block.get("type")
 
-            if block_type == "text":
-                text_parts.append(block.get("text", ""))
-            elif block_type == "tool_use":
+            block = cast(
+                TextBlockParam | ToolUseBlockParam | ToolResultBlockParam, block
+            )
+
+            if block["type"] == "text":
+                block = cast(TextBlockParam, block)
+                text_parts.append(block["text"])
+            elif block["type"] == "tool_use":
+                block = cast(ToolUseBlockParam, block)
+                raw_input = block["input"]
                 tool_calls.append(
-                    {
-                        "id": block["id"],
-                        "type": "function",
-                        "function": {
-                            "name": block["name"],
-                            "arguments": (
-                                json.dumps(block["input"])
-                                if isinstance(block["input"], dict)
-                                else str(block["input"])
+                    ChatCompletionMessageToolCallParam(
+                        id=block["id"],
+                        type="function",
+                        function=Function(
+                            name=block["name"],
+                            arguments=(
+                                json.dumps(raw_input)
+                                if isinstance(raw_input, dict)
+                                else str(raw_input)
                             ),
-                        },
-                    }
+                        ),
+                    )
                 )
-            elif block_type == "tool_result":
+            elif block["type"] == "tool_result":
+                block = cast(ToolResultBlockParam, block)
                 result_content = block.get("content", "")
                 if isinstance(result_content, list):
-                    parts = []
+                    parts: list[str] = []
                     for rb in result_content:
                         if not isinstance(rb, dict):
                             continue
                         if rb.get("type") == "text":
-                            parts.append(rb.get("text", ""))
+                            rb = cast(TextBlockParam, rb)
+                            parts.append(rb["text"])
                         elif rb.get("type") == "search_result":
                             title = rb.get("title", "")
                             source = rb.get("source", "")
                             inner = rb.get("content", [])
                             inner_text = "\n".join(
-                                ib.get("text", "")
+                                ib["text"]
                                 for ib in inner
                                 if isinstance(ib, dict) and ib.get("type") == "text"
                             )
                             parts.append(f"[{title}]({source})\n{inner_text}")
                     result_content = "\n\n".join(parts)
                 tool_results.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": block.get("tool_use_id", ""),
-                        "content": str(result_content),
-                    }
+                    ChatCompletionToolMessageParam(
+                        role="tool",
+                        tool_call_id=block["tool_use_id"],
+                        content=str(result_content),
+                    )
                 )
 
         if role == "assistant":
-            assistant_msg: dict[str, Any] = {"role": "assistant"}
+            assistant_msg = ChatCompletionAssistantMessageParam(role="assistant")
             if text_parts:
                 assistant_msg["content"] = "\n".join(text_parts)
             if tool_calls:
                 assistant_msg["tool_calls"] = tool_calls
             result.append(assistant_msg)
         elif role == "user" and tool_results:
-            for tr in tool_results:
-                result.append(tr)
+            result.extend(tool_results)
         else:
             if text_parts:
-                result.append({"role": role, "content": "\n".join(text_parts)})
+                result.append(
+                    ChatCompletionUserMessageParam(
+                        role="user", content="\n".join(text_parts)
+                    )
+                )
 
     return result
 
@@ -162,8 +208,8 @@ class VLLMProvider(LLMProvider):
         max_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
-        tools: list[dict[str, Any]] | None = None,
-        messages: list[dict[str, Any]] | None = None,
+        tools: list[ToolParam] | None = None,
+        messages: list[MessageParam] | None = None,
         system_prompt: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response from vLLM, yielding Anthropic-compatible MessageStreamEvents."""
@@ -173,9 +219,10 @@ class VLLMProvider(LLMProvider):
             )
 
             if system_prompt:
-                openai_messages = [
-                    {"role": "system", "content": system_prompt}
-                ] + openai_messages
+                system_msg = ChatCompletionSystemMessageParam(
+                    role="system", content=system_prompt
+                )
+                openai_messages = [system_msg] + openai_messages
 
             params: dict[str, Any] = {
                 "model": self.model,
