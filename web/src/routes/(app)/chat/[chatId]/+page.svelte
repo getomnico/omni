@@ -586,9 +586,9 @@
     function recalcBottomPadding() {
         if (!lastUserMessageRef || !chatContainerRef) return
         const containerHeight = chatContainerRef.clientHeight
-        const userMsgTop = lastUserMessageRef.offsetTop - chatContainerRef.offsetTop
+        const userMsgTop = lastUserMessageRef.offsetTop - chatContainerRef.offsetTop - 24
         const contentHeight = chatContainerRef.scrollHeight - bottomPadding
-        // Pad so that max scroll aligns the last user message near the top of the viewport
+        // Pad so that max scroll aligns the last user message near the top of the viewport (with some breathing room)
         bottomPadding = Math.max(0, userMsgTop + containerHeight - contentHeight)
     }
 
@@ -596,11 +596,7 @@
         requestAnimationFrame(() => {
             recalcBottomPadding()
             requestAnimationFrame(() => {
-                if (lastUserMessageRef && chatContainerRef) {
-                    const messageTop =
-                        lastUserMessageRef.offsetTop - chatContainerRef.offsetTop - 24
-                    chatContainerRef.scrollTo({ top: Math.max(0, messageTop), behavior: 'smooth' })
-                }
+                scrollToBottom()
             })
         })
     }
