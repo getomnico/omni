@@ -343,7 +343,7 @@ services:
     expose:
       - "${GOOGLE_CONNECTOR_PORT}"
     environment:
-      <<: [*redis-config, *otel-config, *docling-config]
+      <<: [*redis-config, *otel-config]
       RUST_LOG: ${RUST_LOG}
       PORT: ${GOOGLE_CONNECTOR_PORT}
       AI_SERVICE_URL: ${AI_SERVICE_URL}
@@ -393,7 +393,7 @@ services:
     expose:
       - "${ATLASSIAN_CONNECTOR_PORT}"
     environment:
-      <<: [*redis-config, *otel-config, *docling-config]
+      <<: [*redis-config, *otel-config]
       RUST_LOG: ${RUST_LOG}
       PORT: ${ATLASSIAN_CONNECTOR_PORT}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
@@ -519,7 +519,7 @@ services:
     expose:
       - "${IMAP_CONNECTOR_PORT}"
     environment:
-      <<: [*otel-config, *docling-config]
+      <<: *otel-config
       PORT: ${IMAP_CONNECTOR_PORT}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
       CONNECTOR_HOST_NAME: imap-connector
@@ -559,7 +559,7 @@ services:
     expose:
       - "${MICROSOFT_CONNECTOR_PORT}"
     environment:
-      <<: [*otel-config, *docling-config]
+      <<: *otel-config
       PORT: ${MICROSOFT_CONNECTOR_PORT}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
       CONNECTOR_HOST_NAME: microsoft-connector
@@ -599,7 +599,7 @@ services:
     expose:
       - "${FILESYSTEM_CONNECTOR_PORT}"
     environment:
-      <<: [*otel-config, *docling-config]
+      <<: *otel-config
       PORT: ${FILESYSTEM_CONNECTOR_PORT}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
       CONNECTOR_HOST_NAME: filesystem-connector
