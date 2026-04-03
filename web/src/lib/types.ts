@@ -31,6 +31,7 @@ export enum ServiceProvider {
     IMAP = 'imap',
     CLICKUP = 'clickup',
     LINEAR = 'linear',
+    NOTION = 'notion',
 }
 
 export enum AuthType {
