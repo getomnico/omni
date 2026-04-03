@@ -52,11 +52,13 @@ Conversion is asynchronous. Submit a file and get a job ID back immediately, the
 |---|---|---|
 | `MAX_CONCURRENT_CONVERSIONS` | `1` | Maximum simultaneous conversions |
 
-## Running standalone
+## Running
+
+Start the service via Docker Compose profile from the project root:
 
 ```bash
-cd services/docling
-docker compose up
+cd docker
+docker compose --profile docling up -d
 ```
 
 On first start the service downloads the required models (~400 MB) and caches them in a named Docker volume.

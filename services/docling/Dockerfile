@@ -3,10 +3,12 @@ FROM python:3.12-slim
 
 # libgomp1: required by PyTorch CPU; libglib2.0-0: required by OpenCV headless
 # g++: required by torch inductor for JIT C++ compilation
+# curl: required for Docker healthcheck
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libgomp1 \
         libglib2.0-0 \
         g++ \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
