@@ -2,6 +2,8 @@ import type { Handle, HandleServerError } from '@sveltejs/kit'
 import { sequence } from '@sveltejs/kit/hooks'
 import { redirect } from '@sveltejs/kit'
 import * as auth from '$lib/server/auth.js'
+import { validateApiKey } from '$lib/server/apiKeys.js'
+import { rateLimit } from '$lib/server/rateLimit.js'
 import { Logger } from '$lib/server/logger.js'
 import { initTelemetry, extractTraceContext, getRequestId } from '$lib/server/telemetry.js'
 
@@ -9,6 +11,40 @@ import { initTelemetry, extractTraceContext, getRequestId } from '$lib/server/te
 initTelemetry()
 
 const handleAuth: Handle = async ({ event, resolve }) => {
+    // 1. Try API key auth (Authorization: Bearer omni_* or X-API-Key header)
+    const authHeader = event.request.headers.get('authorization')
+    const xApiKey = event.request.headers.get('x-api-key')
+    const apiKeyValue =
+        (authHeader?.startsWith('Bearer omni_') ? authHeader.slice(7) : null) || xApiKey
+
+    if (apiKeyValue?.startsWith('omni_')) {
+        // Rate limit API key auth attempts per IP (30 attempts per 60s window)
+        const ip = event.getClientAddress()
+        const rl = await rateLimit(`${ip}:api-key-auth`, 30, 60)
+        if (!rl.success) {
+            return new Response(JSON.stringify({ error: 'Too many requests' }), {
+                status: 429,
+                headers: { 'Content-Type': 'application/json' },
+            })
+        }
+
+        const result = await validateApiKey(apiKeyValue)
+        if (result) {
+            event.locals.user = result.user
+            event.locals.session = null
+            return resolve(event)
+        }
+        // Invalid API key on /api/ routes → 401 immediately
+        if (event.url.pathname.startsWith('/api/')) {
+            return new Response(JSON.stringify({ error: 'Invalid or expired API key' }), {
+                status: 401,
+                headers: { 'Content-Type': 'application/json' },
+            })
+        }
+        // For non-API routes (browser), fall through to cookie auth
+    }
+
+    // 2. Fall through to cookie-based session auth
     const sessionToken = event.cookies.get(auth.sessionCookieName)
 
     if (!sessionToken) {
