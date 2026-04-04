@@ -12,6 +12,7 @@ use shared::db::repositories::{
 use shared::models::{ChunkResult, Document, Facet, FacetValue};
 use shared::utils::safe_str_slice;
 use shared::SourceType;
+use time::OffsetDateTime;
 use shared::{
     AIClient, DatabasePool, ObjectStorage, Repository, SearcherConfig, StorageFactory,
     UserRepository,
@@ -77,6 +78,24 @@ impl SearchEngine {
                 info!("Failed to fetch source types: {}", e);
             }
         }
+    }
+
+    fn apply_recency_boost_to_score(&self, score: f32, doc: &Document) -> f32 {
+        // Prefer the original document date stored in metadata over the DB updated_at,
+        // which reflects the indexing time rather than the content creation time.
+        let effective_time = doc
+            .metadata
+            .get("updated_at")
+            .and_then(|v| v.as_str())
+            .and_then(|s| OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok())
+            .unwrap_or(doc.updated_at);
+
+        let now = OffsetDateTime::now_utc();
+        let age_seconds = (now - effective_time).whole_seconds().max(0) as f32;
+        let half_life_seconds = self.config.recency_half_life_days * 86400.0;
+        let recency_factor =
+            1.0 + self.config.recency_boost_weight * (-age_seconds / half_life_seconds).exp();
+        score * recency_factor
     }
 
     fn prepare_document_for_response(&self, mut doc: Document) -> Document {
@@ -575,10 +594,11 @@ impl SearchEngine {
                     .map(|(_, snippet)| snippet)
                     .collect();
 
+                let boosted_score = self.apply_recency_boost_to_score(max_score, doc);
                 let prepared_doc = self.prepare_document_for_response(doc.clone());
                 results.push(SearchResult {
                     document: prepared_doc,
-                    score: max_score,
+                    score: boosted_score,
                     highlights: all_highlights,
                     match_type: "semantic".to_string(),
                     content: None,
@@ -932,10 +952,11 @@ impl SearchEngine {
                     String::new()
                 };
 
+                let boosted_score = self.apply_recency_boost_to_score(max_score, doc);
                 let prepared_doc = self.prepare_document_for_response(doc.clone());
                 results.push(SearchResult {
                     document: prepared_doc,
-                    score: max_score,
+                    score: boosted_score,
                     highlights: if expanded_context.trim().is_empty() {
                         vec![]
                     } else {
