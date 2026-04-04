@@ -834,16 +834,27 @@ impl GmailClient {
                     )));
                 }
 
-                let body: AttachmentResponse = response.json().await.with_context(|| {
-                    format!(
-                        "Failed to parse attachment response for {} in message {}",
-                        attachment_id, message_id
-                    )
-                })?;
+                let body: AttachmentResponse = match response.json().await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        return Ok(ApiResult::OtherError(anyhow!(
+                            "Failed to parse attachment response for {} in message {}: {}",
+                            attachment_id,
+                            message_id,
+                            e
+                        )));
+                    }
+                };
 
-                let decoded = URL_SAFE_NO_PAD
-                    .decode(&body.data)
-                    .with_context(|| "Failed to decode attachment data")?;
+                let decoded = match URL_SAFE_NO_PAD.decode(&body.data) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        return Ok(ApiResult::OtherError(anyhow!(
+                            "Failed to decode attachment data: {}",
+                            e
+                        )));
+                    }
+                };
 
                 Ok(ApiResult::Success(decoded))
             }

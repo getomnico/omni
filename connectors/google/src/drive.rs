@@ -586,13 +586,24 @@ impl DriveClient {
                     )));
                 }
 
-                // Check content length to warn about large files
+                // Skip files over 100 MB to prevent OOM
+                const MAX_FILE_SIZE_MB: f64 = 100.0;
                 if let Some(content_length) =
                     response.headers().get(reqwest::header::CONTENT_LENGTH)
                 {
                     if let Ok(length_str) = content_length.to_str() {
                         if let Ok(length) = length_str.parse::<u64>() {
                             let mb = length as f64 / (1024.0 * 1024.0);
+                            if mb > MAX_FILE_SIZE_MB {
+                                warn!(
+                                    "Skipping oversized file {} ({:.1} MB > {:.0} MB limit)",
+                                    file_id, mb, MAX_FILE_SIZE_MB
+                                );
+                                return Ok(ApiResult::OtherError(anyhow!(
+                                    "File too large ({:.1} MB), skipping",
+                                    mb
+                                )));
+                            }
                             if mb > 50.0 {
                                 warn!("Large office document detected ({}): {:.1} MB", file_id, mb);
                             }
