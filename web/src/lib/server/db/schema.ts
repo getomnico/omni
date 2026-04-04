@@ -293,6 +293,8 @@ export const apiKeys = pgTable('api_keys', {
     name: text('name').notNull(),
     lastUsedAt: timestamp('last_used_at', { withTimezone: true, mode: 'date' }),
     expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }),
+    allowedSources: jsonb('allowed_sources').$type<string[] | null>().default(null),
+    scope: text('scope').notNull().default('public'),
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),

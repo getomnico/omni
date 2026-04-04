@@ -32,6 +32,8 @@ const handleAuth: Handle = async ({ event, resolve }) => {
         if (result) {
             event.locals.user = result.user
             event.locals.session = null
+            event.locals.apiKeyAllowedSources = result.allowedSources
+            event.locals.apiKeyScope = result.scope
             return resolve(event)
         }
         // Invalid API key on /api/ routes → 401 immediately
@@ -50,6 +52,8 @@ const handleAuth: Handle = async ({ event, resolve }) => {
     if (!sessionToken) {
         event.locals.user = null
         event.locals.session = null
+        event.locals.apiKeyAllowedSources = null
+        event.locals.apiKeyScope = null
         return resolve(event)
     }
 
@@ -63,6 +67,8 @@ const handleAuth: Handle = async ({ event, resolve }) => {
 
     event.locals.user = user
     event.locals.session = session
+    event.locals.apiKeyAllowedSources = null // cookie auth = unrestricted
+    event.locals.apiKeyScope = null
     return resolve(event)
 }
 

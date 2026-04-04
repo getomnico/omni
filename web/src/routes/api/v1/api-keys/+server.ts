@@ -33,7 +33,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         return json({ error: 'Invalid JSON in request body' }, { status: 400 })
     }
 
-    const { name, expires_at } = body
+    const { name, expires_at, allowed_sources, scope: scopeInput } = body
 
     if (!name || typeof name !== 'string' || name.trim().length === 0 || name.trim().length > 255) {
         return json({ error: 'Name is required (max 255 characters)' }, { status: 400 })
@@ -47,13 +47,38 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         return json({ error: 'expires_at must be in the future' }, { status: 400 })
     }
 
+    // Validate allowed_sources if provided
+    let allowedSources: string[] | null = null
+    if (allowed_sources != null) {
+        if (!Array.isArray(allowed_sources) || !allowed_sources.every((s) => typeof s === 'string')) {
+            return json(
+                { error: 'allowed_sources must be an array of source type strings' },
+                { status: 400 },
+            )
+        }
+        allowedSources = allowed_sources as string[]
+    }
+
+    // Validate scope — 'admin' requires admin role
+    let scope: 'public' | 'user' | 'admin' = 'public'
+    if (scopeInput === 'admin') {
+        if (locals.user.role !== 'admin') {
+            return json({ error: 'Admin scope requires admin role' }, { status: 403 })
+        }
+        scope = 'admin'
+    } else if (scopeInput === 'user') {
+        scope = 'user'
+    }
+
     try {
-        const result = await createApiKey(locals.user.id, name.trim(), expiresAt)
+        const result = await createApiKey(locals.user.id, name.trim(), expiresAt, allowedSources, scope)
         return json(
             {
                 id: result.id,
                 key: result.key,
                 prefix: result.prefix,
+                allowed_sources: allowedSources,
+                scope,
                 message: 'Store this key securely — it will not be shown again.',
             },
             { status: 201 },
