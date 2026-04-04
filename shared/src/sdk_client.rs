@@ -160,7 +160,10 @@ impl SdkClient {
             .text("mime_type", mime_type.to_string())
             .part(
                 "data",
-                reqwest::multipart::Part::bytes(data).file_name("file"),
+                reqwest::multipart::Part::bytes(data)
+                    .file_name("file")
+                    .mime_str("application/octet-stream")
+                    .expect("valid mime string"),
             );
 
         let form = if let Some(name) = filename {
