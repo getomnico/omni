@@ -13,7 +13,7 @@ use crate::admin::AdminClient;
 use crate::auth::{GoogleAuth, OAuthAuth, ServiceAccountAuth};
 use crate::cache::LruFolderCache;
 use crate::drive::{DriveClient, FileContent};
-use crate::gmail::{GmailClient, MessageFormat};
+use crate::gmail::{BatchThreadResult, GmailClient, MessageFormat};
 use crate::models::{
     mime_type_to_content_type, GmailThread, GoogleConnectorState, SyncRequest, UserFile,
     WebhookChannel, WebhookChannelResponse, WebhookNotification,
@@ -2071,36 +2071,74 @@ impl SyncManager {
 
             debug!("Processing batch of {} threads", unprocessed_threads.len());
 
-            let batch_results = match self
-                .gmail_client
-                .batch_get_threads(
-                    &service_auth,
-                    user_email,
-                    &unprocessed_threads,
-                    MessageFormat::Full,
-                )
-                .await
-                .with_context(|| {
-                    format!("Failed to get Gmail threads batch for user {}", user_email)
-                }) {
-                Ok(results) => results,
-                Err(e) => {
-                    warn!("Failed to fetch thread batch: {}", e);
-                    continue;
+            // Fetch batch with retry on 429 (up to 3 attempts with exponential backoff)
+            let mut threads_to_fetch = unprocessed_threads.clone();
+            let mut all_successes: Vec<(String, crate::gmail::GmailThreadResponse)> = Vec::new();
+            let max_retries = 3;
+
+            for attempt in 0..=max_retries {
+                if threads_to_fetch.is_empty() {
+                    break;
                 }
-            };
 
-            for (i, thread_result) in batch_results.into_iter().enumerate() {
-                let thread_id = &unprocessed_threads[i];
-                total_processed += 1;
+                if attempt > 0 {
+                    let delay = Duration::from_secs(2u64.pow(attempt as u32));
+                    warn!(
+                        "Retrying {} rate-limited threads (attempt {}/{}, waiting {:?})",
+                        threads_to_fetch.len(), attempt, max_retries, delay
+                    );
+                    tokio::time::sleep(delay).await;
+                }
 
-                let thread_response = match thread_result {
-                    Ok(response) => response,
+                let batch_results = match self
+                    .gmail_client
+                    .batch_get_threads(
+                        &service_auth,
+                        user_email,
+                        &threads_to_fetch,
+                        MessageFormat::Full,
+                    )
+                    .await
+                    .with_context(|| {
+                        format!("Failed to get Gmail threads batch for user {}", user_email)
+                    }) {
+                    Ok(results) => results,
                     Err(e) => {
-                        warn!("Failed to fetch thread {}: {}", thread_id, e);
-                        continue;
+                        warn!("Failed to fetch thread batch: {}", e);
+                        break;
                     }
                 };
+
+                let mut rate_limited_ids = Vec::new();
+                for (i, result) in batch_results.into_iter().enumerate() {
+                    let thread_id = &threads_to_fetch[i];
+                    match result {
+                        BatchThreadResult::Success(response) => {
+                            all_successes.push((thread_id.clone(), response));
+                        }
+                        BatchThreadResult::RateLimited => {
+                            rate_limited_ids.push(thread_id.clone());
+                        }
+                        BatchThreadResult::Failed(e) => {
+                            warn!("Failed to fetch thread {}: {}", thread_id, e);
+                        }
+                    }
+                }
+
+                threads_to_fetch = rate_limited_ids;
+            }
+
+            if !threads_to_fetch.is_empty() {
+                warn!(
+                    "Gave up on {} threads after {} retries for user {}",
+                    threads_to_fetch.len(), max_retries, user_email
+                );
+            }
+
+            for (thread_id, thread_response) in all_successes.iter() {
+                total_processed += 1;
+
+                let thread_response = thread_response.clone();
 
                 let mut gmail_thread = GmailThread::new(thread_id.clone());
                 for message in thread_response.messages {
