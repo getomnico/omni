@@ -6,7 +6,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::auth::{execute_with_auth_retry, is_auth_error, ApiResult, GoogleAuth};
 use shared::RateLimiter;
@@ -403,7 +403,7 @@ impl GmailClient {
         user_email: &str,
         thread_ids: &[String],
         format: MessageFormat,
-    ) -> Result<Vec<Result<GmailThreadResponse>>> {
+    ) -> Result<Vec<BatchThreadResult>> {
         if thread_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -487,7 +487,7 @@ impl GmailClient {
         &self,
         response_text: &str,
         thread_ids: &[String],
-    ) -> Result<Vec<Result<GmailThreadResponse>>> {
+    ) -> Result<Vec<BatchThreadResult>> {
         let mut results = Vec::with_capacity(thread_ids.len());
 
         // Split response by boundary markers
@@ -507,10 +507,38 @@ impl GmailClient {
                 if let Some(json_end) = json_part.rfind('}') {
                     let json_str = &json_part[..=json_end];
 
+                    // Check if response is an API error (not a thread)
+                    if let Ok(error_obj) = serde_json::from_str::<serde_json::Value>(json_str) {
+                        if error_obj.get("error").is_some() {
+                            let code = error_obj["error"]["code"].as_u64().unwrap_or(0);
+                            let msg = error_obj["error"]["message"].as_str().unwrap_or("unknown");
+
+                            if code == 429 {
+                                debug!("Rate limited on thread {}: {}", thread_ids[i], msg);
+                                results.push(BatchThreadResult::RateLimited);
+                            } else {
+                                debug!(
+                                    "Gmail API error for thread {}: {} - {}",
+                                    thread_ids[i], code, msg
+                                );
+                                results.push(BatchThreadResult::Failed(anyhow!(
+                                    "Gmail API error for thread {}: {} - {}",
+                                    thread_ids[i], code, msg
+                                )));
+                            }
+                            continue;
+                        }
+                    }
+
                     match serde_json::from_str::<GmailThreadResponse>(json_str) {
-                        Ok(thread) => results.push(Ok(thread)),
+                        Ok(thread) => results.push(BatchThreadResult::Success(thread)),
                         Err(e) => {
-                            results.push(Err(anyhow!(
+                            debug!(
+                                "Failed to parse thread {} — first 200 chars: {}",
+                                thread_ids[i],
+                                &json_str[..json_str.len().min(200)]
+                            );
+                            results.push(BatchThreadResult::Failed(anyhow!(
                                 "Failed to parse thread {} response: {}",
                                 thread_ids[i],
                                 e
@@ -518,21 +546,21 @@ impl GmailClient {
                         }
                     }
                 } else {
-                    results.push(Err(anyhow!(
+                    results.push(BatchThreadResult::Failed(anyhow!(
                         "Invalid JSON response for thread {}",
                         thread_ids[i]
                     )));
                 }
             } else {
-                // Check if this is an error response
-                if part.contains("HTTP/1.1 4") || part.contains("HTTP/1.1 5") {
-                    results.push(Err(anyhow!(
-                        "HTTP error for thread {}: {}",
+                if part.contains("HTTP/1.1 429") {
+                    results.push(BatchThreadResult::RateLimited);
+                } else if part.contains("HTTP/1.1 4") || part.contains("HTTP/1.1 5") {
+                    results.push(BatchThreadResult::Failed(anyhow!(
+                        "HTTP error for thread {}",
                         thread_ids[i],
-                        part
                     )));
                 } else {
-                    results.push(Err(anyhow!(
+                    results.push(BatchThreadResult::Failed(anyhow!(
                         "No JSON found in response for thread {}",
                         thread_ids[i]
                     )));
@@ -540,13 +568,14 @@ impl GmailClient {
             }
         }
 
-        // Ensure we have results for all requested threads
+        // Threads missing from batch response — treat as rate-limited so they get retried
         while results.len() < thread_ids.len() {
             let missing_idx = results.len();
-            results.push(Err(anyhow!(
-                "No response received for thread {}",
+            debug!(
+                "No response in batch for thread {} — marking for retry",
                 thread_ids[missing_idx]
-            )));
+            );
+            results.push(BatchThreadResult::RateLimited);
         }
 
         Ok(results)
@@ -1022,6 +1051,13 @@ pub struct GmailProfile {
     pub threads_total: Option<u64>,
     #[serde(rename = "historyId")]
     pub history_id: String,
+}
+
+#[derive(Debug)]
+pub enum BatchThreadResult {
+    Success(GmailThreadResponse),
+    RateLimited,
+    Failed(anyhow::Error),
 }
 
 #[derive(Debug, Clone, Deserialize)]

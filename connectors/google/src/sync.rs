@@ -13,7 +13,7 @@ use crate::admin::AdminClient;
 use crate::auth::{GoogleAuth, OAuthAuth, ServiceAccountAuth};
 use crate::cache::LruFolderCache;
 use crate::drive::{DriveClient, FileContent};
-use crate::gmail::{GmailClient, MessageFormat};
+use crate::gmail::{BatchThreadResult, GmailClient, MessageFormat};
 use crate::models::{
     mime_type_to_content_type, GmailThread, GoogleConnectorState, SyncRequest, UserFile,
     WebhookChannel, WebhookChannelResponse, WebhookNotification,
@@ -1854,7 +1854,7 @@ impl SyncManager {
                 .list_threads(
                     &service_auth,
                     &user_email,
-                    None,
+                    Some("-in:chats"),
                     Some(BATCH_SIZE as u32),
                     page_token.as_deref(),
                     created_after,
@@ -2028,6 +2028,10 @@ impl SyncManager {
     ) -> Result<(usize, usize)> {
         let mut total_processed = 0;
         let mut total_updated = 0;
+        let mut total_deduped = 0usize;
+        let mut total_skipped_unchanged = 0usize;
+        let mut total_failed = 0usize;
+        let total_listed = thread_ids.len();
         let sync_state = SyncState::new(self.redis_client.clone());
         const THREAD_BATCH_SIZE: usize = 50;
 
@@ -2052,6 +2056,7 @@ impl SyncManager {
                         "Thread {} already processed by another user, skipping",
                         thread_id
                     );
+                    total_deduped += 1;
                     continue;
                 }
 
@@ -2071,36 +2076,86 @@ impl SyncManager {
 
             debug!("Processing batch of {} threads", unprocessed_threads.len());
 
-            let batch_results = match self
-                .gmail_client
-                .batch_get_threads(
-                    &service_auth,
-                    user_email,
-                    &unprocessed_threads,
-                    MessageFormat::Full,
-                )
-                .await
-                .with_context(|| {
-                    format!("Failed to get Gmail threads batch for user {}", user_email)
-                }) {
-                Ok(results) => results,
-                Err(e) => {
-                    warn!("Failed to fetch thread batch: {}", e);
-                    continue;
+            // Fetch batch with retry on 429 (up to 3 attempts with exponential backoff)
+            // When any 429s occur, pause before the NEXT batch too (adaptive backpressure)
+            let mut threads_to_fetch = unprocessed_threads.clone();
+            let mut all_successes: Vec<(String, crate::gmail::GmailThreadResponse)> = Vec::new();
+            let max_retries = 3;
+            let mut saw_rate_limit = false;
+
+            for attempt in 0..=max_retries {
+                if threads_to_fetch.is_empty() {
+                    break;
                 }
-            };
 
-            for (i, thread_result) in batch_results.into_iter().enumerate() {
-                let thread_id = &unprocessed_threads[i];
-                total_processed += 1;
+                if attempt > 0 {
+                    let delay = Duration::from_secs(2u64.pow(attempt as u32));
+                    warn!(
+                        "Retrying {} rate-limited threads (attempt {}/{}, waiting {:?})",
+                        threads_to_fetch.len(), attempt, max_retries, delay
+                    );
+                    tokio::time::sleep(delay).await;
+                }
 
-                let thread_response = match thread_result {
-                    Ok(response) => response,
+                let batch_results = match self
+                    .gmail_client
+                    .batch_get_threads(
+                        &service_auth,
+                        user_email,
+                        &threads_to_fetch,
+                        MessageFormat::Full,
+                    )
+                    .await
+                    .with_context(|| {
+                        format!("Failed to get Gmail threads batch for user {}", user_email)
+                    }) {
+                    Ok(results) => results,
                     Err(e) => {
-                        warn!("Failed to fetch thread {}: {}", thread_id, e);
-                        continue;
+                        warn!("Failed to fetch thread batch: {}", e);
+                        break;
                     }
                 };
+
+                let mut rate_limited_ids = Vec::new();
+                for (i, result) in batch_results.into_iter().enumerate() {
+                    let thread_id = &threads_to_fetch[i];
+                    match result {
+                        BatchThreadResult::Success(response) => {
+                            all_successes.push((thread_id.clone(), response));
+                        }
+                        BatchThreadResult::RateLimited => {
+                            rate_limited_ids.push(thread_id.clone());
+                        }
+                        BatchThreadResult::Failed(e) => {
+                            total_failed += 1;
+                            warn!("Failed to fetch thread {}: {}", thread_id, e);
+                        }
+                    }
+                }
+
+                if !rate_limited_ids.is_empty() {
+                    saw_rate_limit = true;
+                }
+                threads_to_fetch = rate_limited_ids;
+            }
+
+            if !threads_to_fetch.is_empty() {
+                warn!(
+                    "Gave up on {} threads after {} retries for user {}",
+                    threads_to_fetch.len(), max_retries, user_email
+                );
+            }
+
+            // Adaptive backpressure: if this batch had 429s, pause before next batch
+            if saw_rate_limit {
+                debug!("Rate limit hit — pausing 3s before next batch");
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+
+            for (thread_id, thread_response) in all_successes.iter() {
+                total_processed += 1;
+
+                let thread_response = thread_response.clone();
 
                 let mut gmail_thread = GmailThread::new(thread_id.clone());
                 for message in thread_response.messages {
@@ -2120,6 +2175,7 @@ impl SyncManager {
                                             "Thread {} already synced (latest: {}, last synced: {}), skipping",
                                             thread_id, gmail_thread.latest_date, last_synced_date
                                         );
+                                        total_skipped_unchanged += 1;
                                         continue;
                                     } else {
                                         debug!(
@@ -2353,8 +2409,10 @@ impl SyncManager {
         }
 
         info!(
-            "Completed Gmail processing for user {}: {} threads processed, {} updated",
-            user_email, total_processed, total_updated
+            "Completed Gmail processing for user {}: {} listed, {} indexed, {} updated \
+            (skipped: {} deduped across users, {} unchanged, {} failed/inaccessible)",
+            user_email, total_listed, total_processed, total_updated,
+            total_deduped, total_skipped_unchanged, total_failed
         );
 
         Ok((total_processed, total_updated))
