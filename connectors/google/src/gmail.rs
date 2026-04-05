@@ -568,13 +568,14 @@ impl GmailClient {
             }
         }
 
-        // Ensure we have results for all requested threads
+        // Threads missing from batch response — treat as rate-limited so they get retried
         while results.len() < thread_ids.len() {
             let missing_idx = results.len();
-            results.push(BatchThreadResult::Failed(anyhow!(
-                "No response received for thread {}",
+            debug!(
+                "No response in batch for thread {} — marking for retry",
                 thread_ids[missing_idx]
-            )));
+            );
+            results.push(BatchThreadResult::RateLimited);
         }
 
         Ok(results)
