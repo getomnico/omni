@@ -134,6 +134,8 @@ impl EmbeddingRepository {
         offset: i64,
         user_email: Option<&str>,
         document_id: Option<&str>,
+        recency_boost_weight: f32,
+        recency_half_life_days: f32,
     ) -> Result<Vec<ChunkResult>, DatabaseError> {
         let dims = embedding.len() as i16;
         let vector = Vector::from(embedding);
@@ -143,7 +145,10 @@ impl EmbeddingRepository {
         // Filter to matching dimensions so the partial HNSW index is used
         where_conditions.push(format!("e.dimensions = ${}", 4));
 
-        let mut bind_index = 5; // Starting after $1 (vector), $2 (limit), $3 (offset), $4 (dims)
+        // Fixed bind slots: $1=vector, $2=limit, $3=offset, $4=dims,
+        // $5=recency_boost_weight, $6=recency_half_life_days.
+        // Dynamic filters (document_id, source_types, content_types) start at $7.
+        let mut bind_index = 7;
 
         // Filter by the current active embedding model via subquery
         where_conditions.push(
@@ -181,28 +186,71 @@ impl EmbeddingRepository {
 
         let where_clause = format!("WHERE {}", where_conditions.join(" AND "));
 
+        // Recency-boosted vector search (mirrors the FTS approach in search_repository.rs).
+        //
+        // Strategy: over-fetch 3x candidates by raw cosine distance via the HNSW
+        // index, then re-rank in a second pass that incorporates document age.
+        //
+        // The `<=>` operator returns cosine *distance* in [0, 2] (lower = more similar).
+        // The recency factor is always >= 1.0:
+        //   recency_factor = 1.0 + weight * EXP(-age_seconds / (86400 * half_life_days))
+        //     - Recent docs  → EXP ≈ 1  → factor ≈ 1 + weight  (max boost)
+        //     - Old docs      → EXP ≈ 0  → factor ≈ 1.0         (no boost)
+        //
+        // Dividing distance by recency_factor shrinks the distance for recent docs,
+        // making them rank higher. The caller converts back via `similarity = 1 - distance`,
+        // so the resulting similarity_score already includes the recency boost.
+        //
+        // The effective timestamp prefers `metadata->>'updated_at'` (the original
+        // document date) over `d.updated_at` (which reflects indexing time).
+        let recency_expr = format!(
+            "(1.0 + $5::double precision * EXP(\
+                -EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - COALESCE(\
+                    CASE WHEN c.doc_metadata->>'updated_at' IS NOT NULL \
+                         AND pg_input_is_valid(c.doc_metadata->>'updated_at', 'timestamptz') \
+                    THEN (c.doc_metadata->>'updated_at')::timestamptz END, \
+                    c.doc_updated_at))) \
+                / (86400.0 * $6::double precision)))::real"
+        );
+
         let query_str = format!(
             r#"
+            WITH candidates AS (
+                SELECT
+                    e.document_id,
+                    e.embedding <=> $1 as distance,
+                    e.chunk_start_offset,
+                    e.chunk_end_offset,
+                    e.chunk_index,
+                    d.updated_at as doc_updated_at,
+                    d.metadata as doc_metadata
+                FROM embeddings e
+                JOIN documents d ON e.document_id = d.id
+                {where_clause}
+                ORDER BY e.embedding <=> $1
+                LIMIT ($2 + $3) * 3
+            )
             SELECT
-                e.document_id,
-                e.embedding <=> $1 as distance,
-                e.chunk_start_offset,
-                e.chunk_end_offset,
-                e.chunk_index
-            FROM embeddings e
-            JOIN documents d ON e.document_id = d.id
-            {}
-            ORDER BY e.embedding <=> $1
+                c.document_id,
+                c.distance / {recency_expr} as distance,
+                c.chunk_start_offset,
+                c.chunk_end_offset,
+                c.chunk_index
+            FROM candidates c
+            ORDER BY distance
             LIMIT $2 OFFSET $3
             "#,
-            where_clause
+            where_clause = where_clause,
+            recency_expr = recency_expr,
         );
 
         let mut query = sqlx::query(&query_str)
             .bind(&vector)
             .bind(limit)
             .bind(offset)
-            .bind(dims);
+            .bind(dims)
+            .bind(recency_boost_weight as f64)
+            .bind(recency_half_life_days as f64);
 
         if let Some(doc_id) = document_id {
             query = query.bind(doc_id);
@@ -221,6 +269,10 @@ impl EmbeddingRepository {
         }
 
         let results = query.fetch_all(&self.pool).await?;
+        // Convert boosted cosine distance back to a similarity score.
+        // The distance column already has recency boosting applied in SQL,
+        // so the similarity_score returned here reflects both semantic
+        // relevance and document recency — no further Rust-side boost needed.
         let chunk_results: Vec<ChunkResult> = results
             .into_iter()
             .map(|row| {

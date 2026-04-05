@@ -12,7 +12,6 @@ use shared::db::repositories::{
 use shared::models::{ChunkResult, Document, Facet, FacetValue};
 use shared::utils::safe_str_slice;
 use shared::SourceType;
-use time::OffsetDateTime;
 use shared::{
     AIClient, DatabasePool, ObjectStorage, Repository, SearcherConfig, StorageFactory,
     UserRepository,
@@ -78,24 +77,6 @@ impl SearchEngine {
                 info!("Failed to fetch source types: {}", e);
             }
         }
-    }
-
-    fn apply_recency_boost_to_score(&self, score: f32, doc: &Document) -> f32 {
-        // Prefer the original document date stored in metadata over the DB updated_at,
-        // which reflects the indexing time rather than the content creation time.
-        let effective_time = doc
-            .metadata
-            .get("updated_at")
-            .and_then(|v| v.as_str())
-            .and_then(|s| OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok())
-            .unwrap_or(doc.updated_at);
-
-        let now = OffsetDateTime::now_utc();
-        let age_seconds = (now - effective_time).whole_seconds().max(0) as f32;
-        let half_life_seconds = self.config.recency_half_life_days * 86400.0;
-        let recency_factor =
-            1.0 + self.config.recency_boost_weight * (-age_seconds / half_life_seconds).exp();
-        score * recency_factor
     }
 
     fn prepare_document_for_response(&self, mut doc: Document) -> Document {
@@ -524,6 +505,9 @@ impl SearchEngine {
         let sources = request.source_types.as_deref();
         let content_types = request.content_types.as_deref();
 
+        // Recency boost is applied in SQL (inside find_similar_with_filters)
+        // by over-fetching candidates and re-ranking with an exponential decay
+        // factor, consistent with how FTS handles recency in search_repository.
         let chunk_results = embedding_repo
             .find_similar_with_filters(
                 query_embedding,
@@ -533,6 +517,8 @@ impl SearchEngine {
                 request.offset(),
                 request.user_email().map(|e| e.as_str()),
                 request.document_id.as_deref(),
+                self.config.recency_boost_weight,
+                self.config.recency_half_life_days,
             )
             .await?;
 
@@ -562,7 +548,8 @@ impl SearchEngine {
         let mut results = Vec::new();
         for (document_id, chunks) in document_chunks {
             if let Some(doc) = documents_map.get(&document_id) {
-                // Use the highest scoring chunk as the document score
+                // Use the highest scoring chunk as the document score.
+                // similarity_score already includes the recency boost from SQL.
                 let max_score = chunks
                     .iter()
                     .map(|chunk| chunk.similarity_score)
@@ -594,11 +581,10 @@ impl SearchEngine {
                     .map(|(_, snippet)| snippet)
                     .collect();
 
-                let boosted_score = self.apply_recency_boost_to_score(max_score, doc);
                 let prepared_doc = self.prepare_document_for_response(doc.clone());
                 results.push(SearchResult {
                     document: prepared_doc,
-                    score: boosted_score,
+                    score: max_score,
                     highlights: all_highlights,
                     match_type: "semantic".to_string(),
                     content: None,
@@ -880,6 +866,7 @@ impl SearchEngine {
         let sources = request.source_types.as_deref();
         let content_types = request.content_types.as_deref();
 
+        // Recency boost is applied in SQL (see find_similar_with_filters).
         let chunk_results = embedding_repo
             .find_similar_with_filters(
                 query_embedding,
@@ -889,6 +876,8 @@ impl SearchEngine {
                 request.offset(),
                 request.user_email().map(|e| e.as_str()),
                 None,
+                self.config.recency_boost_weight,
+                self.config.recency_half_life_days,
             )
             .await?;
 
@@ -952,11 +941,10 @@ impl SearchEngine {
                     String::new()
                 };
 
-                let boosted_score = self.apply_recency_boost_to_score(max_score, doc);
                 let prepared_doc = self.prepare_document_for_response(doc.clone());
                 results.push(SearchResult {
                     document: prepared_doc,
-                    score: boosted_score,
+                    score: max_score,
                     highlights: if expanded_context.trim().is_empty() {
                         vec![]
                     } else {
