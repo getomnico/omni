@@ -56,7 +56,7 @@ pub struct DoclingClient {
 impl DoclingClient {
     /// Create a new Docling client with the given base URL.
     pub fn new(base_url: impl Into<String>) -> Self {
-        let url = base_url.into();
+            let url = base_url.into();
         Self {
             client: Client::new(),
             base_url: url.trim_end_matches('/').to_string(),
@@ -263,5 +263,17 @@ mod tests {
 
         // Clean up
         std::env::remove_var("DOCLING_ENABLED");
+    }
+
+    #[test]
+    fn test_new_trims_trailing_slash() {
+        let client = DoclingClient::new("http://localhost:8003/");
+        assert_eq!(client.base_url, "http://localhost:8003");
+
+        let client = DoclingClient::new("http://localhost:8003///");
+        assert_eq!(client.base_url, "http://localhost:8003");
+
+        let client = DoclingClient::new("http://localhost:8003");
+        assert_eq!(client.base_url, "http://localhost:8003");
     }
 }

@@ -115,20 +115,22 @@
                                 {/snippet}
                             </Sidebar.MenuButton>
                         </Sidebar.MenuItem>
-                        <Sidebar.MenuItem>
-                            <Sidebar.MenuButton
-                                class={cn(
-                                    page.url.pathname === '/admin/settings/document-conversion' &&
-                                        'bg-sidebar-accent text-sidebar-accent-foreground',
-                                )}>
-                                {#snippet child({ props })}
-                                    <a href="/admin/settings/document-conversion" {...props}>
-                                        <FileText class="h-4 w-4" />
-                                        <span>Document Conversion</span>
-                                    </a>
-                                {/snippet}
-                            </Sidebar.MenuButton>
-                        </Sidebar.MenuItem>
+                        {#if data.doclingConfigured}
+                            <Sidebar.MenuItem>
+                                <Sidebar.MenuButton
+                                    class={cn(
+                                        page.url.pathname === '/admin/settings/document-conversion' &&
+                                            'bg-sidebar-accent text-sidebar-accent-foreground',
+                                    )}>
+                                    {#snippet child({ props })}
+                                        <a href="/admin/settings/document-conversion" {...props}>
+                                            <FileText class="h-4 w-4" />
+                                            <span>Document Conversion</span>
+                                        </a>
+                                    {/snippet}
+                                </Sidebar.MenuButton>
+                            </Sidebar.MenuItem>
+                        {/if}
                         {#if data.agentsEnabled}
                             <Sidebar.MenuItem>
                                 <Sidebar.MenuButton

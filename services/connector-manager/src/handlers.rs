@@ -1373,3 +1373,39 @@ pub async fn sdk_get_connector_config(
 
     Ok(Json(config.config))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_docling_supported_mime() {
+        // Supported types
+        assert!(is_docling_supported_mime("application/pdf"));
+        assert!(is_docling_supported_mime(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ));
+        assert!(is_docling_supported_mime(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ));
+        assert!(is_docling_supported_mime(
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        ));
+        assert!(is_docling_supported_mime("application/vnd.ms-excel"));
+        assert!(is_docling_supported_mime("application/msword"));
+        assert!(is_docling_supported_mime("application/vnd.ms-powerpoint"));
+        assert!(is_docling_supported_mime("text/html"));
+        assert!(is_docling_supported_mime("image/png"));
+        assert!(is_docling_supported_mime("image/jpeg"));
+        assert!(is_docling_supported_mime("image/tiff"));
+        assert!(is_docling_supported_mime("image/bmp"));
+        assert!(is_docling_supported_mime("image/webp"));
+
+        // Unsupported types
+        assert!(!is_docling_supported_mime("text/plain"));
+        assert!(!is_docling_supported_mime("application/json"));
+        assert!(!is_docling_supported_mime("image/svg+xml"));
+        assert!(!is_docling_supported_mime("application/zip"));
+        assert!(!is_docling_supported_mime(""));
+    }
+}
