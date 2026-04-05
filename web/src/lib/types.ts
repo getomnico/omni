@@ -18,6 +18,7 @@ export enum SourceType {
     IMAP = 'imap',
     CLICKUP = 'clickup',
     LINEAR = 'linear',
+    PAPERLESS_NGX = 'paperless_ngx',
 }
 
 export enum ServiceProvider {
@@ -32,6 +33,7 @@ export enum ServiceProvider {
     CLICKUP = 'clickup',
     LINEAR = 'linear',
     NOTION = 'notion',
+    PAPERLESS_NGX = 'paperless_ngx',
 }
 
 export enum AuthType {
@@ -114,6 +116,11 @@ export interface ImapSourceConfig {
     sync_enabled: boolean
 }
 
+export interface PaperlessNgxSourceConfig {
+    base_url: string
+    sync_enabled: boolean
+}
+
 export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.GOOGLE_DRIVE]: 1800,
     [SourceType.GMAIL]: 1800,
@@ -134,6 +141,7 @@ export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.LOCAL_FILES]: 86400,
     [SourceType.WEB]: 86400,
     [SourceType.CLICKUP]: 3600,
+    [SourceType.PAPERLESS_NGX]: 3600,
 }
 
 export const EMBEDDING_PROVIDER_TYPES = ['local', 'jina', 'openai', 'cohere', 'bedrock'] as const

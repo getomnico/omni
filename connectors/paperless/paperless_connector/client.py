@@ -1,0 +1,207 @@
+"""Async HTTP client for the paperless-ngx API."""
+
+import asyncio
+import logging
+from datetime import datetime, timezone
+from typing import Any
+
+import httpx
+
+from .config import INITIAL_BACKOFF_SECONDS, MAX_RETRIES, PAGE_SIZE
+from .models import (
+    PaperlessCorrespondent,
+    PaperlessCustomField,
+    PaperlessDocument,
+    PaperlessDocumentType,
+    PaperlessTag,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class PaperlessError(Exception):
+    """Base exception for paperless-ngx API errors."""
+
+
+class AuthenticationError(PaperlessError):
+    """Invalid or missing API token (401/403)."""
+
+
+class PaperlessClient:
+    """Thin async wrapper around the paperless-ngx REST API."""
+
+    def __init__(self, base_url: str, api_key: str) -> None:
+        # Normalise: strip trailing slash so path concatenation is predictable.
+        self._base_url = base_url.rstrip("/")
+        self._client = httpx.AsyncClient(
+            base_url=self._base_url,
+            headers={"Authorization": f"Token {api_key}"},
+            timeout=30.0,
+        )
+        # In-memory caches for tag/correspondent/document-type lookups so we
+        # don't re-fetch them for every document during a single sync run.
+        self._tags: dict[int, str] | None = None
+        self._correspondents: dict[int, str] | None = None
+        self._document_types: dict[int, str] | None = None
+
+    # ── Internal helpers ────────────────────────────────────────────
+
+    async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+        """Send a request with retry on rate-limit and transient server errors."""
+        backoff = INITIAL_BACKOFF_SECONDS
+        for attempt in range(MAX_RETRIES + 1):
+            resp = await self._client.request(method, path, **kwargs)
+
+            if resp.status_code == 429:
+                wait = float(resp.headers.get("Retry-After", backoff))
+                logger.warning("Rate limited, waiting %.1fs (attempt %d)", wait, attempt + 1)
+                await asyncio.sleep(wait)
+                backoff *= 2
+                continue
+
+            if resp.status_code in (401, 403):
+                raise AuthenticationError(
+                    f"Authentication failed (HTTP {resp.status_code}): check your API key"
+                )
+
+            if resp.status_code >= 500 and attempt < MAX_RETRIES:
+                logger.warning(
+                    "Server error %d, retrying in %.1fs", resp.status_code, backoff
+                )
+                await asyncio.sleep(backoff)
+                backoff *= 2
+                continue
+
+            resp.raise_for_status()
+            return resp.json()
+
+        raise PaperlessError("Max retries exceeded")
+
+    async def _list_all(self, path: str) -> list[dict[str, Any]]:
+        """Paginate through all results for a list endpoint."""
+        results: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            data = await self._request("GET", path, params={"page": page, "page_size": PAGE_SIZE})
+            results.extend(data.get("results", []))
+            if not data.get("next"):
+                break
+            page += 1
+        return results
+
+    # ── Caching lookups ─────────────────────────────────────────────
+
+    async def get_tags(self) -> dict[int, str]:
+        if self._tags is None:
+            items = await self._list_all("/api/tags/")
+            self._tags = {item["id"]: item["name"] for item in items}
+        return self._tags
+
+    async def get_correspondents(self) -> dict[int, str]:
+        if self._correspondents is None:
+            items = await self._list_all("/api/correspondents/")
+            self._correspondents = {item["id"]: item["name"] for item in items}
+        return self._correspondents
+
+    async def get_document_types(self) -> dict[int, str]:
+        if self._document_types is None:
+            items = await self._list_all("/api/document_types/")
+            self._document_types = {item["id"]: item["name"] for item in items}
+        return self._document_types
+
+    # ── Document listing ────────────────────────────────────────────
+
+    async def list_documents(
+        self,
+        *,
+        modified_after: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return raw document dicts, optionally filtered by modification date."""
+        params: dict[str, Any] = {
+            "page_size": PAGE_SIZE,
+            "ordering": "modified",
+        }
+        if modified_after is not None:
+            params["modified__date__gt"] = modified_after.strftime("%Y-%m-%d")
+
+        results: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            params["page"] = page
+            data = await self._request("GET", "/api/documents/", params=params)
+            results.extend(data.get("results", []))
+            if not data.get("next"):
+                break
+            page += 1
+
+        return results
+
+    # ── Document parsing ────────────────────────────────────────────
+
+    async def parse_document(self, raw: dict[str, Any]) -> PaperlessDocument:
+        """Convert a raw API dict to a PaperlessDocument with resolved names."""
+        tags_map = await self.get_tags()
+        correspondents_map = await self.get_correspondents()
+        doc_types_map = await self.get_document_types()
+
+        tag_ids: list[int] = raw.get("tags", [])
+        correspondent_id: int | None = raw.get("correspondent")
+        document_type_id: int | None = raw.get("document_type")
+
+        # Parse custom fields
+        custom_fields: list[PaperlessCustomField] = []
+        for cf in raw.get("custom_fields", []):
+            field_id = cf.get("field")
+            value = cf.get("value")
+            # The field id is used as name if name resolution is unavailable
+            custom_fields.append(
+                PaperlessCustomField(
+                    id=field_id,
+                    name=str(field_id),
+                    value=str(value) if value is not None else None,
+                )
+            )
+
+        return PaperlessDocument(
+            id=raw["id"],
+            title=raw.get("title", "Untitled"),
+            content=raw.get("content", ""),
+            created=_parse_dt(raw.get("created")),
+            added=_parse_dt(raw.get("added")),
+            modified=_parse_dt(raw.get("modified")),
+            original_file_name=raw.get("original_file_name"),
+            archived_file_name=raw.get("archived_file_name"),
+            correspondent_id=correspondent_id,
+            document_type_id=document_type_id,
+            tag_ids=tag_ids,
+            custom_fields=custom_fields,
+            correspondent_name=correspondents_map.get(correspondent_id) if correspondent_id else None,
+            document_type_name=doc_types_map.get(document_type_id) if document_type_id else None,
+            tag_names=[tags_map[t] for t in tag_ids if t in tags_map],
+        )
+
+    # ── Lifecycle ───────────────────────────────────────────────────
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+    async def validate(self) -> None:
+        """Validate connectivity and credentials. Raises AuthenticationError on failure."""
+        await self._request("GET", "/api/")
+
+
+# ── Helpers ──────────────────────────────────────────────────────────
+
+def _parse_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"):
+        try:
+            dt = datetime.strptime(value, fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            continue
+    logger.debug("Could not parse datetime: %r", value)
+    return None

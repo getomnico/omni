@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "paperless-connector"
+version = "1.0.0"
+description = "Paperless-ngx connector for Omni"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+authors = [
+    { name = "Omni Team" }
+]
+dependencies = [
+    "omni-connector",
+    "httpx>=0.27.0",
+]
+
+[tool.uv.sources]
+omni-connector = { path = "../../sdk/python" }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=4.1.0",
+    "mypy>=1.8.0",
+    "ruff>=0.4.0",
+    "respx>=0.21.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["paperless_connector"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]

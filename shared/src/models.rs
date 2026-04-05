@@ -170,6 +170,7 @@ pub enum SourceType {
     Imap,
     Clickup,
     Linear,
+    PaperlessNgx,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -187,6 +188,9 @@ pub enum ServiceProvider {
     Imap,
     Clickup,
     Linear,
+    #[sqlx(rename = "paperless_ngx")]
+    #[serde(rename = "paperless_ngx")]
+    PaperlessNgx,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]

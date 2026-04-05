@@ -288,6 +288,7 @@ fn resolve_source_alias(alias: &str) -> Option<SourceType> {
         "hubspot" => Some(SourceType::Hubspot),
         "fireflies" => Some(SourceType::Fireflies),
         "clickup" | "click_up" => Some(SourceType::Clickup),
+        "paperless" | "paperless_ngx" => Some(SourceType::PaperlessNgx),
         "web" | "website" => Some(SourceType::Web),
         _ => None,
     }
@@ -741,6 +742,8 @@ mod tests {
             ("fireflies", SourceType::Fireflies),
             ("clickup", SourceType::Clickup),
             ("click_up", SourceType::Clickup),
+            ("paperless", SourceType::PaperlessNgx),
+            ("paperless_ngx", SourceType::PaperlessNgx),
             ("web", SourceType::Web),
             ("website", SourceType::Web),
         ];
