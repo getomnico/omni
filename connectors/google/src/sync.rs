@@ -1854,7 +1854,7 @@ impl SyncManager {
                 .list_threads(
                     &service_auth,
                     &user_email,
-                    None,
+                    Some("-in:chats"),
                     Some(BATCH_SIZE as u32),
                     page_token.as_deref(),
                     created_after,
