@@ -53,7 +53,10 @@ class PaperlessClient:
             resp = await self._client.request(method, path, **kwargs)
 
             if resp.status_code == 429:
-                wait = float(resp.headers.get("Retry-After", backoff))
+                try:
+                    wait = float(resp.headers.get("Retry-After", backoff))
+                except (ValueError, TypeError):
+                    wait = backoff
                 logger.warning("Rate limited, waiting %.1fs (attempt %d)", wait, attempt + 1)
                 await asyncio.sleep(wait)
                 backoff *= 2

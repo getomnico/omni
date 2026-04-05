@@ -1,6 +1,5 @@
 """Map paperless-ngx documents to Omni Document model and generate markdown content."""
 
-from datetime import datetime
 from typing import Any
 
 from omni_connector import Document, DocumentMetadata, DocumentPermissions
@@ -85,9 +84,3 @@ def map_document_to_omni(
         permissions=DocumentPermissions(public=True),
         attributes=attributes,
     )
-
-
-def _fmt_date(dt: datetime | None) -> str:
-    if dt is None:
-        return ""
-    return dt.strftime("%Y-%m-%d")

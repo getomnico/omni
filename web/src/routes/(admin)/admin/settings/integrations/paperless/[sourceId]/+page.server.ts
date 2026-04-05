@@ -4,9 +4,6 @@ import { requireAdmin } from '$lib/server/authHelpers'
 import { getSourceById, updateSourceById } from '$lib/server/db/sources'
 import { getConfig } from '$lib/server/config'
 import { SourceType, type PaperlessNgxSourceConfig } from '$lib/types'
-import { db } from '$lib/server/db'
-import { serviceCredentials } from '$lib/server/db/schema'
-import { eq } from 'drizzle-orm'
 
 export const load: PageServerLoad = async ({ params, locals }) => {
     requireAdmin(locals)
