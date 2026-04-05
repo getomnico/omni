@@ -62,9 +62,8 @@ impl SearchDocumentRepository {
         }
 
         // Tokenize query via ParadeDB: splits on non-alphanumeric, ASCII-folds.
-        // No stemming or stopwords — the index aliases apply their own stemmer
-        // at query time via the ||| operator, and dropping stopwords would remove
-        // valid words in non-English languages (e.g. German "die", "in", "was").
+        // No stemming or stopwords — dropping stopwords would remove valid words
+        // in non-English languages (e.g. German "die", "in", "was").
         let raw_terms: Vec<String> = sqlx::query_scalar(
             "SELECT unnest($1::pdb.simple('ascii_folding=true')::text[])"
         )
@@ -74,7 +73,7 @@ impl SearchDocumentRepository {
 
         let mut seen = HashSet::new();
         // Cap at 12 terms. Without stopword removal longer queries produce more
-        // tokens than before. Each unique term adds 5 UNION ALL branches plus one
+        // tokens than before. Each unique term adds 3 UNION ALL branches plus one
         // bind parameter, so this keeps query size and planner overhead bounded.
         let terms: Vec<String> = raw_terms
             .into_iter()
@@ -125,9 +124,7 @@ impl SearchDocumentRepository {
         // Per-term: best score across all tokenizer paths.
         // - title (simple): exact match on filenames/titles split by underscores etc.
         // - title_secondary (source_code): CamelCase splitting for code identifiers
-        // - title_en (simple+stemmer): English morphological matching ("reports"→"report")
         // - content (icu): Unicode word-boundary segmentation for any language
-        // - content_en (icu+stemmer): English morphological matching on content
         // MAX(score) picks the best path per document — no language detection needed.
         let mut term_branches = Vec::new();
         for (i, _term) in terms.iter().enumerate() {
@@ -141,13 +138,7 @@ impl SearchDocumentRepository {
                     WHERE title::pdb.alias('title_secondary') ||| {term_param}::pdb.boost(2){common_where} \
                     UNION ALL \
                     SELECT id, pdb.score(id) as score FROM documents \
-                    WHERE title::pdb.alias('title_en') ||| {term_param}::pdb.boost(2){common_where} \
-                    UNION ALL \
-                    SELECT id, pdb.score(id) as score FROM documents \
-                    WHERE content ||| {term_param}{common_where} \
-                    UNION ALL \
-                    SELECT id, pdb.score(id) as score FROM documents \
-                    WHERE content::pdb.alias('content_en') ||| {term_param}{common_where}\
+                    WHERE content ||| {term_param}{common_where}\
                 ) t{i} GROUP BY id"
             ));
         }
@@ -450,7 +441,7 @@ impl SearchDocumentRepository {
             format!(" AND {}", filters.join(" AND "))
         };
 
-        // Per-term: best of title, title_secondary, title_en, content, content_en
+        // Per-term: best of title, title_secondary, content
         let mut term_branches = Vec::new();
         for (i, _term) in terms.iter().enumerate() {
             let term_param = format!("${}", 2 + i);
@@ -463,13 +454,7 @@ impl SearchDocumentRepository {
                     WHERE title::pdb.alias('title_secondary') ||| {term_param}::pdb.boost(2){common_where} \
                     UNION ALL \
                     SELECT id, pdb.score(id) as score FROM documents \
-                    WHERE title::pdb.alias('title_en') ||| {term_param}::pdb.boost(2){common_where} \
-                    UNION ALL \
-                    SELECT id, pdb.score(id) as score FROM documents \
-                    WHERE content ||| {term_param}{common_where} \
-                    UNION ALL \
-                    SELECT id, pdb.score(id) as score FROM documents \
-                    WHERE content::pdb.alias('content_en') ||| {term_param}{common_where}\
+                    WHERE content ||| {term_param}{common_where}\
                 ) t{i} GROUP BY id"
             ));
         }
