@@ -61,27 +61,16 @@ export class SystemSettings {
 
     /**
      * Check if Docling-based document conversion is enabled.
-     * Environment variable DOCLING_ENABLED takes precedence over Redis setting.
-     * An empty value is treated as unset (defers to Redis / UI setting).
      */
     static async isDoclingEnabled(): Promise<boolean> {
-        // Environment variable takes precedence (non-empty values only)
-        const envValue = process.env.DOCLING_ENABLED
-        if (envValue !== undefined && envValue !== '') {
-            return envValue.toLowerCase() === 'true'
-        }
-
-        // Check memory cache
         if (this.memoryCache.has('docling_enabled')) {
             return this.memoryCache.get('docling_enabled') === 'true'
         }
 
-        // Check Redis
         const redis = await getRedisClient()
         const value = await redis.hGet(SYSTEM_SETTINGS_KEY, 'docling_enabled')
         const enabled = value === 'true'
 
-        // Cache in memory
         this.memoryCache.set('docling_enabled', enabled ? 'true' : 'false')
 
         return enabled
@@ -89,21 +78,11 @@ export class SystemSettings {
 
     /**
      * Set whether Docling-based document conversion is enabled.
-     * Note: If DOCLING_ENABLED env var is set, it will still take precedence.
      */
     static async setDoclingEnabled(enabled: boolean): Promise<void> {
         const redis = await getRedisClient()
         await redis.hSet(SYSTEM_SETTINGS_KEY, 'docling_enabled', enabled ? 'true' : 'false')
         this.memoryCache.set('docling_enabled', enabled ? 'true' : 'false')
-    }
-
-    /**
-     * Check if Docling setting is overridden by environment variable.
-     * An empty value is treated as unset.
-     */
-    static isDoclingOverriddenByEnv(): boolean {
-        const val = process.env.DOCLING_ENABLED
-        return val !== undefined && val !== ''
     }
 
     /**

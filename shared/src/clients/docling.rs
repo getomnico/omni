@@ -224,46 +224,9 @@ impl DoclingClient {
     }
 }
 
-/// Check if Docling conversion is enabled via environment variable.
-///
-/// Returns `Some(true)` or `Some(false)` if the env var is set to a non-empty value,
-/// or `None` if unset or empty (meaning the caller should check Redis / UI setting).
-pub fn docling_enabled_from_env() -> Option<bool> {
-    match std::env::var("DOCLING_ENABLED") {
-        Ok(v) if !v.is_empty() => Some(v.eq_ignore_ascii_case("true")),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_docling_enabled_from_env() {
-        // Test with no env var set
-        std::env::remove_var("DOCLING_ENABLED");
-        assert_eq!(docling_enabled_from_env(), None);
-
-        // Test with empty string (treated as unset)
-        std::env::set_var("DOCLING_ENABLED", "");
-        assert_eq!(docling_enabled_from_env(), None);
-
-        // Test with false
-        std::env::set_var("DOCLING_ENABLED", "false");
-        assert_eq!(docling_enabled_from_env(), Some(false));
-
-        // Test with true
-        std::env::set_var("DOCLING_ENABLED", "true");
-        assert_eq!(docling_enabled_from_env(), Some(true));
-
-        // Test with TRUE (case insensitive)
-        std::env::set_var("DOCLING_ENABLED", "TRUE");
-        assert_eq!(docling_enabled_from_env(), Some(true));
-
-        // Clean up
-        std::env::remove_var("DOCLING_ENABLED");
-    }
 
     #[test]
     fn test_new_trims_trailing_slash() {

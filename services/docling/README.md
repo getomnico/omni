@@ -8,10 +8,7 @@ PDF, DOCX, XLSX, PPTX, HTML, images (PNG, JPEG, TIFF, BMP, WEBP), and more — s
 
 ## Configuration
 
-This service is **opt-in** and disabled by default. To enable:
-
-1. **Via Environment Variable**: Set `DOCLING_ENABLED=true` in your `.env` file
-2. **Via Admin UI**: Navigate to Admin Settings → Document Conversion and toggle the setting
+This service is **deployed by default** but disabled. It uses minimal resources when idle. To enable, navigate to **Admin Settings → Document Conversion** and toggle the setting.
 
 When enabled, all document conversions across all connectors will use Docling instead of the built-in lightweight extractors.
 
@@ -54,13 +51,13 @@ Conversion is asynchronous. Submit a file and get a job ID back immediately, the
 
 ## Running
 
-Start the service via Docker Compose profile from the project root:
+The service starts automatically with Docker Compose:
 
 ```bash
 cd docker
-docker compose --profile docling up -d
+docker compose up -d
 ```
 
 On first start the service downloads the required models (~400 MB) and caches them in a named Docker volume.
 
-Interactive docs at `http://localhost:8000/docs`.
+Interactive docs at `http://localhost:8003/docs`.

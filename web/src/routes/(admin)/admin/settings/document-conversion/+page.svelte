@@ -3,7 +3,7 @@
     import * as Card from '$lib/components/ui/card'
     import * as Alert from '$lib/components/ui/alert'
     import { Switch } from '$lib/components/ui/switch'
-    import { Info, Sparkles, AlertTriangle, CircleCheck } from '@lucide/svelte'
+    import { Sparkles, AlertTriangle, CircleCheck } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import type { PageData } from './$types'
 
@@ -83,7 +83,7 @@
                         </form>
                         <Switch
                             checked={doclingEnabled}
-                            disabled={isSubmitting || data.doclingOverriddenByEnv}
+                            disabled={isSubmitting}
                             onCheckedChange={handleDoclingSwitch}
                             class="cursor-pointer" />
                     </div>
@@ -95,19 +95,6 @@
                     Office documents, and images. Produces structure-aware Markdown that preserves
                     tables, headings, and reading order for higher-quality search results.
                 </p>
-
-                {#if data.doclingOverriddenByEnv}
-                    <Alert.Root variant="default" class="mb-4">
-                        <Info class="h-4 w-4" />
-                        <Alert.Title>Controlled by environment variable</Alert.Title>
-                        <Alert.Description>
-                            This setting is controlled by the
-                            <code class="bg-muted rounded px-1 py-0.5 text-sm"
-                                >DOCLING_ENABLED={data.doclingEnvValue}</code>
-                            environment variable and cannot be changed via the UI.
-                        </Alert.Description>
-                    </Alert.Root>
-                {/if}
 
                 {#if data.doclingReachable}
                     <Alert.Root variant="default">
@@ -122,9 +109,10 @@
                         <AlertTriangle class="h-4 w-4" />
                         <Alert.Title>Service unreachable</Alert.Title>
                         <Alert.Description>
-                            The Docling service is not responding. Make sure it is running:
+                            The Docling service is not responding. It may still be loading models
+                            after a fresh start. Check the service logs:
                             <code class="bg-muted mt-1 block rounded px-2 py-1 text-sm">
-                                docker compose --profile docling up -d
+                                docker compose logs docling
                             </code>
                         </Alert.Description>
                     </Alert.Root>

@@ -1,4 +1,4 @@
-import { fail, redirect } from '@sveltejs/kit'
+import { fail } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
 import type { PageServerLoad, Actions } from './$types'
 import { requireAdmin } from '$lib/server/authHelpers'
@@ -7,13 +7,7 @@ import { SystemSettings } from '$lib/server/system-flags'
 export const load: PageServerLoad = async ({ locals }) => {
     requireAdmin(locals)
 
-    // Redirect if docling is not configured (DOCLING_URL not set)
-    if (!env.DOCLING_URL) {
-        redirect(302, '/admin/settings')
-    }
-
     const doclingEnabled = await SystemSettings.isDoclingEnabled()
-    const doclingOverriddenByEnv = SystemSettings.isDoclingOverriddenByEnv()
 
     // Quick health check to see if the service is reachable
     let doclingReachable = false
@@ -32,8 +26,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 
     return {
         doclingEnabled,
-        doclingOverriddenByEnv,
-        doclingEnvValue: env.DOCLING_ENABLED,
         doclingReachable,
     }
 }
@@ -41,12 +33,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 export const actions: Actions = {
     updateDocling: async ({ request, locals }) => {
         requireAdmin(locals)
-
-        if (SystemSettings.isDoclingOverriddenByEnv()) {
-            return fail(400, {
-                error: 'Docling setting is controlled by DOCLING_ENABLED environment variable',
-            })
-        }
 
         const formData = await request.formData()
         const enabled = formData.get('enabled') === 'true'

@@ -816,15 +816,8 @@ pub async fn get_connector_url_for_source(
 }
 
 /// Check if Docling document conversion is enabled.
-/// Environment variable DOCLING_ENABLED takes precedence over Redis setting.
-/// An empty value is treated as unset (defers to Redis / UI setting).
+/// Reads the `docling_enabled` flag from Redis (set via the admin UI).
 async fn is_docling_enabled(redis_client: &redis::Client) -> bool {
-    // Environment variable takes precedence (non-empty values only)
-    if let Some(enabled) = shared::clients::docling::docling_enabled_from_env() {
-        return enabled;
-    }
-
-    // Check Redis setting
     let mut conn = match redis_client.get_multiplexed_async_connection().await {
         Ok(c) => c,
         Err(e) => {
