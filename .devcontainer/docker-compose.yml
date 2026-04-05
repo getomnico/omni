@@ -1,0 +1,18 @@
+# Devcontainer overlay — layered on top of docker/docker-compose.yml + dev overlay.
+# Only defines the devcontainer service; postgres, redis, etc. come from the base files.
+services:
+  devcontainer:
+    build:
+      context: ../.devcontainer
+      dockerfile: Dockerfile
+    volumes:
+      - ..:/workspaces/omni:cached
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: sleep infinity
+    networks:
+      - omni-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy

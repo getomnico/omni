@@ -1,0 +1,87 @@
+// Omni Development Container
+// https://containers.dev/implementors/json_reference/
+{
+  "name": "Omni Dev",
+  "dockerComposeFile": [
+    "../docker/docker-compose.yml",
+    "../docker/docker-compose.dev.yml",
+    "docker-compose.yml"
+  ],
+  "service": "devcontainer",
+  "runServices": ["devcontainer", "postgres", "redis"],
+  "workspaceFolder": "/workspaces/omni",
+
+  "features": {
+    // Allow running Docker commands from within the container
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+  },
+
+  // Forward service ports
+  "forwardPorts": [
+    3000,  // web
+    3001,  // searcher
+    3002,  // indexer
+    3003,  // ai
+    3004,  // connector-manager
+    5432,  // postgres
+    6379   // redis
+  ],
+  "portsAttributes": {
+    "3000": { "label": "Web UI", "onAutoForward": "notify" },
+    "3001": { "label": "Searcher" },
+    "3002": { "label": "Indexer" },
+    "3003": { "label": "AI Service" },
+    "3004": { "label": "Connector Manager" },
+    "5432": { "label": "PostgreSQL" },
+    "6379": { "label": "Redis" }
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        // Rust
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "vadimcn.vscode-lldb",
+        // JavaScript / TypeScript / Svelte
+        "svelte.svelte-vscode",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        // Python
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "charliermarsh.ruff",
+        // Docker & infrastructure
+        "ms-azuretools.vscode-docker",
+        // General
+        "eamodio.gitlens",
+        "github.copilot"
+      ],
+      "settings": {
+        "rust-analyzer.cargo.features": "all",
+        "rust-analyzer.check.command": "clippy",
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff"
+        },
+        "[svelte]": {
+          "editor.defaultFormatter": "svelte.svelte-vscode"
+        },
+        "[typescript]": {
+          "editor.defaultFormatter": "esbenp.prettier-vscode"
+        },
+        "[javascript]": {
+          "editor.defaultFormatter": "esbenp.prettier-vscode"
+        }
+      }
+    }
+  },
+
+  // Ensure .env exists before compose parses the base files (runs on the host).
+  // Compose resolves env vars from docker/.env (the project dir of the first compose file).
+  "initializeCommand": "test -f .env || cp .env.example .env; test -f docker/.env || ln -s ../.env docker/.env",
+
+  // Run after the container is created (first time only)
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+
+  "remoteUser": "vscode"
+}
