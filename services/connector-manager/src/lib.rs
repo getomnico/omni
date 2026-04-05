@@ -56,8 +56,10 @@ pub fn create_app(state: AppState) -> Router {
         .route("/sdk/register", post(handlers::sdk_register))
         .route("/sdk/events", post(handlers::sdk_emit_event))
         .route("/sdk/content", post(handlers::sdk_store_content))
-        .route("/sdk/extract-content", post(handlers::sdk_extract_content)
-            .layer(DefaultBodyLimit::max(100 * 1024 * 1024))) // 100 MB for binary file extraction
+        .route(
+            "/sdk/extract-content",
+            post(handlers::sdk_extract_content).layer(DefaultBodyLimit::max(400 * 1024 * 1024)),
+        ) // 400 MB for binary file extraction
         .route("/sdk/sync/:id/heartbeat", post(handlers::sdk_heartbeat))
         .route("/sdk/sync/:id/complete", post(handlers::sdk_complete))
         .route("/sdk/sync/:id/fail", post(handlers::sdk_fail))

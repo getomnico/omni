@@ -830,23 +830,82 @@ async fn is_docling_enabled(redis_client: &redis::Client) -> bool {
     value.as_deref() == Some("true")
 }
 
-/// MIME types that Docling can process (typically richer formats that benefit from AI extraction).
+/// MIME types that Docling can process.
+/// See <https://docling-project.github.io/docling/usage/supported_formats/>
+///
+/// Includes standard MIME types plus common non-standard alternatives.
+/// Audio/video formats are omitted because our Docling service does not
+/// include the `asr` extra required by Docling for transcription.
 fn is_docling_supported_mime(mime_type: &str) -> bool {
     matches!(
         mime_type,
-        "application/pdf"
-            | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-            | "application/vnd.ms-excel"
-            | "application/msword"
-            | "application/vnd.ms-powerpoint"
-            | "text/html"
-            | "image/png"
-            | "image/jpeg"
-            | "image/tiff"
-            | "image/bmp"
-            | "image/webp"
+        // PDF
+        "application/pdf" | "application/x-pdf"
+        // MS Office Open XML (DOCX, XLSX, PPTX)
+        | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        // Legacy MS Office (DOC, XLS, PPT)
+        | "application/msword"
+        | "application/vnd.ms-excel"
+        | "application/vnd.ms-powerpoint"
+        // HTML / XHTML
+        | "text/html"
+        | "application/xhtml+xml"
+        // Markdown
+        | "text/markdown"
+        | "text/x-markdown"
+        // AsciiDoc
+        | "text/asciidoc"
+        // LaTeX
+        | "application/x-latex"
+        | "text/x-latex"
+        // CSV
+        | "text/csv"
+        // Images
+        | "image/png"
+        | "image/jpeg"
+        | "image/jpg"
+        | "image/tiff"
+        | "image/bmp"
+        | "image/webp"
+    )
+}
+
+/// Check if a filename extension corresponds to a Docling-supported format.
+/// Used as fallback when the MIME type is generic (`application/octet-stream`)
+/// or missing.
+fn is_docling_supported_extension(filename: Option<&str>) -> bool {
+    let ext = match filename.and_then(|f| f.rsplit_once('.')) {
+        Some((_, e)) => e.to_ascii_lowercase(),
+        None => return false,
+    };
+    matches!(
+        ext.as_str(),
+        "pdf"
+            | "docx"
+            | "xlsx"
+            | "pptx"
+            | "doc"
+            | "xls"
+            | "ppt"
+            | "html"
+            | "htm"
+            | "xhtml"
+            | "md"
+            | "markdown"
+            | "adoc"
+            | "asciidoc"
+            | "tex"
+            | "latex"
+            | "csv"
+            | "png"
+            | "jpg"
+            | "jpeg"
+            | "tiff"
+            | "tif"
+            | "bmp"
+            | "webp"
     )
 }
 
@@ -957,19 +1016,18 @@ pub async fn sdk_extract_content(
         data.len()
     );
 
-    // Try Docling extraction if enabled and supported for this mime type
-    let extracted_text = if is_docling_enabled(&state.redis_client).await
-        && is_docling_supported_mime(&mime_type)
-    {
+    // Try Docling extraction if enabled and supported for this mime type.
+    // Also try when MIME is generic (octet-stream) but the extension is supported.
+    let docling_candidate = is_docling_supported_mime(&mime_type)
+        || (mime_type == "application/octet-stream"
+            && is_docling_supported_extension(filename.as_deref()));
+    let extracted_text = if docling_candidate && is_docling_enabled(&state.redis_client).await {
         // Attempt Docling extraction
         let docling_result = if let Some(client) = DoclingClient::from_env() {
             let file_name = filename.as_deref().unwrap_or("document");
             match client.convert(&data, file_name).await {
                 Ok(markdown) => {
-                    debug!(
-                        "Docling extraction succeeded: {} chars",
-                        markdown.len()
-                    );
+                    debug!("Docling extraction succeeded: {} chars", markdown.len());
                     Some(markdown)
                 }
                 Err(e) => {
@@ -1373,8 +1431,11 @@ mod tests {
 
     #[test]
     fn test_is_docling_supported_mime() {
-        // Supported types
+        // PDF
         assert!(is_docling_supported_mime("application/pdf"));
+        assert!(is_docling_supported_mime("application/x-pdf"));
+
+        // Office Open XML
         assert!(is_docling_supported_mime(
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         ));
@@ -1384,12 +1445,34 @@ mod tests {
         assert!(is_docling_supported_mime(
             "application/vnd.openxmlformats-officedocument.presentationml.presentation"
         ));
-        assert!(is_docling_supported_mime("application/vnd.ms-excel"));
+
+        // Legacy Office
         assert!(is_docling_supported_mime("application/msword"));
+        assert!(is_docling_supported_mime("application/vnd.ms-excel"));
         assert!(is_docling_supported_mime("application/vnd.ms-powerpoint"));
+
+        // HTML / XHTML
         assert!(is_docling_supported_mime("text/html"));
+        assert!(is_docling_supported_mime("application/xhtml+xml"));
+
+        // Markdown (standard + non-standard)
+        assert!(is_docling_supported_mime("text/markdown"));
+        assert!(is_docling_supported_mime("text/x-markdown"));
+
+        // AsciiDoc
+        assert!(is_docling_supported_mime("text/asciidoc"));
+
+        // LaTeX
+        assert!(is_docling_supported_mime("application/x-latex"));
+        assert!(is_docling_supported_mime("text/x-latex"));
+
+        // CSV
+        assert!(is_docling_supported_mime("text/csv"));
+
+        // Images
         assert!(is_docling_supported_mime("image/png"));
         assert!(is_docling_supported_mime("image/jpeg"));
+        assert!(is_docling_supported_mime("image/jpg"));
         assert!(is_docling_supported_mime("image/tiff"));
         assert!(is_docling_supported_mime("image/bmp"));
         assert!(is_docling_supported_mime("image/webp"));
@@ -1399,6 +1482,48 @@ mod tests {
         assert!(!is_docling_supported_mime("application/json"));
         assert!(!is_docling_supported_mime("image/svg+xml"));
         assert!(!is_docling_supported_mime("application/zip"));
+        assert!(!is_docling_supported_mime("application/octet-stream"));
         assert!(!is_docling_supported_mime(""));
+    }
+
+    #[test]
+    fn test_is_docling_supported_extension() {
+        // Supported extensions
+        assert!(is_docling_supported_extension(Some("report.pdf")));
+        assert!(is_docling_supported_extension(Some("doc.docx")));
+        assert!(is_docling_supported_extension(Some("sheet.xlsx")));
+        assert!(is_docling_supported_extension(Some("slides.pptx")));
+        assert!(is_docling_supported_extension(Some("old.doc")));
+        assert!(is_docling_supported_extension(Some("old.xls")));
+        assert!(is_docling_supported_extension(Some("old.ppt")));
+        assert!(is_docling_supported_extension(Some("page.html")));
+        assert!(is_docling_supported_extension(Some("page.htm")));
+        assert!(is_docling_supported_extension(Some("page.xhtml")));
+        assert!(is_docling_supported_extension(Some("readme.md")));
+        assert!(is_docling_supported_extension(Some("readme.markdown")));
+        assert!(is_docling_supported_extension(Some("guide.adoc")));
+        assert!(is_docling_supported_extension(Some("guide.asciidoc")));
+        assert!(is_docling_supported_extension(Some("paper.tex")));
+        assert!(is_docling_supported_extension(Some("paper.latex")));
+        assert!(is_docling_supported_extension(Some("data.csv")));
+        assert!(is_docling_supported_extension(Some("photo.png")));
+        assert!(is_docling_supported_extension(Some("photo.jpg")));
+        assert!(is_docling_supported_extension(Some("photo.jpeg")));
+        assert!(is_docling_supported_extension(Some("scan.tiff")));
+        assert!(is_docling_supported_extension(Some("scan.tif")));
+        assert!(is_docling_supported_extension(Some("image.bmp")));
+        assert!(is_docling_supported_extension(Some("image.webp")));
+
+        // Case insensitive via filename
+        assert!(is_docling_supported_extension(Some("REPORT.PDF")));
+        assert!(is_docling_supported_extension(Some("Doc.DOCX")));
+
+        // Unsupported
+        assert!(!is_docling_supported_extension(Some("file.txt")));
+        assert!(!is_docling_supported_extension(Some("data.json")));
+        assert!(!is_docling_supported_extension(Some("archive.zip")));
+        assert!(!is_docling_supported_extension(Some("noext")));
+        assert!(!is_docling_supported_extension(Some("pdf"))); // no dot — not an extension
+        assert!(!is_docling_supported_extension(None));
     }
 }
