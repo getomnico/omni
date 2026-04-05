@@ -52,6 +52,7 @@ Omni can be deployed entirely on your own infra. See our deployment guides:
 - **Web**: Public websites, documentation and help pages
 - **Fireflies**: Meeting transcripts
 - **HubSpot**: Contacts, companies, deals, tickets
+- **IMAP**: Any E-Mail provider
 - **Local Files**: File system indexing
 
 ## Contributing
