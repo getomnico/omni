@@ -316,9 +316,8 @@ services:
   docling:
     image: ghcr.io/getomnico/omni/omni-docling:${OMNI_VERSION:-latest}${DOCLING_DEVICE:+-${DOCLING_DEVICE}}
     container_name: omni-docling
-    expose:
-      - "${DOCLING_PORT:-8003}"
     environment:
+      PORT: ${DOCLING_PORT:-8003}
       MAX_CONCURRENT_CONVERSIONS: ${DOCLING_MAX_CONCURRENT_CONVERSIONS:-1}
     networks:
       - omni-network

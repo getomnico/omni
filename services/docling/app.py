@@ -16,7 +16,11 @@ import uvicorn
 from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
 from docling.datamodel.base_models import ConversionStatus, InputFormat
 from docling.datamodel.document import DocumentStream
-from docling.datamodel.pipeline_options import PdfPipelineOptions, RapidOcrOptions, TableFormerMode
+from docling.datamodel.pipeline_options import (
+    PdfPipelineOptions,
+    RapidOcrOptions,
+    TableFormerMode,
+)
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
@@ -31,6 +35,7 @@ _ready: bool = False
 
 class _SuppressFilter(logging.Filter):
     """Drop noisy RapidOCR messages that fire on blank/whitespace page regions."""
+
     _SUPPRESSED = {
         "The text detection result is empty",
         "RapidOCR returned empty result!",
@@ -65,14 +70,26 @@ def _build_converter() -> DocumentConverter:
     pipeline_options.table_structure_options.mode = TableFormerMode.ACCURATE
     pipeline_options.do_ocr = True
     pipeline_options.ocr_options = RapidOcrOptions(backend="torch")
-    pipeline_options.images_scale = 1.5  # higher resolution improves OCR/layout accuracy
+    pipeline_options.images_scale = (
+        1.5  # higher resolution improves OCR/layout accuracy
+    )
     pipeline_options.generate_picture_images = True
     pipeline_options.generate_table_images = True
-    pipeline_options.do_code_enrichment = False    # VLM per code block; adds latency on code-heavy docs
-    pipeline_options.do_formula_enrichment = False  # VLM per formula; adds latency on math-heavy docs
-    pipeline_options.do_picture_classification = True  # lightweight ViT; minimal overhead
-    pipeline_options.do_picture_description = False     # SmolVLM per image; significant latency per figure
-    pipeline_options.do_chart_extraction = False        # Granite Vision 2B per chart; high RAM + latency
+    pipeline_options.do_code_enrichment = (
+        False  # VLM per code block; adds latency on code-heavy docs
+    )
+    pipeline_options.do_formula_enrichment = (
+        False  # VLM per formula; adds latency on math-heavy docs
+    )
+    pipeline_options.do_picture_classification = (
+        True  # lightweight ViT; minimal overhead
+    )
+    pipeline_options.do_picture_description = (
+        False  # SmolVLM per image; significant latency per figure
+    )
+    pipeline_options.do_chart_extraction = (
+        False  # Granite Vision 2B per chart; high RAM + latency
+    )
     converter = DocumentConverter(
         format_options={
             InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
@@ -85,13 +102,14 @@ def _build_converter() -> DocumentConverter:
 def _download_models() -> None:
     """Pre-download all Docling models so the first conversion doesn't stall."""
     from docling.utils.model_downloader import download_models
+
     download_models(
         progress=True,
         with_layout=True,
         with_tableformer=True,
-        with_code_formula=False,        # ~500 MB; needed for do_code/formula_enrichment
+        with_code_formula=False,  # ~500 MB; needed for do_code/formula_enrichment
         with_picture_classifier=True,  # ~90 MB; needed for do_picture_classification
-        with_smolvlm=False,             # ~500 MB; needed for do_picture_description
+        with_smolvlm=False,  # ~500 MB; needed for do_picture_description
         with_granitedocling=False,
         with_granitedocling_mlx=False,
         with_smoldocling=False,
@@ -153,7 +171,9 @@ async def _init_converter() -> None:
         _ready = True
         logger.info("Ready — %d converter(s) available.", _MAX_CONCURRENT)
     except Exception:
-        logger.exception("Failed to initialise converter(s). Service will remain unavailable.")
+        logger.exception(
+            "Failed to initialise converter(s). Service will remain unavailable."
+        )
 
 
 async def _cleanup_loop() -> None:
@@ -173,7 +193,9 @@ async def _run_job(job: Job, data: bytes, filename: str) -> None:
     converter = await _converter_pool.get()
     try:
         job.status = JobStatus.RUNNING
-        logger.info("Job %s: conversion started (%s, %d bytes).", job.id, filename, len(data))
+        logger.info(
+            "Job %s: conversion started (%s, %d bytes).", job.id, filename, len(data)
+        )
         t0 = time.monotonic()
         stream = DocumentStream(name=filename, stream=io.BytesIO(data))
         try:
@@ -183,11 +205,20 @@ async def _run_job(job: Job, data: bytes, filename: str) -> None:
         except Exception as exc:
             elapsed = time.monotonic() - t0
             job.status = JobStatus.FAILED
-            if "not supported" in str(exc).lower() or "cannot convert" in str(exc).lower():
+            if (
+                "not supported" in str(exc).lower()
+                or "cannot convert" in str(exc).lower()
+            ):
                 job.detail = f"Unsupported format: {exc}"
             else:
                 job.detail = f"Conversion error: {exc}"
-            logger.error("Job %s: failed after %.1fs — %s", job.id, elapsed, job.detail, exc_info=True)
+            logger.error(
+                "Job %s: failed after %.1fs — %s",
+                job.id,
+                elapsed,
+                job.detail,
+                exc_info=True,
+            )
             return
     finally:
         _converter_pool.put_nowait(converter)
@@ -195,18 +226,29 @@ async def _run_job(job: Job, data: bytes, filename: str) -> None:
     elapsed = time.monotonic() - t0
     # Converter returned to pool; do cheap post-processing outside the slot.
     try:
-        if result.status not in (ConversionStatus.SUCCESS, ConversionStatus.PARTIAL_SUCCESS):
+        if result.status not in (
+            ConversionStatus.SUCCESS,
+            ConversionStatus.PARTIAL_SUCCESS,
+        ):
             job.status = JobStatus.FAILED
             job.detail = "Conversion failed."
             logger.error("Job %s: failed after %.1fs — %s", job.id, elapsed, job.detail)
             return
         job.markdown = result.document.export_to_markdown()
         job.status = JobStatus.COMPLETED
-        logger.info("Job %s: completed in %.1fs (%d chars).", job.id, elapsed, len(job.markdown))
+        logger.info(
+            "Job %s: completed in %.1fs (%d chars).", job.id, elapsed, len(job.markdown)
+        )
     except Exception as exc:
         job.status = JobStatus.FAILED
         job.detail = f"Post-processing error: {exc}"
-        logger.error("Job %s: failed after %.1fs — %s", job.id, elapsed, job.detail, exc_info=True)
+        logger.error(
+            "Job %s: failed after %.1fs — %s",
+            job.id,
+            elapsed,
+            job.detail,
+            exc_info=True,
+        )
 
 
 app = FastAPI(title="docling", version="1.0.0", lifespan=lifespan)
@@ -223,9 +265,14 @@ def health():
 async def submit_conversion(file: UploadFile = File(...)):
     """Submit a document for conversion. Returns a job ID immediately (HTTP 202)."""
     if not _ready:
-        raise HTTPException(status_code=503, detail="Service is starting up; models are being loaded. Try again shortly.")
+        raise HTTPException(
+            status_code=503,
+            detail="Service is starting up; models are being loaded. Try again shortly.",
+        )
     if not file.filename:
-        raise HTTPException(status_code=400, detail="A filename with extension is required.")
+        raise HTTPException(
+            status_code=400, detail="A filename with extension is required."
+        )
 
     data = await file.read()
     job_id = str(uuid.uuid4())
@@ -255,4 +302,8 @@ async def get_job(job_id: str):
 
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8003, log_level="info")
+    port_str = os.getenv("PORT")
+    if not port_str:
+        logger.error("PORT environment variable is required but not set")
+        raise SystemExit(1)
+    uvicorn.run("app:app", host="0.0.0.0", port=int(port_str), log_level="info")
