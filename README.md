@@ -56,9 +56,13 @@ Omni can be deployed entirely on your own infra. See our deployment guides:
 - **Paperless-ngx**: Document management system
 - **Local Files**: File system indexing
 
-## Contributing
+## Build a Connector
+
+Use the [Connector SDK](https://docs.getomni.co/developers/sdk-overview) to build your own integrations with Omni.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+
+If you use [Claude Code](https://docs.anthropic.com/en/docs/claude-code), this repo has an included skill to help build connectors. Run `/build-connector <service name>` (e.g., `/build-connector Asana`).
 
 ## License
 

@@ -123,6 +123,12 @@ uv run pytest
    ```
 4. Create a Pull Request on GitHub
 
+## Building a Connector
+
+If you're building a new connector, we have a Claude Code skill that covers the entire process — SDK usage, manifest structure, content storage, testing, frontend integration, Docker/Terraform setup, and more.
+
+Just invoke `/build-connector <service name>` in Claude Code — e.g., `/build-connector Asana`. The skill is auto-discovered from `.claude/skills/` in the repo.
+
 ## Getting Help
 
 - **Discord**: [Community Discord](https://discord.gg/aNr2J3xD)
