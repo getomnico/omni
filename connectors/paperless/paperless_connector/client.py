@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -64,30 +65,47 @@ class PaperlessClient:
                     f"Authentication failed (HTTP {resp.status_code}): check your API key"
                 )
 
-            if resp.status_code >= 500 and attempt < MAX_RETRIES:
-                logger.warning(
-                    "Server error %d, retrying in %.1fs", resp.status_code, backoff
+            if resp.status_code >= 500:
+                if attempt < MAX_RETRIES:
+                    logger.warning(
+                        "Server error %d, retrying in %.1fs", resp.status_code, backoff
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff *= 2
+                    continue
+                raise PaperlessError(
+                    f"Server error (HTTP {resp.status_code}) after {MAX_RETRIES + 1} attempts"
                 )
-                await asyncio.sleep(backoff)
-                backoff *= 2
-                continue
 
-            resp.raise_for_status()
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise PaperlessError(str(exc)) from exc
             return resp.json()
 
         raise PaperlessError("Max retries exceeded")
 
-    async def _list_all(self, path: str) -> list[dict[str, Any]]:
-        """Paginate through all results for a list endpoint."""
-        results: list[dict[str, Any]] = []
+    async def _iter_pages(
+        self, path: str, params: dict[str, Any] | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield individual items from a paginated endpoint, one page at a time."""
         page = 1
+        query = dict(params) if params else {}
+        query.setdefault("page_size", PAGE_SIZE)
         while True:
-            data = await self._request("GET", path, params={"page": page, "page_size": PAGE_SIZE})
-            results.extend(data.get("results", []))
+            query["page"] = page
+            data = await self._request("GET", path, params=query)
+            for item in data.get("results", []):
+                yield item
             if not data.get("next"):
                 break
             page += 1
-        return results
+
+    async def _list_all(
+        self, path: str, params: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Collect all results from a paginated endpoint (for small lookup tables)."""
+        return [item async for item in self._iter_pages(path, params)]
 
     # ── Caching lookups ─────────────────────────────────────────────
 
@@ -115,28 +133,17 @@ class PaperlessClient:
         self,
         *,
         modified_after: datetime | None = None,
-    ) -> list[dict[str, Any]]:
-        """Return raw document dicts, optionally filtered by modification date."""
-        params: dict[str, Any] = {
-            "page_size": PAGE_SIZE,
-            "ordering": "modified",
-        }
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield raw document dicts, optionally filtered by modification date.
+
+        Documents are streamed page-by-page so that only one page is held in
+        memory at a time — safe for instances with tens of thousands of documents.
+        """
+        params: dict[str, Any] = {"ordering": "modified"}
         if modified_after is not None:
-            # Use full ISO 8601 timestamp for precise incremental filtering.
-            # paperless-ngx supports modified__gt with ISO format.
             params["modified__gt"] = modified_after.isoformat()
-
-        results: list[dict[str, Any]] = []
-        page = 1
-        while True:
-            params["page"] = page
-            data = await self._request("GET", "/api/documents/", params=params)
-            results.extend(data.get("results", []))
-            if not data.get("next"):
-                break
-            page += 1
-
-        return results
+        async for item in self._iter_pages("/api/documents/", params):
+            yield item
 
     # ── Document parsing ────────────────────────────────────────────
 
@@ -197,19 +204,12 @@ class PaperlessClient:
 def _parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
-    # Python 3.11+ fromisoformat handles 'Z' suffix, fractional seconds, and timezone offsets.
+    # Python 3.11+ fromisoformat handles 'Z', fractional seconds, offsets, and date-only strings.
     try:
         dt = datetime.fromisoformat(value)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt
     except ValueError:
-        pass
-    # Fallback for date-only strings (e.g. "2024-01-15")
-    try:
-        dt = datetime.strptime(value, "%Y-%m-%d")
-        return dt.replace(tzinfo=timezone.utc)
-    except ValueError:
-        pass
-    logger.debug("Could not parse datetime: %r", value)
-    return None
+        logger.debug("Could not parse datetime: %r", value)
+        return None

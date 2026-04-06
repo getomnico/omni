@@ -89,19 +89,9 @@ class PaperlessConnector(Connector):
                 modified_after,
             )
 
-            try:
-                raw_docs = await client.list_documents(modified_after=modified_after)
-            except AuthenticationError as e:
-                await ctx.fail(f"Authentication failed during document listing: {e}")
-                return
-            except PaperlessError as e:
-                await ctx.fail(f"Failed to list documents: {e}")
-                return
-
-            logger.info("Found %d documents to process", len(raw_docs))
             docs_since_checkpoint = 0
 
-            for raw in raw_docs:
+            async for raw in client.list_documents(modified_after=modified_after):
                 if ctx.is_cancelled():
                     await ctx.fail("Cancelled by user")
                     return

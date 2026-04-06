@@ -5,25 +5,6 @@ from datetime import datetime
 
 
 @dataclass
-class PaperlessTag:
-    id: int
-    name: str
-    colour: int = 0
-
-
-@dataclass
-class PaperlessCorrespondent:
-    id: int
-    name: str
-
-
-@dataclass
-class PaperlessDocumentType:
-    id: int
-    name: str
-
-
-@dataclass
 class PaperlessCustomField:
     id: int
     name: str

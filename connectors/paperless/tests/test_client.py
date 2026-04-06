@@ -88,14 +88,14 @@ class TestListDocuments:
     async def test_returns_empty_list_when_no_documents(self, client: PaperlessClient) -> None:
         with patch.object(client._client, "request", new_callable=AsyncMock) as mock_req:
             mock_req.return_value = _mock_response(_paginated([]))
-            result = await client.list_documents()
+            result = [doc async for doc in client.list_documents()]
         assert result == []
 
     async def test_passes_modified_after_param(self, client: PaperlessClient) -> None:
         dt = datetime(2024, 6, 1, tzinfo=timezone.utc)
         with patch.object(client._client, "request", new_callable=AsyncMock) as mock_req:
             mock_req.return_value = _mock_response(_paginated([]))
-            await client.list_documents(modified_after=dt)
+            _ = [doc async for doc in client.list_documents(modified_after=dt)]
         call_kwargs = mock_req.call_args
         params = call_kwargs.kwargs.get("params", {})
         assert "modified__gt" in params
@@ -112,7 +112,7 @@ class TestListDocuments:
         with patch.object(
             client._client, "request", new_callable=AsyncMock, side_effect=responses
         ):
-            result = await client.list_documents()
+            result = [doc async for doc in client.list_documents()]
         assert len(result) == 3
         assert [r["id"] for r in result] == [1, 2, 3]
 

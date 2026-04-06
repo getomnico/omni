@@ -107,6 +107,12 @@ VALID_CONFIG = {"base_url": "http://paperless.local"}
 VALID_CREDENTIALS = {"api_key": "token-abc"}
 
 
+async def _async_iter(items: list):
+    """Convert a list into an async generator (for mocking streaming APIs)."""
+    for item in items:
+        yield item
+
+
 # ── Connector validation ─────────────────────────────────────────────────────
 
 
@@ -176,8 +182,7 @@ class TestFullSync:
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.list_documents",
-                new_callable=AsyncMock,
-                return_value=raw_docs,
+                side_effect=lambda **kw: _async_iter(raw_docs),
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.parse_document",
@@ -202,8 +207,7 @@ class TestFullSync:
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.list_documents",
-                new_callable=AsyncMock,
-                return_value=[],
+                side_effect=lambda **kw: _async_iter([]),
             ) as mock_list,
             patch(
                 "paperless_connector.connector.PaperlessClient.parse_document",
@@ -227,8 +231,7 @@ class TestFullSync:
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.list_documents",
-                new_callable=AsyncMock,
-                return_value=raw_docs,
+                side_effect=lambda **kw: _async_iter(raw_docs),
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.parse_document",
@@ -251,8 +254,7 @@ class TestFullSync:
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.list_documents",
-                new_callable=AsyncMock,
-                return_value=[_raw_doc(1)],
+                side_effect=lambda **kw: _async_iter([_raw_doc(1)]),
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.parse_document",
@@ -285,8 +287,7 @@ class TestFullSync:
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.list_documents",
-                new_callable=AsyncMock,
-                return_value=raw_docs,
+                side_effect=lambda **kw: _async_iter(raw_docs),
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.parse_document",
@@ -313,8 +314,7 @@ class TestFullSync:
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.list_documents",
-                new_callable=AsyncMock,
-                return_value=[],
+                side_effect=lambda **kw: _async_iter([]),
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.parse_document",
@@ -364,8 +364,7 @@ class TestIncrementalSync:
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.list_documents",
-                new_callable=AsyncMock,
-                return_value=[],
+                side_effect=lambda **kw: _async_iter([]),
             ) as mock_list,
             patch(
                 "paperless_connector.connector.PaperlessClient.parse_document",
@@ -392,8 +391,7 @@ class TestIncrementalSync:
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.list_documents",
-                new_callable=AsyncMock,
-                return_value=[],
+                side_effect=lambda **kw: _async_iter([]),
             ) as mock_list,
             patch(
                 "paperless_connector.connector.PaperlessClient.parse_document",
@@ -416,8 +414,7 @@ class TestIncrementalSync:
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.list_documents",
-                new_callable=AsyncMock,
-                return_value=[],
+                side_effect=lambda **kw: _async_iter([]),
             ) as mock_list,
             patch(
                 "paperless_connector.connector.PaperlessClient.parse_document",
@@ -441,8 +438,7 @@ class TestIncrementalSync:
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.list_documents",
-                new_callable=AsyncMock,
-                return_value=[],
+                side_effect=lambda **kw: _async_iter([]),
             ) as mock_list,
             patch(
                 "paperless_connector.connector.PaperlessClient.parse_document",
@@ -466,8 +462,7 @@ class TestIncrementalSync:
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.list_documents",
-                new_callable=AsyncMock,
-                return_value=[_raw_doc(1)],
+                side_effect=lambda **kw: _async_iter([_raw_doc(1)]),
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.parse_document",
@@ -525,7 +520,6 @@ class TestAuthFailures:
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.list_documents",
-                new_callable=AsyncMock,
                 side_effect=AuthenticationError("Token expired"),
             ),
         ):
@@ -545,7 +539,6 @@ class TestAuthFailures:
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.list_documents",
-                new_callable=AsyncMock,
                 side_effect=RuntimeError("Unexpected failure"),
             ),
         ):
@@ -576,8 +569,7 @@ class TestCancellation:
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.list_documents",
-                new_callable=AsyncMock,
-                return_value=raw_docs,
+                side_effect=lambda **kw: _async_iter(raw_docs),
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.parse_document",
@@ -609,8 +601,7 @@ class TestCheckpointing:
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.list_documents",
-                new_callable=AsyncMock,
-                return_value=raw_docs,
+                side_effect=lambda **kw: _async_iter(raw_docs),
             ),
             patch(
                 "paperless_connector.connector.PaperlessClient.parse_document",
