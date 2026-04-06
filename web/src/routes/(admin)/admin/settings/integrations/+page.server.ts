@@ -29,6 +29,7 @@ const CONNECTOR_DISPLAY_ORDER: string[] = [
     // Other
     'web',
     'filesystem',
+    'paperless_ngx',
 ]
 
 interface ConnectorInfo {

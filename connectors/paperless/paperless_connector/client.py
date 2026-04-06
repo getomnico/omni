@@ -9,11 +9,8 @@ import httpx
 
 from .config import INITIAL_BACKOFF_SECONDS, MAX_RETRIES, PAGE_SIZE
 from .models import (
-    PaperlessCorrespondent,
     PaperlessCustomField,
     PaperlessDocument,
-    PaperlessDocumentType,
-    PaperlessTag,
 )
 
 logger = logging.getLogger(__name__)
@@ -127,7 +124,7 @@ class PaperlessClient:
         if modified_after is not None:
             # Use full ISO 8601 timestamp for precise incremental filtering.
             # paperless-ngx supports modified__gt with ISO format.
-            params["modified__gt"] = modified_after.strftime("%Y-%m-%dT%H:%M:%S%z")
+            params["modified__gt"] = modified_after.isoformat()
 
         results: list[dict[str, Any]] = []
         page = 1
@@ -200,7 +197,7 @@ class PaperlessClient:
 def _parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
-    # Try ISO 8601 parsing first (handles fractional seconds, timezone offsets, etc.)
+    # Python 3.11+ fromisoformat handles 'Z' suffix, fractional seconds, and timezone offsets.
     try:
         dt = datetime.fromisoformat(value)
         if dt.tzinfo is None:
@@ -208,14 +205,11 @@ def _parse_dt(value: str | None) -> datetime | None:
         return dt
     except ValueError:
         pass
-    # Fallback: try strptime for Z-suffix and date-only formats
-    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"):
-        try:
-            dt = datetime.strptime(value, fmt)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt
-        except ValueError:
-            continue
+    # Fallback for date-only strings (e.g. "2024-01-15")
+    try:
+        dt = datetime.strptime(value, "%Y-%m-%d")
+        return dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        pass
     logger.debug("Could not parse datetime: %r", value)
     return None

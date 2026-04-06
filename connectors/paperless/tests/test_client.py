@@ -101,6 +101,8 @@ class TestListDocuments:
         assert "modified__gt" in params
         # Should be full ISO 8601, not date-only
         assert "T" in params["modified__gt"]
+        # Should contain proper colon separator in timezone offset (e.g. +00:00)
+        assert params["modified__gt"] == "2024-06-01T00:00:00+00:00"
 
     async def test_paginates_multiple_pages(self, client: PaperlessClient) -> None:
         page1 = {"count": 2, "next": "?page=2", "results": [{"id": 1}, {"id": 2}]}
