@@ -43,6 +43,7 @@ jobs:
       web-connector: ${{ steps.filter.outputs.web-connector }}
       clickup-connector: ${{ steps.filter.outputs.clickup-connector }}
       linear-connector: ${{ steps.filter.outputs.linear-connector }}
+      docling: ${{ steps.filter.outputs.docling }}
       deployment: ${{ steps.filter.outputs.deployment }}
     steps:
       - uses: actions/checkout@v6
@@ -96,6 +97,10 @@ jobs:
               - 'shared/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-service.yml'
+            docling:
+              - 'services/docling/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/build-service.yml'
             migrator:
@@ -252,6 +257,31 @@ jobs:
       image-name: omni-sandbox
       docker-context: .
       dockerfile: services/sandbox/Dockerfile
+    secrets: inherit
+
+  build-docling:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.is-tag != 'true' && needs.detect-changes.outputs.docling == 'true'
+    uses: ./.github/workflows/build-service.yml
+    with:
+      image-name: omni-docling
+      docker-context: services/docling
+      dockerfile: services/docling/Dockerfile
+      build-args: DEVICE=cpu
+      free-disk-space: true
+    secrets: inherit
+
+  build-docling-cuda:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.is-tag != 'true' && needs.detect-changes.outputs.docling == 'true'
+    uses: ./.github/workflows/build-service.yml
+    with:
+      image-name: omni-docling
+      docker-context: services/docling
+      dockerfile: services/docling/Dockerfile
+      build-args: DEVICE=cuda
+      tag-suffix: -cuda
+      free-disk-space: true
     secrets: inherit
 
   build-migrator:
@@ -421,6 +451,17 @@ jobs:
             docker-context: .
             dockerfile: services/sandbox/Dockerfile
             free-disk-space: false
+          - image-name: omni-docling
+            docker-context: services/docling
+            dockerfile: services/docling/Dockerfile
+            build-args: DEVICE=cpu
+            free-disk-space: true
+          - image-name: omni-docling
+            docker-context: services/docling
+            dockerfile: services/docling/Dockerfile
+            build-args: DEVICE=cuda
+            tag-suffix: -cuda
+            free-disk-space: true
           - image-name: omni-migrator
             docker-context: .
             dockerfile: services/migrations/Dockerfile
@@ -431,6 +472,8 @@ jobs:
       docker-context: ${{ matrix.docker-context }}
       dockerfile: ${{ matrix.dockerfile }}
       free-disk-space: ${{ matrix.free-disk-space }}
+      build-args: ${{ matrix.build-args }}
+      tag-suffix: ${{ matrix.tag-suffix }}
     secrets: inherit
 
   release-connectors:

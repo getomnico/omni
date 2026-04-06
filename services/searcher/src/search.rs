@@ -505,6 +505,9 @@ impl SearchEngine {
         let sources = request.source_types.as_deref();
         let content_types = request.content_types.as_deref();
 
+        // Recency boost is applied in SQL (inside find_similar_with_filters)
+        // by over-fetching candidates and re-ranking with an exponential decay
+        // factor, consistent with how FTS handles recency in search_repository.
         let chunk_results = embedding_repo
             .find_similar_with_filters(
                 query_embedding,
@@ -514,6 +517,8 @@ impl SearchEngine {
                 request.offset(),
                 request.user_email().map(|e| e.as_str()),
                 request.document_id.as_deref(),
+                self.config.recency_boost_weight,
+                self.config.recency_half_life_days,
             )
             .await?;
 
@@ -543,7 +548,8 @@ impl SearchEngine {
         let mut results = Vec::new();
         for (document_id, chunks) in document_chunks {
             if let Some(doc) = documents_map.get(&document_id) {
-                // Use the highest scoring chunk as the document score
+                // Use the highest scoring chunk as the document score.
+                // similarity_score already includes the recency boost from SQL.
                 let max_score = chunks
                     .iter()
                     .map(|chunk| chunk.similarity_score)
@@ -860,6 +866,7 @@ impl SearchEngine {
         let sources = request.source_types.as_deref();
         let content_types = request.content_types.as_deref();
 
+        // Recency boost is applied in SQL (see find_similar_with_filters).
         let chunk_results = embedding_repo
             .find_similar_with_filters(
                 query_embedding,
@@ -869,6 +876,8 @@ impl SearchEngine {
                 request.offset(),
                 request.user_email().map(|e| e.as_str()),
                 None,
+                self.config.recency_boost_weight,
+                self.config.recency_half_life_days,
             )
             .await?;
 

@@ -283,6 +283,23 @@ export const agentRuns = pgTable('agent_runs', {
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
 
+export const apiKeys = pgTable('api_keys', {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+        .notNull()
+        .references(() => user.id, { onDelete: 'cascade' }),
+    keyHash: text('key_hash').notNull().unique(),
+    keyPrefix: text('key_prefix').notNull(),
+    name: text('name').notNull(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true, mode: 'date' }),
+    expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }),
+    allowedSources: jsonb('allowed_sources').$type<string[] | null>().default(null),
+    scope: text('scope').notNull().default('public'),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+})
+
 export type User = typeof user.$inferSelect
 export type Source = typeof sources.$inferSelect
 export type Document = typeof documents.$inferSelect
@@ -304,3 +321,4 @@ export type ToolApproval = typeof toolApprovals.$inferSelect
 export type EmailProvider = typeof emailProviders.$inferSelect
 export type Agent = typeof agents.$inferSelect
 export type AgentRun = typeof agentRuns.$inferSelect
+export type ApiKey = typeof apiKeys.$inferSelect
