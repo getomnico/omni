@@ -52,6 +52,7 @@ Omni can be deployed entirely on your own infra. See our deployment guides:
 - **Web**: Public websites, documentation and help pages
 - **Fireflies**: Meeting transcripts
 - **HubSpot**: Contacts, companies, deals, tickets
+- **Nextcloud**: File management platform
 - **IMAP**: Any E-Mail provider
 - **Paperless-ngx**: Document management system
 - **Local Files**: File system indexing
