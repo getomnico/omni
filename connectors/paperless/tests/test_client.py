@@ -83,6 +83,26 @@ class TestPaperlessClientCaching:
         assert dt1 == dt2
         assert mock_req.call_count == 1
 
+    async def test_storage_paths_cached(self, client: PaperlessClient) -> None:
+        sp_response = _paginated([{"id": 7, "name": "Archive/Finance"}])
+        with patch.object(client._client, "request", new_callable=AsyncMock) as mock_req:
+            mock_req.return_value = _mock_response(sp_response)
+            sp1 = await client.get_storage_paths()
+            sp2 = await client.get_storage_paths()
+        assert sp1 == {7: "Archive/Finance"}
+        assert sp1 == sp2
+        assert mock_req.call_count == 1
+
+    async def test_custom_field_definitions_cached(self, client: PaperlessClient) -> None:
+        cfd_response = _paginated([{"id": 1, "name": "Invoice Number"}, {"id": 2, "name": "Amount"}])
+        with patch.object(client._client, "request", new_callable=AsyncMock) as mock_req:
+            mock_req.return_value = _mock_response(cfd_response)
+            cfd1 = await client.get_custom_field_definitions()
+            cfd2 = await client.get_custom_field_definitions()
+        assert cfd1 == {1: "Invoice Number", 2: "Amount"}
+        assert cfd1 == cfd2
+        assert mock_req.call_count == 1
+
 
 class TestListDocuments:
     async def test_returns_empty_list_when_no_documents(self, client: PaperlessClient) -> None:
@@ -123,6 +143,8 @@ class TestParseDocument:
         client._tags = {1: "finance", 2: "2024"}
         client._correspondents = {10: "ACME Corp"}
         client._document_types = {20: "Invoice"}
+        client._storage_paths = {30: "Archive/Finance"}
+        client._custom_field_defs = {99: "Invoice Number", 100: "Amount"}
 
     async def test_basic_fields(self, client: PaperlessClient) -> None:
         await self._setup_caches(client)
@@ -136,8 +158,11 @@ class TestParseDocument:
             "original_file_name": "invoice.pdf",
             "correspondent": 10,
             "document_type": 20,
+            "storage_path": 30,
+            "archive_serial_number": 42,
             "tags": [1, 2],
             "custom_fields": [],
+            "notes": [],
         }
         doc = await client.parse_document(raw)
 
@@ -146,6 +171,8 @@ class TestParseDocument:
         assert doc.content == "Total: 1000 EUR"
         assert doc.correspondent_name == "ACME Corp"
         assert doc.document_type_name == "Invoice"
+        assert doc.storage_path_name == "Archive/Finance"
+        assert doc.archive_serial_number == 42
         assert sorted(doc.tag_names) == ["2024", "finance"]
         assert doc.original_file_name == "invoice.pdf"
 
@@ -161,15 +188,21 @@ class TestParseDocument:
             "original_file_name": None,
             "correspondent": None,
             "document_type": None,
+            "storage_path": None,
+            "archive_serial_number": None,
             "tags": [],
             "custom_fields": [],
+            "notes": [],
         }
         doc = await client.parse_document(raw)
         assert doc.correspondent_name is None
         assert doc.document_type_name is None
+        assert doc.storage_path_name is None
+        assert doc.archive_serial_number is None
         assert doc.tag_names == []
+        assert doc.notes == []
 
-    async def test_custom_fields_parsed(self, client: PaperlessClient) -> None:
+    async def test_custom_fields_resolved_to_names(self, client: PaperlessClient) -> None:
         await self._setup_caches(client)
         raw = {
             "id": 5,
@@ -181,14 +214,114 @@ class TestParseDocument:
             "original_file_name": None,
             "correspondent": None,
             "document_type": None,
+            "storage_path": None,
             "tags": [],
             "custom_fields": [
                 {"field": 99, "value": "INV-001"},
             ],
+            "notes": [],
         }
         doc = await client.parse_document(raw)
         assert len(doc.custom_fields) == 1
+        assert doc.custom_fields[0].name == "Invoice Number"
         assert doc.custom_fields[0].value == "INV-001"
+
+    async def test_custom_field_unknown_id_falls_back_to_str(self, client: PaperlessClient) -> None:
+        await self._setup_caches(client)
+        raw = {
+            "id": 6,
+            "title": "Doc",
+            "content": "",
+            "created": None,
+            "added": None,
+            "modified": None,
+            "original_file_name": None,
+            "correspondent": None,
+            "document_type": None,
+            "storage_path": None,
+            "tags": [],
+            "custom_fields": [
+                {"field": 999, "value": "something"},
+            ],
+            "notes": [],
+        }
+        doc = await client.parse_document(raw)
+        assert doc.custom_fields[0].name == "999"
+
+    async def test_notes_parsed(self, client: PaperlessClient) -> None:
+        await self._setup_caches(client)
+        raw = {
+            "id": 7,
+            "title": "Doc with notes",
+            "content": "",
+            "created": None,
+            "added": None,
+            "modified": None,
+            "original_file_name": None,
+            "correspondent": None,
+            "document_type": None,
+            "storage_path": None,
+            "tags": [],
+            "custom_fields": [],
+            "notes": [
+                {
+                    "id": 1,
+                    "note": "Reviewed and approved.",
+                    "created": "2024-03-15T14:30:00Z",
+                    "user": {"id": 1, "username": "admin"},
+                },
+            ],
+        }
+        doc = await client.parse_document(raw)
+        assert len(doc.notes) == 1
+        assert doc.notes[0].note == "Reviewed and approved."
+        assert doc.notes[0].user == "admin"
+        assert doc.notes[0].created is not None
+
+    async def test_notes_with_legacy_user_id(self, client: PaperlessClient) -> None:
+        """Older paperless-ngx API versions return user as an integer ID."""
+        await self._setup_caches(client)
+        raw = {
+            "id": 8,
+            "title": "Doc",
+            "content": "",
+            "created": None,
+            "added": None,
+            "modified": None,
+            "original_file_name": None,
+            "correspondent": None,
+            "document_type": None,
+            "storage_path": None,
+            "tags": [],
+            "custom_fields": [],
+            "notes": [
+                {"id": 2, "note": "Old style.", "created": None, "user": 5},
+            ],
+        }
+        doc = await client.parse_document(raw)
+        assert doc.notes[0].user == "5"
+
+    async def test_notes_with_null_user(self, client: PaperlessClient) -> None:
+        await self._setup_caches(client)
+        raw = {
+            "id": 9,
+            "title": "Doc",
+            "content": "",
+            "created": None,
+            "added": None,
+            "modified": None,
+            "original_file_name": None,
+            "correspondent": None,
+            "document_type": None,
+            "storage_path": None,
+            "tags": [],
+            "custom_fields": [],
+            "notes": [
+                {"id": 3, "note": "Anonymous.", "created": None, "user": None},
+            ],
+        }
+        doc = await client.parse_document(raw)
+        assert doc.notes[0].user is None
 
 
 class TestRetryBehavior:

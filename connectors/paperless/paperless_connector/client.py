@@ -12,6 +12,7 @@ from .config import INITIAL_BACKOFF_SECONDS, MAX_RETRIES, PAGE_SIZE
 from .models import (
     PaperlessCustomField,
     PaperlessDocument,
+    PaperlessNote,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,11 +37,13 @@ class PaperlessClient:
             headers={"Authorization": f"Token {api_key}"},
             timeout=30.0,
         )
-        # In-memory caches for tag/correspondent/document-type lookups so we
-        # don't re-fetch them for every document during a single sync run.
+        # In-memory caches for tag/correspondent/document-type/storage-path/
+        # custom-field lookups so we don't re-fetch them per document.
         self._tags: dict[int, str] | None = None
         self._correspondents: dict[int, str] | None = None
         self._document_types: dict[int, str] | None = None
+        self._storage_paths: dict[int, str] | None = None
+        self._custom_field_defs: dict[int, str] | None = None
 
     # ── Internal helpers ────────────────────────────────────────────
 
@@ -127,6 +130,19 @@ class PaperlessClient:
             self._document_types = {item["id"]: item["name"] for item in items}
         return self._document_types
 
+    async def get_storage_paths(self) -> dict[int, str]:
+        if self._storage_paths is None:
+            items = await self._list_all("/api/storage_paths/")
+            self._storage_paths = {item["id"]: item["name"] for item in items}
+        return self._storage_paths
+
+    async def get_custom_field_definitions(self) -> dict[int, str]:
+        """Map custom field IDs to their human-readable names."""
+        if self._custom_field_defs is None:
+            items = await self._list_all("/api/custom_fields/")
+            self._custom_field_defs = {item["id"]: item["name"] for item in items}
+        return self._custom_field_defs
+
     # ── Document listing ────────────────────────────────────────────
 
     async def list_documents(
@@ -152,19 +168,43 @@ class PaperlessClient:
         tags_map = await self.get_tags()
         correspondents_map = await self.get_correspondents()
         doc_types_map = await self.get_document_types()
+        storage_paths_map = await self.get_storage_paths()
+        custom_field_defs = await self.get_custom_field_definitions()
 
         tag_ids: list[int] = raw.get("tags", [])
         correspondent_id: int | None = raw.get("correspondent")
         document_type_id: int | None = raw.get("document_type")
+        storage_path_id: int | None = raw.get("storage_path")
 
-        # Parse custom fields
+        # Resolve custom field IDs to human-readable names
         custom_fields: list[PaperlessCustomField] = []
         for cf in raw.get("custom_fields", []):
+            field_id = cf.get("field")
             value = cf.get("value")
+            field_name = custom_field_defs.get(field_id, str(field_id)) if field_id else ""
             custom_fields.append(
                 PaperlessCustomField(
-                    name=str(cf.get("field", "")),
+                    name=field_name,
                     value=str(value) if value is not None else None,
+                )
+            )
+
+        # Parse notes (user annotations on the document)
+        notes: list[PaperlessNote] = []
+        for n in raw.get("notes", []):
+            user_info = n.get("user")
+            # API v8+ returns a user object; older versions return an int ID.
+            if isinstance(user_info, dict):
+                username = user_info.get("username")
+            elif user_info is not None:
+                username = str(user_info)
+            else:
+                username = None
+            notes.append(
+                PaperlessNote(
+                    note=n.get("note", ""),
+                    created=_parse_dt(n.get("created")),
+                    user=username,
                 )
             )
 
@@ -177,8 +217,11 @@ class PaperlessClient:
             modified=_parse_dt(raw.get("modified")),
             original_file_name=raw.get("original_file_name"),
             custom_fields=custom_fields,
+            notes=notes,
             correspondent_name=correspondents_map.get(correspondent_id) if correspondent_id else None,
             document_type_name=doc_types_map.get(document_type_id) if document_type_id else None,
+            storage_path_name=storage_paths_map.get(storage_path_id) if storage_path_id else None,
+            archive_serial_number=raw.get("archive_serial_number"),
             tag_names=[tags_map[t] for t in tag_ids if t in tags_map],
         )
 

@@ -28,6 +28,10 @@ def generate_document_content(doc: PaperlessDocument) -> str:
         lines.append(f"- **Added:** {doc.added.strftime('%Y-%m-%d')}")
     if doc.original_file_name:
         lines.append(f"- **Original File:** {doc.original_file_name}")
+    if doc.storage_path_name:
+        lines.append(f"- **Storage Path:** {doc.storage_path_name}")
+    if doc.archive_serial_number is not None:
+        lines.append(f"- **Archive Serial Number:** {doc.archive_serial_number}")
 
     if doc.custom_fields:
         lines.append("- **Custom Fields:**")
@@ -40,6 +44,20 @@ def generate_document_content(doc: PaperlessDocument) -> str:
         lines.append("## Content")
         lines.append("")
         lines.append(doc.content)
+
+    if doc.notes:
+        lines.append("")
+        lines.append("## Notes")
+        for note in doc.notes:
+            header_parts: list[str] = []
+            if note.user:
+                header_parts.append(note.user)
+            if note.created:
+                header_parts.append(note.created.strftime("%Y-%m-%d %H:%M"))
+            if header_parts:
+                lines.append(f"\n### {' — '.join(header_parts)}")
+            lines.append("")
+            lines.append(note.note)
 
     result = "\n".join(lines)
     if len(result) > MAX_CONTENT_LENGTH:
@@ -68,6 +86,17 @@ def map_document_to_omni(
         attributes["tags"] = ", ".join(sorted(doc.tag_names))
     if doc.original_file_name:
         attributes["original_file_name"] = doc.original_file_name
+    if doc.archive_serial_number is not None:
+        attributes["archive_serial_number"] = str(doc.archive_serial_number)
+
+    # Extra metadata for downstream consumers that need richer context
+    extra: dict[str, Any] = {}
+    if doc.custom_fields:
+        cf_map = {cf.name: cf.value for cf in doc.custom_fields if cf.value is not None}
+        if cf_map:
+            extra["custom_fields"] = cf_map
+    if doc.notes:
+        extra["note_count"] = len(doc.notes)
 
     return Document(
         external_id=f"paperless:{source_id}:{doc.id}",
@@ -80,6 +109,8 @@ def map_document_to_omni(
             content_type="document",
             mime_type="text/plain",
             url=url,
+            path=doc.storage_path_name,
+            extra=extra if extra else None,
         ),
         permissions=DocumentPermissions(public=True),
         attributes=attributes,

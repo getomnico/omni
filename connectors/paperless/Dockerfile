@@ -1,6 +1,6 @@
 # Paperless-ngx Connector Dockerfile
 
-FROM python:3.11-slim as builder
+FROM python:3-slim AS builder
 
 WORKDIR /build
 
@@ -16,7 +16,7 @@ COPY connectors/paperless /build
 RUN pip wheel --no-deps -w /wheels /build
 
 # Production stage
-FROM python:3.11-slim
+FROM python:3-slim
 
 WORKDIR /app
 

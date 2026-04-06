@@ -13,7 +13,7 @@ authors = [
 ]
 dependencies = [
     "omni-connector",
-    "httpx>=0.27.0",
+    "httpx",
 ]
 
 [tool.uv.sources]
@@ -21,12 +21,12 @@ omni-connector = { path = "../../sdk/python" }
 
 [dependency-groups]
 dev = [
-    "pytest>=8.4.0",
-    "pytest-asyncio>=0.24.0",
-    "pytest-cov>=4.1.0",
-    "mypy>=1.8.0",
-    "ruff>=0.4.0",
-    "respx>=0.21.0",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "mypy",
+    "ruff",
+    "respx",
 ]
 
 [tool.hatch.build.targets.wheel]

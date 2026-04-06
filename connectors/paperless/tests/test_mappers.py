@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 
 from paperless_connector.mappers import generate_document_content, map_document_to_omni
-from paperless_connector.models import PaperlessCustomField, PaperlessDocument
+from paperless_connector.models import PaperlessCustomField, PaperlessDocument, PaperlessNote
 
 
 def _make_doc(**kwargs: object) -> PaperlessDocument:
@@ -112,6 +112,50 @@ class TestGenerateDocumentContent:
         assert len(content) <= MAX_CONTENT_LENGTH + len("\n... (truncated)")
         assert content.endswith("... (truncated)")
 
+    def test_storage_path_in_metadata(self) -> None:
+        doc = _make_doc(storage_path_name="Archive/Finance")
+        content = generate_document_content(doc)
+        assert "**Storage Path:** Archive/Finance" in content
+
+    def test_archive_serial_number_in_metadata(self) -> None:
+        doc = _make_doc(archive_serial_number=42)
+        content = generate_document_content(doc)
+        assert "**Archive Serial Number:** 42" in content
+
+    def test_archive_serial_number_none_omitted(self) -> None:
+        doc = _make_doc(archive_serial_number=None)
+        content = generate_document_content(doc)
+        assert "Archive Serial Number" not in content
+
+    def test_notes_section_rendered(self) -> None:
+        doc = _make_doc(
+            notes=[
+                PaperlessNote(
+                    note="Approved for payment.",
+                    created=datetime(2024, 3, 15, 14, 30, tzinfo=timezone.utc),
+                    user="admin",
+                ),
+            ]
+        )
+        content = generate_document_content(doc)
+        assert "## Notes" in content
+        assert "admin" in content
+        assert "2024-03-15 14:30" in content
+        assert "Approved for payment." in content
+
+    def test_notes_without_user_or_date(self) -> None:
+        doc = _make_doc(
+            notes=[PaperlessNote(note="Just a note.", created=None, user=None)]
+        )
+        content = generate_document_content(doc)
+        assert "## Notes" in content
+        assert "Just a note." in content
+
+    def test_no_notes_no_section(self) -> None:
+        doc = _make_doc(notes=[])
+        content = generate_document_content(doc)
+        assert "## Notes" not in content
+
     def test_full_document_structure(self) -> None:
         """Smoke test: a fully-populated document produces well-structured markdown."""
         doc = _make_doc(
@@ -124,6 +168,15 @@ class TestGenerateDocumentContent:
             custom_fields=[
                 PaperlessCustomField(name="Fiscal Year", value="2024"),
             ],
+            storage_path_name="Archive/Finance",
+            archive_serial_number=7,
+            notes=[
+                PaperlessNote(
+                    note="Reviewed.",
+                    created=datetime(2025, 1, 5, 10, 0, tzinfo=timezone.utc),
+                    user="reviewer",
+                ),
+            ],
         )
         content = generate_document_content(doc)
 
@@ -134,6 +187,10 @@ class TestGenerateDocumentContent:
         assert "**Created:** 2024-12-31" in content
         assert "Fiscal Year: 2024" in content
         assert "Revenue increased by 12% in Q4." in content
+        assert "**Storage Path:** Archive/Finance" in content
+        assert "**Archive Serial Number:** 7" in content
+        assert "## Notes" in content
+        assert "Reviewed." in content
 
 
 # ── map_document_to_omni ────────────────────────────────────────────────────
@@ -224,3 +281,66 @@ class TestMapDocumentToOmni:
         assert "document_type" not in omni_doc.attributes
         assert "tags" not in omni_doc.attributes
         assert "original_file_name" not in omni_doc.attributes
+
+    def test_storage_path_in_metadata_path(self) -> None:
+        doc = _make_doc(storage_path_name="Archive/Finance")
+        omni_doc = map_document_to_omni(doc, "cid", "src", "http://paperless.local")
+        assert omni_doc.metadata is not None
+        assert omni_doc.metadata.path == "Archive/Finance"
+
+    def test_archive_serial_number_in_attributes(self) -> None:
+        doc = _make_doc(archive_serial_number=123)
+        omni_doc = map_document_to_omni(doc, "cid", "src", "http://paperless.local")
+        assert omni_doc.attributes is not None
+        assert omni_doc.attributes["archive_serial_number"] == "123"
+
+    def test_archive_serial_number_absent_when_none(self) -> None:
+        doc = _make_doc(archive_serial_number=None)
+        omni_doc = map_document_to_omni(doc, "cid", "src", "http://paperless.local")
+        assert omni_doc.attributes is not None
+        assert "archive_serial_number" not in omni_doc.attributes
+
+    def test_extra_custom_fields_in_metadata(self) -> None:
+        doc = _make_doc(
+            custom_fields=[
+                PaperlessCustomField(name="Invoice Number", value="INV-001"),
+                PaperlessCustomField(name="Empty", value=None),
+            ]
+        )
+        omni_doc = map_document_to_omni(doc, "cid", "src", "http://paperless.local")
+        assert omni_doc.metadata is not None
+        assert omni_doc.metadata.extra is not None
+        assert omni_doc.metadata.extra["custom_fields"] == {"Invoice Number": "INV-001"}
+
+    def test_extra_note_count_in_metadata(self) -> None:
+        doc = _make_doc(
+            notes=[
+                PaperlessNote(note="A", created=None, user=None),
+                PaperlessNote(note="B", created=None, user=None),
+            ]
+        )
+        omni_doc = map_document_to_omni(doc, "cid", "src", "http://paperless.local")
+        assert omni_doc.metadata is not None
+        assert omni_doc.metadata.extra is not None
+        assert omni_doc.metadata.extra["note_count"] == 2
+
+    def test_extra_is_none_when_no_extra_data(self) -> None:
+        doc = _make_doc(custom_fields=[], notes=[])
+        omni_doc = map_document_to_omni(doc, "cid", "src", "http://paperless.local")
+        assert omni_doc.metadata is not None
+        assert omni_doc.metadata.extra is None
+
+    def test_extra_is_none_when_all_custom_field_values_are_none(self) -> None:
+        doc = _make_doc(
+            custom_fields=[PaperlessCustomField(name="Optional", value=None)],
+            notes=[],
+        )
+        omni_doc = map_document_to_omni(doc, "cid", "src", "http://paperless.local")
+        assert omni_doc.metadata is not None
+        assert omni_doc.metadata.extra is None
+
+    def test_no_storage_path_means_no_path(self) -> None:
+        doc = _make_doc(storage_path_name=None)
+        omni_doc = map_document_to_omni(doc, "cid", "src", "http://paperless.local")
+        assert omni_doc.metadata is not None
+        assert omni_doc.metadata.path is None
