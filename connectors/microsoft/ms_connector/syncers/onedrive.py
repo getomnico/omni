@@ -147,6 +147,10 @@ class OneDriveSyncer(BaseSyncer):
             else None
         )
 
+        logger.debug(
+            "[onedrive] Delta returned %d items for %s", len(items), display_name
+        )
+
         for item in items:
             if ctx.is_cancelled():
                 return delta_token
@@ -168,6 +172,9 @@ class OneDriveSyncer(BaseSyncer):
             if cutoff:
                 modified = _parse_iso(item.get("lastModifiedDateTime"))
                 if modified and modified < cutoff:
+                    logger.debug(
+                        "[onedrive] Skipping %s (older than cutoff)", item.get("name")
+                    )
                     continue
 
             try:
@@ -288,6 +295,12 @@ class OneDriveSyncer(BaseSyncer):
             )
             return seen_items
 
+        logger.debug(
+            "[onedrive] sharedWithMe returned %d items for %s",
+            len(shared_items),
+            display_name,
+        )
+
         new_seen: dict[str, SharedItemRecord] = {}
 
         for item in shared_items:
@@ -296,6 +309,10 @@ class OneDriveSyncer(BaseSyncer):
 
             remote = item.get("remoteItem")
             if not remote:
+                logger.debug(
+                    "[onedrive] Skipping shared item without remoteItem: %s",
+                    item.get("id"),
+                )
                 continue
 
             if "folder" in remote:
@@ -318,6 +335,11 @@ class OneDriveSyncer(BaseSyncer):
 
             prev = seen_items.get(record.key)
             if prev and prev.last_modified == last_modified:
+                logger.debug(
+                    "[onedrive] Skipping unchanged shared item %s (%s)",
+                    remote.get("name"),
+                    record.key,
+                )
                 continue
 
             try:
