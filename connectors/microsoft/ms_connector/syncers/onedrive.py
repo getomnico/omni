@@ -1,6 +1,7 @@
 """OneDrive file syncer using delta queries."""
 
 import logging
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -13,6 +14,47 @@ from ..mappers import (
     _parse_iso,
 )
 from .base import BaseSyncer, DEFAULT_MAX_AGE_DAYS
+
+
+@dataclass
+class SharedItemRecord:
+    """Tracks a shared item for incremental sync (sharedWithMe has no delta support)."""
+
+    drive_id: str
+    item_id: str
+    last_modified: str
+
+    @property
+    def key(self) -> str:
+        return f"{self.drive_id}:{self.item_id}"
+
+
+@dataclass
+class OneDriveSyncState:
+    """Persisted state for the OneDrive syncer across sync runs."""
+
+    delta_tokens: dict[str, str]
+    shared_items: dict[str, dict[str, SharedItemRecord]]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "delta_tokens": self.delta_tokens,
+            "shared_items": {
+                uid: [asdict(r) for r in records.values()]
+                for uid, records in self.shared_items.items()
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "OneDriveSyncState":
+        shared: dict[str, dict[str, SharedItemRecord]] = {}
+        for uid, entries in raw.get("shared_items", {}).items():
+            shared[uid] = {(r := SharedItemRecord(**entry)).key: r for entry in entries}
+        return cls(
+            delta_tokens=raw.get("delta_tokens", {}),
+            shared_items=shared,
+        )
+
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +97,8 @@ class OneDriveSyncer(BaseSyncer):
     ) -> dict[str, Any]:
         """Run delta sync and shared-with-me sync in one user loop."""
         source_config = source_config or {}
-        delta_tokens: dict[str, str] = state.get("delta_tokens", {})
-        shared_state: dict[str, dict[str, str]] = state.get("shared_items", {})
-        new_tokens: dict[str, str] = {}
-        new_shared: dict[str, dict[str, str]] = {}
+        prev = OneDriveSyncState.from_dict(state)
+        new = OneDriveSyncState(delta_tokens={}, shared_items={})
 
         users = await client.list_users()
         logger.info("[onedrive] Syncing across %d users", len(users))
@@ -81,23 +121,23 @@ class OneDriveSyncer(BaseSyncer):
                 client,
                 user,
                 ctx,
-                delta_tokens.get(user_id),
+                prev.delta_tokens.get(user_id),
                 user_cache=user_cache,
                 group_cache=group_cache,
             )
             if new_token:
-                new_tokens[user_id] = new_token
+                new.delta_tokens[user_id] = new_token
 
-            new_shared[user_id] = await self._sync_shared_with_me(
+            new.shared_items[user_id] = await self._sync_shared_with_me(
                 client,
                 user,
                 ctx,
-                shared_state.get(user_id, {}),
+                prev.shared_items.get(user_id, {}),
                 user_cache,
                 group_cache,
             )
 
-        return {"delta_tokens": new_tokens, "shared_items": new_shared}
+        return new.to_dict()
 
     async def sync_for_user(
         self,
@@ -246,15 +286,11 @@ class OneDriveSyncer(BaseSyncer):
         client: GraphClient,
         user: dict[str, Any],
         ctx: SyncContext,
-        seen_items: dict[str, str],
+        seen_items: dict[str, SharedItemRecord],
         user_cache: dict[str, str] | None = None,
         group_cache: dict[str, str] | None = None,
-    ) -> dict[str, str]:
-        """Sync files shared with a user. Returns updated seen-items map.
-
-        seen_items maps "driveId:itemId" to lastModifiedDateTime for
-        incremental skip logic (sharedWithMe has no delta query support).
-        """
+    ) -> dict[str, SharedItemRecord]:
+        """Sync files shared with a user. Returns updated seen-items map."""
         user_id = user["id"]
         display_name = user.get("displayName", user_id)
         logger.info("[onedrive] Syncing shared-with-me for user %s", display_name)
@@ -269,7 +305,7 @@ class OneDriveSyncer(BaseSyncer):
             )
             return seen_items
 
-        new_seen: dict[str, str] = {}
+        new_seen: dict[str, SharedItemRecord] = {}
 
         for item in shared_items:
             if ctx.is_cancelled():
@@ -288,12 +324,17 @@ class OneDriveSyncer(BaseSyncer):
                 "driveId", "unknown"
             )
             remote_item_id = remote["id"]
-            key = f"{remote_drive_id}:{remote_item_id}"
-
             last_modified = remote.get("lastModifiedDateTime", "")
-            new_seen[key] = last_modified
 
-            if seen_items.get(key) == last_modified:
+            record = SharedItemRecord(
+                drive_id=remote_drive_id,
+                item_id=remote_item_id,
+                last_modified=last_modified,
+            )
+            new_seen[record.key] = record
+
+            prev = seen_items.get(record.key)
+            if prev and prev.last_modified == last_modified:
                 continue
 
             try:
