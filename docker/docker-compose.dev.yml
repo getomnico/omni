@@ -199,10 +199,30 @@ services:
     build:
       context: ../services/docling
       dockerfile: Dockerfile
+      args:
+        DEVICE: ${DOCLING_DEVICE:-cpu}
 
   vllm:
     profiles:
       - production
+
+  llama-server:
+    image: local/llama.cpp:server-cuda
+    container_name: omni-llama-server
+    ports:
+      - "8080:8080"
+    volumes:
+      - /home/praveen/workspace/gguf-models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - omni-network
+    command: -m /models/gemma-4-26B-A4B-it-Q4_K_M.gguf --port 8080 --host 0.0.0.0 -n 42000 --parallel 1 
   
   embeddings:
     ports:

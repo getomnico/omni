@@ -16,6 +16,15 @@ on:
         required: false
         type: boolean
         default: false
+      build-args:
+        required: false
+        type: string
+        default: ''
+      tag-suffix:
+        description: 'Appended to every image tag (e.g. "-cuda" produces latest-cuda, v0.1.3-cuda)'
+        required: false
+        type: string
+        default: ''
 
 env:
   REGISTRY: ghcr.io
@@ -71,7 +80,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ env.IMAGE_NAME }}
           flavor: |
-            suffix=-${{ matrix.arch }}
+            suffix=${{ inputs.tag-suffix }}-${{ matrix.arch }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -89,8 +98,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+          build-args: ${{ inputs.build-args }}
+          cache-from: type=gha,scope=${{ env.IMAGE_NAME }}${{ inputs.tag-suffix }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ env.IMAGE_NAME }}${{ inputs.tag-suffix }}-${{ matrix.arch }}
 
   create-manifest:
     needs: [build]
@@ -112,6 +122,8 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            suffix=${{ inputs.tag-suffix }}
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -162,5 +174,6 @@ jobs:
           platforms: linux/amd64
           file: ${{ inputs.dockerfile }}
           push: false
-          cache-from: type=gha,scope=amd64
-          cache-to: type=gha,mode=max,scope=amd64
+          build-args: ${{ inputs.build-args }}
+          cache-from: type=gha,scope=${{ env.IMAGE_NAME }}${{ inputs.tag-suffix }}-amd64
+          cache-to: type=gha,mode=max,scope=${{ env.IMAGE_NAME }}${{ inputs.tag-suffix }}-amd64

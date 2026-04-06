@@ -311,8 +311,10 @@ services:
   # Docling Service - AI-based document to Markdown conversion
   # Provides superior PDF extraction, OCR, and structure-aware output
   # Always deployed; enable via the admin UI at /admin/settings/document-conversion
+  # Default image is CPU-only (~1.5 GB). For GPU, set DOCLING_DEVICE=cuda in .env
+  # to use the -cuda tagged image.
   docling:
-    image: ghcr.io/getomnico/omni/omni-docling:${OMNI_VERSION:-latest}
+    image: ghcr.io/getomnico/omni/omni-docling:${OMNI_VERSION:-latest}${DOCLING_DEVICE:+-${DOCLING_DEVICE}}
     container_name: omni-docling
     expose:
       - "${DOCLING_PORT:-8003}"
@@ -323,6 +325,11 @@ services:
     volumes:
       - docling_models:/root/.cache
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "${DOCLING_CPUS:-2}"
+          memory: "${DOCLING_MEMORY:-4g}"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${DOCLING_PORT:-8003}/health"]
       interval: 30s
