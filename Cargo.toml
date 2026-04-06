@@ -11,6 +11,7 @@ members = [
     "connectors/fireflies",
     "connectors/web",
     "connectors/imap",
+    "connectors/nextcloud",
     "shared",
     "benchmarks",
 ]

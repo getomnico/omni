@@ -19,6 +19,7 @@ export enum SourceType {
     CLICKUP = 'clickup',
     LINEAR = 'linear',
     PAPERLESS_NGX = 'paperless_ngx',
+    NEXTCLOUD = 'nextcloud',
 }
 
 export enum ServiceProvider {
@@ -34,6 +35,7 @@ export enum ServiceProvider {
     LINEAR = 'linear',
     NOTION = 'notion',
     PAPERLESS_NGX = 'paperless_ngx',
+    NEXTCLOUD = 'nextcloud',
 }
 
 export enum AuthType {
@@ -121,6 +123,16 @@ export interface PaperlessNgxSourceConfig {
     sync_enabled: boolean
 }
 
+export interface NextcloudSourceConfig {
+    server_url: string
+    base_path: string
+    extension_allowlist: string[]
+    extension_denylist: string[]
+    /** 0 = unlimited */
+    max_file_size: number
+    sync_enabled: boolean
+}
+
 export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.GOOGLE_DRIVE]: 1800,
     [SourceType.GMAIL]: 1800,
@@ -142,6 +154,7 @@ export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.WEB]: 86400,
     [SourceType.CLICKUP]: 3600,
     [SourceType.PAPERLESS_NGX]: 3600,
+    [SourceType.NEXTCLOUD]: 3600,
 }
 
 export const EMBEDDING_PROVIDER_TYPES = ['local', 'jina', 'openai', 'cohere', 'bedrock'] as const

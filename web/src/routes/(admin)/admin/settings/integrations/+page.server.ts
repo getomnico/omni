@@ -27,6 +27,7 @@ const CONNECTOR_DISPLAY_ORDER: string[] = [
     // Meetings
     'fireflies',
     // Other
+    'nextcloud',
     'web',
     'filesystem',
     'paperless_ngx',

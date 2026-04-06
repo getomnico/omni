@@ -1,0 +1,130 @@
+import { error, redirect } from '@sveltejs/kit'
+import type { PageServerLoad, Actions } from './$types'
+import { requireAdmin } from '$lib/server/authHelpers'
+import { getSourceById, updateSourceById } from '$lib/server/db/sources'
+import { getConfig } from '$lib/server/config'
+import { SourceType, type NextcloudSourceConfig } from '$lib/types'
+import { db } from '$lib/server/db'
+import { serviceCredentials } from '$lib/server/db/schema'
+import { eq } from 'drizzle-orm'
+
+export const load: PageServerLoad = async ({ params, locals }) => {
+    requireAdmin(locals)
+
+    const source = await getSourceById(params.sourceId)
+
+    if (!source) {
+        throw error(404, 'Source not found')
+    }
+
+    if (source.sourceType !== SourceType.NEXTCLOUD) {
+        throw error(400, 'Invalid source type for this page')
+    }
+
+    const creds = await db.query.serviceCredentials.findFirst({
+        where: eq(serviceCredentials.sourceId, params.sourceId),
+    })
+
+    return {
+        source,
+        principalEmail: creds?.principalEmail ?? null,
+    }
+}
+
+export const actions: Actions = {
+    default: async ({ request, params, locals, fetch }) => {
+        const user = locals.user
+        if (!user || user.role !== 'admin') {
+            throw error(403, 'Admin access required')
+        }
+
+        const source = await getSourceById(params.sourceId)
+        if (!source) {
+            throw error(404, 'Source not found')
+        }
+
+        if (source.sourceType !== SourceType.NEXTCLOUD) {
+            throw error(400, 'Invalid source type')
+        }
+
+        const formData = await request.formData()
+
+        const isActive = formData.has('enabled')
+        const serverUrl = (formData.get('serverUrl') as string | null)?.trim() ?? ''
+        const username = (formData.get('username') as string | null)?.trim() ?? ''
+        const password = (formData.get('password') as string | null) ?? ''
+        const basePath = (formData.get('basePath') as string | null)?.trim() || '/'
+        const extensionAllowlistRaw = (formData.get('extensionAllowlist') as string | null) ?? ''
+        const extensionDenylistRaw = (formData.get('extensionDenylist') as string | null) ?? ''
+        const maxFileSizeMbStr = formData.get('maxFileSizeMb') as string | null
+
+        if (!serverUrl) {
+            throw error(400, 'Nextcloud server URL is required')
+        }
+
+        const maxFileSizeMb = parseInt(maxFileSizeMbStr ?? '0', 10) || 0
+
+        const parseCommaSeparated = (value: string): string[] =>
+            value
+                .split(',')
+                .map((s) => s.trim())
+                .filter((s) => s.length > 0)
+
+        try {
+            const config: NextcloudSourceConfig = {
+                server_url: serverUrl.replace(/\/+$/, ''),
+                base_path: basePath,
+                extension_allowlist: parseCommaSeparated(extensionAllowlistRaw),
+                extension_denylist: parseCommaSeparated(extensionDenylistRaw),
+                max_file_size: maxFileSizeMb > 0 ? maxFileSizeMb * 1024 * 1024 : 0,
+                sync_enabled: isActive,
+            }
+
+            await updateSourceById(source.id, { isActive, config })
+
+            if (password && username) {
+                const indexerUrl = getConfig().services.indexerUrl
+                const credResponse = await fetch(`${indexerUrl}/service-credentials`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        source_id: source.id,
+                        provider: 'nextcloud',
+                        auth_type: 'basic_auth',
+                        principal_email: username,
+                        credentials: { username, password },
+                        config: {},
+                    }),
+                })
+                if (!credResponse.ok) {
+                    const text = await credResponse.text()
+                    throw new Error(`Failed to update credentials: ${text}`)
+                }
+                const credResult = await credResponse.json()
+                if (!credResult.success) {
+                    throw new Error(credResult.message ?? 'Failed to update credentials')
+                }
+            }
+
+            if (isActive) {
+                const connectorManagerUrl = getConfig().services.connectorManagerUrl
+                try {
+                    await fetch(`${connectorManagerUrl}/sync/${source.id}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                    })
+                } catch (err) {
+                    console.error(
+                        `Failed to trigger sync for Nextcloud source ${source.id}:`,
+                        err,
+                    )
+                }
+            }
+        } catch (err) {
+            console.error('Failed to save Nextcloud settings:', err)
+            throw error(500, 'Failed to save configuration')
+        }
+
+        throw redirect(303, '/admin/settings/integrations')
+    },
+}

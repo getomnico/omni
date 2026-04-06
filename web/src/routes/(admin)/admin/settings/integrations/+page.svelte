@@ -20,7 +20,7 @@
     import linearLogo from '$lib/images/icons/linear.svg'
     import githubLogo from '$lib/images/icons/github.svg'
     import { getSourceIconPath } from '$lib/utils/icons'
-    import { Globe, HardDrive, Mail } from '@lucide/svelte'
+    import { Cloud, Globe, HardDrive, Mail } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import GoogleWorkspaceSetup from '$lib/components/google-workspace-setup.svelte'
     import AtlassianConnectorSetup from '$lib/components/atlassian-connector-setup.svelte'
@@ -36,6 +36,7 @@
     import LinearConnectorSetup from '$lib/components/linear-connector-setup.svelte'
     import GithubConnectorSetup from '$lib/components/github-connector-setup.svelte'
     import PaperlessConnectorSetup from '$lib/components/paperless-connector-setup.svelte'
+    import NextcloudConnectorSetup from '$lib/components/nextcloud-connector-setup.svelte'
     import { SourceType } from '$lib/types'
     import { invalidateAll } from '$app/navigation'
     import { onMount, onDestroy } from 'svelte'
@@ -166,6 +167,7 @@
         [SourceType.NOTION]: 'pages',
         [SourceType.GITHUB]: 'documents',
         [SourceType.PAPERLESS_NGX]: 'documents',
+        [SourceType.NEXTCLOUD]: 'files',
     }
 
     function getSourceNoun(sourceType: SourceType): string {
@@ -229,6 +231,8 @@
                                     <Mail class="h-6 w-6" />
                                 {:else if source.sourceType === 'paperless_ngx'}
                                     <HardDrive class="h-6 w-6" />
+                                {:else if source.sourceType === 'nextcloud'}
+                                    <Cloud class="h-6 w-6" />
                                 {/if}
                                 <div class="flex flex-col gap-0.5">
                                     <div class="flex items-center gap-2">
@@ -332,6 +336,8 @@
                                     <Mail class="h-6 w-6" />
                                 {:else if integration.id === 'paperless_ngx'}
                                     <HardDrive class="h-6 w-6" />
+                                {:else if integration.id === 'nextcloud'}
+                                    <Cloud class="h-6 w-6" />
                                 {/if}
                                 <span>{integration.name}</span>
                             </CardTitle>
@@ -421,5 +427,10 @@
 
 <PaperlessConnectorSetup
     open={activeSetup === 'paperless_ngx'}
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
+
+<NextcloudConnectorSetup
+    open={activeSetup === 'nextcloud'}
     onSuccess={handleSetupSuccess}
     onCancel={closeSetup} />

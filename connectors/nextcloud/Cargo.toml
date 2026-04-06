@@ -1,0 +1,35 @@
+[package]
+name = "omni-nextcloud-connector"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "omni-nextcloud-connector"
+path = "src/main.rs"
+
+[lib]
+name = "omni_nextcloud_connector"
+path = "src/lib.rs"
+
+[dependencies]
+shared = { path = "../../shared" }
+anyhow = { workspace = true }
+axum = { workspace = true }
+dashmap = { workspace = true }
+dotenvy = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls-tls", "stream"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tower = { workspace = true }
+tower-http = { workspace = true, features = ["cors", "trace"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+urlencoding = "2.1"
+quick-xml = "0.39"
+time = { workspace = true, features = ["parsing"] }
+
+[dev-dependencies]
+wiremock = "0.6"

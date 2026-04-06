@@ -21,6 +21,7 @@ import clickupIcon from '$lib/images/icons/clickup.svg'
 import notionIcon from '$lib/images/icons/notion.svg'
 import linearIcon from '$lib/images/icons/linear.svg'
 import githubIcon from '$lib/images/icons/github.svg'
+import nextcloudIcon from '$lib/images/icons/nextcloud.svg'
 
 // Google Workspace MIME types
 const GOOGLE_DOCS_MIMETYPES = [
@@ -61,6 +62,7 @@ const SOURCE_TYPE_ICONS: Record<string, string> = {
     [SourceType.GITHUB]: githubIcon,
     [SourceType.CLICKUP]: clickupIcon,
     [SourceType.NOTION]: notionIcon,
+    [SourceType.NEXTCLOUD]: nextcloudIcon,
 }
 
 // Get icon based on source type and content type
@@ -141,6 +143,12 @@ export function inferSourceFromUrl(url: string): SourceType | null {
     if (urlLower.includes('github.com')) return SourceType.GITHUB
     if (urlLower.includes('fireflies.ai')) return SourceType.FIREFLIES
     if (urlLower.includes('linear.app')) return SourceType.LINEAR
+    if (
+        urlLower.includes('/remote.php/dav/') ||
+        urlLower.includes('/apps/files/') ||
+        urlLower.includes('nextcloud')
+    )
+        return SourceType.NEXTCLOUD
 
     return null
 }
@@ -197,6 +205,7 @@ export function getSourceDisplayName(sourceType: SourceType) {
         [SourceType.OUTLOOK_CALENDAR]: 'Outlook Calendar',
         [SourceType.MS_TEAMS]: 'Teams',
         [SourceType.IMAP]: 'IMAP',
+        [SourceType.NEXTCLOUD]: 'Nextcloud',
     }
 
     return sourceDisplayNames[sourceType]

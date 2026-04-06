@@ -534,6 +534,26 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
+  nextcloud-connector:
+    image: ghcr.io/getomnico/omni/omni-nextcloud-connector:${OMNI_VERSION:-latest}
+    container_name: omni-nextcloud-connector
+    profiles:
+      - nextcloud
+    expose:
+      - "${NEXTCLOUD_CONNECTOR_PORT}"
+    environment:
+      <<: *otel-config
+      PORT: ${NEXTCLOUD_CONNECTOR_PORT}
+      CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      CONNECTOR_HOST_NAME: nextcloud-connector
+    networks:
+      - omni-network
+    depends_on:
+      connector-manager:
+        condition: service_started
+    restart: unless-stopped
+    logging: *default-logging
+
   linear-connector:
     image: ghcr.io/getomnico/omni/omni-linear-connector:${OMNI_VERSION:-latest}
     container_name: omni-linear-connector

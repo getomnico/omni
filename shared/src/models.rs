@@ -171,6 +171,7 @@ pub enum SourceType {
     Clickup,
     Linear,
     PaperlessNgx,
+    Nextcloud,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -191,6 +192,7 @@ pub enum ServiceProvider {
     #[sqlx(rename = "paperless_ngx")]
     #[serde(rename = "paperless_ngx")]
     PaperlessNgx,
+    Nextcloud,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]

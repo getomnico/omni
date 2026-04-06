@@ -176,6 +176,14 @@ services:
     environment:
       RUST_LOG: debug
 
+  nextcloud-connector:
+    image: omni-nextcloud-connector:dev
+    build:
+      context: ..
+      dockerfile: connectors/nextcloud/Dockerfile
+    environment:
+      RUST_LOG: debug
+
   clickup-connector:
     image: omni-clickup-connector:dev
     build:
