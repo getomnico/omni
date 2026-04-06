@@ -105,6 +105,7 @@ impl DriveClient {
                 ("pageSize", "100"),
                 ("fields", "nextPageToken,files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,permissions(id,type,emailAddress,role))"),
                 ("q", query.as_str()),
+                ("orderBy", "modifiedTime desc"),
                 ("includeItemsFromAllDrives", "true"),
                 ("supportsAllDrives", "true"),
             ];

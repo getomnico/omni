@@ -55,13 +55,21 @@ Use `excel schema <file>` to see detected types, sample values, and null counts 
 - Cell-level editing, formatting, formulas: `openpyxl` via `run_python`
 - Always use `present_artifact` after generating or modifying a spreadsheet so the user can download it.
 
+## Formulas
+The `excel` CLI can extract formulas from cells:
+- `excel formulas <file>` — list all cells containing formulas (shows formula + computed value)
+- `excel cell <file> <sheet> <range> --formulas` — show formulas alongside values for specific cells
+
+This is useful for understanding how computed values are derived and for auditing spreadsheets.
+
 ## excel CLI Reference
 ```
 excel inspect <file>                                   — sheets, dims, merged cells, headers, preview
 excel headers <file> [sheet]                           — detected header row per sheet
 excel schema <file> [sheet]                            — column names, types, sample values, null counts
 excel rows <file> <sheet> <range>                      — specific rows as TSV (e.g., 100:110)
-excel cell <file> <sheet> <range>                      — specific cell/range (e.g., J101 or A1:D10)
+excel cell <file> <sheet> <range> [--formulas]         — specific cell/range (e.g., J101 or A1:D10)
+excel formulas <file> [sheet]                          — list all formulas with computed values
 excel grep <file> <pattern> [--sheet S] [--column C]   — search for text across cells
 excel filter <file> <sheet> <expr>                     — filter rows (pandas query syntax)
 excel to-csv <file> [--sheet S]                        — export as CSV (merged cells filled)

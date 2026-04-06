@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
-from pathlib import Path
+import pathlib
 from typing import cast
 
 import httpx
@@ -254,7 +254,7 @@ async def _build_registry(request: Request, chat: Chat) -> RegistryResult:
         registry.register(SandboxToolHandler(sandbox_url=SANDBOX_URL))
 
     # Register skill loader (load_skill tool)
-    skills_dir = Path(__file__).resolve().parent.parent / "skills"
+    skills_dir = pathlib.Path(__file__).resolve().parent.parent / "skills"
     skill_handler = SkillHandler(skills_dir=skills_dir)
     if skill_handler._available:
         registry.register(skill_handler)
