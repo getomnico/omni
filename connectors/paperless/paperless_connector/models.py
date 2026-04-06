@@ -6,7 +6,6 @@ from datetime import datetime
 
 @dataclass
 class PaperlessCustomField:
-    id: int
     name: str
     value: str | None
 
@@ -20,13 +19,7 @@ class PaperlessDocument:
     added: datetime | None
     modified: datetime | None
     original_file_name: str | None
-    archived_file_name: str | None
-    correspondent_id: int | None
-    document_type_id: int | None
-    tag_ids: list[int] = field(default_factory=list)
     custom_fields: list[PaperlessCustomField] = field(default_factory=list)
-
-    # Resolved names (populated by the client after lookup)
     correspondent_name: str | None = None
     document_type_name: str | None = None
     tag_names: list[str] = field(default_factory=list)

@@ -2,8 +2,6 @@
 
 from datetime import datetime, timezone
 
-import pytest
-
 from paperless_connector.mappers import generate_document_content, map_document_to_omni
 from paperless_connector.models import PaperlessCustomField, PaperlessDocument
 
@@ -17,9 +15,6 @@ def _make_doc(**kwargs: object) -> PaperlessDocument:
         "added": datetime(2024, 1, 16, tzinfo=timezone.utc),
         "modified": datetime(2024, 1, 17, tzinfo=timezone.utc),
         "original_file_name": "test.pdf",
-        "archived_file_name": "test.pdf.pdf",
-        "correspondent_id": None,
-        "document_type_id": None,
     }
     defaults.update(kwargs)
     return PaperlessDocument(**defaults)  # type: ignore[arg-type]
@@ -78,8 +73,8 @@ class TestGenerateDocumentContent:
     def test_custom_fields_rendered(self) -> None:
         doc = _make_doc(
             custom_fields=[
-                PaperlessCustomField(id=1, name="Invoice Number", value="INV-2024-001"),
-                PaperlessCustomField(id=2, name="Amount", value="500.00"),
+                PaperlessCustomField(name="Invoice Number", value="INV-2024-001"),
+                PaperlessCustomField(name="Amount", value="500.00"),
             ]
         )
         content = generate_document_content(doc)
@@ -89,7 +84,7 @@ class TestGenerateDocumentContent:
     def test_custom_field_with_none_value_omitted(self) -> None:
         doc = _make_doc(
             custom_fields=[
-                PaperlessCustomField(id=1, name="Optional", value=None),
+                PaperlessCustomField(name="Optional", value=None),
             ]
         )
         content = generate_document_content(doc)
@@ -127,7 +122,7 @@ class TestGenerateDocumentContent:
             created=datetime(2024, 12, 31, tzinfo=timezone.utc),
             content="Revenue increased by 12% in Q4.",
             custom_fields=[
-                PaperlessCustomField(id=1, name="Fiscal Year", value="2024"),
+                PaperlessCustomField(name="Fiscal Year", value="2024"),
             ],
         )
         content = generate_document_content(doc)

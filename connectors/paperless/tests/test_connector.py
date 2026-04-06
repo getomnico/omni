@@ -15,7 +15,6 @@ from paperless_connector.models import PaperlessDocument
 
 
 def _make_ctx(
-    state: dict[str, Any] | None = None,
     source_id: str = "src-1",
 ) -> MagicMock:
     """Return a mock SyncContext that records emitted documents and sync outcomes.
@@ -80,7 +79,6 @@ def _raw_doc(doc_id: int = 1, title: str = "Test Doc") -> dict[str, Any]:
         "added": "2024-01-16T08:00:00Z",
         "modified": "2024-01-17T09:00:00Z",
         "original_file_name": "test.pdf",
-        "archived_file_name": "test.pdf",
         "correspondent": None,
         "document_type": None,
         "tags": [],
@@ -97,9 +95,6 @@ def _parsed_doc(doc_id: int = 1, title: str = "Test Doc") -> PaperlessDocument:
         added=datetime(2024, 1, 16, tzinfo=timezone.utc),
         modified=datetime(2024, 1, 17, tzinfo=timezone.utc),
         original_file_name="test.pdf",
-        archived_file_name="test.pdf",
-        correspondent_id=None,
-        document_type_id=None,
     )
 
 
@@ -355,7 +350,7 @@ class TestIncrementalSync:
         """When state has last_sync_at, list_documents is called with modified_after."""
         connector = PaperlessConnector()
         state = {"last_sync_at": "2024-06-01T00:00:00+00:00"}
-        ctx = _make_ctx(state=state)
+        ctx = _make_ctx()
 
         with (
             patch(
@@ -382,7 +377,7 @@ class TestIncrementalSync:
     async def test_no_state_fetches_all(self) -> None:
         """Without prior state, all documents are fetched (modified_after=None)."""
         connector = PaperlessConnector()
-        ctx = _make_ctx(state=None)
+        ctx = _make_ctx()
 
         with (
             patch(
@@ -405,7 +400,7 @@ class TestIncrementalSync:
     async def test_empty_state_fetches_all(self) -> None:
         """Empty state dict should also fetch all."""
         connector = PaperlessConnector()
-        ctx = _make_ctx(state={})
+        ctx = _make_ctx()
 
         with (
             patch(
@@ -429,7 +424,7 @@ class TestIncrementalSync:
         """Malformed timestamp in state should fall back to full sync."""
         connector = PaperlessConnector()
         state = {"last_sync_at": "not-a-timestamp"}
-        ctx = _make_ctx(state=state)
+        ctx = _make_ctx()
 
         with (
             patch(
@@ -453,7 +448,7 @@ class TestIncrementalSync:
         """Incremental sync should save a new last_sync_at timestamp."""
         connector = PaperlessConnector()
         state = {"last_sync_at": "2024-01-01T00:00:00+00:00"}
-        ctx = _make_ctx(state=state)
+        ctx = _make_ctx()
 
         with (
             patch(

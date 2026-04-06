@@ -160,13 +160,10 @@ class PaperlessClient:
         # Parse custom fields
         custom_fields: list[PaperlessCustomField] = []
         for cf in raw.get("custom_fields", []):
-            field_id = cf.get("field")
             value = cf.get("value")
-            # The field id is used as name if name resolution is unavailable
             custom_fields.append(
                 PaperlessCustomField(
-                    id=field_id,
-                    name=str(field_id),
+                    name=str(cf.get("field", "")),
                     value=str(value) if value is not None else None,
                 )
             )
@@ -179,10 +176,6 @@ class PaperlessClient:
             added=_parse_dt(raw.get("added")),
             modified=_parse_dt(raw.get("modified")),
             original_file_name=raw.get("original_file_name"),
-            archived_file_name=raw.get("archived_file_name"),
-            correspondent_id=correspondent_id,
-            document_type_id=document_type_id,
-            tag_ids=tag_ids,
             custom_fields=custom_fields,
             correspondent_name=correspondents_map.get(correspondent_id) if correspondent_id else None,
             document_type_name=doc_types_map.get(document_type_id) if document_type_id else None,
