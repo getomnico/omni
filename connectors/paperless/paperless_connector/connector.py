@@ -47,12 +47,12 @@ class PaperlessConnector(Connector):
         state: dict[str, Any] | None,
         ctx: SyncContext,
     ) -> None:
-        base_url = source_config.get("base_url", "").rstrip("/")
+        base_url = source_config.get("base_url", "").strip().rstrip("/")
         if not base_url:
             await ctx.fail("Missing 'base_url' in source config")
             return
 
-        api_key = credentials.get("api_key", "")
+        api_key = credentials.get("api_key", "").strip()
         if not api_key:
             await ctx.fail("Missing 'api_key' in credentials")
             return
@@ -69,9 +69,12 @@ class PaperlessConnector(Connector):
                 await ctx.fail(f"Connection to paperless-ngx failed: {e}")
                 return
 
-            # Incremental sync: only fetch documents modified after last sync.
+            # Incremental sync: if we have state with a last_sync_at timestamp,
+            # only fetch documents modified after that time. This is state-driven
+            # (like the ClickUp connector) rather than relying on ctx.sync_mode,
+            # because SyncContext does not expose sync_mode.
             modified_after: datetime | None = None
-            if ctx.sync_mode == "incremental" and state:
+            if state:
                 last_sync_ts = state.get("last_sync_at")
                 if last_sync_ts:
                     try:

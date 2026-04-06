@@ -98,7 +98,9 @@ class TestListDocuments:
             await client.list_documents(modified_after=dt)
         call_kwargs = mock_req.call_args
         params = call_kwargs.kwargs.get("params", {})
-        assert params.get("modified__date__gt") == "2024-06-01"
+        assert "modified__gt" in params
+        # Should be full ISO 8601, not date-only
+        assert "T" in params["modified__gt"]
 
     async def test_paginates_multiple_pages(self, client: PaperlessClient) -> None:
         page1 = {"count": 2, "next": "?page=2", "results": [{"id": 1}, {"id": 2}]}
@@ -211,3 +213,71 @@ class TestRetryBehavior:
             with patch("asyncio.sleep", new_callable=AsyncMock):
                 with pytest.raises(PaperlessError, match="Max retries exceeded"):
                     await client._request("GET", "/api/documents/")
+
+
+class TestParseDt:
+    """Tests for the _parse_dt helper function."""
+
+    def test_iso_with_timezone(self) -> None:
+        from paperless_connector.client import _parse_dt
+
+        result = _parse_dt("2024-01-15T10:30:00+00:00")
+        assert result is not None
+        assert result.year == 2024
+        assert result.month == 1
+        assert result.day == 15
+        assert result.hour == 10
+        assert result.minute == 30
+        assert result.tzinfo is not None
+
+    def test_iso_with_z_suffix(self) -> None:
+        from paperless_connector.client import _parse_dt
+
+        result = _parse_dt("2024-01-15T10:30:00Z")
+        assert result is not None
+        assert result.tzinfo is not None
+
+    def test_iso_with_fractional_seconds(self) -> None:
+        from paperless_connector.client import _parse_dt
+
+        result = _parse_dt("2024-01-15T10:30:00.123456+00:00")
+        assert result is not None
+        assert result.year == 2024
+        assert result.microsecond == 123456
+
+    def test_iso_with_fractional_seconds_z(self) -> None:
+        from paperless_connector.client import _parse_dt
+
+        result = _parse_dt("2024-06-15T14:23:45.999999Z")
+        assert result is not None
+        assert result.tzinfo is not None
+
+    def test_date_only(self) -> None:
+        from paperless_connector.client import _parse_dt
+
+        result = _parse_dt("2024-01-15")
+        assert result is not None
+        assert result.year == 2024
+        assert result.tzinfo is not None
+
+    def test_naive_datetime_gets_utc(self) -> None:
+        from paperless_connector.client import _parse_dt
+
+        result = _parse_dt("2024-01-15T10:30:00")
+        assert result is not None
+        assert result.tzinfo is not None
+
+    def test_none_returns_none(self) -> None:
+        from paperless_connector.client import _parse_dt
+
+        assert _parse_dt(None) is None
+
+    def test_empty_string_returns_none(self) -> None:
+        from paperless_connector.client import _parse_dt
+
+        assert _parse_dt("") is None
+
+    def test_garbage_returns_none(self) -> None:
+        from paperless_connector.client import _parse_dt
+
+        assert _parse_dt("not-a-date") is None

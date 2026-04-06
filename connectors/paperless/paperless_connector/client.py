@@ -125,7 +125,9 @@ class PaperlessClient:
             "ordering": "modified",
         }
         if modified_after is not None:
-            params["modified__date__gt"] = modified_after.strftime("%Y-%m-%d")
+            # Use full ISO 8601 timestamp for precise incremental filtering.
+            # paperless-ngx supports modified__gt with ISO format.
+            params["modified__gt"] = modified_after.strftime("%Y-%m-%dT%H:%M:%S%z")
 
         results: list[dict[str, Any]] = []
         page = 1
@@ -198,7 +200,16 @@ class PaperlessClient:
 def _parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
-    for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"):
+    # Try ISO 8601 parsing first (handles fractional seconds, timezone offsets, etc.)
+    try:
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        pass
+    # Fallback: try strptime for Z-suffix and date-only formats
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"):
         try:
             dt = datetime.strptime(value, fmt)
             if dt.tzinfo is None:

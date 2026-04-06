@@ -15,15 +15,17 @@ from paperless_connector.models import PaperlessDocument
 
 
 def _make_ctx(
-    sync_mode: str = "full",
     state: dict[str, Any] | None = None,
     source_id: str = "src-1",
 ) -> MagicMock:
-    """Return a mock SyncContext that records emitted documents and sync outcomes."""
-    ctx = MagicMock()
-    ctx.sync_mode = sync_mode
+    """Return a mock SyncContext that records emitted documents and sync outcomes.
+
+    NOTE: We intentionally do NOT set ``sync_mode`` on the mock — the real
+    ``SyncContext`` does not expose that attribute, so the connector must
+    not rely on it.
+    """
+    ctx = MagicMock(spec=[])  # spec=[] prevents auto-attribute creation
     ctx.source_id = source_id
-    ctx.state = state or {}
     ctx.documents_scanned = 0
     ctx.documents_emitted = 0
     ctx.is_cancelled = MagicMock(return_value=False)
@@ -129,10 +131,31 @@ class TestConnectorConfigValidation:
         assert ctx._failed
         assert "base_url" in ctx._failed[0]
 
+    async def test_empty_base_url_fails(self) -> None:
+        connector = PaperlessConnector()
+        ctx = _make_ctx()
+        await connector.sync({"base_url": ""}, VALID_CREDENTIALS, None, ctx)
+        assert ctx._failed
+        assert "base_url" in ctx._failed[0]
+
+    async def test_whitespace_only_base_url_fails(self) -> None:
+        connector = PaperlessConnector()
+        ctx = _make_ctx()
+        await connector.sync({"base_url": "   "}, VALID_CREDENTIALS, None, ctx)
+        assert ctx._failed
+        assert "base_url" in ctx._failed[0]
+
     async def test_missing_api_key_fails(self) -> None:
         connector = PaperlessConnector()
         ctx = _make_ctx()
         await connector.sync(VALID_CONFIG, {}, None, ctx)
+        assert ctx._failed
+        assert "api_key" in ctx._failed[0]
+
+    async def test_empty_api_key_fails(self) -> None:
+        connector = PaperlessConnector()
+        ctx = _make_ctx()
+        await connector.sync(VALID_CONFIG, {"api_key": ""}, None, ctx)
         assert ctx._failed
         assert "api_key" in ctx._failed[0]
 
@@ -143,7 +166,7 @@ class TestConnectorConfigValidation:
 class TestFullSync:
     async def test_full_sync_emits_documents(self) -> None:
         connector = PaperlessConnector()
-        ctx = _make_ctx(sync_mode="full")
+        ctx = _make_ctx()
         raw_docs = [_raw_doc(1, "Doc A"), _raw_doc(2, "Doc B")]
 
         with (
@@ -167,10 +190,10 @@ class TestFullSync:
         assert len(ctx._emitted) == 2
         assert ctx._completed, "sync should complete successfully"
 
-    async def test_full_sync_does_not_pass_modified_after(self) -> None:
-        """Full sync should fetch all documents regardless of modification date."""
+    async def test_first_sync_without_state_fetches_all(self) -> None:
+        """First sync (no prior state) should fetch all documents (modified_after=None)."""
         connector = PaperlessConnector()
-        ctx = _make_ctx(sync_mode="full", state={"last_sync_at": "2024-01-01T00:00:00+00:00"})
+        ctx = _make_ctx()
 
         with (
             patch(
@@ -189,7 +212,7 @@ class TestFullSync:
         ):
             await connector.sync(VALID_CONFIG, VALID_CREDENTIALS, None, ctx)
 
-        # For a full sync, modified_after should be None
+        # Without state, modified_after should be None
         mock_list.assert_called_once_with(modified_after=None)
 
     async def test_documents_scanned_count_incremented(self) -> None:
@@ -278,12 +301,61 @@ class TestFullSync:
         assert len(ctx._errors) == 1
         assert ctx._completed, "sync should complete despite one error"
 
+    async def test_client_closed_after_successful_sync(self) -> None:
+        """Client.close() must be called even after successful sync."""
+        connector = PaperlessConnector()
+        ctx = _make_ctx()
+
+        with (
+            patch(
+                "paperless_connector.connector.PaperlessClient.validate",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "paperless_connector.connector.PaperlessClient.list_documents",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch(
+                "paperless_connector.connector.PaperlessClient.parse_document",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "paperless_connector.connector.PaperlessClient.close",
+                new_callable=AsyncMock,
+            ) as mock_close,
+        ):
+            await connector.sync(VALID_CONFIG, VALID_CREDENTIALS, None, ctx)
+
+        mock_close.assert_called_once()
+
+    async def test_client_closed_after_failed_sync(self) -> None:
+        """Client.close() must be called even when sync fails."""
+        connector = PaperlessConnector()
+        ctx = _make_ctx()
+
+        with (
+            patch(
+                "paperless_connector.connector.PaperlessClient.validate",
+                new_callable=AsyncMock,
+                side_effect=AuthenticationError("Invalid token"),
+            ),
+            patch(
+                "paperless_connector.connector.PaperlessClient.close",
+                new_callable=AsyncMock,
+            ) as mock_close,
+        ):
+            await connector.sync(VALID_CONFIG, VALID_CREDENTIALS, None, ctx)
+
+        mock_close.assert_called_once()
+
 
 class TestIncrementalSync:
-    async def test_incremental_passes_modified_after(self) -> None:
+    async def test_state_driven_incremental_passes_modified_after(self) -> None:
+        """When state has last_sync_at, list_documents is called with modified_after."""
         connector = PaperlessConnector()
         state = {"last_sync_at": "2024-06-01T00:00:00+00:00"}
-        ctx = _make_ctx(sync_mode="incremental", state=state)
+        ctx = _make_ctx(state=state)
 
         with (
             patch(
@@ -308,10 +380,10 @@ class TestIncrementalSync:
         assert modified_after.year == 2024
         assert modified_after.month == 6
 
-    async def test_incremental_without_state_fetches_all(self) -> None:
-        """Incremental sync with no prior state behaves like full sync."""
+    async def test_no_state_fetches_all(self) -> None:
+        """Without prior state, all documents are fetched (modified_after=None)."""
         connector = PaperlessConnector()
-        ctx = _make_ctx(sync_mode="incremental", state=None)
+        ctx = _make_ctx(state=None)
 
         with (
             patch(
@@ -331,6 +403,86 @@ class TestIncrementalSync:
             await connector.sync(VALID_CONFIG, VALID_CREDENTIALS, None, ctx)
 
         mock_list.assert_called_once_with(modified_after=None)
+
+    async def test_empty_state_fetches_all(self) -> None:
+        """Empty state dict should also fetch all."""
+        connector = PaperlessConnector()
+        ctx = _make_ctx(state={})
+
+        with (
+            patch(
+                "paperless_connector.connector.PaperlessClient.validate",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "paperless_connector.connector.PaperlessClient.list_documents",
+                new_callable=AsyncMock,
+                return_value=[],
+            ) as mock_list,
+            patch(
+                "paperless_connector.connector.PaperlessClient.parse_document",
+                new_callable=AsyncMock,
+            ),
+        ):
+            await connector.sync(VALID_CONFIG, VALID_CREDENTIALS, {}, ctx)
+
+        mock_list.assert_called_once_with(modified_after=None)
+
+    async def test_malformed_last_sync_at_fetches_all(self) -> None:
+        """Malformed timestamp in state should fall back to full sync."""
+        connector = PaperlessConnector()
+        state = {"last_sync_at": "not-a-timestamp"}
+        ctx = _make_ctx(state=state)
+
+        with (
+            patch(
+                "paperless_connector.connector.PaperlessClient.validate",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "paperless_connector.connector.PaperlessClient.list_documents",
+                new_callable=AsyncMock,
+                return_value=[],
+            ) as mock_list,
+            patch(
+                "paperless_connector.connector.PaperlessClient.parse_document",
+                new_callable=AsyncMock,
+            ),
+        ):
+            await connector.sync(VALID_CONFIG, VALID_CREDENTIALS, state, ctx)
+
+        mock_list.assert_called_once_with(modified_after=None)
+
+    async def test_incremental_updates_state_after_completion(self) -> None:
+        """Incremental sync should save a new last_sync_at timestamp."""
+        connector = PaperlessConnector()
+        state = {"last_sync_at": "2024-01-01T00:00:00+00:00"}
+        ctx = _make_ctx(state=state)
+
+        with (
+            patch(
+                "paperless_connector.connector.PaperlessClient.validate",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "paperless_connector.connector.PaperlessClient.list_documents",
+                new_callable=AsyncMock,
+                return_value=[_raw_doc(1)],
+            ),
+            patch(
+                "paperless_connector.connector.PaperlessClient.parse_document",
+                new_callable=AsyncMock,
+                return_value=_parsed_doc(1),
+            ),
+        ):
+            await connector.sync(VALID_CONFIG, VALID_CREDENTIALS, state, ctx)
+
+        assert ctx._completed
+        new_state = ctx._completed[0]
+        assert new_state is not None
+        assert "last_sync_at" in new_state
+        # New timestamp should be different from the old one
+        assert new_state["last_sync_at"] != "2024-01-01T00:00:00+00:00"
 
 
 class TestAuthFailures:
@@ -381,6 +533,26 @@ class TestAuthFailures:
 
         assert ctx._failed
 
+    async def test_unexpected_exception_handled(self) -> None:
+        """Unexpected exceptions should be caught and reported via ctx.fail."""
+        connector = PaperlessConnector()
+        ctx = _make_ctx()
+
+        with (
+            patch(
+                "paperless_connector.connector.PaperlessClient.validate",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "paperless_connector.connector.PaperlessClient.list_documents",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("Unexpected failure"),
+            ),
+        ):
+            await connector.sync(VALID_CONFIG, VALID_CREDENTIALS, None, ctx)
+
+        assert ctx._failed
+
 
 class TestCancellation:
     async def test_cancelled_mid_sync_stops_processing(self) -> None:
@@ -418,3 +590,36 @@ class TestCancellation:
         # Should have processed fewer than all 5 documents
         assert ctx.documents_scanned < 5
         assert ctx._failed, "Cancelled sync should call ctx.fail"
+
+
+class TestCheckpointing:
+    async def test_checkpoint_interval_triggers_state_save(self) -> None:
+        """State should be saved every CHECKPOINT_INTERVAL documents."""
+        from paperless_connector.config import CHECKPOINT_INTERVAL
+
+        connector = PaperlessConnector()
+        ctx = _make_ctx()
+        # Generate more docs than the checkpoint interval
+        raw_docs = [_raw_doc(i) for i in range(1, CHECKPOINT_INTERVAL + 5)]
+
+        with (
+            patch(
+                "paperless_connector.connector.PaperlessClient.validate",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "paperless_connector.connector.PaperlessClient.list_documents",
+                new_callable=AsyncMock,
+                return_value=raw_docs,
+            ),
+            patch(
+                "paperless_connector.connector.PaperlessClient.parse_document",
+                new_callable=AsyncMock,
+                side_effect=lambda r: _parsed_doc(r["id"]),
+            ),
+        ):
+            await connector.sync(VALID_CONFIG, VALID_CREDENTIALS, None, ctx)
+
+        # At least one checkpoint should have been saved
+        assert len(ctx._saved_states) >= 1
+        assert "last_sync_at" in ctx._saved_states[0]
