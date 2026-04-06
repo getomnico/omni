@@ -588,8 +588,9 @@
         const containerHeight = chatContainerRef.clientHeight
         const userMsgTop = lastUserMessageRef.offsetTop - chatContainerRef.offsetTop - 24
         const contentHeight = chatContainerRef.scrollHeight - bottomPadding
-        // Pad so that max scroll aligns the last user message near the top of the viewport (with some breathing room)
-        bottomPadding = Math.max(0, userMsgTop + containerHeight - contentHeight)
+        // Pad so that max scroll aligns the last user message near the top of the viewport (with some breathing room).
+        // Minimum 48px so the final assistant response doesn't sit flush against the input box.
+        bottomPadding = Math.max(48, userMsgTop + containerHeight - contentHeight)
     }
 
     function scrollUserMessageToTop() {
