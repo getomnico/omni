@@ -82,6 +82,10 @@ INDEXABLE_EXTENSIONS = {
 
 
 class OneDriveSyncer(BaseSyncer):
+    def __init__(self) -> None:
+        self._prev_shared: dict[str, dict[str, SharedItemRecord]] = {}
+        self._new_shared: dict[str, dict[str, SharedItemRecord]] = {}
+
     @property
     def name(self) -> str:
         return "onedrive"
@@ -95,49 +99,19 @@ class OneDriveSyncer(BaseSyncer):
         user_cache: dict[str, str] | None = None,
         group_cache: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Run delta sync and shared-with-me sync in one user loop."""
-        source_config = source_config or {}
-        prev = OneDriveSyncState.from_dict(state)
-        new = OneDriveSyncState(delta_tokens={}, shared_items={})
+        parsed = OneDriveSyncState.from_dict(state)
+        self._prev_shared = parsed.shared_items
+        self._new_shared = {}
 
-        users = await client.list_users()
-        logger.info("[onedrive] Syncing across %d users", len(users))
+        result = await super().sync(
+            client, ctx, state, source_config, user_cache, group_cache
+        )
 
-        users = [
-            u
-            for u in users
-            if ctx.should_index_user(u.get("mail") or u.get("userPrincipalName") or "")
-        ]
-        logger.info("[onedrive] %d users after filtering", len(users))
-
-        for user in users:
-            if ctx.is_cancelled():
-                logger.info("[onedrive] Cancelled")
-                return state
-
-            user_id = user["id"]
-
-            new_token = await self.sync_for_user(
-                client,
-                user,
-                ctx,
-                prev.delta_tokens.get(user_id),
-                user_cache=user_cache,
-                group_cache=group_cache,
-            )
-            if new_token:
-                new.delta_tokens[user_id] = new_token
-
-            new.shared_items[user_id] = await self._sync_shared_with_me(
-                client,
-                user,
-                ctx,
-                prev.shared_items.get(user_id, {}),
-                user_cache,
-                group_cache,
-            )
-
-        return new.to_dict()
+        result["shared_items"] = {
+            uid: [asdict(r) for r in records.values()]
+            for uid, records in self._new_shared.items()
+        }
+        return result
 
     async def sync_for_user(
         self,
@@ -205,6 +179,15 @@ class OneDriveSyncer(BaseSyncer):
                 external_id = f"onedrive:{drive_id}:{item['id']}"
                 logger.warning("[onedrive] Error processing %s: %s", external_id, e)
                 await ctx.emit_error(external_id, str(e))
+
+        self._new_shared[user_id] = await self._sync_shared_with_me(
+            client,
+            user,
+            ctx,
+            self._prev_shared.get(user_id, {}),
+            user_cache,
+            group_cache,
+        )
 
         return new_token
 
