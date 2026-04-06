@@ -53,6 +53,7 @@ Omni can be deployed entirely on your own infra. See our deployment guides:
 - **Fireflies**: Meeting transcripts
 - **HubSpot**: Contacts, companies, deals, tickets
 - **IMAP**: Any E-Mail provider
+- **Paperless-ngx**: Document management system
 - **Local Files**: File system indexing
 
 ## Contributing
