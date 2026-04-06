@@ -44,6 +44,61 @@ class OneDriveSyncer(BaseSyncer):
     def name(self) -> str:
         return "onedrive"
 
+    async def sync(
+        self,
+        client: GraphClient,
+        ctx: SyncContext,
+        state: dict[str, Any],
+        source_config: dict[str, Any] | None = None,
+        user_cache: dict[str, str] | None = None,
+        group_cache: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Run delta sync and shared-with-me sync in one user loop."""
+        source_config = source_config or {}
+        delta_tokens: dict[str, str] = state.get("delta_tokens", {})
+        shared_state: dict[str, dict[str, str]] = state.get("shared_items", {})
+        new_tokens: dict[str, str] = {}
+        new_shared: dict[str, dict[str, str]] = {}
+
+        users = await client.list_users()
+        logger.info("[onedrive] Syncing across %d users", len(users))
+
+        users = [
+            u
+            for u in users
+            if ctx.should_index_user(u.get("mail") or u.get("userPrincipalName") or "")
+        ]
+        logger.info("[onedrive] %d users after filtering", len(users))
+
+        for user in users:
+            if ctx.is_cancelled():
+                logger.info("[onedrive] Cancelled")
+                return state
+
+            user_id = user["id"]
+
+            new_token = await self.sync_for_user(
+                client,
+                user,
+                ctx,
+                delta_tokens.get(user_id),
+                user_cache=user_cache,
+                group_cache=group_cache,
+            )
+            if new_token:
+                new_tokens[user_id] = new_token
+
+            new_shared[user_id] = await self._sync_shared_with_me(
+                client,
+                user,
+                ctx,
+                shared_state.get(user_id, {}),
+                user_cache,
+                group_cache,
+            )
+
+        return {"delta_tokens": new_tokens, "shared_items": new_shared}
+
     async def sync_for_user(
         self,
         client: GraphClient,
@@ -185,6 +240,76 @@ class OneDriveSyncer(BaseSyncer):
             )
             content = generate_drive_item_content(item, {})
             return await ctx.content_storage.save(content, "text/plain")
+
+    async def _sync_shared_with_me(
+        self,
+        client: GraphClient,
+        user: dict[str, Any],
+        ctx: SyncContext,
+        seen_items: dict[str, str],
+        user_cache: dict[str, str] | None = None,
+        group_cache: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        """Sync files shared with a user. Returns updated seen-items map.
+
+        seen_items maps "driveId:itemId" to lastModifiedDateTime for
+        incremental skip logic (sharedWithMe has no delta query support).
+        """
+        user_id = user["id"]
+        display_name = user.get("displayName", user_id)
+        logger.info("[onedrive] Syncing shared-with-me for user %s", display_name)
+
+        try:
+            shared_items = await client.list_shared_with_me(user_id)
+        except GraphAPIError as e:
+            logger.warning(
+                "[onedrive] Failed to fetch sharedWithMe for %s: %s",
+                display_name,
+                e,
+            )
+            return seen_items
+
+        new_seen: dict[str, str] = {}
+
+        for item in shared_items:
+            if ctx.is_cancelled():
+                return seen_items
+
+            remote = item.get("remoteItem")
+            if not remote:
+                continue
+
+            if "folder" in remote:
+                continue
+
+            await ctx.increment_scanned()
+
+            remote_drive_id = remote.get("parentReference", {}).get(
+                "driveId", "unknown"
+            )
+            remote_item_id = remote["id"]
+            key = f"{remote_drive_id}:{remote_item_id}"
+
+            last_modified = remote.get("lastModifiedDateTime", "")
+            new_seen[key] = last_modified
+
+            if seen_items.get(key) == last_modified:
+                continue
+
+            try:
+                await self._process_item(
+                    client, user, remote, ctx, user_cache, group_cache
+                )
+            except Exception as e:
+                external_id = f"onedrive:{remote_drive_id}:{remote_item_id}"
+                logger.warning(
+                    "[onedrive] Error processing shared item %s: %s",
+                    external_id,
+                    e,
+                )
+                await ctx.emit_error(external_id, str(e))
+
+        return new_seen
 
 
 def _get_extension(filename: str) -> str:

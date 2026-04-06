@@ -51,6 +51,7 @@ class MockGraphAPI:
         self.channel_messages: dict[str, list[dict[str, Any]]] = {}
         self.message_replies: dict[str, list[dict[str, Any]]] = {}
         self.channel_members: dict[str, list[dict[str, Any]]] = {}
+        self.shared_with_me: dict[str, list[dict[str, Any]]] = {}
         self.share_drive_items: dict[str, dict[str, Any]] = {}
         self.message_attachments: dict[str, list[dict[str, Any]]] = {}
 
@@ -70,6 +71,7 @@ class MockGraphAPI:
         self.channel_messages.clear()
         self.message_replies.clear()
         self.channel_members.clear()
+        self.shared_with_me.clear()
         self.share_drive_items.clear()
         self.message_attachments.clear()
 
@@ -134,6 +136,9 @@ class MockGraphAPI:
     ) -> None:
         key = f"{user_id}:{message_id}"
         self.message_attachments.setdefault(key, []).append(attachment)
+
+    def add_shared_with_me_item(self, user_id: str, item: dict[str, Any]) -> None:
+        self.shared_with_me.setdefault(user_id, []).append(item)
 
     def set_share_drive_item(
         self, share_token: str, drive_item: dict[str, Any]
@@ -251,6 +256,11 @@ class MockGraphAPI:
             attachments = mock.message_attachments.get(key, [])
             return JSONResponse({"value": attachments})
 
+        async def shared_with_me(request: Request) -> JSONResponse:
+            uid = request.path_params["uid"]
+            items = mock.shared_with_me.get(uid, [])
+            return JSONResponse({"value": items})
+
         async def resolve_share(request: Request) -> JSONResponse:
             token = request.path_params["token"]
             drive_item = mock.share_drive_items.get(token)
@@ -264,6 +274,7 @@ class MockGraphAPI:
             Route("/v1.0/organization", organization),
             Route("/v1.0/users", list_users),
             Route("/v1.0/users/{uid}/drive/root/delta", user_drive_delta),
+            Route("/v1.0/users/{uid}/drive/sharedWithMe", shared_with_me),
             Route("/v1.0/drives/{did}/items/{iid}/content", drive_item_content),
             Route("/v1.0/drives/{did}/items/{iid}/permissions", item_permissions),
             Route(

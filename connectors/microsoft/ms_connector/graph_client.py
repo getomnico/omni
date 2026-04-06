@@ -247,6 +247,15 @@ class GraphClient:
             members.append(member)
         return members
 
+    async def list_shared_with_me(self, user_id: str) -> list[dict[str, Any]]:
+        """List items shared with a user via OneDrive."""
+        items: list[dict[str, Any]] = []
+        async for item in self.get_paginated(
+            f"/users/{user_id}/drive/sharedWithMe",
+        ):
+            items.append(item)
+        return items
+
     async def list_item_permissions(
         self, drive_id: str, item_id: str
     ) -> list[dict[str, Any]]:

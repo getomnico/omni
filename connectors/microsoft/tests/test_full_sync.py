@@ -84,6 +84,68 @@ async def test_onedrive_sync(
     assert state is not None, "connector_state should be saved after sync"
 
 
+SHARED_DRIVE_ID = "drive-shared-xyz"
+SHARED_ITEM_ID = "item-shared-001"
+
+
+async def test_onedrive_shared_with_me_sync(
+    harness, seed, onedrive_source_id, mock_graph_api, cm_client: httpx.AsyncClient
+):
+    """Shared-with-me files are indexed alongside the user's own drive."""
+    mock_graph_api.add_user(_make_user())
+    mock_graph_api.add_shared_with_me_item(
+        USER_ID,
+        {
+            "id": "local-ref-001",
+            "name": "shared-report.txt",
+            "remoteItem": {
+                "id": SHARED_ITEM_ID,
+                "name": "shared-report.txt",
+                "file": {"mimeType": "text/plain"},
+                "size": 512,
+                "webUrl": "https://contoso-my.sharepoint.com/personal/bob/Documents/shared-report.txt",
+                "createdDateTime": "2024-04-01T10:00:00Z",
+                "lastModifiedDateTime": "2024-07-01T14:00:00Z",
+                "parentReference": {
+                    "driveId": SHARED_DRIVE_ID,
+                    "path": "/drive/root:/Documents",
+                },
+            },
+        },
+    )
+    mock_graph_api.set_file_content(
+        SHARED_DRIVE_ID, SHARED_ITEM_ID, b"Shared report content"
+    )
+
+    resp = await cm_client.post(
+        "/sync",
+        json={"source_id": onedrive_source_id, "sync_type": "full"},
+    )
+    assert resp.status_code == 200, resp.text
+    sync_run_id = resp.json()["sync_run_id"]
+
+    row = await wait_for_sync(harness.db_pool, sync_run_id, timeout=60)
+    assert (
+        row["status"] == "completed"
+    ), f"Sync ended with status={row['status']}, error={row.get('error_message')}"
+
+    events = await get_events(harness.db_pool, onedrive_source_id)
+    doc_ids = {
+        e["payload"]["document_id"]
+        for e in events
+        if e["event_type"] == "document_created"
+    }
+    expected_id = f"onedrive:{SHARED_DRIVE_ID}:{SHARED_ITEM_ID}"
+    assert (
+        expected_id in doc_ids
+    ), f"Expected shared-with-me doc {expected_id} in {doc_ids}"
+
+    state = await seed.get_connector_state(onedrive_source_id)
+    assert state is not None
+    assert "shared_items" in state, "State should include shared_items"
+    assert USER_ID in state["shared_items"], "shared_items should have user entry"
+
+
 async def test_outlook_sync(
     harness, seed, outlook_source_id, mock_graph_api, cm_client: httpx.AsyncClient
 ):
