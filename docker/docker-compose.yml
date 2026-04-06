@@ -328,8 +328,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "${DOCLING_CPUS:-2}"
-          memory: "${DOCLING_MEMORY:-4g}"
+          cpus: "${DOCLING_CPUS:-1}"
+          memory: "${DOCLING_MEMORY:-2g}"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${DOCLING_PORT:-8003}/health"]
       interval: 30s
