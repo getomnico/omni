@@ -53,7 +53,17 @@ class SkillHandler:
     async def execute(
         self, tool_name: str, tool_input: dict, context: ToolContext
     ) -> ToolResult:
-        skill = tool_input.get("skill", "")
+        skill = tool_input.get("skill")
+        if not skill:
+            return ToolResult(
+                content=[
+                    {
+                        "type": "text",
+                        "text": "Missing required parameter: skill",
+                    }
+                ],
+                is_error=True,
+            )
         path = self._available.get(skill)
         if not path:
             available = ", ".join(sorted(self._available.keys()))
