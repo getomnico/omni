@@ -610,7 +610,8 @@ pub fn generate_permission_filter(user_email: &str, user_groups: &[String]) -> S
         format!("permissions->'users' ? '{}'", escaped_email),
     ];
 
-    // Domain-wide access: match user's email domain against groups array
+    // Domain-wide access: exact JSON containment check to avoid BM25 tokenizer
+    // splitting email addresses (e.g. "engineering@example.com" matching "example.com")
     if let Some(domain) = user_email.split('@').nth(1) {
         if !domain.is_empty() {
             let escaped_domain = domain.replace('\'', "''");

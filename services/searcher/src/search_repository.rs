@@ -73,16 +73,18 @@ impl SearchDocumentRepository {
 
         let mut seen = HashSet::new();
         // Cap at 12 terms. Without stopword removal longer queries produce more
-        // tokens than before. Each unique term adds 3 UNION ALL branches plus one
-        // bind parameter, so this keeps query size and planner overhead bounded.
+        // tokens than before. Each term adds field-boosted clauses to the Tantivy
+        // query string, so this keeps query complexity bounded.
         let terms: Vec<String> = raw_terms
             .into_iter()
             .filter(|t| seen.insert(t.clone()))
             .take(12)
             .collect();
 
-        // Bind params: $1 = full query, $2..$(1+N) = individual terms, then filters
-        let mut param_idx = 2 + terms.len();
+        let tantivy_query = build_tantivy_query(&terms, query);
+
+        // Bind params: $1 = tantivy query string, $2 = original query (for snippets), then filters
+        let mut param_idx = 3;
 
         let mut filters = Vec::new();
         build_common_filters(
@@ -115,49 +117,19 @@ impl SearchDocumentRepository {
             }
         }
 
-        let common_where = if filters.is_empty() {
+        let filter_where = if filters.is_empty() {
             String::new()
         } else {
             format!(" AND {}", filters.join(" AND "))
         };
 
-        // Per-term: best score across all tokenizer paths.
-        // - title (simple): exact match on filenames/titles split by underscores etc.
-        // - title_secondary (source_code): CamelCase splitting for code identifiers
-        // - content (icu): Unicode word-boundary segmentation for any language
-        // MAX(score) picks the best path per document — no language detection needed.
-        let mut term_branches = Vec::new();
-        for (i, _term) in terms.iter().enumerate() {
-            let term_param = format!("${}", 2 + i);
-            term_branches.push(format!(
-                "SELECT id, MAX(score) as score FROM (\
-                    SELECT id, pdb.score(id) as score FROM documents \
-                    WHERE title ||| {term_param}::pdb.boost(2){common_where} \
-                    UNION ALL \
-                    SELECT id, pdb.score(id) as score FROM documents \
-                    WHERE title::pdb.alias('title_secondary') ||| {term_param}::pdb.boost(2){common_where} \
-                    UNION ALL \
-                    SELECT id, pdb.score(id) as score FROM documents \
-                    WHERE content ||| {term_param}{common_where}\
-                ) t{i} GROUP BY id"
-            ));
-        }
-
-        // Phrase branches: best of title phrase vs content phrase (using $1 = full query)
-        let phrase_branch = format!(
-            "SELECT id, MAX(score) as score FROM (\
-                SELECT id, pdb.score(id) as score FROM documents \
-                WHERE title ### $1::pdb.slop(2)::pdb.boost(10){common_where} \
-                UNION ALL \
-                SELECT id, pdb.score(id) as score FROM documents \
-                WHERE content ### $1::pdb.slop(2)::pdb.boost(5){common_where}\
-            ) p GROUP BY id"
-        );
-
-        // When the query tokenizes to zero terms (e.g. pure punctuation), fall
-        // back to phrase scoring only.
-        let weight_idx = param_idx + 2;
-        let half_life_idx = param_idx + 3;
+        // Bind order: $1=tantivy_query, $2=original_query, filters...,
+        // candidate_limit, limit, offset, recency_weight, recency_half_life
+        let candidate_limit_idx = param_idx;
+        let limit_idx = param_idx + 1;
+        let offset_idx = param_idx + 2;
+        let weight_idx = param_idx + 3;
+        let half_life_idx = param_idx + 4;
 
         let recency_expr = format!(
             "(1.0 + ${w}::double precision * EXP(-EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - COALESCE(\
@@ -169,88 +141,44 @@ impl SearchDocumentRepository {
             h = half_life_idx,
         );
 
-        let full_query = if terms.is_empty() {
-            format!(
-                r#"
-                WITH phrase_scores AS (
-                    {phrase_branch}
-                ),
-                ranked AS (
-                    SELECT ps.id, (ps.score * {recency_expr}) as score
-                    FROM phrase_scores ps
-                    JOIN documents d ON d.id = ps.id
-                    ORDER BY score DESC
-                    LIMIT ${limit_idx} OFFSET ${offset_idx}
-                )
-                SELECT r.id, r.score,
-                       d.source_id, d.external_id, d.title, d.content_id, d.content_type,
-                       d.file_size, d.file_extension, d.url,
-                       d.metadata, d.permissions, d.attributes, d.created_at, d.updated_at, d.last_indexed_at,
-                       COALESCE(snip.content_snippets, ARRAY[LEFT(d.content, 240)]) as content_snippets
-                FROM ranked r
-                JOIN documents d ON d.id = r.id
-                LEFT JOIN LATERAL (
-                    SELECT pdb.snippets(doc.content, start_tag => '**', end_tag => '**',
-                                        max_num_chars => 200, "limit" => 3, sort_by => 'score') as content_snippets
-                    FROM documents doc
-                    WHERE doc.content ||| $1 AND doc.id = r.id
-                    LIMIT 1
-                ) snip ON true
-                ORDER BY r.score DESC"#,
-                phrase_branch = phrase_branch,
-                recency_expr = recency_expr,
-                limit_idx = param_idx,
-                offset_idx = param_idx + 1,
+        let full_query = format!(
+            r#"
+            WITH candidates AS (
+                SELECT id, pdb.score(id) as bm25_score
+                FROM documents
+                WHERE id @@@ pdb.parse($1, lenient => true){filter_where}
+                ORDER BY bm25_score DESC
+                LIMIT ${candidate_limit_idx}
+            ),
+            ranked AS (
+                SELECT c.id, (c.bm25_score * {recency_expr}) as score
+                FROM candidates c
+                JOIN documents d ON d.id = c.id
+                ORDER BY score DESC
+                LIMIT ${limit_idx} OFFSET ${offset_idx}
             )
-        } else {
-            format!(
-                r#"
-                WITH term_scores AS (
-                    {term_union}
-                ),
-                phrase_scores AS (
-                    {phrase_branch}
-                ),
-                combined AS (
-                    SELECT id, SUM(score) as token_score FROM term_scores GROUP BY id
-                ),
-                ranked AS (
-                    SELECT c.id, ((c.token_score + COALESCE(p.score, 0)) * {recency_expr}) as score
-                    FROM combined c
-                    LEFT JOIN phrase_scores p ON c.id = p.id
-                    JOIN documents d ON d.id = c.id
-                    ORDER BY score DESC
-                    LIMIT ${limit_idx} OFFSET ${offset_idx}
-                )
-                SELECT r.id, r.score,
-                       d.source_id, d.external_id, d.title, d.content_id, d.content_type,
-                       d.file_size, d.file_extension, d.url,
-                       d.metadata, d.permissions, d.attributes, d.created_at, d.updated_at, d.last_indexed_at,
-                       COALESCE(snip.content_snippets, ARRAY[LEFT(d.content, 240)]) as content_snippets
-                FROM ranked r
-                JOIN documents d ON d.id = r.id
-                LEFT JOIN LATERAL (
-                    SELECT pdb.snippets(doc.content, start_tag => '**', end_tag => '**',
-                                        max_num_chars => 200, "limit" => 3, sort_by => 'score') as content_snippets
-                    FROM documents doc
-                    WHERE doc.content ||| $1 AND doc.id = r.id
-                    LIMIT 1
-                ) snip ON true
-                ORDER BY r.score DESC"#,
-                term_union = term_branches.join("\nUNION ALL\n"),
-                phrase_branch = phrase_branch,
-                recency_expr = recency_expr,
-                limit_idx = param_idx,
-                offset_idx = param_idx + 1,
-            )
-        };
+            SELECT r.id, r.score,
+                   d.source_id, d.external_id, d.title, d.content_id, d.content_type,
+                   d.file_size, d.file_extension, d.url,
+                   d.metadata, d.permissions, d.attributes, d.created_at, d.updated_at, d.last_indexed_at,
+                   ARRAY[ts_headline('english', d.content,
+                       plainto_tsquery('english', $2),
+                       'StartSel=**, StopSel=**, MaxFragments=3, MaxWords=30, MinWords=10'
+                   )] as content_snippets
+            FROM ranked r
+            JOIN documents d ON d.id = r.id
+            ORDER BY r.score DESC"#,
+            filter_where = filter_where,
+            recency_expr = recency_expr,
+            candidate_limit_idx = candidate_limit_idx,
+            limit_idx = limit_idx,
+            offset_idx = offset_idx,
+        );
         debug!("Full search query: {}", full_query);
 
-        let mut query_builder = sqlx::query_as::<_, SearchHit>(&full_query).bind(query);
-
-        for term in &terms {
-            query_builder = query_builder.bind(term.as_str());
-        }
+        let mut query_builder = sqlx::query_as::<_, SearchHit>(&full_query)
+            .bind(&tantivy_query)
+            .bind(query);
 
         query_builder = query_builder.bind(source_ids);
 
@@ -264,7 +192,9 @@ impl SearchDocumentRepository {
             query_builder = query_builder.bind(doc_id);
         }
 
+        let candidate_limit = offset + limit + 200;
         query_builder = query_builder
+            .bind(candidate_limit)
             .bind(limit)
             .bind(offset)
             .bind(recency_boost_weight as f64)
@@ -407,8 +337,10 @@ impl SearchDocumentRepository {
             .take(12)
             .collect();
 
-        // Bind params: $1 = full query, $2..$(1+N) = individual terms, then filters
-        let mut param_idx = 2 + terms.len();
+        let tantivy_query = build_tantivy_query(&terms, query);
+
+        // Bind params: $1 = tantivy query string, then filters
+        let mut param_idx = 2;
 
         let mut filters = Vec::new();
         build_common_filters(
@@ -435,97 +367,33 @@ impl SearchDocumentRepository {
             }
         }
 
-        let common_where = if filters.is_empty() {
+        let filter_where = if filters.is_empty() {
             String::new()
         } else {
             format!(" AND {}", filters.join(" AND "))
         };
 
-        // Per-term: best of title, title_secondary, content
-        let mut term_branches = Vec::new();
-        for (i, _term) in terms.iter().enumerate() {
-            let term_param = format!("${}", 2 + i);
-            term_branches.push(format!(
-                "SELECT id, MAX(score) as score FROM (\
-                    SELECT id, pdb.score(id) as score FROM documents \
-                    WHERE title ||| {term_param}::pdb.boost(2){common_where} \
-                    UNION ALL \
-                    SELECT id, pdb.score(id) as score FROM documents \
-                    WHERE title::pdb.alias('title_secondary') ||| {term_param}::pdb.boost(2){common_where} \
-                    UNION ALL \
-                    SELECT id, pdb.score(id) as score FROM documents \
-                    WHERE content ||| {term_param}{common_where}\
-                ) t{i} GROUP BY id"
-            ));
-        }
-
-        let phrase_branch = format!(
-            "SELECT id, MAX(score) as score FROM (\
-                SELECT id, pdb.score(id) as score FROM documents \
-                WHERE title ### $1::pdb.slop(2)::pdb.boost(10){common_where} \
-                UNION ALL \
-                SELECT id, pdb.score(id) as score FROM documents \
-                WHERE content ### $1::pdb.slop(2)::pdb.boost(5){common_where}\
-            ) p GROUP BY id"
+        let query_str = format!(
+            r#"
+            WITH candidates AS (
+                SELECT id, pdb.score(id) as score
+                FROM documents
+                WHERE id @@@ pdb.parse($1, lenient => true){filter_where}
+                ORDER BY score DESC
+                LIMIT 1000
+            )
+            SELECT 'source_type' as facet, s.source_type as value, count(*) as count
+            FROM candidates c
+            JOIN documents d ON d.id = c.id
+            JOIN sources s ON d.source_id = s.id
+            GROUP BY s.source_type
+            ORDER BY count DESC
+            "#,
+            filter_where = filter_where,
         );
 
-        let query_str = if terms.is_empty() {
-            // No terms after tokenization — phrase-only scoring
-            format!(
-                r#"
-                WITH phrase_scores AS (
-                    {phrase_branch}
-                ),
-                thresholded AS (
-                    SELECT id FROM phrase_scores
-                    WHERE score >= (SELECT MAX(score) FROM phrase_scores) * 0.15
-                )
-                SELECT 'source_type' as facet, s.source_type as value, count(*) as count
-                FROM thresholded t
-                JOIN documents d ON d.id = t.id
-                JOIN sources s ON d.source_id = s.id
-                GROUP BY s.source_type
-                ORDER BY count DESC
-                "#,
-            )
-        } else {
-            format!(
-                r#"
-                WITH term_scores AS (
-                    {term_union}
-                ),
-                phrase_scores AS (
-                    {phrase_branch}
-                ),
-                combined AS (
-                    SELECT id, SUM(score) as token_score FROM term_scores GROUP BY id
-                ),
-                scored AS (
-                    SELECT c.id, (c.token_score + COALESCE(p.score, 0)) as score
-                    FROM combined c
-                    LEFT JOIN phrase_scores p ON c.id = p.id
-                ),
-                thresholded AS (
-                    SELECT id FROM scored
-                    WHERE score >= (SELECT MAX(score) FROM scored) * 0.15
-                )
-                SELECT 'source_type' as facet, s.source_type as value, count(*) as count
-                FROM thresholded t
-                JOIN documents d ON d.id = t.id
-                JOIN sources s ON d.source_id = s.id
-                GROUP BY s.source_type
-                ORDER BY count DESC
-                "#,
-                term_union = term_branches.join("\nUNION ALL\n"),
-                phrase_branch = phrase_branch,
-            )
-        };
-
-        let mut query_builder = sqlx::query_as::<_, (String, String, i64)>(&query_str).bind(query);
-
-        for term in &terms {
-            query_builder = query_builder.bind(term.as_str());
-        }
+        let mut query_builder =
+            sqlx::query_as::<_, (String, String, i64)>(&query_str).bind(&tantivy_query);
 
         query_builder = query_builder.bind(source_ids);
 
@@ -594,6 +462,53 @@ fn rows_to_facets(rows: Vec<(String, String, i64)>) -> Vec<Facet> {
 
 fn generate_permission_filter(user_email: &str, user_groups: &[String]) -> String {
     document::generate_permission_filter(user_email, user_groups)
+}
+
+// TODO: use tantivy crate for query string validation
+fn build_tantivy_query(terms: &[String], original_query: &str) -> String {
+    let mut clauses = Vec::new();
+
+    for term in terms {
+        let escaped = escape_tantivy_term(term);
+        clauses.push(format!("title:{escaped}^2"));
+        clauses.push(format!("title_secondary:{escaped}^2"));
+        clauses.push(format!("content:{escaped}"));
+    }
+
+    // Phrase matching on the original query with slop and boost
+    let escaped_phrase = original_query.replace('\\', "\\\\").replace('"', "\\\"");
+    clauses.push(format!("title:\"{escaped_phrase}\"~2^10"));
+    clauses.push(format!("content:\"{escaped_phrase}\"~2^5"));
+
+    clauses.join(" ")
+}
+
+fn escape_tantivy_term(term: &str) -> String {
+    let mut escaped = String::with_capacity(term.len());
+    for ch in term.chars() {
+        if matches!(
+            ch,
+            '+' | '-'
+                | '('
+                | ')'
+                | '{'
+                | '}'
+                | '['
+                | ']'
+                | '^'
+                | '"'
+                | '~'
+                | '*'
+                | '?'
+                | '\\'
+                | '/'
+                | ':'
+        ) {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
 }
 
 fn json_value_to_term_string(value: &JsonValue) -> String {
