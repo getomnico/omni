@@ -11,6 +11,7 @@ import httpx
 from db.documents import DocumentsRepository
 from storage import ContentStorage, PostgresContentStorage
 from tools.registry import ToolContext, ToolResult
+from tools.sandbox import write_binary_to_sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -195,27 +196,8 @@ class DocumentToolHandler:
             binary_data = resp.content
             file_name = resp.headers.get("x-file-name", document_name)
 
-            # Base64 encode and write to sandbox
-            encoded = base64.b64encode(binary_data).decode("ascii")
-            size_kb = len(binary_data) / 1024
-
-            write_resp = await client.post(
-                f"{self._sandbox_url}/files/write_binary",
-                json={
-                    "path": file_name,
-                    "content_base64": encoded,
-                    "chat_id": context.chat_id,
-                },
-            )
-            write_resp.raise_for_status()
-
-        return ToolResult(
-            content=[
-                {
-                    "type": "text",
-                    "text": f"File saved to workspace: {file_name} ({size_kb:.0f} KB)",
-                }
-            ],
+        return await write_binary_to_sandbox(
+            self._sandbox_url, binary_data, file_name, context.chat_id
         )
 
     async def _read_text(
