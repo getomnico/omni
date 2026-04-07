@@ -22,9 +22,10 @@ CHECK (source_type IN (
   'clickup',
   'linear',
   'ms_teams',
+  'paperless_ngx',
   'nextcloud'
 ));
 
 ALTER TABLE service_credentials DROP CONSTRAINT IF EXISTS service_credentials_provider_check;
 ALTER TABLE service_credentials ADD CONSTRAINT service_credentials_provider_check
-CHECK (provider IN ('google', 'slack', 'atlassian', 'github', 'notion', 'fireflies', 'hubspot', 'microsoft', 'imap', 'clickup', 'linear', 'nextcloud'));
+CHECK (provider IN ('google', 'slack', 'atlassian', 'github', 'notion', 'fireflies', 'hubspot', 'microsoft', 'imap', 'clickup', 'linear', 'paperless_ngx', 'nextcloud'));
