@@ -335,28 +335,31 @@ pub async fn execute_action(
             ))
         })?;
 
-    // Resolve document_id -> external_id if present in params
+    // Resolve Omni document ID -> source external_id.
+    // TODO: replace hard-coded param names with a connector-declared resolve_params list.
     let mut params = request.params.clone();
-    if let Some(doc_id) = params.get("document_id").and_then(|v| v.as_str()) {
+    let doc_id = params
+        .get("document_id")
+        .or_else(|| params.get("file_id"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    if let Some(doc_id) = doc_id {
         let doc_repo = DocumentRepository::new(state.db_pool.pool());
-        if let Ok(Some(doc)) = doc_repo.find_by_id(doc_id).await {
+        if let Ok(Some(doc)) = doc_repo.find_by_id(&doc_id).await {
             info!(
-                "Resolved document_id {} -> external_id {}",
+                "Resolved document/file ID {} -> external_id {}",
                 doc_id, doc.external_id
             );
             if let Some(obj) = params.as_object_mut() {
                 obj.remove("document_id");
+                obj.remove("file_id");
                 obj.insert(
                     "file_id".to_string(),
                     serde_json::Value::String(doc.external_id),
                 );
             }
-        } else {
-            return Err(ApiError::NotFound(format!(
-                "Document not found: {}",
-                doc_id
-            )));
         }
+        // If not found, assume the ID is already a source-native ID and pass through
     }
 
     let client = ConnectorClient::new();

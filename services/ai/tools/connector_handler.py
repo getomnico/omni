@@ -13,6 +13,7 @@ import redis.asyncio as aioredis
 from db.documents import DocumentsRepository
 from db.models import Source
 from tools.registry import ToolContext, ToolResult
+from tools.sandbox import write_binary_to_sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +56,10 @@ class ConnectorToolHandler:
         source_filter: dict[str, list[str]] | None = None,
         action_whitelist: list[str] | None = None,
         documents_repo: DocumentsRepository | None = None,
+        sandbox_url: str | None = None,
     ) -> None:
         self._connector_manager_url = connector_manager_url.rstrip("/")
+        self._sandbox_url = sandbox_url.rstrip("/") if sandbox_url else None
         self._user_id = user_id
         self._redis = redis_client
         self._prefetched_sources = prefetched_sources
@@ -301,7 +304,7 @@ class ConnectorToolHandler:
                 )
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(
                     f"{self._connector_manager_url}/action",
                     json={
@@ -311,6 +314,27 @@ class ConnectorToolHandler:
                     },
                 )
                 response.raise_for_status()
+
+                # Binary file response — connectors set x-file-name on file downloads
+                if response.headers.get("x-file-name"):
+                    if not self._sandbox_url:
+                        return ToolResult(
+                            content=[
+                                {
+                                    "type": "text",
+                                    "text": "Received binary file but no sandbox is available to save it.",
+                                }
+                            ],
+                            is_error=True,
+                        )
+                    file_name = response.headers["x-file-name"]
+                    return await write_binary_to_sandbox(
+                        self._sandbox_url,
+                        response.content,
+                        file_name,
+                        context.chat_id,
+                    )
+
                 result = response.json()
         except Exception as e:
             logger.error(f"Connector action failed: {e}")

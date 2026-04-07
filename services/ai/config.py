@@ -114,7 +114,7 @@ CONNECTOR_MANAGER_URL = get_required_env("CONNECTOR_MANAGER_URL")
 APPROVAL_TIMEOUT_SECONDS = int(
     get_optional_env("APPROVAL_TIMEOUT_SECONDS", "600")
 )  # 10 minutes
-SANDBOX_URL = get_optional_env("SANDBOX_URL", "")
+SANDBOX_URL: str | None = os.getenv("SANDBOX_URL") or None
 
 # Background agent scheduler
 AGENT_SCHEDULER_POLL_INTERVAL = int(

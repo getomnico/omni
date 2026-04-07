@@ -196,6 +196,7 @@ async def _build_registry(request: Request, chat: Chat) -> RegistryResult:
             redis_client=getattr(request.app.state, "redis_client", None),
             prefetched_sources=sources,
             documents_repo=DocumentsRepository(),
+            sandbox_url=SANDBOX_URL,
         )
         await connector_handler._ensure_initialized()
         registry.register(connector_handler)
@@ -241,7 +242,7 @@ async def _build_registry(request: Request, chat: Chat) -> RegistryResult:
             DocumentToolHandler(
                 content_storage=content_storage,
                 documents_repo=DocumentsRepository(),
-                sandbox_url=SANDBOX_URL or None,
+                sandbox_url=SANDBOX_URL,
                 connector_manager_url=CONNECTOR_MANAGER_URL or None,
             )
         )
@@ -310,7 +311,7 @@ async def _build_agent_chat_registry(request: Request) -> RegistryResult:
             DocumentToolHandler(
                 content_storage=content_storage,
                 documents_repo=DocumentsRepository(),
-                sandbox_url=SANDBOX_URL or None,
+                sandbox_url=SANDBOX_URL,
                 connector_manager_url=CONNECTOR_MANAGER_URL or None,
             )
         )

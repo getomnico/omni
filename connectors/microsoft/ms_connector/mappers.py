@@ -22,6 +22,17 @@ def strip_html(html: str) -> str:
     return text.strip()
 
 
+_MIME_TO_CONTENT_TYPE: dict[str, str] = {
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "document",
+    "application/msword": "document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "spreadsheet",
+    "application/vnd.ms-excel": "spreadsheet",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "presentation",
+    "application/vnd.ms-powerpoint": "presentation",
+    "application/pdf": "pdf",
+}
+
+
 def map_drive_item_to_document(
     item: dict[str, Any],
     content_id: str,
@@ -66,6 +77,7 @@ def map_drive_item_to_document(
             updated_at=_parse_iso(item.get("lastModifiedDateTime")),
             url=item.get("webUrl"),
             mime_type=mime_type,
+            content_type=_MIME_TO_CONTENT_TYPE.get(mime_type) if mime_type else None,
             size=str(size) if size is not None else None,
             path=parent_ref.get("path"),
             extra={

@@ -111,6 +111,7 @@ async def _build_agent_registry(
             source_filter=source_filter,
             action_whitelist=action_whitelist,
             documents_repo=DocumentsRepository(),
+            sandbox_url=SANDBOX_URL,
         )
         await connector_handler._ensure_initialized()
         registry.register(connector_handler)
@@ -152,7 +153,7 @@ async def _build_agent_registry(
             DocumentToolHandler(
                 content_storage=content_storage,
                 documents_repo=DocumentsRepository(),
-                sandbox_url=SANDBOX_URL or None,
+                sandbox_url=SANDBOX_URL,
                 connector_manager_url=CONNECTOR_MANAGER_URL or None,
             )
         )
