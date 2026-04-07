@@ -104,7 +104,10 @@ impl QueueProcessor {
             event_queue,
             embedding_queue,
             sync_run_repo,
-            batch_size: 128,
+            batch_size: std::env::var("INDEXER_BATCH_SIZE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1000),
             parallelism,
             semaphore,
             processing_mutex,
