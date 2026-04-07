@@ -11,6 +11,8 @@
 
     let { data }: { data: PageData } = $props()
 
+    const MAX_COUNTED_RESULTS = 10_000
+
     // Create sources lookup map for efficient access
     let sourcesLookup = $derived(
         data.sources ? new Map(data.sources.map((s: any) => [s.id, s.sourceType])) : new Map(),
@@ -166,7 +168,9 @@
 
         {#if data.searchResults}
             <div class="px-6 text-sm text-gray-600">
-                Found {data.searchResults.total_count} results in
+                Found {data.searchResults.total_count >= MAX_COUNTED_RESULTS
+                    ? `${MAX_COUNTED_RESULTS.toLocaleString()}+`
+                    : data.searchResults.total_count.toLocaleString()} results in
                 {data.searchResults.query_time_ms}ms for "{data.searchResults.query}"
                 {#if getTotalSelectedFilters() > 0}
                     <span

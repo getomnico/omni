@@ -28,6 +28,11 @@ services:
       POSTGRES_DB: omni_benchmark
       POSTGRES_USER: omni_bench
       POSTGRES_PASSWORD: omni_bench_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U omni_bench -d omni_benchmark"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     container_name: omni-redis-benchmark
@@ -91,6 +96,10 @@ services:
   connector-manager:
     profiles: [full]
   caddy:
+    profiles: [full]
+  docling:
+    profiles: [full]
+  sandbox:
     profiles: [full]
 
 volumes:
