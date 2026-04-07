@@ -109,8 +109,9 @@ async fn test_event_driven_document_lifecycle() {
     .await
     .expect("Embedding queue entry should exist");
 
-    let stats = event_queue.get_queue_stats().await.unwrap();
-    assert!(stats.completed >= 1);
+    let completed =
+        common::wait_for_completed(fixture.state.db_pool.pool(), 1, Duration::from_secs(5)).await;
+    assert!(completed >= 1);
 
     // --- Update ---
     let updated_content = "This is updated lifecycle content";
