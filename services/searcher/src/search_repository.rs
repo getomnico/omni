@@ -8,6 +8,14 @@ use sqlx::{FromRow, PgPool};
 use std::collections::{HashMap, HashSet};
 use tracing::debug;
 
+/// Extra candidates fetched beyond offset+limit so that recency re-ranking
+/// doesn't miss relevant results.
+const CANDIDATE_PADDING: i64 = 200;
+
+/// Maximum candidates considered for facet counts. TopN pushes this limit into
+/// the Tantivy index scan, avoiding full result-set materialisation.
+const FACET_CANDIDATE_LIMIT: i64 = 10_000;
+
 #[derive(FromRow)]
 pub struct SearchHit {
     #[sqlx(flatten)]
@@ -64,12 +72,11 @@ impl SearchDocumentRepository {
         // Tokenize query via ParadeDB: splits on non-alphanumeric, ASCII-folds.
         // No stemming or stopwords — dropping stopwords would remove valid words
         // in non-English languages (e.g. German "die", "in", "was").
-        let raw_terms: Vec<String> = sqlx::query_scalar(
-            "SELECT unnest($1::pdb.simple('ascii_folding=true')::text[])"
-        )
-        .bind(query)
-        .fetch_all(&self.pool)
-        .await?;
+        let raw_terms: Vec<String> =
+            sqlx::query_scalar("SELECT unnest($1::pdb.simple('ascii_folding=true')::text[])")
+                .bind(query)
+                .fetch_all(&self.pool)
+                .await?;
 
         let mut seen = HashSet::new();
         // Cap at 12 terms. Without stopword removal longer queries produce more
@@ -192,7 +199,7 @@ impl SearchDocumentRepository {
             query_builder = query_builder.bind(doc_id);
         }
 
-        let candidate_limit = offset + limit + 200;
+        let candidate_limit = offset + limit + CANDIDATE_PADDING;
         query_builder = query_builder
             .bind(candidate_limit)
             .bind(limit)
@@ -322,12 +329,11 @@ impl SearchDocumentRepository {
         }
 
         // Tokenize query via ParadeDB — same pipeline as search()
-        let raw_terms: Vec<String> = sqlx::query_scalar(
-            "SELECT unnest($1::pdb.simple('ascii_folding=true')::text[])"
-        )
-        .bind(query)
-        .fetch_all(&self.pool)
-        .await?;
+        let raw_terms: Vec<String> =
+            sqlx::query_scalar("SELECT unnest($1::pdb.simple('ascii_folding=true')::text[])")
+                .bind(query)
+                .fetch_all(&self.pool)
+                .await?;
 
         let mut seen = HashSet::new();
         // Cap at 12 terms — same reasoning as search().
@@ -373,6 +379,8 @@ impl SearchDocumentRepository {
             format!(" AND {}", filters.join(" AND "))
         };
 
+        let facet_limit_idx = param_idx;
+
         let query_str = format!(
             r#"
             WITH candidates AS (
@@ -380,7 +388,7 @@ impl SearchDocumentRepository {
                 FROM documents
                 WHERE id @@@ pdb.parse($1, lenient => true){filter_where}
                 ORDER BY score DESC
-                LIMIT 1000
+                LIMIT ${facet_limit_idx}
             )
             SELECT 'source_type' as facet, s.source_type as value, count(*) as count
             FROM candidates c
@@ -390,6 +398,7 @@ impl SearchDocumentRepository {
             ORDER BY count DESC
             "#,
             filter_where = filter_where,
+            facet_limit_idx = facet_limit_idx,
         );
 
         let mut query_builder =
@@ -402,6 +411,8 @@ impl SearchDocumentRepository {
                 query_builder = query_builder.bind(ct);
             }
         }
+
+        query_builder = query_builder.bind(FACET_CANDIDATE_LIMIT);
 
         let facet_rows = query_builder.fetch_all(&self.pool).await?;
         Ok(rows_to_facets(facet_rows))
