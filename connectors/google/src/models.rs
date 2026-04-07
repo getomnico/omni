@@ -81,9 +81,15 @@ impl From<GoogleDriveFile> for FolderMetadata {
 
 pub fn mime_type_to_content_type(mime_type: &str) -> Option<String> {
     match mime_type {
-        "application/vnd.google-apps.document" => Some("document".to_string()),
-        "application/vnd.google-apps.spreadsheet" => Some("spreadsheet".to_string()),
-        "application/vnd.google-apps.presentation" => Some("presentation".to_string()),
+        "application/vnd.google-apps.document"
+        | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        | "application/msword" => Some("document".to_string()),
+        "application/vnd.google-apps.spreadsheet"
+        | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        | "application/vnd.ms-excel" => Some("spreadsheet".to_string()),
+        "application/vnd.google-apps.presentation"
+        | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        | "application/vnd.ms-powerpoint" => Some("presentation".to_string()),
         "application/pdf" => Some("pdf".to_string()),
         _ => None,
     }
