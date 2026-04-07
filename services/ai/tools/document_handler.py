@@ -14,8 +14,16 @@ from tools.registry import ToolContext, ToolResult
 
 logger = logging.getLogger(__name__)
 
-# Content types considered binary (not extracted text)
+# Content types considered binary (not extracted text).
+# The documents.content_type column stores the standardized content_type
+# (e.g. "spreadsheet") when set, falling back to MIME type otherwise.
 BINARY_CONTENT_TYPES = {
+    # Standardized content types
+    "spreadsheet",
+    "document",
+    "presentation",
+    "pdf",
+    # MIME type fallbacks (for documents without a standardized content_type)
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "application/vnd.ms-excel",
     "application/vnd.google-apps.spreadsheet",
