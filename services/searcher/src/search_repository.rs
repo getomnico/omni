@@ -483,13 +483,17 @@ fn build_tantivy_query(terms: &[String], original_query: &str) -> String {
         let escaped = escape_tantivy_term(term);
         clauses.push(format!("title:{escaped}^2"));
         clauses.push(format!("title_secondary:{escaped}^2"));
+        clauses.push(format!("title_en:{escaped}^2"));
         clauses.push(format!("content:{escaped}"));
+        clauses.push(format!("content_en:{escaped}"));
     }
 
     // Phrase matching on the original query with slop and boost
     let escaped_phrase = original_query.replace('\\', "\\\\").replace('"', "\\\"");
     clauses.push(format!("title:\"{escaped_phrase}\"~2^10"));
+    clauses.push(format!("title_en:\"{escaped_phrase}\"~2^10"));
     clauses.push(format!("content:\"{escaped_phrase}\"~2^5"));
+    clauses.push(format!("content_en:\"{escaped_phrase}\"~2^5"));
 
     clauses.join(" ")
 }
