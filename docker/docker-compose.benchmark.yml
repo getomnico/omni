@@ -97,6 +97,10 @@ services:
     profiles: [full]
   caddy:
     profiles: [full]
+  docling:
+    profiles: [full]
+  sandbox:
+    profiles: [full]
 
 volumes:
   postgres_benchmark_data:
