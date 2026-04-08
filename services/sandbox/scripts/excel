@@ -1,0 +1,826 @@
+#!/usr/bin/env python3
+"""excel — CLI tool for inspecting and querying Excel spreadsheets.
+
+Handles merged cells, multi-row headers, and complex layouts.
+All read operations automatically fill merged cell regions with the top-left cell's value.
+"""
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+import openpyxl
+import pandas as pd
+
+
+def _load_workbook(path: str) -> openpyxl.Workbook:
+    try:
+        return openpyxl.load_workbook(path, read_only=False, data_only=True)
+    except Exception as e:
+        if "xlrd" in str(e).lower() or path.lower().endswith(".xls"):
+            print(f"Error: .xls format is not supported. Convert to .xlsx first.", file=sys.stderr)
+        elif "password" in str(e).lower() or "encrypted" in str(e).lower():
+            print(f"Error: file appears to be password-protected.", file=sys.stderr)
+        else:
+            print(f"Error opening file: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _build_merged_map(ws) -> dict[tuple[int, int], object]:
+    """Build a map of (row, col) -> value for all merged cell regions."""
+    merged_map = {}
+    for merged_range in ws.merged_cells.ranges:
+        top_left_value = ws.cell(merged_range.min_row, merged_range.min_col).value
+        for row in range(merged_range.min_row, merged_range.max_row + 1):
+            for col in range(merged_range.min_col, merged_range.max_col + 1):
+                if row != merged_range.min_row or col != merged_range.min_col:
+                    merged_map[(row, col)] = top_left_value
+    return merged_map
+
+
+def _cell_value(ws, row: int, col: int, merged_map: dict) -> object:
+    """Get cell value, falling back to merged map if None."""
+    val = ws.cell(row, col).value
+    if val is None:
+        val = merged_map.get((row, col))
+    return val
+
+
+def _format_value(val) -> str:
+    if val is None:
+        return ""
+    return str(val)
+
+
+def _merged_ranges_description(ws) -> list[str]:
+    """Describe merged cell ranges in human-readable form."""
+    descriptions = []
+    for mr in ws.merged_cells.ranges:
+        top_val = ws.cell(mr.min_row, mr.min_col).value
+        val_str = f' ("{top_val}")' if top_val is not None else ""
+        descriptions.append(f"  {mr}{val_str}")
+    return descriptions
+
+
+_FOOTER_KEYWORDS = {
+    "total", "totals", "sum", "average", "avg", "count",
+    "notes", "note", "source", "sources", "footnote", "footnotes",
+    "grand total", "subtotal", "sub-total", "sub total",
+}
+
+
+def _row_values(ws, row: int, min_col: int, max_col: int, merged_map: dict) -> list:
+    """Read all values in a row within the given column range."""
+    return [_cell_value(ws, row, col, merged_map) for col in range(min_col, max_col + 1)]
+
+
+def _row_fill(values: list) -> tuple[int, int]:
+    """Return (non_empty_count, total_count) for a row's values."""
+    non_empty = sum(1 for v in values if v is not None and str(v).strip() != "")
+    return non_empty, len(values)
+
+
+def _is_title_row(values: list, merged_map: dict, row: int, min_col: int) -> bool:
+    """Check if a row looks like a sheet title (single value, possibly merged)."""
+    non_empty = [v for v in values if v is not None and str(v).strip() != ""]
+    if len(values) > 2 and len(non_empty) <= 1:
+        return True
+    # Also title-like if a single merged region spans most of the row
+    merged_cols = set()
+    for (r, c), _ in merged_map.items():
+        if r == row:
+            merged_cols.add(c)
+    if merged_cols and len(non_empty) <= 1:
+        return True
+    return False
+
+
+def _detect_header_row(ws, merged_map: dict, min_col: int, max_col: int, max_scan: int = 30) -> int | None:
+    """Detect the most likely header row.
+
+    Strategy: score candidate rows, pick the best one. A header row is the first row
+    that starts a tabular region — it has good fill, is followed by more filled rows,
+    and is not a title row.
+
+    Handles numeric headers (years, IDs) by not requiring string-majority.
+    Prefers rows with more string values as a tiebreaker.
+    """
+    if ws.max_row is None or ws.max_column is None:
+        return None
+
+    col_count = max_col - min_col + 1
+    if col_count == 0:
+        return None
+
+    scan_limit = min(ws.max_row or 0, max_scan)
+    min_row = ws.min_row or 1
+
+    # First pass: collect row stats
+    row_stats: list[tuple[int, list, int, int]] = []  # (row_num, values, non_empty, string_count)
+    for row in range(min_row, scan_limit + 1):
+        values = _row_values(ws, row, min_col, max_col, merged_map)
+        non_empty_vals = [v for v in values if v is not None and str(v).strip() != ""]
+        non_empty = len(non_empty_vals)
+        string_count = sum(1 for v in non_empty_vals if isinstance(v, str))
+        row_stats.append((row, values, non_empty, string_count))
+
+    # Second pass: find the first row that starts a tabular region
+    for i, (row, values, non_empty, string_count) in enumerate(row_stats):
+        if non_empty == 0:
+            continue
+
+        fill_ratio = non_empty / col_count
+
+        # Skip title-like rows
+        if _is_title_row(values, merged_map, row, min_col):
+            continue
+
+        # Need at least 30% fill
+        if fill_ratio < 0.3:
+            continue
+
+        # Verify the next non-empty row also has decent fill (confirms tabular region)
+        has_data_below = False
+        for j in range(i + 1, min(i + 4, len(row_stats))):
+            _, _, next_non_empty, _ = row_stats[j]
+            next_fill = next_non_empty / col_count
+            if next_fill >= 0.2:
+                has_data_below = True
+                break
+
+        if not has_data_below:
+            continue
+
+        # This row starts a tabular region. But is it the header or the first data row?
+        # If the row is mostly strings and the next row has numbers/dates, this is likely the header.
+        # If both are numbers, pick this one (it could be numeric headers like years).
+        if string_count >= non_empty * 0.5:
+            # Majority strings — very likely a header
+            return row
+
+        # Mostly numeric. Check if values look like labels (short, distinct) vs data.
+        # Short values (<=10 chars) that are all distinct suggest headers.
+        non_empty_vals = [v for v in values if v is not None and str(v).strip() != ""]
+        str_vals = [str(v).strip() for v in non_empty_vals]
+        all_short = all(len(s) <= 15 for s in str_vals)
+        all_distinct = len(set(str_vals)) == len(str_vals)
+
+        if all_short and all_distinct and non_empty >= 2:
+            return row
+
+        # Check if the next filled row has similar shape — if so, this row is data, not header.
+        # In that case, no clear header exists for this tabular region.
+        for j in range(i + 1, min(i + 3, len(row_stats))):
+            _, _, next_non_empty, next_strings = row_stats[j]
+            if next_non_empty == 0:
+                continue
+            # If both rows have similar string/number ratio, they're both data
+            ratio_this = string_count / max(non_empty, 1)
+            ratio_next = next_strings / max(next_non_empty, 1)
+            if abs(ratio_this - ratio_next) < 0.2:
+                # Same shape — this isn't a header, it's data. No header detected.
+                return None
+            break
+
+        return row
+
+    return None
+
+
+def _detect_data_end(
+    ws, merged_map: dict, data_start: int, min_col: int, max_col: int
+) -> int:
+    """Find the last row of actual data, excluding trailing blanks and footers.
+
+    Stops at:
+    - 2+ consecutive fully-empty rows
+    - A footer row (fill drops sharply and contains footer keywords)
+    """
+    max_row = ws.max_row or data_start
+    col_count = max_col - min_col + 1
+
+    # Sample first rows to establish typical fill
+    sample_fills = []
+    for row in range(data_start, min(data_start + 20, max_row + 1)):
+        values = _row_values(ws, row, min_col, max_col, merged_map)
+        fill, _ = _row_fill(values)
+        if fill > 0:
+            sample_fills.append(fill)
+
+    typical_fill = (sum(sample_fills) / len(sample_fills)) if sample_fills else col_count
+
+    last_data_row = data_start - 1
+    consecutive_empty = 0
+
+    for row in range(data_start, max_row + 1):
+        values = _row_values(ws, row, min_col, max_col, merged_map)
+        fill, _ = _row_fill(values)
+
+        if fill == 0:
+            consecutive_empty += 1
+            if consecutive_empty >= 2:
+                break
+            continue
+
+        consecutive_empty = 0
+
+        # Check for footer-like row: fill dropped sharply and contains footer keywords
+        if typical_fill > 0 and fill <= max(typical_fill * 0.3, 1):
+            text_vals = [str(v).strip().lower() for v in values if v is not None and str(v).strip()]
+            row_text = " ".join(text_vals)
+            if any(kw in row_text for kw in _FOOTER_KEYWORDS):
+                break
+
+        last_data_row = row
+
+    return max(last_data_row, data_start)
+
+
+def _detect_data_columns(
+    ws, merged_map: dict, header_row: int | None, max_sample: int = 30
+) -> tuple[int, int]:
+    """Detect the actual data column range by scanning cell occupancy.
+
+    Returns (min_col, max_col) covering columns that are consistently populated,
+    filtering out stray isolated values in distant columns.
+    """
+    ws_min_col = ws.min_column or 1
+    ws_max_col = ws.max_column or 1
+    ws_max_row = ws.max_row or 1
+
+    start_row = header_row if header_row else (ws.min_row or 1)
+    end_row = min(start_row + max_sample, ws_max_row + 1)
+
+    # Count non-empty cells per column across sample rows
+    col_fill: dict[int, int] = {}
+    rows_sampled = 0
+    for row in range(start_row, end_row):
+        rows_sampled += 1
+        for col in range(ws_min_col, ws_max_col + 1):
+            val = _cell_value(ws, row, col, merged_map)
+            if val is not None and str(val).strip() != "":
+                col_fill[col] = col_fill.get(col, 0) + 1
+
+    if not col_fill or rows_sampled == 0:
+        return ws_min_col, ws_max_col
+
+    # Keep columns with >= 15% fill in the sampled rows
+    threshold = max(rows_sampled * 0.15, 1)
+    active_cols = sorted(c for c, count in col_fill.items() if count >= threshold)
+
+    if not active_cols:
+        return ws_min_col, ws_max_col
+
+    # Return contiguous range from first to last active column
+    return active_cols[0], active_cols[-1]
+
+
+def _get_headers(ws, merged_map: dict, header_row: int, min_col: int | None = None, max_col: int | None = None) -> list[str]:
+    """Extract headers from the detected header row.
+
+    If the row above has merged cells spanning multiple columns, treat as multi-level
+    headers and combine: "Group - SubHeader".
+    """
+    min_col = min_col or ws.min_column or 1
+    max_col = max_col or ws.max_column or 1
+
+    # Check for group header row above
+    group_headers: dict[int, str] = {}
+    if header_row > 1:
+        prev_row = header_row - 1
+        for mr in ws.merged_cells.ranges:
+            if mr.min_row == prev_row and mr.max_row == prev_row:
+                if mr.max_col - mr.min_col >= 1:  # Spans at least 2 columns
+                    val = ws.cell(mr.min_row, mr.min_col).value
+                    if val is not None:
+                        for c in range(mr.min_col, mr.max_col + 1):
+                            group_headers[c] = str(val)
+
+    headers = []
+    for col in range(min_col, max_col + 1):
+        val = _cell_value(ws, header_row, col, merged_map)
+        name = _format_value(val).strip()
+        if col in group_headers and name:
+            name = f"{group_headers[col]} - {name}"
+        elif col in group_headers:
+            name = group_headers[col]
+        if not name:
+            name = f"col_{col}"
+        headers.append(name)
+
+    return headers
+
+
+def _parse_range(range_str: str) -> tuple[int, int]:
+    """Parse a row range like '100:110' into (start, end) 1-based row numbers."""
+    parts = range_str.split(":")
+    if len(parts) != 2:
+        print(f"Error: invalid range '{range_str}'. Use format START:END (e.g., 100:110)", file=sys.stderr)
+        sys.exit(1)
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        print(f"Error: invalid range '{range_str}'. Values must be integers.", file=sys.stderr)
+        sys.exit(1)
+
+
+def _parse_cell_range(range_str: str) -> tuple[str, str] | tuple[str, None]:
+    """Parse a cell range like 'A1:D10' or single cell like 'J101'."""
+    if ":" in range_str:
+        parts = range_str.split(":")
+        return parts[0].strip(), parts[1].strip()
+    return range_str.strip(), None
+
+
+def _cell_ref_to_row_col(ref: str) -> tuple[int, int]:
+    """Convert a cell reference like 'J101' to (row, col) 1-based."""
+    match = re.match(r'^([A-Za-z]+)(\d+)$', ref)
+    if not match:
+        print(f"Error: invalid cell reference '{ref}'", file=sys.stderr)
+        sys.exit(1)
+    col_str = match.group(1).upper()
+    row = int(match.group(2))
+    col = 0
+    for ch in col_str:
+        col = col * 26 + (ord(ch) - ord('A') + 1)
+    return row, col
+
+
+def _get_sheet(wb: openpyxl.Workbook, name: str | None):
+    """Get worksheet by name, or active sheet if None."""
+    if name is None:
+        return wb.active
+    if name not in wb.sheetnames:
+        print(f"Error: sheet '{name}' not found. Available: {', '.join(wb.sheetnames)}", file=sys.stderr)
+        sys.exit(1)
+    return wb[name]
+
+
+def _infer_type(values: list) -> str:
+    """Infer the predominant type of a list of cell values."""
+    from datetime import datetime, date, time
+    type_counts: dict[str, int] = {}
+    for v in values:
+        if v is None:
+            continue
+        elif isinstance(v, bool):
+            t = "boolean"
+        elif isinstance(v, (int, float)):
+            t = "number"
+        elif isinstance(v, (datetime, date, time)):
+            t = "datetime"
+        elif isinstance(v, str):
+            stripped = v.strip().replace(",", "").replace("$", "").replace("€", "").replace("£", "")
+            if stripped and stripped.replace(".", "", 1).replace("-", "", 1).isdigit():
+                t = "number (as text)"
+            elif "%" in v:
+                t = "percentage (as text)"
+            else:
+                t = "text"
+        else:
+            t = "other"
+        type_counts[t] = type_counts.get(t, 0) + 1
+
+    if not type_counts:
+        return "empty"
+    return max(type_counts, key=type_counts.get)
+
+
+# ── Commands ──────────────────────────────────────────────────────────────────
+
+
+def cmd_inspect(args):
+    wb = _load_workbook(args.file)
+    print(f"File: {args.file}")
+    print(f"Sheets: {len(wb.sheetnames)}")
+    print()
+
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        merged_map = _build_merged_map(ws)
+
+        dims = ws.dimensions or "empty"
+        ws_row_count = (ws.max_row or 0) - (ws.min_row or 1) + 1 if ws.max_row else 0
+        ws_col_count = (ws.max_column or 0) - (ws.min_column or 1) + 1 if ws.max_column else 0
+
+        print(f"## Sheet: \"{sheet_name}\" ({dims}, {ws_row_count} rows x {ws_col_count} cols)")
+
+        # Merged cells
+        merged_descs = _merged_ranges_description(ws)
+        if merged_descs:
+            print(f"Merged cells ({len(merged_descs)}):")
+            for desc in merged_descs[:20]:
+                print(desc)
+            if len(merged_descs) > 20:
+                print(f"  ... and {len(merged_descs) - 20} more")
+        else:
+            print("No merged cells.")
+
+        # Detect data region
+        min_col, max_col = _detect_data_columns(ws, merged_map, None)
+        header_row = _detect_header_row(ws, merged_map, min_col, max_col)
+
+        if header_row:
+            # Re-detect columns with header context for better accuracy
+            min_col, max_col = _detect_data_columns(ws, merged_map, header_row)
+            headers = _get_headers(ws, merged_map, header_row, min_col, max_col)
+            data_start = header_row + 1
+            data_end = _detect_data_end(ws, merged_map, data_start, min_col, max_col)
+            data_rows = max(data_end - data_start + 1, 0)
+            print(f"Detected header row: {header_row}")
+            print(f"Data region: rows {data_start}-{data_end} ({data_rows} data rows), cols {openpyxl.utils.get_column_letter(min_col)}-{openpyxl.utils.get_column_letter(max_col)}")
+            print(f"Headers: {' | '.join(headers)}")
+        else:
+            print("No header row detected.")
+            header_row = ws.min_row or 1
+            data_end = ws.max_row or 1
+
+        # Data preview
+        preview_start = header_row
+        preview_end = min(preview_start + 15, data_end + 1)
+
+        if preview_start < preview_end:
+            print()
+            for row in range(preview_start, preview_end):
+                vals = []
+                for col in range(min_col, max_col + 1):
+                    vals.append(_format_value(_cell_value(ws, row, col, merged_map)))
+                print("\t".join(vals))
+
+        print()
+
+
+def cmd_headers(args):
+    wb = _load_workbook(args.file)
+    sheets = [args.sheet] if args.sheet else wb.sheetnames
+
+    for sheet_name in sheets:
+        ws = _get_sheet(wb, sheet_name)
+        merged_map = _build_merged_map(ws)
+        min_col, max_col = _detect_data_columns(ws, merged_map, None)
+        header_row = _detect_header_row(ws, merged_map, min_col, max_col)
+
+        if header_row:
+            min_col, max_col = _detect_data_columns(ws, merged_map, header_row)
+            headers = _get_headers(ws, merged_map, header_row, min_col, max_col)
+            print(f"{sheet_name} (row {header_row}): {' | '.join(headers)}")
+        else:
+            print(f"{sheet_name}: no header row detected")
+
+
+def cmd_schema(args):
+    wb = _load_workbook(args.file)
+    sheets = [args.sheet] if args.sheet else wb.sheetnames
+
+    for sheet_name in sheets:
+        ws = _get_sheet(wb, sheet_name)
+        merged_map = _build_merged_map(ws)
+        min_col, max_col = _detect_data_columns(ws, merged_map, None)
+        header_row = _detect_header_row(ws, merged_map, min_col, max_col)
+
+        if not header_row:
+            print(f"## {sheet_name}: no header row detected")
+            continue
+
+        min_col, max_col = _detect_data_columns(ws, merged_map, header_row)
+        headers = _get_headers(ws, merged_map, header_row, min_col, max_col)
+        data_start = header_row + 1
+        data_end = _detect_data_end(ws, merged_map, data_start, min_col, max_col)
+
+        print(f"## {sheet_name} ({data_end - data_start + 1} data rows)")
+        print(f"{'Column':<30} {'Type':<20} {'Nulls':<8} {'Sample values'}")
+        print("-" * 90)
+
+        for col_idx, header in enumerate(headers):
+            col_num = min_col + col_idx
+            if col_num > max_col:
+                break
+
+            values = []
+            for row in range(data_start, min(data_end + 1, data_start + 200)):
+                values.append(_cell_value(ws, row, col_num, merged_map))
+
+            null_count = sum(1 for v in values if v is None or str(v).strip() == "")
+            non_null = [v for v in values if v is not None and str(v).strip() != ""]
+            col_type = _infer_type(values)
+            samples = [_format_value(v) for v in non_null[:3]]
+            sample_str = ", ".join(samples) if samples else "(all empty)"
+
+            print(f"{header:<30} {col_type:<20} {null_count:<8} {sample_str}")
+
+        print()
+
+
+def cmd_rows(args):
+    wb = _load_workbook(args.file)
+    ws = _get_sheet(wb, args.sheet)
+    merged_map = _build_merged_map(ws)
+
+    start, end = _parse_range(args.range)
+    min_col, max_col = _detect_data_columns(ws, merged_map, None)
+
+    for row in range(start, end + 1):
+        if row > (ws.max_row or 0):
+            break
+        vals = []
+        for col in range(min_col, max_col + 1):
+            vals.append(_format_value(_cell_value(ws, row, col, merged_map)))
+        print(f"{row}\t" + "\t".join(vals))
+
+
+def cmd_cell(args):
+    wb = _load_workbook(args.file)
+    ws = _get_sheet(wb, args.sheet)
+    merged_map = _build_merged_map(ws)
+
+    # Optionally load formula workbook
+    formula_ws = None
+    if args.formulas:
+        try:
+            formula_wb = openpyxl.load_workbook(args.file, data_only=False)
+            formula_ws = _get_sheet(formula_wb, args.sheet)
+        except Exception:
+            pass
+
+    start_ref, end_ref = _parse_cell_range(args.range)
+    start_row, start_col = _cell_ref_to_row_col(start_ref)
+
+    if end_ref:
+        end_row, end_col = _cell_ref_to_row_col(end_ref)
+        for row in range(start_row, end_row + 1):
+            vals = []
+            for col in range(start_col, end_col + 1):
+                computed = _format_value(_cell_value(ws, row, col, merged_map))
+                if formula_ws:
+                    formula_val = formula_ws.cell(row, col).value
+                    if isinstance(formula_val, str) and formula_val.startswith("="):
+                        vals.append(f"{computed} [{formula_val}]")
+                    else:
+                        vals.append(computed)
+                else:
+                    vals.append(computed)
+            print("\t".join(vals))
+    else:
+        computed = _format_value(_cell_value(ws, start_row, start_col, merged_map))
+        if formula_ws:
+            formula_val = formula_ws.cell(start_row, start_col).value
+            if isinstance(formula_val, str) and formula_val.startswith("="):
+                print(f"{computed} [{formula_val}]")
+            else:
+                print(computed)
+        else:
+            print(computed)
+
+
+def cmd_grep(args):
+    wb = _load_workbook(args.file)
+    pattern = re.compile(re.escape(args.pattern), re.IGNORECASE)
+    sheets = [args.sheet] if args.sheet else wb.sheetnames
+    matches = 0
+    max_matches = 200
+
+    for sheet_name in sheets:
+        ws = _get_sheet(wb, sheet_name)
+        merged_map = _build_merged_map(ws)
+        min_col, max_col = _detect_data_columns(ws, merged_map, None)
+
+        # Resolve --column to column number
+        target_col = None
+        if args.column:
+            col_ref = args.column.upper()
+            if col_ref.isalpha():
+                target_col = 0
+                for ch in col_ref:
+                    target_col = target_col * 26 + (ord(ch) - ord('A') + 1)
+            else:
+                # Try matching by header name
+                header_row = _detect_header_row(ws, merged_map, min_col, max_col)
+                if header_row:
+                    headers = _get_headers(ws, merged_map, header_row, min_col, max_col)
+                    for i, h in enumerate(headers):
+                        if h.lower() == args.column.lower():
+                            target_col = min_col + i
+                            break
+                if target_col is None:
+                    print(f"Warning: column '{args.column}' not found in sheet '{sheet_name}'", file=sys.stderr)
+                    continue
+
+        for row in range(ws.min_row or 1, (ws.max_row or 0) + 1):
+            col_range = range(target_col, target_col + 1) if target_col else range(min_col, max_col + 1)
+            for col in col_range:
+                val = _cell_value(ws, row, col, merged_map)
+                if val is not None and pattern.search(str(val)):
+                    # Print the full row for context
+                    row_vals = []
+                    for c in range(min_col, max_col + 1):
+                        row_vals.append(_format_value(_cell_value(ws, row, c, merged_map)))
+                    col_letter = openpyxl.utils.get_column_letter(col)
+                    print(f"{sheet_name}:{col_letter}{row}\t" + "\t".join(row_vals))
+                    matches += 1
+                    break  # One match per row is enough
+
+            if matches >= max_matches:
+                print(f"... (stopped at {max_matches} matches)", file=sys.stderr)
+                return
+
+    if matches == 0:
+        print(f"No matches for '{args.pattern}'")
+    else:
+        print(f"\n{matches} matching row(s)", file=sys.stderr)
+
+
+def cmd_filter(args):
+    wb = _load_workbook(args.file)
+    ws = _get_sheet(wb, args.sheet)
+    merged_map = _build_merged_map(ws)
+    min_col, max_col = _detect_data_columns(ws, merged_map, None)
+    header_row = _detect_header_row(ws, merged_map, min_col, max_col)
+
+    if not header_row:
+        print("Error: cannot detect header row for filtering.", file=sys.stderr)
+        sys.exit(1)
+
+    min_col, max_col = _detect_data_columns(ws, merged_map, header_row)
+    headers = _get_headers(ws, merged_map, header_row, min_col, max_col)
+    data_start = header_row + 1
+    data_end = _detect_data_end(ws, merged_map, data_start, min_col, max_col)
+
+    # Build DataFrame
+    data = []
+    for row in range(data_start, data_end + 1):
+        row_data = []
+        for col in range(min_col, max_col + 1):
+            row_data.append(_cell_value(ws, row, col, merged_map))
+        data.append(row_data)
+
+    # Ensure headers list matches column count
+    col_count = max_col - min_col + 1
+    while len(headers) < col_count:
+        headers.append(f"col_{len(headers) + 1}")
+
+    df = pd.DataFrame(data, columns=headers[:col_count])
+
+    # Convert numeric-looking columns
+    for col_name in df.columns:
+        df[col_name] = pd.to_numeric(df[col_name], errors="ignore")
+
+    try:
+        result = df.query(args.expr)
+    except Exception as e:
+        print(f"Error in filter expression: {e}", file=sys.stderr)
+        print(f"Available columns: {', '.join(df.columns.tolist())}", file=sys.stderr)
+        sys.exit(1)
+
+    print(result.to_csv(sep="\t", index=False))
+
+
+def cmd_formulas(args):
+    """List all cells that contain formulas."""
+    try:
+        wb = openpyxl.load_workbook(args.file, data_only=False)
+    except Exception as e:
+        print(f"Error opening file: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Also load with data_only=True for computed values
+    wb_data = _load_workbook(args.file)
+
+    sheets = [args.sheet] if args.sheet else wb.sheetnames
+    found = 0
+
+    for sheet_name in sheets:
+        ws = wb[sheet_name] if sheet_name in wb.sheetnames else None
+        ws_data = wb_data[sheet_name] if sheet_name in wb_data.sheetnames else None
+        if not ws or not ws_data:
+            continue
+
+        for row in range(ws.min_row or 1, (ws.max_row or 0) + 1):
+            for col in range(ws.min_column or 1, (ws.max_column or 0) + 1):
+                val = ws.cell(row, col).value
+                if isinstance(val, str) and val.startswith("="):
+                    computed = ws_data.cell(row, col).value
+                    col_letter = openpyxl.utils.get_column_letter(col)
+                    print(f"{sheet_name}:{col_letter}{row}\t{val}\t= {_format_value(computed)}")
+                    found += 1
+
+    if found == 0:
+        print("No formulas found.")
+    else:
+        print(f"\n{found} formula(s)", file=sys.stderr)
+
+
+def cmd_to_csv(args):
+    wb = _load_workbook(args.file)
+    sheets = [args.sheet] if args.sheet else wb.sheetnames
+
+    for sheet_name in sheets:
+        ws = _get_sheet(wb, sheet_name)
+        merged_map = _build_merged_map(ws)
+
+        min_col = ws.min_column or 1
+        max_col = ws.max_column or 1
+        min_row = ws.min_row or 1
+        max_row = ws.max_row or 1
+
+        if args.sheet:
+            out_path = None  # stdout
+        else:
+            safe_name = re.sub(r'[^\w\-.]', '_', sheet_name)
+            out_path = f"{Path(args.file).stem}_{safe_name}.csv"
+
+        rows = []
+        for row in range(min_row, max_row + 1):
+            vals = []
+            for col in range(min_col, max_col + 1):
+                vals.append(_format_value(_cell_value(ws, row, col, merged_map)))
+            rows.append(vals)
+
+        if out_path:
+            df = pd.DataFrame(rows)
+            df.to_csv(out_path, index=False, header=False)
+            print(f"Wrote {out_path} ({len(rows)} rows)")
+        else:
+            for row_vals in rows:
+                print(",".join(f'"{v}"' if "," in v or '"' in v else v for v in row_vals))
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="excel",
+        description="CLI tool for inspecting and querying Excel spreadsheets.",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # inspect
+    p = subparsers.add_parser("inspect", help="Overview: sheets, dims, merged cells, headers, preview")
+    p.add_argument("file", help="Path to Excel file")
+
+    # headers
+    p = subparsers.add_parser("headers", help="Show detected header row per sheet")
+    p.add_argument("file", help="Path to Excel file")
+    p.add_argument("sheet", nargs="?", help="Sheet name (default: all)")
+
+    # schema
+    p = subparsers.add_parser("schema", help="Column names, types, sample values, null counts")
+    p.add_argument("file", help="Path to Excel file")
+    p.add_argument("sheet", nargs="?", help="Sheet name (default: all)")
+
+    # rows
+    p = subparsers.add_parser("rows", help="Print specific rows as TSV")
+    p.add_argument("file", help="Path to Excel file")
+    p.add_argument("sheet", help="Sheet name")
+    p.add_argument("range", help="Row range, e.g., 100:110")
+
+    # cell
+    p = subparsers.add_parser("cell", help="Read specific cell or range")
+    p.add_argument("file", help="Path to Excel file")
+    p.add_argument("sheet", help="Sheet name")
+    p.add_argument("range", help="Cell reference, e.g., J101 or A1:D10")
+    p.add_argument("--formulas", action="store_true", help="Show formulas alongside computed values")
+
+    # formulas
+    p = subparsers.add_parser("formulas", help="List all cells containing formulas")
+    p.add_argument("file", help="Path to Excel file")
+    p.add_argument("sheet", nargs="?", help="Sheet name (default: all)")
+
+    # grep
+    p = subparsers.add_parser("grep", help="Search for text across cells")
+    p.add_argument("file", help="Path to Excel file")
+    p.add_argument("pattern", help="Text to search for")
+    p.add_argument("--sheet", help="Limit to specific sheet")
+    p.add_argument("--column", help="Limit to specific column (letter or header name)")
+
+    # filter
+    p = subparsers.add_parser("filter", help="Filter rows using pandas query syntax")
+    p.add_argument("file", help="Path to Excel file")
+    p.add_argument("sheet", help="Sheet name")
+    p.add_argument("expr", help="Filter expression, e.g., 'revenue > 1000'")
+
+    # to-csv
+    p = subparsers.add_parser("to-csv", help="Export sheet(s) as CSV")
+    p.add_argument("file", help="Path to Excel file")
+    p.add_argument("--sheet", help="Specific sheet (default: all sheets to separate files)")
+
+    args = parser.parse_args()
+
+    commands = {
+        "inspect": cmd_inspect,
+        "headers": cmd_headers,
+        "schema": cmd_schema,
+        "rows": cmd_rows,
+        "cell": cmd_cell,
+        "formulas": cmd_formulas,
+        "grep": cmd_grep,
+        "filter": cmd_filter,
+        "to-csv": cmd_to_csv,
+    }
+
+    commands[args.command](args)
+
+
+if __name__ == "__main__":
+    main()

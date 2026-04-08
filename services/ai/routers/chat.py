@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
+import pathlib
 from typing import cast
 
 import httpx
@@ -26,6 +27,7 @@ from tools import (
 from tools.connector_handler import ConnectorAction, SearchOperator
 from tools.sandbox_handler import SandboxToolHandler
 from tools.search_handler import fetch_operator_values
+from tools.skill_handler import SkillHandler
 from config import (
     DEFAULT_MAX_TOKENS,
     DEFAULT_TEMPERATURE,
@@ -250,6 +252,12 @@ async def _build_registry(request: Request, chat: Chat) -> RegistryResult:
     # Register sandbox tools if sandbox service is configured
     if SANDBOX_URL:
         registry.register(SandboxToolHandler(sandbox_url=SANDBOX_URL))
+
+    # Register skill loader (load_skill tool)
+    skills_dir = pathlib.Path(__file__).resolve().parent.parent / "skills"
+    skill_handler = SkillHandler(skills_dir=skills_dir)
+    if skill_handler._available:
+        registry.register(skill_handler)
 
     return RegistryResult(
         registry=registry,

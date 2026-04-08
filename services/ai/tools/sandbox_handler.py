@@ -54,7 +54,7 @@ SANDBOX_TOOLS = [
     },
     {
         "name": "run_bash",
-        "description": "Run a bash command in the scratch workspace. Use for file operations, data processing with standard unix tools, etc.",
+        "description": "Run a bash command in the scratch workspace. The `excel` CLI is available for spreadsheet operations (run `excel --help` for usage). Use for file operations, data processing with standard unix tools, etc.",
         "input_schema": {
             "type": "object",
             "properties": {

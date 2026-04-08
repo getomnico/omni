@@ -12,6 +12,7 @@
         Image,
         Download,
         Users,
+        BookOpen,
     } from '@lucide/svelte'
     import type { ToolMessageContent, ToolName } from '$lib/types/message'
     import { ToolApprovalStatus } from '$lib/types/message'
@@ -60,6 +61,10 @@
             loading: 'searching people',
             loaded: 'searched people',
         },
+        load_skill: {
+            loading: 'loading skill',
+            loaded: 'loaded skill',
+        },
     }
 
     const ToolInputKey: Record<string, string> = {
@@ -71,6 +76,7 @@
         run_python: 'code',
         present_artifact: 'title',
         search_people: 'query',
+        load_skill: 'skill',
     }
 
     const ToolApprovalColors: Record<
@@ -238,6 +244,20 @@
             </div>
         </div>
     {/if}
+{:else if toolName === 'load_skill'}
+    <div
+        class={cn(
+            'flex cursor-pointer items-center justify-between rounded-md border border-gray-200 px-3 py-3 text-sm hover:no-underline',
+        )}>
+        <div class="flex w-full items-center justify-between">
+            <div class="flex items-center gap-2">
+                <BookOpen class="h-5 w-5 text-indigo-600" />
+                <div class="max-w-screen-md truncate text-sm font-normal">
+                    {statusIndicator}: {message.toolUse.input[toolInputKey]}
+                </div>
+            </div>
+        </div>
+    </div>
 {:else if isConnectorAction}
     <div
         class={cn(

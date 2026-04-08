@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import cast
 
 import httpx
@@ -41,6 +42,7 @@ from tools.connector_handler import ConnectorAction
 from tools.email_handler import EmailToolHandler
 from tools.sandbox_handler import SandboxToolHandler
 from tools.search_handler import fetch_operator_values
+from tools.skill_handler import SkillHandler
 
 from .models import Agent, AgentRun
 from .repository import AgentRunRepository
@@ -161,6 +163,12 @@ async def _build_agent_registry(
     # Sandbox tools
     if SANDBOX_URL:
         registry.register(SandboxToolHandler(sandbox_url=SANDBOX_URL))
+
+    # Skill loader
+    skills_dir = Path(__file__).resolve().parent.parent / "skills"
+    skill_handler = SkillHandler(skills_dir=skills_dir)
+    if skill_handler._available:
+        registry.register(skill_handler)
 
     # Email tool — only for org agents with send_email in allowed_actions
     if (

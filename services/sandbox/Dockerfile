@@ -42,6 +42,9 @@ RUN pip install --no-cache-dir \
     matplotlib>=3.9.0 \
     seaborn>=0.13.0
 
+COPY services/sandbox/scripts/excel /usr/local/bin/excel
+RUN chmod +x /usr/local/bin/excel
+
 # Run as non-root user
 RUN useradd -m sandbox
 
