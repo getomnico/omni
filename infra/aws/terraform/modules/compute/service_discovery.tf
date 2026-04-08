@@ -329,3 +329,22 @@ resource "aws_service_discovery_service" "filesystem_connector" {
     failure_threshold = 1
   }
 }
+
+resource "aws_service_discovery_service" "nextcloud_connector" {
+  count = contains(var.enabled_connectors, "nextcloud") ? 1 : 0
+
+  name = "nextcloud-connector"
+
+  dns_config {
+    namespace_id = var.service_discovery_namespace_id
+
+    dns_records {
+      ttl  = 300
+      type = "A"
+    }
+  }
+
+  health_check_custom_config {
+    failure_threshold = 1
+  }
+}
