@@ -1,10 +1,9 @@
 use anyhow::{anyhow, Result};
-use base64::{engine::general_purpose, Engine as _};
 use futures_util::{Stream, StreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
-use tracing::{debug, error};
+use tracing::error;
 
 use crate::telemetry::http_client::RequestBuilderExt;
 

@@ -202,6 +202,21 @@ services:
       context: ..
       dockerfile: connectors/microsoft/Dockerfile
 
+  filesystem-connector:
+    image: omni-filesystem-connector:dev
+    build:
+      context: ..
+      dockerfile: connectors/filesystem/Dockerfile
+    environment:
+      <<: *dev-database-url
+      RUST_BACKTRACE: full
+
+  paperless-connector:
+    image: omni-paperless-connector:dev
+    build:
+      context: ..
+      dockerfile: connectors/paperless/Dockerfile
+
   docling:
     image: omni-docling:dev
     build:
