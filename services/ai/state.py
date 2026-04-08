@@ -6,6 +6,7 @@ from datetime import datetime
 
 import redis.asyncio as aioredis
 
+from db.models import ModelRecord
 from embeddings import EmbeddingProvider
 from providers import LLMProvider
 from tools import SearcherTool
@@ -25,6 +26,7 @@ class AppState:
     embedding_provider_id: str | None = None
     embedding_provider_updated_at: datetime | None = None
     models: dict[str, LLMProvider] = field(default_factory=dict)
+    model_records: dict[str, ModelRecord] = field(default_factory=dict)
     default_model_id: str | None = None
     secondary_model_id: str | None = None
     searcher_tool: SearcherTool | None = None

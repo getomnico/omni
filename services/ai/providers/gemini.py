@@ -12,8 +12,11 @@ from google import genai
 from google.genai import types
 from anthropic.types import (
     Message,
+    MessageDelta,
+    MessageDeltaUsage,
     Usage,
     RawMessageStartEvent,
+    RawMessageDeltaEvent,
     RawContentBlockStartEvent,
     RawContentBlockDeltaEvent,
     RawMessageStopEvent,
@@ -24,7 +27,7 @@ from anthropic.types import (
 )
 from anthropic.types.message_stream_event import MessageStreamEvent
 
-from . import LLMProvider
+from . import LLMProvider, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -196,12 +199,16 @@ class GeminiProvider(LLMProvider):
             next_block_index = 0
             text_started = False
             current_text_index = 0
+            last_usage_metadata = None
 
             async for chunk in await self.client.aio.models.generate_content_stream(
                 model=self.model,
                 contents=contents,
                 config=config,
             ):
+                if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
+                    last_usage_metadata = chunk.usage_metadata
+
                 if not chunk.candidates:
                     continue
 
@@ -256,6 +263,24 @@ class GeminiProvider(LLMProvider):
                                 ),
                             )
 
+            if last_usage_metadata:
+                input_tokens = (
+                    getattr(last_usage_metadata, "prompt_token_count", 0) or 0
+                )
+                output_tokens = (
+                    getattr(last_usage_metadata, "candidates_token_count", 0) or 0
+                )
+                yield RawMessageDeltaEvent(
+                    type="message_delta",
+                    delta=MessageDelta(stop_reason="end_turn"),
+                    usage=MessageDeltaUsage(output_tokens=output_tokens),
+                )
+                # Also update the message_start usage retroactively isn't possible,
+                # so we store input_tokens via last_usage for callers that need it
+                self.last_usage = TokenUsage(
+                    input_tokens=input_tokens, output_tokens=output_tokens
+                )
+
             yield RawMessageStopEvent(type="message_stop")
 
         except Exception as e:
@@ -282,6 +307,18 @@ class GeminiProvider(LLMProvider):
                 contents=prompt,
                 config=config,
             )
+
+            if hasattr(response, "usage_metadata") and response.usage_metadata:
+                self.last_usage = TokenUsage(
+                    input_tokens=getattr(
+                        response.usage_metadata, "prompt_token_count", 0
+                    )
+                    or 0,
+                    output_tokens=getattr(
+                        response.usage_metadata, "candidates_token_count", 0
+                    )
+                    or 0,
+                )
 
             if not response.text:
                 raise Exception("Empty response from Gemini")

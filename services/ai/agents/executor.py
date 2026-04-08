@@ -24,11 +24,13 @@ from config import (
     SANDBOX_URL,
 )
 from db.documents import DocumentsRepository
-from db.models import Source
+from db.models import ModelRecord, Source
+from db.usage import UsageRepository
 from db.users import UsersRepository
 from providers import LLMProvider
 from prompts import build_agent_system_prompt
 from services.compaction import ConversationCompactor
+from services.usage import UsageTracker, UsageContext, save_usage_fire_and_forget
 from state import AppState
 from tools import (
     ToolRegistry,
@@ -52,19 +54,23 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 
 
-def _resolve_llm_provider(state: AppState, agent: Agent) -> LLMProvider:
+def _resolve_llm_provider(
+    state: AppState, agent: Agent
+) -> tuple[LLMProvider, ModelRecord]:
     """Resolve which LLM provider to use for an agent."""
     models = state.models
+    records = state.model_records
     if not models:
         raise RuntimeError("No models configured")
 
     if agent.model_id and agent.model_id in models:
-        return models[agent.model_id]
+        key = agent.model_id
+    elif state.default_model_id and state.default_model_id in models:
+        key = state.default_model_id
+    else:
+        key = next(iter(models))
 
-    if state.default_model_id and state.default_model_id in models:
-        return models[state.default_model_id]
-
-    return next(iter(models.values()))
+    return models[key], records[key]
 
 
 async def _fetch_sources() -> list[Source] | None:
@@ -196,7 +202,7 @@ async def _run_agent_loop(
 
     await emit_status("Initializing...")
 
-    llm_provider = _resolve_llm_provider(app_state, agent)
+    llm_provider, model_record = _resolve_llm_provider(app_state, agent)
     sources = await _fetch_sources()
 
     registry, connector_actions = await _build_agent_registry(app_state, agent, sources)
@@ -239,14 +245,35 @@ async def _run_agent_loop(
 
     # Compaction support — use secondary model for summarization when available
     secondary_provider = llm_provider
+    secondary_record = model_record
     if (
         app_state.secondary_model_id
         and app_state.secondary_model_id in app_state.models
     ):
         secondary_provider = app_state.models[app_state.secondary_model_id]
+        secondary_record = app_state.model_records[app_state.secondary_model_id]
+
+    def _on_compaction_usage(usage):
+        save_usage_fire_and_forget(
+            UsageRepository(),
+            UsageContext(
+                user_id=agent.user_id if not is_org_agent else None,
+                model_id=secondary_record.id,
+                model_name=secondary_record.model_id,
+                provider_type=secondary_record.provider_type,
+                usage_type="compaction",
+                agent_run_id=run.id,
+            ),
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_creation_tokens=usage.cache_creation_tokens,
+        )
+
     compactor = ConversationCompactor(
         llm_provider=secondary_provider,
         redis_client=app_state.redis_client,
+        on_usage=_on_compaction_usage,
     )
 
     for iteration in range(AGENT_MAX_ITERATIONS):
@@ -263,7 +290,21 @@ async def _run_agent_loop(
         # Call LLM (non-streaming — collect full response)
         content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
 
-        stream = llm_provider.stream_response(
+        usage_repo = UsageRepository()
+        tracker = UsageTracker(
+            usage_repo,
+            UsageContext(
+                user_id=agent.user_id if not is_org_agent else None,
+                model_id=model_record.id,
+                model_name=model_record.model_id,
+                provider_type=model_record.provider_type,
+                usage_type="agent_run",
+                agent_run_id=run.id,
+            ),
+            provider=llm_provider,
+        )
+
+        raw_stream = llm_provider.stream_response(
             prompt="",
             messages=conversation_messages,
             tools=all_tools,
@@ -273,7 +314,7 @@ async def _run_agent_loop(
             system_prompt=system_prompt,
         )
 
-        async for event in stream:
+        async for event in tracker.wrap_stream(raw_stream):
             if event.type == "content_block_start":
                 if event.content_block.type == "text":
                     content_blocks.append(
@@ -303,6 +344,8 @@ async def _run_agent_loop(
                         )
             elif event.type == "message_stop":
                 break
+
+        tracker.save()
 
         # Parse tool call inputs — on failure, send error back to LLM
         tool_calls = [b for b in content_blocks if b["type"] == "tool_use"]
@@ -378,7 +421,19 @@ async def _run_agent_loop(
     conversation_messages.append(summary_prompt_message)
 
     summary_blocks: list = []
-    summary_stream = llm_provider.stream_response(
+    summary_tracker = UsageTracker(
+        UsageRepository(),
+        UsageContext(
+            user_id=agent.user_id if not is_org_agent else None,
+            model_id=model_record.id,
+            model_name=model_record.model_id,
+            provider_type=model_record.provider_type,
+            usage_type="agent_summary",
+            agent_run_id=run.id,
+        ),
+        provider=llm_provider,
+    )
+    raw_summary_stream = llm_provider.stream_response(
         prompt="",
         messages=conversation_messages,
         tools=[],
@@ -386,13 +441,15 @@ async def _run_agent_loop(
         temperature=0.3,
         system_prompt=system_prompt,
     )
-    async for event in summary_stream:
+    async for event in summary_tracker.wrap_stream(raw_summary_stream):
         if event.type == "content_block_start" and event.content_block.type == "text":
             summary_blocks.append(event.content_block.text)
         elif event.type == "content_block_delta" and event.delta.type == "text_delta":
             summary_blocks.append(event.delta.text)
         elif event.type == "message_stop":
             break
+
+    summary_tracker.save()
 
     summary = "".join(summary_blocks).strip()
 

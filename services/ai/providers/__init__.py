@@ -4,13 +4,24 @@ LLM Provider abstraction layer for supporting multiple AI providers.
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any
 
 from anthropic import MessageStreamEvent
 
 
+@dataclass
+class TokenUsage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+
+
 class LLMProvider(ABC):
     """Abstract base class for LLM providers."""
+
+    last_usage: TokenUsage | None = None
 
     @abstractmethod
     async def stream_response(
@@ -111,6 +122,7 @@ def create_llm_provider(provider_type: str, **kwargs) -> LLMProvider:
 
 
 __all__ = [
+    "TokenUsage",
     "LLMProvider",
     "AnthropicProvider",
     "VLLMProvider",

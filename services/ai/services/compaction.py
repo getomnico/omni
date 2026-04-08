@@ -2,6 +2,7 @@
 
 import json
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import redis.asyncio as aioredis
@@ -14,7 +15,7 @@ from config import (
     ENABLE_CONVERSATION_COMPACTION,
     COMPACTION_CACHE_TTL_SECONDS,
 )
-from providers import LLMProvider
+from providers import LLMProvider, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +36,11 @@ class ConversationCompactor:
         self,
         llm_provider: LLMProvider,
         redis_client: aioredis.Redis | None = None,
+        on_usage: Callable[[TokenUsage], None] | None = None,
     ):
         self.llm_provider = llm_provider
         self.redis = redis_client
+        self._on_usage = on_usage
 
     def estimate_tokens(self, messages: list[MessageParam]) -> int:
         """Estimate token count using character heuristic (~4 chars/token).
@@ -235,6 +238,9 @@ Summary:"""
             max_tokens=COMPACTION_SUMMARY_MAX_TOKENS,
             temperature=0.3,
         )
+
+        if self._on_usage and self.llm_provider.last_usage:
+            self._on_usage(self.llm_provider.last_usage)
 
         logger.info(f"Generated summary: {len(summary)} chars")
         return summary.strip()

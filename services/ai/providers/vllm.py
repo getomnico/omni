@@ -26,6 +26,8 @@ from openai.types.chat import (
 from openai.types.chat.chat_completion_message_tool_call_param import Function
 from anthropic.types import (
     Message,
+    MessageDelta,
+    MessageDeltaUsage,
     MessageParam,
     TextBlockParam,
     ToolParam,
@@ -33,6 +35,7 @@ from anthropic.types import (
     ToolUseBlockParam,
     Usage,
     RawMessageStartEvent,
+    RawMessageDeltaEvent,
     RawContentBlockStartEvent,
     RawContentBlockDeltaEvent,
     RawContentBlockStopEvent,
@@ -44,7 +47,7 @@ from anthropic.types import (
 )
 from anthropic.types.message_stream_event import MessageStreamEvent
 
-from . import LLMProvider
+from . import LLMProvider, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +232,7 @@ class VLLMProvider(LLMProvider):
                 "messages": openai_messages,
                 "max_tokens": max_tokens or 4096,
                 "stream": True,
+                "stream_options": {"include_usage": True},
             }
 
             if temperature is not None:
@@ -265,8 +269,16 @@ class VLLMProvider(LLMProvider):
             tool_call_names: dict[int, str] = {}
             next_block_index = 0
 
+            stream_input_tokens = 0
+            stream_output_tokens = 0
+
             chunk: ChatCompletionChunk
             async for chunk in stream:
+                # Usage-only chunk (no choices) arrives at end of stream
+                if chunk.usage:
+                    stream_input_tokens = chunk.usage.prompt_tokens or 0
+                    stream_output_tokens = chunk.usage.completion_tokens or 0
+
                 if not chunk.choices:
                     continue
 
@@ -355,6 +367,17 @@ class VLLMProvider(LLMProvider):
                     index=block_index,
                 )
 
+            if stream_input_tokens or stream_output_tokens:
+                yield RawMessageDeltaEvent(
+                    type="message_delta",
+                    delta=MessageDelta(stop_reason="end_turn"),
+                    usage=MessageDeltaUsage(output_tokens=stream_output_tokens),
+                )
+                self.last_usage = TokenUsage(
+                    input_tokens=stream_input_tokens,
+                    output_tokens=stream_output_tokens,
+                )
+
             yield RawMessageStopEvent(type="message_stop")
 
         except Exception as e:
@@ -381,6 +404,12 @@ class VLLMProvider(LLMProvider):
                 params["top_p"] = top_p
 
             response = await self.client.chat.completions.create(**params)
+
+            if response.usage:
+                self.last_usage = TokenUsage(
+                    input_tokens=response.usage.prompt_tokens or 0,
+                    output_tokens=response.usage.completion_tokens or 0,
+                )
 
             content = response.choices[0].message.content
             if not content:

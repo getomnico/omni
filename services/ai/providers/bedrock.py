@@ -13,8 +13,11 @@ from botocore.exceptions import ClientError
 from anthropic.types import (
     MessageParam,
     Message,
+    MessageDelta,
+    MessageDeltaUsage,
     Usage,
     RawMessageStartEvent,
+    RawMessageDeltaEvent,
     RawContentBlockStartEvent,
     RawContentBlockDeltaEvent,
     RawContentBlockStopEvent,
@@ -35,7 +38,7 @@ from anthropic.types import (
 from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic import AnthropicBedrock
 
-from . import LLMProvider
+from . import LLMProvider, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -406,6 +409,19 @@ class BedrockProvider(LLMProvider):
                 type="content_block_stop",
                 index=content_block_stop["contentBlockIndex"],
             )
+        elif "metadata" in event:
+            usage_data = event["metadata"].get("usage", {})
+            input_tokens = usage_data.get("inputTokens", 0)
+            output_tokens = usage_data.get("outputTokens", 0)
+            self.last_usage = TokenUsage(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+            return RawMessageDeltaEvent(
+                type="message_delta",
+                delta=MessageDelta(stop_reason="end_turn"),
+                usage=MessageDeltaUsage(output_tokens=output_tokens),
+            )
         elif "messageStop" in event:
             return RawMessageStopEvent(type="message_stop")
 
@@ -602,6 +618,20 @@ class BedrockProvider(LLMProvider):
 
                 # Invoke the model
                 message = self.client.messages.create(**request_params)
+
+                self.last_usage = TokenUsage(
+                    input_tokens=message.usage.input_tokens,
+                    output_tokens=message.usage.output_tokens,
+                    cache_read_tokens=getattr(
+                        message.usage, "cache_read_input_tokens", 0
+                    )
+                    or 0,
+                    cache_creation_tokens=getattr(
+                        message.usage, "cache_creation_input_tokens", 0
+                    )
+                    or 0,
+                )
+
                 response_text = message.content[0].text
 
                 if not response_text:
@@ -622,6 +652,12 @@ class BedrockProvider(LLMProvider):
                     },
                 )
                 logger.debug(f"generate_response: response from LLM -> {response}")
+
+                usage_data = response.get("usage", {})
+                self.last_usage = TokenUsage(
+                    input_tokens=usage_data.get("inputTokens", 0),
+                    output_tokens=usage_data.get("outputTokens", 0),
+                )
 
                 response_text = response["output"]["message"]["content"][0]["text"]
                 if not response_text:

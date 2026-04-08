@@ -92,6 +92,7 @@ async def load_models(app_state: AppState) -> None:
     records = await repo.list_active()
 
     models: dict[str, LLMProvider] = {}
+    model_records: dict[str, ModelRecord] = {}
     default_id: str | None = None
     secondary_id: str | None = None
 
@@ -99,6 +100,7 @@ async def load_models(app_state: AppState) -> None:
         try:
             provider = _create_provider_from_model_record(record)
             models[record.id] = provider
+            model_records[record.id] = record
             logger.info(
                 f"Initialized model '{record.display_name}' (type={record.provider_type}, model={record.model_id}, id={record.id})"
             )
@@ -112,6 +114,7 @@ async def load_models(app_state: AppState) -> None:
             )
 
     app_state.models = models
+    app_state.model_records = model_records
     app_state.default_model_id = default_id
     app_state.secondary_model_id = secondary_id
 
@@ -209,14 +212,14 @@ async def _init_embedding_provider(app_state: AppState) -> None:
 
 async def reload_embedding_provider(app_state: AppState) -> None:
     """Re-read current embedding provider from DB and re-initialize.
-    
+
     If a provider is newly configured (transitioning from None), also start
     the batch processor which may have exited early during startup.
     """
     was_none = app_state.embedding_provider is None
     invalidate_embedding_config_cache()
     await _init_embedding_provider(app_state)
-    
+
     # Start batch processor if we just gained a provider
     if was_none and app_state.embedding_provider is not None:
         logger.info("Embedding provider became available, starting batch processor")

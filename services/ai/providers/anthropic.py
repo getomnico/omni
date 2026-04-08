@@ -9,7 +9,7 @@ from typing import Any
 
 from anthropic import AsyncAnthropic, AsyncStream, MessageStreamEvent
 
-from . import LLMProvider
+from . import LLMProvider, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +152,17 @@ class AnthropicProvider(LLMProvider):
                 max_tokens=max_tokens or 4096,
                 temperature=temperature or 0.7,
                 stream=False,
+            )
+
+            self.last_usage = TokenUsage(
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+                cache_read_tokens=getattr(response.usage, "cache_read_input_tokens", 0)
+                or 0,
+                cache_creation_tokens=getattr(
+                    response.usage, "cache_creation_input_tokens", 0
+                )
+                or 0,
             )
 
             # Extract text content from response

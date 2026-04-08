@@ -81,12 +81,14 @@ class VertexAIProvider(LLMProvider):
         temperature: float | None = None,
         top_p: float | None = None,
     ) -> str:
-        return await self._delegate.generate_response(
+        result = await self._delegate.generate_response(
             prompt=prompt,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
         )
+        self.last_usage = self._delegate.last_usage
+        return result
 
     async def health_check(self) -> bool:
         return await self._delegate.health_check()

@@ -23,6 +23,7 @@ from routers import (
     prompts_router,
     model_providers_router,
     agents_router,
+    usage_router,
 )
 
 from config import PORT
@@ -43,6 +44,7 @@ app.include_router(prompts_router)
 app.include_router(chat_router)
 app.include_router(model_providers_router)
 app.include_router(agents_router)
+app.include_router(usage_router)
 
 
 @app.on_event("startup")
