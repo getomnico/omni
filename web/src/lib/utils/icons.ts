@@ -210,6 +210,7 @@ export function getSourceDisplayName(sourceType: SourceType) {
         [SourceType.MS_TEAMS]: 'Teams',
         [SourceType.IMAP]: 'IMAP',
         [SourceType.NEXTCLOUD]: 'Nextcloud',
+        [SourceType.PAPERLESS_NGX]: 'Paperless-ngx',
     }
 
     return sourceDisplayNames[sourceType]

@@ -237,6 +237,8 @@
                                     <Mail class="h-6 w-6" />
                                 {:else if source.sourceType === 'paperless_ngx'}
                                     <HardDrive class="h-6 w-6" />
+                                {:else if source.sourceType === 'nextcloud'}
+                                    <Cloud class="h-6 w-6" />
                                 {/if}
                                 <div class="flex flex-col gap-0.5">
                                     <div class="flex items-center gap-2">
@@ -340,6 +342,8 @@
                                     <Mail class="h-6 w-6" />
                                 {:else if integration.id === 'paperless_ngx'}
                                     <HardDrive class="h-6 w-6" />
+                                {:else if integration.id === 'nextcloud'}
+                                    <Cloud class="h-6 w-6" />
                                 {/if}
                                 <span>{integration.name}</span>
                             </CardTitle>

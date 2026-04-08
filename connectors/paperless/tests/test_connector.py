@@ -123,6 +123,16 @@ class TestConnectorProperties:
         assert "full" in modes
         assert "incremental" in modes
 
+    def test_search_operators(self) -> None:
+        operators = PaperlessConnector().search_operators
+        op_map = {op.operator: op for op in operators}
+        assert "correspondent" in op_map
+        assert op_map["correspondent"].attribute_key == "correspondent"
+        assert "type" in op_map
+        assert op_map["type"].attribute_key == "document_type"
+        assert "tag" in op_map
+        assert op_map["tag"].attribute_key == "tags"
+
 
 class TestConnectorConfigValidation:
     async def test_missing_base_url_fails(self) -> None:
