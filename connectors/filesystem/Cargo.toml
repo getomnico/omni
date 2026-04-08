@@ -31,6 +31,9 @@ time = { workspace = true }
 futures = { workspace = true }
 governor = { workspace = true }
 nonzero_ext = { workspace = true }
+dashmap = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true, features = ["cors", "trace"] }
 notify = "6.0"
 walkdir = "2.3"
 mime_guess = "2.0"
