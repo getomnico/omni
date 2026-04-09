@@ -92,15 +92,16 @@ async def load_models(app_state: AppState) -> None:
     records = await repo.list_active()
 
     models: dict[str, LLMProvider] = {}
-    model_records: dict[str, ModelRecord] = {}
     default_id: str | None = None
     secondary_id: str | None = None
 
     for record in records:
         try:
             provider = _create_provider_from_model_record(record)
+            provider.model_record_id = record.id
+            provider.model_name = record.model_id
+            provider.provider_type = record.provider_type
             models[record.id] = provider
-            model_records[record.id] = record
             logger.info(
                 f"Initialized model '{record.display_name}' (type={record.provider_type}, model={record.model_id}, id={record.id})"
             )
@@ -114,7 +115,6 @@ async def load_models(app_state: AppState) -> None:
             )
 
     app_state.models = models
-    app_state.model_records = model_records
     app_state.default_model_id = default_id
     app_state.secondary_model_id = secondary_id
 

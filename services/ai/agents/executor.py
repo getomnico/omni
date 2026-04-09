@@ -24,7 +24,7 @@ from config import (
     SANDBOX_URL,
 )
 from db.documents import DocumentsRepository
-from db.models import ModelRecord, Source
+from db.models import Source
 from db.usage import UsageRepository
 from db.users import UsersRepository
 from providers import LLMProvider
@@ -54,23 +54,17 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 
 
-def _resolve_llm_provider(
-    state: AppState, agent: Agent
-) -> tuple[LLMProvider, ModelRecord]:
+def _resolve_llm_provider(state: AppState, agent: Agent) -> LLMProvider:
     """Resolve which LLM provider to use for an agent."""
     models = state.models
-    records = state.model_records
     if not models:
         raise RuntimeError("No models configured")
 
     if agent.model_id and agent.model_id in models:
-        key = agent.model_id
-    elif state.default_model_id and state.default_model_id in models:
-        key = state.default_model_id
-    else:
-        key = next(iter(models))
-
-    return models[key], records[key]
+        return models[agent.model_id]
+    if state.default_model_id and state.default_model_id in models:
+        return models[state.default_model_id]
+    return next(iter(models.values()))
 
 
 async def _fetch_sources() -> list[Source] | None:
@@ -202,7 +196,7 @@ async def _run_agent_loop(
 
     await emit_status("Initializing...")
 
-    llm_provider, model_record = _resolve_llm_provider(app_state, agent)
+    llm_provider = _resolve_llm_provider(app_state, agent)
     sources = await _fetch_sources()
 
     registry, connector_actions = await _build_agent_registry(app_state, agent, sources)
@@ -245,22 +239,20 @@ async def _run_agent_loop(
 
     # Compaction support — use secondary model for summarization when available
     secondary_provider = llm_provider
-    secondary_record = model_record
     if (
         app_state.secondary_model_id
         and app_state.secondary_model_id in app_state.models
     ):
         secondary_provider = app_state.models[app_state.secondary_model_id]
-        secondary_record = app_state.model_records[app_state.secondary_model_id]
 
     def _on_compaction_usage(usage):
         save_usage_fire_and_forget(
             UsageRepository(),
             UsageContext(
                 user_id=agent.user_id if not is_org_agent else None,
-                model_id=secondary_record.id,
-                model_name=secondary_record.model_id,
-                provider_type=secondary_record.provider_type,
+                model_id=secondary_provider.model_record_id,
+                model_name=secondary_provider.model_name,
+                provider_type=secondary_provider.provider_type,
                 usage_type="compaction",
                 agent_run_id=run.id,
             ),
@@ -295,9 +287,9 @@ async def _run_agent_loop(
             usage_repo,
             UsageContext(
                 user_id=agent.user_id if not is_org_agent else None,
-                model_id=model_record.id,
-                model_name=model_record.model_id,
-                provider_type=model_record.provider_type,
+                model_id=llm_provider.model_record_id,
+                model_name=llm_provider.model_name,
+                provider_type=llm_provider.provider_type,
                 usage_type="agent_run",
                 agent_run_id=run.id,
             ),
@@ -425,9 +417,9 @@ async def _run_agent_loop(
         UsageRepository(),
         UsageContext(
             user_id=agent.user_id if not is_org_agent else None,
-            model_id=model_record.id,
-            model_name=model_record.model_id,
-            provider_type=model_record.provider_type,
+            model_id=llm_provider.model_record_id,
+            model_name=llm_provider.model_name,
+            provider_type=llm_provider.provider_type,
             usage_type="agent_summary",
             agent_run_id=run.id,
         ),

@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
 import pathlib
 from typing import cast
 
@@ -74,56 +73,31 @@ Based on the first message(s) of a conversation, generate a title that is:
 Just respond with the title text, nothing else."""
 
 
-@dataclass
-class ResolvedModel:
-    provider: LLMProvider
-    record_id: str
-    model_name: str
-    provider_type: str
-
-
-def _resolve_model(state: AppState, model_id: str | None) -> ResolvedModel:
-    """Resolve a model by ID, returning the provider and its metadata."""
+def _resolve_provider(state: AppState, model_id: str | None) -> LLMProvider:
+    """Resolve a model by ID, returning the provider.
+    Priority: requested model -> default model -> first available.
+    """
     models = state.models
-    records = state.model_records
     if not models:
         raise HTTPException(status_code=503, detail="No models configured")
 
-    # Try the requested model first
     if model_id and model_id in models:
-        key = model_id
-    elif state.default_model_id and state.default_model_id in models:
-        key = state.default_model_id
-    else:
-        key = next(iter(models))
-
-    record = records[key]
-    return ResolvedModel(
-        provider=models[key],
-        record_id=key,
-        model_name=record.model_id,
-        provider_type=record.provider_type,
-    )
+        return models[model_id]
+    if state.default_model_id and state.default_model_id in models:
+        return models[state.default_model_id]
+    return next(iter(models.values()))
 
 
-def _resolve_llm_provider(state: AppState, chat: Chat) -> ResolvedModel:
-    """Resolve which LLM provider to use for a chat.
-    Priority: chat's model -> default model -> first available.
-    """
-    return _resolve_model(state, chat.model_id)
+def _resolve_llm_provider(state: AppState, chat: Chat) -> LLMProvider:
+    """Resolve which LLM provider to use for a chat."""
+    return _resolve_provider(state, chat.model_id)
 
 
-def _resolve_secondary_provider(state: AppState) -> ResolvedModel:
+def _resolve_secondary_provider(state: AppState) -> LLMProvider:
     """Resolve the secondary (lightweight) model provider.
-    Priority: secondary model -> default model -> first available.
     Used for title generation, suggested questions, compaction, etc.
     """
-    models = state.models
-    if not models:
-        raise HTTPException(status_code=503, detail="No models configured")
-
-    model_id = state.secondary_model_id or state.default_model_id
-    return _resolve_model(state, model_id)
+    return _resolve_provider(state, state.secondary_model_id or state.default_model_id)
 
 
 def convert_citation_to_param(citation_delta: CitationsDelta) -> TextCitationParam:
@@ -419,8 +393,7 @@ async def stream_chat(
     if not chat:
         raise HTTPException(status_code=404, detail="Chat thread not found")
 
-    resolved = _resolve_llm_provider(request.app.state, chat)
-    llm_provider = resolved.provider
+    llm_provider = _resolve_llm_provider(request.app.state, chat)
     redis_client = getattr(request.app.state, "redis_client", None)
     messages_repo = MessagesRepository()
     chat_messages = await messages_repo.get_active_path(chat_id)
@@ -532,16 +505,16 @@ async def stream_chat(
         )
 
     # Check if conversation needs compaction
-    resolved_secondary = _resolve_secondary_provider(request.app.state)
+    secondary_provider = _resolve_secondary_provider(request.app.state)
 
     def _on_compaction_usage(usage):
         save_usage_fire_and_forget(
             UsageRepository(),
             UsageContext(
                 user_id=chat.user_id,
-                model_id=resolved_secondary.record_id,
-                model_name=resolved_secondary.model_name,
-                provider_type=resolved_secondary.provider_type,
+                model_id=secondary_provider.model_record_id,
+                model_name=secondary_provider.model_name,
+                provider_type=secondary_provider.provider_type,
                 usage_type="compaction",
                 chat_id=chat_id,
             ),
@@ -552,7 +525,7 @@ async def stream_chat(
         )
 
     compactor = ConversationCompactor(
-        llm_provider=resolved_secondary.provider,
+        llm_provider=secondary_provider,
         redis_client=redis_client,
         on_usage=_on_compaction_usage,
     )
@@ -650,9 +623,9 @@ async def stream_chat(
                     usage_repo,
                     UsageContext(
                         user_id=chat.user_id,
-                        model_id=resolved.record_id,
-                        model_name=resolved.model_name,
-                        provider_type=resolved.provider_type,
+                        model_id=llm_provider.model_record_id,
+                        model_name=llm_provider.model_name,
+                        provider_type=llm_provider.provider_type,
                         usage_type="chat",
                         chat_id=chat_id,
                     ),
@@ -906,8 +879,7 @@ async def generate_chat_title(
         if not chat:
             raise HTTPException(status_code=404, detail="Chat thread not found")
 
-        resolved_title = _resolve_secondary_provider(request.app.state)
-        llm_provider = resolved_title.provider
+        llm_provider = _resolve_secondary_provider(request.app.state)
 
         # Check if title already exists
         if chat.title:
@@ -955,9 +927,9 @@ async def generate_chat_title(
                 UsageRepository(),
                 UsageContext(
                     user_id=chat.user_id,
-                    model_id=resolved_title.record_id,
-                    model_name=resolved_title.model_name,
-                    provider_type=resolved_title.provider_type,
+                    model_id=llm_provider.model_record_id,
+                    model_name=llm_provider.model_name,
+                    provider_type=llm_provider.provider_type,
                     usage_type="title_generation",
                     chat_id=chat_id,
                 ),
