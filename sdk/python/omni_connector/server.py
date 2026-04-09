@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, status
 from fastapi.responses import JSONResponse
+from starlette.responses import Response
 
 from .client import SdkClient
 from .context import SyncContext
@@ -199,7 +200,7 @@ def create_app(connector: "Connector") -> FastAPI:
         return CancelResponse(status="not_found").model_dump()
 
     @app.post("/action")
-    async def execute_action(request: ActionRequest) -> dict[str, Any]:
+    async def execute_action(request: ActionRequest):
         logger.info("Action requested: %s", request.action)
 
         try:
@@ -208,6 +209,8 @@ def create_app(connector: "Connector") -> FastAPI:
                 request.params,
                 request.credentials,
             )
+            if isinstance(response, Response):
+                return response
             return response.model_dump()
         except Exception as e:
             logger.error("Action %s failed: %s", request.action, e)
