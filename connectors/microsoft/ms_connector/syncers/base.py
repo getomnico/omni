@@ -77,4 +77,6 @@ class BaseSyncer(abc.ABC):
             if new_token:
                 new_tokens[user_id] = new_token
 
+            await ctx.save_state({"delta_tokens": new_tokens})
+
         return {"delta_tokens": new_tokens}

@@ -396,6 +396,14 @@ class TeamsSyncer:
                     new_tokens[token_key] = new_token
                     new_sync_ts[token_key] = now_iso
 
+                await ctx.save_state(
+                    {
+                        "delta_tokens": new_tokens,
+                        "last_sync_ts": new_sync_ts,
+                        "chat_last_sync_ts": chat_last_sync_ts,
+                    }
+                )
+
         # Phase 2: Chats (1:1, group, meeting)
         new_chat_sync_ts = await self._sync_chats(
             client=client,
@@ -404,6 +412,7 @@ class TeamsSyncer:
             now_iso=now_iso,
             user_cache=user_cache,
             chat_last_sync_ts=chat_last_sync_ts,
+            channel_state={"delta_tokens": new_tokens, "last_sync_ts": new_sync_ts},
         )
 
         return {
@@ -785,6 +794,7 @@ class TeamsSyncer:
         now_iso: str,
         user_cache: dict[str, str],
         chat_last_sync_ts: dict[str, str],
+        channel_state: dict[str, Any] | None = None,
     ) -> dict[str, str]:
         """Iterate users, collect their chats, and sync messages."""
         new_chat_sync_ts: dict[str, str] = {}
@@ -855,6 +865,13 @@ class TeamsSyncer:
                 )
                 if ok:
                     new_chat_sync_ts[chat_id] = now_iso
+
+                await ctx.save_state(
+                    {
+                        **(channel_state or {}),
+                        "chat_last_sync_ts": new_chat_sync_ts,
+                    }
+                )
 
         logger.info("[teams] Processed %d chats", len(seen_chat_ids))
         return new_chat_sync_ts

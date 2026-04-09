@@ -78,28 +78,32 @@ class OneDriveSyncer(BaseSyncer):
             else None
         )
 
+        skipped_folders = 0
+        skipped_cutoff = 0
+        skipped_deleted = 0
+
         for item in items:
             if ctx.is_cancelled():
                 return delta_token
 
-            await ctx.increment_scanned()
-
-            # Handle deletions
             if item.get("deleted"):
+                skipped_deleted += 1
                 drive_id = item.get("parentReference", {}).get("driveId", "unknown")
                 external_id = f"onedrive:{drive_id}:{item['id']}"
                 await ctx.emit_deleted(external_id)
                 continue
 
-            # Skip folders
             if "folder" in item:
+                skipped_folders += 1
                 continue
 
-            # On initial sync, skip files older than the max age cutoff
             if cutoff:
                 modified = _parse_iso(item.get("lastModifiedDateTime"))
                 if modified and modified < cutoff:
+                    skipped_cutoff += 1
                     continue
+
+            await ctx.increment_scanned()
 
             try:
                 await self._process_item(
@@ -110,6 +114,20 @@ class OneDriveSyncer(BaseSyncer):
                 external_id = f"onedrive:{drive_id}:{item['id']}"
                 logger.warning("[onedrive] Error processing %s: %s", external_id, e)
                 await ctx.emit_error(external_id, str(e))
+
+        total = len(items)
+        skipped = skipped_folders + skipped_cutoff + skipped_deleted
+        if skipped:
+            logger.info(
+                "[onedrive] User %s: %d items total, %d skipped "
+                "(folders=%d, cutoff=%d, deleted=%d)",
+                display_name,
+                total,
+                skipped,
+                skipped_folders,
+                skipped_cutoff,
+                skipped_deleted,
+            )
 
         return new_token
 

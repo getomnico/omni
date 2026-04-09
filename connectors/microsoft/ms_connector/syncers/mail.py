@@ -124,16 +124,17 @@ class MailSyncer(BaseSyncer):
             )
             return delta_token
 
+        skipped_deleted = 0
+
         for item in items:
             if ctx.is_cancelled():
                 return delta_token
 
-            await ctx.increment_scanned()
-
-            # Skip deletions: a message deleted from one user's inbox
-            # shouldn't disappear from search for all participants.
             if item.get("deleted") or item.get("@removed"):
+                skipped_deleted += 1
                 continue
+
+            await ctx.increment_scanned()
 
             try:
                 body_content = item.get("body", {}).get("content", "")
@@ -157,6 +158,15 @@ class MailSyncer(BaseSyncer):
 
             if item.get("hasAttachments"):
                 await self._process_attachments(client, user_id, item, ctx)
+
+        if skipped_deleted:
+            logger.info(
+                "[mail] %s/%s: %d items total, %d deleted skipped",
+                display_name,
+                folder,
+                len(items),
+                skipped_deleted,
+            )
 
         return new_token
 
