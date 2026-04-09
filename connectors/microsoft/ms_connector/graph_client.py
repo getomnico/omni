@@ -297,7 +297,6 @@ class GraphClient:
         members: list[dict[str, Any]] = []
         async for member in self.get_paginated(
             f"/teams/{team_id}/channels/{channel_id}/members",
-            params={"$select": "id,displayName,email,userId"},
         ):
             members.append(member)
         return members
@@ -346,6 +345,25 @@ class GraphClient:
             params=params,
         )
 
+    async def list_channel_messages(
+        self,
+        team_id: str,
+        channel_id: str,
+        filter_from: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List channel messages without delta query (fallback for channels
+        that don't support delta, e.g. certain private channels)."""
+        params: dict[str, str] = {"$top": "50"}
+        if filter_from:
+            params["$filter"] = f"lastModifiedDateTime gt {filter_from}"
+        messages: list[dict[str, Any]] = []
+        async for msg in self.get_paginated(
+            f"/teams/{team_id}/channels/{channel_id}/messages",
+            params=params,
+        ):
+            messages.append(msg)
+        return messages
+
     async def list_message_replies(
         self, team_id: str, channel_id: str, message_id: str
     ) -> list[dict[str, Any]]:
@@ -353,10 +371,6 @@ class GraphClient:
         replies: list[dict[str, Any]] = []
         async for reply in self.get_paginated(
             f"/teams/{team_id}/channels/{channel_id}/messages/{message_id}/replies",
-            params={
-                "$select": "id,body,from,createdDateTime,lastModifiedDateTime,"
-                "attachments,mentions,reactions,messageType",
-            },
         ):
             replies.append(reply)
         return replies

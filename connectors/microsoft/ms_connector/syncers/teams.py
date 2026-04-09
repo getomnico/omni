@@ -457,6 +457,7 @@ class TeamsSyncer:
         logger.info("[teams] Syncing channel %s/%s", team_name, channel_name)
 
         # Phase 1: detect changes via delta
+        use_delta = True
         try:
             delta_items, new_token = await client.get_channel_messages_delta(
                 team_id, channel_id, delta_token
@@ -476,6 +477,29 @@ class TeamsSyncer:
                 except GraphAPIError as e2:
                     logger.warning(
                         "[teams] Full sync fallback failed for %s/%s: %s",
+                        team_name,
+                        channel_name,
+                        e2,
+                    )
+                    return delta_token
+            elif e.status_code == 400 and "DeltaToken" in str(e):
+                # Some channels (e.g. certain private channels) don't support
+                # delta queries — fall back to listing messages directly
+                logger.info(
+                    "[teams] Delta not supported for %s/%s, using list fallback",
+                    team_name,
+                    channel_name,
+                )
+                use_delta = False
+                try:
+                    delta_items = await client.list_channel_messages(
+                        team_id, channel_id
+                    )
+                    new_token = None
+                    is_first_sync = True
+                except GraphAPIError as e2:
+                    logger.warning(
+                        "[teams] List fallback failed for %s/%s: %s",
                         team_name,
                         channel_name,
                         e2,
