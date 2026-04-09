@@ -204,7 +204,7 @@ services:
     networks:
       - sandbox-net
     mem_limit: 512m
-    # cpuset: "0"   # Uncomment to pin to specific cores, e.g. CPU=0,1
+    cpuset: "0,1"   # Pin to specific cores, e.g. CPU=0,1
     security_opt:
       - no-new-privileges:true
     read_only: true
@@ -322,7 +322,7 @@ services:
       - docling_models:/root/.cache
     restart: unless-stopped
     mem_limit: ${DOCLING_MEMORY:-2g}
-    # cpuset: "${DOCLING_CPUS}"  # Uncomment to pin to specific cores, e.g. DOCLING_CPUS=0,1
+    cpuset: "${DOCLING_CPUSET}"  # pin to specific cores, e.g. DOCLING_CPUSET=0,1
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${DOCLING_PORT:-8003}/health"]
       interval: 30s
