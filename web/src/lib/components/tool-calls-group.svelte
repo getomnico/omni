@@ -50,8 +50,7 @@
         class:max-h-0={!expanded}
         class:opacity-0={!expanded}
         class:pointer-events-none={!expanded}>
-        <div
-            class="bg-card mb-3 max-h-64 overflow-y-auto rounded-lg border border-gray-200 p-3 opacity-75">
+        <div class="mb-3 max-h-64 overflow-y-auto opacity-75">
             {#each earlierBlocks as block (block.id)}
                 {#if block.type === 'text'}
                     <MarkdownMessage

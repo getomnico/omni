@@ -55,10 +55,14 @@
     import {
         getIconFromSearchResult,
         getSourceDisplayName,
+        getSourceIconPath,
         inferSourceFromUrl,
     } from '$lib/utils/icons'
+    import * as Card from '$lib/components/ui/card'
     import { SourceType } from '$lib/types'
     import MarkdownMessage from '$lib/components/markdown-message.svelte'
+    import omniLogoLight from '$lib/images/icons/omni-logo-256.png'
+    import omniLogoDark from '$lib/images/icons/omni-logo-dark-256.png'
 
     let { data }: PageProps = $props()
     let chatMessages = $state<ChatMessage[]>([...data.messages])
@@ -78,6 +82,95 @@
     let isStreaming = $state(false)
     let error = $state<string | null>(null)
     let eventSource: EventSource | null = $state(null)
+
+    const defaultVerbs = ['Thinking', 'Reasoning', 'Analyzing', 'Processing']
+    const slowMessages = [
+        'Still working',
+        'This is taking a bit longer',
+        'Almost there',
+        'Still thinking',
+    ]
+
+    const toolVerbMap: Record<string, string[]> = {
+        search_documents: ['Searching', 'Looking it up', 'Digging through results'],
+        read_document: ['Reading document', 'Reviewing document'],
+        write_file: ['Writing file', 'Preparing file'],
+        read_file: ['Reading file', 'Opening file'],
+        run_bash: ['Running command', 'Executing'],
+        run_python: ['Running code', 'Executing script'],
+        present_artifact: ['Preparing result', 'Finalizing'],
+    }
+
+    let thinkingText = $state(defaultVerbs[0])
+    let thinkingVerbIndex = 0
+    let thinkingRotateInterval: ReturnType<typeof setInterval> | null = null
+    let thinkingSlowTimer: ReturnType<typeof setTimeout> | null = null
+    let lastToolContext: string | null = null
+
+    function pickRandom(arr: string[]): string {
+        return arr[Math.floor(Math.random() * arr.length)]
+    }
+
+    function getThinkingVerbs(): string[] {
+        if (lastToolContext && toolVerbMap[lastToolContext]) {
+            return toolVerbMap[lastToolContext]
+        }
+        return defaultVerbs
+    }
+
+    function updateThinkingForTool(toolName: string) {
+        lastToolContext = toolName
+        const verbs = toolVerbMap[toolName]
+        if (verbs) {
+            thinkingText = pickRandom(verbs)
+        } else {
+            thinkingText = 'Working'
+        }
+        // Reset the slow timer since we just got new activity
+        if (thinkingSlowTimer) {
+            clearTimeout(thinkingSlowTimer)
+            thinkingSlowTimer = setTimeout(() => {
+                if (thinkingRotateInterval) clearInterval(thinkingRotateInterval)
+                thinkingRotateInterval = null
+                thinkingText = pickRandom(slowMessages)
+            }, 15000)
+        }
+    }
+
+    function updateThinkingForText() {
+        if (lastToolContext) {
+            lastToolContext = null
+            thinkingText = pickRandom(defaultVerbs)
+        }
+    }
+
+    function startThinkingText() {
+        lastToolContext = null
+        thinkingVerbIndex = Math.floor(Math.random() * defaultVerbs.length)
+        thinkingText = defaultVerbs[thinkingVerbIndex]
+        thinkingRotateInterval = setInterval(() => {
+            const verbs = getThinkingVerbs()
+            thinkingVerbIndex = (thinkingVerbIndex + 1) % verbs.length
+            thinkingText = verbs[thinkingVerbIndex]
+        }, 4000)
+        thinkingSlowTimer = setTimeout(() => {
+            if (thinkingRotateInterval) clearInterval(thinkingRotateInterval)
+            thinkingRotateInterval = null
+            thinkingText = pickRandom(slowMessages)
+        }, 15000)
+    }
+
+    function stopThinkingText() {
+        if (thinkingRotateInterval) {
+            clearInterval(thinkingRotateInterval)
+            thinkingRotateInterval = null
+        }
+        if (thinkingSlowTimer) {
+            clearTimeout(thinkingSlowTimer)
+            thinkingSlowTimer = null
+        }
+        lastToolContext = null
+    }
 
     let copiedMessageId = $state<number | null>(null)
     let copiedUrl = $state(false)
@@ -630,6 +723,7 @@
     function streamResponse(chatId: string) {
         isStreaming = true
         error = null
+        startThinkingText()
 
         let currToolUseId: string
         let currToolUseName: string
@@ -793,9 +887,11 @@
                         currToolUseId = data.content_block.id
                         currToolUseName = data.content_block.name
                         currToolUseInputStr = ''
+                        updateThinkingForTool(data.content_block.name)
                     }
                 } else if (data.type === 'content_block_delta') {
                     if (data.delta.type === 'text_delta' && data.delta.text) {
+                        updateThinkingForText()
                         collectStreamingResponse(data.delta, data.index)
                     } else if (data.delta.type === 'citations_delta') {
                         collectStreamingResponse(data.delta, data.index)
@@ -834,6 +930,7 @@
                 const approvalData: ApprovalRequiredEvent = JSON.parse(event.data)
                 pendingApproval = approvalData
                 isStreaming = false
+                stopThinkingText()
                 requestAnimationFrame(() => recalcBottomPadding())
             } catch (err) {
                 console.error('Failed to parse approval_required event:', err)
@@ -843,6 +940,7 @@
         eventSource.addEventListener('end_of_stream', () => {
             streamCompleted = true
             isStreaming = false
+            stopThinkingText()
             requestAnimationFrame(() => recalcBottomPadding())
             userInputRef?.focus()
             eventSource?.close()
@@ -856,6 +954,7 @@
         eventSource.addEventListener('error', (event) => {
             error = 'Failed to generate response. Please try again.'
             isStreaming = false
+            stopThinkingText()
             requestAnimationFrame(() => recalcBottomPadding())
             userInputRef?.focus()
             eventSource?.close()
@@ -1318,6 +1417,81 @@
                                     isStreaming={isStreaming && i === processedMessages.length - 1}
                                     {stripThinkingContent} />
                             </div>
+                            {#if pendingApproval && i === processedMessages.length - 1}
+                                {@const connectorName = pendingApproval.tool_name.split('__')[0]}
+                                {@const actionName = pendingApproval.tool_name
+                                    .split('__')
+                                    .slice(1)
+                                    .join('__')}
+                                {@const connectorIcon = getSourceIconPath(connectorName)}
+                                <Card.Root class="gap-0 overflow-hidden py-0">
+                                    <!-- Header -->
+                                    <Card.Header
+                                        class="flex items-center gap-3 border-b px-5 py-3 [.border-b]:py-3">
+                                        {#if connectorIcon}
+                                            <img
+                                                src={connectorIcon}
+                                                alt={connectorName}
+                                                class="h-7 w-7" />
+                                        {/if}
+                                        <div class="min-w-0 flex-1">
+                                            <Card.Title class="text-sm">
+                                                {getSourceDisplayName(
+                                                    connectorName as SourceType,
+                                                ) || connectorName}
+                                            </Card.Title>
+                                            <Card.Description class="text-xs">
+                                                {actionName.replaceAll('_', ' ')}
+                                            </Card.Description>
+                                        </div>
+                                        <div
+                                            class="flex items-center gap-1.5 rounded-full bg-amber-100 px-2.5 py-1 dark:bg-amber-950">
+                                            <span class="h-1.5 w-1.5 rounded-full bg-amber-500"
+                                            ></span>
+                                            <span
+                                                class="text-[11px] font-medium text-amber-700 dark:text-amber-400"
+                                                >Awaiting approval</span>
+                                        </div>
+                                    </Card.Header>
+
+                                    <!-- Parameters -->
+                                    <Card.Content class="px-5 py-4">
+                                        <div
+                                            class="grid grid-cols-[80px_1fr] items-start gap-x-4 gap-y-2.5 text-[13px]">
+                                            {#each Object.entries(pendingApproval.tool_input) as [key, value]}
+                                                <div class="text-muted-foreground">{key}</div>
+                                                <div
+                                                    class={typeof value === 'string' &&
+                                                    value.length > 60
+                                                        ? 'leading-relaxed'
+                                                        : 'font-mono'}>
+                                                    {value}
+                                                </div>
+                                            {/each}
+                                        </div>
+                                    </Card.Content>
+
+                                    <!-- Footer -->
+                                    <Card.Footer
+                                        class="bg-muted/50 justify-end gap-2 border-t px-3 py-3 [.border-t]:py-3">
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            class="cursor-pointer"
+                                            onclick={() => handleApproval('denied')}>
+                                            Deny
+                                        </Button>
+                                        <Button
+                                            size="sm"
+                                            variant="default"
+                                            class="cursor-pointer"
+                                            onclick={() => handleApproval('approved')}>
+                                            <Check class="h-3 w-3" />
+                                            Approve & send
+                                        </Button>
+                                    </Card.Footer>
+                                </Card.Root>
+                            {/if}
                             {#if !isStreaming}
                                 {@render sourcesSection(collectSources(message))}
                             {/if}
@@ -1338,48 +1512,6 @@
                     {/if}
                 {/each}
 
-                <!-- Approval Required UI -->
-                {#if pendingApproval}
-                    <div class="mx-auto w-full max-w-lg">
-                        <div class="rounded-lg border border-amber-200 bg-amber-50 p-4">
-                            <div class="mb-2 flex items-center gap-2">
-                                <CircleAlertIcon class="h-5 w-5 text-amber-600" />
-                                <h3 class="text-sm font-semibold text-amber-800">
-                                    Action requires approval
-                                </h3>
-                            </div>
-                            <div class="mb-3 space-y-1">
-                                <p class="text-sm text-amber-700">
-                                    <span class="font-medium"
-                                        >{pendingApproval.tool_name.replace('__', ' > ')}</span>
-                                </p>
-                                <pre
-                                    class="max-h-32 overflow-auto rounded bg-amber-100 p-2 text-xs text-amber-900">{JSON.stringify(
-                                        pendingApproval.tool_input,
-                                        null,
-                                        2,
-                                    )}</pre>
-                            </div>
-                            <div class="flex gap-2">
-                                <Button
-                                    size="sm"
-                                    variant="default"
-                                    class="cursor-pointer bg-green-600 text-white hover:bg-green-700"
-                                    onclick={() => handleApproval('approved')}>
-                                    Approve
-                                </Button>
-                                <Button
-                                    size="sm"
-                                    variant="outline"
-                                    class="cursor-pointer"
-                                    onclick={() => handleApproval('denied')}>
-                                    Deny
-                                </Button>
-                            </div>
-                        </div>
-                    </div>
-                {/if}
-
                 <!-- Streaming AI Response -->
                 {#if isStreaming || error}
                     <div class="flex px-2">
@@ -1390,8 +1522,20 @@
                                 <!-- <Alert.Description>{error}</Alert.Description> -->
                             </Alert.Root>
                         {:else if isStreaming}
-                            <span class="mt-2 flex items-center gap-1">
-                                <span class="thinking-dot"></span>
+                            <span class="thinking-container mt-2 flex items-center gap-1.5">
+                                <img
+                                    src={omniLogoLight}
+                                    alt="Thinking"
+                                    class="thinking-logo rounded opacity-60 dark:hidden"
+                                    width="20"
+                                    height="20" />
+                                <img
+                                    src={omniLogoDark}
+                                    alt="Thinking"
+                                    class="thinking-logo hidden rounded opacity-60 dark:block"
+                                    width="20"
+                                    height="20" />
+                                <span class="text-muted-foreground text-sm">{thinkingText}...</span>
                             </span>
                         {/if}
                     </div>
@@ -1420,22 +1564,43 @@
 </div>
 
 <style>
-    @keyframes pulse-dot {
-        0%,
-        100% {
-            transform: scale(1);
+    @keyframes shine-sweep {
+        0% {
+            left: -100%;
         }
-        50% {
-            transform: scale(1.5);
+        100% {
+            left: 200%;
         }
     }
 
-    .thinking-dot {
-        display: inline-block;
-        width: 12px;
-        height: 12px;
-        background-color: currentColor;
-        border-radius: 50%;
-        animation: pulse-dot 1.4s ease-in-out infinite;
+    .thinking-container {
+        position: relative;
+        overflow: hidden;
+    }
+
+    .thinking-container::after {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: -100%;
+        width: 50%;
+        height: 100%;
+        background: linear-gradient(
+            120deg,
+            transparent 0%,
+            rgba(255, 255, 255, 0.6) 50%,
+            transparent 100%
+        );
+        animation: shine-sweep 2s ease-in-out infinite;
+        pointer-events: none;
+    }
+
+    :global(.dark) .thinking-container::after {
+        background: linear-gradient(
+            120deg,
+            transparent 0%,
+            rgba(255, 255, 255, 0.3) 50%,
+            transparent 100%
+        );
     }
 </style>

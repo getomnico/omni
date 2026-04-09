@@ -192,7 +192,7 @@ def _build_search_tools(
     return [
         {
             "name": "search_documents",
-            "description": "Search enterprise documents using hybrid text and semantic search. Use this when you need to find information to answer user questions. Use inline query operators (in:, by:, type:, status:, etc.) for filtering.",
+            "description": "Search the Omni index for data across all connected apps using hybrid text and semantic search. Use this when you need to find information to answer user questions. Use inline query operators (in:, by:, type:, status:, etc.) for filtering.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -296,7 +296,9 @@ class SearchToolHandler:
             # in attributes when present.
             date_str: str | None = None
             if doc.metadata:
-                raw_date = doc.metadata.get("updated_at") or doc.metadata.get("created_at")
+                raw_date = doc.metadata.get("updated_at") or doc.metadata.get(
+                    "created_at"
+                )
                 if raw_date and isinstance(raw_date, str):
                     try:
                         dt = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
@@ -306,7 +308,9 @@ class SearchToolHandler:
                     except (ValueError, AttributeError):
                         date_str = raw_date
             if not date_str and doc.attributes:
-                raw_ts = doc.attributes.get("updated_at") or doc.attributes.get("created_at")
+                raw_ts = doc.attributes.get("updated_at") or doc.attributes.get(
+                    "created_at"
+                )
                 if raw_ts and isinstance(raw_ts, (int, float)):
                     try:
                         dt = datetime.fromtimestamp(raw_ts, tz=timezone.utc)
