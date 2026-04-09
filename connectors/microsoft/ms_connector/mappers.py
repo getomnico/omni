@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from omni_connector import Document, DocumentMetadata, DocumentPermissions
 
 if TYPE_CHECKING:
-    from .syncers.teams import TeamsMessageGroup
+    from .syncers.teams import TeamsChatMessageGroup, TeamsMessageGroup
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -519,6 +519,59 @@ def generate_teams_message_content(
             content = strip_html(content)
         lines.append(f"{sender_name} [{timestamp}]: {content}")
     return "\n\n".join(lines)
+
+
+def map_teams_chat_messages_to_document(
+    group: TeamsChatMessageGroup,
+    content_id: str,
+) -> Document:
+    """Map a group of Teams chat messages to an Omni Document."""
+    external_id = group.external_id
+
+    if group.chat_topic:
+        title = f"{group.chat_topic} - {group.date}"
+    elif group.chat_type == "oneOnOne":
+        names = group.participant_names[:2]
+        title = f"Chat: {' & '.join(names)} - {group.date}"
+    elif group.chat_type == "meeting":
+        title = f"Meeting chat - {group.date}"
+    else:
+        names = group.participant_names[:3]
+        suffix = (
+            f" +{len(group.participant_names) - 3}"
+            if len(group.participant_names) > 3
+            else ""
+        )
+        title = f"Group chat: {', '.join(names)}{suffix} - {group.date}"
+
+    authors = sorted(set(group.authors))
+
+    return Document(
+        external_id=external_id,
+        title=title,
+        content_id=content_id,
+        metadata=DocumentMetadata(
+            author=authors[0] if len(authors) == 1 else "Multiple authors",
+            created_at=group.first_timestamp,
+            updated_at=group.last_timestamp,
+            content_type="message",
+            mime_type="text/plain",
+            extra={
+                "teams_chat": {
+                    "chat_id": group.chat_id,
+                    "chat_type": group.chat_type,
+                    "message_count": group.message_count,
+                    "authors": authors,
+                    "date": str(group.date),
+                }
+            },
+        ),
+        permissions=group.permissions,
+        attributes={
+            "source_type": "ms_teams",
+            "chat_type": group.chat_type,
+        },
+    )
 
 
 def _parse_graph_datetime(dt_obj: dict[str, Any] | None) -> datetime | None:

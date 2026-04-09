@@ -264,7 +264,7 @@ class GraphClient:
         async for team in self.get_paginated(
             "/groups",
             params={
-                "$filter": "resourceProvisionedPlans/any(p: p/providingService eq 'MCO')",
+                "$filter": "resourceProvisioningOptions/Any(x:x eq 'Team')",
                 "$select": "id,displayName,mail,description",
             },
         ):
@@ -328,10 +328,7 @@ class GraphClient:
         If filter_from is set (ISO datetime) and delta_token is None,
         adds $filter=lastModifiedDateTime gt <date> to scope the query.
         """
-        params: dict[str, str] = {
-            "$select": "id,body,from,createdDateTime,lastModifiedDateTime,"
-            "replyToId,attachments,mentions,reactions,messageType",
-        }
+        params: dict[str, str] = {}
         if filter_from and delta_token is None:
             params["$filter"] = f"lastModifiedDateTime gt {filter_from}"
         return await self.get_delta(
@@ -354,6 +351,41 @@ class GraphClient:
         ):
             replies.append(reply)
         return replies
+
+    async def list_user_chats(self, user_id: str) -> list[dict[str, Any]]:
+        """List all chats for a user, with members expanded."""
+        chats: list[dict[str, Any]] = []
+        async for chat in self.get_paginated(
+            f"/users/{user_id}/chats",
+            params={
+                "$select": "id,topic,chatType,createdDateTime,lastUpdatedDateTime",
+                "$expand": "members",
+            },
+        ):
+            chats.append(chat)
+        return chats
+
+    async def list_chat_messages(
+        self,
+        chat_id: str,
+        filter_from: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """List messages in a chat with optional time filter for incremental sync."""
+        params: dict[str, str] = {
+            "$orderby": "lastModifiedDateTime desc",
+            "$top": "50",
+        }
+        if filter_from:
+            params["$filter"] = f"lastModifiedDateTime gt {filter_from}"
+            # $filter requires matching $orderby
+            params["$orderby"] = "lastModifiedDateTime desc"
+        messages: list[dict[str, Any]] = []
+        async for msg in self.get_paginated(
+            f"/chats/{chat_id}/messages",
+            params=params,
+        ):
+            messages.append(msg)
+        return messages
 
     async def resolve_share(self, share_url: str) -> dict[str, Any]:
         """Resolve a SharePoint sharing URL to its underlying driveItem.

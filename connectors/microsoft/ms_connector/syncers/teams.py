@@ -1,4 +1,4 @@
-"""Microsoft Teams channel message syncer using delta queries."""
+"""Microsoft Teams syncer: channel messages and chats (1:1, group, meeting)."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from ..mappers import (
     generate_drive_item_content,
     generate_teams_message_content,
     map_drive_item_to_document,
+    map_teams_chat_messages_to_document,
     map_teams_messages_to_document,
     strip_html,
     _parse_iso,
@@ -194,12 +195,118 @@ def group_channel_messages(
     return daily_groups + thread_groups
 
 
-class TeamsSyncer:
-    """Syncs team channel messages from Microsoft Teams.
+@dataclass
+class TeamsChatMessageGroup:
+    """A group of Teams chat messages forming a single indexable document."""
 
-    Iterates over all teams in the tenant, their channels, and messages.
-    Groups messages by date per channel (daily documents) and creates
-    separate documents for threaded conversations.
+    chat_id: str
+    chat_type: str
+    chat_topic: str | None
+    participant_names: list[str]
+    date: date
+    part: int = 0
+    permissions: DocumentPermissions | None = None
+    messages: list[tuple[dict[str, Any], str]] = field(default_factory=list)
+
+    @property
+    def external_id(self) -> str:
+        ext_id = f"teams_chat:{self.chat_id}:{self.date}"
+        if self.part > 0:
+            ext_id += f"_p{self.part}"
+        return ext_id
+
+    @property
+    def message_count(self) -> int:
+        return len(self.messages)
+
+    @property
+    def authors(self) -> list[str]:
+        return [sender for _, sender in self.messages]
+
+    @property
+    def first_timestamp(self) -> datetime | None:
+        if not self.messages:
+            return None
+        return _parse_iso(self.messages[0][0].get("createdDateTime"))
+
+    @property
+    def last_timestamp(self) -> datetime | None:
+        if not self.messages:
+            return None
+        return _parse_iso(self.messages[-1][0].get("createdDateTime"))
+
+    @property
+    def content_size(self) -> int:
+        total = 0
+        for msg, _ in self.messages:
+            body = msg.get("body", {})
+            total += len(body.get("content", ""))
+        return total
+
+    def should_split(self) -> bool:
+        return (
+            self.message_count >= MAX_MESSAGES_PER_GROUP
+            or self.content_size >= MAX_CONTENT_BYTES_PER_GROUP
+        )
+
+
+def group_chat_messages(
+    messages: list[dict[str, Any]],
+    chat_id: str,
+    chat_type: str,
+    chat_topic: str | None,
+    participant_names: list[str],
+    user_cache: dict[str, str],
+    permissions: DocumentPermissions,
+) -> list[TeamsChatMessageGroup]:
+    """Group chat messages by date, splitting large groups."""
+    daily_messages: dict[date, list[tuple[dict[str, Any], str]]] = {}
+
+    for msg in messages:
+        sender = _get_sender_name(msg, user_cache)
+        msg_date = _message_date(msg)
+        if msg_date not in daily_messages:
+            daily_messages[msg_date] = []
+        daily_messages[msg_date].append((msg, sender))
+
+    groups: list[TeamsChatMessageGroup] = []
+    for msg_date in sorted(daily_messages.keys()):
+        msgs = daily_messages[msg_date]
+        part = 0
+        current = TeamsChatMessageGroup(
+            chat_id=chat_id,
+            chat_type=chat_type,
+            chat_topic=chat_topic,
+            participant_names=participant_names,
+            date=msg_date,
+            part=part,
+            permissions=permissions,
+        )
+        for msg_tuple in msgs:
+            current.messages.append(msg_tuple)
+            if current.should_split():
+                groups.append(current)
+                part += 1
+                current = TeamsChatMessageGroup(
+                    chat_id=chat_id,
+                    chat_type=chat_type,
+                    chat_topic=chat_topic,
+                    participant_names=participant_names,
+                    date=msg_date,
+                    part=part,
+                    permissions=permissions,
+                )
+        if current.messages:
+            groups.append(current)
+
+    return groups
+
+
+class TeamsSyncer:
+    """Syncs Microsoft Teams: channel messages and chats.
+
+    Phase 1 — Channels: iterates teams, channels, and messages using delta queries.
+    Phase 2 — Chats: iterates users, their 1:1/group/meeting chats, and messages.
     """
 
     @property
@@ -220,16 +327,18 @@ class TeamsSyncer:
         group_cache = group_cache or {}
         delta_tokens: dict[str, str] = state.get("delta_tokens", {})
         last_sync_ts: dict[str, str] = state.get("last_sync_ts", {})
+        chat_last_sync_ts: dict[str, str] = state.get("chat_last_sync_ts", {})
         new_tokens: dict[str, str] = {}
         new_sync_ts: dict[str, str] = {}
+        new_chat_sync_ts: dict[str, str] = {}
 
         cutoff = datetime.now(timezone.utc) - timedelta(days=DEFAULT_MAX_AGE_DAYS)
         now_iso = datetime.now(timezone.utc).isoformat()
 
+        # Phase 1: Channel messages
         teams = await self._list_teams(client)
         logger.info("[teams] Found %d teams", len(teams))
 
-        # Cache team members per team to avoid redundant API calls
         team_members_cache: dict[str, list[str]] = {}
 
         for team in teams:
@@ -287,7 +396,21 @@ class TeamsSyncer:
                     new_tokens[token_key] = new_token
                     new_sync_ts[token_key] = now_iso
 
-        return {"delta_tokens": new_tokens, "last_sync_ts": new_sync_ts}
+        # Phase 2: Chats (1:1, group, meeting)
+        new_chat_sync_ts = await self._sync_chats(
+            client=client,
+            ctx=ctx,
+            cutoff=cutoff,
+            now_iso=now_iso,
+            user_cache=user_cache,
+            chat_last_sync_ts=chat_last_sync_ts,
+        )
+
+        return {
+            "delta_tokens": new_tokens,
+            "last_sync_ts": new_sync_ts,
+            "chat_last_sync_ts": new_chat_sync_ts,
+        }
 
     async def _list_teams(self, client: GraphClient) -> list[dict[str, Any]]:
         try:
@@ -651,3 +774,198 @@ class TeamsSyncer:
         if dt is None:
             return False
         return dt < cutoff
+
+    # ── Chat sync (Phase 2) ──────────────────────────────────────────
+
+    async def _sync_chats(
+        self,
+        client: GraphClient,
+        ctx: SyncContext,
+        cutoff: datetime,
+        now_iso: str,
+        user_cache: dict[str, str],
+        chat_last_sync_ts: dict[str, str],
+    ) -> dict[str, str]:
+        """Iterate users, collect their chats, and sync messages."""
+        new_chat_sync_ts: dict[str, str] = {}
+
+        try:
+            users = await client.list_users()
+        except Exception as e:
+            logger.warning("[teams] Failed to list users for chat sync: %s", e)
+            return chat_last_sync_ts
+
+        users = [
+            u
+            for u in users
+            if ctx.should_index_user(u.get("mail") or u.get("userPrincipalName") or "")
+        ]
+        logger.info("[teams] Syncing chats across %d users", len(users))
+
+        seen_chat_ids: set[str] = set()
+
+        for user in users:
+            if ctx.is_cancelled():
+                return chat_last_sync_ts
+
+            user_id = user["id"]
+            user_email = (
+                user.get("mail") or user.get("userPrincipalName") or ""
+            ).lower()
+
+            try:
+                chats = await client.list_user_chats(user_id)
+            except GraphAPIError as e:
+                logger.warning(
+                    "[teams] Failed to list chats for user %s: %s", user_email, e
+                )
+                continue
+
+            for chat in chats:
+                if ctx.is_cancelled():
+                    return chat_last_sync_ts
+
+                chat_id = chat.get("id", "")
+                if not chat_id or chat_id in seen_chat_ids:
+                    continue
+                seen_chat_ids.add(chat_id)
+
+                # Skip unchanged chats on incremental sync
+                chat_last_updated = chat.get("lastUpdatedDateTime")
+                prev_sync = chat_last_sync_ts.get(chat_id)
+                if prev_sync and chat_last_updated:
+                    prev_dt = _parse_iso(prev_sync)
+                    updated_dt = _parse_iso(chat_last_updated)
+                    if prev_dt and updated_dt and updated_dt <= prev_dt:
+                        new_chat_sync_ts[chat_id] = prev_sync
+                        continue
+
+                permissions = self._resolve_chat_permissions(chat, user_cache)
+                participant_names = self._get_participant_names(chat)
+
+                ok = await self._sync_chat(
+                    client=client,
+                    chat=chat,
+                    ctx=ctx,
+                    cutoff=cutoff,
+                    user_cache=user_cache,
+                    permissions=permissions,
+                    participant_names=participant_names,
+                    last_sync_ts=prev_sync,
+                )
+                if ok:
+                    new_chat_sync_ts[chat_id] = now_iso
+
+        logger.info("[teams] Processed %d chats", len(seen_chat_ids))
+        return new_chat_sync_ts
+
+    async def _sync_chat(
+        self,
+        client: GraphClient,
+        chat: dict[str, Any],
+        ctx: SyncContext,
+        cutoff: datetime,
+        user_cache: dict[str, str],
+        permissions: DocumentPermissions,
+        participant_names: list[str],
+        last_sync_ts: str | None = None,
+    ) -> bool:
+        """Sync a single chat's messages. Returns True if successful."""
+        chat_id = chat["id"]
+        chat_type = chat.get("chatType", "oneOnOne")
+        chat_topic = chat.get("topic")
+        is_first_sync = last_sync_ts is None
+
+        filter_from = None
+        if not is_first_sync and last_sync_ts:
+            filter_from = self._start_of_day_iso(last_sync_ts)
+
+        try:
+            messages = await client.list_chat_messages(chat_id, filter_from=filter_from)
+        except GraphAPIError as e:
+            logger.warning(
+                "[teams] Failed to fetch messages for chat %s: %s", chat_id, e
+            )
+            return False
+
+        # Filter to real messages, skip system events and deleted
+        messages = [
+            m
+            for m in messages
+            if m.get("messageType") == "message" and not m.get("deletedDateTime")
+        ]
+
+        if is_first_sync:
+            messages = [m for m in messages if not self._is_before_cutoff(m, cutoff)]
+
+        if not messages:
+            return True
+
+        # Sort chronologically for grouping
+        messages.sort(key=lambda m: m.get("createdDateTime", ""))
+
+        groups = group_chat_messages(
+            messages=messages,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            chat_topic=chat_topic,
+            participant_names=participant_names,
+            user_cache=user_cache,
+            permissions=permissions,
+        )
+
+        for group in groups:
+            if ctx.is_cancelled():
+                return False
+
+            await ctx.increment_scanned()
+
+            try:
+                content = generate_teams_message_content(group.messages)
+                content_id = await ctx.content_storage.save(content, "text/plain")
+                doc = map_teams_chat_messages_to_document(group, content_id)
+                await ctx.emit(doc)
+            except Exception as e:
+                logger.warning(
+                    "[teams] Error emitting chat message group %s: %s",
+                    group.external_id,
+                    e,
+                )
+
+        # Process file attachments
+        await self._process_file_attachments(
+            client=client,
+            messages=messages,
+            ctx=ctx,
+            permissions=permissions,
+            user_cache=user_cache,
+        )
+
+        return True
+
+    @staticmethod
+    def _resolve_chat_permissions(
+        chat: dict[str, Any],
+        user_cache: dict[str, str],
+    ) -> DocumentPermissions:
+        """Resolve chat members to email addresses."""
+        members = chat.get("members") or []
+        emails: list[str] = []
+        for member in members:
+            email = member.get("email")
+            if email:
+                emails.append(email.lower())
+            else:
+                user_id = member.get("userId", "")
+                if user_id and user_id in user_cache:
+                    emails.append(user_cache[user_id].lower())
+        return DocumentPermissions(
+            public=False,
+            users=sorted(set(emails)),
+        )
+
+    @staticmethod
+    def _get_participant_names(chat: dict[str, Any]) -> list[str]:
+        """Extract display names of chat participants."""
+        members = chat.get("members") or []
+        return [m["displayName"] for m in members if m.get("displayName")]

@@ -26,6 +26,8 @@ Uses app-only (client credentials) authentication with Microsoft Entra ID. Requi
 | Outlook Calendar | `Calendars.Read` | Application |
 | SharePoint Sites | `Sites.Read.All` | Application |
 | User enumeration | `User.Read.All` | Application |
+| Teams Chats | `Chat.Read.All` | Application |
+| Teams Chat Messages | `ChatMessage.Read.All` | Application |
 
 ## Source Configuration
 
