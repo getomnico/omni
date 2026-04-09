@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 class AnthropicProvider(LLMProvider):
     """Provider for Anthropic Claude API."""
 
+    @property
+    def supports_citations(self) -> bool:
+        return True
+
     def __init__(self, api_key: str, model: str):
         self.client = AsyncAnthropic(api_key=api_key)
         self.model = model

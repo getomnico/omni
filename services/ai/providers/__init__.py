@@ -12,6 +12,11 @@ from anthropic import MessageStreamEvent
 class LLMProvider(ABC):
     """Abstract base class for LLM providers."""
 
+    @property
+    def supports_citations(self) -> bool:
+        """Whether this provider natively generates citation events for documents and search results."""
+        return False
+
     @abstractmethod
     async def stream_response(
         self,

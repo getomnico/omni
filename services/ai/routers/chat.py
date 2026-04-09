@@ -48,16 +48,18 @@ from anthropic.types import (
     TextBlockParam,
     ToolUseBlockParam,
     TextCitationParam,
-    CitationCharLocationParam,
-    CitationPageLocationParam,
-    CitationContentBlockLocationParam,
-    CitationSearchResultLocationParam,
-    CitationWebSearchResultLocationParam,
     CitationsDelta,
     ToolResultBlockParam,
     SearchResultBlockParam,
     CitationsConfigParam,
 )
+from services.citations import (
+    CitationProcessor,
+    CitationStreamProcessor,
+    CitableRef,
+    CITATION_INSTRUCTION,
+)
+from services.stream import StreamProcessor
 
 router = APIRouter(tags=["chat"])
 logger = logging.getLogger(__name__)
@@ -105,57 +107,6 @@ def _resolve_secondary_provider(state: AppState) -> LLMProvider:
         return models[state.default_model_id]
 
     return next(iter(models.values()))
-
-
-def convert_citation_to_param(citation_delta: CitationsDelta) -> TextCitationParam:
-    citation = citation_delta.citation
-    if citation.type == "char_location":
-        return CitationCharLocationParam(
-            type="char_location",
-            start_char_index=citation.start_char_index,
-            end_char_index=citation.end_char_index,
-            document_title=citation.document_title,
-            document_index=citation.document_index,
-            cited_text=citation.cited_text,
-        )
-    elif citation.type == "page_location":
-        return CitationPageLocationParam(
-            type="page_location",
-            start_page_number=citation.start_page_number,
-            end_page_number=citation.end_page_number,
-            document_title=citation.document_title,
-            document_index=citation.document_index,
-            cited_text=citation.cited_text,
-        )
-    elif citation.type == "content_block_location":
-        return CitationContentBlockLocationParam(
-            type="content_block_location",
-            start_block_index=citation.start_block_index,
-            end_block_index=citation.end_block_index,
-            document_title=citation.document_title,
-            document_index=citation.document_index,
-            cited_text=citation.cited_text,
-        )
-    elif citation.type == "search_result_location":
-        return CitationSearchResultLocationParam(
-            type="search_result_location",
-            start_block_index=citation.start_block_index,
-            end_block_index=citation.end_block_index,
-            search_result_index=citation.search_result_index,
-            title=citation.title,
-            source=citation.source,
-            cited_text=citation.cited_text,
-        )
-    elif citation.type == "web_search_result_location":
-        return CitationWebSearchResultLocationParam(
-            type="web_search_result_location",
-            url=citation.url,
-            title=citation.title,
-            encrypted_index=citation.encrypted_index,
-            cited_text=citation.cited_text,
-        )
-    else:
-        raise ValueError(f"Unknown citation type: {citation.type}")
 
 
 @dataclass
@@ -599,117 +550,155 @@ async def stream_chat(
                 logger.info(f"Iteration {iteration + 1}/{AGENT_MAX_ITERATIONS}")
                 content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
 
+                # For non-citation providers, number search results/documents
+                # and build an index for synthetic citation extraction
+                citable_index: dict[int, CitableRef] = {}
+                if llm_provider.supports_citations:
+                    provider_messages = conversation_messages
+                    provider_system_prompt = system_prompt
+                else:
+                    citable_index = CitationProcessor.build_citable_index(
+                        conversation_messages
+                    )
+                    provider_messages = CitationProcessor.prepare_messages(
+                        conversation_messages, citable_index
+                    )
+                    provider_system_prompt = (
+                        (system_prompt or "") + CITATION_INSTRUCTION
+                        if citable_index
+                        else system_prompt
+                    )
+
                 logger.info(f"Sending request to LLM provider")
                 logger.debug(
-                    f"Messages being sent: {json.dumps(conversation_messages, indent=2)}"
+                    f"Messages being sent: {json.dumps(provider_messages, indent=2)}"
                 )
                 logger.debug(f"Tools available: {[tool['name'] for tool in all_tools]}")
 
                 stream: AsyncStream[MessageStreamEvent] = llm_provider.stream_response(
                     prompt="",  # Not used when messages provided
-                    messages=conversation_messages,
+                    messages=provider_messages,
                     tools=all_tools,
                     max_tokens=DEFAULT_MAX_TOKENS,
                     temperature=DEFAULT_TEMPERATURE,
                     top_p=DEFAULT_TOP_P,
-                    system_prompt=system_prompt,
+                    system_prompt=provider_system_prompt,
                 )
+
+                # Build stream processor chain
+                processors: list[StreamProcessor] = []
+                if not llm_provider.supports_citations and citable_index:
+                    processors.append(CitationStreamProcessor(citable_index))
 
                 event_index = 0
                 message_stop_received = False
-                async for event in stream:
-                    logger.debug(f"Received event: {event} (index: {event_index})")
+                async for raw_event in stream:
+                    logger.debug(f"Received event: {raw_event} (index: {event_index})")
                     event_index += 1
 
-                    if event.type == "message_start":
-                        logger.info(f"Message start received.")
+                    # Run event through processor chain
+                    output_events = [raw_event]
+                    for proc in processors:
+                        next_events = []
+                        for e in output_events:
+                            next_events.extend(proc.process(e))
+                        output_events = next_events
 
-                    if event.type == "content_block_delta":
-                        logger.debug(
-                            f"Content block delta received at index {event.index}: {event.delta}"
-                        )
-                        if event.delta.type == "text_delta":
-                            if event.index >= len(content_blocks):
-                                logger.warning(
-                                    f"Received text delta for unknown content block index {event.index}, creating new text block"
+                    # Accumulate and forward each processed event
+                    for event in output_events:
+                        if event.type == "message_start":
+                            logger.info(f"Message start received.")
+
+                        elif event.type == "content_block_delta":
+                            if event.delta.type == "text_delta":
+                                if event.index >= len(content_blocks):
+                                    content_blocks.append(
+                                        TextBlockParam(type="text", text="")
+                                    )
+                                text_block = cast(
+                                    TextBlockParam, content_blocks[event.index]
+                                )
+                                text_block["text"] += event.delta.text
+                            elif event.delta.type == "input_json_delta":
+                                if event.index >= len(content_blocks):
+                                    content_blocks.append(
+                                        ToolUseBlockParam(
+                                            type="tool_use",
+                                            id="",
+                                            name="",
+                                            input="",
+                                        )
+                                    )
+                                tool_use_block = cast(
+                                    ToolUseBlockParam, content_blocks[event.index]
+                                )
+                                tool_use_block["input"] = (
+                                    cast(str, tool_use_block["input"])
+                                    + event.delta.partial_json
+                                )
+                            elif event.delta.type == "citations_delta":
+                                if event.index >= len(content_blocks):
+                                    content_blocks.append(
+                                        TextBlockParam(
+                                            type="text", text="", citations=[]
+                                        )
+                                    )
+                                text_block = cast(
+                                    TextBlockParam, content_blocks[event.index]
+                                )
+                                if (
+                                    "citations" not in text_block
+                                    or not text_block["citations"]
+                                ):
+                                    text_block["citations"] = []
+                                citations = cast(
+                                    list[TextCitationParam], text_block["citations"]
+                                )
+                                citations.append(
+                                    CitationProcessor.convert_delta_to_param(
+                                        event.delta
+                                    )
+                                )
+
+                        elif event.type == "content_block_start":
+                            if event.content_block.type == "text":
+                                logger.info(
+                                    f"Text block start: {event.content_block.text}"
                                 )
                                 content_blocks.append(
-                                    TextBlockParam(type="text", text="")
+                                    TextBlockParam(
+                                        type="text", text=event.content_block.text
+                                    )
                                 )
-                            text_block = cast(
-                                TextBlockParam, content_blocks[event.index]
-                            )
-                            text_block["text"] += event.delta.text
-                        elif event.delta.type == "input_json_delta":
-                            if event.index >= len(content_blocks):
-                                logger.warning(
-                                    f"Received input JSON delta for unknown content block index {event.index}, creating new tool use block"
+                            elif event.content_block.type == "tool_use":
+                                logger.info(
+                                    f"Tool use block start: {event.content_block.name} (id: {event.content_block.id})"
                                 )
                                 content_blocks.append(
                                     ToolUseBlockParam(
-                                        type="tool_use", id="", name="", input=""
+                                        type="tool_use",
+                                        id=event.content_block.id,
+                                        name=event.content_block.name,
+                                        input="",
                                     )
                                 )
-                            tool_use_block = cast(
-                                ToolUseBlockParam, content_blocks[event.index]
-                            )
-                            tool_use_block["input"] = (
-                                cast(str, tool_use_block["input"])
-                                + event.delta.partial_json
-                            )
-                        elif event.delta.type == "citations_delta":
-                            if event.index >= len(content_blocks):
-                                logger.warning(
-                                    f"Received citations delta for unknown content block index {event.index}, creating new citations block"
-                                )
-                                content_blocks.append(
-                                    TextBlockParam(type="text", text="", citations=[])
-                                )
-                            text_block = cast(
-                                TextBlockParam, content_blocks[event.index]
-                            )
-                            if (
-                                "citations" not in text_block
-                                or not text_block["citations"]
-                            ):
-                                text_block["citations"] = []
-                            citations = cast(
-                                list[TextCitationParam], text_block["citations"]
-                            )
-                            citations.append(convert_citation_to_param(event.delta))
-                    elif event.type == "content_block_start":
-                        if event.content_block.type == "text":
-                            logger.info(f"Text block start: {event.content_block.text}")
-                            content_blocks.append(
-                                TextBlockParam(
-                                    type="text", text=event.content_block.text
-                                )
-                            )
-                        elif event.content_block.type == "tool_use":
-                            logger.info(
-                                f"Tool use block start: {event.content_block.name} (id: {event.content_block.id})"
-                            )
-                            content_blocks.append(
-                                ToolUseBlockParam(
-                                    type="tool_use",
-                                    id=event.content_block.id,
-                                    name=event.content_block.name,
-                                    input="",
-                                )
-                            )
-                    elif event.type == "citation":
-                        logger.info(f"Citation received: {event.citation}")
-                    elif event.type == "message_stop":
-                        logger.info(f"Message stop received.")
-                        message_stop_received = True
 
-                    logger.debug(
-                        f"Yielding event to client: {event.to_json(indent=None)}"
-                    )
-                    yield f"event: message\ndata: {event.to_json(indent=None)}\n\n"
+                        elif event.type == "citation":
+                            logger.info(f"Citation received: {event.citation}")
+
+                        elif event.type == "message_stop":
+                            logger.info(f"Message stop received.")
+                            message_stop_received = True
+
+                        yield f"event: message\ndata: {event.to_json(indent=None)}\n\n"
 
                     if message_stop_received:
                         break
+
+                # Flush any remaining buffered state from processors
+                for proc in processors:
+                    for event in proc.flush():
+                        yield f"event: message\ndata: {event.to_json(indent=None)}\n\n"
 
                 # Parse tool call inputs. Convert to JSON.
                 tool_calls = [b for b in content_blocks if b["type"] == "tool_use"]

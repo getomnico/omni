@@ -33,6 +33,10 @@ class VertexAIProvider(LLMProvider):
     and authenticates via Application Default Credentials (ADC).
     """
 
+    @property
+    def supports_citations(self) -> bool:
+        return self._delegate.supports_citations
+
     def __init__(self, region: str, project_id: str, model: str):
         self.region = region
         self.project_id = project_id
