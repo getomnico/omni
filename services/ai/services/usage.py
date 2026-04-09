@@ -84,7 +84,7 @@ class UsageTracker:
 
     async def _persist(self) -> None:
         try:
-            await self._repo.create(
+            await self._repo.upsert(
                 user_id=self._ctx.user_id,
                 model_id=self._ctx.model_id,
                 model_name=self._ctx.model_name,
@@ -115,7 +115,7 @@ def save_usage_fire_and_forget(
 
     async def _persist():
         try:
-            await repo.create(
+            await repo.upsert(
                 user_id=ctx.user_id,
                 model_id=ctx.model_id,
                 model_name=ctx.model_name,

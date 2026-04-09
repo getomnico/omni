@@ -15,7 +15,7 @@ class UsageRepository:
             return self.pool
         return await get_db_pool()
 
-    async def create(
+    async def upsert(
         self,
         user_id: str | None,
         model_id: str,
@@ -29,10 +29,22 @@ class UsageRepository:
         chat_id: str | None = None,
         agent_run_id: str | None = None,
     ) -> None:
+        if chat_id is None and agent_run_id is None:
+            raise ValueError("At least one of chat_id or agent_run_id must be set")
+
         pool = await self._get_pool()
         usage_id = str(ULID())
 
-        query = """
+        if chat_id is not None:
+            conflict_clause = (
+                "(chat_id, model_id, usage_type) WHERE chat_id IS NOT NULL"
+            )
+        else:
+            conflict_clause = (
+                "(agent_run_id, model_id, usage_type) WHERE agent_run_id IS NOT NULL"
+            )
+
+        query = f"""
             INSERT INTO model_usage (
                 id, user_id, model_id, model_name, provider_type,
                 usage_type, input_tokens, output_tokens,
@@ -40,6 +52,14 @@ class UsageRepository:
                 chat_id, agent_run_id
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            ON CONFLICT {conflict_clause}
+            DO UPDATE SET
+                input_tokens = model_usage.input_tokens + EXCLUDED.input_tokens,
+                output_tokens = model_usage.output_tokens + EXCLUDED.output_tokens,
+                cache_read_tokens = model_usage.cache_read_tokens + EXCLUDED.cache_read_tokens,
+                cache_creation_tokens = model_usage.cache_creation_tokens + EXCLUDED.cache_creation_tokens,
+                call_count = model_usage.call_count + 1,
+                updated_at = NOW()
         """
         async with pool.acquire() as conn:
             await conn.execute(
@@ -65,7 +85,7 @@ class UsageRepository:
 
         query = """
             SELECT model_name, provider_type, usage_type,
-                   COUNT(*) as call_count,
+                   SUM(call_count) as call_count,
                    SUM(input_tokens) as total_input_tokens,
                    SUM(output_tokens) as total_output_tokens,
                    SUM(cache_read_tokens) as total_cache_read_tokens,
