@@ -22,6 +22,8 @@ import notionIcon from '$lib/images/icons/notion.svg'
 import linearIcon from '$lib/images/icons/linear.svg'
 import githubIcon from '$lib/images/icons/github.svg'
 import nextcloudIcon from '$lib/images/icons/nextcloud.svg'
+import paperlessIcon from '$lib/images/icons/paperless.svg'
+import imapIcon from '$lib/images/icons/imap.svg'
 
 // Google Workspace MIME types
 const GOOGLE_DOCS_MIMETYPES = [
@@ -62,7 +64,9 @@ const SOURCE_TYPE_ICONS: Record<string, string> = {
     [SourceType.GITHUB]: githubIcon,
     [SourceType.CLICKUP]: clickupIcon,
     [SourceType.NOTION]: notionIcon,
+    [SourceType.PAPERLESS_NGX]: paperlessIcon,
     [SourceType.NEXTCLOUD]: nextcloudIcon,
+    [SourceType.IMAP]: imapIcon,
 }
 
 // Get icon based on source type and content type

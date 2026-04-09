@@ -9,7 +9,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use shared::models::{SourceType, SyncRequest};
+use shared::models::{ActionDefinition, SearchOperator, SourceType, SyncRequest};
 use shared::telemetry;
 use std::sync::Arc;
 use tower::ServiceBuilder;
@@ -102,8 +102,53 @@ pub fn build_manifest(connector_url: String) -> ConnectorManifest {
         connector_url,
         source_types: vec![SourceType::Imap],
         description: Some("Index emails from any IMAP-compatible mailbox".to_string()),
-        actions: vec![],
-        search_operators: vec![],
+        actions: vec![
+            ActionDefinition {
+                name: "validate_credentials".to_string(),
+                description: "Test IMAP connection with the provided credentials".to_string(),
+                mode: "read".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "host": { "type": "string" },
+                        "port": { "type": "integer" },
+                        "encryption": { "type": "string" }
+                    },
+                    "required": ["host"]
+                }),
+            },
+            ActionDefinition {
+                name: "list_folders".to_string(),
+                description: "List accessible IMAP mailbox folders".to_string(),
+                mode: "read".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "host": { "type": "string" },
+                        "port": { "type": "integer" },
+                        "encryption": { "type": "string" }
+                    },
+                    "required": ["host"]
+                }),
+            },
+        ],
+        search_operators: vec![
+            SearchOperator {
+                operator: "from".to_string(),
+                attribute_key: "from".to_string(),
+                value_type: "person".to_string(),
+            },
+            SearchOperator {
+                operator: "folder".to_string(),
+                attribute_key: "folder".to_string(),
+                value_type: "text".to_string(),
+            },
+            SearchOperator {
+                operator: "subject".to_string(),
+                attribute_key: "subject".to_string(),
+                value_type: "text".to_string(),
+            },
+        ],
         read_only: true,
         extra_schema: None,
         attributes_schema: None,

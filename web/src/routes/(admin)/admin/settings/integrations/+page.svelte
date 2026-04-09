@@ -20,6 +20,8 @@
     import linearLogo from '$lib/images/icons/linear.svg'
     import githubLogo from '$lib/images/icons/github.svg'
     import nextcloudLogo from '$lib/images/icons/nextcloud.svg'
+    import paperlessLogo from '$lib/images/icons/paperless.svg'
+    import imapLogo from '$lib/images/icons/imap.svg'
     import { getSourceIconPath } from '$lib/utils/icons'
     import { Cloud, Globe, HardDrive, Mail } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
@@ -132,6 +134,8 @@
         linear: linearLogo,
         github: githubLogo,
         nextcloud: nextcloudLogo,
+        paperless_ngx: paperlessLogo,
+        imap: imapLogo,
     }
 
     function getIntegrationIcon(integrationId: string): string | null {
