@@ -247,6 +247,15 @@ class GraphClient:
             members.append(member)
         return members
 
+    async def get_drive_item_metadata(
+        self, drive_id: str, item_id: str
+    ) -> dict[str, Any]:
+        """Fetch name and file info for a drive item."""
+        return await self.get(
+            f"/drives/{drive_id}/items/{item_id}",
+            params={"$select": "id,name,file"},
+        )
+
     async def list_item_permissions(
         self, drive_id: str, item_id: str
     ) -> list[dict[str, Any]]:

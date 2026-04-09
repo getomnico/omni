@@ -3,6 +3,8 @@
 import logging
 from typing import Any
 
+from starlette.responses import Response
+
 from omni_connector import Connector, SearchOperator, SyncContext
 from omni_connector.models import ActionDefinition, ActionResponse
 
@@ -80,7 +82,22 @@ class MicrosoftConnector(Connector):
                     },
                     "required": ["query"],
                 },
-            )
+            ),
+            ActionDefinition(
+                name="fetch_file",
+                description="Download a file from OneDrive or SharePoint",
+                mode="read",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "file_id": {
+                            "type": "string",
+                            "description": "External file ID (e.g. onedrive:driveId:itemId)",
+                        },
+                    },
+                    "required": ["file_id"],
+                },
+            ),
         ]
 
     async def execute_action(
@@ -88,10 +105,18 @@ class MicrosoftConnector(Connector):
         action: str,
         params: dict[str, Any],
         credentials: dict[str, Any],
-    ) -> ActionResponse:
-        if action != "search_users":
-            return ActionResponse.not_supported(action)
+    ) -> ActionResponse | Response:
+        if action == "search_users":
+            return await self._action_search_users(params, credentials)
+        elif action == "fetch_file":
+            return await self._action_fetch_file(params, credentials)
+        return ActionResponse.not_supported(action)
 
+    async def _action_search_users(
+        self,
+        params: dict[str, Any],
+        credentials: dict[str, Any],
+    ) -> ActionResponse:
         query = params.get("query", "").strip()
         if not query:
             return ActionResponse.success({"users": []})
@@ -107,6 +132,63 @@ class MicrosoftConnector(Connector):
                 await client.close()
         except Exception as e:
             logger.exception("search_users action failed")
+            return ActionResponse.failure(str(e))
+
+    async def _action_fetch_file(
+        self,
+        params: dict[str, Any],
+        credentials: dict[str, Any],
+    ) -> ActionResponse | Response:
+        file_id = params.get("file_id", "").strip()
+        if not file_id:
+            return ActionResponse.failure("Missing required parameter: file_id")
+
+        # Parse external_id: onedrive:{drive_id}:{item_id} or sharepoint:{site_id}:{item_id}
+        parts = file_id.split(":")
+        if len(parts) < 3:
+            return ActionResponse.failure(
+                f"Invalid file_id format: {file_id}. "
+                "Expected onedrive:{{drive_id}}:{{item_id}} or sharepoint:{{site_id}}:{{item_id}}"
+            )
+
+        # For both onedrive and sharepoint, the drive_id and item_id are at positions 1 and 2
+        drive_id = parts[1]
+        item_id = parts[2]
+
+        try:
+            raw_creds = credentials.get("credentials", credentials)
+            auth = MSGraphAuth.from_credentials(raw_creds)
+            client = GraphClient(auth)
+            try:
+                metadata = await client.get_drive_item_metadata(drive_id, item_id)
+                file_name = metadata.get("name", "download")
+                mime_type = metadata.get("file", {}).get(
+                    "mimeType", "application/octet-stream"
+                )
+
+                data = await client.get_binary(
+                    f"/drives/{drive_id}/items/{item_id}/content"
+                )
+
+                logger.info(
+                    "fetch_file: returning '%s' (%d bytes, %s)",
+                    file_name,
+                    len(data),
+                    mime_type,
+                )
+
+                return Response(
+                    content=data,
+                    media_type=mime_type,
+                    headers={
+                        "X-File-Name": file_name,
+                        "Content-Length": str(len(data)),
+                    },
+                )
+            finally:
+                await client.close()
+        except Exception as e:
+            logger.exception("fetch_file action failed")
             return ActionResponse.failure(str(e))
 
     async def sync(
