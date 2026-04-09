@@ -105,6 +105,8 @@
 
     // Determine if this is a connector action (contains __)
     const isConnectorAction = toolName.includes('__')
+    const connectorSourceType = isConnectorAction ? toolName.split('__')[0] : null
+    const connectorIconPath = connectorSourceType ? getSourceIconPath(connectorSourceType) : null
     const connectorDisplayName = isConnectorAction ? toolName.replace('__', ' > ') : toolName
 
     let statusIndicator = $derived(
@@ -267,7 +269,11 @@
         )}>
         <div class="flex w-full items-center justify-between">
             <div class="flex items-center gap-2">
-                <Play class="h-5 w-5 text-purple-600" />
+                {#if connectorIconPath}
+                    <img src={connectorIconPath} alt={connectorSourceType} class="!m-0 h-5 w-5" />
+                {:else}
+                    <Play class="h-5 w-5 text-purple-600" />
+                {/if}
                 <div class="max-w-screen-md truncate text-sm font-normal">
                     {statusIndicator}: {connectorDisplayName}
                     {#if inputSummary()}
