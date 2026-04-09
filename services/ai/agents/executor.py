@@ -30,7 +30,7 @@ from db.users import UsersRepository
 from providers import LLMProvider
 from prompts import build_agent_system_prompt
 from services.compaction import ConversationCompactor
-from services.usage import UsageTracker, UsageContext, save_usage_fire_and_forget
+from services.usage import UsageTracker, UsageContext, UsagePurpose, track_usage
 from state import AppState
 from tools import (
     ToolRegistry,
@@ -246,14 +246,14 @@ async def _run_agent_loop(
         secondary_provider = app_state.models[app_state.secondary_model_id]
 
     def _on_compaction_usage(usage):
-        save_usage_fire_and_forget(
+        track_usage(
             UsageRepository(),
             UsageContext(
                 user_id=agent.user_id if not is_org_agent else None,
                 model_id=secondary_provider.model_record_id,
                 model_name=secondary_provider.model_name,
                 provider_type=secondary_provider.provider_type,
-                usage_type="compaction",
+                purpose=UsagePurpose.COMPACTION,
                 agent_run_id=run.id,
             ),
             input_tokens=usage.input_tokens,
@@ -290,7 +290,7 @@ async def _run_agent_loop(
                 model_id=llm_provider.model_record_id,
                 model_name=llm_provider.model_name,
                 provider_type=llm_provider.provider_type,
-                usage_type="agent_run",
+                purpose=UsagePurpose.AGENT_RUN,
                 agent_run_id=run.id,
             ),
             provider=llm_provider,
@@ -420,7 +420,7 @@ async def _run_agent_loop(
             model_id=llm_provider.model_record_id,
             model_name=llm_provider.model_name,
             provider_type=llm_provider.provider_type,
-            usage_type="agent_summary",
+            purpose=UsagePurpose.AGENT_SUMMARY,
             agent_run_id=run.id,
         ),
         provider=llm_provider,

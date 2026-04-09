@@ -1,4 +1,5 @@
 import logging
+from dataclasses import asdict
 
 from fastapi import APIRouter, Query
 
@@ -14,7 +15,7 @@ async def get_usage_summary(
     days: int = Query(30, ge=1, le=365),
     user_id: str | None = Query(None),
 ):
-    """Return aggregated token usage summary grouped by model, provider, and usage type."""
+    """Return aggregated token usage summary grouped by model, provider, and purpose."""
     repo = UsageRepository()
     summary = await repo.get_summary(days=days, user_id=user_id)
-    return {"period_days": days, "usage": summary}
+    return {"period_days": days, "usage": [asdict(row) for row in summary]}

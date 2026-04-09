@@ -23,9 +23,9 @@ class LLMProvider(ABC):
 
     last_usage: TokenUsage | None = None
     # ID of this model's record in the models table
-    model_record_id: str = ""
-    model_name: str = ""
-    provider_type: str = ""
+    model_record_id: str | None = None
+    model_name: str | None = None
+    provider_type: str | None = None
 
     @abstractmethod
     async def stream_response(

@@ -40,7 +40,7 @@ from db.usage import UsageRepository
 from providers import LLMProvider
 from prompts import build_chat_system_prompt, build_agent_chat_system_prompt
 from services.compaction import ConversationCompactor
-from services.usage import UsageTracker, UsageContext, save_usage_fire_and_forget
+from services.usage import UsageTracker, UsageContext, UsagePurpose, track_usage
 from state import AppState
 
 from anthropic import MessageStreamEvent, AsyncStream
@@ -508,14 +508,14 @@ async def stream_chat(
     secondary_provider = _resolve_secondary_provider(request.app.state)
 
     def _on_compaction_usage(usage):
-        save_usage_fire_and_forget(
+        track_usage(
             UsageRepository(),
             UsageContext(
                 user_id=chat.user_id,
                 model_id=secondary_provider.model_record_id,
                 model_name=secondary_provider.model_name,
                 provider_type=secondary_provider.provider_type,
-                usage_type="compaction",
+                purpose=UsagePurpose.COMPACTION,
                 chat_id=chat_id,
             ),
             input_tokens=usage.input_tokens,
@@ -626,7 +626,7 @@ async def stream_chat(
                         model_id=llm_provider.model_record_id,
                         model_name=llm_provider.model_name,
                         provider_type=llm_provider.provider_type,
-                        usage_type="chat",
+                        purpose=UsagePurpose.CHAT,
                         chat_id=chat_id,
                     ),
                     provider=llm_provider,
@@ -923,14 +923,14 @@ async def generate_chat_title(
         )
 
         if llm_provider.last_usage:
-            save_usage_fire_and_forget(
+            track_usage(
                 UsageRepository(),
                 UsageContext(
                     user_id=chat.user_id,
                     model_id=llm_provider.model_record_id,
                     model_name=llm_provider.model_name,
                     provider_type=llm_provider.provider_type,
-                    usage_type="title_generation",
+                    purpose=UsagePurpose.TITLE_GENERATION,
                     chat_id=chat_id,
                 ),
                 input_tokens=llm_provider.last_usage.input_tokens,

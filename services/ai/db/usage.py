@@ -1,9 +1,22 @@
+from dataclasses import dataclass
 from typing import Optional
 
 from asyncpg import Pool
 from ulid import ULID
 
 from .connection import get_db_pool
+
+
+@dataclass
+class UsageSummary:
+    model_name: str
+    provider_type: str
+    purpose: str
+    call_count: int
+    total_input_tokens: int
+    total_output_tokens: int
+    total_cache_read_tokens: int
+    total_cache_creation_tokens: int
 
 
 class UsageRepository:
@@ -21,7 +34,7 @@ class UsageRepository:
         model_id: str,
         model_name: str,
         provider_type: str,
-        usage_type: str,
+        purpose: str,
         input_tokens: int,
         output_tokens: int,
         cache_read_tokens: int = 0,
@@ -36,18 +49,16 @@ class UsageRepository:
         usage_id = str(ULID())
 
         if chat_id is not None:
-            conflict_clause = (
-                "(chat_id, model_id, usage_type) WHERE chat_id IS NOT NULL"
-            )
+            conflict_clause = "(chat_id, model_id, purpose) WHERE chat_id IS NOT NULL"
         else:
             conflict_clause = (
-                "(agent_run_id, model_id, usage_type) WHERE agent_run_id IS NOT NULL"
+                "(agent_run_id, model_id, purpose) WHERE agent_run_id IS NOT NULL"
             )
 
         query = f"""
             INSERT INTO model_usage (
                 id, user_id, model_id, model_name, provider_type,
-                usage_type, input_tokens, output_tokens,
+                purpose, input_tokens, output_tokens,
                 cache_read_tokens, cache_creation_tokens,
                 chat_id, agent_run_id
             )
@@ -69,7 +80,7 @@ class UsageRepository:
                 model_id,
                 model_name,
                 provider_type,
-                usage_type,
+                purpose,
                 input_tokens,
                 output_tokens,
                 cache_read_tokens,
@@ -80,11 +91,11 @@ class UsageRepository:
 
     async def get_summary(
         self, days: int = 30, user_id: str | None = None
-    ) -> list[dict]:
+    ) -> list[UsageSummary]:
         pool = await self._get_pool()
 
         query = """
-            SELECT model_name, provider_type, usage_type,
+            SELECT model_name, provider_type, purpose,
                    SUM(call_count) as call_count,
                    SUM(input_tokens) as total_input_tokens,
                    SUM(output_tokens) as total_output_tokens,
@@ -99,9 +110,9 @@ class UsageRepository:
             query += " AND user_id = $2"
             params.append(user_id)
 
-        query += " GROUP BY model_name, provider_type, usage_type ORDER BY total_input_tokens DESC"
+        query += " GROUP BY model_name, provider_type, purpose ORDER BY total_input_tokens DESC"
 
         async with pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
 
-        return [dict(row) for row in rows]
+        return [UsageSummary(**row) for row in rows]

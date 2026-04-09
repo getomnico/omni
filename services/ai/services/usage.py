@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from enum import StrEnum
 
 from anthropic.types.message_stream_event import MessageStreamEvent
 
@@ -11,6 +12,14 @@ from db.usage import UsageRepository
 from providers import LLMProvider
 
 logger = logging.getLogger(__name__)
+
+
+class UsagePurpose(StrEnum):
+    CHAT = "chat"
+    TITLE_GENERATION = "title_generation"
+    COMPACTION = "compaction"
+    AGENT_RUN = "agent_run"
+    AGENT_SUMMARY = "agent_summary"
 
 
 @dataclass
@@ -21,7 +30,7 @@ class UsageContext:
     model_id: str
     model_name: str
     provider_type: str
-    usage_type: str
+    purpose: UsagePurpose
     chat_id: str | None = None
     agent_run_id: str | None = None
 
@@ -89,7 +98,7 @@ class UsageTracker:
                 model_id=self._ctx.model_id,
                 model_name=self._ctx.model_name,
                 provider_type=self._ctx.provider_type,
-                usage_type=self._ctx.usage_type,
+                purpose=self._ctx.purpose,
                 input_tokens=self.input_tokens,
                 output_tokens=self.output_tokens,
                 cache_read_tokens=self.cache_read_tokens,
@@ -101,7 +110,7 @@ class UsageTracker:
             logger.warning("Failed to persist usage record", exc_info=True)
 
 
-def save_usage_fire_and_forget(
+def track_usage(
     repo: UsageRepository,
     ctx: UsageContext,
     input_tokens: int,
@@ -120,7 +129,7 @@ def save_usage_fire_and_forget(
                 model_id=ctx.model_id,
                 model_name=ctx.model_name,
                 provider_type=ctx.provider_type,
-                usage_type=ctx.usage_type,
+                purpose=ctx.purpose,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cache_read_tokens=cache_read_tokens,
