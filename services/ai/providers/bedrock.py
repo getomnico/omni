@@ -13,7 +13,6 @@ from botocore.exceptions import ClientError
 from anthropic.types import (
     MessageParam,
     Message,
-    MessageDelta,
     MessageDeltaUsage,
     Usage,
     RawMessageStartEvent,
@@ -36,6 +35,7 @@ from anthropic.types import (
     CitationContentBlockLocation,
 )
 from anthropic.types.message_stream_event import MessageStreamEvent
+from anthropic.types.raw_message_delta_event import Delta
 from anthropic import AnthropicBedrock
 
 from . import LLMProvider, TokenUsage
@@ -419,7 +419,7 @@ class BedrockProvider(LLMProvider):
             )
             return RawMessageDeltaEvent(
                 type="message_delta",
-                delta=MessageDelta(stop_reason="end_turn"),
+                delta=Delta(stop_reason="end_turn"),
                 usage=MessageDeltaUsage(output_tokens=output_tokens),
             )
         elif "messageStop" in event:

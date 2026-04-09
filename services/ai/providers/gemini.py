@@ -12,7 +12,6 @@ from google import genai
 from google.genai import types
 from anthropic.types import (
     Message,
-    MessageDelta,
     MessageDeltaUsage,
     Usage,
     RawMessageStartEvent,
@@ -26,6 +25,7 @@ from anthropic.types import (
     InputJSONDelta,
 )
 from anthropic.types.message_stream_event import MessageStreamEvent
+from anthropic.types.raw_message_delta_event import Delta
 
 from . import LLMProvider, TokenUsage
 
@@ -272,7 +272,7 @@ class GeminiProvider(LLMProvider):
                 )
                 yield RawMessageDeltaEvent(
                     type="message_delta",
-                    delta=MessageDelta(stop_reason="end_turn"),
+                    delta=Delta(stop_reason="end_turn"),
                     usage=MessageDeltaUsage(output_tokens=output_tokens),
                 )
                 # Also update the message_start usage retroactively isn't possible,

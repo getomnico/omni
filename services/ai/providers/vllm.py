@@ -26,7 +26,6 @@ from openai.types.chat import (
 from openai.types.chat.chat_completion_message_tool_call_param import Function
 from anthropic.types import (
     Message,
-    MessageDelta,
     MessageDeltaUsage,
     MessageParam,
     TextBlockParam,
@@ -46,6 +45,7 @@ from anthropic.types import (
     InputJSONDelta,
 )
 from anthropic.types.message_stream_event import MessageStreamEvent
+from anthropic.types.raw_message_delta_event import Delta
 
 from . import LLMProvider, TokenUsage
 
@@ -370,7 +370,7 @@ class VLLMProvider(LLMProvider):
             if stream_input_tokens or stream_output_tokens:
                 yield RawMessageDeltaEvent(
                     type="message_delta",
-                    delta=MessageDelta(stop_reason="end_turn"),
+                    delta=Delta(stop_reason="end_turn"),
                     usage=MessageDeltaUsage(output_tokens=stream_output_tokens),
                 )
                 self.last_usage = TokenUsage(
