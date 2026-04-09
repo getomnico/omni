@@ -270,15 +270,18 @@ class GeminiProvider(LLMProvider):
                 output_tokens = (
                     getattr(last_usage_metadata, "candidates_token_count", 0) or 0
                 )
+                cached_tokens = (
+                    getattr(last_usage_metadata, "cached_content_token_count", 0) or 0
+                )
                 yield RawMessageDeltaEvent(
                     type="message_delta",
                     delta=Delta(stop_reason="end_turn"),
                     usage=MessageDeltaUsage(output_tokens=output_tokens),
                 )
-                # Also update the message_start usage retroactively isn't possible,
-                # so we store input_tokens via last_usage for callers that need it
                 self.last_usage = TokenUsage(
-                    input_tokens=input_tokens, output_tokens=output_tokens
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cached_tokens,
                 )
 
             yield RawMessageStopEvent(type="message_stop")
@@ -309,15 +312,11 @@ class GeminiProvider(LLMProvider):
             )
 
             if hasattr(response, "usage_metadata") and response.usage_metadata:
+                um = response.usage_metadata
                 self.last_usage = TokenUsage(
-                    input_tokens=getattr(
-                        response.usage_metadata, "prompt_token_count", 0
-                    )
-                    or 0,
-                    output_tokens=getattr(
-                        response.usage_metadata, "candidates_token_count", 0
-                    )
-                    or 0,
+                    input_tokens=getattr(um, "prompt_token_count", 0) or 0,
+                    output_tokens=getattr(um, "candidates_token_count", 0) or 0,
+                    cache_read_tokens=getattr(um, "cached_content_token_count", 0) or 0,
                 )
 
             if not response.text:

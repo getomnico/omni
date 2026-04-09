@@ -194,6 +194,12 @@ class OpenAIProvider(LLMProvider):
                     if resp_usage:
                         input_tokens = getattr(resp_usage, "input_tokens", 0) or 0
                         output_tokens = getattr(resp_usage, "output_tokens", 0) or 0
+                        details = getattr(resp_usage, "input_tokens_details", None)
+                        cached_tokens = (
+                            (getattr(details, "cached_tokens", 0) or 0)
+                            if details
+                            else 0
+                        )
                         yield RawMessageDeltaEvent(
                             type="message_delta",
                             delta=Delta(stop_reason="end_turn"),
@@ -202,6 +208,7 @@ class OpenAIProvider(LLMProvider):
                         self.last_usage = TokenUsage(
                             input_tokens=input_tokens,
                             output_tokens=output_tokens,
+                            cache_read_tokens=cached_tokens,
                         )
                     break
 
@@ -313,9 +320,14 @@ class OpenAIProvider(LLMProvider):
 
             resp_usage = getattr(response, "usage", None)
             if resp_usage:
+                details = getattr(resp_usage, "input_tokens_details", None)
+                cached_tokens = (
+                    (getattr(details, "cached_tokens", 0) or 0) if details else 0
+                )
                 self.last_usage = TokenUsage(
-                    input_tokens=getattr(resp_usage, "input_tokens", 0),
-                    output_tokens=getattr(resp_usage, "output_tokens", 0),
+                    input_tokens=getattr(resp_usage, "input_tokens", 0) or 0,
+                    output_tokens=getattr(resp_usage, "output_tokens", 0) or 0,
+                    cache_read_tokens=cached_tokens,
                 )
 
             content = response.output_text
