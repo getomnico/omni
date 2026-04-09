@@ -3,6 +3,7 @@ import json
 import logging
 import pathlib
 from typing import cast
+from dataclasses import dataclass
 
 import httpx
 from fastapi import APIRouter, HTTPException, Path, Query, Request
