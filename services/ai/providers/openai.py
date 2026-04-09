@@ -192,12 +192,16 @@ class OpenAIProvider(LLMProvider):
                 elif event_type == "response.completed":
                     resp_usage = getattr(event.response, "usage", None)
                     if resp_usage:
+                        input_tokens = getattr(resp_usage, "input_tokens", 0) or 0
+                        output_tokens = getattr(resp_usage, "output_tokens", 0) or 0
                         yield RawMessageDeltaEvent(
                             type="message_delta",
                             delta=Delta(stop_reason="end_turn"),
-                            usage=MessageDeltaUsage(
-                                output_tokens=getattr(resp_usage, "output_tokens", 0),
-                            ),
+                            usage=MessageDeltaUsage(output_tokens=output_tokens),
+                        )
+                        self.last_usage = TokenUsage(
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
                         )
                     break
 
