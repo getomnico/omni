@@ -28,11 +28,13 @@ def map_repo_to_document(
     if repo.topics:
         topics = list(repo.topics)
 
+    title = full_name
     return Document(
         external_id=f"github:repo:{full_name}",
-        title=full_name,
+        title=title,
         content_id=content_id,
         metadata=DocumentMetadata(
+            title=title,
             author=repo.owner.login if repo.owner else None,
             created_at=_to_datetime(repo.created_at),
             updated_at=_to_datetime(repo.updated_at),
@@ -65,11 +67,13 @@ def map_issue_to_document(
     assignee_login = issue.assignee.login if issue.assignee else ""
     milestone_title = issue.milestone.title if issue.milestone else ""
 
+    title = f"[{repo_full_name}] Issue #{issue.number}: {issue.title}"
     return Document(
         external_id=f"github:issue:{repo_full_name}#{issue.number}",
-        title=f"[{repo_full_name}] Issue #{issue.number}: {issue.title}",
+        title=title,
         content_id=content_id,
         metadata=DocumentMetadata(
+            title=title,
             author=issue.user.login if issue.user else None,
             created_at=_to_datetime(issue.created_at),
             updated_at=_to_datetime(issue.updated_at),
@@ -101,11 +105,13 @@ def map_pr_to_document(
     is_merged = bool(pr.merged_at)
     is_draft = bool(pr.draft) if hasattr(pr, "draft") else False
 
+    title = f"[{repo_full_name}] PR #{pr.number}: {pr.title}"
     return Document(
         external_id=f"github:pr:{repo_full_name}#{pr.number}",
-        title=f"[{repo_full_name}] PR #{pr.number}: {pr.title}",
+        title=title,
         content_id=content_id,
         metadata=DocumentMetadata(
+            title=title,
             author=pr.user.login if pr.user else None,
             created_at=_to_datetime(pr.created_at),
             updated_at=_to_datetime(pr.updated_at),
@@ -137,11 +143,13 @@ def map_discussion_to_document(
     category = discussion.get("category", {}) or {}
     is_answered = discussion.get("answerChosenAt") is not None
 
+    doc_title = f"[{repo_full_name}] Discussion #{number}: {title}"
     return Document(
         external_id=f"github:discussion:{repo_full_name}#{number}",
-        title=f"[{repo_full_name}] Discussion #{number}: {title}",
+        title=doc_title,
         content_id=content_id,
         metadata=DocumentMetadata(
+            title=doc_title,
             author=author.get("login"),
             created_at=_parse_iso(discussion.get("createdAt")),
             updated_at=_parse_iso(discussion.get("updatedAt")),
