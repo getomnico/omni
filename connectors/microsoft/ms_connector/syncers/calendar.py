@@ -55,16 +55,19 @@ class CalendarSyncer(BaseSyncer):
             )
             return delta_token
 
+        skipped_deleted = 0
+
         for item in items:
             if ctx.is_cancelled():
                 return delta_token
 
-            await ctx.increment_scanned()
-
             if item.get("deleted") or item.get("@removed"):
+                skipped_deleted += 1
                 external_id = f"calendar:{user_id}:{item['id']}"
                 await ctx.emit_deleted(external_id)
                 continue
+
+            await ctx.increment_scanned()
 
             try:
                 content = generate_event_content(item)
@@ -79,5 +82,13 @@ class CalendarSyncer(BaseSyncer):
                 external_id = f"calendar:{user_id}:{item.get('id', 'unknown')}"
                 logger.warning("[calendar] Error processing %s: %s", external_id, e)
                 await ctx.emit_error(external_id, str(e))
+
+        if skipped_deleted:
+            logger.info(
+                "[calendar] User %s: %d items total, %d deleted skipped",
+                display_name,
+                len(items),
+                skipped_deleted,
+            )
 
         return new_token

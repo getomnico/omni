@@ -59,6 +59,7 @@ class SharePointSyncer:
             if new_token:
                 new_tokens[site_id] = new_token
 
+            await ctx.save_state({"delta_tokens": new_tokens})
             logger.info("[sharepoint] Finished site %s", site_name)
 
         return {"delta_tokens": new_tokens}
@@ -104,25 +105,32 @@ class SharePointSyncer:
             else None
         )
 
+        skipped_folders = 0
+        skipped_cutoff = 0
+        skipped_deleted = 0
+
         for item in items:
             if ctx.is_cancelled():
                 return delta_token
 
-            await ctx.increment_scanned()
-
             if item.get("deleted"):
+                skipped_deleted += 1
                 drive_id = item.get("parentReference", {}).get("driveId", "unknown")
                 external_id = f"sharepoint:{site_id}:{item['id']}"
                 await ctx.emit_deleted(external_id)
                 continue
 
             if "folder" in item:
+                skipped_folders += 1
                 continue
 
             if cutoff:
                 modified = _parse_iso(item.get("lastModifiedDateTime"))
                 if modified and modified < cutoff:
+                    skipped_cutoff += 1
                     continue
+
+            await ctx.increment_scanned()
 
             try:
                 await self._process_item(client, site, item, ctx)
@@ -130,6 +138,20 @@ class SharePointSyncer:
                 external_id = f"sharepoint:{site_id}:{item['id']}"
                 logger.warning("[sharepoint] Error processing %s: %s", external_id, e)
                 await ctx.emit_error(external_id, str(e))
+
+        total = len(items)
+        skipped = skipped_folders + skipped_cutoff + skipped_deleted
+        if skipped:
+            logger.info(
+                "[sharepoint] Site %s: %d items total, %d skipped "
+                "(folders=%d, cutoff=%d, deleted=%d)",
+                site_name,
+                total,
+                skipped,
+                skipped_folders,
+                skipped_cutoff,
+                skipped_deleted,
+            )
 
         return new_token
 
