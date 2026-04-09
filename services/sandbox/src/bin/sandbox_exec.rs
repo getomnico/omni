@@ -9,8 +9,10 @@
 use std::ffi::CString;
 use std::path::Path;
 
+#[cfg(target_os = "linux")]
 use nix::libc;
 
+#[cfg(target_os = "linux")]
 use landlock::{
     path_beneath_rules, Access, AccessFs, Ruleset, RulesetAttr, RulesetCreatedAttr, ABI,
 };
@@ -48,33 +50,36 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. Set no-new-privileges (required by Landlock)
     // Safety: prctl with PR_SET_NO_NEW_PRIVS is a simple flag set
-    let ret = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
-    if ret != 0 {
-        return Err("prctl(PR_SET_NO_NEW_PRIVS) failed".into());
+    #[cfg(target_os = "linux")]
+    {
+        let ret = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+        if ret != 0 {
+            return Err("prctl(PR_SET_NO_NEW_PRIVS) failed".into());
+        }
+
+        // 2. Build Landlock ruleset
+        let read_access = AccessFs::Execute | AccessFs::ReadFile | AccessFs::ReadDir;
+        let all_access = AccessFs::from_all(ABI::V3);
+
+        let read_only_paths: Vec<&str> = ["/usr", "/lib", "/bin", "/etc", "/lib64"]
+            .iter()
+            .copied()
+            .filter(|p| Path::new(p).exists())
+            .collect();
+
+        let rw_paths: Vec<&str> = [chat_dir.as_str(), "/tmp", "/dev"]
+            .iter()
+            .copied()
+            .filter(|p| Path::new(p).exists())
+            .collect();
+
+        Ruleset::default()
+            .handle_access(all_access)?
+            .create()?
+            .add_rules(path_beneath_rules(&read_only_paths, read_access))?
+            .add_rules(path_beneath_rules(&rw_paths, all_access))?
+            .restrict_self()?;
     }
-
-    // 2. Build Landlock ruleset
-    let read_access = AccessFs::Execute | AccessFs::ReadFile | AccessFs::ReadDir;
-    let all_access = AccessFs::from_all(ABI::V3);
-
-    let read_only_paths: Vec<&str> = ["/usr", "/lib", "/bin", "/etc", "/lib64"]
-        .iter()
-        .copied()
-        .filter(|p| Path::new(p).exists())
-        .collect();
-
-    let rw_paths: Vec<&str> = [chat_dir.as_str(), "/tmp", "/dev"]
-        .iter()
-        .copied()
-        .filter(|p| Path::new(p).exists())
-        .collect();
-
-    Ruleset::default()
-        .handle_access(all_access)?
-        .create()?
-        .add_rules(path_beneath_rules(&read_only_paths, read_access))?
-        .add_rules(path_beneath_rules(&rw_paths, all_access))?
-        .restrict_self()?;
 
     // 3. Set up environment and exec
     std::env::set_current_dir(chat_dir)?;
