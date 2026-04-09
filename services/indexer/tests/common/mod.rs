@@ -44,17 +44,12 @@ pub async fn setup_test_fixture() -> Result<TestFixture> {
     let content_storage: Arc<dyn shared::ObjectStorage> =
         Arc::new(PostgresStorage::new(test_env.db_pool.pool().clone()));
 
-    let service_credentials_repo = std::sync::Arc::new(
-        shared::ServiceCredentialsRepo::new(test_env.db_pool.pool().clone()).unwrap(),
-    );
-
     let app_state = AppState {
         db_pool: test_env.db_pool.clone(),
         redis_client: test_env.redis_client.clone(),
         ai_client,
         embedding_queue,
         content_storage,
-        service_credentials_repo,
     };
 
     let app = create_app(app_state.clone());

@@ -20,7 +20,7 @@ use tokio::time::{interval, Duration, Instant};
 use tracing::{debug, error, info, warn};
 
 // Adaptive batch accumulation constants
-const IDLE_TIMEOUT: Duration = Duration::from_secs(2);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_ACCUMULATION_WAIT: Duration = Duration::from_secs(300); // 5 minutes
 const BATCH_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -37,8 +37,7 @@ struct GroupSyncEvent {
 #[derive(Debug)]
 struct EventBatch {
     sync_run_id: String,
-    documents_created: Vec<(Document, Vec<String>)>, // (document, event_ids)
-    documents_updated: Vec<(Document, Vec<String>)>, // (document, event_ids)
+    documents_upsert: Vec<(Document, Vec<String>)>, // (document, event_ids) — both creates and updates
     documents_deleted: Vec<(String, String, Vec<String>)>, // (source_id, document_id, event_ids)
     group_syncs: Vec<GroupSyncEvent>,
 }
@@ -47,41 +46,16 @@ impl EventBatch {
     fn new(sync_run_id: String) -> Self {
         Self {
             sync_run_id,
-            documents_created: Vec::new(),
-            documents_updated: Vec::new(),
+            documents_upsert: Vec::new(),
             documents_deleted: Vec::new(),
             group_syncs: Vec::new(),
         }
     }
 
     fn is_empty(&self) -> bool {
-        self.documents_created.is_empty()
-            && self.documents_updated.is_empty()
+        self.documents_upsert.is_empty()
             && self.documents_deleted.is_empty()
             && self.group_syncs.is_empty()
-    }
-
-    #[allow(dead_code)]
-    fn total_documents(&self) -> usize {
-        self.documents_created.len() + self.documents_updated.len() + self.documents_deleted.len()
-    }
-
-    #[allow(dead_code)]
-    fn total_events(&self) -> usize {
-        self.documents_created
-            .iter()
-            .map(|(_, event_ids)| event_ids.len())
-            .sum::<usize>()
-            + self
-                .documents_updated
-                .iter()
-                .map(|(_, event_ids)| event_ids.len())
-                .sum::<usize>()
-            + self
-                .documents_deleted
-                .iter()
-                .map(|(_, _, event_ids)| event_ids.len())
-                .sum::<usize>()
     }
 }
 
@@ -130,7 +104,10 @@ impl QueueProcessor {
             event_queue,
             embedding_queue,
             sync_run_repo,
-            batch_size: 128,
+            batch_size: std::env::var("INDEXER_BATCH_SIZE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1000),
             parallelism,
             semaphore,
             processing_mutex,
@@ -430,12 +407,10 @@ impl QueueProcessor {
             }
 
             info!(
-                "Batch contains: {} created, {} updated, {} deleted documents ({} created events, {} updated events, {} deleted events)",
-                batch.documents_created.len(),
-                batch.documents_updated.len(),
+                "Batch contains: {} upsert, {} deleted documents ({} upsert events, {} deleted events)",
+                batch.documents_upsert.len(),
                 batch.documents_deleted.len(),
-                batch.documents_created.iter().map(|(_, event_ids)| event_ids.len()).sum::<usize>(),
-                batch.documents_updated.iter().map(|(_, event_ids)| event_ids.len()).sum::<usize>(),
+                batch.documents_upsert.iter().map(|(_, event_ids)| event_ids.len()).sum::<usize>(),
                 batch.documents_deleted.iter().map(|(_, _, event_ids)| event_ids.len()).sum::<usize>()
             );
 
@@ -541,12 +516,9 @@ impl QueueProcessor {
         let mut batch = EventBatch::new(sync_run_id);
 
         // Temporary storage for grouping events by document key
-        let mut created_docs: std::collections::HashMap<String, (Document, Vec<String>)> =
-            std::collections::HashMap::new();
-        let mut updated_docs: std::collections::HashMap<String, (Document, Vec<String>)> =
-            std::collections::HashMap::new();
-        let mut deleted_docs: std::collections::HashMap<String, (String, String, Vec<String>)> =
-            std::collections::HashMap::new();
+        // Single map for both creates and updates — both go through batch_upsert
+        let mut upsert_docs: HashMap<String, (Document, Vec<String>)> = HashMap::new();
+        let mut deleted_docs: HashMap<String, (String, String, Vec<String>)> = HashMap::new();
 
         for event_item in events {
             let event_id = event_item.id.clone();
@@ -573,16 +545,11 @@ impl QueueProcessor {
                         attributes,
                     )?;
 
-                    // Use source_id + external_id as deduplication key
                     let key = format!("{}:{}", source_id, document_id);
-
-                    if let Some((_, event_ids)) = created_docs.get_mut(&key) {
-                        // Already have this document, just add the event_id
-                        event_ids.push(event_id);
-                    } else {
-                        // New document, create new entry
-                        created_docs.insert(key, (document, vec![event_id]));
-                    }
+                    upsert_docs
+                        .entry(key)
+                        .and_modify(|(_, event_ids)| event_ids.push(event_id.clone()))
+                        .or_insert_with(|| (document, vec![event_id]));
                 }
                 ConnectorEvent::DocumentUpdated {
                     source_id,
@@ -593,44 +560,46 @@ impl QueueProcessor {
                     attributes,
                     ..
                 } => {
-                    let document = self
-                        .create_document_from_event_update(
-                            source_id.clone(),
-                            document_id.clone(),
-                            content_id,
-                            metadata,
-                            permissions,
-                            attributes,
-                        )
-                        .await?;
-                    if let Some(doc) = document {
-                        // Use source_id + external_id as deduplication key
-                        let key = format!("{}:{}", source_id, document_id);
+                    // Build document the same way as creates — batch_upsert's
+                    // COALESCE handles preserving existing values when
+                    // permissions/attributes are NULL
+                    let has_permissions = permissions.is_some();
+                    let document = self.create_document_from_event(
+                        source_id.clone(),
+                        document_id.clone(),
+                        content_id,
+                        metadata,
+                        permissions.unwrap_or(DocumentPermissions {
+                            public: false,
+                            users: vec![],
+                            groups: vec![],
+                        }),
+                        attributes,
+                    )?;
 
-                        if let Some((_, event_ids)) = updated_docs.get_mut(&key) {
-                            // Already have this document, just add the event_id
-                            event_ids.push(event_id);
-                        } else {
-                            // New document, create new entry
-                            updated_docs.insert(key, (doc, vec![event_id]));
-                        }
+                    // For updates with no permissions, set to Null so COALESCE
+                    // preserves existing DB values
+                    let mut document = document;
+                    if !has_permissions {
+                        document.permissions = serde_json::Value::Null;
                     }
+
+                    let key = format!("{}:{}", source_id, document_id);
+                    upsert_docs
+                        .entry(key)
+                        .and_modify(|(_, event_ids)| event_ids.push(event_id.clone()))
+                        .or_insert_with(|| (document, vec![event_id]));
                 }
                 ConnectorEvent::DocumentDeleted {
                     source_id,
                     document_id,
                     ..
                 } => {
-                    // Use source_id + external_id as deduplication key
                     let key = format!("{}:{}", source_id, document_id);
-
-                    if let Some((_, _, event_ids)) = deleted_docs.get_mut(&key) {
-                        // Already have this deletion, just add the event_id
-                        event_ids.push(event_id);
-                    } else {
-                        // New deletion, create new entry
-                        deleted_docs.insert(key, (source_id, document_id, vec![event_id]));
-                    }
+                    deleted_docs
+                        .entry(key)
+                        .and_modify(|(_, _, event_ids)| event_ids.push(event_id.clone()))
+                        .or_insert_with(|| (source_id, document_id, vec![event_id]));
                 }
                 ConnectorEvent::GroupMembershipSync {
                     source_id,
@@ -639,7 +608,6 @@ impl QueueProcessor {
                     member_emails,
                     ..
                 } => {
-                    // Dedup by source_id:group_email — last event wins
                     let key = format!("{}:{}", source_id, group_email);
                     if let Some(existing) = batch
                         .group_syncs
@@ -662,9 +630,7 @@ impl QueueProcessor {
             }
         }
 
-        // Convert the HashMap results to Vec format for EventBatch
-        batch.documents_created = created_docs.into_values().collect();
-        batch.documents_updated = updated_docs.into_values().collect();
+        batch.documents_upsert = upsert_docs.into_values().collect();
         batch.documents_deleted = deleted_docs.into_values().collect();
 
         Ok(batch)
@@ -673,11 +639,11 @@ impl QueueProcessor {
     async fn process_event_batch(&self, batch: EventBatch) -> Result<BatchProcessingResult> {
         let mut result = BatchProcessingResult::new();
 
-        // Process document creations in batch
-        if !batch.documents_created.is_empty() {
-            let docs_count = batch.documents_created.len();
+        // Process document upserts (creates + updates) in a single batch
+        if !batch.documents_upsert.is_empty() {
+            let docs_count = batch.documents_upsert.len();
             match self
-                .process_documents_created_batch(&batch.documents_created)
+                .process_documents_upsert_batch(&batch.documents_upsert)
                 .await
             {
                 Ok(successful_ids) => {
@@ -685,32 +651,8 @@ impl QueueProcessor {
                     result.successful_documents_count += docs_count;
                 }
                 Err(e) => {
-                    error!("Batch document creation failed: {}", e);
-                    // Add all creation events to failed list
-                    for (_, event_ids) in batch.documents_created {
-                        for event_id in event_ids {
-                            result.failed_events.push((event_id, e.to_string()));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Process document updates in batch
-        if !batch.documents_updated.is_empty() {
-            let docs_count = batch.documents_updated.len();
-            match self
-                .process_documents_updated_batch(&batch.documents_updated)
-                .await
-            {
-                Ok(successful_ids) => {
-                    result.successful_event_ids.extend(successful_ids);
-                    result.successful_documents_count += docs_count;
-                }
-                Err(e) => {
-                    error!("Batch document update failed: {}", e);
-                    // Add all update events to failed list
-                    for (_, event_ids) in batch.documents_updated {
+                    error!("Batch document upsert failed: {}", e);
+                    for (_, event_ids) in batch.documents_upsert {
                         for event_id in event_ids {
                             result.failed_events.push((event_id, e.to_string()));
                         }
@@ -960,43 +902,7 @@ impl QueueProcessor {
         })
     }
 
-    async fn create_document_from_event_update(
-        &self,
-        source_id: String,
-        document_id: String,
-        content_id: String,
-        metadata: DocumentMetadata,
-        permissions: Option<DocumentPermissions>,
-        attributes: Option<DocumentAttributes>,
-    ) -> Result<Option<Document>> {
-        let repo = DocumentRepository::new(self.state.db_pool.pool());
-
-        if let Some(mut document) = repo.find_by_external_id(&source_id, &document_id).await? {
-            let now = sqlx::types::time::OffsetDateTime::now_utc();
-            let metadata_json = self.convert_metadata_to_json(&metadata)?;
-
-            document.title = metadata.title.unwrap_or(document.title);
-            document.content_id = Some(content_id);
-            document.metadata = metadata_json;
-            if let Some(perms) = permissions {
-                document.permissions = serde_json::to_value(&perms)?;
-            }
-            if let Some(attrs) = attributes {
-                document.attributes = serde_json::to_value(&attrs)?;
-            }
-            document.updated_at = now;
-
-            Ok(Some(document))
-        } else {
-            warn!(
-                "Document not found for update: {} from source {}",
-                document_id, source_id
-            );
-            Ok(None)
-        }
-    }
-
-    async fn process_documents_created_batch(
+    async fn process_documents_upsert_batch(
         &self,
         documents_with_event_ids: &[(Document, Vec<String>)],
     ) -> Result<Vec<String>> {
@@ -1085,84 +991,6 @@ impl QueueProcessor {
             .collect())
     }
 
-    async fn process_documents_updated_batch(
-        &self,
-        documents_with_event_ids: &[(Document, Vec<String>)],
-    ) -> Result<Vec<String>> {
-        let repo = DocumentRepository::new(self.state.db_pool.pool());
-
-        // Batch fetch content from storage
-        let documents: Vec<&Document> = documents_with_event_ids
-            .iter()
-            .map(|(doc, _)| doc)
-            .collect();
-
-        let content_ids: Vec<String> = documents
-            .iter()
-            .filter_map(|d| d.content_id.clone())
-            .collect();
-
-        let content_map = self
-            .state
-            .content_storage
-            .batch_get_text(content_ids)
-            .await?;
-
-        // For updates, we need to handle them individually since we need to find existing documents
-        let mut successful_event_ids = Vec::new();
-        let mut updated_documents = Vec::new();
-
-        for (document, event_ids) in documents_with_event_ids {
-            let content = document
-                .content_id
-                .as_ref()
-                .and_then(|cid| content_map.get(cid).cloned())
-                .unwrap_or_default();
-
-            match repo.update(&document.id, document.clone(), &content).await {
-                Ok(Some(updated_doc)) => {
-                    updated_documents.push((event_ids.clone(), updated_doc));
-                    successful_event_ids.extend(event_ids.clone());
-                }
-                Ok(None) => {
-                    warn!("Document not found for update: {}", document.external_id);
-                }
-                Err(e) => {
-                    error!("Failed to update document {}: {}", document.external_id, e);
-                    return Err(e.into());
-                }
-            }
-        }
-
-        if !updated_documents.is_empty() {
-            // Collect document IDs for batch operations
-            let doc_ids: Vec<String> = updated_documents
-                .iter()
-                .map(|(_, doc)| doc.id.clone())
-                .collect();
-
-            // Batch queue embeddings
-            if let Err(e) = self
-                .state
-                .embedding_queue
-                .enqueue_batch(doc_ids.clone())
-                .await
-            {
-                error!(
-                    "Failed to batch queue embeddings for {} updated documents: {}",
-                    doc_ids.len(),
-                    e
-                );
-            }
-        }
-
-        info!(
-            "Batch updated {} documents successfully",
-            successful_event_ids.len()
-        );
-        Ok(successful_event_ids)
-    }
-
     async fn process_documents_deleted_batch(
         &self,
         deletions: &[(String, String, Vec<String>)], // (source_id, document_id, event_ids)
@@ -1171,30 +999,41 @@ impl QueueProcessor {
         let repo = DocumentRepository::new(self.state.db_pool.pool());
         let embedding_repo = EmbeddingRepository::new(self.state.db_pool.pool());
 
-        let mut successful_event_ids = Vec::new();
-        let mut document_ids_to_delete = Vec::new();
+        // All deletion events are considered successful (even if doc not found)
+        let successful_event_ids: Vec<String> = deletions
+            .iter()
+            .flat_map(|(_, _, event_ids)| event_ids.clone())
+            .collect();
 
-        // First, find all documents that exist
-        for (source_id, document_id, event_ids) in deletions {
-            if let Some(document) = repo.find_by_external_id(source_id, document_id).await? {
-                document_ids_to_delete.push(document.id.clone());
-                successful_event_ids.extend(event_ids.clone());
-            } else {
-                warn!(
-                    "Document not found for deletion: {} from source {}",
-                    document_id, source_id
-                );
-                // Still count as successful since the document doesn't exist
-                successful_event_ids.extend(event_ids.clone());
-            }
+        // Batch-lookup all documents by (source_id, external_id)
+        let pairs: Vec<(String, String)> = deletions
+            .iter()
+            .map(|(source_id, document_id, _)| (source_id.clone(), document_id.clone()))
+            .collect();
+
+        let found_documents = repo.find_by_external_ids(&pairs).await?;
+        let document_ids_to_delete: Vec<String> =
+            found_documents.iter().map(|d| d.id.clone()).collect();
+
+        if found_documents.len() < deletions.len() {
+            warn!(
+                "{} of {} documents not found for deletion (already deleted?)",
+                deletions.len() - found_documents.len(),
+                deletions.len()
+            );
         }
 
         if !document_ids_to_delete.is_empty() {
             // Delete embeddings in batch
-            for doc_id in &document_ids_to_delete {
-                if let Err(e) = embedding_repo.delete_by_document_id(doc_id).await {
-                    error!("Failed to delete embeddings for document {}: {}", doc_id, e);
-                }
+            if let Err(e) = embedding_repo
+                .bulk_delete_by_document_ids(&document_ids_to_delete)
+                .await
+            {
+                error!(
+                    "Failed to batch delete embeddings for {} documents: {}",
+                    document_ids_to_delete.len(),
+                    e
+                );
             }
 
             // Delete documents in batch

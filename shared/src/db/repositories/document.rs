@@ -325,6 +325,36 @@ impl DocumentRepository {
         Ok(document)
     }
 
+    pub async fn find_by_external_ids(
+        &self,
+        pairs: &[(String, String)], // Vec of (source_id, external_id)
+    ) -> Result<Vec<Document>, DatabaseError> {
+        if pairs.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let source_ids: Vec<&str> = pairs.iter().map(|(s, _)| s.as_str()).collect();
+        let external_ids: Vec<&str> = pairs.iter().map(|(_, e)| e.as_str()).collect();
+
+        let documents = sqlx::query_as::<_, Document>(
+            r#"
+            SELECT id, source_id, external_id, title, content_id, content_type,
+                   file_size, file_extension, url,
+                   metadata, permissions, attributes, created_at, updated_at, last_indexed_at
+            FROM documents
+            WHERE (source_id, external_id) IN (
+                SELECT * FROM UNNEST($1::text[], $2::text[])
+            )
+            "#,
+        )
+        .bind(&source_ids)
+        .bind(&external_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(documents)
+    }
+
     pub async fn create(&self, document: Document) -> Result<Document, DatabaseError> {
         let created_document = sqlx::query_as::<_, Document>(
             r#"
@@ -448,11 +478,11 @@ impl DocumentRepository {
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             ON CONFLICT (source_id, external_id)
             DO UPDATE SET
-                title = EXCLUDED.title,
+                title = COALESCE(NULLIF(EXCLUDED.title, ''), documents.title),
                 content_id = EXCLUDED.content_id,
                 metadata = EXCLUDED.metadata,
-                permissions = EXCLUDED.permissions,
-                attributes = EXCLUDED.attributes,
+                permissions = COALESCE(EXCLUDED.permissions, documents.permissions),
+                attributes = COALESCE(EXCLUDED.attributes, documents.attributes),
                 updated_at = EXCLUDED.updated_at,
                 last_indexed_at = CURRENT_TIMESTAMP,
                 content = EXCLUDED.content
@@ -547,11 +577,11 @@ impl DocumentRepository {
             ) AS t(id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, attributes, created_at, updated_at, last_indexed_at, content)
             ON CONFLICT (source_id, external_id)
             DO UPDATE SET
-                title = EXCLUDED.title,
+                title = COALESCE(NULLIF(EXCLUDED.title, ''), documents.title),
                 content_id = EXCLUDED.content_id,
                 metadata = EXCLUDED.metadata,
-                permissions = EXCLUDED.permissions,
-                attributes = EXCLUDED.attributes,
+                permissions = COALESCE(EXCLUDED.permissions, documents.permissions),
+                attributes = COALESCE(EXCLUDED.attributes, documents.attributes),
                 updated_at = EXCLUDED.updated_at,
                 last_indexed_at = CURRENT_TIMESTAMP,
                 content = EXCLUDED.content
