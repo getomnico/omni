@@ -7,7 +7,6 @@ use futures_util::future;
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row};
 use std::collections::HashMap;
-use tower::buffer::error::ServiceError;
 use tracing::{debug, warn};
 
 #[derive(Debug, Clone)]

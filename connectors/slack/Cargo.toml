@@ -21,7 +21,7 @@ axum = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 dashmap = { workspace = true }
 dotenvy = { workspace = true }
-reqwest = { workspace = true, features = ["json", "rustls-tls"], default-features = false }
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 rustls = "0.23"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

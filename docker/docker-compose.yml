@@ -203,11 +203,8 @@ services:
       - sandbox_data:/scratch
     networks:
       - sandbox-net
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 512M
+    mem_limit: 512m
+    cpuset: "0,1"   # Pin to specific cores, e.g. CPU=0,1
     security_opt:
       - no-new-privileges:true
     read_only: true
@@ -324,11 +321,8 @@ services:
     volumes:
       - docling_models:/root/.cache
     restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "${DOCLING_CPUS:-1}"
-          memory: "${DOCLING_MEMORY:-2g}"
+    mem_limit: ${DOCLING_MEMORY:-2g}
+    cpuset: "${DOCLING_CPUSET}"  # pin to specific cores, e.g. DOCLING_CPUSET=0,1
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${DOCLING_PORT:-8003}/health"]
       interval: 30s
@@ -554,6 +548,29 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
+  paperless-connector:
+    image: ghcr.io/getomnico/omni/omni-paperless-connector:${OMNI_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: connectors/paperless/Dockerfile
+    container_name: omni-paperless-connector
+    profiles:
+      - paperless
+    expose:
+      - "${PAPERLESS_CONNECTOR_PORT}"
+    environment:
+      <<: *otel-config
+      PORT: ${PAPERLESS_CONNECTOR_PORT}
+      CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      CONNECTOR_HOST_NAME: paperless-connector
+    networks:
+      - omni-network
+    depends_on:
+      connector-manager:
+        condition: service_started
+    restart: unless-stopped
+    logging: *default-logging
+
   linear-connector:
     image: ghcr.io/getomnico/omni/omni-linear-connector:${OMNI_VERSION:-latest}
     container_name: omni-linear-connector
@@ -622,13 +639,17 @@ services:
     expose:
       - "${FILESYSTEM_CONNECTOR_PORT}"
     environment:
-      <<: *otel-config
+      <<: [*db-config, *db-pool-config, *otel-config]
       PORT: ${FILESYSTEM_CONNECTOR_PORT}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
       CONNECTOR_HOST_NAME: filesystem-connector
     networks:
       - omni-network
     depends_on:
+      postgres:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
       connector-manager:
         condition: service_started
     restart: unless-stopped
@@ -649,6 +670,7 @@ services:
       SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME}
       SESSION_DURATION_DAYS: ${SESSION_DURATION_DAYS}
       APP_URL: ${APP_URL}
+      ORIGIN: ${APP_URL}
       AI_ANSWER_ENABLED: ${AI_ANSWER_ENABLED}
       AGENTS_ENABLED: ${AGENTS_ENABLED:-false}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
