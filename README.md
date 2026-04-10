@@ -36,11 +36,6 @@ The AI agent can execute code in a sandboxed container that runs on an isolated 
 
 See the full [architecture documentation](https://docs.getomni.co/architecture) for more details.
 
-## Minimum Requirements
-
-- CPU with 4 or more cores
-- 4 GB RAM
-
 ## Deployment
 
 Omni can be deployed entirely on your own infra. See our deployment guides:
