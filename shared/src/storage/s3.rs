@@ -372,51 +372,27 @@ impl ObjectStorage for S3Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_environment::TestEnvironment;
 
-    // Note: These tests require a running S3-compatible service (LocalStack, MinIO, etc.)
-    // To run these tests:
-    // 1. Start LocalStack: docker run -d -p 4566:4566 localstack/localstack
-    // 2. Set environment variables: AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test
-    // 3. Run tests: cargo test --package shared --lib storage::s3
-
-    async fn create_test_storage() -> Option<S3Storage> {
-        use crate::test_environment::TestEnvironment;
-
-        // Only run tests if LocalStack/MinIO is available
-        let bucket = "test-omni-content".to_string();
-        let endpoint = std::env::var("S3_ENDPOINT")
-            .ok()
-            .or_else(|| Some("http://localhost:4566".to_string()));
-
-        if endpoint.is_none() {
-            return None;
-        }
-
-        let env = TestEnvironment::new().await.ok()?;
-
-        match S3Storage::new(
-            bucket.clone(),
-            Some("us-east-1".to_string()),
-            endpoint,
+    async fn create_test_storage() -> S3Storage {
+        let env = Box::leak(Box::new(TestEnvironment::new().await.unwrap()));
+        let bucket = "test-omni-content";
+        let region = "us-east-1";
+        let storage = S3Storage::new(
+            bucket.to_string(),
+            Some(region.to_string()),
+            Some(env.localstack_endpoint.clone()),
             env.db_pool.pool().clone(),
         )
         .await
-        {
-            Ok(storage) => {
-                // Try to create bucket (ignore error if it already exists)
-                let _ = storage.client.create_bucket().bucket(&bucket).send().await;
-                Some(storage)
-            }
-            Err(_) => None,
-        }
+        .unwrap();
+        let _ = storage.client.create_bucket().bucket(bucket).send().await;
+        storage
     }
 
     #[tokio::test]
     async fn test_s3_storage_basic_operations() {
-        let Some(storage) = create_test_storage().await else {
-            println!("Skipping S3 test - no LocalStack/MinIO available");
-            return;
-        };
+        let storage = create_test_storage().await;
 
         // Test storing and retrieving content without prefix
         let test_content = b"Hello, S3! This is a test content.";
@@ -439,10 +415,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_s3_storage_with_content_type() {
-        let Some(storage) = create_test_storage().await else {
-            println!("Skipping S3 test - no LocalStack/MinIO available");
-            return;
-        };
+        let storage = create_test_storage().await;
 
         let text_content = "This is a text content";
         let content_id = storage.store_text(text_content, None).await.unwrap();
@@ -460,10 +433,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_s3_batch_get_text() {
-        let Some(storage) = create_test_storage().await else {
-            println!("Skipping S3 test - no LocalStack/MinIO available");
-            return;
-        };
+        let storage = create_test_storage().await;
 
         // Store multiple pieces of content
         let content1 = "First document content";
@@ -496,10 +466,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_s3_storage_with_prefix() {
-        let Some(storage) = create_test_storage().await else {
-            println!("Skipping S3 test - no LocalStack/MinIO available");
-            return;
-        };
+        let storage = create_test_storage().await;
 
         // Test with hierarchical prefix like {date}/{sync_run_id}
         let prefix = "2025-10/01ABC123DEF456";

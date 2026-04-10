@@ -65,7 +65,7 @@ opentelemetry-http = "0.27"
 
 # Test dependencies
 testcontainers = "0.21"
-testcontainers-modules = { version = "0.9", features = ["postgres", "redis"] }
+testcontainers-modules = { version = "0.9", features = ["postgres", "redis", "localstack"] }
 axum-test = "15.3"
 
 [profile.release]
