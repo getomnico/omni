@@ -381,7 +381,7 @@ mod tests {
         let storage = S3Storage::new(
             bucket.to_string(),
             Some(region.to_string()),
-            Some(env.localstack_endpoint.clone()),
+            Some(env.s3_endpoint.clone()),
             env.db_pool.pool().clone(),
         )
         .await

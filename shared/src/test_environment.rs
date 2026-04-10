@@ -9,7 +9,7 @@ use testcontainers::{
     runners::AsyncRunner,
     ContainerAsync, GenericImage, ImageExt,
 };
-use testcontainers_modules::{localstack::LocalStack, redis::Redis};
+use testcontainers_modules::{minio::MinIO, redis::Redis};
 use tokio::time::{sleep, Duration};
 
 use crate::{
@@ -22,11 +22,11 @@ pub struct TestEnvironment {
     pub db_pool: DatabasePool,
     pub redis_client: RedisClient,
     pub mock_ai_server: MockAIServer,
-    pub localstack_endpoint: String,
+    pub s3_endpoint: String,
     redis_port: u16,
     _postgres_container: ContainerAsync<GenericImage>,
     _redis_container: ContainerAsync<Redis>,
-    _localstack_container: ContainerAsync<LocalStack>,
+    _minio_container: ContainerAsync<MinIO>,
 }
 
 impl TestEnvironment {
@@ -54,12 +54,12 @@ impl TestEnvironment {
             .get_host_port_ipv4(ContainerPort::Tcp(6379))
             .await?;
 
-        // Start LocalStack (S3)
-        let localstack_container = LocalStack::default().start().await?;
-        let localstack_port = localstack_container
-            .get_host_port_ipv4(ContainerPort::Tcp(4566))
+        // Start MinIO (S3)
+        let minio_container = MinIO::default().start().await?;
+        let minio_port = minio_container
+            .get_host_port_ipv4(ContainerPort::Tcp(9000))
             .await?;
-        let localstack_endpoint = format!("http://localhost:{}", localstack_port);
+        let s3_endpoint = format!("http://localhost:{}", minio_port);
 
         // Create database connection
         let database_url = format!(
@@ -100,21 +100,20 @@ impl TestEnvironment {
         // Start mock AI server
         let mock_ai_server = MockAIServer::start().await?;
 
-        // LocalStack accepts any credentials
         unsafe {
-            std::env::set_var("AWS_ACCESS_KEY_ID", "test");
-            std::env::set_var("AWS_SECRET_ACCESS_KEY", "test");
+            std::env::set_var("AWS_ACCESS_KEY_ID", "minioadmin");
+            std::env::set_var("AWS_SECRET_ACCESS_KEY", "minioadmin");
         }
 
         Ok(Self {
             db_pool,
             redis_client,
             mock_ai_server,
-            localstack_endpoint,
+            s3_endpoint,
             redis_port,
             _postgres_container: postgres_container,
             _redis_container: redis_container,
-            _localstack_container: localstack_container,
+            _minio_container: minio_container,
         })
     }
 
