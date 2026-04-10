@@ -258,7 +258,10 @@
                                                     {noun} scanned{#if sync.documentsUpdated && sync.documentsUpdated > 0},
                                                         {sync.documentsUpdated.toLocaleString()} updated{/if}
                                                     {#if documentCounts[source.id]}
-                                                        ({documentCounts[source.id].toLocaleString()} indexed, scanned includes duplicates across users)
+                                                        ({documentCounts[
+                                                            source.id
+                                                        ].toLocaleString()} indexed, scanned includes
+                                                        duplicates across users)
                                                     {/if}</span>
                                             {:else}
                                                 <span>Syncing...</span>
