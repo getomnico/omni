@@ -9,7 +9,7 @@ use testcontainers::{
     runners::AsyncRunner,
     ContainerAsync, GenericImage, ImageExt,
 };
-use testcontainers_modules::{minio::MinIO, redis::Redis};
+use testcontainers_modules::{localstack::LocalStack, redis::Redis};
 use tokio::time::{sleep, Duration};
 
 use crate::{
@@ -26,7 +26,7 @@ pub struct TestEnvironment {
     redis_port: u16,
     _postgres_container: ContainerAsync<GenericImage>,
     _redis_container: ContainerAsync<Redis>,
-    _minio_container: ContainerAsync<MinIO>,
+    _localstack_container: ContainerAsync<LocalStack>,
 }
 
 impl TestEnvironment {
@@ -54,12 +54,12 @@ impl TestEnvironment {
             .get_host_port_ipv4(ContainerPort::Tcp(6379))
             .await?;
 
-        // Start MinIO (S3)
-        let minio_container = MinIO::default().start().await?;
-        let minio_port = minio_container
-            .get_host_port_ipv4(ContainerPort::Tcp(9000))
+        // Start LocalStack (S3)
+        let localstack_container = LocalStack::default().start().await?;
+        let localstack_port = localstack_container
+            .get_host_port_ipv4(ContainerPort::Tcp(4566))
             .await?;
-        let s3_endpoint = format!("http://localhost:{}", minio_port);
+        let s3_endpoint = format!("http://localhost:{}", localstack_port);
 
         // Create database connection
         let database_url = format!(
@@ -101,8 +101,9 @@ impl TestEnvironment {
         let mock_ai_server = MockAIServer::start().await?;
 
         unsafe {
-            std::env::set_var("AWS_ACCESS_KEY_ID", "minioadmin");
-            std::env::set_var("AWS_SECRET_ACCESS_KEY", "minioadmin");
+            std::env::set_var("AWS_ACCESS_KEY_ID", "test");
+            std::env::set_var("AWS_SECRET_ACCESS_KEY", "test");
+            std::env::set_var("AWS_DEFAULT_REGION", "us-east-1");
         }
 
         Ok(Self {
@@ -113,7 +114,7 @@ impl TestEnvironment {
             redis_port,
             _postgres_container: postgres_container,
             _redis_container: redis_container,
-            _minio_container: minio_container,
+            _localstack_container: localstack_container,
         })
     }
 
