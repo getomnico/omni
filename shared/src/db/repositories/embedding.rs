@@ -175,7 +175,6 @@ impl EmbeddingRepository {
         if let Some(ct) = content_types {
             if !ct.is_empty() {
                 where_conditions.push(format!("d.content_type = ANY(${})", bind_index));
-                bind_index += 1;
             }
         }
 
