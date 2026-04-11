@@ -3,7 +3,17 @@
 # Adds a llama.cpp LLM server and activates the HuggingFace TEI embeddings
 # service for fully-local Omni deployments. No external API keys required.
 #
-# CPU (default):
+# CPU (default — uses the small Gemma 4 E2B model, ~1.5 GB download):
+#   EMBEDDING_MODEL=BAAI/bge-small-en-v1.5 \
+#   docker compose \
+#     -f docker/docker-compose.yml \
+#     -f docker/docker-compose.local-inference.yml \
+#     --profile local-inference up -d
+#
+# GPU (NVIDIA CUDA) — set LOCAL_INFERENCE_GPU_COUNT to the number of GPUs to
+# reserve (1, 2, or "all"). This swaps in the :server-cuda image, offloads all
+# layers, and reserves NVIDIA devices for both llama.cpp and TEI:
+#   LOCAL_INFERENCE_GPU_COUNT=1 \
 #   LLAMA_CPP_MODEL=unsloth/Qwen2.5-7B-Instruct-GGUF:Q4_K_M \
 #   EMBEDDING_MODEL=BAAI/bge-small-en-v1.5 \
 #   docker compose \
@@ -11,14 +21,15 @@
 #     -f docker/docker-compose.local-inference.yml \
 #     --profile local-inference up -d
 #
-# GPU (NVIDIA CUDA) — layer the gpu override on top:
-#   LLAMA_CPP_MODEL=unsloth/Qwen2.5-7B-Instruct-GGUF:Q4_K_M \
-#   EMBEDDING_MODEL=BAAI/bge-small-en-v1.5 \
-#   docker compose \
-#     -f docker/docker-compose.yml \
-#     -f docker/docker-compose.local-inference.yml \
-#     -f docker/docker-compose.gpu.yml \
-#     --profile local-inference up -d
+# Environment:
+#   LLAMA_CPP_MODEL           HuggingFace GGUF repo[:quant]. Default:
+#                             ggml-org/gemma-4-E2B-it-GGUF (CPU-friendly first-run).
+#                             Override with a larger model when running on GPU.
+#   LLAMA_CPP_CONTEXT_SIZE    Context window. Default: 8192.
+#   LOCAL_INFERENCE_GPU_COUNT Number of NVIDIA GPUs to reserve. Unset or 0 = CPU
+#                             mode. Any positive value enables GPU for both
+#                             llama.cpp and TEI embeddings.
+#   HF_TOKEN                  Optional HuggingFace token for gated models.
 #
 # After startup, configure Omni via the admin UI:
 #   - LLM provider:        "OpenAI Compatible"  Base URL: http://llama-cpp:8000
@@ -26,18 +37,19 @@
 
 services:
   llama-cpp:
-    image: ghcr.io/ggml-org/llama.cpp:server
+    image: ghcr.io/ggml-org/llama.cpp:server${LOCAL_INFERENCE_GPU_COUNT:+-cuda}
     container_name: omni-llama-cpp
     expose:
       - "8000"
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
     command: >
-      -hf ${LLAMA_CPP_MODEL:?LLAMA_CPP_MODEL must be set to a HuggingFace GGUF repo (e.g. unsloth/Qwen2.5-7B-Instruct-GGUF:Q4_K_M)}
+      -hf ${LLAMA_CPP_MODEL:-ggml-org/gemma-4-E2B-it-GGUF}
       --host 0.0.0.0
       --port 8000
       --ctx-size ${LLAMA_CPP_CONTEXT_SIZE:-8192}
       --jinja
+      ${LOCAL_INFERENCE_GPU_COUNT:+-ngl 999}
     networks:
       - omni-network
     volumes:
@@ -51,13 +63,28 @@ services:
       start_period: 120s
     profiles:
       - local-inference
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${LOCAL_INFERENCE_GPU_COUNT:-0}
+              capabilities: [gpu]
 
-  # Activate the existing TEI embeddings service under the local-inference profile.
+  # Activate the existing TEI embeddings service under the local-inference
+  # profile, and reserve GPUs when LOCAL_INFERENCE_GPU_COUNT is set.
   # Compose merges `profiles:` as an array union, so the base `local-embeddings`
   # profile still works too.
   embeddings:
     profiles:
       - local-inference
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${LOCAL_INFERENCE_GPU_COUNT:-0}
+              capabilities: [gpu]
 
 volumes:
   llama_cpp_models:
