@@ -143,6 +143,8 @@
         },
     }
 
+    const MULTI_INSTANCE_TYPES: ProviderType[] = ['openai_compatible']
+
     const providerTypes: ProviderType[] = [
         'anthropic',
         'openai',
@@ -153,19 +155,23 @@
         'openai_compatible',
     ]
 
-    let providerByType = $derived(
-        Object.fromEntries(
-            providerTypes.map((t) => [t, data.providers.find((p) => p.providerType === t) ?? null]),
-        ) as Record<ProviderType, (typeof data.providers)[0] | null>,
-    )
-
     let connectedProviders = $derived(
-        providerTypes
-            .filter((t) => providerByType[t] !== null)
-            .map((t) => ({ type: t, provider: providerByType[t]!, meta: providerMeta[t] })),
+        data.providers.map((p) => ({
+            type: p.providerType as ProviderType,
+            provider: p,
+            meta: providerMeta[p.providerType as ProviderType],
+        })),
     )
 
-    let unconfiguredTypes = $derived(providerTypes.filter((t) => providerByType[t] === null))
+    let configuredSingletonTypes = $derived(
+        data.providers
+            .map((p) => p.providerType as ProviderType)
+            .filter((t) => !MULTI_INSTANCE_TYPES.includes(t)),
+    )
+
+    let unconfiguredTypes = $derived(
+        providerTypes.filter((t) => !configuredSingletonTypes.includes(t)),
+    )
 
     function openSetupDialog(type: ProviderType) {
         editMode = false
