@@ -19,7 +19,7 @@ jobs:
         run: |
           mkdir -p staging/docker-compose/docker
           cp docker/docker-compose.yml staging/docker-compose/docker/
-          cp docker/docker-compose.gpu.yml staging/docker-compose/docker/
+          cp docker/docker-compose.local-inference.yml staging/docker-compose/docker/
           cp .env.example staging/docker-compose/
           cp Caddyfile staging/docker-compose/
           tar -czf omni-docker-compose.tar.gz -C staging/docker-compose .
