@@ -1,35 +1,32 @@
 # Local Inference Override
 #
-# Adds a llama.cpp LLM server and activates the HuggingFace TEI embeddings
-# service for fully-local Omni deployments. No external API keys required.
+# Adds a llama.cpp LLM server (CPU mode) and activates the HuggingFace TEI
+# embeddings service for fully-local Omni deployments. No external API keys
+# required, runs on any host (no NVIDIA runtime prerequisite).
 #
-# CPU (default — uses the small Gemma 4 E2B model, ~1.5 GB download):
+# Usage:
 #   EMBEDDING_MODEL=BAAI/bge-small-en-v1.5 \
 #   docker compose \
 #     -f docker/docker-compose.yml \
 #     -f docker/docker-compose.local-inference.yml \
 #     --profile local-inference up -d
 #
-# GPU (NVIDIA CUDA) — set LOCAL_INFERENCE_GPU_COUNT to the number of GPUs to
-# reserve (1, 2, or "all"). This swaps in the :server-cuda image, offloads all
-# layers, and reserves NVIDIA devices for both llama.cpp and TEI:
-#   LOCAL_INFERENCE_GPU_COUNT=1 \
-#   LLAMA_CPP_MODEL=unsloth/Qwen2.5-7B-Instruct-GGUF:Q4_K_M \
-#   EMBEDDING_MODEL=BAAI/bge-small-en-v1.5 \
-#   docker compose \
-#     -f docker/docker-compose.yml \
-#     -f docker/docker-compose.local-inference.yml \
-#     --profile local-inference up -d
+# Default model is ggml-org/gemma-4-E2B-it-GGUF — small and CPU-friendly for
+# first-run. Override with a larger/better model via LLAMA_CPP_MODEL.
+#
+# NVIDIA GPU acceleration: edit this file manually (see the commented blocks
+# below). Three changes are needed:
+#   1. Change the llama-cpp image tag from `:server` to `:server-cuda`.
+#   2. Append `-ngl 999` to the llama-cpp command to offload all layers.
+#   3. Uncomment the `deploy.resources.reservations` block on both llama-cpp
+#      and embeddings.
+# Requires the nvidia-container-toolkit installed on the host.
 #
 # Environment:
-#   LLAMA_CPP_MODEL            HuggingFace GGUF repo[:quant]. Default:
-#                              ggml-org/gemma-4-E2B-it-GGUF (CPU-friendly first-run).
-#                              Override with a larger model when running on GPU.
+#   LLAMA_CPP_MODEL            HuggingFace GGUF repo[:quant].
+#                              Default: ggml-org/gemma-4-E2B-it-GGUF
 #   LLAMA_CPP_CONTEXT_SIZE     Context window. Default: 8192.
 #   LOCAL_INFERENCE_MODEL_PORT Port the llama.cpp server listens on. Default: 8000.
-#   LOCAL_INFERENCE_GPU_COUNT  Number of NVIDIA GPUs to reserve. Unset or 0 = CPU
-#                              mode. Any positive value enables GPU for both
-#                              llama.cpp and TEI embeddings.
 #   HF_TOKEN                   Optional HuggingFace token for gated models.
 #
 # After startup, configure Omni via the admin UI:
@@ -38,19 +35,20 @@
 
 services:
   llama-cpp:
-    image: ghcr.io/ggml-org/llama.cpp:server${LOCAL_INFERENCE_GPU_COUNT:+-cuda}
+    # For GPU: change tag to `:server-cuda`
+    image: ghcr.io/ggml-org/llama.cpp:server
     container_name: omni-llama-cpp
     expose:
       - "${LOCAL_INFERENCE_MODEL_PORT}"
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
+    # For GPU: append `-ngl 999` on a new line (offloads all layers)
     command: >
       -hf ${LLAMA_CPP_MODEL:-ggml-org/gemma-4-E2B-it-GGUF}
       --host 0.0.0.0
       --port ${LOCAL_INFERENCE_MODEL_PORT}
       --ctx-size ${LLAMA_CPP_CONTEXT_SIZE:-8192}
       --jinja
-      ${LOCAL_INFERENCE_GPU_COUNT:+-ngl 999}
     networks:
       - omni-network
     volumes:
@@ -64,28 +62,29 @@ services:
       start_period: 120s
     profiles:
       - local-inference
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: ${LOCAL_INFERENCE_GPU_COUNT:-0}
-              capabilities: [gpu]
+    # For GPU: uncomment to reserve an NVIDIA device.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
 
   # Activate the existing TEI embeddings service under the local-inference
-  # profile, and reserve GPUs when LOCAL_INFERENCE_GPU_COUNT is set.
-  # Compose merges `profiles:` as an array union, so the base `local-embeddings`
-  # profile still works too.
+  # profile. Compose merges `profiles:` as an array union, so the base
+  # `local-embeddings` profile still works too.
   embeddings:
     profiles:
       - local-inference
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: ${LOCAL_INFERENCE_GPU_COUNT:-0}
-              capabilities: [gpu]
+    # For GPU: uncomment to reserve an NVIDIA device for TEI.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
 
 volumes:
   llama_cpp_models:
