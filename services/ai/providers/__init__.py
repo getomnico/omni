@@ -60,7 +60,7 @@ class LLMProvider(ABC):
 
 # Import all providers after base class definition
 from .anthropic import AnthropicProvider
-from .vllm import VLLMProvider
+from .openai_compatible import OpenAICompatibleProvider
 from .bedrock import BedrockProvider
 from .openai import OpenAIProvider
 from .gemini import GeminiProvider
@@ -71,12 +71,13 @@ from .vertex_ai import VertexAIProvider
 # Factory function to create LLM providers
 def create_llm_provider(provider_type: str, **kwargs) -> LLMProvider:
     """Factory function to create LLM provider based on type."""
-    if provider_type.lower() == "vllm":
-        vllm_url = kwargs.get("vllm_url")
-        if not vllm_url:
-            raise ValueError("vllm_url is required for vLLM provider")
+    if provider_type.lower() == "openai_compatible":
+        base_url = kwargs.get("base_url")
+        if not base_url:
+            raise ValueError("base_url is required for OpenAI-compatible provider")
+        api_key = kwargs.get("api_key")
         model = kwargs.get("model", "default")
-        return VLLMProvider(vllm_url, model=model)
+        return OpenAICompatibleProvider(base_url, api_key=api_key, model=model)
 
     elif provider_type.lower() == "anthropic":
         api_key = kwargs.get("api_key")
@@ -129,7 +130,7 @@ __all__ = [
     "TokenUsage",
     "LLMProvider",
     "AnthropicProvider",
-    "VLLMProvider",
+    "OpenAICompatibleProvider",
     "BedrockProvider",
     "OpenAIProvider",
     "GeminiProvider",

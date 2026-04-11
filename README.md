@@ -23,7 +23,7 @@ Connects to your workplace apps, helps employees find information and get work d
 - **AI Agent**: Chat interface with tool use: searches your connected apps, reads documents, and executes Python/bash in a sandboxed container to analyze data.
 - **Self-hosted**: Runs entirely on your infrastructure. No data leaves your network.
 - **Permission Inheritance**: Respects source system permissions. Users only see data they're already authorized to access.
-- **Bring Your Own LLM**: Anthropic, OpenAI, Gemini, or open-weight models via vLLM.
+- **Bring Your Own LLM**: Anthropic, OpenAI, Gemini, AWS Bedrock, Vertex AI, Azure AI Foundry, or any OpenAI-compatible endpoint (vLLM, Ollama, LM Studio, LiteLLM, etc.).
 - **Simple Deployment**: Docker Compose for single-server setups, Terraform for production AWS/GCP deployments.
 
 ## Architecture

@@ -6,7 +6,7 @@ import { ulid } from 'ulid'
 import { encryptConfig, decryptConfig } from '$lib/server/crypto/encryption'
 
 export const MODEL_PROVIDER_TYPES = [
-    'vllm',
+    'openai_compatible',
     'anthropic',
     'bedrock',
     'openai',
@@ -62,7 +62,7 @@ export const PREDEFINED_MODELS: Record<
         { modelId: 'anthropic.claude-haiku-4-5-20251001-v1:0', displayName: 'Claude Haiku 4.5' },
         { modelId: 'amazon.nova-pro-v1:0', displayName: 'Amazon Nova Pro' },
     ],
-    vllm: [],
+    openai_compatible: [],
     gemini: [
         { modelId: 'gemini-2.5-pro', displayName: 'Gemini 2.5 Pro' },
         { modelId: 'gemini-2.5-flash', displayName: 'Gemini 2.5 Flash' },

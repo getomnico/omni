@@ -1,11 +1,22 @@
-# GPU support override for local inference services (vLLM, TEI)
-# Usage: docker compose -f docker/docker-compose.yml -f docker/docker-compose.gpu.yml --profile local-embeddings up
+# GPU support override for local inference services (llama.cpp, TEI)
 #
-# This file adds NVIDIA GPU support to local inference services.
+# Layer on top of docker-compose.yml (for TEI only) or together with
+# docker-compose.local-inference.yml (for llama.cpp + TEI).
+#
 # Only include this file when running on a machine with an NVIDIA GPU.
+#
+# Usage (TEI embeddings only):
+#   docker compose -f docker/docker-compose.yml -f docker/docker-compose.gpu.yml \
+#     --profile local-embeddings up -d
+#
+# Usage (full local inference stack):
+#   docker compose -f docker/docker-compose.yml \
+#     -f docker/docker-compose.local-inference.yml \
+#     -f docker/docker-compose.gpu.yml \
+#     --profile local-inference up -d
 
 services:
-  vllm:
+  embeddings:
     deploy:
       resources:
         reservations:
@@ -14,7 +25,19 @@ services:
               count: 1
               capabilities: [gpu]
 
-  embeddings:
+  # llama.cpp GPU override — only meaningful when layered on top of
+  # docker-compose.local-inference.yml. The `command:` is duplicated from the
+  # base override because compose replaces (not appends) command fields, and
+  # `-ngl 999` is required to actually offload layers to the GPU.
+  llama-cpp:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    command: >
+      -hf ${LLAMA_CPP_MODEL:?LLAMA_CPP_MODEL must be set to a HuggingFace GGUF repo (e.g. unsloth/Qwen2.5-7B-Instruct-GGUF:Q4_K_M)}
+      --host 0.0.0.0
+      --port 8000
+      --ctx-size ${LLAMA_CPP_CONTEXT_SIZE:-8192}
+      --jinja
+      -ngl 999
     deploy:
       resources:
         reservations:

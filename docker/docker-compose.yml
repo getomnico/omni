@@ -249,36 +249,6 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
-  # vLLM Service for LLM inference (optional - only when using vLLM provider)
-  # GPU support: use docker-compose.gpu.yml override for GPU acceleration
-  vllm:
-    image: vllm/vllm-openai:latest
-    container_name: omni-vllm
-    expose:
-      - "${VLLM_PORT}"
-    environment:
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
-    command: >
-      --model ${VLLM_MODEL}
-      --dtype ${VLLM_DTYPE:-auto}
-      --api-key ${VLLM_API_KEY}
-      --port ${VLLM_PORT}
-      --host 0.0.0.0
-      --max-model-len ${VLLM_MAX_MODEL_LEN}
-    networks:
-      - omni-network
-    volumes:
-      - vllm_models:/root/.cache/huggingface
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    profiles:
-      - vllm  # Only start when vllm profile is active
-    logging: *default-logging
-
   # HuggingFace TEI Embeddings Service (for local embedding models)
   # GPU support: use docker-compose.gpu.yml override for GPU acceleration
   embeddings:
@@ -732,8 +702,6 @@ volumes:
     name: omni-redis-data
   ai_models:
     name: omni-ai-models
-  vllm_models:
-    name: omni-vllm-models
   tei_models:
     name: omni-tei-models
   docling_models:

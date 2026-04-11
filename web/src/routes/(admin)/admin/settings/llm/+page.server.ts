@@ -236,7 +236,8 @@ function validateConfig(
 ): string | null {
     if (providerType === 'azure_foundry' && !config.apiUrl)
         return 'Endpoint URL is required for Azure AI Foundry'
-    if (providerType === 'vllm' && !config.apiUrl) return 'API URL is required for vLLM'
+    if (providerType === 'openai_compatible' && !config.apiUrl)
+        return 'Base URL is required for OpenAI-compatible provider'
     if (providerType === 'anthropic' && !config.apiKey && !isEdit)
         return 'API key is required for Anthropic'
     if (providerType === 'openai' && !config.apiKey && !isEdit)

@@ -1,7 +1,7 @@
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
     anthropic: 'Anthropic',
     openai: 'OpenAI',
-    vllm: 'vLLM',
+    openai_compatible: 'OpenAI Compatible',
     bedrock: 'Bedrock',
     gemini: 'Gemini',
     azure_foundry: 'Azure AI',

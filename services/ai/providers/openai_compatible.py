@@ -1,8 +1,9 @@
 """
-vLLM Provider — uses the OpenAI Chat Completions API that vLLM exposes.
+OpenAI-compatible provider — talks to any endpoint that implements the OpenAI
+Chat Completions API (vLLM, Ollama, LM Studio, LiteLLM, OpenRouter, etc.).
 
-vLLM serves an OpenAI-compatible API, so we use the OpenAI SDK with a custom
-base_url. This gives us full tool/function-calling support for free.
+Uses the OpenAI SDK with a custom base_url, giving us full tool/function-calling
+support without provider-specific glue.
 """
 
 import json
@@ -11,7 +12,6 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
-import httpx
 from openai import AsyncOpenAI
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
@@ -188,22 +188,24 @@ def _convert_messages_to_openai(
     return result
 
 
-class VLLMProvider(LLMProvider):
-    """Provider for vLLM's OpenAI-compatible API.
+class OpenAICompatibleProvider(LLMProvider):
+    """Provider for any OpenAI-compatible Chat Completions endpoint.
 
-    Uses the OpenAI SDK pointed at the vLLM server, giving us Chat Completions
-    with full tool/function-calling support.
+    Uses the OpenAI SDK pointed at a user-supplied base URL, giving us Chat
+    Completions with full tool/function-calling support.
     """
 
-    def __init__(self, vllm_url: str, model: str = "default"):
-        self.vllm_url = vllm_url.rstrip("/")
+    def __init__(
+        self, base_url: str, api_key: str | None = None, model: str = "default"
+    ):
+        self.base_url = base_url.rstrip("/")
         self.model = model
+        # Some keyless local endpoints (vLLM without --api-key, Ollama, etc.)
+        # still require the SDK to send *something* — fall back to a placeholder.
         self.client = AsyncOpenAI(
-            api_key="unused",
-            base_url=f"{self.vllm_url}/v1",
+            api_key=api_key or "unused",
+            base_url=f"{self.base_url}/v1",
         )
-        # Keep a raw httpx client for the health check endpoint
-        self._http_client = httpx.AsyncClient(timeout=10.0)
 
     async def stream_response(
         self,
@@ -215,7 +217,7 @@ class VLLMProvider(LLMProvider):
         messages: list[MessageParam] | None = None,
         system_prompt: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
-        """Stream response from vLLM, yielding Anthropic-compatible MessageStreamEvents."""
+        """Stream response, yielding Anthropic-compatible MessageStreamEvents."""
         try:
             openai_messages = _convert_messages_to_openai(
                 messages or [{"role": "user", "content": prompt}]
@@ -252,7 +254,7 @@ class VLLMProvider(LLMProvider):
             yield RawMessageStartEvent(
                 type="message_start",
                 message=Message(
-                    id=f"vllm-{time.time_ns()}",
+                    id=f"openai-compat-{time.time_ns()}",
                     type="message",
                     role="assistant",
                     content=[],
@@ -381,7 +383,10 @@ class VLLMProvider(LLMProvider):
             yield RawMessageStopEvent(type="message_stop")
 
         except Exception as e:
-            logger.error(f"Failed to stream from vLLM: {e}", exc_info=True)
+            logger.error(
+                f"Failed to stream from OpenAI-compatible endpoint: {e}",
+                exc_info=True,
+            )
 
     async def generate_response(
         self,
@@ -390,7 +395,7 @@ class VLLMProvider(LLMProvider):
         temperature: float | None = None,
         top_p: float | None = None,
     ) -> str:
-        """Generate non-streaming response from vLLM."""
+        """Generate non-streaming response."""
         try:
             params: dict[str, Any] = {
                 "model": self.model,
@@ -413,17 +418,16 @@ class VLLMProvider(LLMProvider):
 
             content = response.choices[0].message.content
             if not content:
-                raise Exception("Empty response from vLLM service")
+                raise Exception("Empty response from OpenAI-compatible endpoint")
 
             return content
 
         except Exception as e:
-            raise Exception(f"Failed to generate response from vLLM: {e}")
+            raise Exception(
+                f"Failed to generate response from OpenAI-compatible endpoint: {e}"
+            )
 
     async def health_check(self) -> bool:
-        """Check if vLLM service is healthy."""
-        try:
-            response = await self._http_client.get(f"{self.vllm_url}/health")
-            return response.status_code == 200
-        except Exception:
-            return False
+        """Liveness is determined by inference calls themselves; no separate probe
+        since not every OpenAI-compatible server exposes a common health endpoint."""
+        return True

@@ -73,7 +73,7 @@ class UsageTracker:
 
     def save(self) -> None:
         """Fire-and-forget: persist usage record without blocking the caller."""
-        # Some providers (Gemini, vLLM) set last_usage on the provider instance
+        # Some providers (Gemini, OpenAI-compatible) set last_usage on the provider instance
         # with data not available in streaming events (e.g., input_tokens).
         if self._provider and self._provider.last_usage:
             pu = self._provider.last_usage

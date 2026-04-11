@@ -161,7 +161,7 @@ export const EMBEDDING_PROVIDER_TYPES = ['local', 'jina', 'openai', 'cohere', 'b
 export type EmbeddingProviderType = (typeof EMBEDDING_PROVIDER_TYPES)[number]
 
 export const PROVIDER_LABELS: Record<EmbeddingProviderType, string> = {
-    local: 'Local (vLLM)',
+    local: 'Local (TEI)',
     jina: 'Jina AI',
     openai: 'OpenAI',
     cohere: 'Cohere',

@@ -1,0 +1,64 @@
+# Local Inference Override
+#
+# Adds a llama.cpp LLM server and activates the HuggingFace TEI embeddings
+# service for fully-local Omni deployments. No external API keys required.
+#
+# CPU (default):
+#   LLAMA_CPP_MODEL=unsloth/Qwen2.5-7B-Instruct-GGUF:Q4_K_M \
+#   EMBEDDING_MODEL=BAAI/bge-small-en-v1.5 \
+#   docker compose \
+#     -f docker/docker-compose.yml \
+#     -f docker/docker-compose.local-inference.yml \
+#     --profile local-inference up -d
+#
+# GPU (NVIDIA CUDA) — layer the gpu override on top:
+#   LLAMA_CPP_MODEL=unsloth/Qwen2.5-7B-Instruct-GGUF:Q4_K_M \
+#   EMBEDDING_MODEL=BAAI/bge-small-en-v1.5 \
+#   docker compose \
+#     -f docker/docker-compose.yml \
+#     -f docker/docker-compose.local-inference.yml \
+#     -f docker/docker-compose.gpu.yml \
+#     --profile local-inference up -d
+#
+# After startup, configure Omni via the admin UI:
+#   - LLM provider:        "OpenAI Compatible"  Base URL: http://llama-cpp:8000
+#   - Embedding provider:  "Local (TEI)"        API URL:  http://embeddings:8001/v1
+
+services:
+  llama-cpp:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    container_name: omni-llama-cpp
+    expose:
+      - "8000"
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    command: >
+      -hf ${LLAMA_CPP_MODEL:?LLAMA_CPP_MODEL must be set to a HuggingFace GGUF repo (e.g. unsloth/Qwen2.5-7B-Instruct-GGUF:Q4_K_M)}
+      --host 0.0.0.0
+      --port 8000
+      --ctx-size ${LLAMA_CPP_CONTEXT_SIZE:-8192}
+      --jinja
+    networks:
+      - omni-network
+    volumes:
+      - llama_cpp_models:/root/.cache/llama.cpp
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    profiles:
+      - local-inference
+
+  # Activate the existing TEI embeddings service under the local-inference profile.
+  # Compose merges `profiles:` as an array union, so the base `local-embeddings`
+  # profile still works too.
+  embeddings:
+    profiles:
+      - local-inference
+
+volumes:
+  llama_cpp_models:
+    name: omni-llama-cpp-models

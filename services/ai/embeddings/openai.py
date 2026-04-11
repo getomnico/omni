@@ -20,7 +20,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
     Works with:
     - OpenAI's API (https://api.openai.com/v1)
-    - vLLM server serving local models
+    - Any OpenAI-compatible embeddings endpoint serving local models
     """
 
     def __init__(

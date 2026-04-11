@@ -87,7 +87,7 @@
         { description: string; icon: string | null }
     > = {
         local: {
-            description: 'Self-hosted embeddings via a vLLM-compatible endpoint',
+            description: 'Self-hosted embeddings via HuggingFace Text Embeddings Inference (TEI)',
             icon: null,
         },
         jina: {

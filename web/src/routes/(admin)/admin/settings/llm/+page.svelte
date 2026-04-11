@@ -23,7 +23,7 @@
     let { data }: { data: PageData } = $props()
 
     type ProviderType =
-        | 'vllm'
+        | 'openai_compatible'
         | 'anthropic'
         | 'bedrock'
         | 'openai'
@@ -91,8 +91,10 @@
         confirmDialogOpen = true
     }
 
-    const showApiKey = (p: ProviderType) => p === 'anthropic' || p === 'openai' || p === 'gemini'
-    const showApiUrl = (p: ProviderType) => p === 'vllm' || p === 'azure_foundry'
+    const showApiKey = (p: ProviderType) =>
+        p === 'anthropic' || p === 'openai' || p === 'gemini' || p === 'openai_compatible'
+    const showApiUrl = (p: ProviderType) => p === 'openai_compatible' || p === 'azure_foundry'
+    const apiKeyOptional = (p: ProviderType) => p === 'openai_compatible'
     const showRegion = (p: ProviderType) => p === 'bedrock' || p === 'vertex_ai'
     const showProjectId = (p: ProviderType) => p === 'vertex_ai'
 
@@ -118,9 +120,10 @@
             description: 'Access models through AWS Bedrock with IAM auth',
             icon: awsIcon,
         },
-        vllm: {
-            label: 'vLLM (Self-hosted)',
-            description: 'Self-hosted models via a vLLM-compatible endpoint',
+        openai_compatible: {
+            label: 'OpenAI Compatible',
+            description:
+                'Any OpenAI-compatible endpoint (vLLM, Ollama, LM Studio, LiteLLM, OpenRouter, etc.)',
             icon: null,
         },
         gemini: {
@@ -147,7 +150,7 @@
         'azure_foundry',
         'bedrock',
         'vertex_ai',
-        'vllm',
+        'openai_compatible',
     ]
 
     let providerByType = $derived(
@@ -522,7 +525,11 @@
                     {#if showApiKey(formState.providerType)}
                         <div class="space-y-2">
                             <Label for="apiKey">
-                                API Key {editingHasApiKey && editMode ? '' : '*'}
+                                API Key {apiKeyOptional(formState.providerType)
+                                    ? '(optional)'
+                                    : editingHasApiKey && editMode
+                                      ? ''
+                                      : '*'}
                             </Label>
                             <Input
                                 id="apiKey"
@@ -534,7 +541,9 @@
                                     : formState.providerType === 'anthropic'
                                       ? 'sk-ant-...'
                                       : 'sk-...'}
-                                required={!editMode && showApiKey(formState.providerType)} />
+                                required={!editMode &&
+                                    showApiKey(formState.providerType) &&
+                                    !apiKeyOptional(formState.providerType)} />
                         </div>
                     {/if}
 
@@ -543,7 +552,7 @@
                             <Label for="apiUrl">
                                 {formState.providerType === 'azure_foundry'
                                     ? 'Endpoint URL'
-                                    : 'API URL'} *
+                                    : 'Base URL'} *
                             </Label>
                             <Input
                                 id="apiUrl"
@@ -551,7 +560,7 @@
                                 bind:value={formState.apiUrl}
                                 placeholder={formState.providerType === 'azure_foundry'
                                     ? 'https://<project>.services.ai.azure.com'
-                                    : 'http://vllm:8000'}
+                                    : 'https://api.example.com'}
                                 required={showApiUrl(formState.providerType)} />
                         </div>
                     {/if}
