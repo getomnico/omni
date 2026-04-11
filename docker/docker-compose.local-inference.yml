@@ -22,31 +22,32 @@
 #     --profile local-inference up -d
 #
 # Environment:
-#   LLAMA_CPP_MODEL           HuggingFace GGUF repo[:quant]. Default:
-#                             ggml-org/gemma-4-E2B-it-GGUF (CPU-friendly first-run).
-#                             Override with a larger model when running on GPU.
-#   LLAMA_CPP_CONTEXT_SIZE    Context window. Default: 8192.
-#   LOCAL_INFERENCE_GPU_COUNT Number of NVIDIA GPUs to reserve. Unset or 0 = CPU
-#                             mode. Any positive value enables GPU for both
-#                             llama.cpp and TEI embeddings.
-#   HF_TOKEN                  Optional HuggingFace token for gated models.
+#   LLAMA_CPP_MODEL            HuggingFace GGUF repo[:quant]. Default:
+#                              ggml-org/gemma-4-E2B-it-GGUF (CPU-friendly first-run).
+#                              Override with a larger model when running on GPU.
+#   LLAMA_CPP_CONTEXT_SIZE     Context window. Default: 8192.
+#   LOCAL_INFERENCE_MODEL_PORT Port the llama.cpp server listens on. Default: 8000.
+#   LOCAL_INFERENCE_GPU_COUNT  Number of NVIDIA GPUs to reserve. Unset or 0 = CPU
+#                              mode. Any positive value enables GPU for both
+#                              llama.cpp and TEI embeddings.
+#   HF_TOKEN                   Optional HuggingFace token for gated models.
 #
 # After startup, configure Omni via the admin UI:
-#   - LLM provider:        "OpenAI Compatible"  Base URL: http://llama-cpp:8000
-#   - Embedding provider:  "Local (TEI)"        API URL:  http://embeddings:8001/v1
+#   - LLM provider:        "OpenAI Compatible"  Base URL: http://llama-cpp:${LOCAL_INFERENCE_MODEL_PORT}
+#   - Embedding provider:  "Local (TEI)"        API URL:  http://embeddings:${LOCAL_EMBEDDINGS_PORT}/v1
 
 services:
   llama-cpp:
     image: ghcr.io/ggml-org/llama.cpp:server${LOCAL_INFERENCE_GPU_COUNT:+-cuda}
     container_name: omni-llama-cpp
     expose:
-      - "8000"
+      - "${LOCAL_INFERENCE_MODEL_PORT}"
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
     command: >
       -hf ${LLAMA_CPP_MODEL:-ggml-org/gemma-4-E2B-it-GGUF}
       --host 0.0.0.0
-      --port 8000
+      --port ${LOCAL_INFERENCE_MODEL_PORT}
       --ctx-size ${LLAMA_CPP_CONTEXT_SIZE:-8192}
       --jinja
       ${LOCAL_INFERENCE_GPU_COUNT:+-ngl 999}
@@ -56,7 +57,7 @@ services:
       - llama_cpp_models:/root/.cache/llama.cpp
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:${LOCAL_INFERENCE_MODEL_PORT}/health"]
       interval: 30s
       timeout: 10s
       retries: 3
