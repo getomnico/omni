@@ -65,6 +65,7 @@ impl SearchDocumentRepository {
                     user_email,
                     user_groups,
                     date_filter,
+                    person_filters,
                 )
                 .await;
         }
@@ -222,6 +223,7 @@ impl SearchDocumentRepository {
         user_email: Option<&str>,
         user_groups: &[String],
         date_filter: Option<&DateFilter>,
+        person_filters: Option<&[String]>,
     ) -> Result<Vec<SearchHit>, DatabaseError> {
         let mut param_idx = 1;
         let mut filters = Vec::new();
@@ -235,6 +237,27 @@ impl SearchDocumentRepository {
             user_groups,
             date_filter,
         );
+
+        // Apply person filters (from `by:Name` operators) here too — without
+        // this, an empty-query browse with `by:Alice` silently ignores the
+        // person filter and returns everything.
+        //
+        // Uses plain JSONB ILIKE instead of the `metadata ||| 'author:X'` BM25
+        // operator because BM25 operators require a BM25 scoring context
+        // (the `@@@` operator elsewhere in the query). In the filter-only path
+        // there's no `@@@`, so BM25 operators are no-ops and every row matches.
+        if let Some(persons) = person_filters {
+            let conditions: Vec<String> = persons
+                .iter()
+                .map(|p| {
+                    let escaped = p.replace('\'', "''");
+                    format!("metadata->>'author' ILIKE '%{escaped}%'")
+                })
+                .collect();
+            if !conditions.is_empty() {
+                filters.push(format!("({})", conditions.join(" OR ")));
+            }
+        }
 
         let where_clause = if filters.is_empty() {
             String::new()
@@ -250,7 +273,11 @@ impl SearchDocumentRepository {
                    ARRAY[LEFT(content, 240)] as content_snippets
             FROM documents
             {where_clause}
-            ORDER BY updated_at DESC
+            ORDER BY COALESCE(
+                CASE WHEN metadata->>'updated_at' IS NOT NULL
+                     AND pg_input_is_valid(metadata->>'updated_at', 'timestamptz')
+                THEN (metadata->>'updated_at')::timestamptz END,
+                updated_at) DESC
             LIMIT ${limit_idx} OFFSET ${offset_idx}
             "#,
             where_clause = where_clause,

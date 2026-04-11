@@ -17,8 +17,41 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
     }
 
     const query = typeof body.query === 'string' ? body.query.trim() : ''
-    if (!query) {
-        return json({ error: 'query is required' }, { status: 400 })
+
+    // Attribute filters: structured filters on indexed document attributes
+    // (e.g. {"chat_title": "Solv & ComputeLabs"}, {"sender": ["alice","bob"]},
+    // {"date": {"gte": "2024-01-01"}}). Forwarded as-is to the searcher which
+    // uses its AttributeFilter enum (untagged: exact / any-of / range).
+    // See shared/src/models.rs::AttributeFilter.
+    const attributeFilters =
+        body.attribute_filters && typeof body.attribute_filters === 'object'
+            ? (body.attribute_filters as Record<string, unknown>)
+            : undefined
+
+    // Empty query is allowed ONLY when there's some other filter driving the
+    // search — otherwise an empty `filter_only_search` against 150K docs is
+    // wasteful. Valid "empty query" cases:
+    //   1. Query string contains operators only ("last week in:telegram")
+    //      — the operator parser will extract them, leaving "" as the final query
+    //      BUT that parsing happens inside the searcher, so from our POV any
+    //      non-empty original body.query is fine.
+    //   2. attribute_filters narrows the search (e.g. one specific chat_title)
+    //   3. source_types is narrowly specified by the caller
+    // We accept case 1 by checking the RAW body.query (not the trimmed one),
+    // and cases 2+3 via explicit filters.
+    const rawQuery = typeof body.query === 'string' ? body.query : ''
+    const hasNonEmptyInput = rawQuery.trim().length > 0
+    const hasNarrowingFilter =
+        !!attributeFilters ||
+        (Array.isArray(body.source_types) && body.source_types.length > 0)
+    if (!hasNonEmptyInput && !hasNarrowingFilter) {
+        return json(
+            {
+                error:
+                    'query is required (or provide source_types / attribute_filters for filtered browsing)',
+            },
+            { status: 400 },
+        )
     }
 
     // Enforce API key source scoping
@@ -40,15 +73,17 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
         }
     }
 
-    const queryData = {
+    const queryData: Record<string, unknown> = {
         query,
         source_types: sourceTypes,
         content_types: Array.isArray(body.content_types) ? body.content_types : undefined,
+        attribute_filters: attributeFilters,
         limit: typeof body.limit === 'number' ? Math.min(body.limit, 100) : 20,
         offset: typeof body.offset === 'number' ? body.offset : 0,
         mode: ['fulltext', 'semantic', 'hybrid'].includes(body.mode as string)
             ? body.mode
             : 'hybrid',
+        include_facets: typeof body.include_facets === 'boolean' ? body.include_facets : undefined,
         // 'admin' scope: omit user_email → searcher skips permission filter → all docs
         // 'user'/'public' scope (or cookie auth): real user identity → user's permitted docs
         user_email:

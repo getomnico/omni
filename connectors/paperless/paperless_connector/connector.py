@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from omni_connector import Connector, SyncContext
+from omni_connector.models import SearchOperator
 
 from .client import AuthenticationError, PaperlessClient, PaperlessError
 from .config import CHECKPOINT_INTERVAL
@@ -39,6 +40,14 @@ class PaperlessConnector(Connector):
     @property
     def sync_modes(self) -> list[str]:
         return ["full", "incremental"]
+
+    @property
+    def search_operators(self) -> list[SearchOperator]:
+        return [
+            SearchOperator(operator="correspondent", attribute_key="correspondent", value_type="text"),
+            SearchOperator(operator="type", attribute_key="document_type", value_type="text"),
+            SearchOperator(operator="tag", attribute_key="tags", value_type="text"),
+        ]
 
     async def sync(
         self,

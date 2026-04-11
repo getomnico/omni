@@ -234,7 +234,24 @@ impl SearchEngine {
         let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
         let limit = request.limit();
 
-        if request.query.trim().is_empty() && !has_parsed_filters {
+        // Empty query is allowed ONLY if some narrowing filter will scope the
+        // result set. Otherwise `filter_only_search` would scan the entire
+        // corpus. Accept either parser-extracted filters (from query operators)
+        // OR body-provided filters (attribute_filters, source_types, content_types)
+        // that were merged into `request` above.
+        let has_body_filters = request
+            .attribute_filters
+            .as_ref()
+            .map_or(false, |m| !m.is_empty())
+            || request
+                .source_types
+                .as_ref()
+                .map_or(false, |v| !v.is_empty())
+            || request
+                .content_types
+                .as_ref()
+                .map_or(false, |v| !v.is_empty());
+        if request.query.trim().is_empty() && !has_parsed_filters && !has_body_filters {
             return Err(anyhow::anyhow!("Search query cannot be empty"));
         }
 

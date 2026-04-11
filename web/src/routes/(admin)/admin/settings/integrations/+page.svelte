@@ -241,6 +241,8 @@
                                     <Mail class="h-6 w-6" />
                                 {:else if source.sourceType === 'paperless_ngx'}
                                     <HardDrive class="h-6 w-6" />
+                                {:else if source.sourceType === 'nextcloud'}
+                                    <Cloud class="h-6 w-6" />
                                 {/if}
                                 <div class="flex flex-col gap-0.5">
                                     <div class="flex items-center gap-2">
@@ -260,7 +262,10 @@
                                                     {noun} scanned{#if sync.documentsUpdated && sync.documentsUpdated > 0},
                                                         {sync.documentsUpdated.toLocaleString()} updated{/if}
                                                     {#if documentCounts[source.id]}
-                                                        ({documentCounts[source.id].toLocaleString()} indexed, scanned includes duplicates across users)
+                                                        ({documentCounts[
+                                                            source.id
+                                                        ].toLocaleString()} indexed, scanned includes
+                                                        duplicates across users)
                                                     {/if}</span>
                                             {:else}
                                                 <span>Syncing...</span>
@@ -344,6 +349,8 @@
                                     <Mail class="h-6 w-6" />
                                 {:else if integration.id === 'paperless_ngx'}
                                     <HardDrive class="h-6 w-6" />
+                                {:else if integration.id === 'nextcloud'}
+                                    <Cloud class="h-6 w-6" />
                                 {/if}
                                 <span>{integration.name}</span>
                             </CardTitle>
