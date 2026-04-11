@@ -73,6 +73,39 @@ export class SdkClient {
     return result.content_id;
   }
 
+  async extractText(
+    syncRunId: string,
+    data: Buffer | Uint8Array,
+    mimeType: string,
+    filename?: string
+  ): Promise<string> {
+    const formData = new FormData();
+    formData.append('sync_run_id', syncRunId);
+    formData.append('mime_type', mimeType);
+    formData.append('data', new Blob([data]), 'file');
+    if (filename) {
+      formData.append('filename', filename);
+    }
+
+    const url = `${this.baseUrl}/sdk/extract-text`;
+    const response = await fetch(url, {
+      method: 'POST',
+      body: formData,
+      signal: AbortSignal.timeout(this.timeout),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new SdkClientError(
+        `Failed to extract text: ${response.status} - ${text}`,
+        response.status
+      );
+    }
+
+    const result = (await response.json()) as { text: string };
+    return result.text;
+  }
+
   async storeContent(
     syncRunId: string,
     content: string,

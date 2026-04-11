@@ -2323,7 +2323,13 @@ impl SyncManager {
                     for message in &gmail_thread.messages {
                         let attachments = self
                             .gmail_client
-                            .extract_attachments(message, &service_auth, user_email)
+                            .extract_attachments(
+                                message,
+                                &service_auth,
+                                user_email,
+                                &self.sdk_client,
+                                sync_run_id,
+                            )
                             .await;
 
                         for att in attachments {

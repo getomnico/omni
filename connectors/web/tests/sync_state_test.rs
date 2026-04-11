@@ -275,7 +275,7 @@ fn test_change_detection_logic() {
             url: "https://example.com".to_string(),
             title: None,
             description: None,
-            content: "content".to_string(),
+            raw_html: "<html><body>content</body></html>".to_string(),
             content_hash: tc.new_hash.to_string(),
             last_modified: tc.new_modified.map(String::from),
             etag: tc.new_etag.map(String::from),

@@ -695,11 +695,14 @@ impl GmailClient {
 
     /// Download and extract text from all supported attachments in a message.
     /// Returns structured attachment data for separate document indexing.
+    /// Extraction is delegated to the connector manager (supports Docling).
     pub async fn extract_attachments(
         &self,
         message: &GmailMessage,
         auth: &GoogleAuth,
         user_email: &str,
+        sdk_client: &shared::SdkClient,
+        sync_run_id: &str,
     ) -> Vec<ExtractedAttachment> {
         let mut results = Vec::new();
 
@@ -717,12 +720,15 @@ impl GmailClient {
             {
                 Ok(data) => {
                     let size = data.len() as u64;
-                    let extracted_text = shared::content_extractor::extract_content(
-                        &data,
-                        &att.mime_type,
-                        Some(&att.filename),
-                    )
-                    .unwrap_or_default();
+                    let extracted_text = sdk_client
+                        .extract_text(
+                            sync_run_id,
+                            data,
+                            &att.mime_type,
+                            Some(&att.filename),
+                        )
+                        .await
+                        .unwrap_or_default();
 
                     results.push(ExtractedAttachment {
                         message_id: message.id.clone(),

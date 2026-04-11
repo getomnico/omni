@@ -238,7 +238,7 @@ impl FileSystemScanner {
 
         let filename = file.path.file_name().and_then(|n| n.to_str());
 
-        match shared::SdkClient::extract_content(&data, &file.mime_type, filename) {
+        match shared::content_extractor::extract_content(&data, &file.mime_type, filename) {
             Ok(content) => {
                 if !content.is_empty() {
                     debug!(

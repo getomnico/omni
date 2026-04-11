@@ -66,11 +66,12 @@ For operators to work, set matching keys in the document's `attributes` dict whe
 
 # Content Storage
 
-Three methods for storing content, all return a `content_id` used when emitting documents:
+Four methods for storing/extracting content, all go through the connector-manager:
 
-1. **`save(content, content_type)`** — text/HTML
-2. **`extract_and_store_content(data, mime_type, filename)`** — binary files (PDF, DOCX, etc.); connector-manager handles text extraction via Docling
-3. **`save_binary(content, content_type)`** — raw binary as base64
+1. **`save(content, content_type)`** — text/HTML, returns `content_id`
+2. **`extract_and_store_content(data, mime_type, filename)`** — binary files (PDF, DOCX, etc.); connector-manager extracts text via Docling (when enabled) or built-in extractor, stores result, returns `content_id`
+3. **`extract_text(data, mime_type, filename)`** — same extraction as above but returns the extracted text without storing; use when the caller needs to post-process or combine text before storing (e.g., appending attachment text to an email thread body)
+4. **`save_binary(content, content_type)`** — raw binary as base64, returns `content_id`
 
 # Emitting Documents
 
@@ -148,7 +149,7 @@ When implementing, read these files for your chosen language:
 |---|---|---|---|
 | Base class / SDK client | `sdk/python/omni_connector/connector.py` | `sdk/typescript/src/connector.ts` | `shared/src/sdk_client.rs` |
 | Sync context (emit, state, storage) | `sdk/python/omni_connector/context.py` | `sdk/typescript/src/context.ts` | `shared/src/sdk_client.rs` (methods directly on `SdkClient`) |
-| Content storage | `sdk/python/omni_connector/storage.py` | `sdk/typescript/src/storage.ts` | `SdkClient::store_content`, `extract_and_store_content` |
+| Content storage | `sdk/python/omni_connector/storage.py` | `sdk/typescript/src/storage.ts` | `SdkClient::store_content`, `extract_and_store_content`, `extract_text` |
 | Data models | `sdk/python/omni_connector/models.py` | `sdk/typescript/src/models.ts` | `shared/src/models.rs` |
 | Server / registration | `sdk/python/omni_connector/server.py` | `sdk/typescript/src/server.ts` | Manual — see `connectors/google/src/main.rs` + `shared::start_registration_loop` |
 | Package config | `connectors/notion/pyproject.toml` | `sdk/typescript/package.json` | `connectors/google/Cargo.toml` (workspace deps) |

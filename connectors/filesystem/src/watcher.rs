@@ -5,11 +5,9 @@ use notify::{Config, Event, EventKind, RecursiveMode, Watcher};
 use shared::db::repositories::SyncRunRepository;
 use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions, SyncRun, SyncType};
 use shared::queue::EventQueue;
-use shared::ObjectStorage;
 use sqlx::PgPool;
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::time::{interval, Instant};
@@ -157,7 +155,7 @@ pub struct FileSystemEventProcessor {
     event_receiver: tokio_mpsc::UnboundedReceiver<FileSystemEvent>,
     scanner: FileSystemScanner,
     event_queue: EventQueue,
-    content_storage: Arc<dyn ObjectStorage>,
+    sdk_client: shared::SdkClient,
     source_id: String,
     pool: PgPool,
     // Batched sync_run state
@@ -172,7 +170,7 @@ impl FileSystemEventProcessor {
         event_receiver: tokio_mpsc::UnboundedReceiver<FileSystemEvent>,
         scanner: FileSystemScanner,
         event_queue: EventQueue,
-        content_storage: Arc<dyn ObjectStorage>,
+        sdk_client: shared::SdkClient,
         source_id: String,
         pool: PgPool,
         idle_timeout_secs: u64,
@@ -181,7 +179,7 @@ impl FileSystemEventProcessor {
             event_receiver,
             scanner,
             event_queue,
-            content_storage,
+            sdk_client,
             source_id,
             pool,
             current_sync_run: None,
@@ -300,19 +298,43 @@ impl FileSystemEventProcessor {
             }
         };
 
-        // Read file content
-        let content = self.scanner.read_file_content(&file).await?;
-        if content.is_empty() {
+        // Read raw file bytes for server-side extraction
+        let data = match std::fs::read(&file.path) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!("Failed to read file {}: {}", file.path.display(), e);
+                return Ok(());
+            }
+        };
+
+        if data.is_empty() {
             debug!("Skipping file with empty content: {}", path.display());
             return Ok(());
         }
 
-        // Store content in object storage
-        let content_id = self
-            .content_storage
-            .store_text(&content, None)
+        let file_name = file.name.clone();
+
+        // Extract and store content via the connector manager
+        let content_id = match self
+            .sdk_client
+            .extract_and_store_content(
+                &sync_run_id,
+                data,
+                &file.mime_type,
+                Some(&file_name),
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to store content: {}", e))?;
+        {
+            Ok(id) => id,
+            Err(e) => {
+                warn!(
+                    "Failed to extract/store content for {}: {}",
+                    file.path.display(),
+                    e
+                );
+                return Ok(());
+            }
+        };
 
         // Create the connector event
         let document_id = path.to_string_lossy().to_string();

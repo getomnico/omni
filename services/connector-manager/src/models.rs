@@ -184,6 +184,11 @@ pub struct SdkExtractContentResponse {
     pub content_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdkExtractTextResponse {
+    pub text: String,
+}
+
 // ============================================================================
 // SDK Cancel Sync
 // ============================================================================

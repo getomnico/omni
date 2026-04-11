@@ -60,6 +60,10 @@ pub fn create_app(state: AppState) -> Router {
             "/sdk/extract-content",
             post(handlers::sdk_extract_content).layer(DefaultBodyLimit::max(400 * 1024 * 1024)),
         ) // 400 MB for binary file extraction
+        .route(
+            "/sdk/extract-text",
+            post(handlers::sdk_extract_text).layer(DefaultBodyLimit::max(400 * 1024 * 1024)),
+        ) // 400 MB for binary file extraction (returns text without storing)
         .route("/sdk/sync/:id/heartbeat", post(handlers::sdk_heartbeat))
         .route("/sdk/sync/:id/complete", post(handlers::sdk_complete))
         .route("/sdk/sync/:id/fail", post(handlers::sdk_fail))

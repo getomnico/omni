@@ -7,8 +7,6 @@ use std::collections::{HashMap, HashSet};
 use time::OffsetDateTime;
 use urlencoding::encode;
 
-use crate::attachment::extract_attachments;
-
 /// Persistent sync checkpoint for a single (source, folder) pair, stored in
 /// `Source.connector_state` as `{ "folders": { "<folder>": FolderSyncState } }`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -447,37 +445,32 @@ pub fn parse_raw_email(raw: &[u8], uid: u32, folder: &str) -> Result<ParsedEmail
     })
 }
 
-/// Extract the best available plain-text body from a parsed email,
-/// including text extracted from supported attachments (PDF, DOCX, XLSX, PPTX).
+/// Extract the best available plain-text body from a parsed email.
+/// Attachment extraction is handled separately via the connector manager.
 fn extract_body_text(mail: &ParsedMail) -> String {
     // Collect inline text parts recursively.
     let mut plain_parts: Vec<String> = Vec::new();
     let mut html_parts: Vec<String> = Vec::new();
     collect_text_parts(mail, &mut plain_parts, &mut html_parts);
 
-    let mut body = if !plain_parts.is_empty() {
+    if !plain_parts.is_empty() {
         plain_parts.join("\n\n")
     } else if !html_parts.is_empty() {
         let combined = html_parts.join("\n\n");
         html_to_text(&combined)
     } else {
         String::new()
-    };
-
-    // Extract text from supported attachments and append.
-    let attachments = extract_attachments(mail);
-    for att in &attachments {
-        body.push_str("\n\n");
-        body.push_str(&format!("[Attachment: {}]\n", att.filename));
-        body.push_str(&att.text);
     }
+}
 
-    body
+/// Collect raw attachment bytes from a parsed email for server-side extraction.
+pub fn collect_raw_attachments(mail: &ParsedMail) -> Vec<crate::attachment::RawAttachment> {
+    crate::attachment::collect_raw_attachments(mail)
 }
 
 fn collect_text_parts(mail: &ParsedMail, plain: &mut Vec<String>, html: &mut Vec<String>) {
     // Skip parts that are file attachments — those are handled by
-    // extract_attachments() and must not be double-counted as inline body.
+    // collect_raw_attachments() and must not be double-counted as inline body.
     if is_file_attachment(mail) {
         return;
     }
@@ -508,7 +501,7 @@ fn collect_text_parts(mail: &ParsedMail, plain: &mut Vec<String>, html: &mut Vec
 ///
 /// The non-empty check mirrors [`attachment::attachment_filename`] so that the
 /// two gates stay in sync: a part skipped here will always be picked up by
-/// `extract_attachments`, and vice-versa.
+/// `collect_raw_attachments`, and vice-versa.
 fn is_file_attachment(mail: &ParsedMail) -> bool {
     let disposition = mail.get_content_disposition();
     if disposition.disposition == mailparse::DispositionType::Attachment {
