@@ -560,8 +560,17 @@
                                 bind:value={formState.apiUrl}
                                 placeholder={formState.providerType === 'azure_foundry'
                                     ? 'https://<project>.services.ai.azure.com'
-                                    : 'https://api.example.com'}
+                                    : 'https://openrouter.ai/api/v1'}
                                 required={showApiUrl(formState.providerType)} />
+                            {#if formState.providerType === 'openai_compatible'}
+                                <p class="text-muted-foreground text-xs">
+                                    Running the bundled local-inference stack? Use
+                                    <code
+                                        class="bg-muted rounded px-1 py-0.5 font-mono text-[11px]">
+                                        http://llama-cpp:8000
+                                    </code>.
+                                </p>
+                            {/if}
                         </div>
                     {/if}
 
