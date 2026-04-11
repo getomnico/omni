@@ -36,7 +36,6 @@ futures = { workspace = true }
 governor = { workspace = true }
 nonzero_ext = { workspace = true }
 rand = { workspace = true }
-html2text = "0.16"
 urlencoding = "2.1"
 # HTTP server dependencies
 dashmap = { workspace = true }

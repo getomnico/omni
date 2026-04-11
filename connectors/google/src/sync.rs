@@ -2230,7 +2230,7 @@ impl SyncManager {
                     }
                 } else {
                     // Index thread conversation content (no attachment text)
-                    match gmail_thread.aggregate_content(&self.gmail_client) {
+                    match gmail_thread.aggregate_content(&self.gmail_client, &self.sdk_client, sync_run_id).await {
                         Ok(content) => {
                             if !content.trim().is_empty() {
                                 match self.sdk_client.store_content(sync_run_id, &content).await {

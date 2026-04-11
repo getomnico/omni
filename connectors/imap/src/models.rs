@@ -66,6 +66,10 @@ pub struct ParsedEmail {
     pub cc: Vec<String>,
     pub date: Option<OffsetDateTime>,
     pub body_text: String,
+    /// When true, `body_text` is raw HTML that must be converted via the
+    /// connector manager before indexing.
+    #[serde(default)]
+    pub body_is_html: bool,
     #[serde(default)]
     pub flags: Vec<String>,
     pub size: usize,
@@ -425,7 +429,7 @@ pub fn parse_raw_email(raw: &[u8], uid: u32, folder: &str) -> Result<ParsedEmail
         .as_deref()
         .and_then(parse_email_date);
 
-    let body_text = extract_body_text(&parsed);
+    let (body_text, body_is_html) = extract_body_text(&parsed);
     let size = raw.len();
 
     Ok(ParsedEmail {
@@ -440,6 +444,7 @@ pub fn parse_raw_email(raw: &[u8], uid: u32, folder: &str) -> Result<ParsedEmail
         cc,
         date,
         body_text,
+        body_is_html,
         flags: vec![],
         size,
     })
@@ -447,19 +452,21 @@ pub fn parse_raw_email(raw: &[u8], uid: u32, folder: &str) -> Result<ParsedEmail
 
 /// Extract the best available plain-text body from a parsed email.
 /// Attachment extraction is handled separately via the connector manager.
-fn extract_body_text(mail: &ParsedMail) -> String {
+///
+/// Returns `(body, is_html)`. When `is_html` is true, the body is raw HTML and
+/// must be converted via the connector manager (Docling-aware) before indexing.
+fn extract_body_text(mail: &ParsedMail) -> (String, bool) {
     // Collect inline text parts recursively.
     let mut plain_parts: Vec<String> = Vec::new();
     let mut html_parts: Vec<String> = Vec::new();
     collect_text_parts(mail, &mut plain_parts, &mut html_parts);
 
     if !plain_parts.is_empty() {
-        plain_parts.join("\n\n")
+        (plain_parts.join("\n\n"), false)
     } else if !html_parts.is_empty() {
-        let combined = html_parts.join("\n\n");
-        html_to_text(&combined)
+        (html_parts.join("\n\n"), true)
     } else {
-        String::new()
+        (String::new(), false)
     }
 }
 
@@ -515,13 +522,6 @@ fn is_file_attachment(mail: &ParsedMail) -> bool {
         return true;
     }
     mail.ctype.params.get("name").is_some_and(|v| !v.is_empty())
-}
-
-/// Column width used when rendering HTML emails to plain text.
-const HTML_TEXT_WIDTH: usize = 100;
-
-fn html_to_text(html: &str) -> String {
-    html2text::from_read(html.as_bytes(), HTML_TEXT_WIDTH).unwrap_or_default()
 }
 
 fn parse_address_list(value: &str) -> Vec<String> {

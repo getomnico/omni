@@ -402,6 +402,32 @@ impl SyncManager {
                 };
                 email.flags = raw.flags.clone();
 
+                // If the email body is HTML (no plain-text alternative), convert
+                // it via the connector manager so Docling is used when enabled.
+                if email.body_is_html && !email.body_text.is_empty() {
+                    match self
+                        .sdk_client
+                        .extract_text(
+                            sync_run_id,
+                            email.body_text.as_bytes().to_vec(),
+                            "text/html",
+                            None,
+                        )
+                        .await
+                    {
+                        Ok(text) => {
+                            email.body_text = text;
+                            email.body_is_html = false;
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to convert HTML body for UID {}: {}, keeping raw",
+                                raw.uid, e
+                            );
+                        }
+                    }
+                }
+
                 // Extract attachment text via the connector manager (supports
                 // Docling when enabled) and append to the email body.
                 if let Ok(parsed_mail) = mailparse::parse_mail(&raw.data) {

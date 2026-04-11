@@ -404,6 +404,9 @@ fn test_email_with_attachment_end_to_end() {
     // Parse email — body_text contains only inline body, not attachments
     let mut email = parse_raw_email(&raw, 1, "Finance").unwrap();
 
+    // Plain text body → no HTML conversion needed
+    assert!(!email.body_is_html);
+
     // Verify inline body is present but attachment text is NOT (extracted separately)
     assert!(email.body_text.contains("Please find attached"));
     assert!(!email.body_text.contains("Q4 Revenue Report"),

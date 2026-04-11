@@ -6,7 +6,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::auth::{execute_with_auth_retry, is_auth_error, ApiResult, GoogleAuth};
 use shared::RateLimiter;
@@ -672,24 +672,24 @@ impl GmailClient {
         .await
     }
 
-    pub fn extract_message_content(&self, message: &GmailMessage) -> Result<String> {
+    /// Extract the message body, returning `(text, is_html)`.
+    /// When `is_html` is true, the text is raw HTML that should be converted
+    /// via the connector manager (Docling-aware) before indexing.
+    pub fn extract_message_content(&self, message: &GmailMessage) -> Result<(String, bool)> {
         if let Some(ref payload) = message.payload {
             let mut plain_parts: Vec<String> = Vec::new();
             let mut html_parts: Vec<String> = Vec::new();
             Self::collect_text_parts(payload, &mut plain_parts, &mut html_parts);
 
-            let body = if !plain_parts.is_empty() {
-                plain_parts.join("\n\n")
+            if !plain_parts.is_empty() {
+                Ok((plain_parts.join("\n\n"), false))
             } else if !html_parts.is_empty() {
-                let combined = html_parts.join("\n\n");
-                html_to_text(&combined)
+                Ok((html_parts.join("\n\n"), true))
             } else {
-                String::new()
-            };
-
-            Ok(body)
+                Ok((String::new(), false))
+            }
         } else {
-            Ok(String::new())
+            Ok((String::new(), false))
         }
     }
 
@@ -1118,12 +1118,6 @@ fn is_file_attachment(part: &MessagePart) -> bool {
             .body
             .as_ref()
             .is_some_and(|b| b.attachment_id.is_some())
-}
-
-const HTML_TEXT_WIDTH: usize = 100;
-
-fn html_to_text(html: &str) -> String {
-    html2text::from_read(html.as_bytes(), HTML_TEXT_WIDTH).unwrap_or_default()
 }
 
 fn mime_type_from_extension(filename: &str) -> Option<&'static str> {
