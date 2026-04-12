@@ -18,7 +18,7 @@ use axum::{
 use futures::stream::Stream;
 use redis::AsyncCommands;
 use serde_json::json;
-use shared::clients::docling::DoclingClient;
+use shared::clients::docling::{DoclingClient, DoclingError};
 use shared::db::repositories::SyncRunRepository;
 use shared::models::{ConnectorManifest, SearchOperator, SourceType, SyncType};
 use shared::queue::EventQueue;
@@ -653,6 +653,9 @@ pub enum ApiError {
 
     #[error("Internal error: {0}")]
     Internal(String),
+
+    #[error("Too many requests: {0}")]
+    TooManyRequests(String),
 }
 
 impl From<SyncError> for ApiError {
@@ -692,6 +695,7 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+            ApiError::TooManyRequests(msg) => (StatusCode::TOO_MANY_REQUESTS, msg.clone()),
         };
 
         let body = json!({ "error": message });
@@ -918,10 +922,10 @@ fn is_docling_supported_extension(filename: Option<&str>) -> bool {
 
 use crate::models::{
     SdkCancelSyncRequest, SdkCancelSyncResponse, SdkCompleteRequest, SdkCreateSyncRequest,
-    SdkCreateSyncResponse, SdkEmitEventRequest, SdkExtractContentResponse,
-    SdkExtractTextResponse, SdkFailRequest, SdkIncrementScannedRequest,
-    SdkSourceSyncConfigResponse, SdkStatusResponse, SdkStoreContentRequest,
-    SdkStoreContentResponse, SdkUserEmailResponse, SdkWebhookNotification, SdkWebhookResponse,
+    SdkCreateSyncResponse, SdkEmitEventRequest, SdkExtractContentResponse, SdkExtractTextResponse,
+    SdkFailRequest, SdkIncrementScannedRequest, SdkSourceSyncConfigResponse, SdkStatusResponse,
+    SdkStoreContentRequest, SdkStoreContentResponse, SdkUserEmailResponse, SdkWebhookNotification,
+    SdkWebhookResponse,
 };
 
 pub async fn sdk_emit_event(
@@ -1029,17 +1033,30 @@ async fn do_extract_text(
     mime_type: &str,
     filename: Option<&str>,
     data: &[u8],
-) -> String {
+) -> Result<String, ApiError> {
+    let docling_enabled = is_docling_enabled(redis_client).await;
     let docling_candidate = is_docling_supported_mime(mime_type)
-        || (mime_type == "application/octet-stream"
-            && is_docling_supported_extension(filename));
-    if docling_candidate && is_docling_enabled(redis_client).await {
+        || (mime_type == "application/octet-stream" && is_docling_supported_extension(filename));
+    if docling_candidate && docling_enabled {
         let docling_result = if let Some(client) = DoclingClient::from_env() {
             let file_name = filename.unwrap_or("document");
+            debug!(
+                "Using docling-based document content extraction for file '{}'",
+                file_name
+            );
             match client.convert(data, file_name).await {
                 Ok(markdown) => {
                     debug!("Docling extraction succeeded: {} chars", markdown.len());
                     Some(markdown)
+                }
+                Err(DoclingError::ServiceOverloaded { retry_after_secs }) => {
+                    warn!(
+                        "Docling overloaded, propagating 429 (retry after {}s)",
+                        retry_after_secs
+                    );
+                    return Err(ApiError::TooManyRequests(
+                        "Document conversion service is overloaded. Try again later.".to_string(),
+                    ));
                 }
                 Err(e) => {
                     warn!("Docling extraction failed, falling back to built-in: {}", e);
@@ -1051,19 +1068,28 @@ async fn do_extract_text(
             None
         };
 
-        docling_result.unwrap_or_else(|| {
-            shared::content_extractor::extract_content(data, mime_type, filename)
-                .unwrap_or_else(|e| {
+        Ok(docling_result.unwrap_or_else(|| {
+            debug!(
+                "Using built-in document content extraction for file {:?}",
+                filename
+            );
+            shared::content_extractor::extract_content(data, mime_type, filename).unwrap_or_else(
+                |e| {
                     warn!("Built-in content extraction failed: {}", e);
                     String::new()
-                })
-        })
+                },
+            )
+        }))
     } else {
-        shared::content_extractor::extract_content(data, mime_type, filename)
-            .unwrap_or_else(|e| {
-                warn!("Content extraction failed: {}", e);
-                String::new()
-            })
+        debug!("Using built-in document content extraction for file {:?} (docling_enabled={}, docling_candidate={})", filename, docling_enabled, docling_candidate);
+        Ok(
+            shared::content_extractor::extract_content(data, mime_type, filename).unwrap_or_else(
+                |e| {
+                    warn!("Content extraction failed: {}", e);
+                    String::new()
+                },
+            ),
+        )
     }
 }
 
@@ -1087,7 +1113,7 @@ pub async fn sdk_extract_content(
         fields.filename.as_deref(),
         &fields.data,
     )
-    .await;
+    .await?;
 
     let today = time::OffsetDateTime::now_utc();
     let prefix = format!(
@@ -1135,7 +1161,7 @@ pub async fn sdk_extract_text(
         fields.filename.as_deref(),
         &fields.data,
     )
-    .await;
+    .await?;
 
     let text = utils::normalize_whitespace(&extracted_text);
 

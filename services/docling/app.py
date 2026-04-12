@@ -29,6 +29,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 _MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_CONVERSIONS", "1"))
+_MAX_PENDING = int(os.getenv("MAX_PENDING_JOBS", str(_MAX_CONCURRENT * 2)))
 _converter_pool: asyncio.Queue[DocumentConverter]  # created inside lifespan
 _ready: bool = False
 
@@ -138,6 +139,13 @@ class Job:
 
 
 _jobs: dict[str, Job] = {}
+
+
+def _active_job_count() -> int:
+    """Count jobs that are pending or running (holding memory)."""
+    return sum(
+        1 for j in _jobs.values() if j.status in (JobStatus.PENDING, JobStatus.RUNNING)
+    )
 
 
 @asynccontextmanager
@@ -261,6 +269,13 @@ def health():
     return JSONResponse(status_code=503, content={"status": "starting"})
 
 
+@app.get("/queue-status")
+def queue_status():
+    pending = sum(1 for j in _jobs.values() if j.status == JobStatus.PENDING)
+    running = sum(1 for j in _jobs.values() if j.status == JobStatus.RUNNING)
+    return {"pending": pending, "running": running, "max": _MAX_PENDING}
+
+
 @app.post("/convert", status_code=202)
 async def submit_conversion(file: UploadFile = File(...)):
     """Submit a document for conversion. Returns a job ID immediately (HTTP 202)."""
@@ -269,6 +284,13 @@ async def submit_conversion(file: UploadFile = File(...)):
             status_code=503,
             detail="Service is starting up; models are being loaded. Try again shortly.",
         )
+    if _active_job_count() >= _MAX_PENDING:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many pending conversions. Try again later."},
+            headers={"Retry-After": "30"},
+        )
+
     if not file.filename:
         raise HTTPException(
             status_code=400, detail="A filename with extension is required."
