@@ -61,8 +61,9 @@ QUALITY_PRESETS: dict[str, dict] = {
     },
 }
 
-# Semaphore to limit concurrent conversions (replaces converter pool).
-# A fresh converter is built per job and destroyed after to avoid memory accumulation.
+# One converter per preset (reused across jobs to avoid re-loading ML models).
+# Concurrency is controlled by a semaphore; chunked conversion caps per-job memory.
+_converters: dict[str, DocumentConverter] = {}
 _semaphore: asyncio.Semaphore  # created in lifespan
 
 
@@ -250,13 +251,20 @@ async def _init() -> None:
         logger.info("Downloading models ...")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _download_models)
-        # Warm up: build and immediately discard one converter so all model
-        # weights are loaded into the HF cache and first real job is fast.
-        await loop.run_in_executor(None, _build_converter, "balanced")
+
+        # Build one converter per preset. The ML models are shared via HF cache
+        # so subsequent converters are fast to construct.
+        for preset_name in QUALITY_PRESETS:
+            converter = await loop.run_in_executor(None, _build_converter, preset_name)
+            _converters[preset_name] = converter
+            logger.info("Converter [%s] ready.", preset_name)
+
         os.environ["HF_HUB_OFFLINE"] = "1"
         _ready = True
         logger.info(
-            "Ready — models cached, max %d concurrent conversion(s).", _MAX_CONCURRENT
+            "Ready — %d preset(s), max %d concurrent conversion(s).",
+            len(_converters),
+            _MAX_CONCURRENT,
         )
     except Exception:
         logger.exception("Failed to initialise. Service will remain unavailable.")
@@ -285,9 +293,8 @@ async def _cleanup_loop() -> None:
 
 
 async def _run_job(job: Job, data: bytes, filename: str) -> None:
-    """Background task: build a fresh converter, run conversion, destroy everything."""
+    """Background task: use shared converter, chunked conversion to cap memory."""
     await _semaphore.acquire()
-    converter = None
     try:
         job.status = JobStatus.RUNNING
         logger.info(
@@ -299,7 +306,7 @@ async def _run_job(job: Job, data: bytes, filename: str) -> None:
         )
         t0 = time.monotonic()
         loop = asyncio.get_running_loop()
-        converter = await loop.run_in_executor(None, _build_converter, job.preset)
+        converter = _converters[job.preset]
         try:
             markdown = await loop.run_in_executor(
                 None, _convert_document, converter, data, filename
@@ -335,7 +342,7 @@ async def _run_job(job: Job, data: bytes, filename: str) -> None:
             job.detail = f"Unexpected error: {exc}"
             logger.error("Job %s: failed — %s", job.id, job.detail, exc_info=True)
     finally:
-        del converter, data
+        del data
         gc.collect()
         _semaphore.release()
 
