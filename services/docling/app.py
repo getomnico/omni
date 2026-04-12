@@ -132,6 +132,32 @@ def _get_pdf_page_count(data: bytes) -> int | None:
         return None
 
 
+def _cleanup_result(result: object) -> None:
+    """Release backend resources held by a ConversionResult to prevent memory leaks.
+
+    Docling backends (pypdfium2, docling-parse) retain parsed page data and
+    PDF objects in memory until explicitly unloaded. Without this call, memory
+    accumulates across conversions even after del + gc.collect().
+    See: https://github.com/docling-project/docling/issues/2209
+    """
+    try:
+        if hasattr(result, "input") and hasattr(result.input, "_backend"):
+            backend = result.input._backend
+            if backend is not None:
+                backend.unload()
+        if hasattr(result, "pages"):
+            for page in result.pages:
+                if hasattr(page, "_backend") and page._backend is not None:
+                    page._backend.unload()
+                    page._backend = None
+                page._image_cache = {}
+    except Exception:
+        logger.debug("Error during result cleanup", exc_info=True)
+    finally:
+        del result
+        gc.collect()
+
+
 def _convert_document(
     converter: DocumentConverter,
     data: bytes,
@@ -157,8 +183,7 @@ def _convert_document(
                 raise RuntimeError("Conversion failed.")
             return result.document.export_to_markdown()
         finally:
-            del result
-            gc.collect()
+            _cleanup_result(result)
 
     # Large PDF: chunked conversion
     markdown_parts: list[str] = []
@@ -176,8 +201,7 @@ def _convert_document(
             else:
                 logger.warning("Chunk pages %d–%d failed, skipping.", start, end)
         finally:
-            del result
-            gc.collect()
+            _cleanup_result(result)
 
     if not markdown_parts:
         raise RuntimeError("All page chunks failed.")
