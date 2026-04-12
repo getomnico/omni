@@ -286,7 +286,6 @@ services:
     environment:
       PORT: ${DOCLING_PORT:-8003}
       MAX_CONCURRENT_CONVERSIONS: ${DOCLING_MAX_CONCURRENT_CONVERSIONS:-1}
-      DOCLING_DEVICE: ${DOCLING_DEVICE:-}
     networks:
       - omni-network
     volumes:
