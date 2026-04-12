@@ -59,8 +59,9 @@ QUALITY_PRESETS: dict[str, dict] = {
     },
 }
 
-# One converter pool per preset, created in lifespan
+# One converter pool per preset, built lazily on first use.
 _converter_pools: dict[str, asyncio.Queue[DocumentConverter]] = {}
+_pool_locks: dict[str, asyncio.Lock] = {p: asyncio.Lock() for p in QUALITY_PRESETS}
 
 
 class _SuppressFilter(logging.Filter):
@@ -177,44 +178,39 @@ async def lifespan(app: FastAPI):
 async def _init_converters() -> None:
     global _ready
     try:
-        total = _MAX_CONCURRENT * len(QUALITY_PRESETS)
-        logger.info(
-            "Loading %d DocumentConverter instance(s) across %d presets ...",
-            total,
-            len(QUALITY_PRESETS),
-        )
         logger.info("Downloading models ...")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _download_models)
-
-        for preset_name in QUALITY_PRESETS:
-            pool: asyncio.Queue[DocumentConverter] = asyncio.Queue(
-                maxsize=_MAX_CONCURRENT
-            )
-            for i in range(_MAX_CONCURRENT):
-                converter = await loop.run_in_executor(
-                    None, _build_converter, preset_name
-                )
-                pool.put_nowait(converter)
-                logger.info(
-                    "Converter [%s] %d/%d ready.",
-                    preset_name,
-                    i + 1,
-                    _MAX_CONCURRENT,
-                )
-            _converter_pools[preset_name] = pool
-
         os.environ["HF_HUB_OFFLINE"] = "1"
         _ready = True
-        logger.info(
-            "Ready — %d converter(s) available (%d per preset).",
-            total,
-            _MAX_CONCURRENT,
-        )
+        logger.info("Ready — models downloaded, converter pools created on demand.")
     except Exception:
         logger.exception(
             "Failed to initialise converter(s). Service will remain unavailable."
         )
+
+
+async def _get_pool(preset: str) -> asyncio.Queue[DocumentConverter]:
+    """Get or lazily create the converter pool for the given preset."""
+    if preset in _converter_pools:
+        return _converter_pools[preset]
+
+    async with _pool_locks[preset]:
+        # Double-check after acquiring lock
+        if preset in _converter_pools:
+            return _converter_pools[preset]
+
+        logger.info(
+            "Building %d converter(s) for preset '%s' ...", _MAX_CONCURRENT, preset
+        )
+        loop = asyncio.get_running_loop()
+        pool: asyncio.Queue[DocumentConverter] = asyncio.Queue(maxsize=_MAX_CONCURRENT)
+        for i in range(_MAX_CONCURRENT):
+            converter = await loop.run_in_executor(None, _build_converter, preset)
+            pool.put_nowait(converter)
+            logger.info("Converter [%s] %d/%d ready.", preset, i + 1, _MAX_CONCURRENT)
+        _converter_pools[preset] = pool
+        return pool
 
 
 async def _cleanup_loop() -> None:
@@ -231,7 +227,7 @@ async def _cleanup_loop() -> None:
 
 async def _run_job(job: Job, data: bytes, filename: str) -> None:
     """Background task: lease a converter from the pool, run conversion, return it."""
-    pool = _converter_pools[job.preset]
+    pool = await _get_pool(job.preset)
     converter = await pool.get()
     try:
         job.status = JobStatus.RUNNING
