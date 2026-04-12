@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_CONVERSIONS", "1"))
 _MAX_PENDING = int(os.getenv("MAX_PENDING_JOBS", str(_MAX_CONCURRENT * 2)))
+_PAGES_PER_CHUNK = int(os.getenv("PAGES_PER_CHUNK", "5"))
 _ready: bool = False
 
 PresetName = Literal["fast", "balanced", "quality"]
@@ -115,6 +116,71 @@ def _build_converter(preset: str = "balanced") -> DocumentConverter:
     )
     _apply_rapidocr_suppression()
     return converter
+
+
+def _get_pdf_page_count(data: bytes) -> int | None:
+    """Return the page count for a PDF, or None if not a PDF."""
+    try:
+        import pypdfium2 as pdfium
+
+        pdf = pdfium.PdfDocument(data)
+        count = len(pdf)
+        pdf.close()
+        return count
+    except Exception:
+        return None
+
+
+def _convert_document(
+    converter: DocumentConverter,
+    data: bytes,
+    filename: str,
+) -> str:
+    """Convert a document to markdown, processing PDFs in page chunks to cap memory.
+
+    Non-PDF formats are converted in a single pass. PDFs are split into chunks
+    of _PAGES_PER_CHUNK pages; each chunk is converted independently and the
+    resulting markdown fragments are concatenated.
+    """
+    page_count = _get_pdf_page_count(data)
+
+    # Non-PDF or small PDF: single-pass conversion
+    if page_count is None or page_count <= _PAGES_PER_CHUNK:
+        stream = DocumentStream(name=filename, stream=io.BytesIO(data))
+        result = converter.convert(stream)
+        try:
+            if result.status not in (
+                ConversionStatus.SUCCESS,
+                ConversionStatus.PARTIAL_SUCCESS,
+            ):
+                raise RuntimeError("Conversion failed.")
+            return result.document.export_to_markdown()
+        finally:
+            del result
+            gc.collect()
+
+    # Large PDF: chunked conversion
+    markdown_parts: list[str] = []
+    for start in range(1, page_count + 1, _PAGES_PER_CHUNK):
+        end = min(start + _PAGES_PER_CHUNK - 1, page_count)
+        logger.debug("Processing pages %d–%d of %d", start, end, page_count)
+        stream = DocumentStream(name=filename, stream=io.BytesIO(data))
+        result = converter.convert(stream, page_range=(start, end))
+        try:
+            if result.status in (
+                ConversionStatus.SUCCESS,
+                ConversionStatus.PARTIAL_SUCCESS,
+            ):
+                markdown_parts.append(result.document.export_to_markdown())
+            else:
+                logger.warning("Chunk pages %d–%d failed, skipping.", start, end)
+        finally:
+            del result
+            gc.collect()
+
+    if not markdown_parts:
+        raise RuntimeError("All page chunks failed.")
+    return "\n\n".join(markdown_parts)
 
 
 def _download_models() -> None:
@@ -221,7 +287,6 @@ async def _cleanup_loop() -> None:
 async def _run_job(job: Job, data: bytes, filename: str) -> None:
     """Background task: build a fresh converter, run conversion, destroy everything."""
     await _semaphore.acquire()
-    result = None
     converter = None
     try:
         job.status = JobStatus.RUNNING
@@ -235,11 +300,10 @@ async def _run_job(job: Job, data: bytes, filename: str) -> None:
         t0 = time.monotonic()
         loop = asyncio.get_running_loop()
         converter = await loop.run_in_executor(None, _build_converter, job.preset)
-        buf = io.BytesIO(data)
-        del data
-        stream = DocumentStream(name=filename, stream=buf)
         try:
-            result = await loop.run_in_executor(None, lambda: converter.convert(stream))
+            markdown = await loop.run_in_executor(
+                None, _convert_document, converter, data, filename
+            )
         except Exception as exc:
             elapsed = time.monotonic() - t0
             job.status = JobStatus.FAILED
@@ -258,19 +322,9 @@ async def _run_job(job: Job, data: bytes, filename: str) -> None:
                 exc_info=True,
             )
             return
-        finally:
-            buf.close()
 
         elapsed = time.monotonic() - t0
-        if result.status not in (
-            ConversionStatus.SUCCESS,
-            ConversionStatus.PARTIAL_SUCCESS,
-        ):
-            job.status = JobStatus.FAILED
-            job.detail = "Conversion failed."
-            logger.error("Job %s: failed after %.1fs — %s", job.id, elapsed, job.detail)
-            return
-        job.markdown = result.document.export_to_markdown()
+        job.markdown = markdown
         job.status = JobStatus.COMPLETED
         logger.info(
             "Job %s: completed in %.1fs (%d chars).", job.id, elapsed, len(job.markdown)
@@ -281,7 +335,7 @@ async def _run_job(job: Job, data: bytes, filename: str) -> None:
             job.detail = f"Unexpected error: {exc}"
             logger.error("Job %s: failed — %s", job.id, job.detail, exc_info=True)
     finally:
-        del result, converter
+        del converter, data
         gc.collect()
         _semaphore.release()
 
