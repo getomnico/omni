@@ -425,6 +425,7 @@ class EmbeddingBatchProcessor:
                     doc.content_fingerprint, item.document_id
                 )
                 if donor_id:
+                    await self.embeddings_repo.delete_for_documents([item.document_id])
                     cloned = await self.embeddings_repo.clone_for_document(
                         donor_id, item.document_id
                     )

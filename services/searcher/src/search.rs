@@ -1244,12 +1244,7 @@ impl SearchEngine {
     /// Returns `Some(key)` for email threads (keyed on thread_id), `None` for other types.
     fn cross_source_dedup_key(result: &SearchResult) -> Option<String> {
         // Only deduplicate email threads
-        let content_type = result
-            .document
-            .metadata
-            .get("content_type")
-            .and_then(|v| v.as_str())?;
-
+        let content_type = result.document.content_type.as_deref()?;
         if content_type != "email_thread" {
             return None;
         }
