@@ -373,8 +373,8 @@ mod tests {
     use super::*;
     use crate::test_environment::TestEnvironment;
 
-    async fn create_test_storage() -> S3Storage {
-        let env = Box::leak(Box::new(TestEnvironment::new().await.unwrap()));
+    async fn create_test_storage() -> (S3Storage, TestEnvironment) {
+        let env = TestEnvironment::new().await.unwrap();
         let bucket = "test-omni-content";
         let region = "us-east-1";
         let storage = S3Storage::new(
@@ -386,12 +386,12 @@ mod tests {
         .await
         .unwrap();
         let _ = storage.client.create_bucket().bucket(bucket).send().await;
-        storage
+        (storage, env)
     }
 
     #[tokio::test]
     async fn test_s3_storage_basic_operations() {
-        let storage = create_test_storage().await;
+        let (storage, _env) = create_test_storage().await;
 
         // Test storing and retrieving content without prefix
         let test_content = b"Hello, S3! This is a test content.";
@@ -414,7 +414,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_s3_storage_with_content_type() {
-        let storage = create_test_storage().await;
+        let (storage, _env) = create_test_storage().await;
 
         let text_content = "This is a text content";
         let content_id = storage.store_text(text_content, None).await.unwrap();
@@ -432,7 +432,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_s3_batch_get_text() {
-        let storage = create_test_storage().await;
+        let (storage, _env) = create_test_storage().await;
 
         // Store multiple pieces of content
         let content1 = "First document content";
@@ -465,7 +465,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_s3_storage_with_prefix() {
-        let storage = create_test_storage().await;
+        let (storage, _env) = create_test_storage().await;
 
         // Test with hierarchical prefix like {date}/{sync_run_id}
         let prefix = "2025-10/01ABC123DEF456";
