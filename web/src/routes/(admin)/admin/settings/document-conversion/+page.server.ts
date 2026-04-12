@@ -3,7 +3,6 @@ import { env } from '$env/dynamic/private'
 import type { PageServerLoad, Actions } from './$types'
 import { requireAdmin } from '$lib/server/authHelpers'
 import { SystemSettings } from '$lib/server/system-flags'
-import { logger } from '$lib/server/logger'
 
 export const load: PageServerLoad = async ({ locals }) => {
     requireAdmin(locals)
@@ -36,10 +35,7 @@ export const actions: Actions = {
         requireAdmin(locals)
 
         const formData = await request.formData()
-        logger.info('form data', formData)
         const enabled = formData.has('enabled')
-
-        logger.info(`Setting Docling enabled to ${enabled}`)
 
         try {
             await SystemSettings.setDoclingEnabled(enabled)
