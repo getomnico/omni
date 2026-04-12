@@ -1,13 +1,13 @@
-use anyhow::{Context, Result};
 use mailparse::ParsedMail;
-use tracing::{debug, warn};
+use tracing::debug;
 
-/// An extracted attachment with its filename, MIME type, and text content.
+/// A raw attachment extracted from an email MIME tree, ready for server-side
+/// content extraction via the connector manager.
 #[derive(Debug, Clone)]
-pub struct ExtractedAttachment {
+pub struct RawAttachment {
     pub filename: String,
     pub mime_type: String,
-    pub text: String,
+    pub data: Vec<u8>,
 }
 
 /// MIME types from which we can extract indexable text.
@@ -28,14 +28,14 @@ fn is_supported(mime: &str) -> bool {
     SUPPORTED_MIME_TYPES.contains(&mime)
 }
 
-/// Recursively walk the MIME tree and extract text from all supported attachments.
-pub fn extract_attachments(mail: &ParsedMail) -> Vec<ExtractedAttachment> {
+/// Recursively walk the MIME tree and collect raw bytes from all supported attachments.
+pub fn collect_raw_attachments(mail: &ParsedMail) -> Vec<RawAttachment> {
     let mut out = Vec::new();
     collect_attachments(mail, &mut out);
     out
 }
 
-fn collect_attachments(mail: &ParsedMail, out: &mut Vec<ExtractedAttachment>) {
+fn collect_attachments(mail: &ParsedMail, out: &mut Vec<RawAttachment>) {
     let declared_ct = mail.ctype.mimetype.to_ascii_lowercase();
 
     // Resolve a filename from Content-Disposition or Content-Type parameters.
@@ -61,20 +61,24 @@ fn collect_attachments(mail: &ParsedMail, out: &mut Vec<ExtractedAttachment>) {
         };
 
         if is_supported(&effective_ct) {
-            match extract_text_from_part(mail, &effective_ct) {
-                Ok(text) if !text.trim().is_empty() => {
-                    debug!("Extracted {} chars from attachment '{}'", text.len(), name);
-                    out.push(ExtractedAttachment {
+            match mail.get_body_raw() {
+                Ok(data) if !data.is_empty() => {
+                    debug!(
+                        "Collected {} bytes from attachment '{}'",
+                        data.len(),
+                        name
+                    );
+                    out.push(RawAttachment {
                         filename: name,
                         mime_type: effective_ct,
-                        text,
+                        data,
                     });
                 }
                 Ok(_) => {
-                    debug!("Attachment '{}' produced empty text, skipping", name);
+                    debug!("Attachment '{}' has empty body, skipping", name);
                 }
                 Err(e) => {
-                    warn!("Failed to extract text from attachment '{}': {}", name, e);
+                    debug!("Failed to get body of attachment '{}': {}", name, e);
                 }
             }
         }
@@ -138,14 +142,6 @@ fn attachment_filename(mail: &ParsedMail) -> Option<String> {
         }
     }
     None
-}
-
-/// Extract plaintext from a single MIME part based on its content type.
-fn extract_text_from_part(mail: &ParsedMail, mime: &str) -> Result<String> {
-    let data = mail
-        .get_body_raw()
-        .context("Failed to get attachment bytes")?;
-    shared::SdkClient::extract_content(&data, mime, None)
 }
 
 #[cfg(test)]

@@ -426,11 +426,16 @@ impl SyncManager {
         };
 
         if should_index {
-            // Store content via SDK
+            // Extract content and store via SDK (routes through Docling when enabled)
             let content_id = sdk_client
-                .store_content(sync_run_id, &web_page.content)
+                .extract_and_store_content(
+                    sync_run_id,
+                    web_page.raw_html.as_bytes().to_vec(),
+                    "text/html",
+                    None,
+                )
                 .await
-                .context("Failed to store page content")?;
+                .context("Failed to extract and store page content")?;
 
             let event = web_page.to_connector_event(
                 sync_run_id.to_string(),

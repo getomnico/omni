@@ -28,7 +28,7 @@ pub fn extract_content(data: &[u8], mime_type: &str, filename: Option<&str>) -> 
         "text/html" => {
             let body = String::from_utf8(data.to_vec())
                 .or_else(|_| Ok::<_, anyhow::Error>(String::from_utf8_lossy(data).into_owned()))?;
-            Ok(html_to_text(&body))
+            Ok(html_to_markdown(&body))
         }
 
         // PDF
@@ -90,10 +90,8 @@ fn mime_from_extension(filename: &str) -> Option<String> {
     Some(mime.to_string())
 }
 
-const HTML_TEXT_WIDTH: usize = 100;
-
-fn html_to_text(html: &str) -> String {
-    html2text::from_read(html.as_bytes(), HTML_TEXT_WIDTH).unwrap_or_default()
+fn html_to_markdown(html: &str) -> String {
+    html2md::parse_html(html)
 }
 
 fn extract_pdf_text(data: &[u8]) -> Result<String> {

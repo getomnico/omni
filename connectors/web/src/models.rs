@@ -1,7 +1,6 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use html2md::{TagHandler, TagHandlerFactory};
-use scraper::{Html, Selector};
+use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
@@ -85,37 +84,11 @@ pub struct WebPage {
     pub url: String,
     pub title: Option<String>,
     pub description: Option<String>,
-    pub content: String,
+    pub raw_html: String,
     pub content_hash: String,
     pub last_modified: Option<String>,
     pub etag: Option<String>,
     pub word_count: usize,
-}
-
-// The built-in DummyHandler doesn't skip descendents, but we need to skip entire elements for our use-case
-// We do not want to extract script, style, img, etc.
-#[derive(Default)]
-struct NoopHandler;
-impl TagHandler for NoopHandler {
-    fn handle(&mut self, _tag: &html2md::Handle, _printer: &mut html2md::StructuredPrinter) {}
-
-    fn after_handle(&mut self, _printer: &mut html2md::StructuredPrinter) {}
-
-    fn skip_descendants(&self) -> bool {
-        true
-    }
-}
-
-#[derive(Default)]
-struct NoopTagHandlerFactory;
-impl TagHandlerFactory for NoopTagHandlerFactory {
-    fn instantiate(&self) -> Box<dyn TagHandler> {
-        Box::new(NoopHandler::default())
-    }
-}
-
-fn get_noop_handler_factory() -> Box<dyn TagHandlerFactory> {
-    Box::new(NoopTagHandlerFactory::default())
 }
 
 impl WebPage {
@@ -142,9 +115,9 @@ impl WebPage {
     /// Create a WebPage from raw HTML content
     pub fn from_html(url: String, html: &str) -> Result<Self> {
         let document = Html::parse_document(html);
-        let content = Self::extract_main_content(&document)?;
-        let content_hash = Self::compute_content_hash(&content);
-        let word_count = content.split_whitespace().count();
+        let text_content = Self::extract_text_content(&document)?;
+        let content_hash = Self::compute_content_hash(&text_content);
+        let word_count = text_content.split_whitespace().count();
 
         let title = Self::extract_title(&document).or_else(|| Self::extract_first_h1(&document));
 
@@ -157,7 +130,7 @@ impl WebPage {
             url,
             title,
             description,
-            content,
+            raw_html: html.to_string(),
             content_hash,
             last_modified,
             etag,
@@ -182,24 +155,36 @@ impl WebPage {
             .map(|s| s.trim().to_string())
     }
 
-    fn extract_main_content(document: &Html) -> Result<String> {
-        let html = document.html();
+    /// Extract visible text from HTML for change detection and word counting.
+    /// Skips script and style elements to match visible page content only.
+    fn extract_text_content(document: &Html) -> Result<String> {
+        let skip = Selector::parse("script, style").unwrap();
+        let skip_ids: std::collections::HashSet<_> =
+            document.select(&skip).map(|el| el.id()).collect();
 
-        let script_handler = get_noop_handler_factory();
-        let style_handler = get_noop_handler_factory();
-        let img_handler = get_noop_handler_factory();
-        let custom_handlers = HashMap::from([
-            ("script".to_string(), script_handler),
-            ("style".to_string(), style_handler),
-            ("img".to_string(), img_handler),
-        ]);
-        let markdown = html2md::parse_html_custom(&html, &custom_handlers);
+        let text: String = document
+            .root_element()
+            .descendants()
+            .filter_map(|node| {
+                // Skip text nodes whose parent is a script/style element
+                if let Some(parent) = node.parent() {
+                    if let Some(parent_el) = ElementRef::wrap(parent) {
+                        if skip_ids.contains(&parent_el.id()) {
+                            return None;
+                        }
+                    }
+                }
+                node.value().as_text().map(|t| t.text.as_ref())
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let trimmed = text.split_whitespace().collect::<Vec<_>>().join(" ");
 
-        if markdown.trim().is_empty() {
+        if trimmed.is_empty() {
             return Err(anyhow::anyhow!("No content found in HTML"));
         }
 
-        Ok(markdown)
+        Ok(trimmed)
     }
 
     fn extract_first_h1(document: &Html) -> Option<String> {
@@ -272,7 +257,7 @@ impl WebPage {
                 .flatten(),
             content_type: Some("webpage".to_string()),
             mime_type: Some("text/html".to_string()),
-            size: Some(self.content.len().to_string()),
+            size: Some(self.raw_html.len().to_string()),
             url: Some(self.url.clone()),
             path: Some(Self::extract_path_from_url(&self.url)),
             extra: Some(extra),
@@ -345,7 +330,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_extract_main_content() {
+    fn test_extract_text_content() {
         let html = r#"
             <!DOCTYPE html>
             <html>
@@ -362,12 +347,32 @@ mod tests {
         "#;
 
         let document = Html::parse_document(html);
-        let content = WebPage::extract_main_content(&document).unwrap();
+        let content = WebPage::extract_text_content(&document).unwrap();
 
         assert!(content.contains("Main Title"));
         assert!(content.contains("main content"));
         assert!(content.contains("Navigation"));
         assert!(content.contains("Footer"));
+    }
+
+    #[test]
+    fn test_extract_text_content_skips_script_and_style() {
+        let html = r#"
+            <html>
+            <head><style>.cls { color: red; }</style></head>
+            <body>
+                <script>var x = "invisible";</script>
+                <p>Visible text</p>
+            </body>
+            </html>
+        "#;
+
+        let document = Html::parse_document(html);
+        let content = WebPage::extract_text_content(&document).unwrap();
+
+        assert!(content.contains("Visible text"));
+        assert!(!content.contains("invisible"));
+        assert!(!content.contains("color"));
     }
 
     #[test]
@@ -407,7 +412,7 @@ mod tests {
             url: "https://example.com".to_string(),
             title: Some("Test".to_string()),
             description: None,
-            content: "Content".to_string(),
+            raw_html: "<html><body>Content</body></html>".to_string(),
             content_hash: "hash1".to_string(),
             last_modified: Some("Mon, 01 Jan 2024 00:00:00 GMT".to_string()),
             etag: Some("etag1".to_string()),

@@ -468,9 +468,11 @@ impl GmailThread {
             .map(|h| h.value.clone())
     }
 
-    pub fn aggregate_content(
+    pub async fn aggregate_content(
         &self,
         gmail_client: &crate::gmail::GmailClient,
+        sdk_client: &shared::SdkClient,
+        sync_run_id: &str,
     ) -> Result<String, anyhow::Error> {
         let mut content_parts = Vec::new();
 
@@ -494,9 +496,22 @@ impl GmailThread {
             content_parts.push(String::new());
 
             match gmail_client.extract_message_content(message) {
-                Ok(message_content) => {
+                Ok((message_content, is_html)) => {
                     if !message_content.trim().is_empty() {
-                        content_parts.push(message_content.trim().to_string());
+                        let text = if is_html {
+                            sdk_client
+                                .extract_text(
+                                    sync_run_id,
+                                    message_content.as_bytes().to_vec(),
+                                    "text/html",
+                                    None,
+                                )
+                                .await
+                                .unwrap_or(message_content)
+                        } else {
+                            message_content
+                        };
+                        content_parts.push(text.trim().to_string());
                     }
                 }
                 Err(e) => {

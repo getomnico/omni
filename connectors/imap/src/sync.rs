@@ -9,9 +9,9 @@ use tracing::{error, info, warn};
 use crate::client::ImapSession;
 use crate::config::ImapAccountConfig;
 use crate::models::{
-    build_thread_connector_event, generate_thread_content, make_thread_document_id,
-    parse_raw_email, resolve_new_email_thread_root, resolve_thread_root, FolderSyncState,
-    ImapConnectorState, ParsedEmail,
+    build_thread_connector_event, collect_raw_attachments, generate_thread_content,
+    make_thread_document_id, parse_raw_email, resolve_new_email_thread_root, resolve_thread_root,
+    FolderSyncState, ImapConnectorState, ParsedEmail,
 };
 use shared::SdkClient;
 
@@ -401,6 +401,65 @@ impl SyncManager {
                     }
                 };
                 email.flags = raw.flags.clone();
+
+                // If the email body is HTML (no plain-text alternative), convert
+                // it via the connector manager so Docling is used when enabled.
+                if email.body_is_html && !email.body_text.is_empty() {
+                    match self
+                        .sdk_client
+                        .extract_text(
+                            sync_run_id,
+                            email.body_text.as_bytes().to_vec(),
+                            "text/html",
+                            None,
+                        )
+                        .await
+                    {
+                        Ok(text) => {
+                            email.body_text = text;
+                            email.body_is_html = false;
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to convert HTML body for UID {}: {}, keeping raw",
+                                raw.uid, e
+                            );
+                        }
+                    }
+                }
+
+                // Extract attachment text via the connector manager (supports
+                // Docling when enabled) and append to the email body.
+                if let Ok(parsed_mail) = mailparse::parse_mail(&raw.data) {
+                    let raw_attachments = collect_raw_attachments(&parsed_mail);
+                    for att in raw_attachments {
+                        match self
+                            .sdk_client
+                            .extract_text(
+                                sync_run_id,
+                                att.data,
+                                &att.mime_type,
+                                Some(&att.filename),
+                            )
+                            .await
+                        {
+                            Ok(text) if !text.trim().is_empty() => {
+                                email.body_text.push_str("\n\n");
+                                email
+                                    .body_text
+                                    .push_str(&format!("[Attachment: {}]\n", att.filename));
+                                email.body_text.push_str(&text);
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                warn!(
+                                    "Failed to extract attachment '{}' for UID {}: {}",
+                                    att.filename, raw.uid, e
+                                );
+                            }
+                        }
+                    }
+                }
 
                 // Resolve canonical thread root with full chain-walking so that
                 // replies-to-replies without a References header are grouped

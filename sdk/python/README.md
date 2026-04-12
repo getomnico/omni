@@ -87,6 +87,8 @@ The `SyncContext` object is passed to your `sync()` method and provides:
 - `ctx.fail(error)` - Mark sync as failed
 - `ctx.is_cancelled()` - Check if sync was cancelled
 - `ctx.content_storage.save(content)` - Store content and get content_id
+- `ctx.content_storage.extract_and_store_content(data, mime_type, filename)` - Extract text from binary files (PDF, DOCX, etc.) and store, returns content_id
+- `ctx.content_storage.extract_text(data, mime_type, filename)` - Extract text from binary files without storing, returns text
 
 ## Connector Protocol (HTTP)
 

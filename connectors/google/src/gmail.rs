@@ -6,7 +6,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::auth::{execute_with_auth_retry, is_auth_error, ApiResult, GoogleAuth};
 use shared::RateLimiter;
@@ -672,34 +672,37 @@ impl GmailClient {
         .await
     }
 
-    pub fn extract_message_content(&self, message: &GmailMessage) -> Result<String> {
+    /// Extract the message body, returning `(text, is_html)`.
+    /// When `is_html` is true, the text is raw HTML that should be converted
+    /// via the connector manager (Docling-aware) before indexing.
+    pub fn extract_message_content(&self, message: &GmailMessage) -> Result<(String, bool)> {
         if let Some(ref payload) = message.payload {
             let mut plain_parts: Vec<String> = Vec::new();
             let mut html_parts: Vec<String> = Vec::new();
             Self::collect_text_parts(payload, &mut plain_parts, &mut html_parts);
 
-            let body = if !plain_parts.is_empty() {
-                plain_parts.join("\n\n")
+            if !plain_parts.is_empty() {
+                Ok((plain_parts.join("\n\n"), false))
             } else if !html_parts.is_empty() {
-                let combined = html_parts.join("\n\n");
-                html_to_text(&combined)
+                Ok((html_parts.join("\n\n"), true))
             } else {
-                String::new()
-            };
-
-            Ok(body)
+                Ok((String::new(), false))
+            }
         } else {
-            Ok(String::new())
+            Ok((String::new(), false))
         }
     }
 
     /// Download and extract text from all supported attachments in a message.
     /// Returns structured attachment data for separate document indexing.
+    /// Extraction is delegated to the connector manager (supports Docling).
     pub async fn extract_attachments(
         &self,
         message: &GmailMessage,
         auth: &GoogleAuth,
         user_email: &str,
+        sdk_client: &shared::SdkClient,
+        sync_run_id: &str,
     ) -> Vec<ExtractedAttachment> {
         let mut results = Vec::new();
 
@@ -717,12 +720,15 @@ impl GmailClient {
             {
                 Ok(data) => {
                     let size = data.len() as u64;
-                    let extracted_text = shared::content_extractor::extract_content(
-                        &data,
-                        &att.mime_type,
-                        Some(&att.filename),
-                    )
-                    .unwrap_or_default();
+                    let extracted_text = sdk_client
+                        .extract_text(
+                            sync_run_id,
+                            data,
+                            &att.mime_type,
+                            Some(&att.filename),
+                        )
+                        .await
+                        .unwrap_or_default();
 
                     results.push(ExtractedAttachment {
                         message_id: message.id.clone(),
@@ -1112,12 +1118,6 @@ fn is_file_attachment(part: &MessagePart) -> bool {
             .body
             .as_ref()
             .is_some_and(|b| b.attachment_id.is_some())
-}
-
-const HTML_TEXT_WIDTH: usize = 100;
-
-fn html_to_text(html: &str) -> String {
-    html2text::from_read(html.as_bytes(), HTML_TEXT_WIDTH).unwrap_or_default()
 }
 
 fn mime_type_from_extension(filename: &str) -> Option<&'static str> {

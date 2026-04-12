@@ -6,9 +6,9 @@
 //! in a real sync.
 
 use omni_imap_connector::models::{
-    build_thread_connector_event, generate_thread_content, make_thread_document_id,
-    parse_raw_email, resolve_new_email_thread_root, resolve_thread_root, FolderSyncState,
-    ImapConnectorState,
+    build_thread_connector_event, collect_raw_attachments, generate_thread_content,
+    make_thread_document_id, parse_raw_email, resolve_new_email_thread_root, resolve_thread_root,
+    FolderSyncState, ImapConnectorState,
 };
 use shared::models::ConnectorEvent;
 use std::collections::HashMap;
@@ -401,16 +401,42 @@ fn test_email_with_attachment_end_to_end() {
     )
     .into_bytes();
 
-    // Parse email
-    let email = parse_raw_email(&raw, 1, "Finance").unwrap();
+    // Parse email — body_text contains only inline body, not attachments
+    let mut email = parse_raw_email(&raw, 1, "Finance").unwrap();
 
-    // Verify attachment text is included in body
+    // Plain text body → no HTML conversion needed
+    assert!(!email.body_is_html);
+
+    // Verify inline body is present but attachment text is NOT (extracted separately)
+    assert!(email.body_text.contains("Please find attached"));
+    assert!(!email.body_text.contains("Q4 Revenue Report"),
+        "attachment text should not be in body_text after parse_raw_email");
+
+    // Collect raw attachments (mirrors what sync.rs does before calling sdk_client.extract_text)
+    let parsed_mail = mailparse::parse_mail(&raw).unwrap();
+    let raw_attachments = collect_raw_attachments(&parsed_mail);
+    assert_eq!(raw_attachments.len(), 1);
+    assert_eq!(raw_attachments[0].filename, "report.txt");
+    // The raw data should contain the original content
+    let attachment_text = String::from_utf8_lossy(&raw_attachments[0].data);
+    assert!(attachment_text.contains("Q4 Revenue Report"));
+
+    // Simulate what the sync loop does: extract text and append to body_text.
+    // In production the SDK calls the connector-manager (with Docling support).
+    // Here we call the built-in extractor directly to complete the pipeline test.
+    for att in &raw_attachments {
+        let text = shared::content_extractor::extract_content(
+            &att.data, &att.mime_type, Some(att.filename.as_str()),
+        ).unwrap_or_default();
+        if !text.is_empty() {
+            email.body_text.push_str(&format!("\n\n[Attachment: {}]\n{}", att.filename, text));
+        }
+    }
+
+    // Now body_text should contain both inline body and extracted attachment text
     assert!(email.body_text.contains("Q4 Revenue Report"));
     assert!(email.body_text.contains("$1.2M"));
     assert!(email.body_text.contains("[Attachment: report.txt]"));
-
-    // Verify inline body also present
-    assert!(email.body_text.contains("Please find attached"));
 
     // Generate connector event
     let event = build_thread_connector_event(

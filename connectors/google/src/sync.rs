@@ -2230,7 +2230,7 @@ impl SyncManager {
                     }
                 } else {
                     // Index thread conversation content (no attachment text)
-                    match gmail_thread.aggregate_content(&self.gmail_client) {
+                    match gmail_thread.aggregate_content(&self.gmail_client, &self.sdk_client, sync_run_id).await {
                         Ok(content) => {
                             if !content.trim().is_empty() {
                                 match self.sdk_client.store_content(sync_run_id, &content).await {
@@ -2323,7 +2323,13 @@ impl SyncManager {
                     for message in &gmail_thread.messages {
                         let attachments = self
                             .gmail_client
-                            .extract_attachments(message, &service_auth, user_email)
+                            .extract_attachments(
+                                message,
+                                &service_auth,
+                                user_email,
+                                &self.sdk_client,
+                                sync_run_id,
+                            )
                             .await;
 
                         for att in attachments {

@@ -118,6 +118,8 @@ Helper for storing document content.
 ```typescript
 class ContentStorage {
   save(content: string, contentType?: string): Promise<string>;
+  extractAndStoreContent(data: Buffer | Uint8Array, mimeType: string, filename?: string): Promise<string>;
+  extractText(data: Buffer | Uint8Array, mimeType: string, filename?: string): Promise<string>;
   saveBinary(content: Buffer, contentType?: string): Promise<string>;
 }
 ```

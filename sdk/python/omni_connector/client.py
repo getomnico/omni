@@ -124,6 +124,51 @@ class SdkClient:
 
         return response.json()["content_id"]
 
+    async def extract_text(
+        self,
+        sync_run_id: str,
+        data: bytes,
+        mime_type: str,
+        filename: str | None = None,
+    ) -> str:
+        """Extract text from binary file content without storing.
+
+        Same extraction as extract_and_store_content (uses Docling when
+        enabled) but returns the extracted text instead of storing it.
+        Use when the caller needs to post-process or combine text before
+        storing.
+        """
+        logger.debug(
+            "SDK: Extracting text for sync_run=%s, mime=%s, size=%d",
+            sync_run_id,
+            mime_type,
+            len(data),
+        )
+
+        files: dict[str, Any] = {
+            "data": ("file", data, "application/octet-stream"),
+        }
+        form_data: dict[str, str] = {
+            "sync_run_id": sync_run_id,
+            "mime_type": mime_type,
+        }
+        if filename is not None:
+            form_data["filename"] = filename
+
+        client = await self._get_client()
+        response = await client.post(
+            f"{self.base_url}/sdk/extract-text",
+            data=form_data,
+            files=files,
+        )
+
+        if not response.is_success:
+            raise SdkClientError(
+                f"Failed to extract text: {response.status_code} - {response.text}"
+            )
+
+        return response.json()["text"]
+
     async def store_content(
         self,
         sync_run_id: str,

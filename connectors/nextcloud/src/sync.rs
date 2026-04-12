@@ -377,7 +377,15 @@ impl SyncManager {
                 let download_url = build_download_url(&config.server_url, &entry.href);
 
                 let content_text =
-                    match download_and_extract(client, &download_url, entry).await {
+                    match download_and_extract(
+                        client,
+                        &download_url,
+                        entry,
+                        &self.sdk_client,
+                        sync_run_id,
+                    )
+                    .await
+                    {
                         Ok(text) => text,
                         Err(e) => {
                             warn!("Failed to process file '{}': {}", entry.filename(), e);
@@ -458,11 +466,13 @@ fn build_download_url(server_url: &str, href: &str) -> String {
     format!("{}{}", base, href)
 }
 
-/// Download a file and extract its text content.
+/// Download a file and extract its text content via the connector manager.
 async fn download_and_extract(
     client: &NextcloudClient,
     url: &str,
     entry: &DavEntry,
+    sdk_client: &SdkClient,
+    sync_run_id: &str,
 ) -> Result<String> {
     let data = client.download_file(url).await?;
 
@@ -472,7 +482,9 @@ async fn download_and_extract(
         .unwrap_or("application/octet-stream");
     let filename = entry.filename();
 
-    let text = SdkClient::extract_content(&data, mime, Some(&filename))
+    let text = sdk_client
+        .extract_text(sync_run_id, data, mime, Some(&filename))
+        .await
         .unwrap_or_default();
 
     Ok(text)

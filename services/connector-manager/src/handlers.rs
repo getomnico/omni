@@ -918,10 +918,10 @@ fn is_docling_supported_extension(filename: Option<&str>) -> bool {
 
 use crate::models::{
     SdkCancelSyncRequest, SdkCancelSyncResponse, SdkCompleteRequest, SdkCreateSyncRequest,
-    SdkCreateSyncResponse, SdkEmitEventRequest, SdkExtractContentResponse, SdkFailRequest,
-    SdkIncrementScannedRequest, SdkSourceSyncConfigResponse, SdkStatusResponse,
-    SdkStoreContentRequest, SdkStoreContentResponse, SdkUserEmailResponse, SdkWebhookNotification,
-    SdkWebhookResponse,
+    SdkCreateSyncResponse, SdkEmitEventRequest, SdkExtractContentResponse,
+    SdkExtractTextResponse, SdkFailRequest, SdkIncrementScannedRequest,
+    SdkSourceSyncConfigResponse, SdkStatusResponse, SdkStoreContentRequest,
+    SdkStoreContentResponse, SdkUserEmailResponse, SdkWebhookNotification, SdkWebhookResponse,
 };
 
 pub async fn sdk_emit_event(
@@ -955,10 +955,18 @@ pub async fn sdk_emit_event(
 
 // TODO: Merge this with sdk_store_content into a single unified content API
 // that accepts both text and binary, deciding extraction based on mime type.
-pub async fn sdk_extract_content(
-    State(state): State<AppState>,
+/// Parsed fields from a multipart extraction request.
+struct ExtractMultipartFields {
+    sync_run_id: String,
+    mime_type: String,
+    filename: Option<String>,
+    data: Vec<u8>,
+}
+
+/// Parse common multipart fields used by both extract-content and extract-text.
+async fn parse_extract_multipart(
     mut multipart: axum::extract::Multipart,
-) -> Result<Json<SdkExtractContentResponse>, ApiError> {
+) -> Result<ExtractMultipartFields, ApiError> {
     let mut sync_run_id: Option<String> = None;
     let mut mime_type: Option<String> = None;
     let mut filename: Option<String> = None;
@@ -1005,30 +1013,30 @@ pub async fn sdk_extract_content(
         }
     }
 
-    let sync_run_id =
-        sync_run_id.ok_or_else(|| ApiError::BadRequest("Missing sync_run_id".to_string()))?;
-    let mime_type =
-        mime_type.ok_or_else(|| ApiError::BadRequest("Missing mime_type".to_string()))?;
-    let data = data.ok_or_else(|| ApiError::BadRequest("Missing data".to_string()))?;
-
-    debug!(
-        "SDK: Extracting content for sync_run={}, mime={}, filename={:?}, size={}",
-        sync_run_id,
-        mime_type,
+    Ok(ExtractMultipartFields {
+        sync_run_id: sync_run_id
+            .ok_or_else(|| ApiError::BadRequest("Missing sync_run_id".to_string()))?,
+        mime_type: mime_type
+            .ok_or_else(|| ApiError::BadRequest("Missing mime_type".to_string()))?,
         filename,
-        data.len()
-    );
+        data: data.ok_or_else(|| ApiError::BadRequest("Missing data".to_string()))?,
+    })
+}
 
-    // Try Docling extraction if enabled and supported for this mime type.
-    // Also try when MIME is generic (octet-stream) but the extension is supported.
-    let docling_candidate = is_docling_supported_mime(&mime_type)
+/// Extract text from binary data using Docling (if enabled) or the built-in extractor.
+async fn do_extract_text(
+    redis_client: &redis::Client,
+    mime_type: &str,
+    filename: Option<&str>,
+    data: &[u8],
+) -> String {
+    let docling_candidate = is_docling_supported_mime(mime_type)
         || (mime_type == "application/octet-stream"
-            && is_docling_supported_extension(filename.as_deref()));
-    let extracted_text = if docling_candidate && is_docling_enabled(&state.redis_client).await {
-        // Attempt Docling extraction
+            && is_docling_supported_extension(filename));
+    if docling_candidate && is_docling_enabled(redis_client).await {
         let docling_result = if let Some(client) = DoclingClient::from_env() {
-            let file_name = filename.as_deref().unwrap_or("document");
-            match client.convert(&data, file_name).await {
+            let file_name = filename.unwrap_or("document");
+            match client.convert(data, file_name).await {
                 Ok(markdown) => {
                     debug!("Docling extraction succeeded: {} chars", markdown.len());
                     Some(markdown)
@@ -1043,22 +1051,43 @@ pub async fn sdk_extract_content(
             None
         };
 
-        // Use Docling result or fall back to built-in extraction
         docling_result.unwrap_or_else(|| {
-            shared::content_extractor::extract_content(&data, &mime_type, filename.as_deref())
+            shared::content_extractor::extract_content(data, mime_type, filename)
                 .unwrap_or_else(|e| {
                     warn!("Built-in content extraction failed: {}", e);
                     String::new()
                 })
         })
     } else {
-        // Use built-in extraction
-        shared::content_extractor::extract_content(&data, &mime_type, filename.as_deref())
+        shared::content_extractor::extract_content(data, mime_type, filename)
             .unwrap_or_else(|e| {
                 warn!("Content extraction failed: {}", e);
                 String::new()
             })
-    };
+    }
+}
+
+pub async fn sdk_extract_content(
+    State(state): State<AppState>,
+    multipart: axum::extract::Multipart,
+) -> Result<Json<SdkExtractContentResponse>, ApiError> {
+    let fields = parse_extract_multipart(multipart).await?;
+
+    debug!(
+        "SDK: Extracting content for sync_run={}, mime={}, filename={:?}, size={}",
+        fields.sync_run_id,
+        fields.mime_type,
+        fields.filename,
+        fields.data.len()
+    );
+
+    let extracted_text = do_extract_text(
+        &state.redis_client,
+        &fields.mime_type,
+        fields.filename.as_deref(),
+        &fields.data,
+    )
+    .await;
 
     let today = time::OffsetDateTime::now_utc();
     let prefix = format!(
@@ -1066,7 +1095,7 @@ pub async fn sdk_extract_content(
         today.year(),
         today.month() as u8,
         today.day(),
-        sync_run_id
+        fields.sync_run_id
     );
 
     let content = utils::normalize_whitespace(&extracted_text);
@@ -1079,11 +1108,45 @@ pub async fn sdk_extract_content(
     // Update heartbeat
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
     sync_run_repo
-        .update_activity(&sync_run_id)
+        .update_activity(&fields.sync_run_id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to update activity: {}", e)))?;
 
     Ok(Json(SdkExtractContentResponse { content_id }))
+}
+
+pub async fn sdk_extract_text(
+    State(state): State<AppState>,
+    multipart: axum::extract::Multipart,
+) -> Result<Json<SdkExtractTextResponse>, ApiError> {
+    let fields = parse_extract_multipart(multipart).await?;
+
+    debug!(
+        "SDK: Extracting text for sync_run={}, mime={}, filename={:?}, size={}",
+        fields.sync_run_id,
+        fields.mime_type,
+        fields.filename,
+        fields.data.len()
+    );
+
+    let extracted_text = do_extract_text(
+        &state.redis_client,
+        &fields.mime_type,
+        fields.filename.as_deref(),
+        &fields.data,
+    )
+    .await;
+
+    let text = utils::normalize_whitespace(&extracted_text);
+
+    // Update heartbeat
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+    sync_run_repo
+        .update_activity(&fields.sync_run_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to update activity: {}", e)))?;
+
+    Ok(Json(SdkExtractTextResponse { text }))
 }
 
 pub async fn sdk_store_content(

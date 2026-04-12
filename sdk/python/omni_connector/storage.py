@@ -47,6 +47,23 @@ class ContentStorage:
             filename,
         )
 
+    async def extract_text(
+        self,
+        data: bytes,
+        mime_type: str,
+        filename: str | None = None,
+    ) -> str:
+        """Extract text from binary file content without storing.
+
+        Use when you need to post-process or combine text before storing.
+        """
+        return await self._client.extract_text(
+            self._sync_run_id,
+            data,
+            mime_type,
+            filename,
+        )
+
     async def save_binary(
         self,
         content: bytes,
