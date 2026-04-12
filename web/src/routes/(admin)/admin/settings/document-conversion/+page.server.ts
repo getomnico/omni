@@ -4,10 +4,13 @@ import type { PageServerLoad, Actions } from './$types'
 import { requireAdmin } from '$lib/server/authHelpers'
 import { SystemSettings } from '$lib/server/system-flags'
 
+const VALID_PRESETS = ['fast', 'balanced', 'quality']
+
 export const load: PageServerLoad = async ({ locals }) => {
     requireAdmin(locals)
 
     const doclingEnabled = await SystemSettings.isDoclingEnabled()
+    const qualityPreset = await SystemSettings.getDoclingQualityPreset()
 
     // Quick health check to see if the service is reachable
     let doclingReachable = false
@@ -27,6 +30,7 @@ export const load: PageServerLoad = async ({ locals }) => {
     return {
         doclingEnabled,
         doclingReachable,
+        qualityPreset,
     }
 }
 
@@ -48,6 +52,30 @@ export const actions: Actions = {
         } catch (err) {
             console.error('Failed to update Docling setting:', err)
             return fail(500, { error: 'Failed to update setting' })
+        }
+    },
+
+    updateQualityPreset: async ({ request, locals }) => {
+        requireAdmin(locals)
+
+        const formData = await request.formData()
+        const preset = formData.get('preset') as string
+
+        if (!preset || !VALID_PRESETS.includes(preset)) {
+            return fail(400, {
+                error: `Invalid preset. Must be one of: ${VALID_PRESETS.join(', ')}`,
+            })
+        }
+
+        try {
+            await SystemSettings.setDoclingQualityPreset(preset)
+            return {
+                success: true,
+                message: `Quality preset updated to "${preset}"`,
+            }
+        } catch (err) {
+            console.error('Failed to update quality preset:', err)
+            return fail(500, { error: 'Failed to update quality preset' })
         }
     },
 }

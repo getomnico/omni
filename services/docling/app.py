@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
+from typing import Literal
 
 import uvicorn
 from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
@@ -22,7 +23,7 @@ from docling.datamodel.pipeline_options import (
     TableFormerMode,
 )
 from docling.document_converter import DocumentConverter, PdfFormatOption
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 
 logging.basicConfig(level=logging.INFO)
@@ -30,8 +31,37 @@ logger = logging.getLogger(__name__)
 
 _MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_CONVERSIONS", "1"))
 _MAX_PENDING = int(os.getenv("MAX_PENDING_JOBS", str(_MAX_CONCURRENT * 2)))
-_converter_pool: asyncio.Queue[DocumentConverter]  # created inside lifespan
 _ready: bool = False
+
+PresetName = Literal["fast", "balanced", "quality"]
+VALID_PRESETS: set[str] = {"fast", "balanced", "quality"}
+
+QUALITY_PRESETS: dict[str, dict] = {
+    "fast": {
+        "table_structure_mode": TableFormerMode.FAST,
+        "images_scale": 1.0,
+        "do_picture_classification": False,
+        "generate_picture_images": False,
+        "generate_table_images": False,
+    },
+    "balanced": {
+        "table_structure_mode": TableFormerMode.ACCURATE,
+        "images_scale": 1.0,
+        "do_picture_classification": True,
+        "generate_picture_images": False,
+        "generate_table_images": False,
+    },
+    "quality": {
+        "table_structure_mode": TableFormerMode.ACCURATE,
+        "images_scale": 1.5,
+        "do_picture_classification": True,
+        "generate_picture_images": True,
+        "generate_table_images": True,
+    },
+}
+
+# One converter pool per preset, created in lifespan
+_converter_pools: dict[str, asyncio.Queue[DocumentConverter]] = {}
 
 
 class _SuppressFilter(logging.Filter):
@@ -59,8 +89,9 @@ def _apply_rapidocr_suppression() -> None:
                 handler.addFilter(f)
 
 
-def _build_converter() -> DocumentConverter:
-    """Build a DocumentConverter with optimal quality settings for CPU inference."""
+def _build_converter(preset: str = "balanced") -> DocumentConverter:
+    """Build a DocumentConverter with pipeline options from the given quality preset."""
+    opts = QUALITY_PRESETS[preset]
     accelerator_options = AcceleratorOptions(
         device=AcceleratorDevice.CPU,
         num_threads=multiprocessing.cpu_count(),
@@ -68,29 +99,17 @@ def _build_converter() -> DocumentConverter:
     pipeline_options = PdfPipelineOptions()
     pipeline_options.accelerator_options = accelerator_options
     pipeline_options.do_table_structure = True
-    pipeline_options.table_structure_options.mode = TableFormerMode.ACCURATE
+    pipeline_options.table_structure_options.mode = opts["table_structure_mode"]
     pipeline_options.do_ocr = True
     pipeline_options.ocr_options = RapidOcrOptions(backend="torch")
-    pipeline_options.images_scale = (
-        1.5  # higher resolution improves OCR/layout accuracy
-    )
-    pipeline_options.generate_picture_images = True
-    pipeline_options.generate_table_images = True
-    pipeline_options.do_code_enrichment = (
-        False  # VLM per code block; adds latency on code-heavy docs
-    )
-    pipeline_options.do_formula_enrichment = (
-        False  # VLM per formula; adds latency on math-heavy docs
-    )
-    pipeline_options.do_picture_classification = (
-        True  # lightweight ViT; minimal overhead
-    )
-    pipeline_options.do_picture_description = (
-        False  # SmolVLM per image; significant latency per figure
-    )
-    pipeline_options.do_chart_extraction = (
-        False  # Granite Vision 2B per chart; high RAM + latency
-    )
+    pipeline_options.images_scale = opts["images_scale"]
+    pipeline_options.generate_picture_images = opts["generate_picture_images"]
+    pipeline_options.generate_table_images = opts["generate_table_images"]
+    pipeline_options.do_code_enrichment = False
+    pipeline_options.do_formula_enrichment = False
+    pipeline_options.do_picture_classification = opts["do_picture_classification"]
+    pipeline_options.do_picture_description = False
+    pipeline_options.do_chart_extraction = False
     converter = DocumentConverter(
         format_options={
             InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
@@ -108,15 +127,15 @@ def _download_models() -> None:
         progress=True,
         with_layout=True,
         with_tableformer=True,
-        with_code_formula=False,  # ~500 MB; needed for do_code/formula_enrichment
-        with_picture_classifier=True,  # ~90 MB; needed for do_picture_classification
-        with_smolvlm=False,  # ~500 MB; needed for do_picture_description
+        with_code_formula=False,
+        with_picture_classifier=True,
+        with_smolvlm=False,
         with_granitedocling=False,
         with_granitedocling_mlx=False,
         with_smoldocling=False,
         with_smoldocling_mlx=False,
         with_granite_vision=False,
-        with_granite_chart_extraction=False,  # ~2 GB; needed for do_chart_extraction
+        with_granite_chart_extraction=False,
         with_rapidocr=True,
         with_easyocr=False,
     )
@@ -132,6 +151,7 @@ class JobStatus(str, Enum):
 @dataclass
 class Job:
     id: str
+    preset: str = "balanced"
     status: JobStatus = JobStatus.PENDING
     markdown: str | None = None
     detail: str | None = None
@@ -150,34 +170,51 @@ def _active_job_count() -> int:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _converter_pool
-    _converter_pool = asyncio.Queue(maxsize=_MAX_CONCURRENT)
     # Start converter init in the background so the HTTP server becomes
     # responsive immediately. /health returns {"status": "starting"} and
     # /convert returns 503 until init completes.
-    asyncio.create_task(_init_converter())
+    asyncio.create_task(_init_converters())
     asyncio.create_task(_cleanup_loop())
     yield
 
 
-async def _init_converter() -> None:
+async def _init_converters() -> None:
     global _ready
     try:
+        total = _MAX_CONCURRENT * len(QUALITY_PRESETS)
         logger.info(
-            "Loading %d DocumentConverter instance(s) ...",
-            _MAX_CONCURRENT,
+            "Loading %d DocumentConverter instance(s) across %d presets ...",
+            total,
+            len(QUALITY_PRESETS),
         )
         logger.info("Downloading models ...")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _download_models)
-        for i in range(_MAX_CONCURRENT):
-            converter = await loop.run_in_executor(None, _build_converter)
-            _converter_pool.put_nowait(converter)
-            logger.info("Converter %d/%d ready.", i + 1, _MAX_CONCURRENT)
-        # All models are loaded; disable network validation for all subsequent HF hub calls.
+
+        for preset_name in QUALITY_PRESETS:
+            pool: asyncio.Queue[DocumentConverter] = asyncio.Queue(
+                maxsize=_MAX_CONCURRENT
+            )
+            for i in range(_MAX_CONCURRENT):
+                converter = await loop.run_in_executor(
+                    None, _build_converter, preset_name
+                )
+                pool.put_nowait(converter)
+                logger.info(
+                    "Converter [%s] %d/%d ready.",
+                    preset_name,
+                    i + 1,
+                    _MAX_CONCURRENT,
+                )
+            _converter_pools[preset_name] = pool
+
         os.environ["HF_HUB_OFFLINE"] = "1"
         _ready = True
-        logger.info("Ready — %d converter(s) available.", _MAX_CONCURRENT)
+        logger.info(
+            "Ready — %d converter(s) available (%d per preset).",
+            total,
+            _MAX_CONCURRENT,
+        )
     except Exception:
         logger.exception(
             "Failed to initialise converter(s). Service will remain unavailable."
@@ -198,11 +235,16 @@ async def _cleanup_loop() -> None:
 
 async def _run_job(job: Job, data: bytes, filename: str) -> None:
     """Background task: lease a converter from the pool, run conversion, return it."""
-    converter = await _converter_pool.get()
+    pool = _converter_pools[job.preset]
+    converter = await pool.get()
     try:
         job.status = JobStatus.RUNNING
         logger.info(
-            "Job %s: conversion started (%s, %d bytes).", job.id, filename, len(data)
+            "Job %s: conversion started (%s, %d bytes, preset=%s).",
+            job.id,
+            filename,
+            len(data),
+            job.preset,
         )
         t0 = time.monotonic()
         stream = DocumentStream(name=filename, stream=io.BytesIO(data))
@@ -229,10 +271,9 @@ async def _run_job(job: Job, data: bytes, filename: str) -> None:
             )
             return
     finally:
-        _converter_pool.put_nowait(converter)
+        pool.put_nowait(converter)
 
     elapsed = time.monotonic() - t0
-    # Converter returned to pool; do cheap post-processing outside the slot.
     try:
         if result.status not in (
             ConversionStatus.SUCCESS,
@@ -276,13 +317,27 @@ def queue_status():
     return {"pending": pending, "running": running, "max": _MAX_PENDING}
 
 
+@app.get("/presets")
+def list_presets():
+    """Return available quality presets and their configurations."""
+    return {"presets": list(QUALITY_PRESETS.keys())}
+
+
 @app.post("/convert", status_code=202)
-async def submit_conversion(file: UploadFile = File(...)):
+async def submit_conversion(
+    file: UploadFile = File(...),
+    preset: str = Query("balanced"),
+):
     """Submit a document for conversion. Returns a job ID immediately (HTTP 202)."""
     if not _ready:
         raise HTTPException(
             status_code=503,
             detail="Service is starting up; models are being loaded. Try again shortly.",
+        )
+    if preset not in VALID_PRESETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid preset '{preset}'. Must be one of: {', '.join(sorted(VALID_PRESETS))}",
         )
     if _active_job_count() >= _MAX_PENDING:
         return JSONResponse(
@@ -298,10 +353,16 @@ async def submit_conversion(file: UploadFile = File(...)):
 
     data = await file.read()
     job_id = str(uuid.uuid4())
-    job = Job(id=job_id)
+    job = Job(id=job_id, preset=preset)
     _jobs[job_id] = job
     asyncio.create_task(_run_job(job, data, file.filename))
-    logger.info("Job %s: submitted (%s, %d bytes).", job_id, file.filename, len(data))
+    logger.info(
+        "Job %s: submitted (%s, %d bytes, preset=%s).",
+        job_id,
+        file.filename,
+        len(data),
+        preset,
+    )
     return {"job_id": job_id}
 
 

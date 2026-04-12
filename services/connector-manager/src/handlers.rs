@@ -19,6 +19,7 @@ use futures::stream::Stream;
 use redis::AsyncCommands;
 use serde_json::json;
 use shared::clients::docling::{DoclingClient, DoclingError};
+use shared::constants::REDIS_SYSTEM_SETTINGS_KEY;
 use shared::db::repositories::SyncRunRepository;
 use shared::models::{ConnectorManifest, SearchOperator, SourceType, SyncType};
 use shared::queue::EventQueue;
@@ -833,8 +834,29 @@ async fn is_docling_enabled(redis_client: &redis::Client) -> bool {
         }
     };
 
-    let value: Option<String> = conn.hget("system:settings", "docling_enabled").await.ok();
+    let value: Option<String> = conn
+        .hget(REDIS_SYSTEM_SETTINGS_KEY, "docling_enabled")
+        .await
+        .ok();
     value.as_deref() == Some("true")
+}
+
+/// Read the Docling quality preset from Redis (set via the admin UI).
+/// Defaults to "balanced" if not set or on error.
+async fn get_docling_quality_preset(redis_client: &redis::Client) -> String {
+    let mut conn = match redis_client.get_multiplexed_async_connection().await {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Failed to connect to Redis for docling preset: {}", e);
+            return "balanced".to_string();
+        }
+    };
+
+    let value: Option<String> = conn
+        .hget(REDIS_SYSTEM_SETTINGS_KEY, "docling_quality_preset")
+        .await
+        .ok();
+    value.unwrap_or_else(|| "balanced".to_string())
 }
 
 /// MIME types that Docling can process.
@@ -1040,11 +1062,12 @@ async fn do_extract_text(
     if docling_candidate && docling_enabled {
         let docling_result = if let Some(client) = DoclingClient::from_env() {
             let file_name = filename.unwrap_or("document");
+            let preset = get_docling_quality_preset(redis_client).await;
             debug!(
-                "Using docling-based document content extraction for file '{}'",
-                file_name
+                "Using docling-based document content extraction for file '{}' (preset={})",
+                file_name, preset
             );
-            match client.convert(data, file_name).await {
+            match client.convert(data, file_name, &preset).await {
                 Ok(markdown) => {
                     debug!("Docling extraction succeeded: {} chars", markdown.len());
                     Some(markdown)

@@ -2,16 +2,45 @@
     import { enhance } from '$app/forms'
     import * as Card from '$lib/components/ui/card'
     import * as Alert from '$lib/components/ui/alert'
+    import * as RadioGroup from '$lib/components/ui/radio-group'
+    import { Label } from '$lib/components/ui/label'
     import { Switch } from '$lib/components/ui/switch'
-    import { Sparkles, AlertTriangle, CircleCheck } from '@lucide/svelte'
+    import { Sparkles, AlertTriangle, CircleCheck, Zap, Scale, Gem } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import type { PageData } from './$types'
 
     let { data }: { data: PageData } = $props()
 
     let doclingEnabled = $state(data.doclingEnabled)
+    let qualityPreset = $state(data.qualityPreset)
     let isSubmitting = $state(false)
-    let formRef = $state<HTMLFormElement | null>(null)
+    let isPresetSubmitting = $state(false)
+    let enableFormRef = $state<HTMLFormElement | null>(null)
+    let presetFormRef = $state<HTMLFormElement | null>(null)
+
+    const presets = [
+        {
+            value: 'fast',
+            label: 'Fast',
+            description:
+                'Fastest extraction. Basic table detection, standard resolution. Best for text-heavy documents.',
+            icon: Zap,
+        },
+        {
+            value: 'balanced',
+            label: 'Balanced',
+            description:
+                'Good quality for most documents. Accurate table structure with image classification.',
+            icon: Scale,
+        },
+        {
+            value: 'quality',
+            label: 'Quality',
+            description:
+                'Best extraction quality. High-resolution processing, generates table and picture images.',
+            icon: Gem,
+        },
+    ]
 </script>
 
 <svelte:head>
@@ -45,7 +74,7 @@
                     <form
                         method="POST"
                         action="?/updateDocling"
-                        bind:this={formRef}
+                        bind:this={enableFormRef}
                         use:enhance={({ formData }) => {
                             if (doclingEnabled) {
                                 formData.set('enabled', 'true')
@@ -71,7 +100,7 @@
                             disabled={isSubmitting}
                             onCheckedChange={(checked) => {
                                 doclingEnabled = checked
-                                formRef?.requestSubmit()
+                                enableFormRef?.requestSubmit()
                             }}
                             class="cursor-pointer" />
                     </form>
@@ -107,5 +136,67 @@
                 {/if}
             </Card.Content>
         </Card.Root>
+
+        {#if doclingEnabled}
+            <Card.Root>
+                <Card.Header>
+                    <div>
+                        <div class="text-base leading-tight font-semibold">Extraction Quality</div>
+                        <p class="text-muted-foreground mt-0.5 text-sm">
+                            Trade off between extraction quality and processing speed
+                        </p>
+                    </div>
+                </Card.Header>
+                <Card.Content>
+                    <form
+                        method="POST"
+                        action="?/updateQualityPreset"
+                        bind:this={presetFormRef}
+                        use:enhance={() => {
+                            isPresetSubmitting = true
+                            return async ({ result, update }) => {
+                                isPresetSubmitting = false
+                                await update()
+                                if (result.type === 'success') {
+                                    toast.success(result.data?.message || 'Preset updated')
+                                } else if (result.type === 'failure') {
+                                    toast.error(result.data?.error || 'Something went wrong')
+                                    qualityPreset = data.qualityPreset
+                                }
+                            }
+                        }}>
+                        <input type="hidden" name="preset" value={qualityPreset} />
+                        <RadioGroup.Root
+                            bind:value={qualityPreset}
+                            disabled={isPresetSubmitting}
+                            onValueChange={() => {
+                                presetFormRef?.requestSubmit()
+                            }}
+                            class="grid gap-3">
+                            {#each presets as preset}
+                                <Label
+                                    for={preset.value}
+                                    class="border-input hover:bg-accent/50 flex cursor-pointer items-start gap-3 rounded-lg border p-4 transition-colors has-[data-state=checked]:border-purple-500/50 has-[data-state=checked]:bg-purple-500/5">
+                                    <RadioGroup.Item
+                                        value={preset.value}
+                                        id={preset.value}
+                                        class="mt-0.5" />
+                                    <div class="flex items-start gap-3">
+                                        <preset.icon
+                                            class="text-muted-foreground mt-0.5 h-4 w-4 shrink-0" />
+                                        <div>
+                                            <div class="text-sm font-medium">{preset.label}</div>
+                                            <div class="text-muted-foreground mt-0.5 text-xs">
+                                                {preset.description}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </Label>
+                            {/each}
+                        </RadioGroup.Root>
+                    </form>
+                </Card.Content>
+            </Card.Root>
+        {/if}
     </div>
 </div>

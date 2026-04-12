@@ -86,6 +86,32 @@ export class SystemSettings {
     }
 
     /**
+     * Get the Docling quality preset. Defaults to "balanced".
+     */
+    static async getDoclingQualityPreset(): Promise<string> {
+        if (this.memoryCache.has('docling_quality_preset')) {
+            return this.memoryCache.get('docling_quality_preset')!
+        }
+
+        const redis = await getRedisClient()
+        const value = await redis.hGet(SYSTEM_SETTINGS_KEY, 'docling_quality_preset')
+        const preset = value ?? 'balanced'
+
+        this.memoryCache.set('docling_quality_preset', preset)
+
+        return preset
+    }
+
+    /**
+     * Set the Docling quality preset.
+     */
+    static async setDoclingQualityPreset(preset: string): Promise<void> {
+        const redis = await getRedisClient()
+        await redis.hSet(SYSTEM_SETTINGS_KEY, 'docling_quality_preset', preset)
+        this.memoryCache.set('docling_quality_preset', preset)
+    }
+
+    /**
      * Clear memory cache
      */
     static clearCache(): void {

@@ -123,12 +123,18 @@ impl DoclingClient {
     /// # Arguments
     /// * `data` - The raw document bytes
     /// * `filename` - The filename (used for format detection via extension)
+    /// * `preset` - Quality preset: "fast", "balanced", or "quality"
     ///
     /// # Returns
     /// The extracted Markdown text, or an error if conversion fails.
-    pub async fn convert(&self, data: &[u8], filename: &str) -> Result<String, DoclingError> {
+    pub async fn convert(
+        &self,
+        data: &[u8],
+        filename: &str,
+        preset: &str,
+    ) -> Result<String, DoclingError> {
         // Submit the conversion job
-        let job_id = self.submit(data, filename).await?;
+        let job_id = self.submit(data, filename, preset).await?;
         debug!("Docling conversion job submitted: {}", job_id);
 
         // Poll for completion
@@ -171,7 +177,12 @@ impl DoclingClient {
 
     /// Submit a document for conversion.
     /// Returns the job ID immediately.
-    async fn submit(&self, data: &[u8], filename: &str) -> Result<String, DoclingError> {
+    async fn submit(
+        &self,
+        data: &[u8],
+        filename: &str,
+        preset: &str,
+    ) -> Result<String, DoclingError> {
         let part = multipart::Part::bytes(data.to_vec())
             .file_name(filename.to_string())
             .mime_str("application/octet-stream")
@@ -181,7 +192,7 @@ impl DoclingClient {
 
         let response = self
             .client
-            .post(format!("{}/convert", self.base_url))
+            .post(format!("{}/convert?preset={}", self.base_url, preset))
             .multipart(form)
             .send()
             .await
