@@ -10,7 +10,7 @@ from .connection import get_db_pool
 logger = logging.getLogger(__name__)
 
 _COLUMNS = (
-    "id, content_id, source_id, external_id, title, content_type, embedding_status"
+    "id, content_id, source_id, external_id, title, content_type, embedding_status, content_fingerprint"
 )
 
 
@@ -35,6 +35,7 @@ class Document:
     title: Optional[str] = None
     content_type: Optional[str] = None
     embedding_status: Optional[str] = None
+    content_fingerprint: Optional[str] = None
 
 
 @dataclass
@@ -88,8 +89,24 @@ class DocumentsRepository:
                 title=row["title"],
                 content_type=row["content_type"],
                 embedding_status=row["embedding_status"],
+                content_fingerprint=row["content_fingerprint"],
             )
         return None
+
+    async def find_embedded_duplicate(
+        self, content_fingerprint: str, exclude_document_id: str
+    ) -> Optional[str]:
+        """Find another document with the same content_fingerprint that already has embeddings.
+
+        Returns the document ID if found, None otherwise.
+        """
+        pool = await self._get_pool()
+        row = await pool.fetchrow(
+            "SELECT id FROM documents WHERE content_fingerprint = $1 AND id != $2 AND embedding_status = 'completed' LIMIT 1",
+            content_fingerprint,
+            exclude_document_id,
+        )
+        return row["id"] if row else None
 
     async def get_content_blob(self, content_id: str) -> Optional[ContentBlob]:
         """Get content blob by ID"""

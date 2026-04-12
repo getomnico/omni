@@ -124,6 +124,7 @@ pub struct Document {
     pub metadata: JsonValue,
     pub permissions: JsonValue,
     pub attributes: JsonValue, // Structured key-value attributes for filtering
+    pub content_fingerprint: Option<String>, // Cross-source dedup key (e.g. SHA256 of thread_id)
     #[serde(with = "time::serde::iso8601")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::iso8601")]

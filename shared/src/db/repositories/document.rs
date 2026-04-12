@@ -36,7 +36,8 @@ impl DocumentRepository {
             r#"
             SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
-                   metadata, permissions, attributes, created_at, updated_at, last_indexed_at
+                   metadata, permissions, attributes, content_fingerprint,
+                   created_at, updated_at, last_indexed_at
             FROM documents
             WHERE id = $1
             "#,
@@ -57,7 +58,8 @@ impl DocumentRepository {
             r#"
             SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
-                   metadata, permissions, attributes, created_at, updated_at, last_indexed_at
+                   metadata, permissions, attributes, content_fingerprint,
+                   created_at, updated_at, last_indexed_at
             FROM documents
             WHERE id = ANY($1)
             "#,
@@ -74,7 +76,8 @@ impl DocumentRepository {
             r#"
             SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
-                   metadata, permissions, attributes, created_at, updated_at, last_indexed_at
+                   metadata, permissions, attributes, content_fingerprint,
+                   created_at, updated_at, last_indexed_at
             FROM documents
             ORDER BY created_at DESC
             LIMIT $1 OFFSET $2
@@ -290,7 +293,8 @@ impl DocumentRepository {
             r#"
             SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
-                   metadata, permissions, attributes, created_at, updated_at, last_indexed_at
+                   metadata, permissions, attributes, content_fingerprint,
+                   created_at, updated_at, last_indexed_at
             FROM documents
             WHERE source_id = $1
             ORDER BY created_at DESC
@@ -312,7 +316,8 @@ impl DocumentRepository {
             r#"
             SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
-                   metadata, permissions, attributes, created_at, updated_at, last_indexed_at
+                   metadata, permissions, attributes, content_fingerprint,
+                   created_at, updated_at, last_indexed_at
             FROM documents
             WHERE source_id = $1 AND external_id = $2
             "#,
@@ -340,7 +345,8 @@ impl DocumentRepository {
             r#"
             SELECT id, source_id, external_id, title, content_id, content_type,
                    file_size, file_extension, url,
-                   metadata, permissions, attributes, created_at, updated_at, last_indexed_at
+                   metadata, permissions, attributes, content_fingerprint,
+                   created_at, updated_at, last_indexed_at
             FROM documents
             WHERE (source_id, external_id) IN (
                 SELECT * FROM UNNEST($1::text[], $2::text[])
@@ -355,14 +361,40 @@ impl DocumentRepository {
         Ok(documents)
     }
 
+    /// Find another document with the same content_fingerprint that has completed embedding.
+    /// Used for embedding cloning: instead of regenerating embeddings for a duplicate,
+    /// we clone from an already-embedded document with the same fingerprint.
+    pub async fn find_embedded_duplicate(
+        &self,
+        content_fingerprint: &str,
+        exclude_document_id: &str,
+    ) -> Result<Option<String>, DatabaseError> {
+        let doc_id: Option<String> = sqlx::query_scalar(
+            r#"
+            SELECT id FROM documents
+            WHERE content_fingerprint = $1
+              AND id != $2
+              AND embedding_status = 'completed'
+            LIMIT 1
+            "#,
+        )
+        .bind(content_fingerprint)
+        .bind(exclude_document_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(doc_id)
+    }
+
     pub async fn create(&self, document: Document) -> Result<Document, DatabaseError> {
         let created_document = sqlx::query_as::<_, Document>(
             r#"
-            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, metadata, permissions, attributes)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, metadata, permissions, attributes, content_fingerprint)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
-                      metadata, permissions, attributes, created_at, updated_at, last_indexed_at
+                      metadata, permissions, attributes, content_fingerprint,
+                      created_at, updated_at, last_indexed_at
             "#
         )
         .bind(&document.id)
@@ -374,6 +406,7 @@ impl DocumentRepository {
         .bind(&document.metadata)
         .bind(&document.permissions)
         .bind(&document.attributes)
+        .bind(&document.content_fingerprint)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| match e {
@@ -406,7 +439,8 @@ impl DocumentRepository {
             WHERE id = $1
             RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
-                      metadata, permissions, attributes, created_at, updated_at, last_indexed_at
+                      metadata, permissions, attributes, content_fingerprint,
+                      created_at, updated_at, last_indexed_at
             "#,
         )
         .bind(id)
@@ -442,7 +476,8 @@ impl DocumentRepository {
             WHERE id = $1
             RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
-                      metadata, permissions, attributes, created_at, updated_at, last_indexed_at
+                      metadata, permissions, attributes, content_fingerprint,
+                      created_at, updated_at, last_indexed_at
             "#,
         )
         .bind(id)
@@ -474,8 +509,8 @@ impl DocumentRepository {
     ) -> Result<Document, DatabaseError> {
         let upserted_document = sqlx::query_as::<_, Document>(
             r#"
-            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, attributes, created_at, updated_at, last_indexed_at, content)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, attributes, content_fingerprint, created_at, updated_at, last_indexed_at, content)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             ON CONFLICT (source_id, external_id)
             DO UPDATE SET
                 title = COALESCE(NULLIF(EXCLUDED.title, ''), documents.title),
@@ -483,12 +518,14 @@ impl DocumentRepository {
                 metadata = EXCLUDED.metadata,
                 permissions = COALESCE(EXCLUDED.permissions, documents.permissions),
                 attributes = COALESCE(EXCLUDED.attributes, documents.attributes),
+                content_fingerprint = COALESCE(EXCLUDED.content_fingerprint, documents.content_fingerprint),
                 updated_at = EXCLUDED.updated_at,
                 last_indexed_at = CURRENT_TIMESTAMP,
                 content = EXCLUDED.content
             RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
-                      metadata, permissions, attributes, created_at, updated_at, last_indexed_at
+                      metadata, permissions, attributes, content_fingerprint,
+                      created_at, updated_at, last_indexed_at
             "#
         )
         .bind(&document.id)
@@ -503,6 +540,7 @@ impl DocumentRepository {
         .bind(&document.metadata)
         .bind(&document.permissions)
         .bind(&document.attributes)
+        .bind(&document.content_fingerprint)
         .bind(&document.created_at)
         .bind(&document.updated_at)
         .bind(&document.last_indexed_at)
@@ -542,6 +580,10 @@ impl DocumentRepository {
             documents.iter().map(|d| d.permissions.clone()).collect();
         let attributes: Vec<serde_json::Value> =
             documents.iter().map(|d| d.attributes.clone()).collect();
+        let content_fingerprints: Vec<Option<String>> = documents
+            .iter()
+            .map(|d| d.content_fingerprint.clone())
+            .collect();
         let created_ats: Vec<sqlx::types::time::OffsetDateTime> =
             documents.iter().map(|d| d.created_at).collect();
         let updated_ats: Vec<sqlx::types::time::OffsetDateTime> =
@@ -564,6 +606,7 @@ impl DocumentRepository {
                 metadata,
                 permissions,
                 attributes,
+                content_fingerprint,
                 created_at,
                 updated_at,
                 last_indexed_at,
@@ -573,8 +616,9 @@ impl DocumentRepository {
             FROM UNNEST(
                 $1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[],
                 $7::bigint[], $8::text[], $9::text[], $10::jsonb[], $11::jsonb[], $12::jsonb[],
-                $13::timestamptz[], $14::timestamptz[], $15::timestamptz[], $16::text[]
-            ) AS t(id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, attributes, created_at, updated_at, last_indexed_at, content)
+                $13::text[],
+                $14::timestamptz[], $15::timestamptz[], $16::timestamptz[], $17::text[]
+            ) AS t(id, source_id, external_id, title, content_id, content_type, file_size, file_extension, url, metadata, permissions, attributes, content_fingerprint, created_at, updated_at, last_indexed_at, content)
             ON CONFLICT (source_id, external_id)
             DO UPDATE SET
                 title = COALESCE(NULLIF(EXCLUDED.title, ''), documents.title),
@@ -582,12 +626,14 @@ impl DocumentRepository {
                 metadata = EXCLUDED.metadata,
                 permissions = COALESCE(EXCLUDED.permissions, documents.permissions),
                 attributes = COALESCE(EXCLUDED.attributes, documents.attributes),
+                content_fingerprint = COALESCE(EXCLUDED.content_fingerprint, documents.content_fingerprint),
                 updated_at = EXCLUDED.updated_at,
                 last_indexed_at = CURRENT_TIMESTAMP,
                 content = EXCLUDED.content
             RETURNING id, source_id, external_id, title, content_id, content_type,
                       file_size, file_extension, url,
-                      metadata, permissions, attributes, created_at, updated_at, last_indexed_at
+                      metadata, permissions, attributes, content_fingerprint,
+                      created_at, updated_at, last_indexed_at
             "#
         )
         .bind(&ids)
@@ -602,6 +648,7 @@ impl DocumentRepository {
         .bind(&metadata)
         .bind(&permissions)
         .bind(&attributes)
+        .bind(&content_fingerprints)
         .bind(&created_ats)
         .bind(&updated_ats)
         .bind(&last_indexed_ats)

@@ -49,6 +49,7 @@ class Document(BaseModel):
     metadata: DocumentMetadata | None = None
     permissions: DocumentPermissions | None = None
     attributes: dict[str, Any] | None = None
+    content_fingerprint: str | None = None
 
 
 class DocumentEvent(BaseModel):

@@ -38,6 +38,7 @@ native-tls = "0.2"
 # Email parsing
 mailparse = "0.15"
 urlencoding = "2.1"
+sha2 = "0.10"
 
 [dev-dependencies]
 base64 = "0.21"

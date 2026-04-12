@@ -121,3 +121,36 @@ class EmbeddingsRepository:
             ],
         )
         logger.info(f"Bulk inserted {len(embeddings)} embeddings")
+
+    async def clone_for_document(
+        self, source_document_id: str, target_document_id: str
+    ) -> int:
+        """Clone all embeddings from one document to another.
+
+        Creates new embedding rows with fresh IDs pointing to target_document_id,
+        copying all chunk data and vectors from source_document_id.
+
+        Returns the number of cloned embeddings.
+        """
+        import ulid as _ulid
+        from datetime import datetime
+
+        existing = await self.get_for_document(source_document_id)
+        if not existing:
+            return 0
+
+        cloned = [
+            {
+                "id": str(_ulid.ULID()),
+                "document_id": target_document_id,
+                "chunk_index": emb.chunk_index,
+                "chunk_start_offset": emb.chunk_start_offset,
+                "chunk_end_offset": emb.chunk_end_offset,
+                "embedding": emb.embedding,
+                "model_name": emb.model_name,
+                "dimensions": emb.dimensions,
+            }
+            for emb in existing
+        ]
+        await self.bulk_insert(cloned)
+        return len(cloned)

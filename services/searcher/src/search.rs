@@ -389,6 +389,14 @@ impl SearchEngine {
         if !parsed.boosted_source_types.is_empty() || !parsed.person_boosts.is_empty() {
             results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
         }
+
+        // Deduplicate cross-source results that share the same content.
+        // For email threads ingested from multiple IMAP accounts, the same
+        // thread will have the same `attributes.thread_id` (RFC 2822 Message-ID).
+        // We keep the highest-scoring result per group and merge permissions
+        // so both account owners retain access.
+        results = Self::deduplicate_cross_source(results);
+
         let total_count: i64 = filtered_facets
             .iter()
             .flat_map(|f| f.values.iter().filter_map(|fv| fv.count))
@@ -1107,6 +1115,152 @@ impl SearchEngine {
             start_time.elapsed().as_millis()
         );
         Ok(final_results)
+    }
+
+    /// Deduplicates search results that represent the same content across different sources.
+    ///
+    /// For IMAP email threads, the `attributes.thread_id` field (derived from RFC 2822
+    /// Message-ID / References headers) is identical across accounts for the same email.
+    /// When duplicates are found, the highest-scoring result is kept and permissions from
+    /// all copies are merged (union) so every account owner retains access.
+    fn deduplicate_cross_source(mut results: Vec<SearchResult>) -> Vec<SearchResult> {
+        // Group indices by dedup key. Only email threads participate; all other
+        // document types pass through unchanged.
+        let mut dedup_groups: HashMap<String, Vec<usize>> = HashMap::new();
+        for (idx, result) in results.iter().enumerate() {
+            if let Some(dedup_key) = Self::cross_source_dedup_key(result) {
+                dedup_groups.entry(dedup_key).or_default().push(idx);
+            }
+        }
+
+        // Fast path: nothing to deduplicate
+        if dedup_groups.values().all(|indices| indices.len() <= 1) {
+            return results;
+        }
+
+        // Collect indices to remove (lower-scoring duplicates)
+        let mut remove_indices: Vec<usize> = Vec::new();
+        for indices in dedup_groups.values() {
+            if indices.len() <= 1 {
+                continue;
+            }
+
+            // Find the best result: highest score, then highest message_count as tiebreaker
+            let best_idx = *indices
+                .iter()
+                .max_by(|&&a, &&b| {
+                    let score_cmp = results[a]
+                        .score
+                        .partial_cmp(&results[b].score)
+                        .unwrap_or(Ordering::Equal);
+                    if score_cmp != Ordering::Equal {
+                        return score_cmp;
+                    }
+                    // Tiebreaker: prefer the result with more messages (more complete thread)
+                    let count_a = results[a]
+                        .document
+                        .attributes
+                        .get("message_count")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let count_b = results[b]
+                        .document
+                        .attributes
+                        .get("message_count")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    count_a.cmp(&count_b)
+                })
+                .expect("indices is non-empty");
+
+            // Merge permissions from all duplicates into the best result
+            let mut merged_users: Vec<String> = Vec::new();
+            let mut merged_groups: Vec<String> = Vec::new();
+            let mut is_public = false;
+            let mut seen_users = std::collections::HashSet::new();
+            let mut seen_groups = std::collections::HashSet::new();
+
+            for &idx in indices {
+                if let Some(perms) = results[idx].document.permissions.as_object() {
+                    if perms.get("public").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        is_public = true;
+                    }
+                    if let Some(users) = perms.get("users").and_then(|v| v.as_array()) {
+                        for u in users {
+                            if let Some(email) = u.as_str() {
+                                if seen_users.insert(email.to_string()) {
+                                    merged_users.push(email.to_string());
+                                }
+                            }
+                        }
+                    }
+                    if let Some(groups) = perms.get("groups").and_then(|v| v.as_array()) {
+                        for g in groups {
+                            if let Some(group) = g.as_str() {
+                                if seen_groups.insert(group.to_string()) {
+                                    merged_groups.push(group.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Apply merged permissions to the best result
+            results[best_idx].document.permissions = serde_json::json!({
+                "public": is_public,
+                "users": merged_users,
+                "groups": merged_groups,
+            });
+
+            // Mark other indices for removal
+            for &idx in indices {
+                if idx != best_idx {
+                    remove_indices.push(idx);
+                }
+            }
+        }
+
+        if remove_indices.is_empty() {
+            return results;
+        }
+
+        // Remove duplicates in reverse order to preserve indices
+        remove_indices.sort_unstable();
+        remove_indices.dedup();
+        for &idx in remove_indices.iter().rev() {
+            results.remove(idx);
+        }
+
+        debug!(
+            "Cross-source dedup removed {} duplicate results",
+            remove_indices.len()
+        );
+
+        results
+    }
+
+    /// Extracts a dedup key for cross-source deduplication.
+    /// Returns `Some(key)` for email threads (keyed on thread_id), `None` for other types.
+    fn cross_source_dedup_key(result: &SearchResult) -> Option<String> {
+        // Only deduplicate email threads
+        let content_type = result
+            .document
+            .metadata
+            .get("content_type")
+            .and_then(|v| v.as_str())?;
+
+        if content_type != "email_thread" {
+            return None;
+        }
+
+        let thread_id = result
+            .document
+            .attributes
+            .get("thread_id")
+            .and_then(|v| v.as_str())?;
+
+        Some(format!("email_thread:{}", thread_id))
     }
 
     fn generate_cache_key(&self, request: &SearchRequest) -> String {

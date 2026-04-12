@@ -484,6 +484,7 @@ async fn test_recovery_and_dead_letter() {
         metadata: json!({}),
         permissions: json!({"public": true, "users": [], "groups": []}),
         attributes: json!({}),
+        content_fingerprint: None,
         created_at: OffsetDateTime::now_utc(),
         updated_at: OffsetDateTime::now_utc(),
         last_indexed_at: OffsetDateTime::now_utc(),
