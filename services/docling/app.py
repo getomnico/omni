@@ -3,7 +3,6 @@
 import asyncio
 import io
 import logging
-import multiprocessing
 import os
 import time
 import uuid
@@ -89,13 +88,19 @@ def _apply_rapidocr_suppression() -> None:
                 handler.addFilter(f)
 
 
+def _detect_device() -> AcceleratorDevice:
+    """Pick accelerator based on DOCLING_DEVICE env var. Empty/unset = CPU, 'cuda' = CUDA."""
+    device_str = os.getenv("DOCLING_DEVICE", "")
+    if device_str == "cuda":
+        return AcceleratorDevice.CUDA
+    return AcceleratorDevice.CPU
+
+
 def _build_converter(preset: str = "balanced") -> DocumentConverter:
     """Build a DocumentConverter with pipeline options from the given quality preset."""
     opts = QUALITY_PRESETS[preset]
-    accelerator_options = AcceleratorOptions(
-        device=AcceleratorDevice.CPU,
-        num_threads=multiprocessing.cpu_count(),
-    )
+    device = _detect_device()
+    accelerator_options = AcceleratorOptions(device=device)
     pipeline_options = PdfPipelineOptions()
     pipeline_options.accelerator_options = accelerator_options
     pipeline_options.do_table_structure = True
@@ -187,6 +192,8 @@ async def _init_converters() -> None:
             total,
             len(QUALITY_PRESETS),
         )
+        device = _detect_device()
+        logger.info("Accelerator device: %s", device.value)
         logger.info("Downloading models ...")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _download_models)
