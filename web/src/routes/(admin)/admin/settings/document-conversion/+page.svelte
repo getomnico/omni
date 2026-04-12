@@ -12,11 +12,6 @@
     let doclingEnabled = $state(data.doclingEnabled)
     let isSubmitting = $state(false)
     let formRef = $state<HTMLFormElement | null>(null)
-
-    function handleDoclingSwitch(checked: boolean) {
-        doclingEnabled = checked
-        formRef?.requestSubmit()
-    }
 </script>
 
 <svelte:head>
@@ -43,50 +38,43 @@
                         <div class="text-base leading-tight font-semibold">
                             AI-Powered Document Conversion
                         </div>
-                        <p class="text-muted-foreground mt-0.5 text-sm">
-                            Powered by Docling
-                        </p>
+                        <p class="text-muted-foreground mt-0.5 text-sm">Powered by Docling</p>
                     </div>
                 </div>
                 <Card.Action>
-                    <div class="flex items-center gap-2">
-                        <form
-                            method="POST"
-                            action="?/updateDocling"
-                            bind:this={formRef}
-                            class="hidden"
-                            use:enhance={() => {
-                                isSubmitting = true
-                                return async ({
-                                    result,
-                                    update,
-                                }: {
-                                    result: { type: string; data?: { message?: string; error?: string } }
-                                    update: () => Promise<void>
-                                }) => {
-                                    isSubmitting = false
-                                    await update()
-                                    if (result.type === 'success') {
-                                        toast.success(
-                                            result.data?.message || 'Setting updated',
-                                        )
-                                    } else if (result.type === 'failure') {
-                                        toast.error(result.data?.error || 'Something went wrong')
-                                        doclingEnabled = data.doclingEnabled
-                                    }
+                    <form
+                        method="POST"
+                        action="?/updateDocling"
+                        bind:this={formRef}
+                        use:enhance={({ formData }) => {
+                            if (doclingEnabled) {
+                                formData.set('enabled', 'true')
+                            } else {
+                                formData.delete('enabled')
+                            }
+                            isSubmitting = true
+                            return async ({ result, update }) => {
+                                isSubmitting = false
+                                await update()
+                                if (result.type === 'success') {
+                                    toast.success(result.data?.message || 'Setting updated')
+                                } else if (result.type === 'failure') {
+                                    toast.error(result.data?.error || 'Something went wrong')
+                                    doclingEnabled = data.doclingEnabled
                                 }
-                            }}>
-                            <input
-                                type="hidden"
-                                name="enabled"
-                                value={doclingEnabled ? 'true' : 'false'} />
-                        </form>
+                            }
+                        }}>
                         <Switch
+                            name="enabled"
+                            value="true"
                             checked={doclingEnabled}
                             disabled={isSubmitting}
-                            onCheckedChange={handleDoclingSwitch}
+                            onCheckedChange={(checked) => {
+                                doclingEnabled = checked
+                                formRef?.requestSubmit()
+                            }}
                             class="cursor-pointer" />
-                    </div>
+                    </form>
                 </Card.Action>
             </Card.Header>
             <Card.Content>

@@ -35,7 +35,7 @@ export const actions: Actions = {
         requireAdmin(locals)
 
         const formData = await request.formData()
-        const enabled = formData.get('enabled') === 'true'
+        const enabled = formData.has('enabled')
 
         try {
             await SystemSettings.setDoclingEnabled(enabled)
