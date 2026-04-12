@@ -1,6 +1,7 @@
 """Document to Markdown conversion service using Docling."""
 
 import asyncio
+import gc
 import io
 import logging
 import os
@@ -59,9 +60,9 @@ QUALITY_PRESETS: dict[str, dict] = {
     },
 }
 
-# One converter pool per preset, built lazily on first use.
-_converter_pools: dict[str, asyncio.Queue[DocumentConverter]] = {}
-_pool_locks: dict[str, asyncio.Lock] = {p: asyncio.Lock() for p in QUALITY_PRESETS}
+# Semaphore to limit concurrent conversions (replaces converter pool).
+# A fresh converter is built per job and destroyed after to avoid memory accumulation.
+_semaphore: asyncio.Semaphore  # created in lifespan
 
 
 class _SuppressFilter(logging.Filter):
@@ -167,58 +168,50 @@ def _active_job_count() -> int:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start converter init in the background so the HTTP server becomes
-    # responsive immediately. /health returns {"status": "starting"} and
-    # /convert returns 503 until init completes.
-    asyncio.create_task(_init_converters())
+    global _semaphore
+    _semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
+    # Start init in the background so the HTTP server becomes responsive
+    # immediately. /health returns {"status": "starting"} and /convert
+    # returns 503 until init completes.
+    asyncio.create_task(_init())
     asyncio.create_task(_cleanup_loop())
     yield
 
 
-async def _init_converters() -> None:
+async def _init() -> None:
     global _ready
     try:
         logger.info("Downloading models ...")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _download_models)
+        # Warm up: build and immediately discard one converter so all model
+        # weights are loaded into the HF cache and first real job is fast.
+        await loop.run_in_executor(None, _build_converter, "balanced")
         os.environ["HF_HUB_OFFLINE"] = "1"
         _ready = True
-        logger.info("Ready — models downloaded, converter pools created on demand.")
-    except Exception:
-        logger.exception(
-            "Failed to initialise converter(s). Service will remain unavailable."
-        )
-
-
-async def _get_pool(preset: str) -> asyncio.Queue[DocumentConverter]:
-    """Get or lazily create the converter pool for the given preset."""
-    if preset in _converter_pools:
-        return _converter_pools[preset]
-
-    async with _pool_locks[preset]:
-        # Double-check after acquiring lock
-        if preset in _converter_pools:
-            return _converter_pools[preset]
-
         logger.info(
-            "Building %d converter(s) for preset '%s' ...", _MAX_CONCURRENT, preset
+            "Ready — models cached, max %d concurrent conversion(s).", _MAX_CONCURRENT
         )
-        loop = asyncio.get_running_loop()
-        pool: asyncio.Queue[DocumentConverter] = asyncio.Queue(maxsize=_MAX_CONCURRENT)
-        for i in range(_MAX_CONCURRENT):
-            converter = await loop.run_in_executor(None, _build_converter, preset)
-            pool.put_nowait(converter)
-            logger.info("Converter [%s] %d/%d ready.", preset, i + 1, _MAX_CONCURRENT)
-        _converter_pools[preset] = pool
-        return pool
+    except Exception:
+        logger.exception("Failed to initialise. Service will remain unavailable.")
 
 
 async def _cleanup_loop() -> None:
-    """Hourly sweep: delete jobs older than 1 day regardless of status."""
+    """Periodic sweep: remove finished jobs after 10 minutes, any job after 1 day."""
     while True:
-        await asyncio.sleep(3600)
-        cutoff = datetime.now(timezone.utc) - timedelta(days=1)
-        stale = [jid for jid, j in _jobs.items() if j.created_at < cutoff]
+        await asyncio.sleep(60)
+        now = datetime.now(timezone.utc)
+        finished_cutoff = now - timedelta(minutes=10)
+        absolute_cutoff = now - timedelta(days=1)
+        stale = [
+            jid
+            for jid, j in _jobs.items()
+            if j.created_at < absolute_cutoff
+            or (
+                j.status in (JobStatus.COMPLETED, JobStatus.FAILED)
+                and j.created_at < finished_cutoff
+            )
+        ]
         for jid in stale:
             del _jobs[jid]
         if stale:
@@ -226,9 +219,10 @@ async def _cleanup_loop() -> None:
 
 
 async def _run_job(job: Job, data: bytes, filename: str) -> None:
-    """Background task: lease a converter from the pool, run conversion, return it."""
-    pool = await _get_pool(job.preset)
-    converter = await pool.get()
+    """Background task: build a fresh converter, run conversion, destroy everything."""
+    await _semaphore.acquire()
+    result = None
+    converter = None
     try:
         job.status = JobStatus.RUNNING
         logger.info(
@@ -239,11 +233,13 @@ async def _run_job(job: Job, data: bytes, filename: str) -> None:
             job.preset,
         )
         t0 = time.monotonic()
-        stream = DocumentStream(name=filename, stream=io.BytesIO(data))
+        loop = asyncio.get_running_loop()
+        converter = await loop.run_in_executor(None, _build_converter, job.preset)
+        buf = io.BytesIO(data)
+        del data
+        stream = DocumentStream(name=filename, stream=buf)
         try:
-            result = await asyncio.get_running_loop().run_in_executor(
-                None, lambda: converter.convert(stream)
-            )
+            result = await loop.run_in_executor(None, lambda: converter.convert(stream))
         except Exception as exc:
             elapsed = time.monotonic() - t0
             job.status = JobStatus.FAILED
@@ -262,11 +258,10 @@ async def _run_job(job: Job, data: bytes, filename: str) -> None:
                 exc_info=True,
             )
             return
-    finally:
-        pool.put_nowait(converter)
+        finally:
+            buf.close()
 
-    elapsed = time.monotonic() - t0
-    try:
+        elapsed = time.monotonic() - t0
         if result.status not in (
             ConversionStatus.SUCCESS,
             ConversionStatus.PARTIAL_SUCCESS,
@@ -281,15 +276,14 @@ async def _run_job(job: Job, data: bytes, filename: str) -> None:
             "Job %s: completed in %.1fs (%d chars).", job.id, elapsed, len(job.markdown)
         )
     except Exception as exc:
-        job.status = JobStatus.FAILED
-        job.detail = f"Post-processing error: {exc}"
-        logger.error(
-            "Job %s: failed after %.1fs — %s",
-            job.id,
-            elapsed,
-            job.detail,
-            exc_info=True,
-        )
+        if job.status not in (JobStatus.COMPLETED, JobStatus.FAILED):
+            job.status = JobStatus.FAILED
+            job.detail = f"Unexpected error: {exc}"
+            logger.error("Job %s: failed — %s", job.id, job.detail, exc_info=True)
+    finally:
+        del result, converter
+        gc.collect()
+        _semaphore.release()
 
 
 app = FastAPI(title="docling", version="1.0.0", lifespan=lifespan)
