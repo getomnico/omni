@@ -157,7 +157,6 @@
                                 }
                             }
                         }}>
-                        <input type="hidden" name="preset" value={qualityPreset} />
                         <RadioGroup.Root
                             bind:value={qualityPreset}
                             disabled={isPresetSubmitting}

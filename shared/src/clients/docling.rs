@@ -192,7 +192,8 @@ impl DoclingClient {
 
         let response = self
             .client
-            .post(format!("{}/convert?preset={}", self.base_url, preset))
+            .post(format!("{}/convert", self.base_url))
+            .query(&[("preset", preset)])
             .multipart(form)
             .send()
             .await
