@@ -3,11 +3,27 @@
 //! The Docling service converts documents to Markdown using AI-based extraction.
 //! It provides superior PDF extraction, OCR support, and structure-aware output.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Context};
 use reqwest::{multipart, Client};
 use serde::Deserialize;
 use std::time::Duration;
 use tracing::{debug, error};
+
+/// Errors from the Docling document conversion service.
+#[derive(Debug, thiserror::Error)]
+pub enum DoclingError {
+    #[error("Docling service is overloaded, retry after {retry_after_secs}s")]
+    ServiceOverloaded { retry_after_secs: u64 },
+
+    #[error("Docling service is starting up")]
+    ServiceStarting,
+
+    #[error("Docling conversion failed: {0}")]
+    ConversionFailed(String),
+
+    #[error("{0}")]
+    Other(#[from] anyhow::Error),
+}
 
 /// Default timeout for polling a conversion job, which can take a very long time with Docling
 const DEFAULT_TIMEOUT: Duration = Duration::from_mins(120);
@@ -56,7 +72,7 @@ pub struct DoclingClient {
 impl DoclingClient {
     /// Create a new Docling client with the given base URL.
     pub fn new(base_url: impl Into<String>) -> Self {
-            let url = base_url.into();
+        let url = base_url.into();
         Self {
             client: Client::new(),
             base_url: url.trim_end_matches('/').to_string(),
@@ -77,7 +93,7 @@ impl DoclingClient {
     }
 
     /// Check if the Docling service is healthy and ready.
-    pub async fn health_check(&self) -> Result<bool> {
+    pub async fn health_check(&self) -> anyhow::Result<bool> {
         let response = self
             .client
             .get(format!("{}/health", self.base_url))
@@ -107,22 +123,28 @@ impl DoclingClient {
     /// # Arguments
     /// * `data` - The raw document bytes
     /// * `filename` - The filename (used for format detection via extension)
+    /// * `preset` - Quality preset: "fast", "balanced", or "quality"
     ///
     /// # Returns
     /// The extracted Markdown text, or an error if conversion fails.
-    pub async fn convert(&self, data: &[u8], filename: &str) -> Result<String> {
+    pub async fn convert(
+        &self,
+        data: &[u8],
+        filename: &str,
+        preset: &str,
+    ) -> Result<String, DoclingError> {
         // Submit the conversion job
-        let job_id = self.submit(data, filename).await?;
+        let job_id = self.submit(data, filename, preset).await?;
         debug!("Docling conversion job submitted: {}", job_id);
 
         // Poll for completion
         let start = std::time::Instant::now();
         loop {
             if start.elapsed() > self.timeout {
-                return Err(anyhow!(
+                return Err(DoclingError::Other(anyhow!(
                     "Docling conversion timed out after {:?}",
                     self.timeout
-                ));
+                )));
             }
 
             let job = self.get_job(&job_id).await?;
@@ -130,7 +152,9 @@ impl DoclingClient {
             match job.status {
                 JobStatus::Completed => {
                     let markdown = job.markdown.ok_or_else(|| {
-                        anyhow!("Docling returned completed status but no markdown")
+                        DoclingError::Other(anyhow!(
+                            "Docling returned completed status but no markdown"
+                        ))
                     })?;
                     debug!(
                         "Docling conversion completed: {} chars in {:?}",
@@ -142,7 +166,7 @@ impl DoclingClient {
                 JobStatus::Failed => {
                     let detail = job.detail.unwrap_or_else(|| "Unknown error".to_string());
                     error!("Docling conversion failed: {}", detail);
-                    return Err(anyhow!("Docling conversion failed: {}", detail));
+                    return Err(DoclingError::ConversionFailed(detail));
                 }
                 JobStatus::Pending | JobStatus::Running => {
                     tokio::time::sleep(POLL_INTERVAL).await;
@@ -153,35 +177,52 @@ impl DoclingClient {
 
     /// Submit a document for conversion.
     /// Returns the job ID immediately.
-    async fn submit(&self, data: &[u8], filename: &str) -> Result<String> {
+    async fn submit(
+        &self,
+        data: &[u8],
+        filename: &str,
+        preset: &str,
+    ) -> Result<String, DoclingError> {
         let part = multipart::Part::bytes(data.to_vec())
             .file_name(filename.to_string())
-            .mime_str("application/octet-stream")?;
+            .mime_str("application/octet-stream")
+            .context("Failed to build multipart request")?;
 
         let form = multipart::Form::new().part("file", part);
 
         let response = self
             .client
             .post(format!("{}/convert", self.base_url))
+            .query(&[("preset", preset)])
             .multipart(form)
             .send()
             .await
             .context("Failed to submit document to Docling")?;
 
+        if response.status().as_u16() == 429 {
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(30);
+            return Err(DoclingError::ServiceOverloaded {
+                retry_after_secs: retry_after,
+            });
+        }
+
         if response.status().as_u16() == 503 {
-            return Err(anyhow!(
-                "Docling service is starting up, models are being loaded. Try again shortly."
-            ));
+            return Err(DoclingError::ServiceStarting);
         }
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!(
+            return Err(DoclingError::Other(anyhow!(
                 "Docling conversion submission failed: {} - {}",
                 status,
                 body
-            ));
+            )));
         }
 
         let submit_response: SubmitResponse = response
@@ -193,7 +234,7 @@ impl DoclingClient {
     }
 
     /// Get the status of a conversion job.
-    async fn get_job(&self, job_id: &str) -> Result<JobResponse> {
+    async fn get_job(&self, job_id: &str) -> Result<JobResponse, DoclingError> {
         let response = self
             .client
             .get(format!("{}/jobs/{}", self.base_url, job_id))
@@ -202,17 +243,20 @@ impl DoclingClient {
             .context("Failed to poll Docling job")?;
 
         if response.status().as_u16() == 404 {
-            return Err(anyhow!("Docling job not found: {}", job_id));
+            return Err(DoclingError::Other(anyhow!(
+                "Docling job not found: {}",
+                job_id
+            )));
         }
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!(
+            return Err(DoclingError::Other(anyhow!(
                 "Failed to get Docling job status: {} - {}",
                 status,
                 body
-            ));
+            )));
         }
 
         let job: JobResponse = response

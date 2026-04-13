@@ -6,7 +6,7 @@ import httpx
 
 from pydantic import ValidationError
 
-from .exceptions import SdkClientError
+from .exceptions import SdkClientError, ServiceOverloadedError
 from .models import ConnectorEvent, SdkSourceSyncData
 
 logger = logging.getLogger(__name__)
@@ -117,6 +117,13 @@ class SdkClient:
             files=files,
         )
 
+        if response.status_code == 429:
+            retry_after = int(response.headers.get("retry-after", "30"))
+            raise ServiceOverloadedError(
+                f"Extraction service overloaded: {response.text}",
+                retry_after=retry_after,
+            )
+
         if not response.is_success:
             raise SdkClientError(
                 f"Failed to extract content: {response.status_code} - {response.text}"
@@ -161,6 +168,13 @@ class SdkClient:
             data=form_data,
             files=files,
         )
+
+        if response.status_code == 429:
+            retry_after = int(response.headers.get("retry-after", "30"))
+            raise ServiceOverloadedError(
+                f"Extraction service overloaded: {response.text}",
+                retry_after=retry_after,
+            )
 
         if not response.is_success:
             raise SdkClientError(

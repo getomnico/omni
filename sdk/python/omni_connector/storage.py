@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import logging
 from typing import TYPE_CHECKING
@@ -5,7 +6,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .client import SdkClient
 
+from .exceptions import ServiceOverloadedError
+
 logger = logging.getLogger(__name__)
+
+_MAX_RETRIES = 5
 
 
 class ContentStorage:
@@ -39,13 +44,29 @@ class ContentStorage:
         """Extract text from binary file content and store it, returning content_id.
 
         The connector manager handles extraction based on MIME type.
+        Retries with exponential backoff when the extraction service is overloaded.
         """
-        return await self._client.extract_and_store_content(
-            self._sync_run_id,
-            data,
-            mime_type,
-            filename,
-        )
+        for attempt in range(_MAX_RETRIES):
+            try:
+                return await self._client.extract_and_store_content(
+                    self._sync_run_id,
+                    data,
+                    mime_type,
+                    filename,
+                )
+            except ServiceOverloadedError as e:
+                if attempt == _MAX_RETRIES - 1:
+                    raise
+                wait = e.retry_after * (1.5**attempt)
+                logger.warning(
+                    "Extraction service overloaded for file %s, retrying in %.0fs (%d/%d)",
+                    filename,
+                    wait,
+                    attempt + 1,
+                    _MAX_RETRIES,
+                )
+                await asyncio.sleep(wait)
+        raise RuntimeError("unreachable")
 
     async def extract_text(
         self,
@@ -56,13 +77,29 @@ class ContentStorage:
         """Extract text from binary file content without storing.
 
         Use when you need to post-process or combine text before storing.
+        Retries with exponential backoff when the extraction service is overloaded.
         """
-        return await self._client.extract_text(
-            self._sync_run_id,
-            data,
-            mime_type,
-            filename,
-        )
+        for attempt in range(_MAX_RETRIES):
+            try:
+                return await self._client.extract_text(
+                    self._sync_run_id,
+                    data,
+                    mime_type,
+                    filename,
+                )
+            except ServiceOverloadedError as e:
+                if attempt == _MAX_RETRIES - 1:
+                    raise
+                wait = e.retry_after * (1.5**attempt)
+                logger.warning(
+                    "Extraction service overloaded for file %s, retrying in %.0fs (%d/%d)",
+                    filename,
+                    wait,
+                    attempt + 1,
+                    _MAX_RETRIES,
+                )
+                await asyncio.sleep(wait)
+        raise RuntimeError("unreachable")
 
     async def save_binary(
         self,

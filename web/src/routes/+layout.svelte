@@ -5,5 +5,5 @@
     let { children } = $props()
 </script>
 
-<Toaster />
+<Toaster position="top-right" />
 {@render children()}
