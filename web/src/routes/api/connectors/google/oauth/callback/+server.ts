@@ -1,12 +1,12 @@
 import { redirect, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
 import { GoogleConnectorOAuthService } from '$lib/server/oauth/googleConnector'
-import { env } from '$env/dynamic/private'
 import { logger } from '$lib/server/logger'
 import { db } from '$lib/server/db'
-import { sources } from '$lib/server/db/schema'
+import { sources, serviceCredentials } from '$lib/server/db/schema'
 import { and, eq } from 'drizzle-orm'
 import { ulid } from 'ulid'
+import { encryptConfig } from '$lib/server/crypto/encryption'
 
 const SOURCE_NAMES: Record<string, string> = {
     google_drive: 'Google Drive (OAuth)',
@@ -91,28 +91,19 @@ export const GET: RequestHandler = async ({ url, locals, fetch: svelteFetch }) =
                 })
                 .returning()
 
-            // Store credentials via indexer
-            const indexerResponse = await svelteFetch(`${env.INDEXER_URL}/service-credentials`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    source_id: newSource.id,
-                    provider: 'google',
-                    auth_type: 'oauth',
-                    principal_email: userEmail,
-                    credentials,
-                    config: {},
-                }),
+            // Store credentials directly in DB (bypasses admin-only API)
+            await db.delete(serviceCredentials).where(eq(serviceCredentials.sourceId, newSource.id))
+            await db.insert(serviceCredentials).values({
+                id: ulid(),
+                sourceId: newSource.id,
+                provider: 'google',
+                authType: 'oauth',
+                principalEmail: userEmail,
+                credentials: encryptConfig(credentials),
+                config: {},
             })
 
-            if (!indexerResponse.ok) {
-                const errorText = await indexerResponse.text()
-                logger.error(
-                    `Failed to store OAuth credentials for source ${newSource.id}:`,
-                    errorText,
-                )
-                throw new Error(`Failed to store credentials for ${serviceType}`)
-            }
+            logger.info(`Stored OAuth credentials for source ${newSource.id} (${serviceType})`)
 
             // Trigger initial sync
             try {

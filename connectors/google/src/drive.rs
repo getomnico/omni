@@ -103,7 +103,7 @@ impl DriveClient {
 
             let mut params = vec![
                 ("pageSize", "100"),
-                ("fields", "nextPageToken,files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,permissions(id,type,emailAddress,role))"),
+                ("fields", "nextPageToken,files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,permissions(id,type,emailAddress,role),owners(emailAddress))"),
                 ("q", query.as_str()),
                 ("orderBy", "modifiedTime desc"),
                 ("includeItemsFromAllDrives", "true"),
@@ -787,7 +787,7 @@ impl DriveClient {
             ("includeItemsFromAllDrives", "true"),
             ("supportsAllDrives", "true"),
             ("includeRemoved", "true"),
-            ("fields", "nextPageToken,changes(changeType,removed,file(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,permissions(id,type,emailAddress,role)),fileId,time)"),
+            ("fields", "nextPageToken,changes(changeType,removed,file(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,permissions(id,type,emailAddress,role),owners(emailAddress)),fileId,time)"),
         ];
 
         let response = self

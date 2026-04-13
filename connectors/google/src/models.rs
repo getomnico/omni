@@ -45,7 +45,7 @@ pub struct GoogleDriveFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Owner {
-    pub id: String,
+    pub id: Option<String>,
     #[serde(rename = "emailAddress")]
     pub email_address: Option<String>,
     #[serde(rename = "displayName")]
@@ -128,6 +128,7 @@ impl GoogleDriveFile {
         source_id: &str,
         content_id: &str,
         path: Option<String>,
+        oauth_user_email: Option<&str>,
     ) -> ConnectorEvent {
         let mut is_public = false;
         let mut users = Vec::new();
@@ -156,6 +157,25 @@ impl GoogleDriveFile {
                     }
                     _ => {}
                 }
+            }
+        }
+
+        // Owner access is implicit in personal Drive and not listed in permissions
+        if let Some(owners) = &self.owners {
+            for owner in owners {
+                if let Some(email) = &owner.email_address {
+                    if !users.contains(email) {
+                        users.push(email.clone());
+                    }
+                }
+            }
+        }
+
+        // Viewers can't see the permissions array, but presence in Drive listing implies access
+        if let Some(email) = oauth_user_email {
+            let email = email.to_string();
+            if !users.contains(&email) {
+                users.push(email);
             }
         }
 
@@ -733,7 +753,7 @@ mod tests {
             owners: None,
         };
 
-        let event = file.to_connector_event("sync123", "source456", "content789", None);
+        let event = file.to_connector_event("sync123", "source456", "content789", None, None);
 
         match event {
             ConnectorEvent::DocumentCreated {
@@ -907,7 +927,7 @@ mod tests {
             owners: None,
         };
 
-        let event = file.to_connector_event("sync1", "source1", "content1", None);
+        let event = file.to_connector_event("sync1", "source1", "content1", None, None);
 
         match event {
             ConnectorEvent::DocumentCreated { permissions, .. } => {
@@ -960,7 +980,7 @@ mod tests {
             owners: None,
         };
 
-        let event = file.to_connector_event("sync1", "source1", "content1", None);
+        let event = file.to_connector_event("sync1", "source1", "content1", None, None);
         match event {
             ConnectorEvent::DocumentCreated { permissions, .. } => {
                 assert!(permissions.public);
@@ -995,6 +1015,7 @@ mod tests {
             "source1",
             "content1",
             Some("/Documents/Reports/report.pdf".to_string()),
+            None,
         );
 
         match event {
@@ -1003,6 +1024,118 @@ mod tests {
                     metadata.path,
                     Some("/Documents/Reports/report.pdf".to_string())
                 );
+            }
+            _ => panic!("Expected DocumentCreated event"),
+        }
+    }
+
+    #[test]
+    fn test_drive_file_owner_added_from_owners_array() {
+        // Personal Drive files have empty permissions array; owner is implicit via owners field
+        let file = GoogleDriveFile {
+            id: "file1".to_string(),
+            name: "doc.txt".to_string(),
+            mime_type: "text/plain".to_string(),
+            web_view_link: None,
+            created_time: None,
+            modified_time: None,
+            size: None,
+            parents: None,
+            shared: None,
+            permissions: Some(vec![]),
+            owners: Some(vec![Owner {
+                id: None,
+                email_address: Some("owner@example.com".to_string()),
+                display_name: None,
+            }]),
+        };
+
+        let event = file.to_connector_event("sync1", "source1", "content1", None, None);
+        match event {
+            ConnectorEvent::DocumentCreated { permissions, .. } => {
+                assert_eq!(permissions.users, vec!["owner@example.com".to_string()]);
+                assert!(!permissions.public);
+            }
+            _ => panic!("Expected DocumentCreated event"),
+        }
+    }
+
+    #[test]
+    fn test_drive_file_oauth_viewer_added_to_permissions() {
+        // Viewer syncing a shared file: permissions array is empty (non-owners can't read it),
+        // but the syncing user must be included since the file appeared in their listing
+        let file = GoogleDriveFile {
+            id: "file1".to_string(),
+            name: "doc.txt".to_string(),
+            mime_type: "text/plain".to_string(),
+            web_view_link: None,
+            created_time: None,
+            modified_time: None,
+            size: None,
+            parents: None,
+            shared: Some(true),
+            permissions: Some(vec![]),
+            owners: Some(vec![Owner {
+                id: None,
+                email_address: Some("owner@example.com".to_string()),
+                display_name: None,
+            }]),
+        };
+
+        let event = file.to_connector_event(
+            "sync1",
+            "source1",
+            "content1",
+            None,
+            Some("viewer@example.com"),
+        );
+        match event {
+            ConnectorEvent::DocumentCreated { permissions, .. } => {
+                assert!(permissions.users.contains(&"owner@example.com".to_string()));
+                assert!(permissions.users.contains(&"viewer@example.com".to_string()));
+                assert_eq!(permissions.users.len(), 2);
+            }
+            _ => panic!("Expected DocumentCreated event"),
+        }
+    }
+
+    #[test]
+    fn test_drive_file_oauth_user_not_duplicated_if_already_in_permissions() {
+        // If the OAuth user is already in the permissions array (e.g. they are the owner),
+        // they should not appear twice
+        let file = GoogleDriveFile {
+            id: "file1".to_string(),
+            name: "doc.txt".to_string(),
+            mime_type: "text/plain".to_string(),
+            web_view_link: None,
+            created_time: None,
+            modified_time: None,
+            size: None,
+            parents: None,
+            shared: None,
+            permissions: Some(vec![Permission {
+                id: "perm1".to_string(),
+                permission_type: "user".to_string(),
+                email_address: Some("owner@example.com".to_string()),
+                role: "owner".to_string(),
+            }]),
+            owners: Some(vec![Owner {
+                id: None,
+                email_address: Some("owner@example.com".to_string()),
+                display_name: None,
+            }]),
+        };
+
+        let event = file.to_connector_event(
+            "sync1",
+            "source1",
+            "content1",
+            None,
+            Some("owner@example.com"),
+        );
+        match event {
+            ConnectorEvent::DocumentCreated { permissions, .. } => {
+                assert_eq!(permissions.users, vec!["owner@example.com".to_string()]);
             }
             _ => panic!("Expected DocumentCreated event"),
         }

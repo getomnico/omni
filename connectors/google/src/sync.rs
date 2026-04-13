@@ -743,6 +743,7 @@ impl SyncManager {
                                     &source_id,
                                     &content_id,
                                     file_path,
+                                    Some(&user_file.user_email),
                                 );
 
                                 match sdk_client.emit_event(&sync_run_id, &source_id, event).await {
