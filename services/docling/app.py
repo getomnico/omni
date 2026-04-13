@@ -7,12 +7,13 @@ import logging
 import os
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Literal
 
+import pypdfium2 as pdfium
 import uvicorn
 from docling.datamodel.accelerator_options import AcceleratorOptions
 from docling.datamodel.base_models import ConversionStatus, InputFormat
@@ -31,40 +32,39 @@ logger = logging.getLogger(__name__)
 
 _MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_CONVERSIONS", "1"))
 _MAX_PENDING = int(os.getenv("MAX_PENDING_JOBS", str(_MAX_CONCURRENT * 2)))
-_PAGES_PER_CHUNK = int(os.getenv("PAGES_PER_CHUNK", "5"))
-_ready: bool = False
+_PAGES_PER_CHUNK = int(os.getenv("PAGES_PER_CHUNK", "10"))
+_MAX_JOB_SECONDS = int(os.getenv("MAX_JOB_SECONDS", "1800"))
+_CONVERTER_RECYCLE_AFTER = int(os.getenv("CONVERTER_RECYCLE_AFTER", "20"))
 
-PresetName = Literal["fast", "balanced", "quality"]
-VALID_PRESETS: set[str] = {"fast", "balanced", "quality"}
+VALID_PRESETS: frozenset[str] = frozenset({"fast", "balanced", "quality"})
 
+# Preset pipeline options. Heavy/unused options stay off everywhere:
+# picture/table image generation (we only emit markdown), picture
+# classification (not reflected in markdown), picture description (VLM),
+# chart extraction (large model, narrow benefit).
 QUALITY_PRESETS: dict[str, dict] = {
     "fast": {
+        "do_ocr": False,
         "table_structure_mode": TableFormerMode.FAST,
         "images_scale": 1.0,
-        "do_picture_classification": False,
-        "generate_picture_images": False,
-        "generate_table_images": False,
+        "do_code_enrichment": False,
+        "do_formula_enrichment": False,
     },
     "balanced": {
+        "do_ocr": False,
         "table_structure_mode": TableFormerMode.ACCURATE,
         "images_scale": 1.0,
-        "do_picture_classification": True,
-        "generate_picture_images": False,
-        "generate_table_images": False,
+        "do_code_enrichment": False,
+        "do_formula_enrichment": False,
     },
     "quality": {
+        "do_ocr": True,
         "table_structure_mode": TableFormerMode.ACCURATE,
         "images_scale": 1.5,
-        "do_picture_classification": True,
-        "generate_picture_images": True,
-        "generate_table_images": True,
+        "do_code_enrichment": True,
+        "do_formula_enrichment": True,
     },
 }
-
-# One converter per preset (reused across jobs to avoid re-loading ML models).
-# Concurrency is controlled by a semaphore; chunked conversion caps per-job memory.
-_converters: dict[str, DocumentConverter] = {}
-_semaphore: asyncio.Semaphore  # created in lifespan
 
 
 class _SuppressFilter(logging.Filter):
@@ -80,64 +80,94 @@ class _SuppressFilter(logging.Filter):
 
 
 def _apply_rapidocr_suppression() -> None:
-    """Must be called after DocumentConverter init has triggered the rapidocr import."""
     for name in ("RapidOCR", "docling.models.stages.ocr.rapid_ocr_model"):
         lg = logging.getLogger(name)
         lg.setLevel(logging.ERROR)
-        f = _SuppressFilter()
         if not any(isinstance(x, _SuppressFilter) for x in lg.filters):
-            lg.addFilter(f)
+            lg.addFilter(_SuppressFilter())
         for handler in lg.handlers:
             if not any(isinstance(x, _SuppressFilter) for x in handler.filters):
-                handler.addFilter(f)
+                handler.addFilter(_SuppressFilter())
 
 
-def _build_converter(preset: str = "balanced") -> DocumentConverter:
-    """Build a DocumentConverter with pipeline options from the given quality preset."""
+def _build_converter(preset: str) -> DocumentConverter:
     opts = QUALITY_PRESETS[preset]
-    accelerator_options = AcceleratorOptions()
     pipeline_options = PdfPipelineOptions()
-    pipeline_options.accelerator_options = accelerator_options
+    pipeline_options.accelerator_options = AcceleratorOptions()
+    # Docling's cooperative timeout: on expiry it stops feeding pages and
+    # returns PARTIAL_SUCCESS — no zombie threads, no process kill needed.
+    pipeline_options.document_timeout = float(_MAX_JOB_SECONDS)
     pipeline_options.do_table_structure = True
     pipeline_options.table_structure_options.mode = opts["table_structure_mode"]
-    pipeline_options.do_ocr = True
-    pipeline_options.ocr_options = RapidOcrOptions(backend="torch")
+    pipeline_options.do_ocr = opts["do_ocr"]
+    if opts["do_ocr"]:
+        pipeline_options.ocr_options = RapidOcrOptions(backend="torch")
     pipeline_options.images_scale = opts["images_scale"]
-    pipeline_options.generate_picture_images = opts["generate_picture_images"]
-    pipeline_options.generate_table_images = opts["generate_table_images"]
-    pipeline_options.do_code_enrichment = False
-    pipeline_options.do_formula_enrichment = False
-    pipeline_options.do_picture_classification = opts["do_picture_classification"]
+    pipeline_options.generate_picture_images = False
+    pipeline_options.generate_table_images = False
+    pipeline_options.do_picture_classification = False
     pipeline_options.do_picture_description = False
     pipeline_options.do_chart_extraction = False
+    pipeline_options.do_code_enrichment = opts["do_code_enrichment"]
+    pipeline_options.do_formula_enrichment = opts["do_formula_enrichment"]
     converter = DocumentConverter(
         format_options={
             InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
         }
     )
-    _apply_rapidocr_suppression()
+    if opts["do_ocr"]:
+        _apply_rapidocr_suppression()
     return converter
 
 
-def _get_pdf_page_count(data: bytes) -> int | None:
-    """Return the page count for a PDF, or None if not a PDF."""
-    try:
-        import pypdfium2 as pdfium
+@dataclass
+class PresetConverter:
+    """Shared converter for a preset with a lock (serializes concurrent use
+    when _MAX_CONCURRENT > 1) and a job counter driving periodic recycling
+    to reclaim ONNX/torch residual memory."""
 
-        pdf = pdfium.PdfDocument(data)
-        count = len(pdf)
-        pdf.close()
-        return count
-    except Exception:
-        return None
+    preset: str
+    converter: DocumentConverter
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    job_count: int = 0
+
+    async def maybe_recycle(self) -> None:
+        if _CONVERTER_RECYCLE_AFTER <= 0 or self.job_count < _CONVERTER_RECYCLE_AFTER:
+            return
+        logger.info(
+            "Recycling converter [%s] after %d jobs.", self.preset, self.job_count
+        )
+        loop = asyncio.get_running_loop()
+        # Build the replacement off the event loop and off the conversion
+        # pool so we don't starve other work.
+        new_converter = await loop.run_in_executor(
+            _build_executor, _build_converter, self.preset
+        )
+        old = self.converter
+        self.converter = new_converter
+        self.job_count = 0
+        del old
+        gc.collect()
+
+
+_converters: dict[str, PresetConverter] = {}
+_failed_presets: set[str] = set()
+_semaphore: asyncio.Semaphore  # created in lifespan
+_ready: bool = False
+
+# Dedicated fixed-size pool for conversions — exactly _MAX_CONCURRENT workers,
+# so we don't rely on asyncio's default executor (sized to min(32, cpu+4)).
+# Separate tiny pool for converter builds (init + recycling) so recycling
+# never competes with in-flight conversions for a worker thread.
+_conversion_executor: ThreadPoolExecutor  # created in lifespan
+_build_executor: ThreadPoolExecutor  # created in lifespan
 
 
 def _cleanup_result(result: object) -> None:
-    """Release backend resources held by a ConversionResult to prevent memory leaks.
+    """Release backend resources held by a ConversionResult.
 
     Docling backends (pypdfium2, docling-parse) retain parsed page data and
-    PDF objects in memory until explicitly unloaded. Without this call, memory
-    accumulates across conversions even after del + gc.collect().
+    PDF objects in memory until explicitly unloaded.
     See: https://github.com/docling-project/docling/issues/2209
     """
     try:
@@ -158,21 +188,51 @@ def _cleanup_result(result: object) -> None:
         gc.collect()
 
 
-def _convert_document(
-    converter: DocumentConverter,
-    data: bytes,
-    filename: str,
-) -> str:
-    """Convert a document to markdown, processing PDFs in page chunks to cap memory.
+def _split_pdf(data: bytes, chunk_size: int) -> list[bytes] | None:
+    """Split PDF bytes into per-chunk PDF byte buffers using pypdfium2.
 
-    Non-PDF formats are converted in a single pass. PDFs are split into chunks
-    of _PAGES_PER_CHUNK pages; each chunk is converted independently and the
-    resulting markdown fragments are concatenated.
+    Returns None if the input is not a PDF. Each chunk is a standalone PDF
+    containing at most `chunk_size` pages, so downstream conversion avoids
+    re-parsing the full file for every chunk.
     """
-    page_count = _get_pdf_page_count(data)
+    try:
+        src = pdfium.PdfDocument(data)
+    except Exception:
+        return None
+    try:
+        page_count = len(src)
+        if page_count <= chunk_size:
+            return [data]
+        chunks: list[bytes] = []
+        for start in range(0, page_count, chunk_size):
+            end = min(start + chunk_size, page_count)
+            dst = pdfium.PdfDocument.new()
+            try:
+                dst.import_pages(src, list(range(start, end)))
+                buf = io.BytesIO()
+                dst.save(buf)
+                chunks.append(buf.getvalue())
+            finally:
+                dst.close()
+        return chunks
+    finally:
+        src.close()
 
-    # Non-PDF or small PDF: single-pass conversion
-    if page_count is None or page_count <= _PAGES_PER_CHUNK:
+
+def _convert_document(converter: DocumentConverter, data: bytes, filename: str) -> str:
+    """Convert a document to markdown. PDFs are split into page chunks up
+    front so each chunk is a small standalone PDF (bounded peak memory, no
+    repeated full-file parses).
+
+    Enforces a whole-job wall-clock deadline across chunks: once exceeded,
+    the loop stops and returns whatever markdown was already produced. The
+    docling-internal `document_timeout` provides per-chunk cooperative
+    cancellation within this budget.
+    """
+    chunks = _split_pdf(data, _PAGES_PER_CHUNK)
+
+    # Non-PDF: single-pass conversion.
+    if chunks is None:
         stream = DocumentStream(name=filename, stream=io.BytesIO(data))
         result = converter.convert(stream)
         try:
@@ -185,13 +245,18 @@ def _convert_document(
         finally:
             _cleanup_result(result)
 
-    # Large PDF: chunked conversion
     markdown_parts: list[str] = []
-    for start in range(1, page_count + 1, _PAGES_PER_CHUNK):
-        end = min(start + _PAGES_PER_CHUNK - 1, page_count)
-        logger.debug("Processing pages %d–%d of %d", start, end, page_count)
-        stream = DocumentStream(name=filename, stream=io.BytesIO(data))
-        result = converter.convert(stream, page_range=(start, end))
+    total = len(chunks)
+    deadline = time.monotonic() + _MAX_JOB_SECONDS
+    for idx, chunk in enumerate(chunks, start=1):
+        if time.monotonic() >= deadline:
+            logger.warning(
+                "Job deadline reached after chunk %d/%d; stopping.", idx - 1, total
+            )
+            break
+        logger.debug("Processing chunk %d/%d (%d bytes)", idx, total, len(chunk))
+        stream = DocumentStream(name=filename, stream=io.BytesIO(chunk))
+        result = converter.convert(stream)
         try:
             if result.status in (
                 ConversionStatus.SUCCESS,
@@ -199,25 +264,24 @@ def _convert_document(
             ):
                 markdown_parts.append(result.document.export_to_markdown())
             else:
-                logger.warning("Chunk pages %d–%d failed, skipping.", start, end)
+                logger.warning("Chunk %d/%d failed, skipping.", idx, total)
         finally:
             _cleanup_result(result)
 
     if not markdown_parts:
-        raise RuntimeError("All page chunks failed.")
+        raise RuntimeError("All page chunks failed or deadline exceeded.")
     return "\n\n".join(markdown_parts)
 
 
 def _download_models() -> None:
-    """Pre-download all Docling models so the first conversion doesn't stall."""
     from docling.utils.model_downloader import download_models
 
     download_models(
         progress=True,
         with_layout=True,
         with_tableformer=True,
-        with_code_formula=False,
-        with_picture_classifier=True,
+        with_code_formula=True,
+        with_picture_classifier=False,
         with_smolvlm=False,
         with_granitedocling=False,
         with_granitedocling_mlx=False,
@@ -251,7 +315,6 @@ _jobs: dict[str, Job] = {}
 
 
 def _active_job_count() -> int:
-    """Count jobs that are pending or running (holding memory)."""
     return sum(
         1 for j in _jobs.values() if j.status in (JobStatus.PENDING, JobStatus.RUNNING)
     )
@@ -259,14 +322,21 @@ def _active_job_count() -> int:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _semaphore
+    global _semaphore, _conversion_executor, _build_executor
     _semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
-    # Start init in the background so the HTTP server becomes responsive
-    # immediately. /health returns {"status": "starting"} and /convert
-    # returns 503 until init completes.
+    _conversion_executor = ThreadPoolExecutor(
+        max_workers=_MAX_CONCURRENT, thread_name_prefix="docling-convert"
+    )
+    _build_executor = ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="docling-build"
+    )
     asyncio.create_task(_init())
     asyncio.create_task(_cleanup_loop())
-    yield
+    try:
+        yield
+    finally:
+        _conversion_executor.shutdown(wait=False, cancel_futures=True)
+        _build_executor.shutdown(wait=False, cancel_futures=True)
 
 
 async def _init() -> None:
@@ -274,20 +344,31 @@ async def _init() -> None:
     try:
         logger.info("Downloading models ...")
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, _download_models)
+        await loop.run_in_executor(_build_executor, _download_models)
 
-        # Build one converter per preset. The ML models are shared via HF cache
-        # so subsequent converters are fast to construct.
         for preset_name in QUALITY_PRESETS:
-            converter = await loop.run_in_executor(None, _build_converter, preset_name)
-            _converters[preset_name] = converter
-            logger.info("Converter [%s] ready.", preset_name)
+            try:
+                converter = await loop.run_in_executor(
+                    _build_executor, _build_converter, preset_name
+                )
+                _converters[preset_name] = PresetConverter(
+                    preset=preset_name, converter=converter
+                )
+                logger.info("Converter [%s] ready.", preset_name)
+            except Exception:
+                _failed_presets.add(preset_name)
+                logger.exception("Failed to build converter [%s].", preset_name)
+
+        if not _converters:
+            logger.error("No presets initialised; service remains unavailable.")
+            return
 
         os.environ["HF_HUB_OFFLINE"] = "1"
         _ready = True
         logger.info(
-            "Ready — %d preset(s), max %d concurrent conversion(s).",
+            "Ready — %d/%d preset(s), max %d concurrent conversion(s).",
             len(_converters),
+            len(QUALITY_PRESETS),
             _MAX_CONCURRENT,
         )
     except Exception:
@@ -317,7 +398,6 @@ async def _cleanup_loop() -> None:
 
 
 async def _run_job(job: Job, data: bytes, filename: str) -> None:
-    """Background task: use shared converter, chunked conversion to cap memory."""
     await _semaphore.acquire()
     try:
         job.status = JobStatus.RUNNING
@@ -330,29 +410,39 @@ async def _run_job(job: Job, data: bytes, filename: str) -> None:
         )
         t0 = time.monotonic()
         loop = asyncio.get_running_loop()
-        converter = _converters[job.preset]
-        try:
-            markdown = await loop.run_in_executor(
-                None, _convert_document, converter, data, filename
-            )
-        except Exception as exc:
-            elapsed = time.monotonic() - t0
-            job.status = JobStatus.FAILED
-            if (
-                "not supported" in str(exc).lower()
-                or "cannot convert" in str(exc).lower()
-            ):
-                job.detail = f"Unsupported format: {exc}"
-            else:
-                job.detail = f"Conversion error: {exc}"
-            logger.error(
-                "Job %s: failed after %.1fs — %s",
-                job.id,
-                elapsed,
-                job.detail,
-                exc_info=True,
-            )
-            return
+        pc = _converters[job.preset]
+
+        # Whole-job timeout is enforced cooperatively: docling's
+        # `document_timeout` stops feeding pages per chunk, and
+        # `_convert_document` stops iterating chunks once the deadline
+        # passes. No zombie threads, no process kill.
+        async with pc.lock:
+            try:
+                markdown = await loop.run_in_executor(
+                    _conversion_executor,
+                    _convert_document,
+                    pc.converter,
+                    data,
+                    filename,
+                )
+            except Exception as exc:
+                elapsed = time.monotonic() - t0
+                job.status = JobStatus.FAILED
+                msg = str(exc).lower()
+                if "not supported" in msg or "cannot convert" in msg:
+                    job.detail = f"Unsupported format: {exc}"
+                else:
+                    job.detail = f"Conversion error: {exc}"
+                logger.error(
+                    "Job %s: failed after %.1fs — %s",
+                    job.id,
+                    elapsed,
+                    job.detail,
+                    exc_info=True,
+                )
+                return
+            finally:
+                pc.job_count += 1
 
         elapsed = time.monotonic() - t0
         job.markdown = markdown
@@ -369,6 +459,15 @@ async def _run_job(job: Job, data: bytes, filename: str) -> None:
         del data
         gc.collect()
         _semaphore.release()
+        # Recycle outside the per-job critical path so the rebuild doesn't
+        # block this job's response nor stall other work on the event loop.
+        pc = _converters.get(job.preset)
+        if pc is not None and pc.job_count >= _CONVERTER_RECYCLE_AFTER > 0:
+            async with pc.lock:
+                try:
+                    await pc.maybe_recycle()
+                except Exception:
+                    logger.exception("Converter recycle failed for [%s].", job.preset)
 
 
 app = FastAPI(title="docling", version="1.0.0", lifespan=lifespan)
@@ -390,8 +489,11 @@ def queue_status():
 
 @app.get("/presets")
 def list_presets():
-    """Return available quality presets and their configurations."""
-    return {"presets": list(QUALITY_PRESETS.keys())}
+    return {
+        "presets": list(QUALITY_PRESETS.keys()),
+        "available": sorted(_converters.keys()),
+        "unavailable": sorted(_failed_presets),
+    }
 
 
 @app.post("/convert", status_code=202)
@@ -409,6 +511,11 @@ async def submit_conversion(
         raise HTTPException(
             status_code=400,
             detail=f"Invalid preset '{preset}'. Must be one of: {', '.join(sorted(VALID_PRESETS))}",
+        )
+    if preset not in _converters:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Preset '{preset}' failed to initialise and is unavailable.",
         )
     if _active_job_count() >= _MAX_PENDING:
         return JSONResponse(
@@ -439,19 +546,18 @@ async def submit_conversion(
 
 @app.get("/jobs/{job_id}")
 async def get_job(job_id: str):
-    """Poll a conversion job. Returns status and, when complete, the Markdown result."""
+    """Poll a conversion job. Returns status and, when complete, the Markdown result.
+
+    Does NOT delete on read: the cleanup loop is the sole owner of deletion,
+    so a dropped connection after a completed response doesn't lose the result.
+    """
     job = _jobs.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Unknown job ID: {job_id!r}")
     if job.status == JobStatus.COMPLETED:
-        logger.info("Job %s: result retrieved.", job_id)
-        del _jobs[job_id]
         return {"status": job.status, "markdown": job.markdown}
     if job.status == JobStatus.FAILED:
-        logger.info("Job %s: failure retrieved.", job_id)
-        del _jobs[job_id]
         return {"status": job.status, "detail": job.detail}
-    logger.info("Job %s: polled — %s.", job_id, job.status.value)
     return {"status": job.status}  # pending or running
 
 

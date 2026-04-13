@@ -8,7 +8,7 @@ use crate::sync_manager::SyncError;
 use crate::AppState;
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{header, HeaderValue, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse,
@@ -655,8 +655,11 @@ pub enum ApiError {
     #[error("Internal error: {0}")]
     Internal(String),
 
-    #[error("Too many requests: {0}")]
-    TooManyRequests(String),
+    #[error("Too many requests: {message} (retry after {retry_after_secs}s)")]
+    TooManyRequests {
+        message: String,
+        retry_after_secs: u64,
+    },
 }
 
 impl From<SyncError> for ApiError {
@@ -691,12 +694,25 @@ impl From<SyncError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
+        if let ApiError::TooManyRequests {
+            message,
+            retry_after_secs,
+        } = &self
+        {
+            let body = json!({ "error": message });
+            let mut resp = (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response();
+            if let Ok(v) = HeaderValue::from_str(&retry_after_secs.to_string()) {
+                resp.headers_mut().insert(header::RETRY_AFTER, v);
+            }
+            return resp;
+        }
+
         let (status, message) = match &self {
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
-            ApiError::TooManyRequests(msg) => (StatusCode::TOO_MANY_REQUESTS, msg.clone()),
+            ApiError::TooManyRequests { .. } => unreachable!(),
         };
 
         let body = json!({ "error": message });
@@ -823,40 +839,53 @@ pub async fn get_connector_url_for_source(
     None
 }
 
-/// Check if Docling document conversion is enabled.
-/// Reads the `docling_enabled` flag from Redis (set via the admin UI).
-async fn is_docling_enabled(redis_client: &redis::Client) -> bool {
+const VALID_DOCLING_PRESETS: &[&str] = &["fast", "balanced", "quality"];
+const DEFAULT_DOCLING_PRESET: &str = "balanced";
+
+/// Read both the Docling `enabled` flag and quality preset from Redis in a
+/// single multiplexed connection. Invalid/unknown preset values fall back to
+/// `balanced` with a warning so a corrupted setting can't silently break
+/// conversion (it would otherwise surface as a Docling 400 → built-in
+/// fallback, invisible to the admin).
+async fn get_docling_settings(redis_client: &redis::Client) -> (bool, String) {
     let mut conn = match redis_client.get_multiplexed_async_connection().await {
         Ok(c) => c,
         Err(e) => {
-            warn!("Failed to connect to Redis for docling check: {}", e);
-            return false;
+            warn!("Failed to connect to Redis for docling settings: {}", e);
+            return (false, DEFAULT_DOCLING_PRESET.to_string());
         }
     };
 
-    let value: Option<String> = conn
-        .hget(REDIS_SYSTEM_SETTINGS_KEY, "docling_enabled")
+    let values: Vec<Option<String>> = conn
+        .hget(
+            REDIS_SYSTEM_SETTINGS_KEY,
+            &["docling_enabled", "docling_quality_preset"],
+        )
         .await
-        .ok();
-    value.as_deref() == Some("true")
-}
+        .unwrap_or_else(|e| {
+            warn!("Failed to read docling settings from Redis: {}", e);
+            vec![None, None]
+        });
 
-/// Read the Docling quality preset from Redis (set via the admin UI).
-/// Defaults to "balanced" if not set or on error.
-async fn get_docling_quality_preset(redis_client: &redis::Client) -> String {
-    let mut conn = match redis_client.get_multiplexed_async_connection().await {
-        Ok(c) => c,
-        Err(e) => {
-            warn!("Failed to connect to Redis for docling preset: {}", e);
-            return "balanced".to_string();
+    let enabled = values
+        .first()
+        .and_then(|v| v.as_deref())
+        .map(|s| s == "true")
+        .unwrap_or(false);
+
+    let preset = match values.get(1).and_then(|v| v.as_deref()) {
+        Some(p) if VALID_DOCLING_PRESETS.contains(&p) => p.to_string(),
+        Some(p) => {
+            warn!(
+                "Invalid docling preset '{}' in Redis; falling back to '{}'.",
+                p, DEFAULT_DOCLING_PRESET
+            );
+            DEFAULT_DOCLING_PRESET.to_string()
         }
+        None => DEFAULT_DOCLING_PRESET.to_string(),
     };
 
-    let value: Option<String> = conn
-        .hget(REDIS_SYSTEM_SETTINGS_KEY, "docling_quality_preset")
-        .await
-        .ok();
-    value.unwrap_or_else(|| "balanced".to_string())
+    (enabled, preset)
 }
 
 /// MIME types that Docling can process.
@@ -1056,13 +1085,16 @@ async fn do_extract_text(
     filename: Option<&str>,
     data: &[u8],
 ) -> Result<String, ApiError> {
-    let docling_enabled = is_docling_enabled(redis_client).await;
     let docling_candidate = is_docling_supported_mime(mime_type)
         || (mime_type == "application/octet-stream" && is_docling_supported_extension(filename));
+    let (docling_enabled, preset) = if docling_candidate {
+        get_docling_settings(redis_client).await
+    } else {
+        (false, DEFAULT_DOCLING_PRESET.to_string())
+    };
     if docling_candidate && docling_enabled {
         let docling_result = if let Some(client) = DoclingClient::from_env() {
             let file_name = filename.unwrap_or("document");
-            let preset = get_docling_quality_preset(redis_client).await;
             debug!(
                 "Using docling-based document content extraction for file '{}' (preset={})",
                 file_name, preset
@@ -1077,9 +1109,11 @@ async fn do_extract_text(
                         "Docling overloaded, propagating 429 (retry after {}s)",
                         retry_after_secs
                     );
-                    return Err(ApiError::TooManyRequests(
-                        "Document conversion service is overloaded. Try again later.".to_string(),
-                    ));
+                    return Err(ApiError::TooManyRequests {
+                        message: "Document conversion service is overloaded. Try again later."
+                            .to_string(),
+                        retry_after_secs,
+                    });
                 }
                 Err(e) => {
                     warn!("Docling extraction failed, falling back to built-in: {}", e);
