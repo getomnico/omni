@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 
-import pypdfium2 as pdfium
 import uvicorn
 from docling.datamodel.accelerator_options import AcceleratorOptions
 from docling.datamodel.base_models import ConversionStatus, InputFormat
@@ -32,7 +31,6 @@ logger = logging.getLogger(__name__)
 
 _MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT_CONVERSIONS", "1"))
 _MAX_PENDING = int(os.getenv("MAX_PENDING_JOBS", str(_MAX_CONCURRENT * 2)))
-_PAGES_PER_CHUNK = int(os.getenv("PAGES_PER_CHUNK", "10"))
 _MAX_JOB_SECONDS = int(os.getenv("MAX_JOB_SECONDS", "1800"))
 _CONVERTER_RECYCLE_AFTER = int(os.getenv("CONVERTER_RECYCLE_AFTER", "20"))
 
@@ -188,89 +186,26 @@ def _cleanup_result(result: object) -> None:
         gc.collect()
 
 
-def _split_pdf(data: bytes, chunk_size: int) -> list[bytes] | None:
-    """Split PDF bytes into per-chunk PDF byte buffers using pypdfium2.
-
-    Returns None if the input is not a PDF. Each chunk is a standalone PDF
-    containing at most `chunk_size` pages, so downstream conversion avoids
-    re-parsing the full file for every chunk.
-    """
-    try:
-        src = pdfium.PdfDocument(data)
-    except Exception:
-        return None
-    try:
-        page_count = len(src)
-        if page_count <= chunk_size:
-            return [data]
-        chunks: list[bytes] = []
-        for start in range(0, page_count, chunk_size):
-            end = min(start + chunk_size, page_count)
-            dst = pdfium.PdfDocument.new()
-            try:
-                dst.import_pages(src, list(range(start, end)))
-                buf = io.BytesIO()
-                dst.save(buf)
-                chunks.append(buf.getvalue())
-            finally:
-                dst.close()
-        return chunks
-    finally:
-        src.close()
-
-
 def _convert_document(converter: DocumentConverter, data: bytes, filename: str) -> str:
-    """Convert a document to markdown. PDFs are split into page chunks up
-    front so each chunk is a small standalone PDF (bounded peak memory, no
-    repeated full-file parses).
+    """Convert a document to markdown in a single pass.
 
-    Enforces a whole-job wall-clock deadline across chunks: once exceeded,
-    the loop stops and returns whatever markdown was already produced. The
-    docling-internal `document_timeout` provides per-chunk cooperative
-    cancellation within this budget.
+    Docling streams pages through bounded queues with per-page backend
+    unload and image-cache clearing, so pre-splitting large PDFs is
+    unnecessary. Runaway conversions are bounded cooperatively by
+    `pipeline_options.document_timeout` (set in `_build_converter`),
+    which makes docling stop feeding pages and return PARTIAL_SUCCESS.
     """
-    chunks = _split_pdf(data, _PAGES_PER_CHUNK)
-
-    # Non-PDF: single-pass conversion.
-    if chunks is None:
-        stream = DocumentStream(name=filename, stream=io.BytesIO(data))
-        result = converter.convert(stream)
-        try:
-            if result.status not in (
-                ConversionStatus.SUCCESS,
-                ConversionStatus.PARTIAL_SUCCESS,
-            ):
-                raise RuntimeError("Conversion failed.")
-            return result.document.export_to_markdown()
-        finally:
-            _cleanup_result(result)
-
-    markdown_parts: list[str] = []
-    total = len(chunks)
-    deadline = time.monotonic() + _MAX_JOB_SECONDS
-    for idx, chunk in enumerate(chunks, start=1):
-        if time.monotonic() >= deadline:
-            logger.warning(
-                "Job deadline reached after chunk %d/%d; stopping.", idx - 1, total
-            )
-            break
-        logger.debug("Processing chunk %d/%d (%d bytes)", idx, total, len(chunk))
-        stream = DocumentStream(name=filename, stream=io.BytesIO(chunk))
-        result = converter.convert(stream)
-        try:
-            if result.status in (
-                ConversionStatus.SUCCESS,
-                ConversionStatus.PARTIAL_SUCCESS,
-            ):
-                markdown_parts.append(result.document.export_to_markdown())
-            else:
-                logger.warning("Chunk %d/%d failed, skipping.", idx, total)
-        finally:
-            _cleanup_result(result)
-
-    if not markdown_parts:
-        raise RuntimeError("All page chunks failed or deadline exceeded.")
-    return "\n\n".join(markdown_parts)
+    stream = DocumentStream(name=filename, stream=io.BytesIO(data))
+    result = converter.convert(stream)
+    try:
+        if result.status not in (
+            ConversionStatus.SUCCESS,
+            ConversionStatus.PARTIAL_SUCCESS,
+        ):
+            raise RuntimeError("Conversion failed.")
+        return result.document.export_to_markdown()
+    finally:
+        _cleanup_result(result)
 
 
 def _download_models() -> None:
@@ -412,10 +347,9 @@ async def _run_job(job: Job, data: bytes, filename: str) -> None:
         loop = asyncio.get_running_loop()
         pc = _converters[job.preset]
 
-        # Whole-job timeout is enforced cooperatively: docling's
-        # `document_timeout` stops feeding pages per chunk, and
-        # `_convert_document` stops iterating chunks once the deadline
-        # passes. No zombie threads, no process kill.
+        # Whole-job timeout is enforced cooperatively by docling's
+        # `document_timeout`: on expiry it stops feeding pages and returns
+        # PARTIAL_SUCCESS. No zombie threads, no process kill.
         async with pc.lock:
             try:
                 markdown = await loop.run_in_executor(
