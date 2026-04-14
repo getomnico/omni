@@ -21,7 +21,6 @@ class TokenUsage:
 class LLMProvider(ABC):
     """Abstract base class for LLM providers."""
 
-    last_usage: TokenUsage | None = None
     # ID of this model's record in the models table
     model_record_id: str | None = None
     model_name: str | None = None
@@ -48,8 +47,11 @@ class LLMProvider(ABC):
         max_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
-    ) -> str:
-        """Generate a non-streaming response from the LLM provider."""
+    ) -> tuple[str, TokenUsage]:
+        """Generate a non-streaming response from the LLM provider.
+
+        Returns (response_text, token_usage).
+        """
         pass
 
     @abstractmethod

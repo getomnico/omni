@@ -276,12 +276,11 @@ class GeminiProvider(LLMProvider):
                 yield RawMessageDeltaEvent(
                     type="message_delta",
                     delta=Delta(stop_reason="end_turn"),
-                    usage=MessageDeltaUsage(output_tokens=output_tokens),
-                )
-                self.last_usage = TokenUsage(
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cache_read_tokens=cached_tokens,
+                    usage=MessageDeltaUsage(
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cache_read_input_tokens=cached_tokens,
+                    ),
                 )
 
             yield RawMessageStopEvent(type="message_stop")
@@ -295,7 +294,7 @@ class GeminiProvider(LLMProvider):
         max_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
-    ) -> str:
+    ) -> tuple[str, TokenUsage]:
         """Generate non-streaming response from Gemini."""
         try:
             config = types.GenerateContentConfig(
@@ -311,9 +310,10 @@ class GeminiProvider(LLMProvider):
                 config=config,
             )
 
+            usage = TokenUsage()
             if hasattr(response, "usage_metadata") and response.usage_metadata:
                 um = response.usage_metadata
-                self.last_usage = TokenUsage(
+                usage = TokenUsage(
                     input_tokens=getattr(um, "prompt_token_count", 0) or 0,
                     output_tokens=getattr(um, "candidates_token_count", 0) or 0,
                     cache_read_tokens=getattr(um, "cached_content_token_count", 0) or 0,
@@ -322,7 +322,7 @@ class GeminiProvider(LLMProvider):
             if not response.text:
                 raise Exception("Empty response from Gemini")
 
-            return response.text
+            return response.text, usage
 
         except Exception as e:
             logger.error(f"Failed to generate response: {str(e)}")

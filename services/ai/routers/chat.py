@@ -630,7 +630,6 @@ async def stream_chat(
                         purpose=UsagePurpose.CHAT,
                         chat_id=chat_id,
                     ),
-                    provider=llm_provider,
                 )
 
                 raw_stream: AsyncStream[MessageStreamEvent] = (
@@ -916,29 +915,28 @@ async def generate_chat_title(
         # Generate title using LLM
         prompt = f"{TITLE_GENERATION_SYSTEM_PROMPT}\n\nConversation:\n{conversation_text}\n\nTitle:"
 
-        generated_title = await llm_provider.generate_response(
+        generated_title, title_usage = await llm_provider.generate_response(
             prompt=prompt,
             max_tokens=20,
             temperature=0.7,
             top_p=0.9,
         )
 
-        if llm_provider.last_usage:
-            track_usage(
-                UsageRepository(),
-                UsageContext(
-                    user_id=chat.user_id,
-                    model_id=llm_provider.model_record_id,
-                    model_name=llm_provider.model_name,
-                    provider_type=llm_provider.provider_type,
-                    purpose=UsagePurpose.TITLE_GENERATION,
-                    chat_id=chat_id,
-                ),
-                input_tokens=llm_provider.last_usage.input_tokens,
-                output_tokens=llm_provider.last_usage.output_tokens,
-                cache_read_tokens=llm_provider.last_usage.cache_read_tokens,
-                cache_creation_tokens=llm_provider.last_usage.cache_creation_tokens,
-            )
+        track_usage(
+            UsageRepository(),
+            UsageContext(
+                user_id=chat.user_id,
+                model_id=llm_provider.model_record_id,
+                model_name=llm_provider.model_name,
+                provider_type=llm_provider.provider_type,
+                purpose=UsagePurpose.TITLE_GENERATION,
+                chat_id=chat_id,
+            ),
+            input_tokens=title_usage.input_tokens,
+            output_tokens=title_usage.output_tokens,
+            cache_read_tokens=title_usage.cache_read_tokens,
+            cache_creation_tokens=title_usage.cache_creation_tokens,
+        )
 
         # Clean up the title
         title = generated_title.strip().strip('"').strip("'")

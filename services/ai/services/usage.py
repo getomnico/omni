@@ -9,7 +9,6 @@ from enum import StrEnum
 from anthropic.types.message_stream_event import MessageStreamEvent
 
 from db.usage import UsageRepository
-from providers import LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +41,9 @@ class UsageTracker:
         self,
         repo: UsageRepository,
         ctx: UsageContext,
-        provider: LLMProvider | None = None,
     ):
         self._repo = repo
         self._ctx = ctx
-        self._provider = provider
         self.input_tokens = 0
         self.output_tokens = 0
         self.cache_read_tokens = 0
@@ -67,25 +64,24 @@ class UsageTracker:
                     getattr(usage, "cache_creation_input_tokens", 0) or 0
                 )
             elif event.type == "message_delta":
-                if hasattr(event, "usage") and event.usage:
-                    self.output_tokens = event.usage.output_tokens
+                usage = getattr(event, "usage", None)
+                if usage:
+                    # Providers that only learn input_tokens at stream end emit them
+                    # on the final message_delta. Overwrite when present; last delta wins.
+                    input_tokens = getattr(usage, "input_tokens", None)
+                    if input_tokens is not None:
+                        self.input_tokens = input_tokens
+                    self.output_tokens = usage.output_tokens
+                    cache_read = getattr(usage, "cache_read_input_tokens", None)
+                    if cache_read is not None:
+                        self.cache_read_tokens = cache_read
+                    cache_creation = getattr(usage, "cache_creation_input_tokens", None)
+                    if cache_creation is not None:
+                        self.cache_creation_tokens = cache_creation
             yield event
 
     def save(self) -> None:
         """Fire-and-forget: persist usage record without blocking the caller."""
-        # Some providers (Gemini, OpenAI-compatible) set last_usage on the provider instance
-        # with data not available in streaming events (e.g., input_tokens).
-        if self._provider and self._provider.last_usage:
-            pu = self._provider.last_usage
-            if not self.input_tokens:
-                self.input_tokens = pu.input_tokens
-            if not self.output_tokens:
-                self.output_tokens = pu.output_tokens
-            if not self.cache_read_tokens:
-                self.cache_read_tokens = pu.cache_read_tokens
-            if not self.cache_creation_tokens:
-                self.cache_creation_tokens = pu.cache_creation_tokens
-
         if not (self.input_tokens or self.output_tokens):
             return
 

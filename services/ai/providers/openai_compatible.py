@@ -373,11 +373,10 @@ class OpenAICompatibleProvider(LLMProvider):
                 yield RawMessageDeltaEvent(
                     type="message_delta",
                     delta=Delta(stop_reason="end_turn"),
-                    usage=MessageDeltaUsage(output_tokens=stream_output_tokens),
-                )
-                self.last_usage = TokenUsage(
-                    input_tokens=stream_input_tokens,
-                    output_tokens=stream_output_tokens,
+                    usage=MessageDeltaUsage(
+                        input_tokens=stream_input_tokens,
+                        output_tokens=stream_output_tokens,
+                    ),
                 )
 
             yield RawMessageStopEvent(type="message_stop")
@@ -394,7 +393,7 @@ class OpenAICompatibleProvider(LLMProvider):
         max_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
-    ) -> str:
+    ) -> tuple[str, TokenUsage]:
         """Generate non-streaming response."""
         try:
             params: dict[str, Any] = {
@@ -410,8 +409,9 @@ class OpenAICompatibleProvider(LLMProvider):
 
             response = await self.client.chat.completions.create(**params)
 
+            usage = TokenUsage()
             if response.usage:
-                self.last_usage = TokenUsage(
+                usage = TokenUsage(
                     input_tokens=response.usage.prompt_tokens or 0,
                     output_tokens=response.usage.completion_tokens or 0,
                 )
@@ -420,7 +420,7 @@ class OpenAICompatibleProvider(LLMProvider):
             if not content:
                 raise Exception("Empty response from OpenAI-compatible endpoint")
 
-            return content
+            return content, usage
 
         except Exception as e:
             raise Exception(

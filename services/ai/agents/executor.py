@@ -293,7 +293,6 @@ async def _run_agent_loop(
                 purpose=UsagePurpose.AGENT_RUN,
                 agent_run_id=run.id,
             ),
-            provider=llm_provider,
         )
 
         raw_stream = llm_provider.stream_response(
@@ -423,7 +422,6 @@ async def _run_agent_loop(
             purpose=UsagePurpose.AGENT_SUMMARY,
             agent_run_id=run.id,
         ),
-        provider=llm_provider,
     )
     raw_summary_stream = llm_provider.stream_response(
         prompt="",

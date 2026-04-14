@@ -203,12 +203,11 @@ class OpenAIProvider(LLMProvider):
                         yield RawMessageDeltaEvent(
                             type="message_delta",
                             delta=Delta(stop_reason="end_turn"),
-                            usage=MessageDeltaUsage(output_tokens=output_tokens),
-                        )
-                        self.last_usage = TokenUsage(
-                            input_tokens=input_tokens,
-                            output_tokens=output_tokens,
-                            cache_read_tokens=cached_tokens,
+                            usage=MessageDeltaUsage(
+                                input_tokens=input_tokens,
+                                output_tokens=output_tokens,
+                                cache_read_input_tokens=cached_tokens,
+                            ),
                         )
                     break
 
@@ -307,7 +306,7 @@ class OpenAIProvider(LLMProvider):
         max_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
-    ) -> str:
+    ) -> tuple[str, TokenUsage]:
         """Generate non-streaming response from OpenAI Responses API."""
         try:
             params: dict[str, Any] = {
@@ -318,13 +317,14 @@ class OpenAIProvider(LLMProvider):
             }
             response = await self.client.responses.create(**params)
 
+            usage = TokenUsage()
             resp_usage = getattr(response, "usage", None)
             if resp_usage:
                 details = getattr(resp_usage, "input_tokens_details", None)
                 cached_tokens = (
                     (getattr(details, "cached_tokens", 0) or 0) if details else 0
                 )
-                self.last_usage = TokenUsage(
+                usage = TokenUsage(
                     input_tokens=getattr(resp_usage, "input_tokens", 0) or 0,
                     output_tokens=getattr(resp_usage, "output_tokens", 0) or 0,
                     cache_read_tokens=cached_tokens,
@@ -334,7 +334,7 @@ class OpenAIProvider(LLMProvider):
             if not content:
                 raise Exception("Empty response from OpenAI")
 
-            return content
+            return content, usage
 
         except Exception as e:
             logger.error(f"Failed to generate response: {str(e)}")

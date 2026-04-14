@@ -143,7 +143,7 @@ class AnthropicProvider(LLMProvider):
         max_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
-    ) -> str:
+    ) -> tuple[str, TokenUsage]:
         """Generate non-streaming response from Anthropic Claude API."""
         try:
             response = await self.client.messages.create(
@@ -154,7 +154,7 @@ class AnthropicProvider(LLMProvider):
                 stream=False,
             )
 
-            self.last_usage = TokenUsage(
+            usage = TokenUsage(
                 input_tokens=response.usage.input_tokens,
                 output_tokens=response.usage.output_tokens,
                 cache_read_tokens=getattr(response.usage, "cache_read_input_tokens", 0)
@@ -171,7 +171,7 @@ class AnthropicProvider(LLMProvider):
                 if hasattr(block, "text"):
                     content += block.text
 
-            return content
+            return content, usage
 
         except Exception as e:
             logger.error(f"Failed to generate response from Anthropic: {str(e)}")

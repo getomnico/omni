@@ -233,14 +233,14 @@ Summary:"""
 
         logger.info(f"Creating summary of {len(messages)} messages")
 
-        summary = await self.llm_provider.generate_response(
+        summary, usage = await self.llm_provider.generate_response(
             prompt=prompt,
             max_tokens=COMPACTION_SUMMARY_MAX_TOKENS,
             temperature=0.3,
         )
 
-        if self._on_usage and self.llm_provider.last_usage:
-            self._on_usage(self.llm_provider.last_usage)
+        if self._on_usage:
+            self._on_usage(usage)
 
         logger.info(f"Generated summary: {len(summary)} chars")
         return summary.strip()

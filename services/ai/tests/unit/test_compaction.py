@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from anthropic.types import MessageParam
 
+from providers import TokenUsage
 from services.compaction import ConversationCompactor
 
 
@@ -217,7 +218,10 @@ class TestSummaryGeneration:
     def mock_llm(self):
         """Create a mock LLM provider."""
         mock = AsyncMock()
-        mock.generate_response.return_value = "This is a summary of the conversation."
+        mock.generate_response.return_value = (
+            "This is a summary of the conversation.",
+            TokenUsage(input_tokens=50, output_tokens=10),
+        )
         return mock
 
     @pytest.fixture
@@ -259,7 +263,10 @@ class TestRedisCaching:
     def mock_llm(self):
         """Create a mock LLM provider."""
         mock = AsyncMock()
-        mock.generate_response.return_value = "Summary"
+        mock.generate_response.return_value = (
+            "Summary",
+            TokenUsage(input_tokens=50, output_tokens=5),
+        )
         return mock
 
     @pytest.fixture
@@ -326,7 +333,10 @@ class TestCompactConversation:
     def mock_llm(self):
         """Create a mock LLM provider."""
         mock = AsyncMock()
-        mock.generate_response.return_value = "Summary of earlier messages."
+        mock.generate_response.return_value = (
+            "Summary of earlier messages.",
+            TokenUsage(input_tokens=100, output_tokens=20),
+        )
         return mock
 
     @pytest.fixture
@@ -403,7 +413,10 @@ class TestCompactorWithoutRedis:
     def mock_llm(self):
         """Create a mock LLM provider."""
         mock = AsyncMock()
-        mock.generate_response.return_value = "Summary"
+        mock.generate_response.return_value = (
+            "Summary",
+            TokenUsage(input_tokens=50, output_tokens=5),
+        )
         return mock
 
     @pytest.fixture

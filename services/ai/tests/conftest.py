@@ -247,8 +247,11 @@ def mock_llm_provider():
     """Mock LLM provider for unit tests."""
     provider = AsyncMock()
     provider.health_check.return_value = True
+    from providers import TokenUsage
+
     provider.generate_response.return_value = (
-        "This is a test response from the mock LLM."
+        "This is a test response from the mock LLM.",
+        TokenUsage(input_tokens=10, output_tokens=20),
     )
 
     async def mock_stream(*args, **kwargs):

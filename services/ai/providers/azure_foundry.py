@@ -18,7 +18,7 @@ from anthropic import AsyncAnthropicFoundry, MessageStreamEvent
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from openai import AsyncOpenAI
 
-from . import LLMProvider
+from . import LLMProvider, TokenUsage
 from .anthropic import AnthropicProvider
 from .openai import OpenAIProvider
 
@@ -98,7 +98,6 @@ class AzureFoundryProvider(LLMProvider):
             system_prompt=system_prompt,
         ):
             yield event
-        self.last_usage = self._delegate.last_usage
 
     async def generate_response(
         self,
@@ -106,15 +105,13 @@ class AzureFoundryProvider(LLMProvider):
         max_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
-    ) -> str:
-        result = await self._delegate.generate_response(
+    ) -> tuple[str, TokenUsage]:
+        return await self._delegate.generate_response(
             prompt=prompt,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
         )
-        self.last_usage = self._delegate.last_usage
-        return result
 
     async def health_check(self) -> bool:
         return await self._delegate.health_check()

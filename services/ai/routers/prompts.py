@@ -82,7 +82,7 @@ async def _generate_non_streaming_response(
         raise HTTPException(status_code=500, detail="LLM provider not initialized")
 
     try:
-        generated_text = await llm_provider.generate_response(
+        generated_text, _ = await llm_provider.generate_response(
             body.prompt,
             max_tokens=body.max_tokens,
             temperature=body.temperature,

@@ -413,14 +413,13 @@ class BedrockProvider(LLMProvider):
             usage_data = event["metadata"].get("usage", {})
             input_tokens = usage_data.get("inputTokens", 0)
             output_tokens = usage_data.get("outputTokens", 0)
-            self.last_usage = TokenUsage(
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-            )
             return RawMessageDeltaEvent(
                 type="message_delta",
                 delta=Delta(stop_reason="end_turn"),
-                usage=MessageDeltaUsage(output_tokens=output_tokens),
+                usage=MessageDeltaUsage(
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                ),
             )
         elif "messageStop" in event:
             return RawMessageStopEvent(type="message_stop")
@@ -597,7 +596,7 @@ class BedrockProvider(LLMProvider):
         max_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
-    ) -> str:
+    ) -> tuple[str, TokenUsage]:
         """Generate non-streaming response from AWS Bedrock Claude models."""
         try:
             logger.info(
@@ -619,7 +618,7 @@ class BedrockProvider(LLMProvider):
                 # Invoke the model
                 message = self.client.messages.create(**request_params)
 
-                self.last_usage = TokenUsage(
+                usage = TokenUsage(
                     input_tokens=message.usage.input_tokens,
                     output_tokens=message.usage.output_tokens,
                     cache_read_tokens=getattr(
@@ -637,7 +636,7 @@ class BedrockProvider(LLMProvider):
                 if not response_text:
                     raise Exception("Empty response from AWS Bedrock model")
 
-                return response_text
+                return response_text, usage
 
             elif self.model_family == "amazon":
                 conversation = [{"role": "user", "content": [{"text": prompt}]}]
@@ -654,7 +653,7 @@ class BedrockProvider(LLMProvider):
                 logger.debug(f"generate_response: response from LLM -> {response}")
 
                 usage_data = response.get("usage", {})
-                self.last_usage = TokenUsage(
+                usage = TokenUsage(
                     input_tokens=usage_data.get("inputTokens", 0),
                     output_tokens=usage_data.get("outputTokens", 0),
                 )
@@ -663,7 +662,7 @@ class BedrockProvider(LLMProvider):
                 if not response_text:
                     raise Exception("Empty response from AWS Bedrock model")
 
-                return response_text
+                return response_text, usage
 
         except ClientError as e:
             logger.error(f"AWS Bedrock client error: {str(e)}")
