@@ -53,3 +53,40 @@ class ContentBlobsRepository:
                 storage_backend=row["storage_backend"],
             )
         return None
+
+    async def insert_postgres(
+        self, content_id: str, content: bytes, content_type: str
+    ) -> None:
+        """Insert a Postgres-backed content blob."""
+        pool = await self._get_pool()
+        await pool.execute(
+            """
+            INSERT INTO content_blobs (id, content, content_type, size_bytes, storage_backend)
+            VALUES ($1, $2, $3, $4, 'postgres')
+            """,
+            content_id,
+            content,
+            content_type,
+            len(content),
+        )
+
+    async def insert_s3(
+        self,
+        content_id: str,
+        storage_key: str,
+        content_type: str,
+        size_bytes: int,
+    ) -> None:
+        """Insert an S3-backed content blob (bytes already uploaded to S3)."""
+        pool = await self._get_pool()
+        await pool.execute(
+            """
+            INSERT INTO content_blobs
+                (id, storage_key, content_type, size_bytes, storage_backend)
+            VALUES ($1, $2, $3, $4, 's3')
+            """,
+            content_id,
+            storage_key,
+            content_type,
+            size_bytes,
+        )

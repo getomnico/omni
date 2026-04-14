@@ -6,6 +6,12 @@ import { getAgent } from '$lib/server/db/agents.js'
 interface MessageRequest {
     content: string
     parentId?: string
+    attachmentIds?: string[]
+}
+
+type UploadBlock = {
+    type: 'document' | 'image'
+    source: { type: 'omni_upload'; upload_id: string }
 }
 
 export const GET: RequestHandler = async ({ params, locals }) => {
@@ -88,9 +94,11 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
         return json({ error: 'Invalid JSON in request body' }, { status: 400 })
     }
 
-    if (!messageRequest.content || messageRequest.content.trim() === '') {
+    const trimmedText = messageRequest.content?.trim() ?? ''
+    const attachmentIds = messageRequest.attachmentIds ?? []
+    if (trimmedText === '' && attachmentIds.length === 0) {
         logger.warn('Empty content in message request')
-        return json({ error: 'Content is required' }, { status: 400 })
+        return json({ error: 'Content or attachments are required' }, { status: 400 })
     }
 
     logger.debug('Adding message to chat', {
@@ -115,10 +123,21 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             }
         }
 
-        // Create the user message in MessageParam format
-        const userMessage = {
-            role: 'user' as const,
-            content: messageRequest.content.trim(),
+        // Create the user message in MessageParam format. If there are attachments, build
+        // the content as an array of blocks: omni_upload document blocks first, then text.
+        let userMessage: { role: 'user'; content: string | Array<unknown> }
+        if (attachmentIds.length > 0) {
+            const uploadBlocks: UploadBlock[] = attachmentIds.map((id) => ({
+                type: 'document',
+                source: { type: 'omni_upload', upload_id: id },
+            }))
+            const blocks: Array<unknown> = [...uploadBlocks]
+            if (trimmedText !== '') {
+                blocks.push({ type: 'text', text: trimmedText })
+            }
+            userMessage = { role: 'user', content: blocks }
+        } else {
+            userMessage = { role: 'user', content: trimmedText }
         }
 
         // Determine parentId: use provided value, or find the last message in the active path

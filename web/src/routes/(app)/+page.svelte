@@ -1,10 +1,11 @@
 <script lang="ts">
     import type { PageProps } from './$types'
-    import { Search } from '@lucide/svelte'
+    import { Search, Paperclip } from '@lucide/svelte'
     import { goto } from '$app/navigation'
     import omniLogoLight from '$lib/images/icons/omni-logo-256.png'
     import omniLogoDark from '$lib/images/icons/omni-logo-dark-256.png'
     import UserInput, { type InputMode } from '$lib/components/user-input.svelte'
+    import { Button } from '$lib/components/ui/button'
     import { userPreferences } from '$lib/preferences'
 
     let { data }: PageProps = $props()
@@ -13,6 +14,47 @@
     let popoverOpen = $state(false)
     let isSearching = $state(false)
     let inputMode = $state<InputMode>(userPreferences.get('inputMode'))
+
+    type PendingUpload = { id: string; filename: string; sizeBytes: number; uploading: boolean }
+    let pendingUploads = $state<PendingUpload[]>([])
+    let uploadInputEl: HTMLInputElement | undefined = $state()
+
+    async function handleFilesSelected(files: FileList | null) {
+        if (!files) return
+        for (const file of Array.from(files)) {
+            const placeholder: PendingUpload = {
+                id: crypto.randomUUID(),
+                filename: file.name,
+                sizeBytes: file.size,
+                uploading: true,
+            }
+            pendingUploads.push(placeholder)
+            try {
+                const fd = new FormData()
+                fd.append('file', file)
+                const resp = await fetch('/api/uploads', { method: 'POST', body: fd })
+                if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
+                const data = await resp.json()
+                const idx = pendingUploads.findIndex((u) => u.id === placeholder.id)
+                if (idx >= 0) {
+                    pendingUploads[idx] = {
+                        id: data.id,
+                        filename: data.filename,
+                        sizeBytes: data.size_bytes,
+                        uploading: false,
+                    }
+                }
+            } catch (err) {
+                console.error(err)
+                pendingUploads = pendingUploads.filter((u) => u.id !== placeholder.id)
+            }
+        }
+        if (uploadInputEl) uploadInputEl.value = ''
+    }
+
+    function removePendingUpload(id: string) {
+        pendingUploads = pendingUploads.filter((u) => u.id !== id)
+    }
 
     const models = $derived(data.models)
 
@@ -34,9 +76,10 @@
     })
 
     async function submitQuery() {
-        if (!searchQuery.trim()) {
-            return
-        }
+        const trimmed = searchQuery.trim()
+        const readyAttachments = pendingUploads.filter((u) => !u.uploading)
+        if (pendingUploads.some((u) => u.uploading)) return
+        if (!trimmed && readyAttachments.length === 0) return
 
         if (isSearching) {
             return
@@ -45,7 +88,7 @@
         isSearching = true
 
         if (inputMode === 'search') {
-            goto(`/search?q=${encodeURIComponent(searchQuery.trim())}`)
+            goto(`/search?q=${encodeURIComponent(trimmed)}`)
             return
         }
 
@@ -71,8 +114,9 @@
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                content: searchQuery.trim(),
+                content: trimmed,
                 role: 'user',
+                attachmentIds: readyAttachments.map((u) => u.id),
             }),
         })
 
@@ -124,27 +168,65 @@
         </div>
 
         <!-- Search Box -->
-        <UserInput
-            bind:value={searchQuery}
-            bind:inputMode
-            onSubmit={submitQuery}
-            onInput={(v) => (searchQuery = v)}
-            modeSelectorEnabled={true}
-            placeholders={{
-                search: 'Search for anything...',
-                chat: 'Ask anything...',
-            }}
-            isLoading={isSearching}
-            {popoverItems}
-            showPopover={popoverOpen}
-            onPopoverChange={(open) => (popoverOpen = open)}
-            maxWidth="max-w-2xl"
-            {models}
-            {selectedModelId}
-            onModelChange={(id) => {
-                selectedModelId = id
-                userPreferences.set('preferredModelId', id)
-            }} />
+        {#if pendingUploads.length > 0 && inputMode === 'chat'}
+            <div class="mb-2 flex w-full max-w-2xl flex-wrap gap-2">
+                {#each pendingUploads as up (up.id)}
+                    <div
+                        class="bg-card flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm">
+                        <span class="max-w-[200px] truncate">{up.filename}</span>
+                        {#if up.uploading}
+                            <span class="text-muted-foreground text-xs">uploading…</span>
+                        {/if}
+                        <button
+                            type="button"
+                            class="text-muted-foreground hover:text-foreground cursor-pointer"
+                            onclick={() => removePendingUpload(up.id)}>×</button>
+                    </div>
+                {/each}
+            </div>
+        {/if}
+        <div class="flex w-full max-w-2xl items-end gap-2">
+            {#if inputMode === 'chat'}
+                <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    class="size-8 shrink-0 cursor-pointer"
+                    onclick={() => uploadInputEl?.click()}
+                    aria-label="Attach file">
+                    <Paperclip class="h-4 w-4" />
+                </Button>
+                <input
+                    bind:this={uploadInputEl}
+                    type="file"
+                    multiple
+                    class="hidden"
+                    onchange={(e) => handleFilesSelected((e.target as HTMLInputElement).files)} />
+            {/if}
+            <div class="flex-1">
+                <UserInput
+                    bind:value={searchQuery}
+                    bind:inputMode
+                    onSubmit={submitQuery}
+                    onInput={(v) => (searchQuery = v)}
+                    modeSelectorEnabled={true}
+                    placeholders={{
+                        search: 'Search for anything...',
+                        chat: 'Ask anything...',
+                    }}
+                    isLoading={isSearching}
+                    {popoverItems}
+                    showPopover={popoverOpen}
+                    onPopoverChange={(open) => (popoverOpen = open)}
+                    maxWidth="max-w-2xl"
+                    {models}
+                    {selectedModelId}
+                    onModelChange={(id) => {
+                        selectedModelId = id
+                        userPreferences.set('preferredModelId', id)
+                    }} />
+            </div>
+        </div>
 
         <!-- Suggested Questions -->
         {#if data.suggestedQuestions && data.suggestedQuestions.length > 0}

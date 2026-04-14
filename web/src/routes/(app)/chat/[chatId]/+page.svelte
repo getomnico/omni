@@ -21,6 +21,7 @@
         CircleAlertIcon,
         ExternalLink,
         FileText,
+        Paperclip,
         Pencil,
         ChevronLeft,
         ChevronRight,
@@ -49,6 +50,7 @@
     } from '@anthropic-ai/sdk/resources.js'
     import { afterNavigate, invalidate } from '$app/navigation'
     import UserInput from '$lib/components/user-input.svelte'
+    import UploadChip from '$lib/components/upload-chip.svelte'
     import * as Alert from '$lib/components/ui/alert'
     import type { Attachment } from 'svelte/attachments'
     import * as HoverCard from '$lib/components/ui/hover-card'
@@ -74,6 +76,46 @@
     })
 
     let userMessage = $state('')
+    type PendingUpload = { id: string; filename: string; sizeBytes: number; uploading: boolean }
+    let pendingUploads = $state<PendingUpload[]>([])
+    let uploadInputEl: HTMLInputElement | undefined = $state()
+
+    async function handleFilesSelected(files: FileList | null) {
+        if (!files) return
+        for (const file of Array.from(files)) {
+            const placeholder: PendingUpload = {
+                id: crypto.randomUUID(),
+                filename: file.name,
+                sizeBytes: file.size,
+                uploading: true,
+            }
+            pendingUploads.push(placeholder)
+            try {
+                const fd = new FormData()
+                fd.append('file', file)
+                const resp = await fetch('/api/uploads', { method: 'POST', body: fd })
+                if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
+                const data = await resp.json()
+                const idx = pendingUploads.findIndex((u) => u.id === placeholder.id)
+                if (idx >= 0) {
+                    pendingUploads[idx] = {
+                        id: data.id,
+                        filename: data.filename,
+                        sizeBytes: data.size_bytes,
+                        uploading: false,
+                    }
+                }
+            } catch (err) {
+                console.error(err)
+                pendingUploads = pendingUploads.filter((u) => u.id !== placeholder.id)
+            }
+        }
+        if (uploadInputEl) uploadInputEl.value = ''
+    }
+
+    function removePendingUpload(id: string) {
+        pendingUploads = pendingUploads.filter((u) => u.id !== id)
+    }
     let chatContainerRef: HTMLDivElement
     let chatContentRef: HTMLDivElement
     let lastUserMessageRef: HTMLDivElement | null = $state(null)
@@ -513,17 +555,29 @@
             const messageCitations: TextCitationParam[] = [] // All citations in this message
 
             if (isUserMessage(message)) {
-                // User messages are expected to contain only text blocks
+                // User messages may contain text blocks plus omni_upload document/image blocks.
                 const userMessageContent: MessageContent =
                     typeof message.content === 'string'
                         ? [{ id: 0, type: 'text', text: message.content }]
                         : message.content
-                              .filter((b) => b.type === 'text')
-                              .map((b, bi) => ({
-                                  id: bi,
-                                  type: 'text',
-                                  text: b.text,
-                              }))
+                              .map((b: any, bi: number): MessageContent[number] | null => {
+                                  if (b.type === 'text') {
+                                      return { id: bi, type: 'text', text: b.text }
+                                  }
+                                  if (
+                                      (b.type === 'document' || b.type === 'image') &&
+                                      b.source?.type === 'omni_upload' &&
+                                      b.source.upload_id
+                                  ) {
+                                      return {
+                                          id: bi,
+                                          type: 'upload',
+                                          uploadId: b.source.upload_id,
+                                      }
+                                  }
+                                  return null
+                              })
+                              .filter((b): b is MessageContent[number] => b !== null)
 
                 const processedUserMessage: ProcessedMessage = {
                     id: processedMessages.length,
@@ -993,53 +1047,67 @@
 
     async function handleSubmit() {
         const userMsg = userMessage.trim()
-        if (userMsg) {
-            // Determine parentId: last message in current display path
-            const displayPath = getDisplayPath(chatMessages)
-            const parentId =
-                displayPath.length > 0 ? displayPath[displayPath.length - 1].id : undefined
-
-            const response = await fetch(`/api/chat/${data.chat.id}/messages`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    content: userMsg,
-                    role: 'user',
-                    parentId,
-                }),
-            })
-
-            if (!response.ok) {
-                console.error('Failed to send message to chat session')
-                return
-            }
-
-            const { messageId } = await response.json()
-
-            const newUserMessage: ChatMessage = {
-                id: messageId,
-                chatId: data.chat.id,
-                parentId: parentId ?? null,
-                message: {
-                    role: 'user',
-                    content: userMsg,
-                },
-                messageSeqNum: chatMessages.length + 1,
-                createdAt: new Date(),
-            }
-            chatMessages.push(newUserMessage)
-
-            userMessage = ''
-            userHasScrolled = false
-
-            // Scroll to show the new user message at the top
-            scrollUserMessageToTop()
-
-            // Start streaming AI response
-            streamResponse(data.chat.id)
+        const readyAttachments = pendingUploads.filter((u) => !u.uploading)
+        if (pendingUploads.some((u) => u.uploading)) {
+            return
         }
+        if (!userMsg && readyAttachments.length === 0) return
+
+        const displayPath = getDisplayPath(chatMessages)
+        const parentId = displayPath.length > 0 ? displayPath[displayPath.length - 1].id : undefined
+
+        const attachmentIds = readyAttachments.map((u) => u.id)
+
+        const response = await fetch(`/api/chat/${data.chat.id}/messages`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                content: userMsg,
+                role: 'user',
+                parentId,
+                attachmentIds,
+            }),
+        })
+
+        if (!response.ok) {
+            console.error('Failed to send message to chat session')
+            return
+        }
+
+        const { messageId } = await response.json()
+
+        const messageContent =
+            attachmentIds.length > 0
+                ? [
+                      ...attachmentIds.map((id) => ({
+                          type: 'document' as const,
+                          source: { type: 'omni_upload', upload_id: id },
+                      })),
+                      ...(userMsg ? [{ type: 'text' as const, text: userMsg }] : []),
+                  ]
+                : userMsg
+
+        const newUserMessage: ChatMessage = {
+            id: messageId,
+            chatId: data.chat.id,
+            parentId: parentId ?? null,
+            message: {
+                role: 'user',
+                content: messageContent as any,
+            },
+            messageSeqNum: chatMessages.length + 1,
+            createdAt: new Date(),
+        }
+        chatMessages.push(newUserMessage)
+
+        userMessage = ''
+        pendingUploads = []
+        userHasScrolled = false
+
+        scrollUserMessageToTop()
+        streamResponse(data.chat.id)
     }
 
     const attachInlineCitations: Attachment = (container: Element) => {
@@ -1184,10 +1252,27 @@
             </div>
         </div>
     {:else}
-        <div class="flex max-w-[80%] flex-col items-end">
-            <div class="text-foreground w-fit rounded-2xl bg-gray-200 px-6 py-4">
-                {@html marked.parse((message.content[0] as TextMessageContent).text)}
-            </div>
+        {@const firstText = message.content.find((b) => b.type === 'text') as
+            | TextMessageContent
+            | undefined}
+        {@const uploads = message.content.filter((b) => b.type === 'upload') as Array<{
+            id: number
+            type: 'upload'
+            uploadId: string
+        }>}
+        <div class="flex max-w-[80%] flex-col items-end gap-1">
+            {#if uploads.length > 0}
+                <div class="flex flex-wrap justify-end gap-1">
+                    {#each uploads as up (up.uploadId)}
+                        <UploadChip uploadId={up.uploadId} />
+                    {/each}
+                </div>
+            {/if}
+            {#if firstText}
+                <div class="text-foreground w-fit rounded-2xl bg-gray-200 px-6 py-4">
+                    {@html marked.parse(firstText.text)}
+                </div>
+            {/if}
             <div class="mx-0.5 mt-1 flex items-center justify-end gap-1">
                 {@render messageTimestamp(message)}
                 {#if message.siblingIds && message.siblingIds.length > 1}
@@ -1198,11 +1283,7 @@
                         size="icon"
                         variant="ghost"
                         class="h-7 w-7 cursor-pointer opacity-0 transition-opacity group-hover:opacity-100"
-                        onclick={() =>
-                            handleEdit(
-                                message.origMessageId,
-                                (message.content[0] as TextMessageContent).text,
-                            )}>
+                        onclick={() => handleEdit(message.origMessageId, firstText?.text ?? '')}>
                         <RotateCcw class="h-3.5 w-3.5" />
                     </Button>
                     <Button
@@ -1211,7 +1292,7 @@
                         class="h-7 w-7 cursor-pointer opacity-0 transition-opacity group-hover:opacity-100"
                         onclick={() => {
                             editingMessageId = message.origMessageId
-                            editingContent = (message.content[0] as TextMessageContent).text
+                            editingContent = firstText?.text ?? ''
                         }}>
                         <Pencil class="h-3.5 w-3.5" />
                     </Button>
@@ -1543,21 +1624,58 @@
             </div>
 
             <!-- Input -->
-            <div class="bg-background sticky bottom-0 flex justify-center pb-4">
-                <UserInput
-                    bind:this={userInputRef}
-                    bind:value={userMessage}
-                    inputMode="chat"
-                    onSubmit={handleSubmit}
-                    onInput={(v) => (userMessage = v)}
-                    modeSelectorEnabled={false}
-                    placeholders={{
-                        chat: 'Ask a follow-up...',
-                        search: 'Search for something else...',
-                    }}
-                    {isStreaming}
-                    onStop={handleStop}
-                    maxWidth="max-w-4xl" />
+            <div class="bg-background sticky bottom-0 flex flex-col items-center pb-4">
+                {#if pendingUploads.length > 0}
+                    <div class="mb-2 flex w-full max-w-4xl flex-wrap gap-2">
+                        {#each pendingUploads as up (up.id)}
+                            <div
+                                class="bg-card flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm">
+                                <span class="max-w-[200px] truncate">{up.filename}</span>
+                                {#if up.uploading}
+                                    <span class="text-muted-foreground text-xs">uploading…</span>
+                                {/if}
+                                <button
+                                    type="button"
+                                    class="text-muted-foreground hover:text-foreground cursor-pointer"
+                                    onclick={() => removePendingUpload(up.id)}>×</button>
+                            </div>
+                        {/each}
+                    </div>
+                {/if}
+                <div class="flex w-full max-w-4xl items-end gap-2">
+                    <Button
+                        type="button"
+                        size="icon"
+                        variant="outline"
+                        class="size-8 shrink-0 cursor-pointer"
+                        onclick={() => uploadInputEl?.click()}
+                        aria-label="Attach file">
+                        <Paperclip class="h-4 w-4" />
+                    </Button>
+                    <input
+                        bind:this={uploadInputEl}
+                        type="file"
+                        multiple
+                        class="hidden"
+                        onchange={(e) =>
+                            handleFilesSelected((e.target as HTMLInputElement).files)} />
+                    <div class="flex-1">
+                        <UserInput
+                            bind:this={userInputRef}
+                            bind:value={userMessage}
+                            inputMode="chat"
+                            onSubmit={handleSubmit}
+                            onInput={(v) => (userMessage = v)}
+                            modeSelectorEnabled={false}
+                            placeholders={{
+                                chat: 'Ask a follow-up...',
+                                search: 'Search for something else...',
+                            }}
+                            {isStreaming}
+                            onStop={handleStop}
+                            maxWidth="max-w-4xl" />
+                    </div>
+                </div>
             </div>
         </div>
     </div>
