@@ -267,11 +267,15 @@ class SearchToolHandler:
         logger.info(
             f"Executing search_documents with query: {params.query}, document_id: {params.document_id}, context: {context}"
         )
+        search_user_id = None if context.skip_permission_check else context.user_id
+        search_user_email = (
+            None if context.skip_permission_check else context.user_email
+        )
         search_results = await _execute_search_tool(
             self._searcher,
             params,
-            context.user_id,
-            context.user_email,
+            search_user_id,
+            search_user_email,
             context.original_user_query,
         )
 
