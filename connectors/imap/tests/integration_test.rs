@@ -457,7 +457,7 @@ fn test_email_with_attachment_end_to_end() {
             permissions,
             ..
         } => {
-            assert!(document_id.contains("source-fin"));
+            assert!(document_id.starts_with("imap-thread:"));
             assert_eq!(metadata.title.as_deref(), Some("Q4 Financial Report"));
             assert_eq!(metadata.author.as_deref(), Some("finance@example.com"));
             // URL should be populated from template
@@ -475,18 +475,24 @@ fn test_email_with_attachment_end_to_end() {
 #[test]
 fn test_thread_document_id_stability_edge_cases() {
     // Case 1: Folder with special characters
-    let id1 = make_thread_document_id("src", "Work/Projects/2024", "<thread@example.com>");
-    let id2 = make_thread_document_id("src", "Work/Projects/2024", "<thread@example.com>");
+    let id1 = make_thread_document_id("Work/Projects/2024", "<thread@example.com>");
+    let id2 = make_thread_document_id("Work/Projects/2024", "<thread@example.com>");
     assert_eq!(id1, id2, "ID must be deterministic");
     assert!(id1.contains("%2F"), "Slashes must be encoded");
 
     // Case 2: Thread ID with special characters
-    let id3 = make_thread_document_id("src", "INBOX", "<msg+tag@sub.example.com>");
+    let id3 = make_thread_document_id("INBOX", "<msg+tag@sub.example.com>");
     assert!(id3.contains("%40"), "@ must be encoded");
     assert!(id3.contains("%2B"), "+ must be encoded");
 
     // Case 3: Unicode folder name
-    let id4 = make_thread_document_id("src", "Gelöschte Objekte", "<msg@de.example>");
-    let id5 = make_thread_document_id("src", "Gelöschte Objekte", "<msg@de.example>");
+    let id4 = make_thread_document_id("Gelöschte Objekte", "<msg@de.example>");
+    let id5 = make_thread_document_id("Gelöschte Objekte", "<msg@de.example>");
     assert_eq!(id4, id5, "Unicode folders must produce stable IDs");
+
+    // Case 4: Same thread across different sources produces the same ID
+    let id6 = make_thread_document_id("INBOX", "<list-msg@mailing-list.org>");
+    let id7 = make_thread_document_id("INBOX", "<list-msg@mailing-list.org>");
+    assert_eq!(id6, id7, "Same folder+thread across sources must produce same ID");
+    assert!(!id6.contains("source"), "source_id must not appear in thread document ID");
 }

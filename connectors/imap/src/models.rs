@@ -161,13 +161,8 @@ pub fn make_document_id(source_id: &str, folder: &str, uid: u32) -> String {
     format!("imap:{}:{}:{}", source_id, urlenc(folder), uid)
 }
 
-pub fn make_thread_document_id(source_id: &str, folder: &str, thread_id: &str) -> String {
-    format!(
-        "imap-thread:{}:{}:{}",
-        source_id,
-        urlenc(folder),
-        encode(thread_id)
-    )
+pub fn make_thread_document_id(folder: &str, thread_id: &str) -> String {
+    format!("imap-thread:{}:{}", urlenc(folder), encode(thread_id))
 }
 
 pub fn generate_thread_content(messages: &[ParsedEmail]) -> String {
@@ -229,7 +224,7 @@ pub fn build_thread_connector_event(
     // relying on first.thread_id(), which is order-dependent and can return an
     // intermediate message-ID when a dateless reply-without-References sorts first.
     let thread_id = derive_thread_root(&sorted_messages);
-    let document_id = make_thread_document_id(&source_id, &first.folder, &thread_id);
+    let document_id = make_thread_document_id(&first.folder, &thread_id);
 
     let title = sorted_messages
         .iter()

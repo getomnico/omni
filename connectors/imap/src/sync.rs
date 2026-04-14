@@ -703,7 +703,7 @@ impl SyncManager {
                 ConnectorEvent::DocumentDeleted {
                     sync_run_id: sync_run_id.to_string(),
                     source_id: source_id.to_string(),
-                    document_id: make_thread_document_id(source_id, folder, &thread_root),
+                    document_id: make_thread_document_id(folder, &thread_root),
                 }
             } else {
                 let content = generate_thread_content(&remaining_messages);

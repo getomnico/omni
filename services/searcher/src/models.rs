@@ -51,6 +51,13 @@ impl SearchRequest {
         self.limit.unwrap_or(20).min(100)
     }
 
+    /// Over-fetch limit for cross-source deduplication.
+    /// Fetches extra results so that after collapsing duplicates with
+    /// the same external_id, we still return the requested number.
+    pub fn dedup_limit(&self) -> i64 {
+        (self.limit() * 3).min(300)
+    }
+
     pub fn offset(&self) -> i64 {
         self.offset.unwrap_or(0).max(0)
     }

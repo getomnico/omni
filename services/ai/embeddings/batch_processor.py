@@ -417,6 +417,31 @@ class EmbeddingBatchProcessor:
                 self._docs_failed += 1
                 return
 
+            # Cross-source embedding cloning: if another document with the same
+            # external_id already has embeddings, clone them instead of
+            # regenerating.  This avoids duplicate vectors in the HNSW index
+            # for IMAP threads ingested from multiple accounts.
+            if doc.external_id:
+                donor_id = await self.documents_repo.find_embedded_duplicate(
+                    doc.external_id, item.document_id
+                )
+                if donor_id:
+                    await self.embeddings_repo.delete_for_documents([item.document_id])
+                    cloned = await self.embeddings_repo.clone_for_document(
+                        donor_id, item.document_id
+                    )
+                    if cloned > 0:
+                        await self.queue_repo.mark_completed([item.id])
+                        await self.documents_repo.update_embedding_status(
+                            [item.document_id], "completed"
+                        )
+                        self._docs_completed += 1
+                        self._embeddings_written += cloned
+                        logger.info(
+                            f"Cloned {cloned} embeddings from {donor_id} to {item.document_id} (cross-source dedup)"
+                        )
+                        return
+
             content_text = await self.content_storage.get_text(doc.content_id)
 
             if not content_text or not content_text.strip():

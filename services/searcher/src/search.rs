@@ -19,6 +19,7 @@ use shared::{
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -389,6 +390,13 @@ impl SearchEngine {
         if !parsed.boosted_source_types.is_empty() || !parsed.person_boosts.is_empty() {
             results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
         }
+
+        // Deduplicate cross-source results sharing the same external_id.
+        // IMAP email threads from different accounts but the same mailing list
+        // produce identical external_ids (source_id is not part of the ID).
+        // Keep the highest-scoring result per group; trim to requested limit.
+        results = Self::deduplicate_cross_source(results, request.limit() as usize);
+
         let total_count: i64 = filtered_facets
             .iter()
             .flat_map(|f| f.values.iter().filter_map(|fv| fv.count))
@@ -456,7 +464,7 @@ impl SearchEngine {
                 source_ids,
                 content_types,
                 attribute_filters,
-                request.limit(),
+                request.dedup_limit(),
                 request.offset(),
                 request.user_email().map(|e| e.as_str()),
                 user_groups,
@@ -530,7 +538,7 @@ impl SearchEngine {
                 query_embedding,
                 sources,
                 content_types,
-                request.limit(),
+                request.dedup_limit(),
                 request.offset(),
                 request.user_email().map(|e| e.as_str()),
                 request.document_id.as_deref(),
@@ -1098,8 +1106,8 @@ impl SearchEngine {
             .collect();
         final_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
 
-        if final_results.len() > request.limit() as usize {
-            final_results.truncate(request.limit() as usize);
+        if final_results.len() > request.dedup_limit() as usize {
+            final_results.truncate(request.dedup_limit() as usize);
         }
 
         info!(
@@ -1107,6 +1115,93 @@ impl SearchEngine {
             start_time.elapsed().as_millis()
         );
         Ok(final_results)
+    }
+
+    /// Deduplicate search results that share the same `external_id`.
+    ///
+    /// IMAP email threads from different accounts but the same mailing list
+    /// produce identical `external_id` values (source_id is not baked in).
+    /// Only results whose `external_id` starts with a known dedup-eligible
+    /// prefix participate; all others pass through unchanged.
+    ///
+    /// The highest-scoring result per group is kept (tiebreaker: message_count).
+    /// Permissions are NOT mutated — the SQL layer already filters by the
+    /// requesting user's access.
+    fn deduplicate_cross_source(results: Vec<SearchResult>, limit: usize) -> Vec<SearchResult> {
+        // Group indices by external_id for dedup-eligible results only.
+        let mut dedup_groups: HashMap<String, Vec<usize>> = HashMap::new();
+        for (idx, result) in results.iter().enumerate() {
+            if result.document.external_id.starts_with("imap-thread:") {
+                dedup_groups
+                    .entry(result.document.external_id.clone())
+                    .or_default()
+                    .push(idx);
+            }
+        }
+
+        // Fast path: nothing to deduplicate
+        if dedup_groups.values().all(|indices| indices.len() <= 1) {
+            let mut results = results;
+            results.truncate(limit);
+            return results;
+        }
+
+        // Collect indices to remove (lower-scoring duplicates)
+        let mut remove_indices: HashSet<usize> = HashSet::new();
+        for indices in dedup_groups.values() {
+            if indices.len() <= 1 {
+                continue;
+            }
+
+            // Find the best result: highest score, then highest message_count
+            let best_idx = *indices
+                .iter()
+                .max_by(|&&a, &&b| {
+                    let score_cmp = results[a]
+                        .score
+                        .partial_cmp(&results[b].score)
+                        .unwrap_or(Ordering::Equal);
+                    if score_cmp != Ordering::Equal {
+                        return score_cmp;
+                    }
+                    let count_a = results[a]
+                        .document
+                        .attributes
+                        .get("message_count")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let count_b = results[b]
+                        .document
+                        .attributes
+                        .get("message_count")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    count_a.cmp(&count_b)
+                })
+                .expect("indices is non-empty");
+
+            for &idx in indices {
+                if idx != best_idx {
+                    remove_indices.insert(idx);
+                }
+            }
+        }
+
+        let deduped: Vec<SearchResult> = results
+            .into_iter()
+            .enumerate()
+            .filter(|(idx, _)| !remove_indices.contains(idx))
+            .map(|(_, result)| result)
+            .take(limit)
+            .collect();
+
+        debug!(
+            "Cross-source dedup removed {} duplicates, returning {} results",
+            remove_indices.len(),
+            deduped.len()
+        );
+
+        deduped
     }
 
     fn generate_cache_key(&self, request: &SearchRequest) -> String {
