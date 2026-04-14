@@ -98,6 +98,15 @@ pub struct SearchResult {
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_type: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub also_in: Vec<AlsoIn>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlsoIn {
+    pub source_id: String,
+    pub document_id: String,
+    pub score: f32,
 }
 
 #[derive(Debug, Deserialize)]

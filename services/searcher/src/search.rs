@@ -1,5 +1,5 @@
 use crate::models::{
-    RecentSearchesResponse, SearchMode, SearchRequest, SearchResponse, SearchResult,
+    AlsoIn, RecentSearchesResponse, SearchMode, SearchRequest, SearchResponse, SearchResult,
 };
 use crate::operator_registry::OperatorRegistry;
 use crate::query_parser;
@@ -500,6 +500,7 @@ impl SearchEngine {
                 match_type: "fulltext".to_string(),
                 content: None,
                 source_type: None,
+                also_in: Vec::new(),
             });
         }
 
@@ -614,6 +615,7 @@ impl SearchEngine {
                     match_type: "semantic".to_string(),
                     content: None,
                     source_type: None,
+                    also_in: Vec::new(),
                 });
             }
         }
@@ -678,6 +680,7 @@ impl SearchEngine {
                             match_type: "full_content".to_string(),
                             content: None,
                             source_type: None,
+                            also_in: Vec::new(),
                         }]
                     } else {
                         // Check if specific line range is requested
@@ -740,6 +743,7 @@ impl SearchEngine {
                                     match_type: "line_range".to_string(),
                                     content: None,
                                     source_type: None,
+                                    also_in: Vec::new(),
                                 }]
                             }
                             _ => {
@@ -840,6 +844,7 @@ impl SearchEngine {
                     match_type: "fulltext".to_string(),
                     content: None,
                     source_type: None,
+                    also_in: Vec::new(),
                 }]
             } else {
                 error!(
@@ -978,6 +983,7 @@ impl SearchEngine {
                     match_type: "semantic".to_string(),
                     content: None,
                     source_type: None,
+                    also_in: Vec::new(),
                 });
             }
         }
@@ -1063,6 +1069,7 @@ impl SearchEngine {
                     match_type: "fulltext".to_string(),
                     content: result.content,
                     source_type: None,
+                    also_in: Vec::new(),
                 },
             );
         }
@@ -1092,6 +1099,7 @@ impl SearchEngine {
                         match_type: "semantic".to_string(),
                         content: result.content,
                         source_type: None,
+                        also_in: Vec::new(),
                     }
                 });
         }
@@ -1124,7 +1132,8 @@ impl SearchEngine {
     /// Only results whose `external_id` starts with a known dedup-eligible
     /// prefix participate; all others pass through unchanged.
     ///
-    /// The highest-scoring result per group is kept (tiebreaker: message_count).
+    /// The highest-scoring result per group is kept (tiebreaker: `updated_at`).
+    /// Collapsed duplicates are recorded in `also_in` on the winner.
     /// Permissions are NOT mutated — the SQL layer already filters by the
     /// requesting user's access.
     fn deduplicate_cross_source(results: Vec<SearchResult>, limit: usize) -> Vec<SearchResult> {
@@ -1146,14 +1155,16 @@ impl SearchEngine {
             return results;
         }
 
-        // Collect indices to remove (lower-scoring duplicates)
+        // Map from best_idx -> list of AlsoIn entries for its collapsed duplicates
+        let mut also_in_map: HashMap<usize, Vec<AlsoIn>> = HashMap::new();
         let mut remove_indices: HashSet<usize> = HashSet::new();
+
         for indices in dedup_groups.values() {
             if indices.len() <= 1 {
                 continue;
             }
 
-            // Find the best result: highest score, then highest message_count
+            // Find the best result: highest score, then most recently updated
             let best_idx = *indices
                 .iter()
                 .max_by(|&&a, &&b| {
@@ -1164,24 +1175,21 @@ impl SearchEngine {
                     if score_cmp != Ordering::Equal {
                         return score_cmp;
                     }
-                    let count_a = results[a]
+                    results[a]
                         .document
-                        .attributes
-                        .get("message_count")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let count_b = results[b]
-                        .document
-                        .attributes
-                        .get("message_count")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    count_a.cmp(&count_b)
+                        .updated_at
+                        .cmp(&results[b].document.updated_at)
                 })
                 .expect("indices is non-empty");
 
+            let entries = also_in_map.entry(best_idx).or_default();
             for &idx in indices {
                 if idx != best_idx {
+                    entries.push(AlsoIn {
+                        source_id: results[idx].document.source_id.clone(),
+                        document_id: results[idx].document.id.clone(),
+                        score: results[idx].score,
+                    });
                     remove_indices.insert(idx);
                 }
             }
@@ -1191,7 +1199,12 @@ impl SearchEngine {
             .into_iter()
             .enumerate()
             .filter(|(idx, _)| !remove_indices.contains(idx))
-            .map(|(_, result)| result)
+            .map(|(idx, mut result)| {
+                if let Some(entries) = also_in_map.remove(&idx) {
+                    result.also_in = entries;
+                }
+                result
+            })
             .take(limit)
             .collect();
 
