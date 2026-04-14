@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import pathlib
+import re
 from typing import cast
 from dataclasses import dataclass
 
@@ -62,6 +63,10 @@ from anthropic.types import (
     SearchResultBlockParam,
     CitationsConfigParam,
 )
+from evaluation.models import EvalTrace
+from evaluation.store import save_eval_trace
+
+DOC_ID_RE = re.compile(r"\[Document ID:\s*([a-zA-Z0-9\-_]+)\]")
 
 router = APIRouter(tags=["chat"])
 logger = logging.getLogger(__name__)
@@ -643,6 +648,7 @@ async def stream_chat(
                     break
 
                 logger.info(f"Iteration {iteration + 1}/{AGENT_MAX_ITERATIONS}")
+                assistant_message: MessageParam | None = None
                 content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
 
                 logger.info(f"Sending request to LLM provider")
@@ -877,6 +883,67 @@ async def stream_chat(
 
                 # Send complete tool result message to omni-web for database persistence
                 yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
+
+            # --- Evaluation Telemetry Hook ---
+            try:
+                final_answer_text = ""
+                final_citations = []
+                retrieved_doc_ids = set()
+                context_highlights = []
+
+                if assistant_message and assistant_message.get("role") == "assistant":
+                    for block in assistant_message.get("content", []):
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            final_answer_text += block.get("text", "")
+                            citations = block.get("citations", [])
+                            if citations:
+                                final_citations.extend(citations)
+
+                for msg in conversation_messages:
+                    if msg.get("role") == "user":
+                        content = msg.get("content")
+                        if isinstance(content, list):
+                            for block in content:
+                                if isinstance(block, dict) and block.get("type") == "tool_result" and isinstance(block.get("content"), list):
+                                    for sub in block.get("content", []):
+                                        # Standard text blocks (might contain doc id)
+                                        if isinstance(sub, dict) and sub.get("type") == "text":
+                                            val = sub.get("text", "")
+                                            match = DOC_ID_RE.search(val)
+                                            if match:
+                                                retrieved_doc_ids.add(match.group(1))
+                                        
+                                        # Anthropic Search results (contain doc id + highlight content)
+                                        elif isinstance(sub, dict) and sub.get("type") == "search_result":
+                                            # Try to find [Document ID: ...] in the metadata blocks
+                                            for inner in sub.get("content", []):
+                                                if isinstance(inner, dict) and inner.get("type") == "text":
+                                                    text_val = inner.get("text", "")
+                                                    id_match = DOC_ID_RE.search(text_val)
+                                                    if id_match:
+                                                        doc_id = id_match.group(1)
+                                                        retrieved_doc_ids.add(doc_id)
+                                                    
+                                                    # If it's not a metadata block, it might be a highlight
+                                                    if not text_val.startswith("["):
+                                                        context_highlights.append({
+                                                            "text": text_val,
+                                                            "metadata": {"source": sub.get("source", "unknown")}
+                                                        })
+
+                trace = EvalTrace(
+                    query=original_user_query or "",
+                    retrieved_doc_ids=list(retrieved_doc_ids),
+                    context_chunks=context_highlights,  # capturing text context for RAGAs
+                    generated_answer=final_answer_text,
+                    citations=final_citations,
+                    chat_id=chat_id,
+                    user_id=tool_user_id
+                )
+                asyncio.create_task(save_eval_trace(trace))
+            except Exception as e:
+                logger.error(f"Failed to dispatch evaluation trace: {e}")
+            # --------------------------------
 
             yield f"event: end_of_stream\ndata: Stream ended\n\n"
 

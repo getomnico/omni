@@ -1,0 +1,15 @@
+- id: "eval-001"
+  query: "What is Omni?"
+  task_family: "current_state"
+  temporal_type: "none"
+  reference_answer: "Omni is an open-source workplace search platform that indexes documents from multiple data sources and provides unified search with AI-powered answers."
+  reference_doc_ids: ["README.md"]
+  tags: ["basic", "intro"]
+
+- id: "eval-002"
+  query: "How do I build the Rust services?"
+  task_family: "current_state"
+  temporal_type: "current"
+  reference_answer: "You can build the Rust services by running `cargo build --workspace`. To test them, use `cargo test --workspace`."
+  reference_doc_ids: ["CLAUDE.md"]
+  tags: ["build", "rust"]
