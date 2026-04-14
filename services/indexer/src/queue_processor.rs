@@ -883,16 +883,6 @@ impl QueueProcessor {
         // Ensure last_indexed_at is after created_at
         let last_indexed_at = now + std::time::Duration::from_millis(1);
 
-        // Extract content_fingerprint from connector metadata if present.
-        // Connectors (e.g. IMAP) compute a source-independent fingerprint so
-        // the same entity across multiple sources can be identified for dedup.
-        let content_fingerprint = metadata
-            .extra
-            .as_ref()
-            .and_then(|extra| extra.get("content_fingerprint"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
         Ok(Document {
             id: ulid::Ulid::new().to_string(),
             source_id,
@@ -906,7 +896,6 @@ impl QueueProcessor {
             metadata: metadata_json,
             permissions: permissions_json,
             attributes: attributes_json,
-            content_fingerprint,
             created_at: now,
             updated_at: now,
             last_indexed_at,
@@ -1284,7 +1273,6 @@ impl ProcessorContext {
             metadata: metadata_json,
             permissions: permissions_json,
             attributes: attributes_json,
-            content_fingerprint: None,
             created_at: now,
             updated_at: now,
             last_indexed_at: now,

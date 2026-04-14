@@ -345,8 +345,7 @@ impl EmbeddingRepository {
             SELECT
                 d.id, d.source_id, d.external_id, d.title, d.content_id,
                 d.content_type, d.file_size, d.file_extension, d.url,
-                d.metadata, d.permissions, d.attributes, d.content_fingerprint,
-                d.created_at, d.updated_at, d.last_indexed_at,
+                d.metadata, d.permissions, d.attributes, d.created_at, d.updated_at, d.last_indexed_at,
                 e.embedding <=> $1 as distance,
                 e.chunk_start_offset,
                 e.chunk_end_offset
@@ -379,7 +378,6 @@ impl EmbeddingRepository {
                     metadata: row.get("metadata"),
                     permissions: row.get("permissions"),
                     attributes: row.get("attributes"),
-                    content_fingerprint: row.get("content_fingerprint"),
                     created_at: row.get("created_at"),
                     updated_at: row.get("updated_at"),
                     last_indexed_at: row.get("last_indexed_at"),

@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use mailparse::{MailAddr, MailHeaderMap, ParsedMail};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use std::collections::{HashMap, HashSet};
 use time::OffsetDateTime;
@@ -307,20 +306,6 @@ pub fn build_thread_connector_event(
     );
     extra.insert("message_ids".to_string(), json!(message_ids));
     extra.insert("account".to_string(), json!(account_display_name));
-
-    // Cross-source dedup fingerprint: SHA256 of the canonical thread_id (RFC 2822
-    // Message-ID / References[0]). This is identical across IMAP accounts for the
-    // same email thread, enabling deduplication at search and embedding time.
-    let fingerprint = {
-        let mut hasher = Sha256::new();
-        hasher.update(b"imap-thread:");
-        hasher.update(thread_id.as_bytes());
-        format!("{:x}", hasher.finalize())
-    };
-    extra.insert(
-        "content_fingerprint".to_string(),
-        json!(fingerprint),
-    );
 
     let url = webmail_url_template.map(|template| {
         template

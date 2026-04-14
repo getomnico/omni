@@ -417,30 +417,6 @@ class EmbeddingBatchProcessor:
                 self._docs_failed += 1
                 return
 
-            # Check for cross-source duplicate: if another document shares the
-            # same content_fingerprint and already has embeddings, clone them
-            # instead of regenerating (saves compute and keeps vectors identical).
-            if doc.content_fingerprint:
-                donor_id = await self.documents_repo.find_embedded_duplicate(
-                    doc.content_fingerprint, item.document_id
-                )
-                if donor_id:
-                    await self.embeddings_repo.delete_for_documents([item.document_id])
-                    cloned = await self.embeddings_repo.clone_for_document(
-                        donor_id, item.document_id
-                    )
-                    if cloned > 0:
-                        await self.queue_repo.mark_completed([item.id])
-                        await self.documents_repo.update_embedding_status(
-                            [item.document_id], "completed"
-                        )
-                        self._docs_completed += 1
-                        self._embeddings_written += cloned
-                        logger.info(
-                            f"Cloned {cloned} embeddings from {donor_id} to {item.document_id} (cross-source dedup)"
-                        )
-                        return
-
             content_text = await self.content_storage.get_text(doc.content_id)
 
             if not content_text or not content_text.strip():
