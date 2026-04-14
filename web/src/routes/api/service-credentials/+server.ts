@@ -12,10 +12,6 @@ export const POST: RequestHandler = async ({ request, locals, fetch }) => {
         throw error(401, 'Unauthorized')
     }
 
-    if (locals.user.role !== 'admin') {
-        throw error(403, 'Admin access required')
-    }
-
     const { sourceId, provider, authType, principalEmail, credentials, config } =
         await request.json()
 
@@ -40,6 +36,12 @@ export const POST: RequestHandler = async ({ request, locals, fetch }) => {
 
     if (!source) {
         throw error(404, 'Source not found')
+    }
+
+    // Allow source owner in addition to admins (e.g. OAuth callback for non-admin users)
+    const isOwner = source.createdBy === locals.user.id
+    if (locals.user.role !== 'admin' && !isOwner) {
+        throw error(403, 'Forbidden')
     }
 
     try {

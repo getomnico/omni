@@ -3,10 +3,9 @@ import type { RequestHandler } from './$types'
 import { GoogleConnectorOAuthService } from '$lib/server/oauth/googleConnector'
 import { logger } from '$lib/server/logger'
 import { db } from '$lib/server/db'
-import { sources, serviceCredentials } from '$lib/server/db/schema'
+import { sources } from '$lib/server/db/schema'
 import { and, eq } from 'drizzle-orm'
 import { ulid } from 'ulid'
-import { encryptConfig } from '$lib/server/crypto/encryption'
 
 const SOURCE_NAMES: Record<string, string> = {
     google_drive: 'Google Drive (OAuth)',
@@ -91,26 +90,27 @@ export const GET: RequestHandler = async ({ url, locals, fetch: svelteFetch }) =
                 })
                 .returning()
 
-            // Store credentials directly in DB (bypasses admin-only API)
-            await db.delete(serviceCredentials).where(eq(serviceCredentials.sourceId, newSource.id))
-            await db.insert(serviceCredentials).values({
-                id: ulid(),
-                sourceId: newSource.id,
-                provider: 'google',
-                authType: 'oauth',
-                principalEmail: userEmail,
-                credentials: encryptConfig(credentials),
-                config: {},
+            // Store credentials via API (triggers initial sync automatically)
+            const credResponse = await svelteFetch('/api/service-credentials', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sourceId: newSource.id,
+                    provider: 'google',
+                    authType: 'oauth',
+                    principalEmail: userEmail,
+                    credentials,
+                    config: {},
+                }),
             })
 
-            logger.info(`Stored OAuth credentials for source ${newSource.id} (${serviceType})`)
-
-            // Trigger initial sync
-            try {
-                await svelteFetch(`/api/sources/${newSource.id}/sync`, { method: 'POST' })
-            } catch (syncError) {
-                logger.warn(`Failed to trigger initial sync for source ${newSource.id}:`, syncError)
+            if (!credResponse.ok) {
+                const errText = await credResponse.text()
+                logger.error(`Failed to store OAuth credentials for source ${newSource.id}:`, errText)
+                throw new Error(`Failed to store credentials for ${serviceType}`)
             }
+
+            logger.info(`Stored OAuth credentials for source ${newSource.id} (${serviceType})`)
         }
     } catch (err: any) {
         if (err?.status === 302) throw err // re-throw redirects
