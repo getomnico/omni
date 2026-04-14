@@ -37,6 +37,14 @@ dependencies = [
     "croniter>=2.0.0",
 ]
 
+[project.optional-dependencies]
+eval = [
+    "ragas>=0.2.0",
+    "datasets>=2.18.0",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0.1",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
@@ -95,6 +103,7 @@ include = [
     "logger*",
     "agents*",
     "email_service*",
+    "evaluation*",
 ]
 
 [dependency-groups]
