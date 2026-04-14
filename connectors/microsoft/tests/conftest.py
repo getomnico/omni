@@ -41,6 +41,13 @@ class MockGraphAPI:
         self.calendar_events: dict[str, list[dict[str, Any]]] = {}
         self.sites: list[dict[str, Any]] = []
         self.site_drive_items: dict[str, list[dict[str, Any]]] = {}
+        # site_id -> [drive dicts]; drive_id -> [item dicts]
+        self.site_drives: dict[str, list[dict[str, Any]]] = {}
+        self.drive_items_by_drive: dict[str, list[dict[str, Any]]] = {}
+        # site_id -> {"status": int, "body": dict} for forcing failures
+        self.site_drives_errors: dict[str, dict[str, Any]] = {}
+        self.drive_delta_errors: dict[str, list[dict[str, Any]]] = {}
+        self.site_diagnostics: dict[str, dict[str, Any]] = {}
         self.file_contents: dict[str, bytes] = {}
         self.groups: list[dict[str, Any]] = []
         self.group_members: dict[str, list[dict[str, Any]]] = {}
@@ -61,6 +68,11 @@ class MockGraphAPI:
         self.calendar_events.clear()
         self.sites.clear()
         self.site_drive_items.clear()
+        self.site_drives.clear()
+        self.drive_items_by_drive.clear()
+        self.site_drives_errors.clear()
+        self.drive_delta_errors.clear()
+        self.site_diagnostics.clear()
         self.file_contents.clear()
         self.groups.clear()
         self.group_members.clear()
@@ -88,8 +100,45 @@ class MockGraphAPI:
     def add_site(self, site: dict[str, Any]) -> None:
         self.sites.append(site)
 
+    def add_site_drive(self, site_id: str, drive: dict[str, Any]) -> None:
+        self.site_drives.setdefault(site_id, []).append(drive)
+
+    def add_drive_item(self, drive_id: str, item: dict[str, Any]) -> None:
+        self.drive_items_by_drive.setdefault(drive_id, []).append(item)
+
     def add_site_drive_item(self, site_id: str, item: dict[str, Any]) -> None:
+        """Backwards-compat helper: registers a default drive for the site
+        (deriving the drive id from the item's parentReference) and adds the
+        item to that drive."""
+        drive_id = item.get("parentReference", {}).get("driveId")
+        if drive_id is None:
+            raise ValueError(
+                "add_site_drive_item now requires parentReference.driveId on the item"
+            )
         self.site_drive_items.setdefault(site_id, []).append(item)
+        if not any(d["id"] == drive_id for d in self.site_drives.get(site_id, [])):
+            self.add_site_drive(
+                site_id,
+                {"id": drive_id, "name": "Documents", "driveType": "documentLibrary"},
+            )
+        self.add_drive_item(drive_id, item)
+
+    def set_site_drives_error(
+        self, site_id: str, status: int, body: dict[str, Any] | None = None
+    ) -> None:
+        self.site_drives_errors[site_id] = {"status": status, "body": body or {}}
+
+    def queue_drive_delta_error(
+        self, drive_id: str, status: int, body: dict[str, Any] | None = None
+    ) -> None:
+        """Queue a one-shot error response for the next /drives/{id}/root/delta
+        call. Subsequent calls return the normal item list."""
+        self.drive_delta_errors.setdefault(drive_id, []).append(
+            {"status": status, "body": body or {}}
+        )
+
+    def set_site_diagnostic(self, site_id: str, payload: dict[str, Any]) -> None:
+        self.site_diagnostics[site_id] = payload
 
     def set_file_content(self, drive_id: str, item_id: str, content: bytes) -> None:
         self.file_contents[f"{drive_id}:{item_id}"] = content
@@ -213,6 +262,32 @@ class MockGraphAPI:
             delta_link = f"{base_url}/sites/{sid}/drive/root/delta?deltatoken=latest"
             return JSONResponse({"value": items, "@odata.deltaLink": delta_link})
 
+        async def site_drives_list(request: Request) -> JSONResponse:
+            sid = request.path_params["sid"]
+            err = mock.site_drives_errors.get(sid)
+            if err is not None:
+                return JSONResponse(err["body"], status_code=err["status"])
+            return JSONResponse({"value": mock.site_drives.get(sid, [])})
+
+        async def site_get(request: Request) -> JSONResponse:
+            sid = request.path_params["sid"]
+            payload = mock.site_diagnostics.get(sid)
+            if payload is None:
+                return JSONResponse(
+                    {"error": {"code": "itemNotFound"}}, status_code=404
+                )
+            return JSONResponse(payload)
+
+        async def drive_root_delta(request: Request) -> JSONResponse:
+            did = request.path_params["did"]
+            queued = mock.drive_delta_errors.get(did)
+            if queued:
+                err = queued.pop(0)
+                return JSONResponse(err["body"], status_code=err["status"])
+            items = mock.drive_items_by_drive.get(did, [])
+            delta_link = f"{base_url}/v1.0/drives/{did}/root/delta?deltatoken=latest"
+            return JSONResponse({"value": items, "@odata.deltaLink": delta_link})
+
         async def team_channels(request: Request) -> JSONResponse:
             tid = request.path_params["tid"]
             channels = mock.team_channels.get(tid, [])
@@ -278,7 +353,10 @@ class MockGraphAPI:
             Route("/v1.0/groups", list_groups),
             Route("/v1.0/groups/{gid}/members", group_members),
             Route("/v1.0/sites", list_sites),
+            Route("/v1.0/sites/{sid}", site_get),
+            Route("/v1.0/sites/{sid}/drives", site_drives_list),
             Route("/v1.0/sites/{sid}/drive/root/delta", site_drive_delta),
+            Route("/v1.0/drives/{did}/root/delta", drive_root_delta),
             Route("/v1.0/teams/{tid}/channels", team_channels),
             Route(
                 "/v1.0/teams/{tid}/channels/{cid}/messages/delta",
@@ -314,6 +392,33 @@ def _wait_for_port(port: int, host: str = "localhost", timeout: float = 10) -> N
         except OSError:
             time.sleep(0.1)
     raise TimeoutError(f"Port {port} not open after {timeout}s")
+
+
+def _wait_for_registration(cm_url: str, source_type: str, timeout: float = 15) -> None:
+    """Poll CM until the connector has registered itself.
+
+    Registration runs asynchronously inside the connector's lifespan loop, so
+    binding the port doesn't guarantee the manifest is in CM's Redis yet.
+    """
+    deadline = time.monotonic() + timeout
+    last_err: Exception | None = None
+    last_payload: object = None
+    while time.monotonic() < deadline:
+        try:
+            resp = httpx.get(f"{cm_url}/connectors", timeout=2)
+            if resp.status_code == 200:
+                manifests = resp.json()
+                last_payload = manifests
+                for m in manifests:
+                    if m.get("source_type") == source_type and m.get("healthy"):
+                        return
+        except Exception as e:
+            last_err = e
+        time.sleep(0.2)
+    raise TimeoutError(
+        f"Connector did not register source_type={source_type} within "
+        f"{timeout}s: last_err={last_err}"
+    )
 
 
 async def _create_ms_source(
@@ -368,13 +473,38 @@ def connector_port() -> int:
     return _free_port()
 
 
+@pytest_asyncio.fixture(scope="session")
+async def harness() -> OmniTestHarness:
+    """Session-scoped OmniTestHarness with infra + connector-manager started.
+
+    Does not depend on `connector_server` — CM learns of connectors via the
+    `/register` call the connector itself makes after startup, not via any
+    pre-known URL. Starting the harness first means `connector_server` can
+    set CONNECTOR_MANAGER_URL to the real CM URL before SdkClient caches it.
+    """
+    h = OmniTestHarness()
+    await h.start_infra()
+    await h.start_connector_manager()
+
+    yield h
+    await h.teardown()
+
+
 @pytest.fixture(scope="session")
-def connector_server(connector_port: int) -> str:
-    """Start the Microsoft connector as a uvicorn server in a daemon thread."""
+def connector_server(connector_port: int, harness: OmniTestHarness) -> str:
+    """Start the Microsoft connector as a uvicorn server in a daemon thread.
+
+    Depends on `harness` so we can point CONNECTOR_MANAGER_URL at the real CM
+    before `create_app` runs (SdkClient reads the env var once at construction
+    and caches it).
+    """
     import os
 
-    os.environ.setdefault("CONNECTOR_MANAGER_URL", "http://localhost:0")
-    os.environ.setdefault("CONNECTOR_HOST_NAME", "localhost")
+    os.environ["CONNECTOR_MANAGER_URL"] = harness.connector_manager_url
+    # Connector advertises this hostname in its registration manifest. CM
+    # health-checks the URL from inside its container, so localhost would
+    # resolve to the container itself — use host.docker.internal instead.
+    os.environ["CONNECTOR_HOST_NAME"] = "host.docker.internal"
     os.environ.setdefault("PORT", str(connector_port))
 
     from ms_connector import MicrosoftConnector
@@ -390,29 +520,8 @@ def connector_server(connector_port: int) -> str:
     thread.start()
 
     _wait_for_port(connector_port)
+    _wait_for_registration(harness.connector_manager_url, "one_drive")
     return f"http://localhost:{connector_port}"
-
-
-@pytest_asyncio.fixture(scope="session")
-async def harness(
-    connector_server: str,
-    connector_port: int,
-) -> OmniTestHarness:
-    """Session-scoped OmniTestHarness with all infrastructure started."""
-    import os
-
-    h = OmniTestHarness()
-    await h.start_infra()
-    await h.start_connector_manager(
-        {
-            "MICROSOFT_CONNECTOR_URL": f"http://host.docker.internal:{connector_port}",
-        }
-    )
-
-    os.environ["CONNECTOR_MANAGER_URL"] = h.connector_manager_url
-
-    yield h
-    await h.teardown()
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +536,7 @@ async def seed(harness: OmniTestHarness) -> SeedHelper:
 
 @pytest_asyncio.fixture
 async def onedrive_source_id(
+    connector_server: str,
     seed: SeedHelper,
     mock_graph_server: str,
     mock_graph_api: MockGraphAPI,
@@ -436,6 +546,7 @@ async def onedrive_source_id(
 
 @pytest_asyncio.fixture
 async def sharepoint_source_id(
+    connector_server: str,
     seed: SeedHelper,
     mock_graph_server: str,
     mock_graph_api: MockGraphAPI,
@@ -447,6 +558,7 @@ async def sharepoint_source_id(
 
 @pytest_asyncio.fixture
 async def outlook_source_id(
+    connector_server: str,
     seed: SeedHelper,
     mock_graph_server: str,
     mock_graph_api: MockGraphAPI,
@@ -456,6 +568,7 @@ async def outlook_source_id(
 
 @pytest_asyncio.fixture
 async def outlook_calendar_source_id(
+    connector_server: str,
     seed: SeedHelper,
     mock_graph_server: str,
     mock_graph_api: MockGraphAPI,
@@ -467,6 +580,7 @@ async def outlook_calendar_source_id(
 
 @pytest_asyncio.fixture
 async def ms_teams_source_id(
+    connector_server: str,
     seed: SeedHelper,
     mock_graph_server: str,
     mock_graph_api: MockGraphAPI,

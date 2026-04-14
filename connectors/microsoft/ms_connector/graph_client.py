@@ -1,6 +1,7 @@
 """Thin async wrapper over Microsoft Graph REST API with retry logic."""
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator
 from functools import wraps
@@ -16,11 +17,76 @@ GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
 
 
 class GraphAPIError(Exception):
-    """Base exception for Graph API errors."""
+    """Base exception for Graph API errors.
 
-    def __init__(self, message: str, status_code: int | None = None):
+    Preserves Graph's structured error body (`error.code`, `innerError.code`,
+    `request-id`) when available so callers can log root-cause information
+    instead of just the HTTP status. See
+    https://learn.microsoft.com/en-us/graph/errors for the response shape.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int | None = None,
+        error_code: str | None = None,
+        inner_error_code: str | None = None,
+        request_id: str | None = None,
+        body: str | None = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
+        self.error_code = error_code
+        self.inner_error_code = inner_error_code
+        self.request_id = request_id
+        self.body = body
+
+    def diagnostic(self) -> str:
+        parts = [f"status={self.status_code}"]
+        if self.error_code:
+            parts.append(f"code={self.error_code}")
+        if self.inner_error_code:
+            parts.append(f"inner_code={self.inner_error_code}")
+        if self.request_id:
+            parts.append(f"request_id={self.request_id}")
+        parts.append(f"message={super().__str__()}")
+        return " ".join(parts)
+
+
+def _parse_graph_error(response: httpx.Response) -> dict[str, str | None]:
+    """Extract structured fields from a Graph error response body."""
+    try:
+        body = response.json()
+    except (json.JSONDecodeError, ValueError):
+        return {
+            "message": response.text,
+            "error_code": None,
+            "inner_error_code": None,
+            "request_id": None,
+            "body": response.text,
+        }
+    err = body.get("error", {}) if isinstance(body, dict) else {}
+    inner = err.get("innerError") or err.get("innererror") or {}
+    return {
+        "message": err.get("message") or response.text,
+        "error_code": err.get("code"),
+        "inner_error_code": inner.get("code") if isinstance(inner, dict) else None,
+        "request_id": (inner.get("request-id") if isinstance(inner, dict) else None),
+        "body": response.text,
+    }
+
+
+def _raise_graph_error(response: httpx.Response, source: httpx.HTTPStatusError) -> None:
+    parsed = _parse_graph_error(response)
+    cls = AuthenticationError if response.status_code == 401 else GraphAPIError
+    raise cls(
+        parsed["message"] or f"HTTP {response.status_code}",
+        status_code=response.status_code,
+        error_code=parsed["error_code"],
+        inner_error_code=parsed["inner_error_code"],
+        request_id=parsed["request_id"],
+        body=parsed["body"],
+    ) from source
 
 
 class AuthenticationError(GraphAPIError):
@@ -54,20 +120,11 @@ def with_retry(max_retries: int = 3, base_delay: float = 1.0):
 
                     if status == 401:
                         if auth_retried:
-                            raise AuthenticationError(
-                                "Authentication failed after token refresh",
-                                status_code=401,
-                            ) from e
+                            _raise_graph_error(e.response, e)
                         auth_retried = True
                         logger.warning("Got 401, refreshing token and retrying")
                         self._refresh_token()
                         continue
-
-                    if status == 404:
-                        raise GraphAPIError(
-                            f"Resource not found: {e.response.text}",
-                            status_code=404,
-                        ) from e
 
                     if status == 429:
                         retry_after = int(e.response.headers.get("Retry-After", "10"))
@@ -90,10 +147,7 @@ def with_retry(max_retries: int = 3, base_delay: float = 1.0):
                         await asyncio.sleep(delay)
                         continue
 
-                    raise GraphAPIError(
-                        f"API error {status}: {e.response.text}",
-                        status_code=status,
-                    ) from e
+                    _raise_graph_error(e.response, e)
 
             raise GraphAPIError(
                 f"Max retries exceeded: {last_exception}"
@@ -266,6 +320,29 @@ class GraphClient:
         ):
             permissions.append(perm)
         return permissions
+
+    async def list_site_drives(self, site_id: str) -> list[dict[str, Any]]:
+        """Enumerate all document libraries (drives) on a SharePoint site."""
+        drives: list[dict[str, Any]] = []
+        async for drive in self.get_paginated(
+            f"/sites/{site_id}/drives",
+            params={"$select": "id,name,driveType,webUrl"},
+        ):
+            drives.append(drive)
+        return drives
+
+    async def get_site_diagnostic(self, site_id: str) -> dict[str, Any]:
+        """Fetch site fields useful for classifying access-denied root causes.
+
+        `isPersonalSite` and `siteCollection.archivalDetails` are the only
+        properties Microsoft documents as stable signals — see
+        https://learn.microsoft.com/en-us/graph/api/resources/site and
+        https://learn.microsoft.com/en-us/graph/api/resources/sitearchivaldetails.
+        """
+        return await self.get(
+            f"/sites/{site_id}",
+            params={"$select": "id,webUrl,isPersonalSite,siteCollection"},
+        )
 
     async def list_teams(self) -> list[dict[str, Any]]:
         """List all teams in the tenant (M365 groups with Teams provisioned)."""

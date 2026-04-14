@@ -271,6 +271,156 @@ async def test_sharepoint_sync(
     assert state is not None, "connector_state should be saved after sync"
 
 
+async def test_sharepoint_multi_drive_and_folder_sync(
+    harness, seed, sharepoint_source_id, mock_graph_api, cm_client: httpx.AsyncClient
+):
+    """Two drives on one site, with a folder + two files across them.
+
+    Verifies that we (a) enumerate every drive on the site, not just the
+    default, and (b) emit folder items as documents (unlike OneDrive).
+    """
+    site_id = "site-multi"
+    drive_a = "drive-multi-a"
+    drive_b = "drive-multi-b"
+
+    mock_graph_api.add_site(
+        {
+            "id": site_id,
+            "displayName": "Multi-Library Site",
+            "webUrl": "https://contoso.sharepoint.com/sites/multi",
+        }
+    )
+    mock_graph_api.add_site_drive(
+        site_id, {"id": drive_a, "name": "Documents", "driveType": "documentLibrary"}
+    )
+    mock_graph_api.add_site_drive(
+        site_id, {"id": drive_b, "name": "Specs", "driveType": "documentLibrary"}
+    )
+
+    mock_graph_api.add_drive_item(
+        drive_a,
+        {
+            "id": "folder-a",
+            "name": "Designs",
+            "folder": {"childCount": 1},
+            "webUrl": "https://contoso.sharepoint.com/sites/multi/Documents/Designs",
+            "createdDateTime": "2024-04-01T10:00:00Z",
+            "lastModifiedDateTime": "2024-06-10T14:00:00Z",
+            "parentReference": {"driveId": drive_a, "path": "/drive/root:"},
+        },
+    )
+    mock_graph_api.add_drive_item(
+        drive_a,
+        {
+            "id": "file-a",
+            "name": "intro.md",
+            "file": {"mimeType": "text/markdown"},
+            "size": 100,
+            "webUrl": "https://contoso.sharepoint.com/sites/multi/Documents/intro.md",
+            "createdDateTime": "2024-04-01T10:00:00Z",
+            "lastModifiedDateTime": "2024-06-10T14:00:00Z",
+            "parentReference": {"driveId": drive_a, "path": "/drive/root:"},
+        },
+    )
+    mock_graph_api.set_file_content(drive_a, "file-a", b"# Intro")
+    mock_graph_api.add_drive_item(
+        drive_b,
+        {
+            "id": "file-b",
+            "name": "spec.md",
+            "file": {"mimeType": "text/markdown"},
+            "size": 200,
+            "webUrl": "https://contoso.sharepoint.com/sites/multi/Specs/spec.md",
+            "createdDateTime": "2024-04-01T10:00:00Z",
+            "lastModifiedDateTime": "2024-06-10T14:00:00Z",
+            "parentReference": {"driveId": drive_b, "path": "/drive/root:"},
+        },
+    )
+    mock_graph_api.set_file_content(drive_b, "file-b", b"# Spec")
+
+    resp = await cm_client.post(
+        "/sync",
+        json={"source_id": sharepoint_source_id, "sync_type": "full"},
+    )
+    assert resp.status_code == 200, resp.text
+    sync_run_id = resp.json()["sync_run_id"]
+    row = await wait_for_sync(harness.db_pool, sync_run_id, timeout=60)
+    assert row["status"] == "completed", row.get("error_message")
+
+    events = await get_events(harness.db_pool, sharepoint_source_id)
+    doc_ids = {
+        e["payload"]["document_id"]
+        for e in events
+        if e["event_type"] == "document_created"
+    }
+    assert f"sharepoint:{site_id}:folder-a" in doc_ids, doc_ids
+    assert f"sharepoint:{site_id}:file-a" in doc_ids, doc_ids
+    assert f"sharepoint:{site_id}:file-b" in doc_ids, doc_ids
+
+    state = await seed.get_connector_state(sharepoint_source_id)
+    tokens = state.get("drive_delta_tokens", {})
+    assert drive_a in tokens and drive_b in tokens, tokens
+
+
+async def test_sharepoint_delta_resync_on_410(
+    harness, seed, sharepoint_source_id, mock_graph_api, cm_client: httpx.AsyncClient
+):
+    """First sync gets a token; second sync's delta returns 410 so we
+    transparently restart from scratch and still emit the document."""
+    site_id = "site-resync"
+    drive_id = "drive-resync"
+
+    mock_graph_api.add_site(
+        {
+            "id": site_id,
+            "displayName": "Resync Site",
+            "webUrl": "https://contoso.sharepoint.com/sites/resync",
+        }
+    )
+    mock_graph_api.add_site_drive(
+        site_id, {"id": drive_id, "name": "Documents", "driveType": "documentLibrary"}
+    )
+    mock_graph_api.add_drive_item(
+        drive_id,
+        {
+            "id": "doc-1",
+            "name": "doc.md",
+            "file": {"mimeType": "text/markdown"},
+            "size": 50,
+            "webUrl": "https://contoso.sharepoint.com/sites/resync/Documents/doc.md",
+            "createdDateTime": "2024-04-01T10:00:00Z",
+            "lastModifiedDateTime": "2024-06-10T14:00:00Z",
+            "parentReference": {"driveId": drive_id, "path": "/drive/root:"},
+        },
+    )
+    mock_graph_api.set_file_content(drive_id, "doc-1", b"# Doc")
+
+    # First sync — populates a delta token.
+    resp = await cm_client.post(
+        "/sync",
+        json={"source_id": sharepoint_source_id, "sync_type": "full"},
+    )
+    sync_run_id = resp.json()["sync_run_id"]
+    row = await wait_for_sync(harness.db_pool, sync_run_id, timeout=60)
+    assert row["status"] == "completed"
+
+    state = await seed.get_connector_state(sharepoint_source_id)
+    assert drive_id in state.get("drive_delta_tokens", {})
+
+    # Second sync — first delta call returns 410, retry should succeed.
+    mock_graph_api.queue_drive_delta_error(
+        drive_id, 410, {"error": {"code": "resyncRequired", "message": "Token gone"}}
+    )
+
+    resp = await cm_client.post(
+        "/sync",
+        json={"source_id": sharepoint_source_id, "sync_type": "incremental"},
+    )
+    sync_run_id = resp.json()["sync_run_id"]
+    row = await wait_for_sync(harness.db_pool, sync_run_id, timeout=60)
+    assert row["status"] == "completed", row.get("error_message")
+
+
 async def test_group_membership_sync(
     harness, seed, onedrive_source_id, mock_graph_api, cm_client: httpx.AsyncClient
 ):
