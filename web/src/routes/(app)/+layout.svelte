@@ -48,8 +48,9 @@
     import * as Avatar from '$lib/components/ui/avatar'
     import type { Chat } from '$lib/server/db/schema'
 
-    import omniLogoLight from '$lib/images/icons/omni-logo-256.png'
-    import omniLogoDark from '$lib/images/icons/omni-logo-dark-256.png'
+    import { themeStore } from '$lib/themes/store.svelte'
+    import { applyTheme } from '$lib/themes/engine'
+    import ThemePicker from '$lib/components/theme-picker.svelte'
 
     interface Props {
         data: LayoutData
@@ -178,6 +179,10 @@
 
     const displayedChats = $derived(searchQuery.trim() ? searchResults : [])
     const showSearchResults = $derived(searchQuery.trim().length > 0)
+
+    $effect(() => {
+        applyTheme(themeStore.current)
+    })
 </script>
 
 <!-- Delete confirmation dialog -->
@@ -237,14 +242,14 @@
             <div class="flex flex-1 items-center justify-between">
                 <a href="/" class="flex items-center gap-1.5 group-data-[collapsible=icon]:hidden">
                     <img
-                        src={omniLogoLight}
+                        src={themeStore.current.omniLogoLight}
                         alt="Omni logo"
-                        class="ml-1 h-5 w-5 rounded-sm dark:hidden" />
+                        class="omni-logo-light ml-1 h-5 w-5 rounded-sm" />
                     <img
-                        src={omniLogoDark}
+                        src={themeStore.current.omniLogoDark}
                         alt="Omni logo"
-                        class="ml-1 hidden h-5 w-5 rounded-sm dark:block" />
-                    <span class="text-xl font-bold group-data-[collapsible=icon]:hidden">omni</span>
+                        class="omni-logo-dark ml-1 h-5 w-5 rounded-sm" />
+                    <span class="text-xl font-bold group-data-[collapsible=icon]:hidden">{themeStore.current.omniName}</span>
                 </a>
                 <TooltipProvider delayDuration={300}>
                     <Tooltip>
@@ -432,41 +437,46 @@
     <!-- Main content area -->
     <div class="flex max-h-[100vh] w-full min-w-0 flex-1 flex-col">
         <header class={cn('bg-background sticky top-0 z-50 transition-shadow')}>
-            <div class="prose flex h-16 items-center px-6">
-                <div class="min-w-0 flex-1 px-4 text-base font-medium">
-                    {#if page.url.pathname === '/search'}
-                        Search
-                    {:else if page.url.pathname.startsWith('/chat') && currentChatTitle}
-                        {#if isEditingHeaderTitle}
-                            <input
-                                bind:this={headerTitleInputRef}
-                                bind:value={headerTitleValue}
-                                class="border-border w-full border-b bg-transparent outline-none"
-                                onkeydown={(e) => {
-                                    if (e.key === 'Enter') saveHeaderTitle()
-                                    if (e.key === 'Escape') {
-                                        isEditingHeaderTitle = false
-                                    }
-                                }}
-                                onblur={() => saveHeaderTitle()} />
+            <div class="flex h-16 w-full items-center justify-between px-6">
+                <div class="text-foreground flex h-16 flex-1 items-center">
+                    <div class="min-w-0 flex-1 px-4 text-base font-medium">
+                        {#if page.url.pathname === '/search'}
+                            Search
+                        {:else if page.url.pathname.startsWith('/chat') && currentChatTitle}
+                            {#if isEditingHeaderTitle}
+                                <input
+                                    bind:this={headerTitleInputRef}
+                                    bind:value={headerTitleValue}
+                                    class="text-foreground border-border w-full border-b bg-transparent outline-none"
+                                    onkeydown={(e) => {
+                                        if (e.key === 'Enter') saveHeaderTitle()
+                                        if (e.key === 'Escape') {
+                                            isEditingHeaderTitle = false
+                                        }
+                                    }}
+                                    onblur={() => saveHeaderTitle()} />
+                            {:else}
+                                <button
+                                    class="text-foreground cursor-pointer text-left transition-opacity hover:opacity-70"
+                                    onclick={() => {
+                                        isEditingHeaderTitle = true
+                                        headerTitleValue = currentChatTitle || ''
+                                        requestAnimationFrame(() => headerTitleInputRef?.focus())
+                                    }}>
+                                    {currentChatTitle}
+                                </button>
+                            {/if}
+                        {:else if page.url.pathname.startsWith('/chat')}
+                            Chat
+                        {:else if page.url.pathname.startsWith('/agents')}
+                            Agents
                         {:else}
-                            <button
-                                class="cursor-pointer text-left transition-opacity hover:opacity-70"
-                                onclick={() => {
-                                    isEditingHeaderTitle = true
-                                    headerTitleValue = currentChatTitle || ''
-                                    requestAnimationFrame(() => headerTitleInputRef?.focus())
-                                }}>
-                                {currentChatTitle}
-                            </button>
+                            <!-- empty -->
                         {/if}
-                    {:else if page.url.pathname.startsWith('/chat')}
-                        Chat
-                    {:else if page.url.pathname.startsWith('/agents')}
-                        Agents
-                    {:else}
-                        <!-- empty -->
-                    {/if}
+                    </div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <ThemePicker class="h-8 w-8 lg:h-9 lg:w-9" />
                 </div>
             </div>
         </header>

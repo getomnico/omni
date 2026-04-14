@@ -333,20 +333,38 @@
                         <CardHeader>
                             <CardTitle class="flex items-center gap-3">
                                 {#if getIntegrationIcon(integration.id)}
-                                    <img
-                                        src={getIntegrationIcon(integration.id)}
-                                        alt={integration.name}
-                                        class="h-6 w-6" />
+                                    <div
+                                        class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
+                                        <img
+                                            src={getIntegrationIcon(integration.id)}
+                                            alt={integration.name}
+                                            class="h-6 w-6 object-contain" />
+                                    </div>
                                 {:else if integration.id === 'web'}
-                                    <Globe class="h-6 w-6" />
+                                    <div
+                                        class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
+                                        <Globe class="h-6 w-6 text-slate-700" />
+                                    </div>
                                 {:else if integration.id === 'filesystem'}
-                                    <HardDrive class="h-6 w-6" />
+                                    <div
+                                        class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
+                                        <HardDrive class="h-6 w-6 text-slate-700" />
+                                    </div>
                                 {:else if integration.id === 'imap'}
-                                    <Mail class="h-6 w-6" />
+                                    <div
+                                        class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
+                                        <Mail class="h-6 w-6 text-slate-700" />
+                                    </div>
                                 {:else if integration.id === 'paperless_ngx'}
-                                    <HardDrive class="h-6 w-6" />
+                                    <div
+                                        class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
+                                        <HardDrive class="h-6 w-6 text-slate-700" />
+                                    </div>
                                 {:else if integration.id === 'nextcloud'}
-                                    <Cloud class="h-6 w-6" />
+                                    <div
+                                        class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
+                                        <Cloud class="h-6 w-6 text-slate-700" />
+                                    </div>
                                 {/if}
                                 <span>{integration.name}</span>
                             </CardTitle>

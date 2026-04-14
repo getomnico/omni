@@ -88,7 +88,10 @@
                     <Card.Header
                         class={oktaShowForm || (!data.okta?.enabled && !oktaEnabled) ? 'pb-2' : ''}>
                         <div class="flex items-center gap-3">
-                            <img src={oktaIcon} alt="Okta" class="h-8 w-8" />
+                            <div
+                                class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
+                                <img src={oktaIcon} alt="Okta" class="h-7 w-7 object-contain" />
+                            </div>
                             <div>
                                 <div class="text-base leading-tight font-semibold">Okta</div>
                                 <p class="text-muted-foreground mt-0.5 text-sm">
@@ -266,7 +269,13 @@
                             ? 'pb-2'
                             : ''}>
                         <div class="flex items-center gap-3">
-                            <img src={microsoftIcon} alt="Microsoft" class="h-8 w-8" />
+                            <div
+                                class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
+                                <img
+                                    src={microsoftIcon}
+                                    alt="Microsoft"
+                                    class="h-7 w-7 object-contain" />
+                            </div>
                             <div>
                                 <div class="text-base leading-tight font-semibold">
                                     Microsoft Entra ID
@@ -443,7 +452,13 @@
             <Card.Root>
                 <Card.Header class={showForm || (!data.google.enabled && !enabled) ? 'pb-2' : ''}>
                     <div class="flex items-center gap-3">
-                        <img src={googleIcon} alt="Google" class="h-8 w-8" />
+                        <div
+                            class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
+                            <img
+                                src={googleIcon}
+                                alt="Google"
+                                class="h-7 w-7 object-contain" />
+                        </div>
                         <div>
                             <div class="text-base leading-tight font-semibold">Google</div>
                             <p class="text-muted-foreground mt-0.5 text-sm">
@@ -598,7 +613,10 @@
             <Card.Root>
                 <Card.Header>
                     <div class="flex items-center gap-3">
-                        <KeyRound class="text-muted-foreground h-8 w-8" />
+                        <div
+                            class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
+                            <KeyRound class="h-6 w-6 text-slate-700" />
+                        </div>
                         <div>
                             <div class="text-base leading-tight font-semibold">Password</div>
                             <p class="text-muted-foreground mt-0.5 text-sm">

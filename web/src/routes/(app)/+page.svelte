@@ -2,9 +2,8 @@
     import type { PageProps } from './$types'
     import { Search } from '@lucide/svelte'
     import { goto } from '$app/navigation'
-    import omniLogoLight from '$lib/images/icons/omni-logo-256.png'
-    import omniLogoDark from '$lib/images/icons/omni-logo-dark-256.png'
     import UserInput, { type InputMode } from '$lib/components/user-input.svelte'
+    import { themeStore } from '$lib/themes/store.svelte'
     import { userPreferences } from '$lib/preferences'
 
     let { data }: PageProps = $props()
@@ -118,8 +117,8 @@
     <!-- Centered Search Section -->
     <div class="flex min-h-[60vh] flex-col items-center justify-center">
         <div class="mb-6 flex items-center gap-2 text-center">
-            <img src={omniLogoLight} alt="Omni logo" class="h-8 w-8 rounded-lg dark:hidden" />
-            <img src={omniLogoDark} alt="Omni logo" class="hidden h-8 w-8 rounded-lg dark:block" />
+            <img src={themeStore.current.omniLogoLight} alt="Omni logo" class="omni-logo-light h-8 w-8 rounded-lg" />
+            <img src={themeStore.current.omniLogoDark} alt="Omni logo" class="omni-logo-dark h-8 w-8 rounded-lg" />
             <h1 class="text-foreground text-3xl font-bold">omni</h1>
         </div>
 
@@ -153,7 +152,7 @@
                     <p class="text-muted-foreground text-xs font-medium uppercase">Try asking</p>
                     {#each data.suggestedQuestions as suggestion}
                         <button
-                            class="hover:border-primary/20 hover:bg-muted max-w-screen-md cursor-pointer truncate rounded-full border border-gray-300 bg-white px-4 py-2 text-xs transition-colors"
+                            class="hover:border-primary/20 hover:bg-muted border-border bg-background text-foreground max-w-screen-md cursor-pointer truncate rounded-full border px-4 py-2 text-xs transition-colors"
                             onclick={() => selectSuggestion(suggestion.question)}>
                             {suggestion.question}
                         </button>

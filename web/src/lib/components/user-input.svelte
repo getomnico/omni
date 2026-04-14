@@ -400,7 +400,7 @@
 <div class={cn('w-full', maxWidth, containerClass)} bind:this={popoverContainer}>
     <div
         class={cn(
-            'bg-card flex max-h-96 min-h-[1.5rem] w-full cursor-text flex-col gap-2 border border-gray-200 p-4 shadow-sm',
+            'omni-composer-shell bg-card relative isolate flex max-h-96 min-h-[1.5rem] w-full cursor-text flex-col gap-2 overflow-hidden border border-gray-200 p-4 shadow-sm',
             effectiveShowPopover && effectivePopoverItems.length > 0
                 ? 'rounded-t-xl'
                 : 'rounded-xl',
@@ -439,7 +439,7 @@
                         }}>
                         <Select.Trigger
                             size="sm"
-                            class="hover:bg-muted text-muted-foreground h-8 max-w-[180px] cursor-pointer border-none text-sm shadow-none"
+                            class="omni-composer-model hover:bg-muted text-muted-foreground h-8 max-w-[180px] cursor-pointer border-none text-sm shadow-none"
                             onclick={(e) => e.stopPropagation()}>
                             {models.find((m) => m.id === selectedModelId)?.displayName ??
                                 'Select model'}
@@ -463,18 +463,18 @@
                 {#if isStreaming}
                     <Button
                         size="icon"
-                        class="cursor-pointer rounded-full"
+                        class="omni-composer-send cursor-pointer rounded-full"
                         onclick={handleStopClick}>
                         <CircleStop class="h-4 w-4" />
                     </Button>
                 {:else if isLoading}
-                    <Button size="icon" class="cursor-pointer" disabled>
+                    <Button size="icon" class="omni-composer-send cursor-pointer" disabled>
                         <Loader2 class="h-4 w-4 animate-spin" />
                     </Button>
                 {:else}
                     <Button
                         size="icon"
-                        class="size-8 cursor-pointer"
+                        class="omni-composer-send size-8 cursor-pointer"
                         onclick={handleSubmitClick}
                         disabled={!value.trim() || disabled}>
                         {#if inputMode === 'search'}
@@ -491,7 +491,7 @@
     {#if effectivePopoverItems.length > 0}
         <Popover.Root open={effectiveShowPopover}>
             <Popover.Content
-                class="w-2xl rounded-b-xl p-0"
+                class="omni-composer-popover w-2xl rounded-b-xl p-0"
                 align="start"
                 sideOffset={-1}
                 alignOffset={-1}
@@ -504,7 +504,7 @@
                     e.preventDefault()
                 }}
                 onFocusOutside={(e) => e.preventDefault()}>
-                <div class="max-w-2xl rounded-b-xl border bg-white">
+                <div class="max-w-2xl rounded-b-xl border bg-background">
                     <div class="py-2">
                         {#each effectivePopoverItems as item, i}
                             <button

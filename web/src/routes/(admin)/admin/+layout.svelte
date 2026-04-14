@@ -4,8 +4,7 @@
     import type { Snippet } from 'svelte'
     import '../../../app.css'
     import type { LayoutData } from './$types.js'
-    import omniLogoLight from '$lib/images/icons/omni-logo-256.png'
-    import omniLogoDark from '$lib/images/icons/omni-logo-dark-256.png'
+    import { themeStore } from '$lib/themes/store.svelte'
 
     interface Props {
         data: LayoutData
@@ -28,14 +27,14 @@
             <div class="flex items-center gap-2 text-center">
                 <a href="/" class="flex items-center gap-2 group-data-[collapsible=icon]:hidden">
                     <img
-                        src={omniLogoLight}
+                        src={themeStore.current.omniLogoLight}
                         alt="Omni logo"
-                        class="h-6 w-6 rounded-sm dark:hidden" />
+                        class="omni-logo-light h-6 w-6 rounded-sm" />
                     <img
-                        src={omniLogoDark}
+                        src={themeStore.current.omniLogoDark}
                         alt="Omni logo"
-                        class="hidden h-6 w-6 rounded-sm dark:block" />
-                    <h1 class="text-foreground text-xl font-bold">omni</h1>
+                        class="omni-logo-dark h-6 w-6 rounded-sm" />
+                    <h1 class="text-foreground text-xl font-bold">{themeStore.current.omniName}</h1>
                 </a>
             </div>
             <div class="flex items-center space-x-4">
