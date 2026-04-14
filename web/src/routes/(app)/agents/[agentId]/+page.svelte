@@ -129,17 +129,15 @@
             </Badge>
         </div>
         <div class="flex items-center gap-2">
-            {#if data.agent.agentType === 'org'}
-                <Button
-                    variant="outline"
-                    size="sm"
-                    class="cursor-pointer"
-                    onclick={startChat}
-                    disabled={startingChat}>
-                    <MessageSquare class="mr-1 h-3 w-3" />
-                    {startingChat ? 'Starting...' : 'Chat with Agent'}
-                </Button>
-            {/if}
+            <Button
+                variant="outline"
+                size="sm"
+                class="cursor-pointer"
+                onclick={startChat}
+                disabled={startingChat}>
+                <MessageSquare class="mr-1 h-3 w-3" />
+                {startingChat ? 'Starting...' : 'Chat with Agent'}
+            </Button>
             <Button variant="outline" size="sm" class="cursor-pointer" onclick={triggerRun}>
                 <Play class="mr-1 h-3 w-3" /> Run Now
             </Button>

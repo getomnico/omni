@@ -10,6 +10,8 @@ from fastapi import APIRouter, HTTPException, Path, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import ValidationError
 
+from agents.executor import _build_source_filter
+from agents.models import Agent
 from agents.repository import AgentRepository, AgentRunRepository
 from db import ChatsRepository, MessagesRepository
 from db.documents import DocumentsRepository
@@ -261,23 +263,28 @@ async def _build_registry(request: Request, chat: Chat) -> RegistryResult:
     )
 
 
-async def _build_agent_chat_registry(request: Request) -> RegistryResult:
+async def _build_agent_chat_registry(request: Request, agent: Agent) -> RegistryResult:
     """Build a read-only ToolRegistry for agent chat sessions.
 
-    Excludes connector actions (write tools) — only search, document read, and people search.
+    Uses the agent's own permissions (matching the background executor):
+    org agents read across everything; user agents are scoped by allowed_sources.
+    Write/connector-action tools are intentionally not registered — agent chats are read-only.
     """
     registry = ToolRegistry()
 
     sources = await _fetch_sources_from_connector_manager()
+
+    source_filter = _build_source_filter(agent) if agent.agent_type == "user" else None
 
     # We still need connector handler for search operators, but won't register it
     search_operators = None
     if CONNECTOR_MANAGER_URL:
         connector_handler = ConnectorToolHandler(
             connector_manager_url=CONNECTOR_MANAGER_URL,
-            user_id="",
+            user_id=agent.user_id if agent.agent_type == "user" else "",
             redis_client=getattr(request.app.state, "redis_client", None),
             prefetched_sources=sources,
+            source_filter=source_filter,
             documents_repo=DocumentsRepository(),
         )
         await connector_handler._ensure_initialized()
@@ -317,6 +324,11 @@ async def _build_agent_chat_registry(request: Request) -> RegistryResult:
                 connector_manager_url=CONNECTOR_MANAGER_URL or None,
             )
         )
+
+    skills_dir = pathlib.Path(__file__).resolve().parent.parent / "skills"
+    skill_handler = SkillHandler(skills_dir=skills_dir)
+    if skill_handler._available:
+        registry.register(skill_handler)
 
     return RegistryResult(
         registry=registry,
@@ -401,20 +413,32 @@ async def stream_chat(
 
     if chat.agent_id:
         # --- Agent chat setup ---
-        users_repo = UsersRepository()
-        admin_user = await users_repo.find_by_id(chat.user_id)
-        if not admin_user or admin_user.role != "admin":
-            raise HTTPException(
-                status_code=403, detail="Admin access required for agent chats"
-            )
-
         agent_repo = AgentRepository()
         agent = await agent_repo.get_agent(chat.agent_id)
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found")
 
-        user_email = admin_user.email
-        user_name = admin_user.full_name
+        users_repo = UsersRepository()
+        chat_user = await users_repo.find_by_id(chat.user_id)
+        if not chat_user:
+            raise HTTPException(status_code=404, detail="Chat user not found")
+
+        if agent.agent_type == "org":
+            if chat_user.role != "admin":
+                raise HTTPException(
+                    status_code=403, detail="Admin access required for org agent chats"
+                )
+        elif agent.user_id != chat.user_id:
+            raise HTTPException(
+                status_code=403, detail="Only the agent owner can chat with this agent"
+            )
+
+        is_org_agent = agent.agent_type == "org"
+        tool_user_id = None if is_org_agent else agent.user_id
+        tool_skip_perm = is_org_agent
+
+        user_email = chat_user.email
+        user_name = chat_user.full_name
 
         # Handle auto_start: inject ephemeral message when no messages exist
         if not chat_messages:
@@ -425,7 +449,7 @@ async def stream_chat(
                     status_code=404, detail="No messages found for chat"
                 )
 
-        build_result = await _build_agent_chat_registry(request)
+        build_result = await _build_agent_chat_registry(request, agent)
         registry = build_result.registry
         all_tools = registry.get_all_tools()
         pending = None  # no approval flow for agent chats
@@ -454,6 +478,8 @@ async def stream_chat(
 
     else:
         # --- Regular chat setup ---
+        tool_user_id = chat.user_id
+        tool_skip_perm = False
         user_email: str | None = None
         user_name: str | None = None
         if chat.user_id:
@@ -551,8 +577,9 @@ async def stream_chat(
                 # re-invokes the stream after approval)
                 context = ToolContext(
                     chat_id=chat_id,
-                    user_id=chat.user_id,
+                    user_id=tool_user_id,
                     user_email=user_email,
+                    skip_permission_check=tool_skip_perm,
                 )
                 result = await registry.execute(
                     tool_call["name"], tool_call["input"], context
@@ -596,9 +623,10 @@ async def stream_chat(
 
             context = ToolContext(
                 chat_id=chat_id,
-                user_id=chat.user_id,
+                user_id=tool_user_id,
                 user_email=user_email,
                 original_user_query=original_user_query,
+                skip_permission_check=tool_skip_perm,
             )
 
             usage_repo = UsageRepository()
