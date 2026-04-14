@@ -325,6 +325,9 @@ async def _build_agent_chat_registry(request: Request, agent: Agent) -> Registry
             )
         )
 
+    if SANDBOX_URL:
+        registry.register(SandboxToolHandler(sandbox_url=SANDBOX_URL))
+
     skills_dir = pathlib.Path(__file__).resolve().parent.parent / "skills"
     skill_handler = SkillHandler(skills_dir=skills_dir)
     if skill_handler._available:
