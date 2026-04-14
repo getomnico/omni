@@ -9,6 +9,7 @@ from typing import Literal
 
 import httpx
 import redis.asyncio as aioredis
+from anthropic.types import ToolParam
 
 from db.documents import DocumentsRepository
 from db.models import Source
@@ -18,6 +19,10 @@ from tools.sandbox import write_binary_to_sandbox
 logger = logging.getLogger(__name__)
 
 ACTIONS_CACHE_TTL = 60  # seconds
+
+SourceMode = Literal["read", "write"]
+# Maps source_id -> list of modes allowed for that source.
+SourceFilter = dict[str, list[SourceMode]]
 
 
 @dataclass
@@ -41,7 +46,7 @@ class ConnectorAction:
     action_name: str
     description: str
     input_schema: dict
-    mode: str  # "read" | "write"
+    mode: SourceMode
 
 
 class ConnectorToolHandler:
@@ -53,7 +58,7 @@ class ConnectorToolHandler:
         user_id: str,
         redis_client: aioredis.Redis | None = None,
         prefetched_sources: list[Source] | None = None,
-        source_filter: dict[str, list[str]] | None = None,
+        source_filter: SourceFilter | None = None,
         action_whitelist: list[str] | None = None,
         documents_repo: DocumentsRepository | None = None,
         sandbox_url: str | None = None,
@@ -63,11 +68,11 @@ class ConnectorToolHandler:
         self._user_id = user_id
         self._redis = redis_client
         self._prefetched_sources = prefetched_sources
-        self._source_filter = source_filter  # {source_id: ["read","write"]}
+        self._source_filter = source_filter
         self._action_whitelist = action_whitelist  # ["gmail__send_email"]
         self._documents_repo = documents_repo
         self._actions: dict[str, ConnectorAction] = {}
-        self._tools: list[dict] = []
+        self._tools: list[ToolParam] = []
         self._search_operators: list[SearchOperator] = []
         self._initialized = False
 
@@ -84,30 +89,30 @@ class ConnectorToolHandler:
         self._build_tools(actions)
         self._initialized = True
 
-    async def _load_cached_actions(self) -> list[dict] | None:
+    async def _load_cached_actions(self) -> list[ConnectorAction] | None:
         if not self._redis:
             return None
         try:
             cached = await self._redis.get(f"actions:{self._user_id}")
             if cached:
-                return json.loads(cached)
+                return [ConnectorAction(**d) for d in json.loads(cached)]
         except Exception as e:
             logger.warning(f"Failed to load cached actions: {e}")
         return None
 
-    async def _cache_actions(self, actions: list[dict]) -> None:
+    async def _cache_actions(self, actions: list[ConnectorAction]) -> None:
         if not self._redis:
             return
         try:
             await self._redis.set(
                 f"actions:{self._user_id}",
-                json.dumps(actions),
+                json.dumps([asdict(a) for a in actions]),
                 ex=ACTIONS_CACHE_TTL,
             )
         except Exception as e:
             logger.warning(f"Failed to cache actions: {e}")
 
-    async def _fetch_actions(self) -> list[dict]:
+    async def _fetch_actions(self) -> list[ConnectorAction]:
         """Fetch available actions from connector-manager.
 
         The connector-manager exposes GET /connectors which returns connector info
@@ -125,24 +130,23 @@ class ConnectorToolHandler:
 
                 # Use pre-fetched sources if available, otherwise fetch from connector-manager
                 if self._prefetched_sources is not None:
-                    sources = [asdict(s) for s in self._prefetched_sources]
+                    sources = self._prefetched_sources
                 else:
                     sources_resp = await client.get(
                         f"{self._connector_manager_url}/sources"
                     )
                     sources_resp.raise_for_status()
-                    sources = sources_resp.json()
+                    sources = [Source.from_row(s) for s in sources_resp.json()]
 
         except Exception as e:
             logger.error(f"Failed to fetch connector info: {e}")
             return []
 
         # Build a mapping from source_type to list of active sources
-        source_by_type: dict[str, list[dict]] = {}
+        source_by_type: dict[str, list[Source]] = {}
         for source in sources:
-            if source.get("is_active") and not source.get("is_deleted"):
-                st = source.get("source_type", "")
-                source_by_type.setdefault(st, []).append(source)
+            if source.is_active and not source.is_deleted:
+                source_by_type.setdefault(source.source_type, []).append(source)
 
         # Extract search operators from connector manifests
         search_operators: list[SearchOperator] = []
@@ -171,7 +175,7 @@ class ConnectorToolHandler:
         self._search_operators = search_operators
 
         # Build action list from connector manifests
-        actions: list[dict] = []
+        actions: list[ConnectorAction] = []
         for connector in connectors:
             source_type = connector.get("source_type", "")
             manifest = connector.get("manifest")
@@ -180,20 +184,19 @@ class ConnectorToolHandler:
 
             for action_def in manifest.get("actions", []):
                 # Find matching active sources for this connector type
-                matching_sources = source_by_type.get(source_type, [])
-                for source in matching_sources:
+                for source in source_by_type.get(source_type, []):
                     actions.append(
-                        {
-                            "source_id": source["id"],
-                            "source_type": source_type,
-                            "source_name": source.get("name", source_type),
-                            "action_name": action_def["name"],
-                            "description": action_def.get("description", ""),
-                            "input_schema": action_def.get(
+                        ConnectorAction(
+                            source_id=source.id,
+                            source_type=source_type,
+                            source_name=source.name or source_type,
+                            action_name=action_def["name"],
+                            description=action_def.get("description", ""),
+                            input_schema=action_def.get(
                                 "input_schema", {"type": "object", "properties": {}}
                             ),
-                            "mode": action_def.get("mode", "write"),
-                        }
+                            mode=action_def.get("mode", "write"),
+                        )
                     )
 
         logger.info(
@@ -201,25 +204,22 @@ class ConnectorToolHandler:
         )
         return actions
 
-    def _build_tools(self, actions: list[dict]) -> None:
+    def _build_tools(self, actions: list[ConnectorAction]) -> None:
         """Convert connector actions to LLM tool format."""
         self._actions.clear()
         self._tools.clear()
 
         seen_tools: set[str] = set()
         for action in actions:
-            source_id = action["source_id"]
-
             # Apply source_filter: skip actions not in allowed sources or modes
             if self._source_filter is not None:
-                if source_id not in self._source_filter:
+                if action.source_id not in self._source_filter:
                     continue
-                allowed_modes = self._source_filter[source_id]
-                if action.get("mode", "write") not in allowed_modes:
+                if action.mode not in self._source_filter[action.source_id]:
                     continue
 
             # Namespace: {source_type}__{action_name}
-            tool_name = f"{action['source_type']}__{action['action_name']}"
+            tool_name = f"{action.source_type}__{action.action_name}"
 
             # Apply action_whitelist: skip actions not in whitelist
             if self._action_whitelist is not None:
@@ -230,30 +230,22 @@ class ConnectorToolHandler:
                 continue
             seen_tools.add(tool_name)
 
-            self._actions[tool_name] = ConnectorAction(
-                source_id=action["source_id"],
-                source_type=action["source_type"],
-                source_name=action["source_name"],
-                action_name=action["action_name"],
-                description=action["description"],
-                input_schema=action["input_schema"],
-                mode=action["mode"],
-            )
+            self._actions[tool_name] = action
 
-            source_display = action["source_name"] or action["source_type"]
+            source_display = action.source_name or action.source_type
             self._tools.append(
-                {
-                    "name": tool_name,
-                    "description": f"[{source_display}] {action['description']}",
-                    "input_schema": action["input_schema"],
-                }
+                ToolParam(
+                    name=tool_name,
+                    description=f"[{source_display}] {action.description}",
+                    input_schema=action.input_schema,
+                )
             )
 
     @property
     def search_operators(self) -> list[SearchOperator]:
         return self._search_operators
 
-    def get_tools(self) -> list[dict]:
+    def get_tools(self) -> list[ToolParam]:
         # Note: caller must await _ensure_initialized() before calling this
         return self._tools
 

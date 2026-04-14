@@ -6,12 +6,13 @@ import json
 import logging
 
 import httpx
+from anthropic.types import ToolParam
 
 from tools.registry import ToolContext, ToolResult
 
 logger = logging.getLogger(__name__)
 
-SANDBOX_TOOLS = [
+SANDBOX_TOOLS: list[ToolParam] = [
     {
         "name": "write_file",
         "description": "Write content to a file in the scratch workspace. Use this to save data, create scripts, or prepare files for processing.",
@@ -109,7 +110,7 @@ class SandboxToolHandler:
     def __init__(self, sandbox_url: str) -> None:
         self._sandbox_url = sandbox_url.rstrip("/")
 
-    def get_tools(self) -> list[dict]:
+    def get_tools(self) -> list[ToolParam]:
         return list(SANDBOX_TOOLS)
 
     def can_handle(self, tool_name: str) -> bool:

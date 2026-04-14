@@ -40,7 +40,7 @@ from tools import (
     DocumentToolHandler,
     PeopleSearchHandler,
 )
-from tools.connector_handler import ConnectorAction
+from tools.connector_handler import ConnectorAction, SourceFilter
 from tools.email_handler import EmailToolHandler
 from tools.sandbox_handler import SandboxToolHandler
 from tools.search_handler import fetch_operator_values
@@ -81,7 +81,7 @@ async def _fetch_sources() -> list[Source] | None:
         return None
 
 
-def _build_source_filter(agent: Agent) -> dict[str, list[str]] | None:
+def _build_source_filter(agent: Agent) -> SourceFilter | None:
     """Build source_filter dict from agent.allowed_sources."""
     if not agent.allowed_sources:
         return None

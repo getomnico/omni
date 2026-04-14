@@ -7,6 +7,7 @@ import logging
 from typing import Union
 
 import httpx
+from anthropic.types import ToolParam
 
 from db.documents import DocumentsRepository
 from storage import ContentStorage, PostgresContentStorage
@@ -94,7 +95,7 @@ class DocumentToolHandler:
             connector_manager_url.rstrip("/") if connector_manager_url else None
         )
 
-    def get_tools(self) -> list[dict]:
+    def get_tools(self) -> list[ToolParam]:
         return [DOCUMENT_TOOL]
 
     def can_handle(self, tool_name: str) -> bool:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+from anthropic.types import ToolParam
+
 from tools.searcher_client import PeopleSearchRequest, PeopleSearchResponse
 from tools.searcher_tool import SearcherTool
 from tools.registry import ToolContext, ToolResult
@@ -19,7 +21,7 @@ class PeopleSearchHandler:
     def __init__(self, searcher_tool: SearcherTool) -> None:
         self._searcher = searcher_tool
 
-    def get_tools(self) -> list[dict]:
+    def get_tools(self) -> list[ToolParam]:
         return [
             {
                 "name": TOOL_NAME,

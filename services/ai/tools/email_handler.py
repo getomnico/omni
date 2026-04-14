@@ -5,6 +5,8 @@ from __future__ import annotations
 import html
 import logging
 
+from anthropic.types import ToolParam
+
 from email_service.sender import EmailSender
 from tools.registry import ToolContext, ToolResult
 
@@ -35,7 +37,7 @@ class EmailToolHandler:
     def __init__(self):
         self._sender = EmailSender()
 
-    def get_tools(self) -> list[dict]:
+    def get_tools(self) -> list[ToolParam]:
         return [
             {
                 "name": TOOL_NAME,

@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from anthropic.types import ToolParam
+
 from tools.registry import ToolContext, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -22,7 +24,7 @@ class SkillHandler:
             for f in skills_dir.glob("*.md"):
                 self._available[f.stem] = f
 
-    def get_tools(self) -> list[dict]:
+    def get_tools(self) -> list[ToolParam]:
         skill_names = ", ".join(sorted(self._available.keys()))
         return [
             {

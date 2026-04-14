@@ -6,6 +6,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
+from anthropic.types import ToolParam
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,7 +34,7 @@ class ToolResult:
 class ToolHandler(Protocol):
     """Interface that all tool handlers implement."""
 
-    def get_tools(self) -> list[dict]:
+    def get_tools(self) -> list[ToolParam]:
         """Return LLM tool definitions this handler provides."""
         ...
 
@@ -60,9 +62,9 @@ class ToolRegistry:
     def register(self, handler: ToolHandler) -> None:
         self._handlers.append(handler)
 
-    def get_all_tools(self) -> list[dict]:
+    def get_all_tools(self) -> list[ToolParam]:
         """Collect tool definitions from all handlers for LLM injection."""
-        tools: list[dict] = []
+        tools: list[ToolParam] = []
         for handler in self._handlers:
             tools.extend(handler.get_tools())
         return tools

@@ -13,6 +13,7 @@ from anthropic.types import (
     TextBlockParam,
     SearchResultBlockParam,
     CitationsConfigParam,
+    ToolParam,
 )
 
 from models.chat import SearchToolParams
@@ -232,7 +233,7 @@ class SearchToolHandler:
             operator_values=operator_values,
         )
 
-    def get_tools(self) -> list[dict]:
+    def get_tools(self) -> list[ToolParam]:
         return self._tools
 
     def can_handle(self, tool_name: str) -> bool:
