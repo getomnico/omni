@@ -73,6 +73,7 @@ class VertexAIProvider(LLMProvider):
             system_prompt=system_prompt,
         ):
             yield event
+        self.last_usage = self._delegate.last_usage
 
     async def generate_response(
         self,
