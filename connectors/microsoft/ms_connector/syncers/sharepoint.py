@@ -1,9 +1,9 @@
 """SharePoint document library syncer using delta queries.
 
 Iterates every site in the tenant and every document library (drive) on
-each site, then runs a per-drive delta query. Folders are emitted as
-metadata-only documents (unlike OneDrive, which skips them) since
-SharePoint folder structure is itself searchable context.
+each site, then runs a per-drive delta query. Folder entries are skipped;
+files nested in folders are returned flat by the delta API and indexed
+directly.
 """
 
 import logging
@@ -71,10 +71,7 @@ class SiteDiagnostic:
         )
 
 
-# State key for per-drive delta tokens. Renamed from the old per-site
-# `delta_tokens` shape — old tokens are intentionally discarded; the next
-# sync re-snapshots within DEFAULT_MAX_AGE_DAYS.
-DRIVE_DELTA_TOKENS_KEY = "drive_delta_tokens"
+DRIVE_DELTA_TOKENS_KEY = "delta_tokens"
 
 # Heuristic: SharePoint provisions one site per private/shared Teams channel,
 # typically with a webUrl path of `/sites/<team>-<channel>`. Used only to

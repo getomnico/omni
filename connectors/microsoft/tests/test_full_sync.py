@@ -358,7 +358,7 @@ async def test_sharepoint_multi_drive_and_folder_sync(
     assert f"sharepoint:{site_id}:file-b" in doc_ids, doc_ids
 
     state = await seed.get_connector_state(sharepoint_source_id)
-    tokens = state.get("drive_delta_tokens", {})
+    tokens = state.get("delta_tokens", {})
     assert drive_a in tokens and drive_b in tokens, tokens
 
 
@@ -405,7 +405,7 @@ async def test_sharepoint_delta_resync_on_410(
     assert row["status"] == "completed"
 
     state = await seed.get_connector_state(sharepoint_source_id)
-    assert drive_id in state.get("drive_delta_tokens", {})
+    assert drive_id in state.get("delta_tokens", {})
 
     # Second sync — first delta call returns 410, retry should succeed.
     mock_graph_api.queue_drive_delta_error(
