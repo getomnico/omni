@@ -353,6 +353,7 @@ class MockGraphAPI:
             Route("/v1.0/groups", list_groups),
             Route("/v1.0/groups/{gid}/members", group_members),
             Route("/v1.0/sites", list_sites),
+            Route("/v1.0/sites/getAllSites", list_sites),
             Route("/v1.0/sites/{sid}", site_get),
             Route("/v1.0/sites/{sid}/drives", site_drives_list),
             Route("/v1.0/sites/{sid}/drive/root/delta", site_drive_delta),

@@ -141,11 +141,17 @@ class SharePointSyncer:
         return {DRIVE_DELTA_TOKENS_KEY: delta_tokens}
 
     async def _list_sites(self, client: GraphClient) -> list[Site]:
+        """Enumerate every site in the tenant via `/sites/getAllSites`.
+
+        https://learn.microsoft.com/en-us/graph/api/site-getallsites
+        """
         sites: list[Site] = []
         async for raw in client.get_paginated(
-            "/sites",
-            params={"search": "*", "$select": "id,displayName,webUrl"},
+            "/sites/getAllSites",
+            params={"$select": "id,displayName,webUrl,isPersonalSite"},
         ):
+            if raw.get("isPersonalSite"):
+                continue
             sites.append(Site.from_graph(raw))
         return sites
 
