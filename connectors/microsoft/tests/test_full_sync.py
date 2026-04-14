@@ -353,7 +353,7 @@ async def test_sharepoint_multi_drive_and_folder_sync(
         for e in events
         if e["event_type"] == "document_created"
     }
-    assert f"sharepoint:{site_id}:folder-a" in doc_ids, doc_ids
+    assert f"sharepoint:{site_id}:folder-a" not in doc_ids, doc_ids
     assert f"sharepoint:{site_id}:file-a" in doc_ids, doc_ids
     assert f"sharepoint:{site_id}:file-b" in doc_ids, doc_ids
 

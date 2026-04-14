@@ -182,7 +182,7 @@ class SharePointSyncer:
 
         skipped_cutoff = 0
         skipped_deleted = 0
-        emitted_folders = 0
+        skipped_folders = 0
 
         for item in items:
             if ctx.is_cancelled():
@@ -194,14 +194,15 @@ class SharePointSyncer:
                 await ctx.emit_deleted(external_id)
                 continue
 
+            if "folder" in item:
+                skipped_folders += 1
+                continue
+
             if cutoff:
                 modified = _parse_iso(item.get("lastModifiedDateTime"))
                 if modified and modified < cutoff:
                     skipped_cutoff += 1
                     continue
-
-            if "folder" in item:
-                emitted_folders += 1
 
             await ctx.increment_scanned()
 
@@ -212,16 +213,20 @@ class SharePointSyncer:
                 logger.warning("[sharepoint] Error processing %s: %s", external_id, e)
                 await ctx.emit_error(external_id, str(e))
 
-        logger.info(
-            "[sharepoint] Drive %s/%s: %d items (folders=%d, deleted=%d, "
-            "cutoff_skipped=%d)",
-            site.display_name,
-            drive.name,
-            len(items),
-            emitted_folders,
-            skipped_deleted,
-            skipped_cutoff,
-        )
+        total = len(items)
+        skipped = skipped_folders + skipped_cutoff + skipped_deleted
+        if skipped:
+            logger.info(
+                "[sharepoint] Drive %s/%s: %d items total, %d skipped "
+                "(folders=%d, cutoff=%d, deleted=%d)",
+                site.display_name,
+                drive.name,
+                total,
+                skipped,
+                skipped_folders,
+                skipped_cutoff,
+                skipped_deleted,
+            )
         return new_token
 
     async def _fetch_delta_with_resync(
@@ -271,7 +276,6 @@ class SharePointSyncer:
         item: dict[str, Any],
         ctx: SyncContext,
     ) -> None:
-        is_folder = "folder" in item
         file_info = item.get("file", {})
         mime_type = file_info.get("mimeType", "")
         file_name = item.get("name", "")
@@ -280,7 +284,7 @@ class SharePointSyncer:
         drive_id = item.get("parentReference", {}).get("driveId", "unknown")
         item_id = item["id"]
 
-        if not is_folder and _is_indexable(mime_type, extension):
+        if _is_indexable(mime_type, extension):
             content_id = await self._extract_file_content(
                 client, item, mime_type, file_name, ctx
             )
