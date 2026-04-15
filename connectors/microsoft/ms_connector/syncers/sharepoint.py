@@ -13,6 +13,21 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, TypeAlias, TypedDict
 
+from omni_connector import SyncContext
+from omni_connector.models import DocumentPermissions
+
+from ..graph_client import GraphClient, GraphAPIError
+from ..mappers import (
+    map_drive_item_to_document,
+    generate_drive_item_content,
+    _parse_iso,
+)
+from .base import DEFAULT_MAX_AGE_DAYS
+from .onedrive import _is_indexable, _get_extension
+
+logger = logging.getLogger(__name__)
+
+
 DriveId: TypeAlias = str
 SiteId: TypeAlias = str
 Email: TypeAlias = str
@@ -64,21 +79,6 @@ class GraphDrive(TypedDict, total=False):
     driveType: str
     webUrl: str
     owner: _GraphIdentitySet
-
-
-from omni_connector import SyncContext
-from omni_connector.models import DocumentPermissions
-
-from ..graph_client import GraphClient, GraphAPIError
-from ..mappers import (
-    map_drive_item_to_document,
-    generate_drive_item_content,
-    _parse_iso,
-)
-from .base import DEFAULT_MAX_AGE_DAYS
-from .onedrive import _is_indexable, _get_extension
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
