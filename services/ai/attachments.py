@@ -40,10 +40,8 @@ class OmniUploadBlock(TypedDict):
     source: OmniUploadSource
 
 
-# After expansion, an omni_upload block becomes one or more text blocks — either the
-# inlined file body or a pointer to the sandbox workspace.
-ExpandedBlocks = list[TextBlockParam]
-UploadCache = dict[str, ExpandedBlocks]
+# ID of a row in the `uploads` table (ULID). Aliased for self-documenting dict keys.
+UploadId = str
 
 logger = logging.getLogger(__name__)
 
@@ -110,14 +108,16 @@ async def _expand_omni_upload(
     storage: ContentStorage,
     uploads_repo: UploadsRepository,
     sandbox_url: str | None,
-    cache: UploadCache,
-) -> ExpandedBlocks:
+    cache: dict[UploadId, list[TextBlockParam]],
+) -> list[TextBlockParam]:
     if upload_id in cache:
         return cache[upload_id]
 
     upload = await uploads_repo.get(upload_id)
     if not upload:
-        expanded: ExpandedBlocks = [_text_block(f"[upload {upload_id} not found]")]
+        expanded: list[TextBlockParam] = [
+            _text_block(f"[upload {upload_id} not found]")
+        ]
         cache[upload_id] = expanded
         return expanded
 
@@ -188,7 +188,7 @@ async def expand_uploads(
     Cheap to call every turn: deterministic per upload_id, with an in-call cache and a
     sandbox stat-before-write to avoid re-uploading staged files.
     """
-    cache: UploadCache = {}
+    cache: dict[UploadId, list[TextBlockParam]] = {}
     out: list[MessageParam] = []
     for msg in messages:
         content = msg["content"]
