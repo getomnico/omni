@@ -21,7 +21,6 @@
         CircleAlertIcon,
         ExternalLink,
         FileText,
-        Paperclip,
         Pencil,
         ChevronLeft,
         ChevronRight,
@@ -1660,15 +1659,6 @@
                     </div>
                 {/if}
                 <div class="flex w-full max-w-4xl items-end gap-2">
-                    <Button
-                        type="button"
-                        size="icon"
-                        variant="outline"
-                        class="size-8 shrink-0 cursor-pointer"
-                        onclick={() => uploadInputEl?.click()}
-                        aria-label="Attach file">
-                        <Paperclip class="h-4 w-4" />
-                    </Button>
                     <input
                         bind:this={uploadInputEl}
                         type="file"
@@ -1683,6 +1673,8 @@
                             inputMode="chat"
                             onSubmit={handleSubmit}
                             onInput={(v) => (userMessage = v)}
+                            onAttachClick={() => uploadInputEl?.click()}
+                            onFilesDropped={(files) => handleFilesSelected(files)}
                             modeSelectorEnabled={false}
                             placeholders={{
                                 chat: 'Ask a follow-up...',

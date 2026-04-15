@@ -1,11 +1,10 @@
 <script lang="ts">
     import type { PageProps } from './$types'
-    import { Search, Paperclip } from '@lucide/svelte'
+    import { Search } from '@lucide/svelte'
     import { goto } from '$app/navigation'
     import omniLogoLight from '$lib/images/icons/omni-logo-256.png'
     import omniLogoDark from '$lib/images/icons/omni-logo-dark-256.png'
     import UserInput, { type InputMode } from '$lib/components/user-input.svelte'
-    import { Button } from '$lib/components/ui/button'
     import { userPreferences } from '$lib/preferences'
 
     let { data }: PageProps = $props()
@@ -193,29 +192,20 @@
             </div>
         {/if}
         <div class="flex w-full max-w-2xl items-end gap-2">
-            {#if inputMode === 'chat'}
-                <Button
-                    type="button"
-                    size="icon"
-                    variant="outline"
-                    class="size-8 shrink-0 cursor-pointer"
-                    onclick={() => uploadInputEl?.click()}
-                    aria-label="Attach file">
-                    <Paperclip class="h-4 w-4" />
-                </Button>
-                <input
-                    bind:this={uploadInputEl}
-                    type="file"
-                    multiple
-                    class="hidden"
-                    onchange={(e) => handleFilesSelected((e.target as HTMLInputElement).files)} />
-            {/if}
+            <input
+                bind:this={uploadInputEl}
+                type="file"
+                multiple
+                class="hidden"
+                onchange={(e) => handleFilesSelected((e.target as HTMLInputElement).files)} />
             <div class="flex-1">
                 <UserInput
                     bind:value={searchQuery}
                     bind:inputMode
                     onSubmit={submitQuery}
                     onInput={(v) => (searchQuery = v)}
+                    onAttachClick={() => uploadInputEl?.click()}
+                    onFilesDropped={(files) => handleFilesSelected(files)}
                     modeSelectorEnabled={true}
                     placeholders={{
                         search: 'Search for anything...',
