@@ -2,16 +2,18 @@ use crate::config::ConnectorManagerConfig;
 use crate::connector_client::{ClientError, ConnectorClient};
 use crate::handlers::get_connector_url_for_source;
 use crate::models::{SyncRequest, TriggerType};
+use dashmap::DashMap;
 use redis::Client as RedisClient;
 use shared::db::repositories::SyncRunRepository;
 use shared::models::{SourceType, SyncStatus, SyncType};
 use shared::{DatabasePool, Repository, SourceRepository};
 use sqlx::PgPool;
+use std::sync::Arc;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use tracing::{debug, error, info, warn};
 
-const MAX_CONSECUTIVE_AUTO_RESUMES: usize = 3;
+const MAX_RESUME_ATTEMPTS: usize = 3;
 
 #[derive(Clone)]
 pub struct SyncManager {
@@ -20,6 +22,10 @@ pub struct SyncManager {
     redis_client: RedisClient,
     connector_client: ConnectorClient,
     sync_run_repo: SyncRunRepository,
+    /// In-memory tally of resume attempts per sync_run_id. Cleared when a
+    /// sync transitions out of `running`. Bounds resume churn for chronically
+    /// crashing connectors without needing schema changes.
+    resume_attempts: Arc<DashMap<String, usize>>,
 }
 
 impl SyncManager {
@@ -34,6 +40,7 @@ impl SyncManager {
             redis_client,
             connector_client: ConnectorClient::new(),
             sync_run_repo: SyncRunRepository::new(db_pool.pool()),
+            resume_attempts: Arc::new(DashMap::new()),
         }
     }
 
@@ -172,6 +179,7 @@ impl SyncManager {
             .await
             .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
 
+        self.resume_attempts.remove(sync_run_id);
         info!("Sync {} cancelled", sync_run_id);
         Ok(())
     }
@@ -263,74 +271,119 @@ impl SyncManager {
         Ok(())
     }
 
-    /// Reconcile a sync that the connector no longer knows about: mark it
-    /// failed and (subject to loop protection) trigger a fresh resume run.
+    /// Re-trigger `/sync` on the connector for an existing `running` sync_run
+    /// whose connector has lost track of it (typically due to a restart). The
+    /// row stays in `running`; the connector will resume from the
+    /// incrementally-persisted `connector_state`. If we exceed
+    /// MAX_RESUME_ATTEMPTS or the connector keeps refusing, mark the row
+    /// failed so we stop churning.
     async fn handle_lost_sync(&self, sync_run_id: &str, source_id: &str) {
-        let reason = "Connector no longer running this sync (likely restarted); auto-resuming";
-        if let Err(e) = self.mark_sync_failed(sync_run_id, reason).await {
-            error!("Failed to mark lost sync {} as failed: {}", sync_run_id, e);
+        let attempts = {
+            let mut entry = self
+                .resume_attempts
+                .entry(sync_run_id.to_string())
+                .or_insert(0);
+            *entry += 1;
+            *entry
+        };
+
+        if attempts > MAX_RESUME_ATTEMPTS {
+            warn!(
+                "Sync {} exceeded {} resume attempts; marking failed",
+                sync_run_id, MAX_RESUME_ATTEMPTS
+            );
+            if let Err(e) = self
+                .mark_sync_failed(
+                    sync_run_id,
+                    "Connector repeatedly lost sync; auto-resume gave up",
+                )
+                .await
+            {
+                error!("Failed to mark sync {} as failed: {}", sync_run_id, e);
+            }
+            self.resume_attempts.remove(sync_run_id);
             return;
         }
 
-        match self.recent_auto_resume_failures(source_id).await {
-            Ok(count) if count >= MAX_CONSECUTIVE_AUTO_RESUMES => {
-                warn!(
-                    "Source {} has {} consecutive auto-resume failures; not resuming again",
-                    source_id, count
-                );
-                return;
-            }
-            Ok(_) => {}
-            Err(e) => {
-                error!(
-                    "Failed to check auto-resume history for source {}: {}",
-                    source_id, e
-                );
-                return;
-            }
-        }
-
-        match self
-            .trigger_sync(source_id, SyncType::Incremental, TriggerType::AutoResume)
+        let source = match SourceRepository::new(&self.pool)
+            .find_by_id(source_id.to_string())
             .await
         {
-            Ok(new_run_id) => info!(
-                "Auto-resumed sync for source {} as {}",
-                source_id, new_run_id
-            ),
-            Err(e) => warn!("Failed to auto-resume sync for source {}: {}", source_id, e),
-        }
-    }
+            Ok(Some(s)) => s,
+            Ok(None) => return,
+            Err(e) => {
+                error!("Failed to load source {}: {}", source_id, e);
+                return;
+            }
+        };
 
-    /// Count the previous consecutive runs (most-recent first) for `source_id`
-    /// that were both `auto_resume`-triggered and ended in the failed state.
-    /// Stops at the first run that breaks the streak.
-    async fn recent_auto_resume_failures(&self, source_id: &str) -> Result<usize, SyncError> {
-        let rows: Vec<(String, String)> = sqlx::query_as(
-            r#"
-            SELECT trigger_type, status::text
-            FROM sync_runs
-            WHERE source_id = $1
-              AND status IN ('failed', 'completed', 'cancelled')
-            ORDER BY created_at DESC
-            LIMIT $2
-            "#,
-        )
-        .bind(source_id)
-        .bind(MAX_CONSECUTIVE_AUTO_RESUMES as i64)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
+        let connector_url =
+            match get_connector_url_for_source(&self.redis_client, source.source_type).await {
+                Some(url) => url,
+                None => return,
+            };
 
-        let mut streak = 0usize;
-        for (trigger_type, status) in rows {
-            if trigger_type == TriggerType::AutoResume.to_string() && status == "failed" {
-                streak += 1;
-            } else {
-                break;
+        // Look up the existing run to recover sync_type and the right
+        // last_sync_at to send.
+        let sync_run = match self.sync_run_repo.find_by_id(sync_run_id).await {
+            Ok(Some(r)) => r,
+            Ok(None) => return,
+            Err(e) => {
+                error!("Failed to load sync_run {}: {}", sync_run_id, e);
+                return;
+            }
+        };
+
+        let last_sync_at = if sync_run.sync_type == SyncType::Incremental {
+            match self
+                .sync_run_repo
+                .get_last_completed_for_source(source_id, None)
+                .await
+            {
+                Ok(Some(r)) => r.completed_at.and_then(|ts| ts.format(&Rfc3339).ok()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let sync_request = SyncRequest {
+            sync_run_id: sync_run_id.to_string(),
+            source_id: source_id.to_string(),
+            sync_mode: match sync_run.sync_type {
+                SyncType::Full => "full",
+                SyncType::Incremental => "incremental",
+            }
+            .to_string(),
+            last_sync_at,
+        };
+
+        match self
+            .connector_client
+            .trigger_sync(&connector_url, &sync_request)
+            .await
+        {
+            Ok(_) => {
+                info!(
+                    "Auto-resumed sync {} on connector (attempt {}/{})",
+                    sync_run_id, attempts, MAX_RESUME_ATTEMPTS
+                );
+                // Reset staleness clock so detect_stale_syncs doesn't fire
+                // before the resumed sync starts emitting.
+                if let Err(e) = self.sync_run_repo.update_activity(sync_run_id).await {
+                    warn!(
+                        "Failed to bump activity for resumed sync {}: {}",
+                        sync_run_id, e
+                    );
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to re-trigger sync {} on connector (attempt {}/{}): {}",
+                    sync_run_id, attempts, MAX_RESUME_ATTEMPTS, e
+                );
             }
         }
-        Ok(streak)
     }
 
     pub async fn detect_stale_syncs(&self) -> Result<Vec<String>, SyncError> {
@@ -396,6 +449,7 @@ impl SyncManager {
             .await
             .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
 
+        self.resume_attempts.remove(sync_run_id);
         Ok(())
     }
 }
