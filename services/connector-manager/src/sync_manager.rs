@@ -232,11 +232,28 @@ impl SyncManager {
                 None => continue,
             };
 
-            let connector_url =
-                match get_connector_url_for_source(&self.redis_client, source.source_type).await {
-                    Some(url) => url,
-                    None => continue,
-                };
+            let connector_url = match get_connector_url_for_source(
+                &self.redis_client,
+                source.source_type,
+            )
+            .await
+            {
+                Some(url) => url,
+                None => {
+                    // Connector isn't registered in Redis — either it's
+                    // down long enough for the 90s TTL to have expired,
+                    // or it never came up. Treat as a lost sync so we
+                    // count attempts and eventually mark the row failed
+                    // (instead of waiting for the 60-min stale timeout).
+                    warn!(
+                        "No registered connector for sync {} (source_type={:?}); treating as lost",
+                        sync_run.id, source.source_type
+                    );
+                    self.handle_lost_sync(&sync_run.id, &sync_run.source_id)
+                        .await;
+                    continue;
+                }
+            };
 
             match self
                 .connector_client

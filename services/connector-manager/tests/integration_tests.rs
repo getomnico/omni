@@ -4,6 +4,7 @@ use axum::http::StatusCode;
 use axum_test::{TestServer, TestServerConfig};
 use common::TEST_SOURCE_ID;
 use omni_connector_manager::source_cleanup::SourceCleanup;
+use redis::AsyncCommands;
 use serde_json::json;
 use shared::db::repositories::SyncRunRepository;
 use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions, SyncStatus};
@@ -598,7 +599,59 @@ async fn test_monitor_tolerates_404_status_endpoint() {
 }
 
 // ============================================================================
-// 12. test_source_cleanup — deleted source document + row cleanup
+// 12. test_monitor_marks_failed_when_connector_unregistered
+// ============================================================================
+#[tokio::test]
+async fn test_monitor_marks_failed_when_connector_unregistered() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server(&fixture);
+    let pool = fixture.state.db_pool.pool();
+    let sync_run_repo = SyncRunRepository::new(pool);
+
+    let sync_run_id = trigger_sync(&server).await;
+
+    // Simulate the Redis registration TTL expiring: the connector has been
+    // down long enough that the manager no longer knows its URL.
+    let mut redis_conn = fixture
+        .state
+        .redis_client
+        .get_multiplexed_async_connection()
+        .await
+        .unwrap();
+    let _: () = redis_conn
+        .del("connector:manifest:filesystem")
+        .await
+        .unwrap();
+
+    // MAX_RESUME_ATTEMPTS = 3, so 4 monitor passes should exceed the cap
+    // and mark the row failed.
+    for _ in 0..4 {
+        fixture
+            .state
+            .sync_manager
+            .monitor_running_syncs()
+            .await
+            .unwrap();
+    }
+
+    let run = sync_run_repo
+        .find_by_id(&sync_run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, SyncStatus::Failed);
+    assert!(
+        run.error_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("auto-resume gave up"),
+        "unexpected error: {:?}",
+        run.error_message
+    );
+}
+
+// ============================================================================
+// 13. test_source_cleanup — deleted source document + row cleanup
 // ============================================================================
 
 async fn seed_deleted_source_with_documents(
