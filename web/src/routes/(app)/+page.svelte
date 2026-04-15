@@ -54,7 +54,9 @@
             } catch (err) {
                 console.error(err)
                 pendingUploads = pendingUploads.filter((u) => u.id !== placeholder.id)
-                toast.error(`Failed to upload ${file.name}`)
+                toast.error(`Failed to upload ${file.name}`, {
+                    classes: { title: 'truncate' },
+                })
             }
         }
         if (uploadInputEl) uploadInputEl.value = ''

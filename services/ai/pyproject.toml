@@ -35,6 +35,7 @@ dependencies = [
     "azure-communication-email>=1.0.0",
     "aiosmtplib>=3.0.0",
     "croniter>=2.0.0",
+    "python-multipart>=0.0.26",
 ]
 
 [tool.pytest.ini_options]
