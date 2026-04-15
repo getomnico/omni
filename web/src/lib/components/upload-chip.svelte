@@ -1,5 +1,6 @@
 <script lang="ts">
     import { Button } from '$lib/components/ui/button'
+    import { Loader2 } from '@lucide/svelte'
 
     type UploadMeta = {
         filename: string
@@ -33,7 +34,12 @@
 {#snippet card(name: string, isUploading: boolean)}
     <div
         class="bg-muted/80 border-primary/10 flex flex-row items-center justify-between rounded-lg border px-4 py-3 text-sm shadow-sm">
-        <div class="truncate pr-4 font-medium break-all">{name}</div>
+        <div class="flex min-w-0 items-center gap-2">
+            {#if isUploading}
+                <Loader2 class="text-muted-foreground size-4 shrink-0 animate-spin" />
+            {/if}
+            <div class="truncate pr-4 font-medium break-all">{name}</div>
+        </div>
         {#if onRemove}
             <button
                 aria-label="Remove"
