@@ -10,6 +10,7 @@ use serde_json::{json, Value as JsonValue};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
+use tokio::sync::oneshot;
 use tokio::time::{sleep, Duration};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +50,7 @@ pub struct MockConnector {
     active_syncs: Arc<Mutex<HashSet<String>>>,
     status_endpoint_enabled: Arc<Mutex<bool>>,
     server_handle: Mutex<tokio::task::JoinHandle<()>>,
+    shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
 }
 
 impl MockConnector {
@@ -64,8 +66,10 @@ impl MockConnector {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let port = listener.local_addr()?.port();
 
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let server_handle = spawn_server(
             listener,
+            shutdown_rx,
             sync_requests.clone(),
             cancel_requests.clone(),
             sync_response_status.clone(),
@@ -86,7 +90,30 @@ impl MockConnector {
             active_syncs,
             status_endpoint_enabled,
             server_handle: Mutex::new(server_handle),
+            shutdown_tx: Mutex::new(Some(shutdown_tx)),
         })
+    }
+
+    /// Kill the HTTP server without restarting. Simulates a connector that
+    /// is down but whose registration is still live in Redis (i.e. within
+    /// the 90s TTL window). Probes will fail with connection-refused.
+    ///
+    /// Uses graceful_shutdown (not `abort()`) so axum actually closes
+    /// pooled keep-alive connections — otherwise reqwest's idle conn on the
+    /// caller side would happily roundtrip to still-alive handler tasks.
+    pub async fn stop(&self) {
+        let sent = if let Some(tx) = self.shutdown_tx.lock().unwrap().take() {
+            tx.send(()).is_ok()
+        } else {
+            false
+        };
+        eprintln!("DEBUG stop: shutdown signal sent={}", sent);
+        let handle = {
+            let mut h = self.server_handle.lock().unwrap();
+            std::mem::replace(&mut *h, tokio::spawn(async {}))
+        };
+        let res = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        eprintln!("DEBUG stop: handle.await timed_out={}", res.is_err());
     }
 
     /// Kill and restart the HTTP server on the same port. In-memory state
@@ -94,7 +121,7 @@ impl MockConnector {
     /// loses on restart. Recorded history (`sync_requests`, `cancel_requests`)
     /// is preserved so tests can still inspect it.
     pub async fn restart(&self) -> anyhow::Result<()> {
-        self.server_handle.lock().unwrap().abort();
+        self.stop().await;
         self.active_syncs.lock().unwrap().clear();
 
         // Give the kernel a moment to release the port.
@@ -105,8 +132,10 @@ impl MockConnector {
             }
         };
 
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let new_handle = spawn_server(
             listener,
+            shutdown_rx,
             self.sync_requests.clone(),
             self.cancel_requests.clone(),
             self.sync_response_status.clone(),
@@ -115,6 +144,7 @@ impl MockConnector {
             self.status_endpoint_enabled.clone(),
         );
         *self.server_handle.lock().unwrap() = new_handle;
+        *self.shutdown_tx.lock().unwrap() = Some(shutdown_tx);
         sleep(Duration::from_millis(50)).await;
         Ok(())
     }
@@ -140,6 +170,7 @@ impl MockConnector {
 #[allow(clippy::too_many_arguments)]
 fn spawn_server(
     listener: TcpListener,
+    shutdown_rx: oneshot::Receiver<()>,
     sync_requests: Arc<Mutex<Vec<RecordedSyncRequest>>>,
     cancel_requests: Arc<Mutex<Vec<RecordedCancelRequest>>>,
     sync_response_status: Arc<Mutex<StatusCode>>,
@@ -175,7 +206,11 @@ fn spawn_server(
         .with_state(state);
 
     tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
+        let _ = axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.await;
+            })
+            .await;
     })
 }
 

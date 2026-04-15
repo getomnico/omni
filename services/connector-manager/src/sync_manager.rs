@@ -11,7 +11,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 const MAX_RESUME_ATTEMPTS: usize = 3;
 
@@ -232,28 +232,24 @@ impl SyncManager {
                 None => continue,
             };
 
-            let connector_url = match get_connector_url_for_source(
-                &self.redis_client,
-                source.source_type,
-            )
-            .await
-            {
-                Some(url) => url,
-                None => {
-                    // Connector isn't registered in Redis — either it's
-                    // down long enough for the 90s TTL to have expired,
-                    // or it never came up. Treat as a lost sync so we
-                    // count attempts and eventually mark the row failed
-                    // (instead of waiting for the 60-min stale timeout).
-                    warn!(
+            let connector_url =
+                match get_connector_url_for_source(&self.redis_client, source.source_type).await {
+                    Some(url) => url,
+                    None => {
+                        // Connector isn't registered in Redis — either it's
+                        // down long enough for the 90s TTL to have expired,
+                        // or it never came up. Treat as a lost sync so we
+                        // count attempts and eventually mark the row failed
+                        // (instead of waiting for the 60-min stale timeout).
+                        warn!(
                         "No registered connector for sync {} (source_type={:?}); treating as lost",
                         sync_run.id, source.source_type
                     );
-                    self.handle_lost_sync(&sync_run.id, &sync_run.source_id)
-                        .await;
-                    continue;
-                }
-            };
+                        self.handle_lost_sync(&sync_run.id, &sync_run.source_id)
+                            .await;
+                        continue;
+                    }
+                };
 
             match self
                 .connector_client
@@ -261,7 +257,9 @@ impl SyncManager {
                 .await
             {
                 Ok(status) if status.running => {
-                    // Connector still working on it; nothing to do.
+                    // Healthy observation — clear any prior lost-signal count
+                    // so the attempt cap tracks consecutive failures.
+                    self.resume_attempts.remove(&sync_run.id);
                 }
                 Ok(_) => {
                     warn!(
@@ -277,10 +275,15 @@ impl SyncManager {
                     // Fall through to existing stale-detection.
                 }
                 Err(e) => {
-                    debug!(
-                        "Sync status probe failed for {} ({}): {}",
+                    // Connector reachable-via-Redis but not responding
+                    // (connection refused, timeout, 5xx). Treat same as
+                    // "lost" — attempt counter absorbs transient blips.
+                    warn!(
+                        "Sync status probe failed for {} ({}): {}; treating as lost",
                         sync_run.id, connector_url, e
                     );
+                    self.handle_lost_sync(&sync_run.id, &sync_run.source_id)
+                        .await;
                 }
             }
         }
@@ -337,7 +340,16 @@ impl SyncManager {
         let connector_url =
             match get_connector_url_for_source(&self.redis_client, source.source_type).await {
                 Some(url) => url,
-                None => return,
+                None => {
+                    // Connector is still unregistered. Attempt was counted
+                    // above; after MAX_RESUME_ATTEMPTS the cap above will
+                    // mark the row failed.
+                    warn!(
+                        "Cannot resume sync {} — connector for {:?} not registered (attempt {}/{})",
+                        sync_run_id, source.source_type, attempts, MAX_RESUME_ATTEMPTS
+                    );
+                    return;
+                }
             };
 
         // Look up the existing run to recover sync_type and the right

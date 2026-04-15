@@ -651,7 +651,48 @@ async fn test_monitor_marks_failed_when_connector_unregistered() {
 }
 
 // ============================================================================
-// 13. test_source_cleanup — deleted source document + row cleanup
+// 13. test_monitor_treats_unreachable_connector_as_lost
+// ============================================================================
+#[tokio::test]
+async fn test_monitor_treats_unreachable_connector_as_lost() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server(&fixture);
+    let pool = fixture.state.db_pool.pool();
+    let sync_run_repo = SyncRunRepository::new(pool);
+
+    let sync_run_id = trigger_sync(&server).await;
+
+    // Connector is down but its Redis registration is still present — the
+    // situation during the first 90s of a connector outage.
+    fixture.mock_connector.stop().await;
+
+    for _ in 0..4 {
+        fixture
+            .state
+            .sync_manager
+            .monitor_running_syncs()
+            .await
+            .unwrap();
+    }
+
+    let run = sync_run_repo
+        .find_by_id(&sync_run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, SyncStatus::Failed);
+    assert!(
+        run.error_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("auto-resume gave up"),
+        "unexpected error: {:?}",
+        run.error_message
+    );
+}
+
+// ============================================================================
+// 14. test_source_cleanup — deleted source document + row cleanup
 // ============================================================================
 
 async fn seed_deleted_source_with_documents(
