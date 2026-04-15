@@ -5,7 +5,6 @@ from .chats import ChatsRepository
 from .messages import MessagesRepository
 from .embedding_providers import EmbeddingProvidersRepository, EmbeddingProviderRecord
 from .documents import DocumentsRepository, Document, ContentBlob
-from .content_blobs import ContentBlobsRepository, ContentBlobRecord
 from .embedding_queue import EmbeddingQueueRepository, EmbeddingQueueItem, QueueStatus
 from .embeddings import EmbeddingsRepository, Embedding
 from .embedding_batch_jobs import EmbeddingBatchJobsRepository, BatchJob
@@ -31,8 +30,6 @@ __all__ = [
     "DocumentsRepository",
     "Document",
     "ContentBlob",
-    "ContentBlobsRepository",
-    "ContentBlobRecord",
     "EmbeddingQueueRepository",
     "EmbeddingQueueItem",
     "QueueStatus",
