@@ -395,12 +395,14 @@ impl SearchEngine {
         // IMAP email threads from different accounts but the same mailing list
         // produce identical external_ids (source_id is not part of the ID).
         // Keep the highest-scoring result per group; trim to requested limit.
-        results = Self::deduplicate_cross_source(results, request.limit() as usize);
+        let (mut results, dedup_removed) =
+            Self::deduplicate_cross_source(results, request.limit() as usize);
 
         let total_count: i64 = filtered_facets
             .iter()
             .flat_map(|f| f.values.iter().filter_map(|fv| fv.count))
-            .sum();
+            .sum::<i64>()
+            - dedup_removed as i64;
         let has_more = total_count >= limit;
         let query_time = start_time.elapsed().as_millis() as u64;
 
@@ -1136,7 +1138,10 @@ impl SearchEngine {
     /// Collapsed duplicates are recorded in `also_in` on the winner.
     /// Permissions are NOT mutated — the SQL layer already filters by the
     /// requesting user's access.
-    fn deduplicate_cross_source(results: Vec<SearchResult>, limit: usize) -> Vec<SearchResult> {
+    fn deduplicate_cross_source(
+        results: Vec<SearchResult>,
+        limit: usize,
+    ) -> (Vec<SearchResult>, usize) {
         // Group indices by external_id for dedup-eligible results only.
         let mut dedup_groups: HashMap<String, Vec<usize>> = HashMap::new();
         for (idx, result) in results.iter().enumerate() {
@@ -1152,7 +1157,7 @@ impl SearchEngine {
         if dedup_groups.values().all(|indices| indices.len() <= 1) {
             let mut results = results;
             results.truncate(limit);
-            return results;
+            return (results, 0);
         }
 
         // Map from best_idx -> list of AlsoIn entries for its collapsed duplicates
@@ -1214,7 +1219,7 @@ impl SearchEngine {
             deduped.len()
         );
 
-        deduped
+        (deduped, remove_indices.len())
     }
 
     fn generate_cache_key(&self, request: &SearchRequest) -> String {

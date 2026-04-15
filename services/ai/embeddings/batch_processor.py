@@ -421,7 +421,7 @@ class EmbeddingBatchProcessor:
             # external_id already has embeddings, clone them instead of
             # regenerating.  This avoids duplicate vectors in the HNSW index
             # for IMAP threads ingested from multiple accounts.
-            if doc.external_id:
+            if doc.external_id and doc.external_id.startswith("imap-thread:"):
                 donor_id = await self.documents_repo.find_embedded_duplicate(
                     doc.external_id, item.document_id
                 )
