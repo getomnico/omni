@@ -107,13 +107,11 @@ impl MockConnector {
         } else {
             false
         };
-        eprintln!("DEBUG stop: shutdown signal sent={}", sent);
         let handle = {
             let mut h = self.server_handle.lock().unwrap();
             std::mem::replace(&mut *h, tokio::spawn(async {}))
         };
         let res = tokio::time::timeout(Duration::from_secs(2), handle).await;
-        eprintln!("DEBUG stop: handle.await timed_out={}", res.is_err());
     }
 
     /// Kill and restart the HTTP server on the same port. In-memory state
