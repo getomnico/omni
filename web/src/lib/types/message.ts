@@ -1,5 +1,12 @@
 import type { TextCitationParam } from '@anthropic-ai/sdk/resources/messages'
 
+// Custom source variant embedded in Anthropic document/image blocks. Resolved to real
+// content blocks by the AI service before sending to the LLM.
+export type OmniUploadBlock = {
+    type: 'document' | 'image'
+    source: { type: 'omni_upload'; upload_id: string }
+}
+
 export type TextMessageContent = {
     id: number
     type: 'text'

@@ -37,6 +37,7 @@
         UploadMessageContent,
         MessageContent,
         ApprovalRequiredEvent,
+        OmniUploadBlock,
     } from '$lib/types/message'
     import ToolMessage from '$lib/components/tool-message.svelte'
     import ToolCallsGroup from '$lib/components/tool-calls-group.svelte'
@@ -78,14 +79,7 @@
 
     let userMessage = $state('')
 
-    // Block that references a user-uploaded file. Mirrors the shape persisted in the DB
-    // and expanded by omni-ai at provider-call time.
-    type OmniUploadBlock = {
-        type: 'document' | 'image'
-        source: { type: 'omni_upload'; upload_id: string }
-    }
-    type UserTextBlock = { type: 'text'; text: string }
-    type UserMessageBlock = OmniUploadBlock | UserTextBlock
+    type UserMessageBlock = OmniUploadBlock | TextBlockParam
 
     type PendingUpload = { id: string; filename: string; sizeBytes: number; uploading: boolean }
     type UploadResponse = {

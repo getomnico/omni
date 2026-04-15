@@ -2,6 +2,8 @@ import { json, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
 import { chatRepository, chatMessageRepository } from '$lib/server/db/chats'
 import { getAgent } from '$lib/server/db/agents.js'
+import type { OmniUploadBlock } from '$lib/types/message'
+import type { TextBlockParam } from '@anthropic-ai/sdk/resources/messages'
 
 interface MessageRequest {
     content: string
@@ -9,13 +11,7 @@ interface MessageRequest {
     attachmentIds?: string[]
 }
 
-type UploadBlock = {
-    type: 'document' | 'image'
-    source: { type: 'omni_upload'; upload_id: string }
-}
-
-type TextBlock = { type: 'text'; text: string }
-type UserMessageBlock = UploadBlock | TextBlock
+type UserMessageBlock = OmniUploadBlock | TextBlockParam
 
 export const GET: RequestHandler = async ({ params, locals }) => {
     const logger = locals.logger.child('chat')
