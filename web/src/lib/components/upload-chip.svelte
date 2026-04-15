@@ -1,4 +1,6 @@
 <script lang="ts">
+    import { Card } from '$lib/components/ui/card'
+
     type UploadMeta = {
         filename: string
         contentType: string
@@ -29,8 +31,8 @@
 </script>
 
 {#snippet card(name: string, isUploading: boolean)}
-    <div
-        class="bg-muted relative flex h-14 w-44 shrink-0 flex-col justify-between rounded-md border px-2.5 py-1.5 text-xs shadow-sm">
+    <Card
+        class="relative h-14 w-44 shrink-0 justify-between gap-0 rounded-md px-2.5 py-1.5 text-xs">
         {#if onRemove}
             <button
                 type="button"
@@ -48,7 +50,7 @@
                 {#if ext}<span>{ext}</span>{/if}
             {/if}
         </div>
-    </div>
+    </Card>
 {/snippet}
 
 {#if filename}
