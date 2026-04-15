@@ -53,7 +53,7 @@ def map_drive_item_to_document(
     item_id = item["id"]
 
     if source_type == "share_point" and site_id:
-        external_id = f"sharepoint:{site_id}:{item_id}"
+        external_id = f"sharepoint:{site_id}:{drive_id}:{item_id}"
     else:
         external_id = f"onedrive:{drive_id}:{item_id}"
 

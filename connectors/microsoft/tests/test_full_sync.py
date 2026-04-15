@@ -353,9 +353,9 @@ async def test_sharepoint_multi_drive_and_folder_sync(
         for e in events
         if e["event_type"] == "document_created"
     }
-    assert f"sharepoint:{site_id}:folder-a" not in doc_ids, doc_ids
-    assert f"sharepoint:{site_id}:file-a" in doc_ids, doc_ids
-    assert f"sharepoint:{site_id}:file-b" in doc_ids, doc_ids
+    assert f"sharepoint:{site_id}:{drive_a}:folder-a" not in doc_ids, doc_ids
+    assert f"sharepoint:{site_id}:{drive_a}:file-a" in doc_ids, doc_ids
+    assert f"sharepoint:{site_id}:{drive_b}:file-b" in doc_ids, doc_ids
 
     state = await seed.get_connector_state(sharepoint_source_id)
     tokens = state.get("delta_tokens", {})

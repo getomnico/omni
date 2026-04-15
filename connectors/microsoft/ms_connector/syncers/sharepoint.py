@@ -245,7 +245,7 @@ class SharePointSyncer:
 
             if item.get("deleted"):
                 skipped_deleted += 1
-                external_id = f"sharepoint:{site.id}:{item['id']}"
+                external_id = f"sharepoint:{site.id}:{drive.id}:{item['id']}"
                 await ctx.emit_deleted(external_id)
                 continue
 
@@ -264,7 +264,7 @@ class SharePointSyncer:
             try:
                 await self._process_item(client, site, item, ctx)
             except Exception as e:
-                external_id = f"sharepoint:{site.id}:{item['id']}"
+                external_id = f"sharepoint:{site.id}:{drive.id}:{item['id']}"
                 logger.warning("[sharepoint] Error processing %s: %s", external_id, e)
                 await ctx.emit_error(external_id, str(e))
 
