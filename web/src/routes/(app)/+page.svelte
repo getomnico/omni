@@ -1,7 +1,8 @@
 <script lang="ts">
     import type { PageProps } from './$types'
     import { Search } from '@lucide/svelte'
-    import { goto } from '$app/navigation'
+    import { onMount } from 'svelte'
+    import { goto, beforeNavigate } from '$app/navigation'
     import omniLogoLight from '$lib/images/icons/omni-logo-256.png'
     import omniLogoDark from '$lib/images/icons/omni-logo-dark-256.png'
     import UserInput, { type InputMode } from '$lib/components/user-input.svelte'
@@ -25,6 +26,25 @@
     }
     let pendingUploads = $state<PendingUpload[]>([])
     let uploadInputEl: HTMLInputElement | undefined = $state()
+
+    const hasUnsubmittedUploads = $derived(pendingUploads.length > 0 && !isSearching)
+
+    beforeNavigate(({ cancel }) => {
+        if (
+            hasUnsubmittedUploads &&
+            !confirm('You have attached files that haven\u2019t been sent. Leave anyway?')
+        ) {
+            cancel()
+        }
+    })
+
+    onMount(() => {
+        const handler = (e: BeforeUnloadEvent) => {
+            if (hasUnsubmittedUploads) e.preventDefault()
+        }
+        window.addEventListener('beforeunload', handler)
+        return () => window.removeEventListener('beforeunload', handler)
+    })
 
     async function handleFilesSelected(files: FileList | null) {
         if (!files) return
