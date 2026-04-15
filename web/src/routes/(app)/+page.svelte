@@ -16,6 +16,13 @@
     let inputMode = $state<InputMode>(userPreferences.get('inputMode'))
 
     type PendingUpload = { id: string; filename: string; sizeBytes: number; uploading: boolean }
+    type UploadResponse = {
+        id: string
+        filename: string
+        content_type: string
+        size_bytes: number
+        created_at: string
+    }
     let pendingUploads = $state<PendingUpload[]>([])
     let uploadInputEl: HTMLInputElement | undefined = $state()
 
@@ -34,7 +41,7 @@
                 fd.append('file', file)
                 const resp = await fetch('/api/uploads', { method: 'POST', body: fd })
                 if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
-                const data = await resp.json()
+                const data = (await resp.json()) as UploadResponse
                 const idx = pendingUploads.findIndex((u) => u.id === placeholder.id)
                 if (idx >= 0) {
                     pendingUploads[idx] = {

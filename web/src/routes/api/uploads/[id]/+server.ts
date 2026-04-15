@@ -2,6 +2,15 @@ import { json } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
 import type { RequestHandler } from './$types.js'
 
+type AiUpload = {
+    id: string
+    user_id: string
+    filename: string
+    content_type: string
+    size_bytes: number
+    created_at: string
+}
+
 export const GET: RequestHandler = async ({ params, locals }) => {
     if (!locals.user?.id) {
         return json({ error: 'User not authenticated' }, { status: 401 })
@@ -20,7 +29,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
         return json({ error: 'Upstream error' }, { status: 502 })
     }
 
-    const upload = await resp.json()
+    const upload = (await resp.json()) as AiUpload
     if (upload.user_id !== locals.user.id) {
         return json({ error: 'Not found' }, { status: 404 })
     }

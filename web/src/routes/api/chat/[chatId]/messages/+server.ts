@@ -14,6 +14,9 @@ type UploadBlock = {
     source: { type: 'omni_upload'; upload_id: string }
 }
 
+type TextBlock = { type: 'text'; text: string }
+type UserMessageBlock = UploadBlock | TextBlock
+
 export const GET: RequestHandler = async ({ params, locals }) => {
     const logger = locals.logger.child('chat')
 
@@ -125,13 +128,13 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
         // Create the user message in MessageParam format. If there are attachments, build
         // the content as an array of blocks: omni_upload document blocks first, then text.
-        let userMessage: { role: 'user'; content: string | Array<unknown> }
+        let userMessage: { role: 'user'; content: string | UserMessageBlock[] }
         if (attachmentIds.length > 0) {
             const uploadBlocks: UploadBlock[] = attachmentIds.map((id) => ({
                 type: 'document',
                 source: { type: 'omni_upload', upload_id: id },
             }))
-            const blocks: Array<unknown> = [...uploadBlocks]
+            const blocks: UserMessageBlock[] = [...uploadBlocks]
             if (trimmedText !== '') {
                 blocks.push({ type: 'text', text: trimmedText })
             }

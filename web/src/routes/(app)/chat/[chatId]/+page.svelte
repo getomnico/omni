@@ -34,6 +34,7 @@
         ProcessedMessage,
         TextMessageContent,
         ToolMessageContent,
+        UploadMessageContent,
         MessageContent,
         ApprovalRequiredEvent,
     } from '$lib/types/message'
@@ -76,7 +77,24 @@
     })
 
     let userMessage = $state('')
+
+    // Block that references a user-uploaded file. Mirrors the shape persisted in the DB
+    // and expanded by omni-ai at provider-call time.
+    type OmniUploadBlock = {
+        type: 'document' | 'image'
+        source: { type: 'omni_upload'; upload_id: string }
+    }
+    type UserTextBlock = { type: 'text'; text: string }
+    type UserMessageBlock = OmniUploadBlock | UserTextBlock
+
     type PendingUpload = { id: string; filename: string; sizeBytes: number; uploading: boolean }
+    type UploadResponse = {
+        id: string
+        filename: string
+        content_type: string
+        size_bytes: number
+        created_at: string
+    }
     let pendingUploads = $state<PendingUpload[]>([])
     let uploadInputEl: HTMLInputElement | undefined = $state()
 
@@ -95,7 +113,7 @@
                 fd.append('file', file)
                 const resp = await fetch('/api/uploads', { method: 'POST', body: fd })
                 if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
-                const data = await resp.json()
+                const data = (await resp.json()) as UploadResponse
                 const idx = pendingUploads.findIndex((u) => u.id === placeholder.id)
                 if (idx >= 0) {
                     pendingUploads[idx] = {
@@ -559,15 +577,15 @@
                 const userMessageContent: MessageContent =
                     typeof message.content === 'string'
                         ? [{ id: 0, type: 'text', text: message.content }]
-                        : message.content
-                              .map((b: any, bi: number): MessageContent[number] | null => {
+                        : (message.content as Array<ContentBlockParam | OmniUploadBlock>)
+                              .map((b, bi): MessageContent[number] | null => {
                                   if (b.type === 'text') {
                                       return { id: bi, type: 'text', text: b.text }
                                   }
                                   if (
                                       (b.type === 'document' || b.type === 'image') &&
-                                      b.source?.type === 'omni_upload' &&
-                                      b.source.upload_id
+                                      'source' in b &&
+                                      b.source.type === 'omni_upload'
                                   ) {
                                       return {
                                           id: bi,
@@ -1078,25 +1096,28 @@
 
         const { messageId } = await response.json()
 
-        const messageContent =
-            attachmentIds.length > 0
-                ? [
-                      ...attachmentIds.map((id) => ({
-                          type: 'document' as const,
-                          source: { type: 'omni_upload', upload_id: id },
-                      })),
-                      ...(userMsg ? [{ type: 'text' as const, text: userMsg }] : []),
-                  ]
-                : userMsg
+        let messageContent: string | UserMessageBlock[]
+        if (attachmentIds.length > 0) {
+            const blocks: UserMessageBlock[] = attachmentIds.map((id) => ({
+                type: 'document',
+                source: { type: 'omni_upload', upload_id: id },
+            }))
+            if (userMsg) blocks.push({ type: 'text', text: userMsg })
+            messageContent = blocks
+        } else {
+            messageContent = userMsg
+        }
 
+        // The DB column is typed as Anthropic's MessageParam; our custom omni_upload
+        // source isn't part of that union, so narrow to MessageParam via unknown.
         const newUserMessage: ChatMessage = {
             id: messageId,
             chatId: data.chat.id,
             parentId: parentId ?? null,
             message: {
                 role: 'user',
-                content: messageContent as any,
-            },
+                content: messageContent,
+            } as unknown as ChatMessage['message'],
             messageSeqNum: chatMessages.length + 1,
             createdAt: new Date(),
         }
@@ -1252,14 +1273,10 @@
             </div>
         </div>
     {:else}
-        {@const firstText = message.content.find((b) => b.type === 'text') as
-            | TextMessageContent
-            | undefined}
-        {@const uploads = message.content.filter((b) => b.type === 'upload') as Array<{
-            id: number
-            type: 'upload'
-            uploadId: string
-        }>}
+        {@const firstText = message.content.find((b): b is TextMessageContent => b.type === 'text')}
+        {@const uploads = message.content.filter(
+            (b): b is UploadMessageContent => b.type === 'upload',
+        )}
         <div class="flex max-w-[80%] flex-col items-end gap-1">
             {#if uploads.length > 0}
                 <div class="flex flex-wrap justify-end gap-1">
