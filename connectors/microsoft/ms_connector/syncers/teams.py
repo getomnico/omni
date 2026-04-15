@@ -1015,9 +1015,9 @@ class TeamsSyncer:
     ) -> DocumentPermissions:
         """Resolve chat members to email addresses.
 
-        Falls back to the chat creator and the mailbox owner whose chat this
-        was fetched from when the members array is empty (e.g., some meeting
-        or legacy chats)."""
+        Falls back to the mailbox owner whose chat this was fetched from
+        when the members array is empty or absent (e.g., some meeting or
+        legacy chats, or chats where $expand=members was truncated)."""
         members = chat.get("members") or []
         emails: set[str] = set()
         for member in members:
@@ -1029,12 +1029,8 @@ class TeamsSyncer:
                 if user_id and user_id in user_cache:
                     emails.add(user_cache[user_id].lower())
 
-        if not emails:
-            created_by = chat.get("createdBy", {}).get("user", {}).get("id") or ""
-            if created_by and created_by in user_cache:
-                emails.add(user_cache[created_by].lower())
-            if owner_email:
-                emails.add(owner_email.lower())
+        if not emails and owner_email:
+            emails.add(owner_email.lower())
 
         return DocumentPermissions(
             public=False,
