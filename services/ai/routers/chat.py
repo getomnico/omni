@@ -13,8 +13,10 @@ from pydantic import ValidationError
 from agents.executor import _build_source_filter
 from agents.models import Agent
 from agents.repository import AgentRepository, AgentRunRepository
+from attachments import expand_uploads
 from db import ChatsRepository, MessagesRepository
 from db.documents import DocumentsRepository
+from db.uploads import UploadsRepository
 from db.models import Chat, Source
 from db.users import UsersRepository
 from tools import (
@@ -517,6 +519,17 @@ async def stream_chat(
         messages: list[MessageParam] = [
             MessageParam(**msg.message) for msg in chat_messages
         ]
+
+    # Expand any omni_upload content blocks (inline small text, stage larger/binary in sandbox).
+    storage = request.app.state.content_storage
+    if storage is not None:
+        messages = await expand_uploads(
+            messages,
+            chat_id=chat_id,
+            storage=storage,
+            uploads_repo=UploadsRepository(),
+            sandbox_url=SANDBOX_URL,
+        )
 
     # Check if we need to process - only if last message is from user (or resuming from approval)
     last_message_role = messages[-1].get("role") if messages else None
