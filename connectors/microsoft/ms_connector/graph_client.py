@@ -347,7 +347,7 @@ class GraphClient:
         drives: list[dict[str, Any]] = []
         async for drive in self.get_paginated(
             f"/sites/{site_id}/drives",
-            params={"$select": "id,name,driveType,webUrl"},
+            params={"$select": "id,name,driveType,webUrl,owner"},
         ):
             drives.append(drive)
         return drives

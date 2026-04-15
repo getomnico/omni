@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from omni_connector import SyncContext
+from omni_connector.models import DocumentPermissions
 
 from ..graph_client import GraphClient, GraphAPIError
 from ..mappers import (
@@ -96,6 +97,7 @@ class SharePointSyncer:
         self._user_cache = user_cache or {}
         self._group_cache = group_cache or {}
         self._drive_permissions: dict[str, list[dict[str, Any]]] = {}
+        self._site_members: dict[str, list[str]] = {}
 
         delta_tokens: dict[str, str] = dict(state.get(DRIVE_DELTA_TOKENS_KEY, {}))
         skip_classifications: Counter[str] = Counter()
@@ -114,6 +116,8 @@ class SharePointSyncer:
                     client, site, e, skip_classifications, op="list_drives"
                 )
                 continue
+
+            await self._prime_site_members(client, site, raw_drives)
 
             for raw_drive in raw_drives:
                 if ctx.is_cancelled():
@@ -267,6 +271,53 @@ class SharePointSyncer:
             )
             return None, delta_token
 
+    async def _prime_site_members(
+        self,
+        client: GraphClient,
+        site: Site,
+        raw_drives: list[dict[str, Any]],
+    ) -> None:
+        """Populate the per-site members cache for group-connected sites.
+
+        SharePoint items that nobody has explicitly shared inherit access
+        from the site's backing M365 group. list_item_permissions only
+        returns *sharing* permissions and does not expose this site-level
+        membership, so we resolve it ourselves via the drive's owner.group.id
+        and cache the member emails as a fallback permission for every doc
+        on the site. Sites without a backing group (classic, communication)
+        are left uncached; docs from those sites fall through to whatever
+        sharing permissions exist on the item itself.
+        """
+        if site.id in self._site_members:
+            return
+        group_id: str | None = None
+        for raw_drive in raw_drives:
+            owner = raw_drive.get("owner") or {}
+            group = owner.get("group") or {}
+            gid = group.get("id")
+            if gid:
+                group_id = gid
+                break
+        if not group_id:
+            self._site_members[site.id] = []
+            return
+        try:
+            members = await client.list_group_members(group_id)
+        except Exception as e:
+            logger.warning(
+                "[sharepoint] Failed to list site backing-group members "
+                "for %s (group %s): %s",
+                site.display_name,
+                group_id,
+                e,
+            )
+            self._site_members[site.id] = []
+            return
+        emails = [
+            (m.get("mail") or m.get("userPrincipalName") or "").lower() for m in members
+        ]
+        self._site_members[site.id] = sorted({e for e in emails if e})
+
     async def _get_drive_permissions(
         self, client: GraphClient, drive_id: str
     ) -> list[dict[str, Any]]:
@@ -333,6 +384,13 @@ class SharePointSyncer:
             group_cache=self._group_cache,
             site_id=site.id,
         )
+
+        perms = doc.permissions
+        if not perms.public and not perms.users and not perms.groups:
+            site_members = self._site_members.get(site.id) or []
+            if site_members:
+                doc.permissions = DocumentPermissions(public=False, users=site_members)
+
         await ctx.emit(doc)
 
     async def _extract_file_content(
