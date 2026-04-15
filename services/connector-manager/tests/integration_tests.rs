@@ -449,7 +449,156 @@ async fn test_stale_sync_detection() {
 }
 
 // ============================================================================
-// 8. test_source_cleanup — deleted source document + row cleanup
+// 8. test_monitor_resumes_lost_sync — connector restart mid-sync
+// ============================================================================
+#[tokio::test]
+async fn test_monitor_resumes_lost_sync() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server(&fixture);
+    let pool = fixture.state.db_pool.pool();
+    let sync_run_repo = SyncRunRepository::new(pool);
+
+    let sync_run_id = trigger_sync(&server).await;
+    assert_eq!(fixture.mock_connector.get_sync_requests().len(), 1);
+
+    // Simulate connector crash + restart: kills the HTTP server, rebinds on
+    // the same port, drops in-memory active_syncs. Recorded history is kept.
+    fixture.mock_connector.restart().await.unwrap();
+
+    fixture
+        .state
+        .sync_manager
+        .monitor_running_syncs()
+        .await
+        .unwrap();
+
+    // Existing row should still be running (not failed), and the connector
+    // should have received a second /sync for the same sync_run_id.
+    let run = sync_run_repo
+        .find_by_id(&sync_run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, SyncStatus::Running);
+
+    let requests = fixture.mock_connector.get_sync_requests();
+    assert_eq!(requests.len(), 2, "expected an auto-resume /sync call");
+    assert_eq!(requests[1].sync_run_id, sync_run_id);
+    assert_eq!(requests[1].source_id, TEST_SOURCE_ID);
+}
+
+// ============================================================================
+// 9. test_monitor_gives_up_after_max_resume_attempts
+// ============================================================================
+#[tokio::test]
+async fn test_monitor_gives_up_after_max_resume_attempts() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server(&fixture);
+    let pool = fixture.state.db_pool.pool();
+    let sync_run_repo = SyncRunRepository::new(pool);
+
+    let sync_run_id = trigger_sync(&server).await;
+
+    // Each restart drops active_syncs, so every monitor pass sees
+    // running=false and attempts a resume. After 3 resumes, the 4th pass
+    // should mark the row failed.
+    for _ in 0..4 {
+        fixture.mock_connector.restart().await.unwrap();
+        fixture
+            .state
+            .sync_manager
+            .monitor_running_syncs()
+            .await
+            .unwrap();
+    }
+
+    let run = sync_run_repo
+        .find_by_id(&sync_run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, SyncStatus::Failed);
+    assert!(
+        run.error_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("auto-resume gave up"),
+        "unexpected error message: {:?}",
+        run.error_message
+    );
+
+    // 3 successful resume attempts + 1 original trigger = 4 /sync calls.
+    let requests = fixture.mock_connector.get_sync_requests();
+    assert_eq!(requests.len(), 4);
+}
+
+// ============================================================================
+// 10. test_monitor_noop_when_connector_reports_running
+// ============================================================================
+#[tokio::test]
+async fn test_monitor_noop_when_connector_reports_running() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server(&fixture);
+    let pool = fixture.state.db_pool.pool();
+    let sync_run_repo = SyncRunRepository::new(pool);
+
+    let sync_run_id = trigger_sync(&server).await;
+
+    fixture
+        .state
+        .sync_manager
+        .monitor_running_syncs()
+        .await
+        .unwrap();
+
+    let run = sync_run_repo
+        .find_by_id(&sync_run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, SyncStatus::Running);
+    assert_eq!(
+        fixture.mock_connector.get_sync_requests().len(),
+        1,
+        "monitor must not re-trigger when connector says sync is running"
+    );
+}
+
+// ============================================================================
+// 11. test_monitor_tolerates_404_status_endpoint
+// ============================================================================
+#[tokio::test]
+async fn test_monitor_tolerates_404_status_endpoint() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server(&fixture);
+    let pool = fixture.state.db_pool.pool();
+    let sync_run_repo = SyncRunRepository::new(pool);
+
+    let sync_run_id = trigger_sync(&server).await;
+
+    // Simulates a connector that doesn't implement GET /sync/{id}
+    // (current Rust connectors). Monitor must treat 404 as a no-op and
+    // leave the row alone.
+    fixture.mock_connector.set_status_endpoint_enabled(false);
+
+    fixture
+        .state
+        .sync_manager
+        .monitor_running_syncs()
+        .await
+        .unwrap();
+
+    let run = sync_run_repo
+        .find_by_id(&sync_run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(run.status, SyncStatus::Running);
+    assert_eq!(fixture.mock_connector.get_sync_requests().len(), 1);
+}
+
+// ============================================================================
+// 12. test_source_cleanup — deleted source document + row cleanup
 // ============================================================================
 
 async fn seed_deleted_source_with_documents(
