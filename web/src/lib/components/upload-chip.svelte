@@ -1,13 +1,18 @@
 <script lang="ts">
-    import { Paperclip } from '@lucide/svelte'
-
     type UploadMeta = {
         filename: string
         contentType: string
         sizeBytes: number
     }
 
-    let { uploadId }: { uploadId: string } = $props()
+    interface Props {
+        uploadId?: string
+        filename?: string
+        uploading?: boolean
+        onRemove?: () => void
+    }
+
+    let { uploadId, filename, uploading = false, onRemove }: Props = $props()
 
     async function fetchMeta(id: string): Promise<UploadMeta> {
         const resp = await fetch(`/api/uploads/${id}`)
@@ -15,25 +20,45 @@
         return resp.json()
     }
 
-    let metaPromise = $derived(fetchMeta(uploadId))
+    let metaPromise = $derived(uploadId && !filename ? fetchMeta(uploadId) : null)
 
-    function formatSize(n: number): string {
-        if (n < 1024) return `${n} B`
-        if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`
-        return `${(n / (1024 * 1024)).toFixed(1)} MB`
+    function getExtension(name: string): string {
+        const dot = name.lastIndexOf('.')
+        return dot > 0 && dot < name.length - 1 ? name.slice(dot + 1) : ''
     }
 </script>
 
-<div class="bg-background flex max-w-xs items-center gap-2 rounded-lg border px-3 py-2 text-sm">
-    <Paperclip class="h-4 w-4 shrink-0 text-gray-500" />
-    {#await metaPromise}
-        <span class="text-gray-500">loading…</span>
-    {:then meta}
-        <div class="flex min-w-0 flex-col">
-            <span class="truncate font-medium">{meta.filename}</span>
-            <span class="text-xs text-gray-500">{formatSize(meta.sizeBytes)}</span>
+{#snippet card(name: string, isUploading: boolean)}
+    <div
+        class="bg-muted relative flex h-14 w-44 shrink-0 flex-col justify-between rounded-md border px-2.5 py-1.5 text-xs shadow-sm">
+        {#if onRemove}
+            <button
+                type="button"
+                aria-label="Remove"
+                class="text-muted-foreground hover:text-foreground absolute top-1 right-1 cursor-pointer leading-none"
+                onclick={onRemove}>×</button>
+        {/if}
+        <span class="line-clamp-2 pr-4 font-medium break-all">{name}</span>
+        <div
+            class="text-muted-foreground flex items-center justify-end gap-1 text-[10px] uppercase">
+            {#if isUploading}
+                <span>uploading…</span>
+            {:else}
+                {@const ext = getExtension(name)}
+                {#if ext}<span>{ext}</span>{/if}
+            {/if}
         </div>
+    </div>
+{/snippet}
+
+{#if filename}
+    {@render card(filename, uploading)}
+{:else if metaPromise}
+    {#await metaPromise}
+        {@render card('loading…', false)}
+    {:then meta}
+        {@render card(meta.filename, false)}
     {:catch}
-        <span class="text-gray-500">attachment unavailable</span>
+        {@render card('attachment unavailable', false)}
     {/await}
-</div>
+{/if}

@@ -1643,26 +1643,22 @@
                 {/if}
             </div>
 
-            <!-- Input -->
-            <div class="bg-background sticky bottom-0 flex flex-col items-center pb-4">
+            {#snippet uploadChips()}
                 {#if pendingUploads.length > 0}
-                    <div class="mb-2 flex w-full max-w-4xl flex-wrap gap-2">
+                    <div class="flex flex-wrap gap-2">
                         {#each pendingUploads as up (up.id)}
-                            <div
-                                class="bg-card flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm">
-                                <span class="max-w-[200px] truncate">{up.filename}</span>
-                                {#if up.uploading}
-                                    <span class="text-muted-foreground text-xs">uploading…</span>
-                                {/if}
-                                <button
-                                    type="button"
-                                    class="text-muted-foreground hover:text-foreground cursor-pointer"
-                                    onclick={() => removePendingUpload(up.id)}>×</button>
-                            </div>
+                            <UploadChip
+                                filename={up.filename}
+                                uploading={up.uploading}
+                                onRemove={() => removePendingUpload(up.id)} />
                         {/each}
                     </div>
                 {/if}
-                <div class="flex w-full max-w-4xl items-end gap-2">
+            {/snippet}
+
+            <!-- Input -->
+            <div class="bg-background sticky bottom-0 flex flex-col items-center pb-4">
+                <div class="w-full max-w-4xl">
                     <input
                         bind:this={uploadInputEl}
                         type="file"
@@ -1670,24 +1666,23 @@
                         class="hidden"
                         onchange={(e) =>
                             handleFilesSelected((e.target as HTMLInputElement).files)} />
-                    <div class="flex-1">
-                        <UserInput
-                            bind:this={userInputRef}
-                            bind:value={userMessage}
-                            inputMode="chat"
-                            onSubmit={handleSubmit}
-                            onInput={(v) => (userMessage = v)}
-                            onAttachClick={() => uploadInputEl?.click()}
-                            onFilesDropped={(files) => handleFilesSelected(files)}
-                            modeSelectorEnabled={false}
-                            placeholders={{
-                                chat: 'Ask a follow-up...',
-                                search: 'Search for something else...',
-                            }}
-                            {isStreaming}
-                            onStop={handleStop}
-                            maxWidth="max-w-4xl" />
-                    </div>
+                    <UserInput
+                        bind:this={userInputRef}
+                        bind:value={userMessage}
+                        inputMode="chat"
+                        onSubmit={handleSubmit}
+                        onInput={(v) => (userMessage = v)}
+                        onAttachClick={() => uploadInputEl?.click()}
+                        onFilesDropped={(files) => handleFilesSelected(files)}
+                        attachments={uploadChips}
+                        modeSelectorEnabled={false}
+                        placeholders={{
+                            chat: 'Ask a follow-up...',
+                            search: 'Search for something else...',
+                        }}
+                        {isStreaming}
+                        onStop={handleStop}
+                        maxWidth="max-w-4xl" />
                 </div>
             </div>
         </div>

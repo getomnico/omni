@@ -13,7 +13,7 @@
         Paperclip,
     } from '@lucide/svelte'
     import { cn } from '$lib/utils'
-    import type { Component } from 'svelte'
+    import type { Component, Snippet } from 'svelte'
     import * as ButtonGroup from '$lib/components/ui/button-group'
     import * as Tooltip from '$lib/components/ui/tooltip'
     import type { TypeaheadResult } from '$lib/types/search'
@@ -53,6 +53,7 @@
         onModelChange?: (modelId: string) => void
         onAttachClick?: () => void
         onFilesDropped?: (files: FileList) => void
+        attachments?: Snippet
     }
 
     export type InputMode = 'search' | 'chat'
@@ -82,6 +83,7 @@
         onModelChange,
         onAttachClick,
         onFilesDropped,
+        attachments,
     }: UserInputProps = $props()
 
     let isDragging = $state(false)
@@ -463,6 +465,9 @@
                 class="bg-card/90 text-muted-foreground pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl text-sm font-medium">
                 Drop files to attach
             </div>
+        {/if}
+        {#if attachments}
+            {@render attachments()}
         {/if}
         <div
             bind:this={inputRef}

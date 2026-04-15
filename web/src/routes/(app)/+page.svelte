@@ -6,6 +6,7 @@
     import omniLogoLight from '$lib/images/icons/omni-logo-256.png'
     import omniLogoDark from '$lib/images/icons/omni-logo-dark-256.png'
     import UserInput, { type InputMode } from '$lib/components/user-input.svelte'
+    import UploadChip from '$lib/components/upload-chip.svelte'
     import { userPreferences } from '$lib/preferences'
     import { toast } from 'svelte-sonner'
 
@@ -197,56 +198,51 @@
             <h1 class="text-foreground text-3xl font-bold">omni</h1>
         </div>
 
+        {#snippet uploadChips()}
+            {#if pendingUploads.length > 0 && inputMode === 'chat'}
+                <div class="flex flex-wrap gap-2">
+                    {#each pendingUploads as up (up.id)}
+                        <UploadChip
+                            filename={up.filename}
+                            uploading={up.uploading}
+                            onRemove={() => removePendingUpload(up.id)} />
+                    {/each}
+                </div>
+            {/if}
+        {/snippet}
+
         <!-- Search Box -->
-        {#if pendingUploads.length > 0 && inputMode === 'chat'}
-            <div class="mb-2 flex w-full max-w-2xl flex-wrap gap-2">
-                {#each pendingUploads as up (up.id)}
-                    <div
-                        class="bg-card flex items-center gap-2 rounded-lg border px-3 py-1.5 text-sm">
-                        <span class="max-w-[200px] truncate">{up.filename}</span>
-                        {#if up.uploading}
-                            <span class="text-muted-foreground text-xs">uploading…</span>
-                        {/if}
-                        <button
-                            type="button"
-                            class="text-muted-foreground hover:text-foreground cursor-pointer"
-                            onclick={() => removePendingUpload(up.id)}>×</button>
-                    </div>
-                {/each}
-            </div>
-        {/if}
-        <div class="flex w-full max-w-2xl items-end gap-2">
+        <div class="w-full max-w-2xl">
             <input
                 bind:this={uploadInputEl}
                 type="file"
                 multiple
                 class="hidden"
                 onchange={(e) => handleFilesSelected((e.target as HTMLInputElement).files)} />
-            <div class="flex-1">
-                <UserInput
-                    bind:value={searchQuery}
-                    bind:inputMode
-                    onSubmit={submitQuery}
-                    onInput={(v) => (searchQuery = v)}
-                    onAttachClick={() => uploadInputEl?.click()}
-                    onFilesDropped={(files) => handleFilesSelected(files)}
-                    modeSelectorEnabled={true}
-                    placeholders={{
-                        search: 'Search for anything...',
-                        chat: 'Ask anything...',
-                    }}
-                    isLoading={isSearching}
-                    {popoverItems}
-                    showPopover={popoverOpen}
-                    onPopoverChange={(open) => (popoverOpen = open)}
-                    maxWidth="max-w-2xl"
-                    {models}
-                    {selectedModelId}
-                    onModelChange={(id) => {
-                        selectedModelId = id
-                        userPreferences.set('preferredModelId', id)
-                    }} />
-            </div>
+            <UserInput
+                bind:value={searchQuery}
+                bind:inputMode
+                onSubmit={submitQuery}
+                onInput={(v) => (searchQuery = v)}
+                onAttachClick={() => uploadInputEl?.click()}
+                onFilesDropped={(files) => handleFilesSelected(files)}
+                attachments={uploadChips}
+                modeSelectorEnabled={true}
+                placeholders={{
+                    search: 'Search for anything...',
+                    chat: 'Ask anything...',
+                }}
+                isLoading={isSearching}
+                {popoverItems}
+                showPopover={popoverOpen}
+                onPopoverChange={(open) => (popoverOpen = open)}
+                maxWidth="max-w-2xl"
+                {models}
+                {selectedModelId}
+                onModelChange={(id) => {
+                    selectedModelId = id
+                    userPreferences.set('preferredModelId', id)
+                }} />
         </div>
 
         <!-- Suggested Questions -->
