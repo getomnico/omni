@@ -770,9 +770,13 @@ class TeamsSyncer:
                     )
                     team_members_cache[team_id] = []
 
+            members_list = team_members_cache[team_id]
+            if not members_list:
+                members_list = await self._team_owner_fallback(client, team_id)
+
             return DocumentPermissions(
                 public=False,
-                users=team_members_cache[team_id],
+                users=members_list,
             )
         else:
             # Private or shared channels have explicit members
@@ -788,10 +792,7 @@ class TeamsSyncer:
                         user_id = m.get("userId", "")
                         if user_id in user_cache:
                             emails.append(user_cache[user_id].lower())
-                return DocumentPermissions(
-                    public=False,
-                    users=sorted(set(emails)),
-                )
+                resolved = sorted(set(emails))
             except Exception as e:
                 logger.warning(
                     "[teams] Failed to list channel members for %s/%s: %s",
@@ -799,7 +800,27 @@ class TeamsSyncer:
                     channel_id,
                     e,
                 )
-                return DocumentPermissions(public=False)
+                resolved = []
+
+            if not resolved:
+                resolved = await self._team_owner_fallback(client, team_id)
+
+            return DocumentPermissions(public=False, users=resolved)
+
+    async def _team_owner_fallback(
+        self, client: GraphClient, team_id: str
+    ) -> list[str]:
+        """Return the team's owners' emails — used when member enumeration
+        yields an empty list so docs still have at least one grantee."""
+        try:
+            owners = await client.list_group_owners(team_id)
+        except Exception as e:
+            logger.warning("[teams] Failed to list team owners for %s: %s", team_id, e)
+            return []
+        emails = [
+            (o.get("mail") or o.get("userPrincipalName") or "").lower() for o in owners
+        ]
+        return sorted({e for e in emails if e})
 
     @staticmethod
     def _is_before_cutoff(msg: dict[str, Any], cutoff: datetime) -> bool:
@@ -874,7 +895,9 @@ class TeamsSyncer:
                         new_chat_sync_ts[chat_id] = prev_sync
                         continue
 
-                permissions = self._resolve_chat_permissions(chat, user_cache)
+                permissions = self._resolve_chat_permissions(
+                    chat, user_cache, owner_email=user_email or None
+                )
                 participant_names = self._get_participant_names(chat)
 
                 ok = await self._sync_chat(
@@ -988,21 +1011,34 @@ class TeamsSyncer:
     def _resolve_chat_permissions(
         chat: dict[str, Any],
         user_cache: dict[str, str],
+        owner_email: str | None = None,
     ) -> DocumentPermissions:
-        """Resolve chat members to email addresses."""
+        """Resolve chat members to email addresses.
+
+        Falls back to the chat creator and the mailbox owner whose chat this
+        was fetched from when the members array is empty (e.g., some meeting
+        or legacy chats)."""
         members = chat.get("members") or []
-        emails: list[str] = []
+        emails: set[str] = set()
         for member in members:
             email = member.get("email")
             if email:
-                emails.append(email.lower())
+                emails.add(email.lower())
             else:
                 user_id = member.get("userId", "")
                 if user_id and user_id in user_cache:
-                    emails.append(user_cache[user_id].lower())
+                    emails.add(user_cache[user_id].lower())
+
+        if not emails:
+            created_by = chat.get("createdBy", {}).get("user", {}).get("id") or ""
+            if created_by and created_by in user_cache:
+                emails.add(user_cache[created_by].lower())
+            if owner_email:
+                emails.add(owner_email.lower())
+
         return DocumentPermissions(
             public=False,
-            users=sorted(set(emails)),
+            users=sorted(emails),
         )
 
     @staticmethod

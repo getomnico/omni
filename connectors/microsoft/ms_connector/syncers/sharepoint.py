@@ -95,6 +95,7 @@ class SharePointSyncer:
     ) -> dict[str, Any]:
         self._user_cache = user_cache or {}
         self._group_cache = group_cache or {}
+        self._drive_permissions: dict[str, list[dict[str, Any]]] = {}
 
         delta_tokens: dict[str, str] = dict(state.get(DRIVE_DELTA_TOKENS_KEY, {}))
         skip_classifications: Counter[str] = Counter()
@@ -266,6 +267,29 @@ class SharePointSyncer:
             )
             return None, delta_token
 
+    async def _get_drive_permissions(
+        self, client: GraphClient, drive_id: str
+    ) -> list[dict[str, Any]]:
+        """Return cached drive-root permissions, fetching on first access.
+
+        SharePoint items inherit permissions from the drive/site by default,
+        so `list_item_permissions` usually returns []. The drive-root list
+        gives us the real access grants.
+        """
+        if drive_id in self._drive_permissions:
+            return self._drive_permissions[drive_id]
+        try:
+            perms = await client.list_drive_root_permissions(drive_id)
+        except Exception as e:
+            logger.warning(
+                "[sharepoint] Failed to fetch drive permissions for %s: %s",
+                drive_id,
+                e,
+            )
+            perms = []
+        self._drive_permissions[drive_id] = perms
+        return perms
+
     async def _process_item(
         self,
         client: GraphClient,
@@ -296,11 +320,15 @@ class SharePointSyncer:
                 "[sharepoint] Failed to fetch permissions for %s: %s", item_id, e
             )
             graph_permissions = []
+
+        drive_permissions = await self._get_drive_permissions(client, drive_id)
+        combined_permissions = drive_permissions + graph_permissions
+
         doc = map_drive_item_to_document(
             item=item,
             content_id=content_id,
             source_type="share_point",
-            graph_permissions=graph_permissions,
+            graph_permissions=combined_permissions,
             user_cache=self._user_cache,
             group_cache=self._group_cache,
             site_id=site.id,

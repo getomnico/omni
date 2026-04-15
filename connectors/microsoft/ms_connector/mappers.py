@@ -167,6 +167,13 @@ def _resolve_identity(
         if user_id in user_cache:
             users.add(user_cache[user_id].lower())
 
+    # Check for AAD group (M365 group, security group)
+    group = identity.get("group")
+    if group:
+        group_id = group.get("id", "")
+        if group_id in group_cache:
+            groups.add(group_cache[group_id].lower())
+
 
 def _collect_message_participants(message: dict[str, Any]) -> set[str]:
     """Collect all participant emails (from, to, cc) from a message."""
@@ -299,6 +306,7 @@ def map_event_to_document(
     event: dict[str, Any],
     user_id: str,
     content_id: str,
+    owner_email: str | None = None,
 ) -> Document:
     """Map an Outlook calendar event to an Omni Document."""
     event_id = event["id"]
@@ -307,14 +315,17 @@ def map_event_to_document(
     organizer = event.get("organizer", {}).get("emailAddress", {})
     organizer_name = organizer.get("name") or organizer.get("address")
 
-    attendee_emails = []
+    attendee_set: set[str] = set()
     for att in event.get("attendees", []):
         email = att.get("emailAddress", {}).get("address")
         if email:
-            attendee_emails.append(email)
+            attendee_set.add(email.lower())
     org_email = organizer.get("address")
-    if org_email and org_email not in attendee_emails:
-        attendee_emails.append(org_email)
+    if org_email:
+        attendee_set.add(org_email.lower())
+    if not attendee_set and owner_email:
+        attendee_set.add(owner_email.lower())
+    attendee_emails = sorted(attendee_set)
 
     start_dt = _parse_graph_datetime(event.get("start"))
     end_dt = _parse_graph_datetime(event.get("end"))

@@ -301,6 +301,17 @@ class GraphClient:
             members.append(member)
         return members
 
+    async def list_group_owners(self, group_id: str) -> list[dict[str, Any]]:
+        """Enumerate owners of a group. Used as a fallback when member
+        enumeration returns empty (e.g., permission-scoped views)."""
+        owners: list[dict[str, Any]] = []
+        async for owner in self.get_paginated(
+            f"/groups/{group_id}/owners",
+            params={"$select": "id,displayName,mail,userPrincipalName"},
+        ):
+            owners.append(owner)
+        return owners
+
     async def get_drive_item_metadata(
         self, drive_id: str, item_id: str
     ) -> dict[str, Any]:
@@ -317,6 +328,16 @@ class GraphClient:
         permissions: list[dict[str, Any]] = []
         async for perm in self.get_paginated(
             f"/drives/{drive_id}/items/{item_id}/permissions",
+        ):
+            permissions.append(perm)
+        return permissions
+
+    async def list_drive_root_permissions(self, drive_id: str) -> list[dict[str, Any]]:
+        """List permissions on the drive root. Used as a baseline for items
+        that inherit from the drive (the default for SharePoint libraries)."""
+        permissions: list[dict[str, Any]] = []
+        async for perm in self.get_paginated(
+            f"/drives/{drive_id}/root/permissions",
         ):
             permissions.append(perm)
         return permissions
