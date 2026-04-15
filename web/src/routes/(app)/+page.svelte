@@ -6,6 +6,7 @@
     import omniLogoDark from '$lib/images/icons/omni-logo-dark-256.png'
     import UserInput, { type InputMode } from '$lib/components/user-input.svelte'
     import { userPreferences } from '$lib/preferences'
+    import { toast } from 'svelte-sonner'
 
     let { data }: PageProps = $props()
 
@@ -39,7 +40,7 @@
                 const fd = new FormData()
                 fd.append('file', file)
                 const resp = await fetch('/api/uploads', { method: 'POST', body: fd })
-                if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
+                if (!resp.ok) throw new Error('upload failed')
                 const data = (await resp.json()) as UploadResponse
                 const idx = pendingUploads.findIndex((u) => u.id === placeholder.id)
                 if (idx >= 0) {
@@ -53,6 +54,7 @@
             } catch (err) {
                 console.error(err)
                 pendingUploads = pendingUploads.filter((u) => u.id !== placeholder.id)
+                toast.error(`Failed to upload ${file.name}`)
             }
         }
         if (uploadInputEl) uploadInputEl.value = ''

@@ -12,6 +12,8 @@ type AiUpload = {
 }
 
 export const GET: RequestHandler = async ({ params, locals }) => {
+    const logger = locals.logger.child('uploads')
+
     if (!locals.user?.id) {
         return json({ error: 'User not authenticated' }, { status: 401 })
     }
@@ -21,7 +23,17 @@ export const GET: RequestHandler = async ({ params, locals }) => {
         return json({ error: 'id is required' }, { status: 400 })
     }
 
-    const resp = await fetch(`${env.AI_SERVICE_URL}/uploads/${id}`)
+    let resp: Response
+    try {
+        resp = await fetch(`${env.AI_SERVICE_URL}/uploads/${id}`)
+    } catch (err) {
+        logger.error('Upload fetch failed', err as Error, {
+            aiServiceUrl: env.AI_SERVICE_URL,
+            uploadId: id,
+        })
+        return json({ error: 'Upload service unavailable' }, { status: 503 })
+    }
+
     if (resp.status === 404) {
         return json({ error: 'Upload not found' }, { status: 404 })
     }

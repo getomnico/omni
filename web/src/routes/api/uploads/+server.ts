@@ -19,10 +19,18 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     forwarded.append('user_id', locals.user.id)
     forwarded.append('file', file, file.name)
 
-    const resp = await fetch(`${env.AI_SERVICE_URL}/uploads`, {
-        method: 'POST',
-        body: forwarded,
-    })
+    let resp: Response
+    try {
+        resp = await fetch(`${env.AI_SERVICE_URL}/uploads`, {
+            method: 'POST',
+            body: forwarded,
+        })
+    } catch (err) {
+        logger.error('Upload proxy fetch failed', err as Error, {
+            aiServiceUrl: env.AI_SERVICE_URL,
+        })
+        return json({ error: 'Upload service unavailable' }, { status: 503 })
+    }
 
     const body = await resp.text()
     if (!resp.ok) {

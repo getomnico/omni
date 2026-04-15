@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { toast } from 'svelte-sonner'
     import { Button } from '$lib/components/ui/button'
     import type {
         MessageParam,
@@ -111,7 +112,7 @@
                 const fd = new FormData()
                 fd.append('file', file)
                 const resp = await fetch('/api/uploads', { method: 'POST', body: fd })
-                if (!resp.ok) throw new Error(`upload failed: ${resp.status}`)
+                if (!resp.ok) throw new Error('upload failed')
                 const data = (await resp.json()) as UploadResponse
                 const idx = pendingUploads.findIndex((u) => u.id === placeholder.id)
                 if (idx >= 0) {
@@ -125,6 +126,7 @@
             } catch (err) {
                 console.error(err)
                 pendingUploads = pendingUploads.filter((u) => u.id !== placeholder.id)
+                toast.error(`Failed to upload ${file.name}`)
             }
         }
         if (uploadInputEl) uploadInputEl.value = ''
