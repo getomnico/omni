@@ -11,7 +11,60 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, TypeAlias, TypedDict
+
+DriveId: TypeAlias = str
+SiteId: TypeAlias = str
+Email: TypeAlias = str
+
+
+# Partial shapes of Graph API payloads — we only type the fields this module
+# touches. `total=False` because Graph omits absent fields rather than
+# returning nulls. Extra (untyped) keys are tolerated at runtime.
+
+
+class _GraphIdentity(TypedDict, total=False):
+    id: str
+    displayName: str
+
+
+class _GraphIdentitySet(TypedDict, total=False):
+    user: _GraphIdentity
+    group: _GraphIdentity
+    siteUser: _GraphIdentity
+    siteGroup: _GraphIdentity
+    application: _GraphIdentity
+
+
+class _GraphSharingLink(TypedDict, total=False):
+    scope: str
+    type: str
+    webUrl: str
+
+
+class _GraphInvitation(TypedDict, total=False):
+    email: str
+
+
+class GraphPermission(TypedDict, total=False):
+    id: str
+    roles: list[str]
+    link: _GraphSharingLink
+    grantedTo: _GraphIdentitySet
+    grantedToV2: _GraphIdentitySet
+    grantedToIdentities: list[_GraphIdentitySet]
+    grantedToIdentitiesV2: list[_GraphIdentitySet]
+    invitation: _GraphInvitation
+    inheritedFrom: dict[str, Any]
+
+
+class GraphDrive(TypedDict, total=False):
+    id: str
+    name: str
+    driveType: str
+    webUrl: str
+    owner: _GraphIdentitySet
+
 
 from omni_connector import SyncContext
 from omni_connector.models import DocumentPermissions
@@ -96,8 +149,8 @@ class SharePointSyncer:
     ) -> dict[str, Any]:
         self._user_cache = user_cache or {}
         self._group_cache = group_cache or {}
-        self._drive_permissions: dict[str, list[dict[str, Any]]] = {}
-        self._site_members: dict[str, list[str]] = {}
+        self._drive_permissions: dict[DriveId, list[GraphPermission]] = {}
+        self._site_members: dict[SiteId, list[Email]] = {}
 
         delta_tokens: dict[str, str] = dict(state.get(DRIVE_DELTA_TOKENS_KEY, {}))
         skip_classifications: Counter[str] = Counter()
@@ -275,18 +328,20 @@ class SharePointSyncer:
         self,
         client: GraphClient,
         site: Site,
-        raw_drives: list[dict[str, Any]],
+        raw_drives: list[GraphDrive],
     ) -> None:
         """Populate the per-site members cache for group-connected sites.
 
-        SharePoint items that nobody has explicitly shared inherit access
-        from the site's backing M365 group. list_item_permissions only
-        returns *sharing* permissions and does not expose this site-level
-        membership, so we resolve it ourselves via the drive's owner.group.id
-        and cache the member emails as a fallback permission for every doc
-        on the site. Sites without a backing group (classic, communication)
-        are left uncached; docs from those sites fall through to whatever
-        sharing permissions exist on the item itself.
+        `list_item_permissions` frequently returns nothing for items whose
+        only access grant is site-level M365 Group membership. Graph's
+        docs are vague on whether backing-group membership surfaces as a
+        sharing permission; empirically it often doesn't, leaving docs
+        with no grantees. We resolve the backing group ourselves via the
+        drive's owner.group.id and cache the member emails as a fallback
+        permission for every doc on the site. Sites without a backing
+        group (classic, communication) are left uncached; docs from those
+        sites fall through to whatever sharing permissions exist on the
+        item itself.
         """
         if site.id in self._site_members:
             return
@@ -319,8 +374,8 @@ class SharePointSyncer:
         self._site_members[site.id] = sorted({e for e in emails if e})
 
     async def _get_drive_permissions(
-        self, client: GraphClient, drive_id: str
-    ) -> list[dict[str, Any]]:
+        self, client: GraphClient, drive_id: DriveId
+    ) -> list[GraphPermission]:
         """Return cached drive-root permissions, fetching on first access.
 
         SharePoint items inherit permissions from the drive/site by default,
