@@ -32,6 +32,7 @@
 
     beforeNavigate(({ cancel }) => {
         if (
+            false &&
             hasUnsubmittedUploads &&
             !confirm('You have attached files that haven\u2019t been sent. Leave anyway?')
         ) {

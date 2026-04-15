@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { Card } from '$lib/components/ui/card'
+    import { Button } from '$lib/components/ui/button'
 
     type UploadMeta = {
         filename: string
@@ -31,26 +31,16 @@
 </script>
 
 {#snippet card(name: string, isUploading: boolean)}
-    <Card
-        class="relative h-14 w-44 shrink-0 justify-between gap-0 rounded-md px-2.5 py-1.5 text-xs">
+    <div
+        class="bg-muted/80 border-primary/10 flex flex-row items-center justify-between rounded-lg border px-4 py-3 text-sm shadow-sm">
+        <div class="truncate pr-4 font-medium break-all">{name}</div>
         {#if onRemove}
             <button
-                type="button"
                 aria-label="Remove"
-                class="text-muted-foreground hover:text-foreground absolute top-1 right-1 cursor-pointer leading-none"
+                class="text-muted-foreground hover:text-foreground cursor-pointer"
                 onclick={onRemove}>×</button>
         {/if}
-        <span class="line-clamp-2 pr-4 font-medium break-all">{name}</span>
-        <div
-            class="text-muted-foreground flex items-center justify-end gap-1 text-[10px] uppercase">
-            {#if isUploading}
-                <span>uploading…</span>
-            {:else}
-                {@const ext = getExtension(name)}
-                {#if ext}<span>{ext}</span>{/if}
-            {/if}
-        </div>
-    </Card>
+    </div>
 {/snippet}
 
 {#if filename}

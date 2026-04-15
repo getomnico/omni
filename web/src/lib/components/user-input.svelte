@@ -572,7 +572,7 @@
         </div>
     </div>
 
-    {#if effectivePopoverItems.length > 0}
+    {#if effectivePopoverItems.length > 0 && inputMode !== 'chat'}
         <Popover.Root open={effectiveShowPopover}>
             <Popover.Content
                 class="w-2xl rounded-b-xl p-0"
