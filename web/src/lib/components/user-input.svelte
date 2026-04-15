@@ -484,18 +484,28 @@
                     {@render modeSelector()}
                 {/if}
                 {#if onAttachClick && inputMode === 'chat'}
-                    <Button
-                        type="button"
-                        size="icon-sm"
-                        variant="outline"
-                        class="text-muted-foreground cursor-pointer"
-                        onclick={(e) => {
-                            e.stopPropagation()
-                            onAttachClick()
-                        }}
-                        aria-label="Attach file">
-                        <Paperclip class="size-4" />
-                    </Button>
+                    <Tooltip.Provider delayDuration={300}>
+                        <Tooltip.Root>
+                            <Tooltip.Trigger>
+                                {#snippet child({ props })}
+                                    <Button
+                                        {...props}
+                                        type="button"
+                                        size="icon-sm"
+                                        variant="ghost"
+                                        class="text-muted-foreground cursor-pointer"
+                                        onclick={(e) => {
+                                            e.stopPropagation()
+                                            onAttachClick()
+                                        }}
+                                        aria-label="Attach file">
+                                        <Paperclip class="size-4" />
+                                    </Button>
+                                {/snippet}
+                            </Tooltip.Trigger>
+                            <Tooltip.Content>Attach file</Tooltip.Content>
+                        </Tooltip.Root>
+                    </Tooltip.Provider>
                 {/if}
             </div>
             <div class="flex w-full justify-end gap-2">
