@@ -155,6 +155,82 @@ class TestCancelEndpoint:
         assert data["status"] == "not_found"
 
 
+class TestSyncStatusEndpoint:
+    def test_sync_status_not_running(self, client):
+        """Returns running=false when sync_run_id is unknown."""
+        response = client.get("/sync/unknown-run")
+        assert response.status_code == 200
+        assert response.json() == {"running": False}
+
+    @patch("omni_connector.client.SdkClient.fetch_source_sync_data")
+    def test_sync_status_running_then_finished(self, mock_fetch, monkeypatch):
+        """Returns running=true while sync is in flight, false after it finishes."""
+        import asyncio
+        import threading
+
+        monkeypatch.setenv("CONNECTOR_MANAGER_URL", "http://localhost:9000")
+        monkeypatch.setenv("CONNECTOR_HOST_NAME", "localhost")
+        monkeypatch.setenv("PORT", "8000")
+
+        sync_started = threading.Event()
+        sync_can_finish = threading.Event()
+
+        class BlockingConnector(Connector):
+            @property
+            def name(self) -> str:
+                return "blocking"
+
+            @property
+            def version(self) -> str:
+                return "1.0.0"
+
+            @property
+            def source_types(self) -> list[str]:
+                return ["blocking"]
+
+            async def sync(self, source_config, credentials, state, ctx):
+                sync_started.set()
+                while not sync_can_finish.is_set():
+                    await asyncio.sleep(0.01)
+                await ctx.complete()
+
+        mock_fetch.return_value = SdkSourceSyncData(
+            config={},
+            credentials={},
+            connector_state=None,
+        )
+
+        app = create_app(BlockingConnector())
+
+        with TestClient(app) as client:
+            client.post(
+                "/sync",
+                json={
+                    "sync_run_id": "sync-status-1",
+                    "source_id": "src-status",
+                    "sync_mode": "full",
+                },
+            )
+            sync_started.wait(timeout=2.0)
+
+            response = client.get("/sync/sync-status-1")
+            assert response.status_code == 200
+            assert response.json() == {"running": True}
+
+            sync_can_finish.set()
+
+            # Allow background task to complete
+            import time
+
+            for _ in range(200):
+                if client.get("/sync/sync-status-1").json()["running"] is False:
+                    break
+                time.sleep(0.01)
+
+            response = client.get("/sync/sync-status-1")
+            assert response.json() == {"running": False}
+
+
 class TestActionEndpoint:
     def test_action_executes_successfully(self, client, mock_connector):
         response = client.post(

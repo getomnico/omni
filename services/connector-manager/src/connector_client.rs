@@ -1,6 +1,6 @@
 use crate::models::{
     ActionRequest, ActionResponse, ConnectorManifest, PromptRequest, ResourceRequest, SyncRequest,
-    SyncResponse,
+    SyncResponse, SyncStatusResponse,
 };
 use reqwest::Client;
 use std::time::Duration;
@@ -74,6 +74,37 @@ impl ConnectorClient {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             error!("Failed to trigger sync: {} - {}", status, body);
+            return Err(ClientError::ConnectorError {
+                status: status.as_u16(),
+                message: body,
+            });
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| ClientError::InvalidResponse(e.to_string()))
+    }
+
+    pub async fn get_sync_status(
+        &self,
+        connector_url: &str,
+        sync_run_id: &str,
+    ) -> Result<SyncStatusResponse, ClientError> {
+        let url = format!("{}/sync/{}", connector_url, sync_run_id);
+        debug!("Probing sync status at {}", url);
+
+        let response = self
+            .client
+            .get(&url)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
             return Err(ClientError::ConnectorError {
                 status: status.as_u16(),
                 message: body,

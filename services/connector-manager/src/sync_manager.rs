@@ -9,7 +9,9 @@ use shared::{DatabasePool, Repository, SourceRepository};
 use sqlx::PgPool;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
+
+const MAX_CONSECUTIVE_AUTO_RESUMES: usize = 3;
 
 #[derive(Clone)]
 pub struct SyncManager {
@@ -188,6 +190,147 @@ impl SyncManager {
             .await
             .map(|r| r.len())
             .map_err(|e| SyncError::DatabaseError(e.to_string()))
+    }
+
+    /// Probe each running sync's connector to confirm it is actually running.
+    ///
+    /// For every `sync_runs` row with status='running', ask the connector via
+    /// `GET /sync/{sync_run_id}` whether it still has the sync in flight. If the
+    /// connector reports `running: false` (typically because it restarted and
+    /// lost its in-memory state), mark the row as failed and immediately
+    /// trigger a fresh run that resumes from the last persisted
+    /// `connector_state`. Tolerates probe errors / 404s / unregistered
+    /// connectors as no-ops; existing stale-detection is the fallback.
+    pub async fn monitor_running_syncs(&self) -> Result<(), SyncError> {
+        let running = self
+            .sync_run_repo
+            .find_all_running()
+            .await
+            .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
+
+        if running.is_empty() {
+            return Ok(());
+        }
+
+        let source_repo = SourceRepository::new(&self.pool);
+
+        for sync_run in running {
+            let source = match source_repo
+                .find_by_id(sync_run.source_id.clone())
+                .await
+                .map_err(|e| SyncError::DatabaseError(e.to_string()))?
+            {
+                Some(s) => s,
+                None => continue,
+            };
+
+            let connector_url =
+                match get_connector_url_for_source(&self.redis_client, source.source_type).await {
+                    Some(url) => url,
+                    None => continue,
+                };
+
+            match self
+                .connector_client
+                .get_sync_status(&connector_url, &sync_run.id)
+                .await
+            {
+                Ok(status) if status.running => {
+                    // Connector still working on it; nothing to do.
+                }
+                Ok(_) => {
+                    warn!(
+                        "Connector reports sync {} no longer running; reconciling",
+                        sync_run.id
+                    );
+                    self.handle_lost_sync(&sync_run.id, &sync_run.source_id)
+                        .await;
+                }
+                Err(ClientError::ConnectorError { status: 404, .. }) => {
+                    // Connector hasn't implemented the status endpoint
+                    // (e.g., Rust connectors prior to follow-up PR).
+                    // Fall through to existing stale-detection.
+                }
+                Err(e) => {
+                    debug!(
+                        "Sync status probe failed for {} ({}): {}",
+                        sync_run.id, connector_url, e
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Reconcile a sync that the connector no longer knows about: mark it
+    /// failed and (subject to loop protection) trigger a fresh resume run.
+    async fn handle_lost_sync(&self, sync_run_id: &str, source_id: &str) {
+        let reason = "Connector no longer running this sync (likely restarted); auto-resuming";
+        if let Err(e) = self.mark_sync_failed(sync_run_id, reason).await {
+            error!("Failed to mark lost sync {} as failed: {}", sync_run_id, e);
+            return;
+        }
+
+        match self.recent_auto_resume_failures(source_id).await {
+            Ok(count) if count >= MAX_CONSECUTIVE_AUTO_RESUMES => {
+                warn!(
+                    "Source {} has {} consecutive auto-resume failures; not resuming again",
+                    source_id, count
+                );
+                return;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                error!(
+                    "Failed to check auto-resume history for source {}: {}",
+                    source_id, e
+                );
+                return;
+            }
+        }
+
+        match self
+            .trigger_sync(source_id, SyncType::Incremental, TriggerType::AutoResume)
+            .await
+        {
+            Ok(new_run_id) => info!(
+                "Auto-resumed sync for source {} as {}",
+                source_id, new_run_id
+            ),
+            Err(e) => warn!("Failed to auto-resume sync for source {}: {}", source_id, e),
+        }
+    }
+
+    /// Count the previous consecutive runs (most-recent first) for `source_id`
+    /// that were both `auto_resume`-triggered and ended in the failed state.
+    /// Stops at the first run that breaks the streak.
+    async fn recent_auto_resume_failures(&self, source_id: &str) -> Result<usize, SyncError> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            r#"
+            SELECT trigger_type, status::text
+            FROM sync_runs
+            WHERE source_id = $1
+              AND status IN ('failed', 'completed', 'cancelled')
+            ORDER BY created_at DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(source_id)
+        .bind(MAX_CONSECUTIVE_AUTO_RESUMES as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
+
+        let mut streak = 0usize;
+        for (trigger_type, status) in rows {
+            if trigger_type == TriggerType::AutoResume.to_string() && status == "failed" {
+                streak += 1;
+            } else {
+                break;
+            }
+        }
+        Ok(streak)
     }
 
     pub async fn detect_stale_syncs(&self) -> Result<Vec<String>, SyncError> {

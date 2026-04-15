@@ -52,6 +52,11 @@ impl Scheduler {
             error!("Error processing due sources: {}", e);
         }
 
+        // Probe in-flight syncs and reconcile any the connector has lost
+        if let Err(e) = self.sync_manager.monitor_running_syncs().await {
+            error!("Error monitoring running syncs: {}", e);
+        }
+
         // Detect and handle stale syncs
         match self.sync_manager.detect_stale_syncs().await {
             Ok(stale) => {

@@ -29,6 +29,7 @@ pub enum TriggerType {
     Scheduled,
     Manual,
     Webhook,
+    AutoResume,
 }
 
 impl std::fmt::Display for TriggerType {
@@ -37,8 +38,14 @@ impl std::fmt::Display for TriggerType {
             TriggerType::Scheduled => write!(f, "scheduled"),
             TriggerType::Manual => write!(f, "manual"),
             TriggerType::Webhook => write!(f, "webhook"),
+            TriggerType::AutoResume => write!(f, "auto_resume"),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncStatusResponse {
+    pub running: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -24,7 +24,7 @@ use std::sync::Arc;
 use sync_manager::SyncManager;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -149,6 +149,12 @@ pub async fn run_server() -> AnyhowResult<()> {
         sync_manager: sync_manager.clone(),
         content_storage,
     };
+
+    // Reconcile any sync_runs left in 'running' state from a previous
+    // manager process before starting the scheduler.
+    if let Err(e) = sync_manager.monitor_running_syncs().await {
+        warn!("Startup sync reconciliation failed: {}", e);
+    }
 
     // Start scheduler in background
     let scheduler = scheduler::Scheduler::new(db_pool.pool().clone(), config.clone(), sync_manager);

@@ -45,6 +45,8 @@ const mockServer = setupServer(
 
 beforeAll(() => {
   vi.stubEnv('CONNECTOR_MANAGER_URL', MANAGER_URL);
+  vi.stubEnv('CONNECTOR_HOST_NAME', 'localhost');
+  vi.stubEnv('PORT', '8000');
   mockServer.listen({ onUnhandledRequest: 'bypass' });
 });
 
@@ -115,6 +117,18 @@ describe('Connector Server', () => {
 
       expect(response.status).toBe(200);
       expect(response.body.status).toBe('started');
+    });
+  });
+
+  describe('GET /sync/:syncRunId', () => {
+    it('returns running=false for unknown sync', async () => {
+      const connector = new MockConnector();
+      const app = createServer(connector);
+
+      const response = await request(app).get('/sync/unknown-sync');
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ running: false });
     });
   });
 
