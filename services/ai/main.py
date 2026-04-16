@@ -28,7 +28,8 @@ from routers import (
     internal_router,
 )
 
-from config import PORT
+from config import PORT, MEMORY_SERVICE_URL
+from memory.client import MemoryClient
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -64,6 +65,12 @@ async def startup_event():
             from agents.scheduler import run_agent_scheduler
 
             asyncio.create_task(run_agent_scheduler(app.state))
+
+        if MEMORY_SERVICE_URL:
+            app.state.memory_client = MemoryClient(base_url=MEMORY_SERVICE_URL)
+            logger.info(f"Memory client initialized: {MEMORY_SERVICE_URL}")
+        else:
+            logger.info("MEMORY_SERVICE_URL not set — memory feature disabled")
     except Exception as e:
         logger.error(f"Failed to initialize services: {e}")
         raise e
