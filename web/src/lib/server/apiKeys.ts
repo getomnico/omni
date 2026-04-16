@@ -27,7 +27,10 @@ export function hashApiKey(key: string): string {
 export async function validateApiKey(
     key: string,
 ): Promise<{
-    user: typeof table.user.$inferSelect
+    user: Pick<
+        typeof table.user.$inferSelect,
+        'id' | 'email' | 'role' | 'isActive' | 'mustChangePassword'
+    >
     allowedSources: string[] | null
     scope: 'public' | 'user' | 'admin'
 } | null> {
