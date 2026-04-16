@@ -1467,6 +1467,7 @@ requires-dist = [
     { name = "opentelemetry-sdk", specifier = ">=1.29.0" },
     { name = "pgvector", specifier = ">=0.4.2" },
     { name = "pydantic", specifier = ">=2.11.0" },
+    { name = "python-dotenv", marker = "extra == 'eval'", specifier = ">=1.0.1" },
     { name = "python-multipart", specifier = ">=0.0.26" },
     { name = "python-ulid", specifier = ">=3.1.0" },
     { name = "redis", specifier = ">=5.0.0" },
