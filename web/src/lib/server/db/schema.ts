@@ -10,6 +10,7 @@ export const user = pgTable('users', {
     authMethod: text('auth_method').notNull().default('password'),
     domain: text('domain'),
     mustChangePassword: boolean('must_change_password').notNull().default(false),
+    memoryMode: text('memory_mode'),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
@@ -299,6 +300,15 @@ export const apiKeys = pgTable('api_keys', {
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
+
+export const configuration = pgTable('configuration', {
+    key: text('key').primaryKey(),
+    value: jsonb('value').notNull().$type<Record<string, unknown>>(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+})
+
+export type Configuration = typeof configuration.$inferSelect
 
 export type User = typeof user.$inferSelect
 export type Source = typeof sources.$inferSelect
