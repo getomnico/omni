@@ -4179,13 +4179,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "omni-connector-sdk"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "dashmap 6.1.0",
+ "serde",
+ "serde_json",
+ "shared",
+ "tokio",
+ "tower 0.5.3",
+ "tower-http 0.6.8",
+ "tracing",
+]
+
+[[package]]
 name = "omni-filesystem-connector"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "axum",
+ "async-trait",
  "chrono",
- "dashmap 6.1.0",
  "docx-rs",
  "dotenvy",
  "futures",
@@ -4193,6 +4209,7 @@ dependencies = [
  "mime_guess",
  "nonzero_ext",
  "notify",
+ "omni-connector-sdk",
  "serde",
  "serde_json",
  "shared",
@@ -4201,8 +4218,6 @@ dependencies = [
  "thiserror 1.0.69",
  "time",
  "tokio",
- "tower 0.5.3",
- "tower-http 0.6.8",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -4449,10 +4464,10 @@ dependencies = [
  "axum-test",
  "base64 0.21.7",
  "chrono",
- "dashmap 6.1.0",
  "dotenvy",
  "md5",
  "omni-connector-manager",
+ "omni-connector-sdk",
  "redis",
  "reqwest 0.12.28",
  "scraper 0.21.0",
@@ -4466,8 +4481,6 @@ dependencies = [
  "testcontainers-modules",
  "time",
  "tokio",
- "tower 0.5.3",
- "tower-http 0.6.8",
  "tracing",
  "tracing-subscriber",
  "url",

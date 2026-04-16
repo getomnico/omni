@@ -91,14 +91,43 @@ impl FileSystemFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileSystemConfig {
+    pub base_path: PathBuf,
+    #[serde(default = "default_scan_interval_seconds")]
+    pub scan_interval_seconds: u64,
+    #[serde(default)]
+    pub file_extensions: Option<Vec<String>>,
+    #[serde(default)]
+    pub exclude_patterns: Option<Vec<String>>,
+    #[serde(default)]
+    pub max_file_size_bytes: Option<u64>,
+}
+
+fn default_scan_interval_seconds() -> u64 {
+    300
+}
+
+#[derive(Debug, Clone)]
 pub struct FileSystemSource {
-    pub id: String,
     pub name: String,
     pub base_path: PathBuf,
     pub scan_interval_seconds: u64,
     pub file_extensions: Option<Vec<String>>,
     pub exclude_patterns: Option<Vec<String>>,
     pub max_file_size_bytes: Option<u64>,
+}
+
+impl FileSystemConfig {
+    pub fn into_source(self, name: String) -> FileSystemSource {
+        FileSystemSource {
+            name,
+            base_path: self.base_path,
+            scan_interval_seconds: self.scan_interval_seconds,
+            file_extensions: self.file_extensions,
+            exclude_patterns: self.exclude_patterns,
+            max_file_size_bytes: self.max_file_size_bytes,
+        }
+    }
 }
 
 impl FileSystemSource {
