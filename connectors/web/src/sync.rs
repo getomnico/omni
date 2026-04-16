@@ -1,15 +1,15 @@
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use dashmap::DashMap;
+use omni_connector_sdk::SyncContext;
 use redis::Client as RedisClient;
 use shared::SdkClient;
 use spider::client::StatusCode;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{mpsc, Mutex};
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 use crate::config::WebSourceConfig;
 use crate::models::{PageSyncState, SyncRequest, WebConnectorState, WebPage};
@@ -179,7 +179,6 @@ pub struct SyncManager {
     redis_client: RedisClient,
     sdk_client: SdkClient,
     page_source: Arc<dyn PageSource>,
-    active_syncs: DashMap<String, Arc<AtomicBool>>,
 }
 
 impl SyncManager {
@@ -196,8 +195,11 @@ impl SyncManager {
             redis_client,
             sdk_client,
             page_source,
-            active_syncs: DashMap::new(),
         }
+    }
+
+    pub fn sdk_client(&self) -> &SdkClient {
+        &self.sdk_client
     }
 
     /// Execute a sync based on the request from connector-manager
@@ -221,7 +223,7 @@ impl SyncManager {
                     info!("No prior connector state found for incremental sync, proceeding with full crawl");
                 }
                 Err(e) => {
-                    error!("Failed to load connector state: {}", e);
+                    tracing::error!("Failed to load connector state: {}", e);
                 }
             }
         }
@@ -232,17 +234,29 @@ impl SyncManager {
             .get_source(source_id)
             .await
             .context("Failed to fetch source via SDK")?;
-
-        let cancelled = Arc::new(AtomicBool::new(false));
-        self.active_syncs
-            .insert(sync_run_id.clone(), cancelled.clone());
-
-        // Parse config from source
         let config = WebSourceConfig::from_json(&source.config)
             .context("Failed to parse web source config")?;
+        let ctx = SyncContext::new(
+            self.sdk_client.clone(),
+            sync_run_id.clone(),
+            source_id.clone(),
+            source.source_type,
+            Arc::new(AtomicBool::new(false)),
+        );
 
+        if let Err(error) = self.run_sync(config, ctx.clone()).await {
+            let _ = ctx.fail(&error.to_string()).await;
+            return Err(error);
+        }
+
+        Ok(())
+    }
+
+    pub async fn run_sync(&self, config: WebSourceConfig, ctx: SyncContext) -> Result<()> {
+        let sync_run_id = ctx.sync_run_id().to_string();
+        let source_id = ctx.source_id().to_string();
         let sync_state = SyncState::new(self.redis_client.clone());
-        let previous_urls = sync_state.get_all_synced_urls(source_id).await?;
+        let previous_urls = sync_state.get_all_synced_urls(&source_id).await?;
         let current_urls: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
         let pages_processed: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
@@ -259,12 +273,11 @@ impl SyncManager {
             let pages_processed = pages_processed.clone();
             let pages_updated = pages_updated.clone();
             let sync_state = sync_state.clone();
-            let sdk_client = self.sdk_client.clone();
-            let cancelled = cancelled.clone();
+            let ctx = ctx.clone();
 
             tokio::spawn(async move {
                 while let Some(web_page) = rx.recv().await {
-                    if cancelled.load(Ordering::SeqCst) {
+                    if ctx.is_cancelled() {
                         info!("Sync {} cancelled, stopping processor", sync_run_id);
                         break;
                     }
@@ -280,11 +293,11 @@ impl SyncManager {
                         &current_urls,
                         &pages_processed,
                         &pages_updated,
-                        &sdk_client,
+                        &ctx,
                     )
                     .await
                     {
-                        error!("Failed to process page {}: {}", page_url, e);
+                        tracing::error!("Failed to process page {}: {}", page_url, e);
                     }
                 }
             })
@@ -299,17 +312,11 @@ impl SyncManager {
             .await
             .with_context(|| "Failed while waiting for page processor to complete")?;
 
-        if cancelled.load(Ordering::SeqCst) {
-            self.active_syncs.remove(sync_run_id);
+        if ctx.is_cancelled() {
             return Ok(());
         }
 
-        // Handle crawl errors
         if let Err(e) = crawl_result {
-            if let Err(fail_err) = self.sdk_client.fail(sync_run_id, &e.to_string()).await {
-                error!("Failed to report sync failure: {}", fail_err);
-            }
-            self.active_syncs.remove(sync_run_id);
             return Err(e);
         }
 
@@ -333,14 +340,14 @@ impl SyncManager {
 
         for url_hash in &deleted_urls {
             if let Err(e) = self
-                .publish_deletion_event(sync_run_id, source_id, url_hash)
+                .publish_deletion_event(&sync_run_id, &source_id, url_hash)
                 .await
             {
-                error!("Failed to publish deletion event: {}", e);
+                tracing::error!("Failed to publish deletion event: {}", e);
             }
 
-            if let Err(e) = sync_state.remove_url_from_set(source_id, url_hash).await {
-                error!("Failed to remove URL from set: {}", e);
+            if let Err(e) = sync_state.remove_url_from_set(&source_id, url_hash).await {
+                tracing::error!("Failed to remove URL from set: {}", e);
             }
         }
 
@@ -356,39 +363,11 @@ impl SyncManager {
         let connector_state = WebConnectorState {
             last_sync_completed_at: Some(chrono::Utc::now().to_rfc3339()),
         };
-        if let Err(e) = self
-            .sdk_client
-            .save_connector_state(source_id, serde_json::to_value(&connector_state)?)
-            .await
-        {
-            error!("Failed to save connector state: {}", e);
-        }
-
-        // Mark sync as completed via SDK
-        if let Err(e) = self
-            .sdk_client
-            .complete(
-                sync_run_id,
-                final_processed as i32,
-                final_updated as i32,
-                None,
-            )
-            .await
-        {
-            error!("Failed to mark sync as completed: {}", e);
-        }
-
-        self.active_syncs.remove(sync_run_id);
+        ctx.save_connector_state(serde_json::to_value(&connector_state)?)
+            .await?;
+        ctx.complete(final_processed as i32, final_updated as i32, None)
+            .await?;
         Ok(())
-    }
-
-    pub fn cancel_sync(&self, sync_run_id: &str) -> bool {
-        if let Some(cancelled) = self.active_syncs.get(sync_run_id) {
-            cancelled.store(true, Ordering::SeqCst);
-            true
-        } else {
-            false
-        }
     }
 
     async fn process_web_page(
@@ -399,7 +378,7 @@ impl SyncManager {
         current_urls: &Arc<Mutex<HashSet<String>>>,
         pages_processed: &Arc<Mutex<usize>>,
         pages_updated: &Arc<Mutex<usize>>,
-        sdk_client: &SdkClient,
+        ctx: &SyncContext,
     ) -> Result<()> {
         let url = &web_page.url;
         let url_hash = WebPage::url_to_document_id(url);
@@ -426,14 +405,8 @@ impl SyncManager {
         };
 
         if should_index {
-            // Extract content and store via SDK (routes through Docling when enabled)
-            let content_id = sdk_client
-                .extract_and_store_content(
-                    sync_run_id,
-                    web_page.raw_html.as_bytes().to_vec(),
-                    "text/html",
-                    None,
-                )
+            let content_id = ctx
+                .extract_and_store_content(web_page.raw_html.as_bytes().to_vec(), "text/html", None)
                 .await
                 .context("Failed to extract and store page content")?;
 
@@ -443,9 +416,7 @@ impl SyncManager {
                 content_id,
             );
 
-            // Emit event via SDK
-            sdk_client
-                .emit_event(sync_run_id, source_id, event)
+            ctx.emit_event(event)
                 .await
                 .context("Failed to emit event")?;
 
@@ -463,9 +434,7 @@ impl SyncManager {
         let mut count = pages_processed.lock().await;
         *count += 1;
 
-        // Update activity and scanned count via SDK
-        sdk_client
-            .increment_scanned(sync_run_id, 1)
+        ctx.increment_scanned(1)
             .await
             .context("Failed to update sync activity")?;
 

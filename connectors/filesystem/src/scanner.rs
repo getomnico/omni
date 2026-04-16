@@ -352,7 +352,6 @@ mod tests {
 
     fn make_source(dir: &TempDir) -> FileSystemSource {
         FileSystemSource {
-            id: "test-source".to_string(),
             name: "Test Source".to_string(),
             base_path: dir.path().to_path_buf(),
             scan_interval_seconds: 300,

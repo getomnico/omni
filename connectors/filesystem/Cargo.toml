@@ -16,7 +16,8 @@ path = "src/lib.rs"
 [dependencies]
 tokio = { workspace = true }
 shared = { path = "../../shared" }
-axum = { workspace = true }
+omni-connector-sdk = { path = "../../sdk/rust" }
+async-trait = { workspace = true }
 sqlx = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -31,9 +32,6 @@ time = { workspace = true }
 futures = { workspace = true }
 governor = { workspace = true }
 nonzero_ext = { workspace = true }
-dashmap = { workspace = true }
-tower = { workspace = true }
-tower-http = { workspace = true, features = ["cors", "trace"] }
 notify = "6.0"
 walkdir = "2.3"
 mime_guess = "2.0"

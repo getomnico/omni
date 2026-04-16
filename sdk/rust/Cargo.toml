@@ -1,0 +1,23 @@
+[package]
+name = "omni-connector-sdk"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "omni_connector_sdk"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+dashmap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+shared = { path = "../../shared" }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true, features = ["cors", "trace"] }
+tracing = { workspace = true }

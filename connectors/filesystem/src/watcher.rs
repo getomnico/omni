@@ -317,12 +317,7 @@ impl FileSystemEventProcessor {
         // Extract and store content via the connector manager
         let content_id = match self
             .sdk_client
-            .extract_and_store_content(
-                &sync_run_id,
-                data,
-                &file.mime_type,
-                Some(&file_name),
-            )
+            .extract_and_store_content(&sync_run_id, data, &file.mime_type, Some(&file_name))
             .await
         {
             Ok(id) => id,
