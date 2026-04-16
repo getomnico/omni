@@ -14,6 +14,7 @@ class User:
     full_name: Optional[str]
     role: str
     is_active: bool
+    memory_mode: Optional[str]
     created_at: datetime
     updated_at: datetime
 
@@ -25,6 +26,7 @@ class User:
             full_name=row.get("full_name"),
             role=row["role"],
             is_active=row["is_active"],
+            memory_mode=row.get("memory_mode"),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
