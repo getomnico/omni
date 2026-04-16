@@ -166,6 +166,7 @@ services:
       EMBEDDING_BATCH_MONITOR_POLL_INTERVAL: ${EMBEDDING_BATCH_MONITOR_POLL_INTERVAL:-30}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
       SANDBOX_URL: ${SANDBOX_URL:-}
+      MEMORY_SERVICE_URL: ${MEMORY_SERVICE_URL:-}
       AGENT_MAX_ITERATIONS: ${AGENT_MAX_ITERATIONS:-15}
       APPROVAL_TIMEOUT_SECONDS: ${APPROVAL_TIMEOUT_SECONDS:-600}
       AGENTS_ENABLED: ${AGENTS_ENABLED:-false}
@@ -299,6 +300,33 @@ services:
       timeout: 10s
       retries: 5
       start_period: 120s  # Models take time to load on first start
+    logging: *default-logging
+
+  # Memory Service (opt-in — start with: docker compose --profile memory up)
+  memory:
+    image: ghcr.io/cuberone/omni-private/omni-memory:${OMNI_VERSION:-latest}
+    container_name: omni-memory
+    expose:
+      - "8888"
+    environment:
+      AI_SERVICE_URL: ${AI_SERVICE_URL}
+      POSTGRES_HOST: ${DATABASE_HOST}
+      POSTGRES_PORT: ${DATABASE_PORT}
+      POSTGRES_DB: ${DATABASE_NAME}
+      POSTGRES_USER: ${DATABASE_USERNAME}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+    networks:
+      - omni-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ai:
+        condition: service_started
+      migrator:
+        condition: service_completed_successfully
+    profiles:
+      - memory
+    restart: unless-stopped
     logging: *default-logging
 
   # Connector Services

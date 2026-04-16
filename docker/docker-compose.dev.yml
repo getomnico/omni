@@ -220,6 +220,14 @@ services:
       context: ..
       dockerfile: connectors/paperless/Dockerfile
 
+  memory:
+    image: omni-memory:dev
+    build:
+      context: ../services/memory
+      dockerfile: Dockerfile
+    ports:
+      - "${MEMORY_PORT:-8888}:8888"
+
   docling:
     image: omni-docling:dev
     build:
