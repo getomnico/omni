@@ -41,14 +41,26 @@ impl ContentStorage {
         content: &[u8],
         content_type: Option<&str>,
     ) -> Result<String, ContentStorageError> {
-        let content_id = generate_ulid();
         let size_bytes = content.len() as i64;
 
-        // Generate SHA256 hash for potential deduplication
         let mut hasher = Sha256::new();
         hasher.update(content);
         let hash = format!("{:x}", hasher.finalize());
 
+        // Content-address: reuse existing blob when hash matches. Under concurrent
+        // writes the SELECT+INSERT race may produce a small bounded number of
+        // duplicates per hash; those are cleaned up by the orphan GC.
+        let existing: Option<String> =
+            sqlx::query_scalar("SELECT id FROM content_blobs WHERE sha256_hash = $1 LIMIT 1")
+                .bind(&hash)
+                .fetch_optional(&self.pool)
+                .await?;
+
+        if let Some(id) = existing {
+            return Ok(id);
+        }
+
+        let content_id = generate_ulid();
         sqlx::query(
             r#"
             INSERT INTO content_blobs (id, content, content_type, size_bytes, sha256_hash)
