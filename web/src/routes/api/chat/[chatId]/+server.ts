@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
-import { chatRepository } from '$lib/server/db/chats'
+import { ChatRepository } from '$lib/server/db/chats'
 
 export const GET: RequestHandler = async ({ params, locals }) => {
     const logger = locals.logger.child('chat')
@@ -14,7 +14,8 @@ export const GET: RequestHandler = async ({ params, locals }) => {
     logger.debug('Fetching chat details', { chatId })
 
     try {
-        const chat = await chatRepository.get(chatId)
+        const repo = new ChatRepository(locals.db)
+        const chat = await repo.get(chatId)
 
         if (!chat) {
             logger.warn('Chat not found', { chatId })
@@ -53,12 +54,10 @@ export const PATCH: RequestHandler = async ({ params, locals, request }) => {
         return json({ error: 'chatId parameter is required' }, { status: 400 })
     }
 
-    const chat = await chatRepository.get(chatId)
+    const repo = new ChatRepository(locals.db)
+    const chat = await repo.get(chatId)
     if (!chat) {
         return json({ error: 'Chat not found' }, { status: 404 })
-    }
-    if (chat.userId !== locals.user.id) {
-        return json({ error: 'Forbidden' }, { status: 403 })
     }
 
     try {
@@ -66,12 +65,12 @@ export const PATCH: RequestHandler = async ({ params, locals, request }) => {
         let updatedChat = chat
 
         if (typeof body.title === 'string') {
-            const result = await chatRepository.updateTitle(chatId, body.title)
+            const result = await repo.updateTitle(chatId, body.title)
             if (result) updatedChat = result
         }
 
         if (typeof body.isStarred === 'boolean') {
-            const result = await chatRepository.toggleStar(chatId, body.isStarred)
+            const result = await repo.toggleStar(chatId, body.isStarred)
             if (result) updatedChat = result
         }
 
@@ -97,16 +96,14 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
         return json({ error: 'chatId parameter is required' }, { status: 400 })
     }
 
-    const chat = await chatRepository.get(chatId)
+    const repo = new ChatRepository(locals.db)
+    const chat = await repo.get(chatId)
     if (!chat) {
         return json({ error: 'Chat not found' }, { status: 404 })
     }
-    if (chat.userId !== locals.user.id) {
-        return json({ error: 'Forbidden' }, { status: 403 })
-    }
 
     try {
-        await chatRepository.delete(chatId)
+        await repo.delete(chatId)
         logger.info('Chat deleted', { chatId })
         return new Response(null, { status: 204 })
     } catch (error) {

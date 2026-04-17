@@ -6,70 +6,93 @@ import { validateApiKey } from '$lib/server/apiKeys.js'
 import { rateLimit } from '$lib/server/rateLimit.js'
 import { Logger } from '$lib/server/logger.js'
 import { initTelemetry, extractTraceContext, getRequestId } from '$lib/server/telemetry.js'
+import { drizzle } from 'drizzle-orm/postgres-js'
+import * as schema from '$lib/server/db/schema.js'
+import { rlsClient } from '$lib/server/db/index.js'
 
 // Initialize OpenTelemetry on module load
 initTelemetry()
 
 const handleAuth: Handle = async ({ event, resolve }) => {
-    // 1. Try API key auth (Authorization: Bearer omni_* or X-API-Key header)
-    const authHeader = event.request.headers.get('authorization')
-    const xApiKey = event.request.headers.get('x-api-key')
-    const apiKeyValue =
-        (authHeader?.startsWith('Bearer omni_') ? authHeader.slice(7) : null) || xApiKey
+    let userId: string | null = null
+    let dbConn: Awaited<ReturnType<typeof rlsClient.connect>> | null = null
 
-    if (apiKeyValue?.startsWith('omni_')) {
-        // Rate limit API key auth attempts per IP (30 attempts per 60s window)
-        const ip = event.getClientAddress()
-        const rl = await rateLimit(`${ip}:api-key-auth`, 30, 60)
-        if (!rl.success) {
-            return new Response(JSON.stringify({ error: 'Too many requests' }), {
-                status: 429,
-                headers: { 'Content-Type': 'application/json' },
-            })
+    try {
+        // 1. Try API key auth (Authorization: Bearer omni_* or X-API-Key header)
+        const authHeader = event.request.headers.get('authorization')
+        const xApiKey = event.request.headers.get('x-api-key')
+        const apiKeyValue =
+            (authHeader?.startsWith('Bearer omni_') ? authHeader.slice(7) : null) || xApiKey
+
+        if (apiKeyValue?.startsWith('omni_')) {
+            // Rate limit API key auth attempts per IP (30 attempts per 60s window)
+            const ip = event.getClientAddress()
+            const rl = await rateLimit(`${ip}:api-key-auth`, 30, 60)
+            if (!rl.success) {
+                return new Response(JSON.stringify({ error: 'Too many requests' }), {
+                    status: 429,
+                    headers: { 'Content-Type': 'application/json' },
+                })
+            }
+
+            const result = await validateApiKey(apiKeyValue)
+            if (result) {
+                event.locals.user = result.user
+                event.locals.session = null
+                event.locals.apiKeyAllowedSources = result.allowedSources
+                event.locals.apiKeyScope = result.scope
+                userId = result.user.id
+            }
+            // Invalid API key on /api/ routes → 401 immediately
+            if (event.url.pathname.startsWith('/api/') && !result) {
+                return new Response(JSON.stringify({ error: 'Invalid or expired API key' }), {
+                    status: 401,
+                    headers: { 'Content-Type': 'application/json' },
+                })
+            }
+            // For non-API routes (browser), fall through to cookie auth
         }
 
-        const result = await validateApiKey(apiKeyValue)
-        if (result) {
-            event.locals.user = result.user
-            event.locals.session = null
-            event.locals.apiKeyAllowedSources = result.allowedSources
-            event.locals.apiKeyScope = result.scope
-            return resolve(event)
+        // 2. Fall through to cookie-based session auth
+        if (!userId) {
+            const sessionToken = event.cookies.get(auth.sessionCookieName)
+
+            if (!sessionToken) {
+                event.locals.user = null
+                event.locals.session = null
+                event.locals.apiKeyAllowedSources = null
+                event.locals.apiKeyScope = null
+            } else {
+                const { session, user } = await auth.validateSessionToken(sessionToken)
+
+                if (session) {
+                    auth.setSessionTokenCookie(event.cookies, sessionToken, session.expiresAt)
+                } else {
+                    auth.deleteSessionTokenCookie(event.cookies)
+                }
+
+                event.locals.user = user
+                event.locals.session = session
+                event.locals.apiKeyAllowedSources = null // cookie auth = unrestricted
+                event.locals.apiKeyScope = null
+                userId = user?.id ?? null
+            }
         }
-        // Invalid API key on /api/ routes → 401 immediately
-        if (event.url.pathname.startsWith('/api/')) {
-            return new Response(JSON.stringify({ error: 'Invalid or expired API key' }), {
-                status: 401,
-                headers: { 'Content-Type': 'application/json' },
-            })
+
+        // 3. Set up RLS connection with user context
+        if (userId) {
+            dbConn = await rlsClient.connect()
+            await dbConn.query('SET app.current_user_id = $1', [userId])
+            event.locals.db = drizzle(dbConn, { schema })
         }
-        // For non-API routes (browser), fall through to cookie auth
+
+        return await resolve(event)
+    } finally {
+        // 4. Always release the connection back to the pool
+        if (dbConn) {
+            await dbConn.end()
+        }
     }
-
-    // 2. Fall through to cookie-based session auth
-    const sessionToken = event.cookies.get(auth.sessionCookieName)
-
-    if (!sessionToken) {
-        event.locals.user = null
-        event.locals.session = null
-        event.locals.apiKeyAllowedSources = null
-        event.locals.apiKeyScope = null
-        return resolve(event)
-    }
-
-    const { session, user } = await auth.validateSessionToken(sessionToken)
-
-    if (session) {
-        auth.setSessionTokenCookie(event.cookies, sessionToken, session.expiresAt)
-    } else {
-        auth.deleteSessionTokenCookie(event.cookies)
-    }
-
-    event.locals.user = user
-    event.locals.session = session
-    event.locals.apiKeyAllowedSources = null // cookie auth = unrestricted
-    event.locals.apiKeyScope = null
-    return resolve(event)
 }
 
 const handlePasswordChange: Handle = async ({ event, resolve }) => {

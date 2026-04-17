@@ -1,10 +1,11 @@
-import { chatRepository, chatMessageRepository } from '$lib/server/db/chats.js'
+import { ChatRepository, ChatMessageRepository } from '$lib/server/db/chats.js'
 import { getModel } from '$lib/server/db/model-providers.js'
 import { getAgent } from '$lib/server/db/agents.js'
 import { error } from '@sveltejs/kit'
 
 export const load = async ({ params, locals }) => {
-    const chat = await chatRepository.get(params.chatId)
+    const chatRepo = new ChatRepository(locals.db)
+    const chat = await chatRepo.get(params.chatId)
     if (!chat) {
         // throw 404
         error(404, 'Chat not found')
@@ -13,7 +14,7 @@ export const load = async ({ params, locals }) => {
     // Agent chats: fetch agent info and enforce admin access
     let agent: { id: string; name: string; agentType: string } | null = null
     if (chat.agentId) {
-        const agentRecord = await getAgent(chat.agentId)
+        const agentRecord = await getAgent(chat.agentId, locals.db)
         if (agentRecord?.agentType === 'org' && locals.user?.role !== 'admin') {
             error(403, 'Admin access required')
         }
@@ -22,7 +23,8 @@ export const load = async ({ params, locals }) => {
         }
     }
 
-    const messages = await chatMessageRepository.getByChatId(chat.id)
+    const msgRepo = new ChatMessageRepository(locals.db)
+    const messages = await msgRepo.getByChatId(chat.id)
 
     let modelDisplayName: string | null = null
     if (chat.modelId) {

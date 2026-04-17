@@ -7,7 +7,7 @@ from typing import Optional
 
 from asyncpg import Pool
 
-from .connection import get_db_pool
+from .connection import get_db_pool, user_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +24,9 @@ class Upload:
 
 
 class UploadsRepository:
-    def __init__(self, pool: Optional[Pool] = None):
+    def __init__(self, pool: Optional[Pool] = None, user_id: Optional[str] = None):
         self.pool = pool
+        self.user_id = user_id
 
     async def _get_pool(self) -> Pool:
         if self.pool:
@@ -35,7 +36,7 @@ class UploadsRepository:
     async def create(
         self,
         upload_id: str,
-        user_id: str,
+        owner_id: str,
         content_id: str,
         filename: str,
         content_type: str,
@@ -49,7 +50,7 @@ class UploadsRepository:
             RETURNING id, user_id, content_id, filename, content_type, size_bytes, created_at
             """,
             upload_id,
-            user_id,
+            owner_id,
             content_id,
             filename,
             content_type,
@@ -58,12 +59,22 @@ class UploadsRepository:
         return Upload(**dict(row))
 
     async def get(self, upload_id: str) -> Optional[Upload]:
-        pool = await self._get_pool()
-        row = await pool.fetchrow(
-            """
-            SELECT id, user_id, content_id, filename, content_type, size_bytes, created_at
-            FROM uploads WHERE id = $1
-            """,
-            upload_id,
-        )
+        if self.user_id:
+            async with user_db_connection(self.user_id) as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT id, user_id, content_id, filename, content_type, size_bytes, created_at
+                    FROM uploads WHERE id = $1
+                    """,
+                    upload_id,
+                )
+        else:
+            pool = await self._get_pool()
+            row = await pool.fetchrow(
+                """
+                SELECT id, user_id, content_id, filename, content_type, size_bytes, created_at
+                FROM uploads WHERE id = $1
+                """,
+                upload_id,
+            )
         return Upload(**dict(row)) if row else None

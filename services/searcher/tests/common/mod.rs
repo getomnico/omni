@@ -92,13 +92,13 @@ impl SearcherTestFixture {
         self.search_with_user(query, mode, limit, None).await
     }
 
-    /// Helper method to make search requests with user_email for permission filtering
+    /// Helper method to make search requests with user_id for permission filtering (RLS)
     pub async fn search_with_user(
         &self,
         query: &str,
         mode: Option<&str>,
         limit: Option<u32>,
-        user_email: Option<&str>,
+        user_id: Option<&str>,
     ) -> Result<(StatusCode, Value)> {
         let mut search_body = json!({
             "query": query
@@ -112,8 +112,8 @@ impl SearcherTestFixture {
             search_body["limit"] = json!(limit);
         }
 
-        if let Some(email) = user_email {
-            search_body["user_email"] = json!(email);
+        if let Some(uid) = user_id {
+            search_body["user_id"] = json!(uid);
         }
 
         let request = Request::builder()

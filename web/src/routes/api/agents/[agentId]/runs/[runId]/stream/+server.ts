@@ -8,7 +8,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
         return json({ error: 'User not authenticated' }, { status: 401 })
     }
 
-    await requireAgentAccess(params.agentId, locals.user)
+    await requireAgentAccess(params.agentId, locals.db)
 
     const config = getConfig()
     const response = await fetch(

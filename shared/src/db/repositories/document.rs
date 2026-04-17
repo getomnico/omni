@@ -1,7 +1,7 @@
 use crate::{
     db::error::DatabaseError,
     models::{AttributeFilter, DateFilter, Document},
-    SourceType,
+    DatabasePool, SourceType,
 };
 use serde_json::Value as JsonValue;
 use sqlx::{FromRow, PgPool};
@@ -111,29 +111,24 @@ impl DocumentRepository {
     }
 
     pub async fn fetch_random_documents(
-        &self,
-        user_email: &str,
-        user_groups: &[String],
+        db_pool: &DatabasePool,
+        user_id: &str,
         count: usize,
     ) -> Result<Vec<Document>, DatabaseError> {
-        let permission_filter = &self.generate_permission_filter(user_email, user_groups);
+        let mut conn = db_pool.acquire_user(user_id).await?;
 
-        let query = format!(
+        let documents = sqlx::query_as::<_, Document>(
             r#"
             SELECT *
             FROM documents d
             WHERE d.content_id IS NOT NULL
-                AND {}
             ORDER BY RANDOM()
             LIMIT $1
         "#,
-            permission_filter
-        );
-
-        let documents = sqlx::query_as::<_, Document>(&query)
-            .bind(count as i32)
-            .fetch_all(&self.pool)
-            .await?;
+        )
+        .bind(count as i32)
+        .fetch_all(&mut *conn)
+        .await?;
 
         Ok(documents)
     }

@@ -1,7 +1,6 @@
 import type { RequestEvent } from '@sveltejs/kit'
 import { eq } from 'drizzle-orm'
-import { sha256 } from '@oslojs/crypto/sha2'
-import { encodeBase64url, encodeHexLowerCase } from '@oslojs/encoding'
+import { sha256, encodeBase64url, encodeHexLowerCase } from './crypto.js'
 import { db } from '$lib/server/db'
 import * as table from '$lib/server/db/schema'
 import { getRedisClient } from '$lib/server/redis'

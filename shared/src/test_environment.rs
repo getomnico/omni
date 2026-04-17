@@ -151,6 +151,30 @@ impl TestEnvironment {
         .execute(pool)
         .await?;
 
+        // Users for permission filtering tests (emails match document permission entries)
+        let permission_users: Vec<(&str, &str)> = vec![
+            ("01JGF7V3E0Y2R1X8P5Q7W9T4N1", "user1"),
+            ("01JGF7V3E0Y2R1X8P5Q7W9T4N2", "user2"),
+            ("01JGF7V3E0Y2R1X8P5Q7W9T4N3", "user3"),
+            ("01JGF7V3E0Y2R1X8P5Q7W9T4N4", "nobody@example.com"),
+            ("01JGF7V3E0Y2R1X8P5Q7W9T4N5", "alice@example.com"),
+            ("01JGF7V3E0Y2R1X8P5Q7W9T4N7", "bob@example.com"),
+            ("01JGF7V3E0Y2R1X8P5Q7W9T4N8", "alice@other.com"),
+        ];
+        for (uid, email) in &permission_users {
+            sqlx::query(
+                r#"
+                INSERT INTO users (id, email, password_hash, created_at, updated_at)
+                VALUES ($1, $2, 'hash', NOW(), NOW())
+                ON CONFLICT (id) DO NOTHING
+                "#,
+            )
+            .bind(uid)
+            .bind(email)
+            .execute(pool)
+            .await?;
+        }
+
         sqlx::query(
             r#"
             INSERT INTO sources (id, name, source_type, config, created_by, created_at, updated_at)
@@ -160,6 +184,29 @@ impl TestEnvironment {
         )
         .bind(source_id)
         .bind(user_id)
+        .execute(pool)
+        .await?;
+
+        // Groups for group permission tests
+        sqlx::query(
+            r#"
+            INSERT INTO groups (id, source_id, email, display_name, description, synced_at)
+            VALUES ('01JGF7V3E0Y2R1X8P5Q7W9T4G1', $1, 'engineering@example.com', 'Engineering', 'Engineering group', NOW())
+            ON CONFLICT (source_id, email) DO NOTHING
+            "#,
+        )
+        .bind(source_id)
+        .execute(pool)
+        .await?;
+
+        // Group memberships for group permission tests
+        sqlx::query(
+            r#"
+            INSERT INTO group_memberships (id, group_id, member_email, synced_at)
+            VALUES ('01JGF7V3E0Y2R1X8P5Q7W9T4G2', '01JGF7V3E0Y2R1X8P5Q7W9T4G1', 'alice@example.com', NOW())
+            ON CONFLICT (group_id, member_email) DO NOTHING
+            "#,
+        )
         .execute(pool)
         .await?;
 

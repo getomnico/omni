@@ -7,8 +7,8 @@ export const GET: RequestHandler = async ({ params, locals }) => {
         return json({ error: 'User not authenticated' }, { status: 401 })
     }
 
-    const agent = await requireAgentAccess(params.agentId, locals.user)
-    const runs = await listAgentRuns(params.agentId)
+    const agent = await requireAgentAccess(params.agentId, locals.db)
+    const runs = await listAgentRuns(params.agentId, 50, locals.db)
 
     // For org agents, strip execution_log
     if (agent.agentType === 'org') {

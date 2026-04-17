@@ -8,7 +8,7 @@ from typing import Optional
 from asyncpg import Pool
 from ulid import ULID
 
-from db.connection import get_db_pool
+from db.connection import get_db_pool, user_db_connection
 from .models import Agent, AgentRun
 
 logger = logging.getLogger(__name__)
@@ -17,8 +17,9 @@ logger = logging.getLogger(__name__)
 class AgentRepository:
     """Read-only access to the agents table (owned by omni-web)."""
 
-    def __init__(self, pool: Optional[Pool] = None):
+    def __init__(self, pool: Optional[Pool] = None, user_id: Optional[str] = None):
         self.pool = pool
+        self.user_id = user_id
 
     async def _get_pool(self) -> Pool:
         if self.pool:
@@ -26,16 +27,27 @@ class AgentRepository:
         return await get_db_pool()
 
     async def get_agent(self, agent_id: str) -> Optional[Agent]:
-        pool = await self._get_pool()
-        query = """
-            SELECT id, user_id, name, instructions, agent_type, schedule_type,
-                   schedule_value, model_id, allowed_sources, allowed_actions,
-                   is_enabled, is_deleted, created_at, updated_at
-            FROM agents
-            WHERE id = $1 AND NOT is_deleted
-        """
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(query, agent_id)
+        if self.user_id:
+            query = """
+                SELECT id, user_id, name, instructions, agent_type, schedule_type,
+                       schedule_value, model_id, allowed_sources, allowed_actions,
+                       is_enabled, is_deleted, created_at, updated_at
+                FROM agents
+                WHERE id = $1 AND NOT is_deleted
+            """
+            async with user_db_connection(self.user_id) as conn:
+                row = await conn.fetchrow(query, agent_id)
+        else:
+            pool = await self._get_pool()
+            query = """
+                SELECT id, user_id, name, instructions, agent_type, schedule_type,
+                       schedule_value, model_id, allowed_sources, allowed_actions,
+                       is_enabled, is_deleted, created_at, updated_at
+                FROM agents
+                WHERE id = $1 AND NOT is_deleted
+            """
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(query, agent_id)
         if row:
             return Agent.from_row(dict(row))
         return None
@@ -109,8 +121,9 @@ class AgentRepository:
 class AgentRunRepository:
     """Read-write access to the agent_runs table (owned by omni-ai)."""
 
-    def __init__(self, pool: Optional[Pool] = None):
+    def __init__(self, pool: Optional[Pool] = None, user_id: Optional[str] = None):
         self.pool = pool
+        self.user_id = user_id
 
     async def _get_pool(self) -> Pool:
         if self.pool:
@@ -188,15 +201,25 @@ class AgentRunRepository:
         return None
 
     async def get_run(self, run_id: str) -> Optional[AgentRun]:
-        pool = await self._get_pool()
-        query = """
-            SELECT id, agent_id, status, started_at, completed_at,
-                   execution_log, summary, error_message, created_at
-            FROM agent_runs
-            WHERE id = $1
-        """
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(query, run_id)
+        if self.user_id:
+            query = """
+                SELECT id, agent_id, status, started_at, completed_at,
+                       execution_log, summary, error_message, created_at
+                FROM agent_runs
+                WHERE id = $1
+            """
+            async with user_db_connection(self.user_id) as conn:
+                row = await conn.fetchrow(query, run_id)
+        else:
+            pool = await self._get_pool()
+            query = """
+                SELECT id, agent_id, status, started_at, completed_at,
+                       execution_log, summary, error_message, created_at
+                FROM agent_runs
+                WHERE id = $1
+            """
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(query, run_id)
         if row:
             return AgentRun.from_row(dict(row))
         return None
@@ -204,15 +227,27 @@ class AgentRunRepository:
     async def list_runs(
         self, agent_id: str, limit: int = 50, offset: int = 0
     ) -> list[AgentRun]:
-        pool = await self._get_pool()
-        query = """
-            SELECT id, agent_id, status, started_at, completed_at,
-                   execution_log, summary, error_message, created_at
-            FROM agent_runs
-            WHERE agent_id = $1
-            ORDER BY created_at DESC
-            LIMIT $2 OFFSET $3
-        """
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(query, agent_id, limit, offset)
+        if self.user_id:
+            query = """
+                SELECT id, agent_id, status, started_at, completed_at,
+                       execution_log, summary, error_message, created_at
+                FROM agent_runs
+                WHERE agent_id = $1
+                ORDER BY created_at DESC
+                LIMIT $2 OFFSET $3
+            """
+            async with user_db_connection(self.user_id) as conn:
+                rows = await conn.fetch(query, agent_id, limit, offset)
+        else:
+            pool = await self._get_pool()
+            query = """
+                SELECT id, agent_id, status, started_at, completed_at,
+                       execution_log, summary, error_message, created_at
+                FROM agent_runs
+                WHERE agent_id = $1
+                ORDER BY created_at DESC
+                LIMIT $2 OFFSET $3
+            """
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(query, agent_id, limit, offset)
         return [AgentRun.from_row(dict(r)) for r in rows]

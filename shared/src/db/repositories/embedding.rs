@@ -16,21 +16,6 @@ impl EmbeddingRepository {
         Self { pool: pool.clone() }
     }
 
-    /// Generate SQL condition to check if user has permission to access document
-    fn generate_permission_filter(&self, user_email: &str) -> String {
-        format!(
-            r#"(
-                (d.permissions->>'public')::boolean = true OR
-                d.permissions->'users' ? '{}' OR
-                d.permissions->'groups' ? ANY(
-                    -- TODO: Add group membership lookup here
-                    ARRAY['{}']::text[]
-                )
-            )"#,
-            user_email, user_email
-        )
-    }
-
     pub async fn find_by_document_id(
         &self,
         document_id: &str,
@@ -132,7 +117,6 @@ impl EmbeddingRepository {
         content_types: Option<&[String]>,
         limit: i64,
         offset: i64,
-        user_email: Option<&str>,
         document_id: Option<&str>,
         recency_boost_weight: f32,
         recency_half_life_days: f32,
@@ -176,11 +160,6 @@ impl EmbeddingRepository {
             if !ct.is_empty() {
                 where_conditions.push(format!("d.content_type = ANY(${})", bind_index));
             }
-        }
-
-        // Add permission filtering if user email is provided
-        if let Some(email) = user_email {
-            where_conditions.push(self.generate_permission_filter(email));
         }
 
         let where_clause = format!("WHERE {}", where_conditions.join(" AND "));

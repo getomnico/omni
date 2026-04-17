@@ -1,7 +1,7 @@
 import { redirect } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
 import type { LayoutServerLoad } from './$types.js'
-import { chatRepository } from '$lib/server/db/chats.js'
+import { ChatRepository } from '$lib/server/db/chats.js'
 
 export const load: LayoutServerLoad = async ({ locals, depends }) => {
     if (!locals.user) {
@@ -13,9 +13,10 @@ export const load: LayoutServerLoad = async ({ locals, depends }) => {
     }
 
     depends('app:recent_chats')
+    const chatRepo = new ChatRepository(locals.db)
     const [starredChats, recentChats] = await Promise.all([
-        chatRepository.getByUserId(locals.user.id, { isStarred: true }),
-        chatRepository.getByUserId(locals.user.id, { limit: 20, isStarred: false }),
+        chatRepo.getByUserId({ isStarred: true }),
+        chatRepo.getByUserId({ limit: 20, isStarred: false }),
     ])
 
     return {

@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
-import { responseFeedbackRepository, type FeedbackType } from '$lib/server/db/response-feedback'
+import { ResponseFeedbackRepository, type FeedbackType } from '$lib/server/db/response-feedback'
 
 interface FeedbackRequest {
     feedbackType: FeedbackType
@@ -49,8 +49,9 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     })
 
     try {
+        const repo = new ResponseFeedbackRepository(locals.db)
         // Create or update feedback
-        const feedback = await responseFeedbackRepository.createOrUpdate(
+        const feedback = await repo.createOrUpdate(
             messageId,
             locals.user.id,
             feedbackRequest.feedbackType,
@@ -105,7 +106,8 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
     })
 
     try {
-        const deleted = await responseFeedbackRepository.delete(messageId, locals.user.id)
+        const repo = new ResponseFeedbackRepository(locals.db)
+        const deleted = await repo.delete(messageId, locals.user.id)
 
         if (!deleted) {
             logger.warn('No feedback found to delete', {
