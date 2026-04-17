@@ -2,7 +2,7 @@ import { json } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
 import type { RequestHandler } from './$types.js'
 
-type AiUpload = {
+type UploadMetadataResponse = {
     id: string
     user_id: string
     filename: string
@@ -41,7 +41,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
         return json({ error: 'Upstream error' }, { status: 502 })
     }
 
-    const upload = (await resp.json()) as AiUpload
+    const upload = (await resp.json()) as UploadMetadataResponse
     if (upload.user_id !== locals.user.id) {
         return json({ error: 'Not found' }, { status: 404 })
     }
