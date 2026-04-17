@@ -525,7 +525,7 @@ async def stream_chat(
             user_memory_mode = user.memory_mode if user else None
             config_repo = ConfigurationRepository()
             org_config = await config_repo.get("memory_mode_default")
-            org_default = (org_config or {}).get("mode")
+            org_default = (org_config or {}).get("value")
             effective_mode = resolve_memory_mode(user_memory_mode, org_default)
             if effective_mode in ("chat", "full"):
                 last_user_text = ""
@@ -936,7 +936,18 @@ async def stream_chat(
                     for msg in reversed(conversation_messages):
                         m = msg if isinstance(msg, dict) else dict(msg)
                         if m.get("role") == "user":
-                            last_user_content = m.get("content", "")
+                            raw = m.get("content", "")
+                            if isinstance(raw, list):
+                                # Extract text blocks only — skip image/tool_result blocks
+                                # so mem0 never tries to call its vision LLM (which may be None).
+                                raw = " ".join(
+                                    b.get("text", "") for b in raw
+                                    if isinstance(b, dict) and b.get("type") == "text"
+                                )
+                            if not raw:
+                                # Tool-result messages have no text — keep scanning back.
+                                continue
+                            last_user_content = raw
                             break
                     if last_user_content and assistant_message:
                         assistant_content = "".join(

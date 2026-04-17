@@ -1,5 +1,4 @@
-from datetime import datetime, timezone
-
+from datetime import UTC, datetime
 
 SOURCE_DISPLAY_NAMES = {
     "google_drive": "Google Drive",
@@ -120,7 +119,7 @@ Connected apps: {connected_apps}
 
 def _format_datetime(dt: datetime | None = None) -> str:
     if dt is None:
-        dt = datetime.now(timezone.utc)
+        dt = datetime.now(UTC)
     return dt.strftime("%A, %B %d, %Y %H:%M UTC")
 
 
@@ -144,8 +143,13 @@ def build_agent_system_prompt(
     connector_actions: list | None = None,
     user_name: str | None = None,
     user_email: str | None = None,
+    memories: list[str] | None = None,
 ) -> str:
-    """Build system prompt for a background agent."""
+    """Build system prompt for a background agent.
+
+    Args:
+        memories: list of memory strings from previous runs to inject as agent memory
+    """
     seen = set()
     display_names = []
     for source in sources:
@@ -176,13 +180,18 @@ def build_agent_system_prompt(
 
     user_line = _format_user_line(user_name, user_email, prefix="Running on behalf of")
 
-    return AGENT_SYSTEM_PROMPT_TEMPLATE.format(
+    base_prompt = AGENT_SYSTEM_PROMPT_TEMPLATE.format(
         instructions=agent.instructions,
         current_datetime=_format_datetime(),
         user_line=user_line,
         connected_apps=connected_apps,
         actions_section=actions_section,
     )
+
+    if memories:
+        bullet_list = "\n".join(f"- {m}" for m in memories)
+        return base_prompt + f"\n\n## Agent memory (from prior runs)\n{bullet_list}"
+    return base_prompt
 
 
 def build_chat_system_prompt(

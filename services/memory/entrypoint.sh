@@ -1,9 +1,8 @@
 #!/bin/sh
 set -e
 
-echo "Memory service: discovering LLM config from AI service at ${AI_SERVICE_URL}..."
+echo "Memory service: fetching config from ${AI_SERVICE_URL}..."
 
-# Retry loop: AI service may not be ready yet at startup
 MAX_ATTEMPTS=30
 ATTEMPT=0
 while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
@@ -17,56 +16,109 @@ while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
 done
 
 if [ -z "$CONFIG" ]; then
-    echo "ERROR: Could not fetch LLM config from AI service after $MAX_ATTEMPTS attempts" >&2
+    echo "ERROR: Could not fetch config after $MAX_ATTEMPTS attempts" >&2
     exit 1
 fi
 
-# Parse JSON fields using Python (always available in this image)
-PROVIDER=$(echo "$CONFIG" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('provider',''))")
-MODEL=$(echo "$CONFIG" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('model',''))")
-API_KEY=$(echo "$CONFIG" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('api_key') or '')")
-BASE_URL=$(echo "$CONFIG" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('base_url') or '')")
+LLM_PROVIDER=$(echo "$CONFIG" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['llm']['provider'])")
+LLM_MODEL=$(echo "$CONFIG" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['llm']['config']['model'])")
+EMBED_PROVIDER=$(echo "$CONFIG" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['embedder']['provider'])")
+echo "Memory service: llm=$LLM_PROVIDER/$LLM_MODEL embedder=$EMBED_PROVIDER"
 
-echo "Memory service: provider=$PROVIDER model=$MODEL"
+# Build /tmp/mem0_config.json by merging the API response with pgvector credentials.
+# Pass CONFIG via env var so the heredoc Python script can read it cleanly.
+export MEM0_RAW_CONFIG="$CONFIG"
 
-# Export mem0-compatible env vars based on provider type
-case "$PROVIDER" in
-    anthropic)
-        export MEM0_LLM_PROVIDER=anthropic
-        export ANTHROPIC_API_KEY="$API_KEY"
-        export MEM0_LLM_MODEL="$MODEL"
-        ;;
-    openai|openai_compatible)
-        export MEM0_LLM_PROVIDER=openai
-        export OPENAI_API_KEY="$API_KEY"
-        export MEM0_LLM_MODEL="$MODEL"
-        if [ -n "$BASE_URL" ]; then
-            export OPENAI_BASE_URL="$BASE_URL"
-        fi
-        ;;
-    gemini)
-        export MEM0_LLM_PROVIDER=gemini
-        export GOOGLE_API_KEY="$API_KEY"
-        export MEM0_LLM_MODEL="$MODEL"
-        ;;
-    bedrock)
-        export MEM0_LLM_PROVIDER=bedrock
-        export MEM0_LLM_MODEL="$MODEL"
-        ;;
-    *)
-        echo "WARNING: Unknown provider '$PROVIDER', mem0 will use its own defaults" >&2
-        ;;
-esac
+python3 <<'PYEOF'
+import hashlib, json, os, sys
+import psycopg
 
-# mem0 pgvector config
-export MEM0_VECTOR_STORE_PROVIDER=pgvector
-export MEM0_VECTOR_STORE_HOST="${POSTGRES_HOST}"
-export MEM0_VECTOR_STORE_PORT="${POSTGRES_PORT:-5432}"
-export MEM0_VECTOR_STORE_DB="${POSTGRES_DB}"
-export MEM0_VECTOR_STORE_USER="${POSTGRES_USER}"
-export MEM0_VECTOR_STORE_PASSWORD="${POSTGRES_PASSWORD}"
+api = json.loads(os.environ["MEM0_RAW_CONFIG"])
 
-# Disable graph memory (Phase 1)
-export MEM0_GRAPH_STORE_PROVIDER=none
+db_host     = os.environ["DATABASE_HOST"]
+db_port     = int(os.environ.get("DATABASE_PORT", "5432"))
+db_user     = os.environ["DATABASE_USERNAME"]
+db_password = os.environ["DATABASE_PASSWORD"]
+db_name     = os.environ["DATABASE_NAME"]
 
-exec python -m uvicorn "mem0.server.main:app" --host 0.0.0.0 --port 8888
+# Separate database for mem0 — keeps memory tables out of the main app schema.
+# Falls back to <main_db>_mem0 if MEMORY_DATABASE_NAME is not set.
+mem0_db = os.environ.get("MEMORY_DATABASE_NAME") or (db_name + "_mem0")
+
+# Ensure the mem0 database exists.
+# Requires CREATEDB privilege. In production with a restricted DB user,
+# pre-create the database manually: CREATE DATABASE "<mem0_db>";
+with psycopg.connect(
+    host=db_host, port=db_port, dbname=db_name,
+    user=db_user, password=db_password,
+    autocommit=True,
+) as conn:
+    row = conn.execute(
+        "SELECT 1 FROM pg_database WHERE datname = %s", (mem0_db,)
+    ).fetchone()
+    if not row:
+        try:
+            conn.execute(f'CREATE DATABASE "{mem0_db}"')
+            print(f"Memory service: created database {mem0_db!r}")
+        except Exception as e:
+            print(
+                f"ERROR: Cannot create database {mem0_db!r}: {e}\n"
+                f"If the DB user lacks CREATEDB privilege, create it manually:\n"
+                f"  CREATE DATABASE \"{mem0_db}\";\n"
+                f"  GRANT ALL PRIVILEGES ON DATABASE \"{mem0_db}\" TO {db_user};",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    else:
+        print(f"Memory service: using existing database {mem0_db!r}")
+
+# Drop any mem0_memories* tables that were previously created in the main app db.
+with psycopg.connect(
+    host=db_host, port=db_port, dbname=db_name,
+    user=db_user, password=db_password,
+) as conn:
+    tables = conn.execute(
+        "SELECT tablename FROM pg_tables "
+        "WHERE schemaname = 'public' AND tablename LIKE 'mem0_memories%'"
+    ).fetchall()
+    for (table,) in tables:
+        conn.execute(f'DROP TABLE IF EXISTS "{table}"')
+        print(f"Memory service: removed stale table {table!r} from {db_name!r}")
+    conn.commit()
+
+# Fingerprint collection name by embedder (provider+model+dims). Switching
+# embedders creates a new collection instead of failing on dim mismatch.
+embed_dims = api["embedder"]["config"].get("embedding_dims")
+fp_str = "{provider}:{model}:{dims}".format(
+    provider=api["embedder"]["provider"],
+    model=api["embedder"]["config"].get("model", ""),
+    dims=embed_dims or 0,
+)
+fp = hashlib.sha256(fp_str.encode()).hexdigest()[:12]
+collection_name = f"mem0_memories_{fp}"
+print(f"Memory service: collection={collection_name} ({fp_str})")
+
+vector_store_config = {
+    "host":            db_host,
+    "port":            db_port,
+    "dbname":          mem0_db,
+    "user":            db_user,
+    "password":        db_password,
+    "collection_name": collection_name,
+}
+if embed_dims:
+    vector_store_config["embedding_model_dims"] = embed_dims
+
+config = {
+    "vector_store": {"provider": "pgvector", "config": vector_store_config},
+    "llm":          api["llm"],
+    "embedder":     api["embedder"],
+    "history_db_path": "/tmp/mem0_history.db",
+}
+
+with open("/tmp/mem0_config.json", "w") as f:
+    json.dump(config, f, indent=2)
+print("Memory service: config written")
+PYEOF
+
+exec uvicorn server:app --host 0.0.0.0 --port 8888

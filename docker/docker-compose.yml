@@ -302,7 +302,7 @@ services:
       start_period: 120s  # Models take time to load on first start
     logging: *default-logging
 
-  # Memory Service (opt-in — start with: docker compose --profile memory up)
+  # Memory Service (mem0 sidecar)
   memory:
     image: ghcr.io/cuberone/omni-private/omni-memory:${OMNI_VERSION:-latest}
     container_name: omni-memory
@@ -310,11 +310,12 @@ services:
       - "8888"
     environment:
       AI_SERVICE_URL: ${AI_SERVICE_URL}
-      POSTGRES_HOST: ${DATABASE_HOST}
-      POSTGRES_PORT: ${DATABASE_PORT}
-      POSTGRES_DB: ${DATABASE_NAME}
-      POSTGRES_USER: ${DATABASE_USERNAME}
-      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+      DATABASE_HOST: ${DATABASE_HOST}
+      DATABASE_PORT: ${DATABASE_PORT}
+      DATABASE_NAME: ${DATABASE_NAME}
+      DATABASE_USERNAME: ${DATABASE_USERNAME}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
+      MEMORY_DATABASE_NAME: ${MEMORY_DATABASE_NAME:-}
     networks:
       - omni-network
     depends_on:
@@ -324,8 +325,6 @@ services:
         condition: service_started
       migrator:
         condition: service_completed_successfully
-    profiles:
-      - memory
     restart: unless-stopped
     logging: *default-logging
 

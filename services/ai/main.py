@@ -26,6 +26,7 @@ from routers import (
     uploads_router,
     usage_router,
     internal_router,
+    memory_router,
 )
 
 from config import PORT, MEMORY_SERVICE_URL
@@ -50,6 +51,7 @@ app.include_router(agents_router)
 app.include_router(uploads_router)
 app.include_router(usage_router)
 app.include_router(internal_router)
+app.include_router(memory_router)
 
 
 @app.on_event("startup")

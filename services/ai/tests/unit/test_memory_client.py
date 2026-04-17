@@ -1,7 +1,8 @@
 """Unit tests for MemoryClient."""
-import pytest
 import httpx
+import pytest
 import respx
+
 from memory.client import MemoryClient
 
 
@@ -14,7 +15,7 @@ class TestMemoryClient:
     @respx.mock
     @pytest.mark.asyncio
     async def test_search_returns_facts(self, client):
-        respx.post("http://memory:8888/v1/memories/search/").mock(
+        respx.post("http://memory:8888/search").mock(
             return_value=httpx.Response(
                 200,
                 json={"results": [{"memory": "User prefers bullet points"}]},
@@ -26,7 +27,7 @@ class TestMemoryClient:
     @respx.mock
     @pytest.mark.asyncio
     async def test_search_returns_empty_on_error(self, client):
-        respx.post("http://memory:8888/v1/memories/search/").mock(
+        respx.post("http://memory:8888/search").mock(
             return_value=httpx.Response(500, json={"error": "internal"})
         )
         facts = await client.search(query="anything", user_id="u1", limit=5)
@@ -35,7 +36,7 @@ class TestMemoryClient:
     @respx.mock
     @pytest.mark.asyncio
     async def test_add_sends_messages_and_user_id(self, client):
-        route = respx.post("http://memory:8888/v1/memories/").mock(
+        route = respx.post("http://memory:8888/memories").mock(
             return_value=httpx.Response(200, json={"id": "m1"})
         )
         messages = [
@@ -53,9 +54,95 @@ class TestMemoryClient:
     @respx.mock
     @pytest.mark.asyncio
     async def test_add_does_not_raise_on_error(self, client):
-        respx.post("http://memory:8888/v1/memories/").mock(
+        respx.post("http://memory:8888/memories").mock(
             return_value=httpx.Response(500, json={"error": "internal"})
         )
         await client.add(
             messages=[{"role": "user", "content": "test"}], user_id="u1"
         )
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_list_returns_results_from_dict_response(self, client):
+        respx.get("http://memory:8888/memories").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {"id": "m1", "memory": "fact one"},
+                        {"id": "m2", "memory": "fact two"},
+                    ]
+                },
+            )
+        )
+        memories = await client.list(user_id="u1")
+        assert len(memories) == 2
+        assert memories[0]["id"] == "m1"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_list_returns_bare_list_response(self, client):
+        respx.get("http://memory:8888/memories").mock(
+            return_value=httpx.Response(
+                200, json=[{"id": "m1", "memory": "fact one"}]
+            )
+        )
+        memories = await client.list(user_id="u1")
+        assert memories == [{"id": "m1", "memory": "fact one"}]
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_list_sends_user_id_query_param(self, client):
+        route = respx.get("http://memory:8888/memories").mock(
+            return_value=httpx.Response(200, json={"results": []})
+        )
+        await client.list(user_id="u-alice")
+        assert route.called
+        assert route.calls[0].request.url.params["user_id"] == "u-alice"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_list_returns_empty_on_error(self, client):
+        respx.get("http://memory:8888/memories").mock(
+            return_value=httpx.Response(500)
+        )
+        memories = await client.list(user_id="u1")
+        assert memories == []
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_delete_returns_true_on_success(self, client):
+        respx.delete("http://memory:8888/memories/abc").mock(
+            return_value=httpx.Response(200, json={"status": "deleted"})
+        )
+        ok = await client.delete(memory_id="abc")
+        assert ok is True
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_delete_returns_false_on_error(self, client):
+        respx.delete("http://memory:8888/memories/abc").mock(
+            return_value=httpx.Response(500)
+        )
+        ok = await client.delete(memory_id="abc")
+        assert ok is False
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_delete_all_sends_user_id_query_param(self, client):
+        route = respx.delete("http://memory:8888/memories").mock(
+            return_value=httpx.Response(200, json={"status": "deleted"})
+        )
+        ok = await client.delete_all(user_id="u-alice")
+        assert ok is True
+        assert route.called
+        assert route.calls[0].request.url.params["user_id"] == "u-alice"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_delete_all_returns_false_on_error(self, client):
+        respx.delete("http://memory:8888/memories").mock(
+            return_value=httpx.Response(500)
+        )
+        ok = await client.delete_all(user_id="u1")
+        assert ok is False
