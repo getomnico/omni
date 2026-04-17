@@ -1,7 +1,7 @@
 import { eq, and, desc } from 'drizzle-orm'
-import { sha256 } from '@oslojs/crypto/sha2'
-import { encodeBase64url, encodeHexLowerCase } from '@oslojs/encoding'
+import { sha256, encodeBase64url, encodeHexLowerCase } from './crypto.js'
 import { timingSafeEqual } from 'crypto'
+import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { db } from '$lib/server/db'
 import * as table from '$lib/server/db/schema'
 import { ulid } from 'ulid'
@@ -24,9 +24,7 @@ export function hashApiKey(key: string): string {
     return encodeHexLowerCase(sha256(new TextEncoder().encode(key)))
 }
 
-export async function validateApiKey(
-    key: string,
-): Promise<{
+export async function validateApiKey(key: string): Promise<{
     user: typeof table.user.$inferSelect
     allowedSources: string[] | null
     scope: 'public' | 'user' | 'admin'
@@ -90,9 +88,10 @@ export async function createApiKey(
     expiresAt?: Date,
     allowedSources?: string[] | null,
     scope?: 'public' | 'user' | 'admin',
+    dbInstance: PostgresJsDatabase<typeof table> = db,
 ): Promise<{ id: string; key: string; prefix: string }> {
     // Check per-user key count limit
-    const existing = await db
+    const existing = await dbInstance
         .select({ id: table.apiKeys.id })
         .from(table.apiKeys)
         .where(and(eq(table.apiKeys.userId, userId), eq(table.apiKeys.isActive, true)))
@@ -104,7 +103,7 @@ export async function createApiKey(
     const { key, hash, prefix } = generateApiKey()
     const id = ulid()
 
-    await db.insert(table.apiKeys).values({
+    await dbInstance.insert(table.apiKeys).values({
         id,
         userId,
         keyHash: hash,
@@ -118,8 +117,8 @@ export async function createApiKey(
     return { id, key, prefix }
 }
 
-export async function listApiKeys(userId: string) {
-    return db
+export async function listApiKeys(dbInstance: PostgresJsDatabase<typeof table> = db) {
+    return dbInstance
         .select({
             id: table.apiKeys.id,
             name: table.apiKeys.name,
@@ -132,24 +131,29 @@ export async function listApiKeys(userId: string) {
             createdAt: table.apiKeys.createdAt,
         })
         .from(table.apiKeys)
-        .where(eq(table.apiKeys.userId, userId))
         .orderBy(desc(table.apiKeys.createdAt))
 }
 
-export async function revokeApiKey(keyId: string, userId: string): Promise<boolean> {
-    const result = await db
+export async function revokeApiKey(
+    keyId: string,
+    dbInstance: PostgresJsDatabase<typeof table> = db,
+): Promise<boolean> {
+    const result = await dbInstance
         .update(table.apiKeys)
         .set({ isActive: false, updatedAt: new Date() })
-        .where(and(eq(table.apiKeys.id, keyId), eq(table.apiKeys.userId, userId)))
+        .where(eq(table.apiKeys.id, keyId))
         .returning({ id: table.apiKeys.id })
 
     return result.length > 0
 }
 
-export async function deleteApiKey(keyId: string, userId: string): Promise<boolean> {
-    const result = await db
+export async function deleteApiKey(
+    keyId: string,
+    dbInstance: PostgresJsDatabase<typeof table> = db,
+): Promise<boolean> {
+    const result = await dbInstance
         .delete(table.apiKeys)
-        .where(and(eq(table.apiKeys.id, keyId), eq(table.apiKeys.userId, userId)))
+        .where(eq(table.apiKeys.id, keyId))
         .returning({ id: table.apiKeys.id })
 
     return result.length > 0

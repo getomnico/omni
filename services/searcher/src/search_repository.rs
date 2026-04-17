@@ -1,10 +1,6 @@
 use serde_json::Value as JsonValue;
-use shared::{
-    db::error::DatabaseError,
-    db::repositories::document,
-    models::{AttributeFilter, DateFilter, Document, Facet, FacetValue},
-};
-use sqlx::{FromRow, PgPool};
+use shared::{db::error::DatabaseError, db::pool::UserConn, DatabasePool};
+use sqlx::FromRow;
 use std::collections::{HashMap, HashSet};
 use tracing::debug;
 
@@ -19,19 +15,29 @@ const FACET_CANDIDATE_LIMIT: i64 = 10_000;
 #[derive(FromRow)]
 pub struct SearchHit {
     #[sqlx(flatten)]
-    pub document: Document,
+    pub document: shared::models::Document,
     pub score: f32,
     #[sqlx(default)]
     pub content_snippets: Option<Vec<String>>,
 }
 
 pub struct SearchDocumentRepository {
-    pool: PgPool,
+    pool: DatabasePool,
+    user_id: Option<String>,
 }
 
 impl SearchDocumentRepository {
-    pub fn new(pool: &PgPool) -> Self {
-        Self { pool: pool.clone() }
+    pub fn new(pool: &DatabasePool, user_id: Option<String>) -> Self {
+        Self {
+            pool: pool.clone(),
+            user_id,
+        }
+    }
+
+    async fn acquire(&self) -> Result<UserConn<'_>, DatabaseError> {
+        self.pool
+            .acquire_user(&self.user_id.as_ref().map(|s| s.as_str()).unwrap_or(""))
+            .await
     }
 
     pub async fn search(
@@ -39,13 +45,11 @@ impl SearchDocumentRepository {
         query: &str,
         source_ids: &[String],
         content_types: Option<&[String]>,
-        attribute_filters: Option<&HashMap<String, AttributeFilter>>,
+        attribute_filters: Option<&HashMap<String, shared::models::AttributeFilter>>,
         limit: i64,
         offset: i64,
-        user_email: Option<&str>,
-        user_groups: &[String],
         document_id: Option<&str>,
-        date_filter: Option<&DateFilter>,
+        date_filter: Option<&shared::models::DateFilter>,
         person_filters: Option<&[String]>,
         recency_boost_weight: f32,
         recency_half_life_days: f32,
@@ -62,8 +66,6 @@ impl SearchDocumentRepository {
                     attribute_filters,
                     limit,
                     offset,
-                    user_email,
-                    user_groups,
                     date_filter,
                     person_filters,
                 )
@@ -76,7 +78,7 @@ impl SearchDocumentRepository {
         let raw_terms: Vec<String> =
             sqlx::query_scalar("SELECT unnest($1::pdb.simple('ascii_folding=true')::text[])")
                 .bind(query)
-                .fetch_all(&self.pool)
+                .fetch_all(self.pool.pool())
                 .await?;
 
         let mut seen = HashSet::new();
@@ -101,8 +103,6 @@ impl SearchDocumentRepository {
             source_ids,
             content_types,
             attribute_filters,
-            user_email,
-            user_groups,
             date_filter,
         );
 
@@ -171,7 +171,7 @@ impl SearchDocumentRepository {
                    d.metadata, d.permissions, d.attributes, d.created_at, d.updated_at, d.last_indexed_at,
                    ARRAY[ts_headline('english', d.content,
                        plainto_tsquery('english', $2),
-                       'StartSel=**, StopSel=**, MaxFragments=3, MaxWords=30, MinWords=10'
+                       'StartSel=**, StopSel=**, MaxFragments=3, MaxWords=10, MinWords=5'
                    )] as content_snippets
             FROM ranked r
             JOIN documents d ON d.id = r.id
@@ -208,7 +208,12 @@ impl SearchDocumentRepository {
             .bind(recency_boost_weight as f64)
             .bind(recency_half_life_days as f64);
 
-        let results = query_builder.fetch_all(&self.pool).await?;
+        let results = if self.user_id.is_some() {
+            let mut conn = self.acquire().await?;
+            query_builder.fetch_all(&mut *conn).await?
+        } else {
+            query_builder.fetch_all(self.pool.pool()).await?
+        };
 
         Ok(results)
     }
@@ -217,12 +222,10 @@ impl SearchDocumentRepository {
         &self,
         source_ids: &[String],
         content_types: Option<&[String]>,
-        attribute_filters: Option<&HashMap<String, AttributeFilter>>,
+        attribute_filters: Option<&HashMap<String, shared::models::AttributeFilter>>,
         limit: i64,
         offset: i64,
-        user_email: Option<&str>,
-        user_groups: &[String],
-        date_filter: Option<&DateFilter>,
+        date_filter: Option<&shared::models::DateFilter>,
         person_filters: Option<&[String]>,
     ) -> Result<Vec<SearchHit>, DatabaseError> {
         let mut param_idx = 1;
@@ -233,8 +236,6 @@ impl SearchDocumentRepository {
             source_ids,
             content_types,
             attribute_filters,
-            user_email,
-            user_groups,
             date_filter,
         );
 
@@ -297,7 +298,12 @@ impl SearchDocumentRepository {
 
         query_builder = query_builder.bind(limit).bind(offset);
 
-        let results = query_builder.fetch_all(&self.pool).await?;
+        let results = if self.user_id.is_some() {
+            let mut conn = self.acquire().await?;
+            query_builder.fetch_all(&mut *conn).await?
+        } else {
+            query_builder.fetch_all(self.pool.pool()).await?
+        };
         Ok(results)
     }
 
@@ -306,12 +312,10 @@ impl SearchDocumentRepository {
         query: &str,
         source_ids: &[String],
         content_types: Option<&[String]>,
-        attribute_filters: Option<&HashMap<String, AttributeFilter>>,
-        user_email: Option<&str>,
-        user_groups: &[String],
-        date_filter: Option<&DateFilter>,
+        attribute_filters: Option<&HashMap<String, shared::models::AttributeFilter>>,
+        date_filter: Option<&shared::models::DateFilter>,
         person_filters: Option<&[String]>,
-    ) -> Result<Vec<Facet>, DatabaseError> {
+    ) -> Result<Vec<shared::models::Facet>, DatabaseError> {
         if source_ids.is_empty() {
             return Ok(vec![]);
         }
@@ -326,8 +330,6 @@ impl SearchDocumentRepository {
                 source_ids,
                 content_types,
                 attribute_filters,
-                user_email,
-                user_groups,
                 date_filter,
             );
             let where_clause = if filters.is_empty() {
@@ -351,7 +353,13 @@ impl SearchDocumentRepository {
                     qb = qb.bind(ct);
                 }
             }
-            let rows = qb.fetch_all(&self.pool).await?;
+            let rows = if self.user_id.is_some() {
+                debug!("Executing empty-query facet with user conn");
+                let mut conn = self.acquire().await?;
+                qb.fetch_all(&mut *conn).await?
+            } else {
+                qb.fetch_all(self.pool.pool()).await?
+            };
             return Ok(rows_to_facets(rows));
         }
 
@@ -359,7 +367,7 @@ impl SearchDocumentRepository {
         let raw_terms: Vec<String> =
             sqlx::query_scalar("SELECT unnest($1::pdb.simple('ascii_folding=true')::text[])")
                 .bind(query)
-                .fetch_all(&self.pool)
+                .fetch_all(self.pool.pool())
                 .await?;
 
         let mut seen = HashSet::new();
@@ -382,8 +390,6 @@ impl SearchDocumentRepository {
             source_ids,
             content_types,
             attribute_filters,
-            user_email,
-            user_groups,
             date_filter,
         );
 
@@ -427,6 +433,7 @@ impl SearchDocumentRepository {
             filter_where = filter_where,
             facet_limit_idx = facet_limit_idx,
         );
+        debug!("Full facet query: {}", query_str);
 
         let mut query_builder =
             sqlx::query_as::<_, (String, String, i64)>(&query_str).bind(&tantivy_query);
@@ -441,8 +448,20 @@ impl SearchDocumentRepository {
 
         query_builder = query_builder.bind(FACET_CANDIDATE_LIMIT);
 
-        let facet_rows = query_builder.fetch_all(&self.pool).await?;
-        Ok(rows_to_facets(facet_rows))
+        let facet_rows = if self.user_id.is_some() {
+            debug!(
+                "Executing facet query with user conn for user_id: {:?}",
+                self.user_id
+            );
+            let mut conn = self.acquire().await?;
+            debug!("User conn acquired, executing facet query...");
+            query_builder.fetch_all(&mut *conn).await
+        } else {
+            debug!("Executing facet query with pool conn");
+            query_builder.fetch_all(self.pool.pool()).await
+        };
+        debug!("Facet query completed successfully, converting to facets");
+        Ok(rows_to_facets(facet_rows?))
     }
 
     pub async fn get_distinct_attribute_values(
@@ -454,7 +473,7 @@ impl SearchDocumentRepository {
             return Ok(HashMap::new());
         }
 
-        let rows: Vec<(String, String)> = sqlx::query_as(
+        let query = sqlx::query_as::<_, (String, String)>(
             r#"
             SELECT key, val FROM (
                 SELECT
@@ -472,9 +491,14 @@ impl SearchDocumentRepository {
             "#,
         )
         .bind(keys)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+        .bind(limit);
+
+        let rows = if self.user_id.is_some() {
+            let mut conn = self.acquire().await?;
+            query.fetch_all(&mut *conn).await?
+        } else {
+            query.fetch_all(self.pool.pool()).await?
+        };
 
         let mut result: HashMap<String, Vec<String>> = HashMap::new();
         for (key, val) in rows {
@@ -484,22 +508,21 @@ impl SearchDocumentRepository {
     }
 }
 
-fn rows_to_facets(rows: Vec<(String, String, i64)>) -> Vec<Facet> {
-    let mut facets_map: HashMap<String, Vec<FacetValue>> = HashMap::new();
+fn rows_to_facets(rows: Vec<(String, String, i64)>) -> Vec<shared::models::Facet> {
+    let mut facets_map: HashMap<String, Vec<shared::models::FacetValue>> = HashMap::new();
     for (facet_name, value, count) in rows {
-        facets_map.entry(facet_name).or_default().push(FacetValue {
-            value,
-            count: Some(count),
-        });
+        facets_map
+            .entry(facet_name)
+            .or_default()
+            .push(shared::models::FacetValue {
+                value,
+                count: Some(count),
+            });
     }
     facets_map
         .into_iter()
-        .map(|(name, values)| Facet { name, values })
+        .map(|(name, values)| shared::models::Facet { name, values })
         .collect()
-}
-
-fn generate_permission_filter(user_email: &str, user_groups: &[String]) -> String {
-    document::generate_permission_filter(user_email, user_groups)
 }
 
 // TODO: use tantivy crate for query string validation
@@ -568,10 +591,8 @@ fn build_common_filters(
     param_idx: &mut usize,
     source_ids: &[String],
     content_types: Option<&[String]>,
-    attribute_filters: Option<&HashMap<String, AttributeFilter>>,
-    user_email: Option<&str>,
-    user_groups: &[String],
-    date_filter: Option<&DateFilter>,
+    attribute_filters: Option<&HashMap<String, shared::models::AttributeFilter>>,
+    date_filter: Option<&shared::models::DateFilter>,
 ) {
     if !source_ids.is_empty() {
         filters.push(format!("source_id = ANY(${})", param_idx));
@@ -587,7 +608,7 @@ fn build_common_filters(
     if let Some(attr_filters) = attribute_filters {
         for (key, filter) in attr_filters {
             match filter {
-                AttributeFilter::Exact(value) => {
+                shared::models::AttributeFilter::Exact(value) => {
                     let term_value = json_value_to_term_string(value);
                     filters.push(format!(
                         "attributes @@@ '{}:{}'",
@@ -595,7 +616,7 @@ fn build_common_filters(
                         term_value.replace('\'', "''")
                     ));
                 }
-                AttributeFilter::AnyOf(values) => {
+                shared::models::AttributeFilter::AnyOf(values) => {
                     let conditions: Vec<String> = values
                         .iter()
                         .map(|v| {
@@ -611,7 +632,7 @@ fn build_common_filters(
                         filters.push(format!("({})", conditions.join(" OR ")));
                     }
                 }
-                AttributeFilter::Range { gte, lte } => {
+                shared::models::AttributeFilter::Range { gte, lte } => {
                     if let Some(gte_val) = gte {
                         let gte_str = json_value_to_term_string(gte_val);
                         filters.push(format!(
@@ -652,9 +673,5 @@ fn build_common_filters(
                 iso.replace('\'', "''")
             ));
         }
-    }
-
-    if let Some(email) = user_email {
-        filters.push(generate_permission_filter(email, user_groups));
     }
 }

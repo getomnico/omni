@@ -5,7 +5,7 @@ from typing import Optional, List
 from dataclasses import dataclass
 from asyncpg import Pool
 
-from .connection import get_db_pool
+from .connection import get_db_pool, user_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +50,9 @@ class ContentBlob:
 class DocumentsRepository:
     """Repository for document-related database operations."""
 
-    def __init__(self, pool: Optional[Pool] = None):
+    def __init__(self, pool: Optional[Pool] = None, user_id: Optional[str] = None):
         self.pool = pool
+        self.user_id = user_id
 
     async def _get_pool(self) -> Pool:
         """Get database pool"""
@@ -69,25 +70,35 @@ class DocumentsRepository:
         in the document's users or groups list.  This mirrors the searcher's
         permission filter so the logic lives in one place (the DB query).
         """
-        pool = await self._get_pool()
-
-        if user_email:
-            perm_filter = _permission_filter(user_email.lower())
-            query = f"SELECT {_COLUMNS} FROM documents WHERE id = $1 {perm_filter}"
-            row = await pool.fetchrow(query, document_id)
+        if self.user_id:
+            if user_email:
+                perm_filter = _permission_filter(user_email.lower())
+                query = f"SELECT {_COLUMNS} FROM documents WHERE id = $1 {perm_filter}"
+                async with user_db_connection(self.user_id) as conn:
+                    row = await conn.fetchrow(query, document_id)
+            else:
+                query = f"SELECT {_COLUMNS} FROM documents WHERE id = $1"
+                async with user_db_connection(self.user_id) as conn:
+                    row = await conn.fetchrow(query, document_id)
         else:
-            query = f"SELECT {_COLUMNS} FROM documents WHERE id = $1"
-            row = await pool.fetchrow(query, document_id)
+            pool = await self._get_pool()
+            if user_email:
+                perm_filter = _permission_filter(user_email.lower())
+                query = f"SELECT {_COLUMNS} FROM documents WHERE id = $1 {perm_filter}"
+                row = await pool.fetchrow(query, document_id)
+            else:
+                query = f"SELECT {_COLUMNS} FROM documents WHERE id = $1"
+                row = await pool.fetchrow(query, document_id)
 
         if row:
             return Document(
                 id=row["id"],
                 content_id=row["content_id"],
-                source_id=row["source_id"],
-                external_id=row["external_id"],
-                title=row["title"],
-                content_type=row["content_type"],
-                embedding_status=row["embedding_status"],
+                source_id=row.get("source_id"),
+                external_id=row.get("external_id"),
+                title=row.get("title"),
+                content_type=row.get("content_type"),
+                embedding_status=row.get("embedding_status"),
             )
         return None
 
@@ -110,42 +121,33 @@ class DocumentsRepository:
         )
         return row["id"] if row else None
 
-    async def get_content_blob(self, content_id: str) -> Optional[ContentBlob]:
-        """Get content blob by ID"""
+    async def get_content_blob(self, document_id: str) -> Optional[ContentBlob]:
+        """Get the content blob for a document"""
         pool = await self._get_pool()
-
-        row = await pool.fetchrow(
-            "SELECT id, content_type, storage_key, storage_backend FROM content_blobs WHERE id = $1",
-            content_id,
-        )
-
+        query = """
+            SELECT id, content_type, storage_key, storage_backend
+            FROM documents
+            WHERE id = $1
+        """
+        row = await pool.fetchrow(query, document_id)
         if row:
             return ContentBlob(
                 id=row["id"],
-                content_type=row["content_type"],
+                content_type=row.get("content_type"),
                 storage_key=row["storage_key"],
                 storage_backend=row["storage_backend"],
             )
         return None
 
-    async def update_embedding_status(
-        self, document_ids: List[str], status: str
-    ) -> None:
-        """Update embedding_status for documents"""
-        if not document_ids:
-            return
-
+    async def get_document_content(self, document_id: str) -> Optional[str]:
+        """Get the content of a document"""
         pool = await self._get_pool()
-
-        await pool.execute(
-            """
-            UPDATE documents
-            SET embedding_status = $2
-            WHERE id = ANY($1)
-            """,
-            document_ids,
-            status,
-        )
-        logger.info(
-            f"Updated {len(document_ids)} documents to embedding_status: {status}"
-        )
+        query = """
+            SELECT content
+            FROM documents
+            WHERE id = $1
+        """
+        row = await pool.fetchrow(query, document_id)
+        if row and row["content"]:
+            return row["content"]
+        return None

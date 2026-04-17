@@ -5,12 +5,13 @@ import asyncpg
 from asyncpg import Pool
 
 from .models import Chat
-from .connection import get_db_pool
+from .connection import get_db_pool, user_db_connection
 
 
 class ChatsRepository:
-    def __init__(self, pool: Optional[Pool] = None):
+    def __init__(self, pool: Optional[Pool] = None, user_id: Optional[str] = None):
         self.pool = pool
+        self.user_id = user_id
 
     async def _get_pool(self) -> Pool:
         """Get database pool"""
@@ -20,7 +21,7 @@ class ChatsRepository:
 
     async def create(
         self,
-        user_id: str,
+        owner_id: str,
         title: Optional[str] = None,
         model_id: Optional[str] = None,
         agent_id: Optional[str] = None,
@@ -37,22 +38,31 @@ class ChatsRepository:
         """
 
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(query, chat_id, user_id, title, model_id, agent_id)
+            row = await conn.fetchrow(
+                query, chat_id, owner_id, title, model_id, agent_id
+            )
 
         return Chat.from_row(dict(row))
 
     async def get(self, chat_id: str) -> Optional[Chat]:
         """Get a chat by ID"""
-        pool = await self._get_pool()
-
-        query = """
-            SELECT id, user_id, title, model_id, agent_id, created_at, updated_at
-            FROM chats
-            WHERE id = $1
-        """
-
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(query, chat_id)
+        if self.user_id:
+            query = """
+                SELECT id, user_id, title, model_id, agent_id, created_at, updated_at
+                FROM chats
+                WHERE id = $1
+            """
+            async with user_db_connection(self.user_id) as conn:
+                row = await conn.fetchrow(query, chat_id)
+        else:
+            pool = await self._get_pool()
+            query = """
+                SELECT id, user_id, title, model_id, agent_id, created_at, updated_at
+                FROM chats
+                WHERE id = $1
+            """
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(query, chat_id)
 
         if row:
             return Chat.from_row(dict(row))

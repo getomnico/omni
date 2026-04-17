@@ -1,45 +1,44 @@
-import { db } from './index.js'
+import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
+import * as schema from './schema.js'
 import { agents, agentRuns } from './schema.js'
 import { eq, and, desc } from 'drizzle-orm'
 import { ulid } from 'ulid'
 import { error } from '@sveltejs/kit'
 import type { Agent } from './schema.js'
+import { db } from './index'
 
 /**
- * Fetch an agent by ID and verify the user has access.
- * Throws SvelteKit error (404/403) on failure.
+ * Fetch an agent by ID. RLS ensures the user can only see their own agents
+ * (or org agents if they're an admin).
+ * Throws SvelteKit error (404) on failure.
  */
 export async function requireAgentAccess(
     agentId: string,
-    user: { id: string; role: string },
+    dbInstance: PostgresJsDatabase<typeof schema> = db,
 ): Promise<Agent> {
-    const agent = await getAgent(agentId)
+    const agent = await getAgent(agentId, dbInstance)
     if (!agent) {
         throw error(404, 'Agent not found')
-    }
-    if (agent.agentType === 'org') {
-        if (user.role !== 'admin') {
-            throw error(403, 'Admin access required')
-        }
-    } else if (agent.userId !== user.id) {
-        throw error(403, 'Access denied')
     }
     return agent
 }
 
-export async function createAgent(data: {
-    userId: string
-    name: string
-    instructions: string
-    agentType: string
-    scheduleType: string
-    scheduleValue: string
-    modelId?: string
-    allowedSources?: any[]
-    allowedActions?: string[]
-}) {
+export async function createAgent(
+    data: {
+        userId: string
+        name: string
+        instructions: string
+        agentType: string
+        scheduleType: string
+        scheduleValue: string
+        modelId?: string
+        allowedSources?: any[]
+        allowedActions?: string[]
+    },
+    dbInstance: PostgresJsDatabase<typeof schema> = db,
+) {
     const id = ulid()
-    const [agent] = await db
+    const [agent] = await dbInstance
         .insert(agents)
         .values({
             id,
@@ -69,8 +68,9 @@ export async function updateAgent(
         allowedActions: string[]
         isEnabled: boolean
     }>,
+    dbInstance: PostgresJsDatabase<typeof schema> = db,
 ) {
-    const [agent] = await db
+    const [agent] = await dbInstance
         .update(agents)
         .set({ ...data, updatedAt: new Date() })
         .where(and(eq(agents.id, agentId), eq(agents.isDeleted, false)))
@@ -78,8 +78,11 @@ export async function updateAgent(
     return agent
 }
 
-export async function deleteAgent(agentId: string) {
-    const [agent] = await db
+export async function deleteAgent(
+    agentId: string,
+    dbInstance: PostgresJsDatabase<typeof schema> = db,
+) {
+    const [agent] = await dbInstance
         .update(agents)
         .set({ isDeleted: true, isEnabled: false, updatedAt: new Date() })
         .where(eq(agents.id, agentId))
@@ -87,8 +90,11 @@ export async function deleteAgent(agentId: string) {
     return agent
 }
 
-export async function getAgent(agentId: string) {
-    const [agent] = await db
+export async function getAgent(
+    agentId: string,
+    dbInstance: PostgresJsDatabase<typeof schema> = db,
+) {
+    const [agent] = await dbInstance
         .select()
         .from(agents)
         .where(and(eq(agents.id, agentId), eq(agents.isDeleted, false)))
@@ -96,16 +102,16 @@ export async function getAgent(agentId: string) {
     return agent || null
 }
 
-export async function listAgents(userId: string) {
-    return db
+export async function listAgents(dbInstance: PostgresJsDatabase<typeof schema> = db) {
+    return dbInstance
         .select()
         .from(agents)
-        .where(and(eq(agents.userId, userId), eq(agents.isDeleted, false)))
+        .where(eq(agents.isDeleted, false))
         .orderBy(desc(agents.createdAt))
 }
 
-export async function listOrgAgents() {
-    return db
+export async function listOrgAgents(dbInstance: PostgresJsDatabase<typeof schema> = db) {
+    return dbInstance
         .select()
         .from(agents)
         .where(and(eq(agents.agentType, 'org'), eq(agents.isDeleted, false)))
@@ -114,8 +120,12 @@ export async function listOrgAgents() {
 
 // --- Agent Runs (read-only from omni-web, written by omni-ai) ---
 
-export async function listAgentRuns(agentId: string, limit = 50) {
-    return db
+export async function listAgentRuns(
+    agentId: string,
+    limit = 50,
+    dbInstance: PostgresJsDatabase<typeof schema> = db,
+) {
+    return dbInstance
         .select()
         .from(agentRuns)
         .where(eq(agentRuns.agentId, agentId))
@@ -123,7 +133,10 @@ export async function listAgentRuns(agentId: string, limit = 50) {
         .limit(limit)
 }
 
-export async function getAgentRun(runId: string) {
-    const [run] = await db.select().from(agentRuns).where(eq(agentRuns.id, runId)).limit(1)
+export async function getAgentRun(
+    runId: string,
+    dbInstance: PostgresJsDatabase<typeof schema> = db,
+) {
+    const [run] = await dbInstance.select().from(agentRuns).where(eq(agentRuns.id, runId)).limit(1)
     return run || null
 }

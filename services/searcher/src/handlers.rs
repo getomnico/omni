@@ -5,7 +5,7 @@ use crate::models::{
 };
 use crate::search::SearchEngine;
 use crate::search_repository::SearchDocumentRepository;
-use crate::suggested_questions::{self, SuggestedQuestionsGenerator};
+
 use crate::{AppState, Result as SearcherResult, SearcherError};
 use anyhow::anyhow;
 use axum::body::Body;
@@ -17,7 +17,7 @@ use axum::{
 use futures_util::Stream;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
-use shared::{PersonRepository, Repository, UserRepository};
+use shared::PersonRepository;
 use sqlx::types::time::OffsetDateTime;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -136,7 +136,11 @@ pub async fn search(
     let response = match search_engine.search(request.clone()).await {
         Ok(response) => response,
         Err(e) => {
-            error!("Search engine error: {}", e);
+            error!(
+                "Search engine error: {:?}\nBacktrace:\n{:?}",
+                e,
+                std::backtrace::Backtrace::capture()
+            );
             return Err(SearcherError::Internal(e));
         }
     };
@@ -280,33 +284,9 @@ pub async fn suggested_questions(
 ) -> SearcherResult<Json<SuggestedQuestionsResponse>> {
     info!("Received suggested questions request");
 
-    let user_repo = UserRepository::new(&state.db_pool.pool());
-    let user = match user_repo.find_by_id(request.user_id.clone()).await {
-        Ok(Some(user)) => user,
-        Ok(None) => {
-            error!("User not found for user_id {}", request.user_id);
-            return Err(SearcherError::NotFound(format!(
-                "User not found for user_id {}",
-                request.user_id
-            )));
-        }
-        Err(e) => {
-            error!(
-                "Failed to fetch user for user_id {}: {:?}",
-                request.user_id, e
-            );
-            return Err(anyhow!(
-                "Failed to fetch user for user_id {}: {:?}",
-                request.user_id,
-                e
-            )
-            .into());
-        }
-    };
-
     let response = state
         .suggested_questions_generator
-        .get_suggested_questions(&user.email)
+        .get_suggested_questions(&request.user_id)
         .await?;
 
     Ok(Json(response))
@@ -371,7 +351,7 @@ pub async fn attribute_values(
     }
 
     let limit = query.limit.unwrap_or(25).min(100);
-    let repo = SearchDocumentRepository::new(state.db_pool.pool());
+    let repo = SearchDocumentRepository::new(&state.db_pool, None);
     let attributes = repo
         .get_distinct_attribute_values(&keys, limit)
         .await

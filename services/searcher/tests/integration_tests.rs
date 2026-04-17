@@ -471,7 +471,12 @@ async fn test_permission_filtering() -> Result<()> {
 
     // user1 has access to all docs (is in every document's users list)
     let (status, response) = fixture
-        .search_with_user("guide", Some("fulltext"), None, Some("user1"))
+        .search_with_user(
+            "guide",
+            Some("fulltext"),
+            None,
+            Some("01JGF7V3E0Y2R1X8P5Q7W9T4N1"),
+        )
         .await?;
     assert_eq!(status, StatusCode::OK);
     let results = response["results"].as_array().unwrap();
@@ -480,15 +485,20 @@ async fn test_permission_filtering() -> Result<()> {
         "user1 should see results (has access to all docs)"
     );
 
-    // nobody@example.com has no access to any document
+    // nobody has no access to any document
     let (status, response) = fixture
-        .search_with_user("guide", Some("fulltext"), None, Some("nobody@example.com"))
+        .search_with_user(
+            "guide",
+            Some("fulltext"),
+            None,
+            Some("01JGF7V3E0Y2R1X8P5Q7W9T4N4"),
+        )
         .await?;
     assert_eq!(status, StatusCode::OK);
     let results = response["results"].as_array().unwrap();
     assert!(
         results.is_empty(),
-        "nobody@example.com should see 0 results, got {}",
+        "nobody should see 0 results, got {}",
         results.len()
     );
 
@@ -1113,7 +1123,7 @@ async fn test_search_respects_group_permissions() -> Result<()> {
             "secret engineering architecture",
             Some("fulltext"),
             Some(10),
-            Some("alice@example.com"),
+            Some("01JGF7V3E0Y2R1X8P5Q7W9T4N5"),
         )
         .await?;
     assert_eq!(status, StatusCode::OK);
@@ -1129,7 +1139,7 @@ async fn test_search_respects_group_permissions() -> Result<()> {
             "secret engineering architecture",
             Some("fulltext"),
             Some(10),
-            Some("bob@example.com"),
+            Some("01JGF7V3E0Y2R1X8P5Q7W9T4N7"),
         )
         .await?;
     assert_eq!(status, StatusCode::OK);
@@ -1167,7 +1177,7 @@ async fn test_search_domain_wide_access() -> Result<()> {
             "company wide quarterly results",
             Some("fulltext"),
             Some(10),
-            Some("alice@example.com"),
+            Some("01JGF7V3E0Y2R1X8P5Q7W9T4N5"),
         )
         .await?;
     assert_eq!(status, StatusCode::OK);
@@ -1183,7 +1193,7 @@ async fn test_search_domain_wide_access() -> Result<()> {
             "company wide quarterly results",
             Some("fulltext"),
             Some(10),
-            Some("alice@other.com"),
+            Some("01JGF7V3E0Y2R1X8P5Q7W9T4N8"),
         )
         .await?;
     assert_eq!(status, StatusCode::OK);

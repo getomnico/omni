@@ -7,15 +7,12 @@ use crate::search_repository::SearchDocumentRepository;
 use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::db::repositories::{
-    DocumentRepository, EmbeddingRepository, GroupRepository, PersonRepository, SourceRepository,
+    DocumentRepository, EmbeddingRepository, PersonRepository, SourceRepository,
 };
 use shared::models::{ChunkResult, Document, Facet, FacetValue};
 use shared::utils::safe_str_slice;
 use shared::SourceType;
-use shared::{
-    AIClient, DatabasePool, ObjectStorage, Repository, SearcherConfig, StorageFactory,
-    UserRepository,
-};
+use shared::{AIClient, DatabasePool, ObjectStorage, SearcherConfig, StorageFactory};
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -118,42 +115,7 @@ impl SearchEngine {
 
         let mut request = request;
         request.document_id = request.document_id.filter(|s| !s.trim().is_empty());
-        request.user_email = request.user_email.filter(|s| !s.trim().is_empty());
         request.user_id = request.user_id.filter(|s| !s.trim().is_empty());
-
-        // In case the request contains only user_id, populate user_email for permission filtering
-        let user_repo = UserRepository::new(self.db_pool.pool());
-        let mut request = match (&request.user_id, &request.user_email) {
-            (Some(user_id), None) => {
-                info!("Search request has user_id but no email, fetching email from DB for user ID: {}", user_id);
-                let res = user_repo.find_by_id(user_id.clone()).await;
-                info!("Fetched user: {:?}", res);
-                if let Ok(Some(user)) = res {
-                    info!(
-                        "Fetched user email: {} for user ID: {}",
-                        user.email, user_id
-                    );
-                    let mut new_request = request.clone();
-                    new_request.user_email = Some(user.email);
-                    new_request
-                } else {
-                    info!("Failed to fetch user email for user ID: {}", user_id);
-                    request
-                }
-            }
-            _ => request,
-        };
-
-        // Resolve user's group memberships for permission filtering
-        let user_groups = if let Some(email) = request.user_email() {
-            let group_repo = GroupRepository::new(self.db_pool.pool());
-            group_repo
-                .find_groups_for_user(email.as_str())
-                .await
-                .unwrap_or_default()
-        } else {
-            vec![]
-        };
 
         // Handle document_id filter for read_document tool
         if let Some(document_id) = &request.document_id {
@@ -232,7 +194,7 @@ impl SearchEngine {
         }
 
         let repo = DocumentRepository::new(self.db_pool.pool());
-        let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
+        let search_repo = SearchDocumentRepository::new(&self.db_pool, request.user_id.clone());
         let limit = request.limit();
 
         // Empty query is allowed ONLY if some narrowing filter will scope the
@@ -272,32 +234,23 @@ impl SearchEngine {
             let start_ts = Instant::now();
             let res = match request.search_mode() {
                 SearchMode::Fulltext => {
-                    self.fulltext_search(&search_repo, &request, &filtered_source_ids, &user_groups)
+                    self.fulltext_search(&search_repo, &request, &filtered_source_ids)
                         .await
                 }
                 SearchMode::Semantic => self.semantic_search(&request).await,
-                SearchMode::Hybrid => self.hybrid_search(&request, &user_groups).await,
+                SearchMode::Hybrid => self.hybrid_search(&request).await,
             };
 
             debug!("Search future completed in: {:?}", start_ts.elapsed());
             res
         };
 
-        // Unfiltered facets: query + permissions only, no source_type/date/person/content filters
+        // Unfiltered facets: query only, no source_type/date/person/content/permission filters
         let unfiltered_facets_future = async {
             if request.include_facets() {
                 let start_ts = Instant::now();
                 let facets = search_repo
-                    .get_facet_counts(
-                        &request.query,
-                        &all_source_ids,
-                        None,
-                        None,
-                        request.user_email().map(|e| e.as_str()),
-                        &user_groups,
-                        None,
-                        None,
-                    )
+                    .get_facet_counts(&request.query, &all_source_ids, None, None, None, None)
                     .await
                     .unwrap_or_else(|e| {
                         info!("Failed to get unfiltered facet counts: {}", e);
@@ -321,8 +274,6 @@ impl SearchEngine {
                         &filtered_source_ids,
                         request.content_types.as_deref(),
                         request.attribute_filters.as_ref(),
-                        request.user_email().map(|e| e.as_str()),
-                        &user_groups,
                         request.date_filter.as_ref(),
                         request.person_filters.as_deref(),
                     )
@@ -458,7 +409,6 @@ impl SearchEngine {
         repo: &SearchDocumentRepository,
         request: &SearchRequest,
         source_ids: &[String],
-        user_groups: &[String],
     ) -> Result<Vec<SearchResult>> {
         let start_time = Instant::now();
         let content_types = request.content_types.as_deref();
@@ -473,8 +423,6 @@ impl SearchEngine {
                 attribute_filters,
                 request.dedup_fetch_limit(),
                 0,
-                request.user_email().map(|e| e.as_str()),
-                user_groups,
                 request.document_id.as_deref(),
                 request.date_filter.as_ref(),
                 request.person_filters.as_deref(),
@@ -548,7 +496,6 @@ impl SearchEngine {
                 content_types,
                 request.dedup_fetch_limit(),
                 0,
-                request.user_email().map(|e| e.as_str()),
                 request.document_id.as_deref(),
                 self.config.recency_boost_weight,
                 self.config.recency_half_life_days,
@@ -807,20 +754,10 @@ impl SearchEngine {
         doc: &shared::models::Document,
         request: &SearchRequest,
     ) -> Result<Vec<SearchResult>> {
-        let user_groups = if let Some(email) = request.user_email() {
-            let group_repo = GroupRepository::new(self.db_pool.pool());
-            group_repo
-                .find_groups_for_user(email.as_str())
-                .await
-                .unwrap_or_default()
-        } else {
-            vec![]
-        };
-
         let results = if !request.query.trim().is_empty() {
             // Query provided: do hybrid search within document
             info!("Query provided, hybrid search within document");
-            self.hybrid_search(request, &user_groups).await?
+            self.hybrid_search(request).await?
         } else {
             info!(
                 "No query provided, returning first 500 lines from document ID {}",
@@ -911,7 +848,6 @@ impl SearchEngine {
                 content_types,
                 request.limit(),
                 request.offset(),
-                request.user_email().map(|e| e.as_str()),
                 None,
                 self.config.recency_boost_weight,
                 self.config.recency_half_life_days,
@@ -1005,20 +941,16 @@ impl SearchEngine {
         Ok(results)
     }
 
-    async fn hybrid_search(
-        &self,
-        request: &SearchRequest,
-        user_groups: &[String],
-    ) -> Result<Vec<SearchResult>> {
+    async fn hybrid_search(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
         info!("Performing hybrid search for query: '{}'", request.query);
         let start_time = Instant::now();
 
         let doc_repo = DocumentRepository::new(self.db_pool.pool());
-        let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
+        let search_repo = SearchDocumentRepository::new(&self.db_pool, request.user_id.clone());
         let source_ids = doc_repo
             .fetch_active_source_ids(request.source_types.as_deref())
             .await?;
-        let fts_future = self.fulltext_search(&search_repo, request, &source_ids, user_groups);
+        let fts_future = self.fulltext_search(&search_repo, request, &source_ids);
 
         // Apply timeout to semantic search
         let semantic_future = tokio::time::timeout(
@@ -1260,8 +1192,8 @@ impl SearchEngine {
             json.hash(&mut hasher);
         }
 
-        if let Some(user_email) = &request.user_email {
-            user_email.hash(&mut hasher);
+        if let Some(user_id) = &request.user_id {
+            user_id.hash(&mut hasher);
         }
 
         if let Some(date_filter) = &request.date_filter {
@@ -1347,23 +1279,13 @@ impl SearchEngine {
     pub async fn get_rag_context(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
         info!("Generating RAG context for query: '{}'", request.query);
 
-        let user_groups = if let Some(email) = request.user_email() {
-            let group_repo = GroupRepository::new(self.db_pool.pool());
-            group_repo
-                .find_groups_for_user(email.as_str())
-                .await
-                .unwrap_or_default()
-        } else {
-            vec![]
-        };
-
         let doc_repo = DocumentRepository::new(self.db_pool.pool());
-        let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
+        let search_repo = SearchDocumentRepository::new(&self.db_pool, request.user_id.clone());
         let source_ids = doc_repo
             .fetch_active_source_ids(request.source_types.as_deref())
             .await?;
         let fts_results = self
-            .fulltext_search(&search_repo, request, &source_ids, &user_groups)
+            .fulltext_search(&search_repo, request, &source_ids)
             .await?;
 
         // Get semantic search results enhanced with expanded context for RAG

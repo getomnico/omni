@@ -1,7 +1,8 @@
 import asyncpg
-from asyncpg import Pool
-from typing import Optional
+from asyncpg import Pool, Connection
+from typing import Optional, AsyncIterator
 import os
+from contextlib import asynccontextmanager
 from urllib.parse import quote_plus
 
 from pgvector.asyncpg import register_vector
@@ -42,6 +43,22 @@ async def get_db_pool() -> Pool:
         )
 
     return _db_pool
+
+
+@asynccontextmanager
+async def user_db_connection(user_id: str) -> AsyncIterator[Connection]:
+    """Context manager that provides a DB connection with RLS context set.
+
+    Acquires a connection from the pool, sets app.current_user_id for RLS,
+    and releases it back when done.
+    """
+    pool = await get_db_pool()
+    conn = await pool.acquire()
+    try:
+        await conn.execute("SET app.current_user_id = $1", user_id)
+        yield conn
+    finally:
+        await pool.release(conn)
 
 
 async def close_db_pool():

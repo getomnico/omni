@@ -1,6 +1,6 @@
 import { requireAdmin } from '$lib/server/authHelpers'
 import { getConfig } from '$lib/server/config'
-import { sourcesRepository } from '$lib/server/repositories/sources'
+import { SourcesRepository } from '$lib/server/repositories/sources'
 import { getConnectorConfigPublic } from '$lib/server/db/connector-configs'
 import type { PageServerLoad } from './$types'
 
@@ -48,8 +48,9 @@ interface ConnectorInfo {
 export const load: PageServerLoad = async ({ locals }) => {
     requireAdmin(locals)
 
-    const connectedSources = await sourcesRepository.getOrgWide()
-    const latestSyncRuns = await sourcesRepository.getLatestSyncRuns()
+    const repo = new SourcesRepository(locals.db)
+    const connectedSources = await repo.getOrgWide()
+    const latestSyncRuns = await repo.getLatestSyncRuns()
     const googleConnectorConfig = await getConnectorConfigPublic('google')
 
     // Fetch registered connectors from connector manager

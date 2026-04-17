@@ -1,7 +1,7 @@
 import { json } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
-import { chatRepository } from '$lib/server/db/chats.js'
-import { toolApprovalRepository } from '$lib/server/db/tool-approvals.js'
+import { ChatRepository } from '$lib/server/db/chats.js'
+import { ToolApprovalRepository } from '$lib/server/db/tool-approvals.js'
 
 export const POST: RequestHandler = async ({ params, locals, request }) => {
     const logger = locals.logger.child('chat-approve')
@@ -11,14 +11,10 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
         return json({ error: 'chatId parameter is required' }, { status: 400 })
     }
 
-    const chat = await chatRepository.get(chatId)
+    const chatRepo = new ChatRepository(locals.db)
+    const chat = await chatRepo.get(chatId)
     if (!chat) {
         return json({ error: 'Chat not found' }, { status: 404 })
-    }
-
-    // Validate user owns the chat
-    if (chat.userId !== locals.user.id) {
-        return json({ error: 'Forbidden' }, { status: 403 })
     }
 
     try {
@@ -37,7 +33,8 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
         }
 
         // Update the approval record in the database
-        const approval = await toolApprovalRepository.resolve(approvalId, decision, locals.user.id)
+        const approvalRepo = new ToolApprovalRepository(locals.db)
+        const approval = await approvalRepo.resolve(approvalId, decision, locals.user.id)
         if (!approval) {
             return json({ error: 'Approval not found' }, { status: 404 })
         }

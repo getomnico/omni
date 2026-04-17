@@ -1,6 +1,6 @@
 import { json, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
-import { chatRepository, chatMessageRepository } from '$lib/server/db/chats'
+import { ChatRepository, ChatMessageRepository } from '$lib/server/db/chats'
 import { getAgent } from '$lib/server/db/agents.js'
 import type { OmniUploadBlock } from '$lib/types/message'
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/messages'
@@ -25,8 +25,11 @@ export const GET: RequestHandler = async ({ params, locals }) => {
     logger.debug('Fetching chat messages', { chatId })
 
     try {
+        const chatRepo = new ChatRepository(locals.db)
+        const msgRepo = new ChatMessageRepository(locals.db)
+
         // First check if chat exists
-        const chat = await chatRepository.get(chatId)
+        const chat = await chatRepo.get(chatId)
         if (!chat) {
             logger.warn('Chat not found', { chatId })
             return json({ error: 'Chat not found' }, { status: 404 })
@@ -34,14 +37,14 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
         // Agent chats require admin access
         if (chat.agentId) {
-            const agent = await getAgent(chat.agentId)
+            const agent = await getAgent(chat.agentId, locals.db)
             if (agent?.agentType === 'org' && locals.user?.role !== 'admin') {
                 throw error(403, 'Admin access required for agent chats')
             }
         }
 
         // Get messages for the chat
-        const chatMessages = await chatMessageRepository.getByChatId(chatId)
+        const chatMessages = await msgRepo.getByChatId(chatId)
 
         logger.info('Chat messages retrieved successfully', {
             chatId,
@@ -107,8 +110,11 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     })
 
     try {
+        const chatRepo = new ChatRepository(locals.db)
+        const msgRepo = new ChatMessageRepository(locals.db)
+
         // First check if chat exists
-        const chat = await chatRepository.get(chatId)
+        const chat = await chatRepo.get(chatId)
         if (!chat) {
             logger.warn('Chat not found', { chatId })
             return json({ error: 'Chat not found' }, { status: 404 })
@@ -116,7 +122,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
         // Agent chats require admin access
         if (chat.agentId) {
-            const agent = await getAgent(chat.agentId)
+            const agent = await getAgent(chat.agentId, locals.db)
             if (agent?.agentType === 'org' && locals.user?.role !== 'admin') {
                 throw error(403, 'Admin access required for agent chats')
             }
@@ -142,14 +148,14 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
         // Determine parentId: use provided value, or find the last message in the active path
         let parentId = messageRequest.parentId
         if (!parentId) {
-            const lastMessage = await chatMessageRepository.getLastMessageInActivePath(chatId)
+            const lastMessage = await msgRepo.getLastMessageInActivePath(chatId)
             if (lastMessage) {
                 parentId = lastMessage.id
             }
         }
 
         // Save message to database
-        const savedMessage = await chatMessageRepository.create(chatId, userMessage, parentId)
+        const savedMessage = await msgRepo.create(chatId, userMessage, parentId)
 
         logger.info('Message added successfully', {
             chatId,

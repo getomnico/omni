@@ -5,9 +5,12 @@ import { listAllActiveModels } from '$lib/server/db/model-providers.js'
 
 export const load: PageServerLoad = async ({ locals, params }) => {
     const { user } = requireActiveUser(locals)
-    const agent = await requireAgentAccess(params.agentId, user)
+    const agent = await requireAgentAccess(params.agentId, locals.db)
 
-    const [runs, models] = await Promise.all([listAgentRuns(params.agentId), listAllActiveModels()])
+    const [runs, models] = await Promise.all([
+        listAgentRuns(params.agentId, 50, locals.db),
+        listAllActiveModels(),
+    ])
 
     return { user, agent, runs, models }
 }
