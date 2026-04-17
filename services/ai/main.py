@@ -84,6 +84,12 @@ async def shutdown_event():
     if hasattr(app.state, "embedding_queue"):
         await app.state.embedding_queue.stop()
     await shutdown_providers(app.state)
+    memory_client = getattr(app.state, "memory_client", None)
+    if memory_client is not None:
+        try:
+            await memory_client.aclose()
+        except Exception as e:
+            logger.warning(f"Failed to close memory client: {e}")
 
 
 if __name__ == "__main__":

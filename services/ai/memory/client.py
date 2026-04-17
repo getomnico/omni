@@ -94,3 +94,8 @@ class MemoryClient:
         except Exception as e:
             logger.warning(f"Memory delete_all failed for user {user_id}: {e}")
             return False
+
+    async def aclose(self) -> None:
+        """Close the underlying httpx connection pool. Idempotent."""
+        if not self._client.is_closed:
+            await self._client.aclose()

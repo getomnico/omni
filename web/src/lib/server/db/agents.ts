@@ -79,11 +79,35 @@ export async function updateAgent(
 }
 
 export async function deleteAgent(agentId: string) {
+    const existing = await getAgent(agentId)
     const [agent] = await db
         .update(agents)
         .set({ isDeleted: true, isEnabled: false, updatedAt: new Date() })
         .where(eq(agents.id, agentId))
         .returning()
+
+    // For org agents, purge the mem0 namespace. Best-effort — never block delete.
+    if (existing?.agentType === 'org') {
+        try {
+            const { getConfig } = await import('../config.js')
+            const { services } = getConfig()
+            const resp = await fetch(
+                `${services.aiServiceUrl}/memories/org-agent/${encodeURIComponent(agentId)}`,
+                {
+                    method: 'DELETE',
+                    headers: { 'x-user-id': 'system', 'x-user-role': 'admin' },
+                },
+            )
+            if (!resp.ok && resp.status !== 503) {
+                console.warn(
+                    `Org-agent memory purge returned ${resp.status} for ${agentId}`,
+                )
+            }
+        } catch (err) {
+            console.warn(`Org-agent memory purge failed for ${agentId}:`, err)
+        }
+    }
+
     return agent
 }
 

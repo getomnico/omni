@@ -51,6 +51,33 @@ async def delete_all_memories(request: Request):
     return {"status": "deleted"}
 
 
+def _require_admin(request: Request) -> None:
+    user_id = request.headers.get("x-user-id")
+    role = request.headers.get("x-user-role")
+    if not user_id or role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+
+@router.delete("/org-agent/{agent_id}")
+async def delete_org_agent_memories(
+    request: Request,
+    agent_id: str = Path(..., description="Agent id whose memory namespace to purge"),
+):
+    """Purge every memory stored under `org_agent:<agent_id>`.
+
+    Used by the web layer when an org agent is deleted, and available
+    to admins for manual cleanup of policy-sensitive memories.
+    """
+    _require_admin(request)
+    client = _require_memory_client(request)
+    namespace = f"org_agent:{agent_id}"
+    ok = await client.delete_all(user_id=namespace)
+    if not ok:
+        raise HTTPException(status_code=502, detail="Memory service delete failed")
+    logger.info(f"Purged org-agent memory namespace: {namespace}")
+    return {"status": "deleted", "namespace": namespace}
+
+
 @router.delete("/{memory_id}")
 async def delete_memory(
     request: Request,

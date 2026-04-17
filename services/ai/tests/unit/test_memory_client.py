@@ -146,3 +146,18 @@ class TestMemoryClient:
         )
         ok = await client.delete_all(user_id="u1")
         assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_aclose_closes_underlying_httpx_client(self):
+        client = MemoryClient(base_url="http://memory:8888")
+        assert not client._client.is_closed
+        await client.aclose()
+        assert client._client.is_closed
+
+    @pytest.mark.asyncio
+    async def test_aclose_is_idempotent(self):
+        client = MemoryClient(base_url="http://memory:8888")
+        await client.aclose()
+        # Second call must not raise.
+        await client.aclose()
+        assert client._client.is_closed

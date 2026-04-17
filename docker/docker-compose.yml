@@ -304,7 +304,7 @@ services:
 
   # Memory Service (mem0 sidecar)
   memory:
-    image: ghcr.io/cuberone/omni-private/omni-memory:${OMNI_VERSION:-latest}
+    image: ghcr.io/getomnico/omni/omni-memory:${OMNI_VERSION:-latest}
     container_name: omni-memory
     expose:
       - "8888"

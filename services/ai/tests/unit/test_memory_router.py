@@ -108,3 +108,45 @@ class TestMemoryRouter:
         assert mem.delete_all_calls == ["alice"]
         # Bob's memories are untouched.
         assert any(m["id"] == "m2" for m in mem._store.get("bob", []))
+
+    def test_delete_org_agent_requires_admin_role(self):
+        mem = _FakeMemoryClient()
+        mem.seed("org_agent:agent-123", [{"id": "m1", "memory": "org secret"}])
+        client = _build_app(mem)
+
+        # Missing role header → 403
+        resp = client.delete(
+            "/memories/org-agent/agent-123",
+            headers={"x-user-id": "alice"},
+        )
+        assert resp.status_code == 403
+        # Non-admin role → 403
+        resp = client.delete(
+            "/memories/org-agent/agent-123",
+            headers={"x-user-id": "alice", "x-user-role": "user"},
+        )
+        assert resp.status_code == 403
+        assert mem.delete_all_calls == []
+
+    def test_delete_org_agent_purges_namespace_for_admin(self):
+        mem = _FakeMemoryClient()
+        mem.seed("org_agent:agent-123", [{"id": "m1", "memory": "org secret"}])
+        mem.seed("alice", [{"id": "m2", "memory": "alice"}])
+        client = _build_app(mem)
+
+        resp = client.delete(
+            "/memories/org-agent/agent-123",
+            headers={"x-user-id": "admin-user", "x-user-role": "admin"},
+        )
+        assert resp.status_code == 200
+        assert mem.delete_all_calls == ["org_agent:agent-123"]
+        # Unrelated namespace untouched.
+        assert mem._store.get("alice")
+
+    def test_delete_org_agent_returns_503_when_client_missing(self):
+        client = _build_app(None)
+        resp = client.delete(
+            "/memories/org-agent/agent-123",
+            headers={"x-user-id": "admin", "x-user-role": "admin"},
+        )
+        assert resp.status_code == 503
