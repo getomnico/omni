@@ -6,7 +6,7 @@
 //! in a real sync.
 
 use omni_imap_connector::models::{
-    build_thread_connector_event, collect_raw_attachments, generate_thread_content,
+    build_thread_connector_event, generate_thread_content,
     make_thread_document_id, parse_raw_email, resolve_new_email_thread_root, resolve_thread_root,
     FolderSyncState, ImapConnectorState,
 };
@@ -71,7 +71,7 @@ fn test_incremental_sync_flow_builds_thread_correctly() {
         Some("Mon, 15 Jan 2024 10:00:00 +0000"),
     );
 
-    let email_root = parse_raw_email(&raw_root, 1, "INBOX").unwrap();
+    let email_root = parse_raw_email(&raw_root, 1, "INBOX").unwrap().0;
     assert_eq!(email_root.subject, "Project Discussion");
     assert_eq!(email_root.thread_id(), "<root@example.com>");
 
@@ -116,7 +116,7 @@ fn test_incremental_sync_flow_builds_thread_correctly() {
         Some("Mon, 15 Jan 2024 11:00:00 +0000"),
     );
 
-    let email_reply = parse_raw_email(&raw_reply, 2, "INBOX").unwrap();
+    let email_reply = parse_raw_email(&raw_reply, 2, "INBOX").unwrap().0;
 
     // Resolve thread root for the new email (simulates sync_folder logic)
     let thread_root = resolve_new_email_thread_root(
@@ -172,7 +172,7 @@ fn test_incremental_sync_flow_builds_thread_correctly() {
         Some("Mon, 15 Jan 2024 12:00:00 +0000"),
     );
 
-    let email_grandchild = parse_raw_email(&raw_grandchild, 3, "INBOX").unwrap();
+    let email_grandchild = parse_raw_email(&raw_grandchild, 3, "INBOX").unwrap().0;
 
     // Thread resolution must walk the In-Reply-To chain
     let thread_root_gc = resolve_new_email_thread_root(
@@ -235,7 +235,7 @@ fn test_connector_state_persistence_across_restarts() {
         "Body 1",
         Some("Mon, 01 Jan 2024 10:00:00 +0000"),
     );
-    let email1 = parse_raw_email(&raw1, 100, "INBOX").unwrap();
+    let email1 = parse_raw_email(&raw1, 100, "INBOX").unwrap().0;
 
     let raw2 = build_raw_email(
         "<msg2@example.com>",
@@ -247,7 +247,7 @@ fn test_connector_state_persistence_across_restarts() {
         "Body 2",
         Some("Mon, 01 Jan 2024 11:00:00 +0000"),
     );
-    let email2 = parse_raw_email(&raw2, 101, "INBOX").unwrap();
+    let email2 = parse_raw_email(&raw2, 101, "INBOX").unwrap().0;
 
     let mut state = ImapConnectorState::default();
     state.folders.insert(
@@ -341,7 +341,7 @@ fn test_uidvalidity_change_clears_state() {
                 "Body",
                 None,
             );
-            m.insert(1, parse_raw_email(&raw, 1, "INBOX").unwrap());
+            m.insert(1, parse_raw_email(&raw, 1, "INBOX").unwrap().0);
             m
         },
         skipped_uids: [99].into_iter().collect(),
@@ -401,8 +401,10 @@ fn test_email_with_attachment_end_to_end() {
     )
     .into_bytes();
 
-    // Parse email — body_text contains only inline body, not attachments
-    let mut email = parse_raw_email(&raw, 1, "Finance").unwrap();
+    // Parse email — body_text contains only inline body, not attachments.
+    // parse_raw_email now returns both the email and collected raw attachments
+    // in a single MIME parse pass.
+    let (mut email, raw_attachments) = parse_raw_email(&raw, 1, "Finance").unwrap();
 
     // Plain text body → no HTML conversion needed
     assert!(!email.body_is_html);
@@ -412,9 +414,7 @@ fn test_email_with_attachment_end_to_end() {
     assert!(!email.body_text.contains("Q4 Revenue Report"),
         "attachment text should not be in body_text after parse_raw_email");
 
-    // Collect raw attachments (mirrors what sync.rs does before calling sdk_client.extract_text)
-    let parsed_mail = mailparse::parse_mail(&raw).unwrap();
-    let raw_attachments = collect_raw_attachments(&parsed_mail);
+    // Attachments are already collected from the same parse pass
     assert_eq!(raw_attachments.len(), 1);
     assert_eq!(raw_attachments[0].filename, "report.txt");
     // The raw data should contain the original content

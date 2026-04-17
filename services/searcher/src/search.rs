@@ -394,15 +394,20 @@ impl SearchEngine {
         // Deduplicate cross-source results sharing the same external_id.
         // IMAP email threads from different accounts but the same mailing list
         // produce identical external_ids (source_id is not part of the ID).
-        // Keep the highest-scoring result per group; trim to requested limit.
-        let (mut results, dedup_removed) =
-            Self::deduplicate_cross_source(results, request.limit() as usize);
+        // Keep the highest-scoring result per group; apply offset+limit after
+        // dedup so duplicates are consistent across pages.
+        let (mut results, dedup_removed) = Self::deduplicate_cross_source(
+            results,
+            request.offset() as usize,
+            request.limit() as usize,
+        );
 
         let total_count: i64 = filtered_facets
             .iter()
             .flat_map(|f| f.values.iter().filter_map(|fv| fv.count))
             .sum::<i64>()
-            - dedup_removed as i64;
+            .saturating_sub(dedup_removed as i64)
+            .max(0);
         let has_more = total_count >= limit;
         let query_time = start_time.elapsed().as_millis() as u64;
 
@@ -466,8 +471,8 @@ impl SearchEngine {
                 source_ids,
                 content_types,
                 attribute_filters,
-                request.dedup_limit(),
-                request.offset(),
+                request.dedup_fetch_limit(),
+                0,
                 request.user_email().map(|e| e.as_str()),
                 user_groups,
                 request.document_id.as_deref(),
@@ -541,8 +546,8 @@ impl SearchEngine {
                 query_embedding,
                 sources,
                 content_types,
-                request.dedup_limit(),
-                request.offset(),
+                request.dedup_fetch_limit(),
+                0,
                 request.user_email().map(|e| e.as_str()),
                 request.document_id.as_deref(),
                 self.config.recency_boost_weight,
@@ -1116,8 +1121,8 @@ impl SearchEngine {
             .collect();
         final_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
 
-        if final_results.len() > request.dedup_limit() as usize {
-            final_results.truncate(request.dedup_limit() as usize);
+        if final_results.len() > request.dedup_fetch_limit() as usize {
+            final_results.truncate(request.dedup_fetch_limit() as usize);
         }
 
         info!(
@@ -1138,8 +1143,12 @@ impl SearchEngine {
     /// Collapsed duplicates are recorded in `also_in` on the winner.
     /// Permissions are NOT mutated — the SQL layer already filters by the
     /// requesting user's access.
+    ///
+    /// Pagination (`offset` / `limit`) is applied **after** dedup so that
+    /// cross-page results are consistent (no duplicates across pages).
     fn deduplicate_cross_source(
         results: Vec<SearchResult>,
+        offset: usize,
         limit: usize,
     ) -> (Vec<SearchResult>, usize) {
         // Group indices by external_id for dedup-eligible results only.
@@ -1156,8 +1165,9 @@ impl SearchEngine {
         // Fast path: nothing to deduplicate
         if dedup_groups.values().all(|indices| indices.len() <= 1) {
             let mut results = results;
-            results.truncate(limit);
-            return (results, 0);
+            let end = results.len().min(offset + limit);
+            let start = offset.min(end);
+            return (results.drain(start..end).collect(), 0);
         }
 
         // Map from best_idx -> list of AlsoIn entries for its collapsed duplicates
@@ -1210,13 +1220,15 @@ impl SearchEngine {
                 }
                 result
             })
+            .skip(offset)
             .take(limit)
             .collect();
 
         debug!(
-            "Cross-source dedup removed {} duplicates, returning {} results",
+            "Cross-source dedup removed {} duplicates, returning {} results (offset={})",
             remove_indices.len(),
-            deduped.len()
+            deduped.len(),
+            offset,
         );
 
         (deduped, remove_indices.len())

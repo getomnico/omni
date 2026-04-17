@@ -389,8 +389,13 @@ pub fn build_thread_connector_event(
     }
 }
 
-/// Parse a raw RFC 2822 email message into a `ParsedEmail`.
-pub fn parse_raw_email(raw: &[u8], uid: u32, folder: &str) -> Result<ParsedEmail> {
+/// Parse a raw RFC 2822 email message into a `ParsedEmail` and collect raw
+/// attachment bytes in one pass (avoids a redundant second MIME parse).
+pub fn parse_raw_email(
+    raw: &[u8],
+    uid: u32,
+    folder: &str,
+) -> Result<(ParsedEmail, Vec<crate::attachment::RawAttachment>)> {
     let parsed = mailparse::parse_mail(raw).context("Failed to parse email")?;
 
     let headers = parsed.get_headers();
@@ -425,24 +430,28 @@ pub fn parse_raw_email(raw: &[u8], uid: u32, folder: &str) -> Result<ParsedEmail
         .and_then(parse_email_date);
 
     let (body_text, body_is_html) = extract_body_text(&parsed);
+    let attachments = collect_raw_attachments(&parsed);
     let size = raw.len();
 
-    Ok(ParsedEmail {
-        message_id,
-        in_reply_to,
-        references,
-        imap_uid: uid,
-        folder: folder.to_string(),
-        subject,
-        from,
-        to,
-        cc,
-        date,
-        body_text,
-        body_is_html,
-        flags: vec![],
-        size,
-    })
+    Ok((
+        ParsedEmail {
+            message_id,
+            in_reply_to,
+            references,
+            imap_uid: uid,
+            folder: folder.to_string(),
+            subject,
+            from,
+            to,
+            cc,
+            date,
+            body_text,
+            body_is_html,
+            flags: vec![],
+            size,
+        },
+        attachments,
+    ))
 }
 
 /// Extract the best available plain-text body from a parsed email.
