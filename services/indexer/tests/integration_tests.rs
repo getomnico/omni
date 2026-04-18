@@ -19,11 +19,8 @@ async fn test_event_driven_document_lifecycle() {
     let event_queue = EventQueue::new(fixture.state.db_pool.pool().clone());
     let repo = DocumentRepository::new(fixture.state.db_pool.pool());
 
-    let processor = QueueProcessor::new(fixture.state.clone()).with_accumulation_config(
-        Duration::from_millis(200),
-        Duration::from_secs(30),
-        Duration::from_millis(50),
-    );
+    let processor =
+        QueueProcessor::new(fixture.state.clone()).with_poll_interval(Duration::from_millis(200));
     let processor_handle = tokio::spawn(async move {
         let _ = processor.start().await;
     });
@@ -211,11 +208,7 @@ async fn test_batch_processing_and_deduplication() {
 
     let processor = QueueProcessor::new(fixture.state.clone())
         .with_batch_size(10)
-        .with_accumulation_config(
-            Duration::from_millis(200),
-            Duration::from_secs(30),
-            Duration::from_millis(50),
-        );
+        .with_poll_interval(Duration::from_millis(200));
     let processor_handle = tokio::spawn(async move {
         let _ = processor.start().await;
     });
@@ -676,11 +669,8 @@ async fn test_people_extraction_from_events() {
     let repo = DocumentRepository::new(fixture.state.db_pool.pool());
     let person_repo = PersonRepository::new(fixture.state.db_pool.pool());
 
-    let processor = QueueProcessor::new(fixture.state.clone()).with_accumulation_config(
-        Duration::from_millis(200),
-        Duration::from_secs(30),
-        Duration::from_millis(50),
-    );
+    let processor =
+        QueueProcessor::new(fixture.state.clone()).with_poll_interval(Duration::from_millis(200));
     let processor_handle = tokio::spawn(async move {
         let _ = processor.start().await;
     });
@@ -855,11 +845,8 @@ async fn test_group_membership_sync_event() {
     let event_queue = EventQueue::new(fixture.state.db_pool.pool().clone());
     let pool = fixture.state.db_pool.pool();
 
-    let processor = QueueProcessor::new(fixture.state.clone()).with_accumulation_config(
-        Duration::from_millis(200),
-        Duration::from_secs(30),
-        Duration::from_millis(50),
-    );
+    let processor =
+        QueueProcessor::new(fixture.state.clone()).with_poll_interval(Duration::from_millis(200));
     let processor_handle = tokio::spawn(async move {
         let _ = processor.start().await;
     });

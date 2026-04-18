@@ -81,6 +81,40 @@ class SdkClient:
                 f"Failed to emit event: {response.status_code} - {response.text}"
             )
 
+    async def emit_event_batch(
+        self,
+        sync_run_id: str,
+        source_id: str,
+        events: list[ConnectorEvent],
+    ) -> None:
+        """Emit a batch of connector events to the queue in a single request."""
+        if not events:
+            return
+
+        logger.debug(
+            "SDK: Emitting batch of %d events for sync_run=%s",
+            len(events),
+            sync_run_id,
+        )
+
+        payload = {
+            "sync_run_id": sync_run_id,
+            "source_id": source_id,
+            "events": [event.to_dict() for event in events],
+        }
+
+        client = await self._get_client()
+        response = await client.post(
+            f"{self.base_url}/sdk/events/batch",
+            json=payload,
+        )
+
+        if not response.is_success:
+            raise SdkClientError(
+                f"Failed to emit event batch ({len(events)} events): "
+                f"{response.status_code} - {response.text}"
+            )
+
     async def extract_and_store_content(
         self,
         sync_run_id: str,

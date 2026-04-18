@@ -4,6 +4,15 @@ use ulid::Ulid;
 
 use crate::models::{ConnectorEvent, ConnectorEventQueueItem};
 
+fn event_type_str(event: &ConnectorEvent) -> &'static str {
+    match event {
+        ConnectorEvent::DocumentCreated { .. } => "document_created",
+        ConnectorEvent::DocumentUpdated { .. } => "document_updated",
+        ConnectorEvent::DocumentDeleted { .. } => "document_deleted",
+        ConnectorEvent::GroupMembershipSync { .. } => "group_membership_sync",
+    }
+}
+
 #[derive(Clone)]
 pub struct EventQueue {
     pool: PgPool,
@@ -16,14 +25,7 @@ impl EventQueue {
 
     pub async fn enqueue(&self, source_id: &str, event: &ConnectorEvent) -> Result<String> {
         let id = Ulid::new().to_string();
-        let event_type = match event {
-            ConnectorEvent::DocumentCreated { .. } => "document_created",
-            ConnectorEvent::DocumentUpdated { .. } => "document_updated",
-            ConnectorEvent::DocumentDeleted { .. } => "document_deleted",
-            ConnectorEvent::GroupMembershipSync { .. } => "group_membership_sync",
-        };
-
-        let mut tx = self.pool.begin().await?;
+        let event_type = event_type_str(event);
 
         sqlx::query(
             r#"
@@ -36,37 +38,63 @@ impl EventQueue {
         .bind(source_id)
         .bind(event_type)
         .bind(serde_json::to_value(event)?)
-        .execute(&mut *tx)
+        .execute(&self.pool)
         .await?;
-
-        sqlx::query("NOTIFY indexer_queue")
-            .execute(&mut *tx)
-            .await?;
-
-        tx.commit().await?;
 
         Ok(id)
     }
 
+    pub async fn enqueue_batch(
+        &self,
+        source_id: &str,
+        events: &[ConnectorEvent],
+    ) -> Result<Vec<String>> {
+        if events.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut ids: Vec<String> = Vec::with_capacity(events.len());
+        let mut sync_run_ids: Vec<String> = Vec::with_capacity(events.len());
+        let mut source_ids: Vec<String> = Vec::with_capacity(events.len());
+        let mut event_types: Vec<String> = Vec::with_capacity(events.len());
+        let mut payloads: Vec<serde_json::Value> = Vec::with_capacity(events.len());
+
+        for event in events {
+            ids.push(Ulid::new().to_string());
+            sync_run_ids.push(event.sync_run_id().to_string());
+            source_ids.push(source_id.to_string());
+            event_types.push(event_type_str(event).to_string());
+            payloads.push(serde_json::to_value(event)?);
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO connector_events_queue (id, sync_run_id, source_id, event_type, payload)
+            SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::jsonb[])
+            "#,
+        )
+        .bind(&ids)
+        .bind(&sync_run_ids)
+        .bind(&source_ids)
+        .bind(&event_types)
+        .bind(&payloads)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(ids)
+    }
+
     pub async fn dequeue_batch(&self, batch_size: i32) -> Result<Vec<ConnectorEventQueueItem>> {
-        // Dequeue events from a single sync_run (the one with most pending events)
-        // This ensures each batch contains events from only one sync_run
+        // Dequeue the oldest N pending events across all sync_runs (ordered by id = ULID,
+        // which is time-sortable). Downstream processing groups by sync_run_id for
+        // progress updates.
         let rows = sqlx::query(
             r#"
-            WITH target_sync_run AS (
-                SELECT sync_run_id
-                FROM connector_events_queue
-                WHERE status = 'pending'
-                GROUP BY sync_run_id
-                ORDER BY COUNT(*) DESC
-                LIMIT 1
-            ),
-            batch AS (
+            WITH batch AS (
                 SELECT id
                 FROM connector_events_queue
                 WHERE status = 'pending'
-                  AND sync_run_id = (SELECT sync_run_id FROM target_sync_run)
-                ORDER BY created_at
+                ORDER BY id
                 LIMIT $1
                 FOR UPDATE SKIP LOCKED
             )
