@@ -1,5 +1,6 @@
 <script lang="ts">
     import { Loader2 } from '@lucide/svelte'
+    import * as Tooltip from '$lib/components/ui/tooltip'
 
     interface Props {
         filename?: string
@@ -18,7 +19,20 @@
             <Loader2 class="text-muted-foreground size-4 shrink-0 animate-spin" />
         {/if}
         {#if filename}
-            <div class="max-w-48 truncate pr-4 font-medium break-all">{filename}</div>
+            <Tooltip.Provider delayDuration={300}>
+                <Tooltip.Root>
+                    <Tooltip.Trigger>
+                        {#snippet child({ props })}
+                            <div {...props} class="max-w-48 truncate pr-4 font-medium break-all">
+                                {filename}
+                            </div>
+                        {/snippet}
+                    </Tooltip.Trigger>
+                    <Tooltip.Content class="max-w-sm break-all">
+                        {filename}
+                    </Tooltip.Content>
+                </Tooltip.Root>
+            </Tooltip.Provider>
         {/if}
     </div>
     {#if onRemove}
