@@ -9,7 +9,7 @@ x-dev-db-config: &dev-db-config
 x-dev-database-url: &dev-database-url
   DATABASE_HOST: postgres
   DATABASE_PORT: 5432
-  DATABASE_USERNAME: omni_dev
+  DATABASE_USERNAME: omni
   DATABASE_PASSWORD: omni_dev_password
   DATABASE_NAME: omni_dev
 
@@ -26,6 +26,38 @@ services:
   redis:
     ports:
       - "6379:6379"
+
+  # One-time init: creates omni_admin and transfers ownership
+  dev-init:
+    image: postgres:17-alpine
+    container_name: omni-dev-init
+    command: >
+      sh -c '
+        psql -h postgres -U omni_dev -d omni_dev -c "CREATE ROLE omni_admin WITH SUPERUSER LOGIN;" 2>/dev/null || true
+        psql -h postgres -U omni_dev -d omni_dev -c "ALTER ROLE omni NOSUPERUSER;" 2>/dev/null || true
+        psql -h postgres -U omni_dev -d omni_dev -c "
+          DO \\\$\\\$
+          DECLARE
+              r RECORD;
+          BEGIN
+              FOR r IN (
+                  SELECT tablename, tableowner
+                  FROM pg_tables
+                  WHERE schemaname = '\''public'\''
+                    AND tableowner != '\''omni_admin'\''
+              ) LOOP
+                  EXECUTE format('\''ALTER TABLE %I OWNER TO omni_admin'\'', r.tablename);
+              END LOOP;
+          END
+          \\\$\\\$;
+        " 2>/dev/null || true
+      '
+    environment:
+      <<: *dev-db-config
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
   # Override for development with hot reload
   web:
@@ -51,7 +83,14 @@ services:
       context: ..
       dockerfile: services/migrations/Dockerfile
     environment:
-      <<: *dev-database-url
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USERNAME: omni_admin
+      DATABASE_PASSWORD: omni_dev_password
+      DATABASE_NAME: omni_dev
+    depends_on:
+      dev-init:
+        condition: service_completed_successfully
 
   searcher:
     image: omni-searcher:dev
