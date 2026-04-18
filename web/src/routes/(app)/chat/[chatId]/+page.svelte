@@ -1280,7 +1280,7 @@
         )}
         <div class="flex max-w-[80%] flex-col items-end gap-1">
             {#if uploads.length > 0}
-                <div class="flex flex-wrap justify-end gap-1">
+                <div class="mb-2 flex flex-wrap justify-end gap-1">
                     {#each uploads as up (up.uploadId)}
                         <UploadChip filename={uploadFilenames[up.uploadId]} />
                     {/each}
