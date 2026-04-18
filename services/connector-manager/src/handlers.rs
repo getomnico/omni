@@ -983,10 +983,10 @@ fn is_docling_supported_extension(filename: Option<&str>) -> bool {
 
 use crate::models::{
     SdkCancelSyncRequest, SdkCancelSyncResponse, SdkCompleteRequest, SdkCreateSyncRequest,
-    SdkCreateSyncResponse, SdkEmitEventRequest, SdkExtractContentResponse, SdkExtractTextResponse,
-    SdkFailRequest, SdkIncrementScannedRequest, SdkSourceSyncConfigResponse, SdkStatusResponse,
-    SdkStoreContentRequest, SdkStoreContentResponse, SdkUserEmailResponse, SdkWebhookNotification,
-    SdkWebhookResponse,
+    SdkCreateSyncResponse, SdkEmitBatchRequest, SdkEmitEventRequest, SdkExtractContentResponse,
+    SdkExtractTextResponse, SdkFailRequest, SdkIncrementScannedRequest,
+    SdkSourceSyncConfigResponse, SdkStatusResponse, SdkStoreContentRequest,
+    SdkStoreContentResponse, SdkUserEmailResponse, SdkWebhookNotification, SdkWebhookResponse,
 };
 
 pub async fn sdk_emit_event(
@@ -1007,6 +1007,35 @@ pub async fn sdk_emit_event(
         .map_err(|e| ApiError::Internal(format!("Failed to enqueue event: {}", e)))?;
 
     // Update heartbeat
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+    sync_run_repo
+        .update_activity(&request.sync_run_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to update activity: {}", e)))?;
+
+    Ok(Json(SdkStatusResponse {
+        status: "ok".to_string(),
+    }))
+}
+
+pub async fn sdk_emit_batch(
+    State(state): State<AppState>,
+    Json(request): Json<SdkEmitBatchRequest>,
+) -> Result<Json<SdkStatusResponse>, ApiError> {
+    debug!(
+        "SDK: Emitting batch of {} events for sync_run={}, source={}",
+        request.events.len(),
+        request.sync_run_id,
+        request.source_id
+    );
+
+    let event_queue = EventQueue::new(state.db_pool.pool().clone());
+
+    event_queue
+        .enqueue_batch(&request.source_id, &request.events)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to enqueue event batch: {}", e)))?;
+
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
     sync_run_repo
         .update_activity(&request.sync_run_id)

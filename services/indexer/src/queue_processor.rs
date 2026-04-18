@@ -12,17 +12,16 @@ use shared::models::{
 };
 use shared::queue::EventQueue;
 use shared::storage::gc::{ContentBlobGC, GCConfig};
-use sqlx::postgres::PgListener;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
-use tokio::time::{interval, Duration, Instant};
+use tokio::time::{interval, Duration, MissedTickBehavior};
 use tracing::{debug, error, info, warn};
 
-// Adaptive batch accumulation constants
-const IDLE_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_ACCUMULATION_WAIT: Duration = Duration::from_secs(300); // 5 minutes
-const BATCH_CHECK_INTERVAL: Duration = Duration::from_millis(500);
+// Default poll interval for draining the queue. Overridable via INDEXER_POLL_INTERVAL_SECS.
+// Trades incremental-update latency (up to one poll interval) for full-sync throughput:
+// a single tick drains everything pending as one large batch.
+const DEFAULT_POLL_INTERVAL_SECS: u64 = 30;
 
 // Batch processing types
 #[derive(Debug)]
@@ -86,9 +85,7 @@ pub struct QueueProcessor {
     pub parallelism: usize,
     semaphore: Arc<Semaphore>,
     processing_mutex: Arc<Mutex<()>>,
-    idle_timeout: Duration,
-    max_accumulation_wait: Duration,
-    batch_check_interval: Duration,
+    poll_interval: Duration,
 }
 
 impl QueueProcessor {
@@ -99,6 +96,10 @@ impl QueueProcessor {
         let parallelism = (num_cpus::get() / 2).max(1); // Half the CPU cores, minimum 1
         let semaphore = Arc::new(Semaphore::new(parallelism));
         let processing_mutex = Arc::new(Mutex::new(()));
+        let poll_interval_secs = std::env::var("INDEXER_POLL_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_POLL_INTERVAL_SECS);
         Self {
             state,
             event_queue,
@@ -107,13 +108,11 @@ impl QueueProcessor {
             batch_size: std::env::var("INDEXER_BATCH_SIZE")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(1000),
+                .unwrap_or(2000),
             parallelism,
             semaphore,
             processing_mutex,
-            idle_timeout: IDLE_TIMEOUT,
-            max_accumulation_wait: MAX_ACCUMULATION_WAIT,
-            batch_check_interval: BATCH_CHECK_INTERVAL,
+            poll_interval: Duration::from_secs(poll_interval_secs),
         }
     }
 
@@ -128,15 +127,8 @@ impl QueueProcessor {
         self
     }
 
-    pub fn with_accumulation_config(
-        mut self,
-        idle_timeout: Duration,
-        max_accumulation_wait: Duration,
-        batch_check_interval: Duration,
-    ) -> Self {
-        self.idle_timeout = idle_timeout;
-        self.max_accumulation_wait = max_accumulation_wait;
-        self.batch_check_interval = batch_check_interval;
+    pub fn with_poll_interval(mut self, poll_interval: Duration) -> Self {
+        self.poll_interval = poll_interval;
         self
     }
 
@@ -180,116 +172,29 @@ impl QueueProcessor {
             }
         }
 
-        let mut listener = PgListener::connect_with(self.state.db_pool.pool()).await?;
-        listener.listen("indexer_queue").await?;
-
-        let mut poll_interval = interval(Duration::from_secs(60)); // Backup polling every minute
+        let mut poll_interval = interval(self.poll_interval);
+        poll_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut heartbeat_interval = interval(Duration::from_secs(300));
         let mut retry_interval = interval(Duration::from_secs(300)); // 5 minutes
         let mut cleanup_interval = interval(Duration::from_secs(3600)); // 1 hour
         let mut recovery_interval = interval(Duration::from_secs(300)); // 5 minutes
         let mut gc_interval = interval(Duration::from_secs(3600 * 6)); // 6 hours
-        let mut check_interval = interval(self.batch_check_interval);
 
         // GC runs off the main select as its own task so a long sweep cannot stall
         // event processing. The semaphore bounds concurrent runs to 1; overlapping
         // ticks are skipped.
         let gc_semaphore = Arc::new(Semaphore::new(1));
 
-        // Batch accumulation state
-        let mut accumulation_start: Option<Instant> = None;
-        let mut last_notification: Option<Instant> = None;
-
-        // Process any existing events first
-        if let Err(e) = self.process_batch_safe().await {
-            error!("Failed to process initial batch: {}", e);
-        }
+        info!(
+            "Queue processor poll interval: {:?}, batch_size: {}",
+            self.poll_interval, self.batch_size
+        );
 
         loop {
             tokio::select! {
-                notification = listener.recv() => {
-                    match notification {
-                        Ok(_) => {
-                            let now = Instant::now();
-
-                            // Enter accumulation mode on first notification
-                            if accumulation_start.is_none() {
-                                accumulation_start = Some(now);
-                                debug!("Entered accumulation mode");
-                            }
-
-                            // Track last notification time for idle detection
-                            last_notification = Some(now);
-                        }
-                        Err(e) => {
-                            error!("Failed to receive notification: {}", e);
-                            // Reconnect listener
-                            if let Ok(mut new_listener) = PgListener::connect_with(self.state.db_pool.pool()).await {
-                                if new_listener.listen("indexer_queue").await.is_ok() {
-                                    listener = new_listener;
-                                    info!("Reconnected to notification listener");
-                                }
-                            }
-                        }
-                    }
-                }
-                _ = check_interval.tick() => {
-                    if let Some(start) = accumulation_start {
-                        let now = Instant::now();
-                        let accumulation_elapsed = start.elapsed();
-                        let idle_elapsed = last_notification
-                            .map(|t| now.duration_since(t))
-                            .unwrap_or(Duration::ZERO);
-
-                        // Check if idle timeout reached (incremental sync detected)
-                        let idle_triggered = idle_elapsed >= self.idle_timeout;
-
-                        // Check if max timeout reached (safety net)
-                        let max_timeout_triggered = accumulation_elapsed >= self.max_accumulation_wait;
-
-                        // Check if threshold reached (full batch ready)
-                        let threshold_triggered = if !idle_triggered && !max_timeout_triggered {
-                            match self.event_queue.get_pending_count().await {
-                                Ok(count) => count >= self.batch_size as i64,
-                                Err(e) => {
-                                    error!("Failed to get pending count: {}", e);
-                                    false
-                                }
-                            }
-                        } else {
-                            false
-                        };
-
-                        if idle_triggered || max_timeout_triggered || threshold_triggered {
-                            let reason = if idle_triggered {
-                                "idle timeout (incremental sync)"
-                            } else if threshold_triggered {
-                                "threshold reached (bulk sync)"
-                            } else {
-                                "max timeout"
-                            };
-
-                            debug!(
-                                "Processing batch: reason={}, accumulated={:?}, idle={:?}",
-                                reason, accumulation_elapsed, idle_elapsed
-                            );
-
-                            // Reset accumulation state
-                            accumulation_start = None;
-                            last_notification = None;
-
-                            if let Err(e) = self.process_batch_safe().await {
-                                error!("Failed to process batch: {}", e);
-                            }
-                        }
-                    }
-                }
                 _ = poll_interval.tick() => {
-                    // Backup polling - only if not in accumulation mode
-                    if accumulation_start.is_none() {
-                        if let Err(e) = self.process_batch_safe().await {
-                            error!("Failed to process batch during backup poll: {}", e);
-                        }
+                    if let Err(e) = self.process_batch_safe().await {
+                        error!("Failed to process batch: {}", e);
                     }
                 }
                 _ = heartbeat_interval.tick() => {
