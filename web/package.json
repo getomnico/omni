@@ -67,8 +67,6 @@
         "@opentelemetry/auto-instrumentations-node": "^0.53.0",
         "@opentelemetry/exporter-trace-otlp-http": "^0.55.0",
         "@opentelemetry/sdk-node": "^0.55.0",
-        "@oslojs/crypto": "^1.0.1",
-        "@oslojs/encoding": "^1.1.0",
         "@paralleldrive/cuid2": "^2.2.2",
         "drizzle-orm": "^0.45.2",
         "marked": "^16.0.0",

@@ -5,8 +5,6 @@ import {
     createSession,
     generateSessionToken,
 } from '$lib/server/auth.js'
-import { sha256 } from '@oslojs/crypto/sha2'
-import { encodeHexLowerCase } from '@oslojs/encoding'
 import { userRepository } from '$lib/server/db/users'
 import { SystemFlags } from '$lib/server/system-flags'
 import {

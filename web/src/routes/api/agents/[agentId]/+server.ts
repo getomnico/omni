@@ -7,7 +7,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
         return json({ error: 'User not authenticated' }, { status: 401 })
     }
 
-    const agent = await requireAgentAccess(params.agentId, locals.user)
+    const agent = await requireAgentAccess(params.agentId, locals.db)
     return json(agent)
 }
 
@@ -16,10 +16,10 @@ export const PUT: RequestHandler = async ({ params, request, locals }) => {
         return json({ error: 'User not authenticated' }, { status: 401 })
     }
 
-    await requireAgentAccess(params.agentId, locals.user)
+    await requireAgentAccess(params.agentId, locals.db)
 
     const data = await request.json()
-    const updated = await updateAgent(params.agentId, data)
+    const updated = await updateAgent(params.agentId, data, locals.db)
     return json(updated)
 }
 
@@ -28,7 +28,7 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
         return json({ error: 'User not authenticated' }, { status: 401 })
     }
 
-    await requireAgentAccess(params.agentId, locals.user)
-    await deleteAgent(params.agentId)
+    await requireAgentAccess(params.agentId, locals.db)
+    await deleteAgent(params.agentId, locals.db)
     return json({ success: true })
 }

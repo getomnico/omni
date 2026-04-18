@@ -6,7 +6,7 @@ use futures_util::StreamExt;
 use redis::AsyncCommands;
 use redis::Client as RedisClient;
 use shared::utils::safe_str_slice;
-use shared::{AIClient, DatabasePool, DocumentRepository, GroupRepository, ObjectStorage};
+use shared::{AIClient, DatabasePool, DocumentRepository, ObjectStorage};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
@@ -48,12 +48,12 @@ impl SuggestedQuestionsGenerator {
 
     pub async fn get_suggested_questions(
         &self,
-        user_email: &str,
+        user_id: &str,
     ) -> SearcherResult<SuggestedQuestionsResponse> {
         let mut redis = self.redis_client.get_multiplexed_async_connection().await?;
 
         if let Ok(cached) = redis
-            .get::<_, String>(format!("{}:{}", REDIS_CACHE_KEY, user_email))
+            .get::<_, String>(format!("{}:{}", REDIS_CACHE_KEY, user_id))
             .await
         {
             info!("Cache hit for suggested questions");
@@ -64,54 +64,54 @@ impl SuggestedQuestionsGenerator {
 
         // Check for existing in-flight suggested question generation tasks
         info!("Cache miss for suggested questions, checking for in-flight generations for this user before proceeding.");
-        if self.in_flight.contains(user_email) {
+        if self.in_flight.contains(user_id) {
             info!(
                 "Suggested questions generation already in progress for user {}",
-                user_email
+                user_id
             );
             return Ok(SuggestedQuestionsResponse { questions: vec![] });
         }
 
         info!(
             "No in-flight generation found, starting new generation task for user {}",
-            user_email
+            user_id
         );
         tokio::spawn({
-            let user_email = user_email.to_string();
+            let user_id = user_id.to_string();
             let in_flight = Arc::clone(&self.in_flight);
             let db_pool = self.db_pool.clone();
             let redis_client = self.redis_client.clone();
             let content_storage = self.content_storage.clone();
             let ai_client = self.ai_client.clone();
             async move {
-                if in_flight.insert(user_email.clone()) {
+                if in_flight.insert(user_id.clone()) {
                     match Self::generate_and_cache_questions(
                         db_pool,
                         redis_client,
                         content_storage,
                         ai_client,
-                        &user_email,
+                        &user_id,
                     )
                     .await
                     {
                         Ok(count) => {
-                            info!("Successfully generated and cached {} suggested questions for user {}", count, user_email);
+                            info!("Successfully generated and cached {} suggested questions for user {}", count, user_id);
                             // Remove the user from the in-flight map to allow future requests to go through
-                            in_flight.remove(&user_email);
+                            in_flight.remove(&user_id);
                         }
                         Err(e) => {
                             error!(
                                 "Failed to generate suggested questions for user {}: {:?}",
-                                user_email, e
+                                user_id, e
                             );
                             // Remove the user from the in-flight map to allow future requests to go through
-                            in_flight.remove(&user_email);
+                            in_flight.remove(&user_id);
                         }
                     }
                 } else {
                     info!(
                         "Another generation task started for user {} while we were waiting",
-                        user_email
+                        user_id
                     );
                 }
             }
@@ -125,7 +125,7 @@ impl SuggestedQuestionsGenerator {
         redis_client: RedisClient,
         content_storage: Arc<dyn ObjectStorage>,
         ai_client: AIClient,
-        user_email: &str,
+        user_id: &str,
     ) -> Result<usize> {
         let mut questions = Vec::new();
         let mut attempts = 0;
@@ -136,7 +136,6 @@ impl SuggestedQuestionsGenerator {
             num_questions, MAX_RETRIES
         );
 
-        let doc_repo = DocumentRepository::new(&db_pool.pool());
         while questions.len() < num_questions && attempts < MAX_RETRIES {
             attempts += 1;
             let needed = num_questions - questions.len();
@@ -145,15 +144,7 @@ impl SuggestedQuestionsGenerator {
                 attempts, MAX_RETRIES, needed
             );
 
-            let group_repo = GroupRepository::new(db_pool.pool());
-            let user_groups: Vec<String> = group_repo
-                .find_groups_for_user(user_email)
-                .await
-                .unwrap_or_default();
-            match doc_repo
-                .fetch_random_documents(user_email, &user_groups, needed)
-                .await
-            {
+            match DocumentRepository::fetch_random_documents(&db_pool, user_id, needed).await {
                 Ok(docs) => {
                     let num_docs_fetched = docs.len();
                     info!(
@@ -223,7 +214,7 @@ impl SuggestedQuestionsGenerator {
                                     .await
                                     .context("Failed to connect to Redis")?;
 
-                                let cache_key = format!("{}:{}", REDIS_CACHE_KEY, user_email);
+                                let cache_key = format!("{}:{}", REDIS_CACHE_KEY, user_id);
                                 debug!(
                                     "Caching questions in Redis with key: {}, TTL: {}s",
                                     cache_key, CACHE_TTL_SECONDS
@@ -256,7 +247,7 @@ impl SuggestedQuestionsGenerator {
                     if num_docs_fetched < needed {
                         debug!(
                             "User {} has only {} documents, skipping further attempts",
-                            user_email, num_docs_fetched
+                            user_id, num_docs_fetched
                         );
                         break;
                     }

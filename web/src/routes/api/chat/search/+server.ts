@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
-import { chatRepository } from '$lib/server/db/chats'
+import { ChatRepository } from '$lib/server/db/chats'
 
 export const GET: RequestHandler = async ({ url, locals }) => {
     const logger = locals.logger.child('chat-search')
@@ -11,7 +11,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     }
 
     try {
-        const results = await chatRepository.search(locals.user.id, query)
+        const results = await new ChatRepository(locals.db).search(query)
         return json(results)
     } catch (error) {
         logger.error('Error searching chats', error)

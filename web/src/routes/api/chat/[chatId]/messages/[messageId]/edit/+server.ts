@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
-import { chatRepository, chatMessageRepository } from '$lib/server/db/chats'
+import { ChatRepository, ChatMessageRepository } from '$lib/server/db/chats'
 
 interface EditRequest {
     content: string
@@ -30,13 +30,16 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     }
 
     try {
-        const chat = await chatRepository.get(chatId)
+        const chatRepo = new ChatRepository(locals.db)
+        const msgRepo = new ChatMessageRepository(locals.db)
+
+        const chat = await chatRepo.get(chatId)
         if (!chat) {
             return json({ error: 'Chat not found' }, { status: 404 })
         }
 
         // Get the original message to find its parent
-        const allMessages = await chatMessageRepository.getByChatId(chatId)
+        const allMessages = await msgRepo.getByChatId(chatId)
         const originalMessage = allMessages.find((m) => m.id === messageId)
         if (!originalMessage) {
             return json({ error: 'Message not found' }, { status: 404 })
@@ -48,7 +51,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             content: editRequest.content.trim(),
         }
 
-        const savedMessage = await chatMessageRepository.create(
+        const savedMessage = await msgRepo.create(
             chatId,
             userMessage,
             originalMessage.parentId ?? undefined,

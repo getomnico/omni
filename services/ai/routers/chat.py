@@ -178,7 +178,9 @@ async def _fetch_sources_from_connector_manager() -> list[Source] | None:
         return None
 
 
-async def _build_registry(request: Request, chat: Chat) -> RegistryResult:
+async def _build_registry(
+    request: Request, chat: Chat, user_id: str = ""
+) -> RegistryResult:
     """Build a ToolRegistry with all available handlers."""
     registry = ToolRegistry()
 
@@ -195,7 +197,7 @@ async def _build_registry(request: Request, chat: Chat) -> RegistryResult:
             user_id=chat.user_id,
             redis_client=getattr(request.app.state, "redis_client", None),
             prefetched_sources=sources,
-            documents_repo=DocumentsRepository(),
+            documents_repo=DocumentsRepository(user_id=user_id),
             sandbox_url=SANDBOX_URL,
         )
         await connector_handler._ensure_initialized()
@@ -241,7 +243,7 @@ async def _build_registry(request: Request, chat: Chat) -> RegistryResult:
         registry.register(
             DocumentToolHandler(
                 content_storage=content_storage,
-                documents_repo=DocumentsRepository(),
+                documents_repo=DocumentsRepository(user_id=user_id),
                 sandbox_url=SANDBOX_URL,
                 connector_manager_url=CONNECTOR_MANAGER_URL or None,
             )
@@ -265,7 +267,9 @@ async def _build_registry(request: Request, chat: Chat) -> RegistryResult:
     )
 
 
-async def _build_agent_chat_registry(request: Request, agent: Agent) -> RegistryResult:
+async def _build_agent_chat_registry(
+    request: Request, agent: Agent, user_id: str = ""
+) -> RegistryResult:
     """Build a read-only ToolRegistry for agent chat sessions.
 
     Uses the agent's own permissions (matching the background executor):
@@ -287,7 +291,7 @@ async def _build_agent_chat_registry(request: Request, agent: Agent) -> Registry
             redis_client=getattr(request.app.state, "redis_client", None),
             prefetched_sources=sources,
             source_filter=source_filter,
-            documents_repo=DocumentsRepository(),
+            documents_repo=DocumentsRepository(user_id=user_id),
         )
         await connector_handler._ensure_initialized()
         if connector_handler.search_operators:
@@ -321,7 +325,7 @@ async def _build_agent_chat_registry(request: Request, agent: Agent) -> Registry
         registry.register(
             DocumentToolHandler(
                 content_storage=content_storage,
-                documents_repo=DocumentsRepository(),
+                documents_repo=DocumentsRepository(user_id=user_id),
                 sandbox_url=SANDBOX_URL,
                 connector_manager_url=CONNECTOR_MANAGER_URL or None,
             )
@@ -405,20 +409,23 @@ async def stream_chat(
     if not request.app.state.searcher_tool:
         raise HTTPException(status_code=500, detail="Searcher tool not initialized")
 
+    # Extract user_id from header for RLS
+    user_id = request.headers.get("x-user-id", "")
+
     # Retrieve chat and messages from database
-    chats_repo = ChatsRepository()
+    chats_repo = ChatsRepository(user_id=user_id)
     chat = await chats_repo.get(chat_id)
     if not chat:
         raise HTTPException(status_code=404, detail="Chat thread not found")
 
     llm_provider = _resolve_llm_provider(request.app.state, chat)
     redis_client = getattr(request.app.state, "redis_client", None)
-    messages_repo = MessagesRepository()
+    messages_repo = MessagesRepository(user_id=user_id)
     chat_messages = await messages_repo.get_active_path(chat_id)
 
     if chat.agent_id:
         # --- Agent chat setup ---
-        agent_repo = AgentRepository()
+        agent_repo = AgentRepository(user_id=user_id)
         agent = await agent_repo.get_agent(chat.agent_id)
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found")
@@ -454,13 +461,13 @@ async def stream_chat(
                     status_code=404, detail="No messages found for chat"
                 )
 
-        build_result = await _build_agent_chat_registry(request, agent)
+        build_result = await _build_agent_chat_registry(request, agent, user_id)
         registry = build_result.registry
         all_tools = registry.get_all_tools()
         pending = None  # no approval flow for agent chats
 
         # Build agent chat system prompt with run history
-        run_repo = AgentRunRepository()
+        run_repo = AgentRunRepository(user_id=user_id)
         runs = await run_repo.list_runs(agent.id, limit=20)
         active_sources = [
             s for s in (build_result.sources or []) if s.is_active and not s.is_deleted
@@ -497,7 +504,7 @@ async def stream_chat(
         if not chat_messages:
             raise HTTPException(status_code=404, detail="No messages found for chat")
 
-        build_result = await _build_registry(request, chat)
+        build_result = await _build_registry(request, chat, user_id)
         registry = build_result.registry
         all_tools = registry.get_all_tools()
 
@@ -527,7 +534,7 @@ async def stream_chat(
             messages,
             chat_id=chat_id,
             storage=storage,
-            uploads_repo=UploadsRepository(),
+            uploads_repo=UploadsRepository(user_id=user_id),
             sandbox_url=SANDBOX_URL,
         )
 
@@ -916,9 +923,12 @@ async def generate_chat_title(
     """Generate a title for a chat thread based on its first messages"""
     logger.info(f"Generating title for chat: {chat_id}")
 
+    # Extract user_id from header for RLS
+    user_id = request.headers.get("x-user-id", "")
+
     try:
         # Get chat from database
-        chats_repo = ChatsRepository()
+        chats_repo = ChatsRepository(user_id=user_id)
         chat = await chats_repo.get(chat_id)
         if not chat:
             raise HTTPException(status_code=404, detail="Chat thread not found")
@@ -931,7 +941,7 @@ async def generate_chat_title(
             return {"title": chat.title, "status": "existing"}
 
         # Get messages from database
-        messages_repo = MessagesRepository()
+        messages_repo = MessagesRepository(user_id=user_id)
         chat_messages = await messages_repo.get_by_chat(chat_id)
         if not chat_messages:
             raise HTTPException(
