@@ -426,6 +426,110 @@ pub struct JiraField {
 }
 
 // ============================================================================
+// Permission Models
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfluenceSpacePermission {
+    pub id: String,
+    pub principal: ConfluencePermissionPrincipal,
+    pub operation: ConfluencePermissionOperation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfluencePermissionPrincipal {
+    #[serde(rename = "type")]
+    pub principal_type: String, // "user" or "group"
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfluencePermissionOperation {
+    pub key: String,    // "read", "write", "administer", etc.
+    pub target: String, // "space", "page", etc.
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ConfluenceSpacePermissionsResponse {
+    pub results: Vec<ConfluenceSpacePermission>,
+    #[serde(rename = "_links")]
+    pub links: Option<ConfluenceResponseLinks>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JiraProjectRolesResponse {
+    #[serde(flatten)]
+    pub roles: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JiraRoleActorsResponse {
+    pub name: String,
+    pub actors: Vec<JiraRoleActor>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JiraRoleActor {
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+    #[serde(rename = "type")]
+    pub actor_type: String, // "atlassian-user-role-actor" or "atlassian-group-role-actor"
+    pub name: Option<String>,
+    #[serde(rename = "actorUser")]
+    pub actor_user: Option<JiraActorUser>,
+    #[serde(rename = "actorGroup")]
+    pub actor_group: Option<JiraActorGroup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JiraActorUser {
+    #[serde(rename = "accountId")]
+    pub account_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JiraActorGroup {
+    pub name: String,
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+    #[serde(rename = "groupId")]
+    pub group_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AtlassianUserBulkResponse {
+    pub values: Vec<AtlassianUserBulkItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AtlassianUserBulkItem {
+    #[serde(rename = "accountId")]
+    pub account_id: String,
+    #[serde(rename = "emailAddress")]
+    pub email_address: Option<String>,
+    pub active: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfluenceGroupMembersResponse {
+    pub results: Vec<ConfluenceGroupMember>,
+    pub start: i64,
+    pub limit: i64,
+    pub size: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfluenceGroupMember {
+    #[serde(rename = "type")]
+    pub user_type: String,
+    #[serde(rename = "accountId")]
+    pub account_id: String,
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+    pub email: Option<String>,
+}
+
+// ============================================================================
 // CQL Search Response Types (Confluence v1 REST API)
 // ============================================================================
 
@@ -653,6 +757,7 @@ impl ConfluencePage {
         source_id: String,
         base_url: &str,
         content_id: String,
+        permissions: DocumentPermissions,
     ) -> ConnectorEvent {
         let document_id = format!("confluence_page_{}_{}", self.space_id, self.id);
         let url = format!("{}/wiki{}", base_url, self.links.webui.clone());
@@ -675,12 +780,6 @@ impl ConfluencePage {
             url: Some(url),
             path: Some(path),
             extra: Some(extra),
-        };
-
-        let permissions = DocumentPermissions {
-            public: true,
-            users: vec![],
-            groups: vec![],
         };
 
         let attributes = self.to_attributes().into_attributes();
@@ -821,6 +920,7 @@ impl JiraIssue {
         source_id: String,
         base_url: &str,
         content_id: String,
+        permissions: DocumentPermissions,
     ) -> ConnectorEvent {
         let document_id = format!("jira_issue_{}_{}", self.fields.project.key, self.key);
 
@@ -856,12 +956,6 @@ impl JiraIssue {
             url,
             path: Some(format!("{}/{}", self.fields.project.name, self.key)),
             extra: Some(extra),
-        };
-
-        let permissions = DocumentPermissions {
-            users: vec![],
-            groups: vec![],
-            public: true,
         };
 
         let attributes = self.to_attributes().into_attributes();
