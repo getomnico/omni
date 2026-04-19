@@ -40,6 +40,31 @@ export class SdkClient {
     }
   }
 
+  async emitEventBatch(
+    syncRunId: string,
+    sourceId: string,
+    events: ConnectorEventPayload[]
+  ): Promise<void> {
+    if (events.length === 0) {
+      return;
+    }
+
+    const payload = {
+      sync_run_id: syncRunId,
+      source_id: sourceId,
+      events: events.map((e) => serializeConnectorEvent(e)),
+    };
+
+    const response = await this.post('/sdk/events/batch', payload);
+    if (!response.ok) {
+      const text = await response.text();
+      throw new SdkClientError(
+        `Failed to emit event batch (${events.length} events): ${response.status} - ${text}`,
+        response.status
+      );
+    }
+  }
+
   async extractAndStoreContent(
     syncRunId: string,
     data: Buffer | Uint8Array,

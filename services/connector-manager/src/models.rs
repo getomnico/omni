@@ -127,6 +127,13 @@ pub struct SdkEmitEventRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdkEmitBatchRequest {
+    pub sync_run_id: String,
+    pub source_id: String,
+    pub events: Vec<shared::models::ConnectorEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SdkStoreContentRequest {
     pub sync_run_id: String,
     pub content: String,
