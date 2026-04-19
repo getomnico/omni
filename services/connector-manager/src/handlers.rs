@@ -44,11 +44,7 @@ pub async fn trigger_sync(
         .sync_manager
         .trigger_sync(
             &request.source_id,
-            match request.sync_mode.as_deref() {
-                // TODO: Use SyncType in TriggerSyncRequest
-                Some("full") => SyncType::Full,
-                _ => SyncType::Incremental,
-            },
+            request.sync_mode.unwrap_or(SyncType::Incremental),
             TriggerType::Manual,
         )
         .await?;
@@ -837,6 +833,20 @@ pub async fn get_connector_url_for_source(
         }
     }
     None
+}
+
+/// Look up the sync modes the connector declared for a given source type.
+/// Returns an empty vec when no connector is registered for the source_type.
+pub async fn get_sync_modes_for_source(
+    redis_client: &redis::Client,
+    source_type: SourceType,
+) -> Vec<SyncType> {
+    for manifest in get_registered_manifests(redis_client).await {
+        if manifest.source_types.contains(&source_type) {
+            return manifest.sync_modes;
+        }
+    }
+    Vec::new()
 }
 
 const VALID_DOCLING_PRESETS: &[&str] = &["fast", "balanced", "quality"];

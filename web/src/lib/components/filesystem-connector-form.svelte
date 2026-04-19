@@ -11,7 +11,6 @@
         fileExtensions?: string[]
         excludePatterns?: string[]
         maxFileSizeMb?: number
-        scanIntervalSeconds?: number
         disabled?: boolean
     }
 
@@ -21,7 +20,6 @@
         fileExtensions = $bindable([]),
         excludePatterns = $bindable([]),
         maxFileSizeMb = $bindable(10),
-        scanIntervalSeconds = $bindable(300),
         disabled = false,
     }: Props = $props()
 
@@ -205,19 +203,6 @@
                             {disabled}
                             placeholder="10" />
                         <p class="text-muted-foreground text-sm">Skip files larger than this</p>
-                    </div>
-
-                    <div class="space-y-2">
-                        <Label for="scanIntervalSeconds">Scan Interval (seconds)</Label>
-                        <Input
-                            id="scanIntervalSeconds"
-                            name="scanIntervalSeconds"
-                            type="number"
-                            min="60"
-                            bind:value={scanIntervalSeconds}
-                            {disabled}
-                            placeholder="300" />
-                        <p class="text-muted-foreground text-sm">How often to rescan</p>
                     </div>
                 </div>
             </div>

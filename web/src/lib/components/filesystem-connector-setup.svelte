@@ -16,7 +16,6 @@
     let fileExtensions = $state<string[]>([])
     let excludePatterns = $state<string[]>([])
     let maxFileSizeMb = $state(10)
-    let scanIntervalSeconds = $state(300)
     let isSubmitting = $state(false)
 
     function validatePath(path: string): boolean {
@@ -44,11 +43,6 @@
             return
         }
 
-        if (scanIntervalSeconds < 60) {
-            toast.error('Scan interval must be at least 60 seconds')
-            return
-        }
-
         isSubmitting = true
         try {
             const config: FilesystemSourceConfig = {
@@ -56,7 +50,6 @@
                 file_extensions: fileExtensions.length > 0 ? fileExtensions : undefined,
                 exclude_patterns: excludePatterns.length > 0 ? excludePatterns : undefined,
                 max_file_size_bytes: maxFileSizeMb * 1024 * 1024,
-                scan_interval_seconds: scanIntervalSeconds,
             }
 
             const sourceResponse = await fetch('/api/sources', {
@@ -103,7 +96,6 @@
         bind:fileExtensions
         bind:excludePatterns
         bind:maxFileSizeMb
-        bind:scanIntervalSeconds
         disabled={isSubmitting} />
 
     <!-- Actions -->

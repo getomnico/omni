@@ -46,7 +46,6 @@ export const actions: Actions = {
         const fileExtensions = formData.getAll('fileExtensions') as string[]
         const excludePatterns = formData.getAll('excludePatterns') as string[]
         const maxFileSizeMb = parseInt(formData.get('maxFileSizeMb') as string) || 10
-        const scanIntervalSeconds = parseInt(formData.get('scanIntervalSeconds') as string) || 300
 
         if (isActive && !basePath.trim()) {
             throw error(400, 'Base path is required when filesystem indexing is enabled')
@@ -62,7 +61,6 @@ export const actions: Actions = {
                 file_extensions: fileExtensions.length > 0 ? fileExtensions : undefined,
                 exclude_patterns: excludePatterns.length > 0 ? excludePatterns : undefined,
                 max_file_size_bytes: maxFileSizeMb * 1024 * 1024,
-                scan_interval_seconds: scanIntervalSeconds,
             }
 
             await updateSourceById(source.id, {

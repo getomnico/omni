@@ -242,7 +242,7 @@ impl SyncManager {
     pub async fn sync_source_from_request(&self, request: SyncRequest) -> Result<()> {
         let sync_run_id = request.sync_run_id.clone();
         let source_id = request.source_id.clone();
-        let sync_mode = request.sync_mode.clone();
+        let sync_type = request.sync_mode;
 
         info!(
             "Starting sync for source {} (sync_run_id: {})",
@@ -262,12 +262,6 @@ impl SyncManager {
             .get_source(&source_id)
             .await
             .context("Failed to fetch source via SDK")?;
-
-        // Determine sync type from mode
-        let sync_type = match sync_mode.as_str() {
-            "incremental" => SyncType::Incremental,
-            _ => SyncType::Full,
-        };
 
         // Sync group memberships (org-wide, shared between Drive and Gmail)
         let known_groups = self.maybe_sync_groups(&source, &sync_run_id).await;
@@ -1312,7 +1306,8 @@ impl SyncManager {
 
         self.sdk_client
             .emit_event(sync_run_id, source_id, event)
-            .await
+            .await?;
+        Ok(())
     }
 
     async fn get_service_credentials(&self, source_id: &str) -> Result<ServiceCredentials> {
@@ -2093,7 +2088,10 @@ impl SyncManager {
                     let delay = Duration::from_secs(2u64.pow(attempt as u32));
                     warn!(
                         "Retrying {} rate-limited threads (attempt {}/{}, waiting {:?})",
-                        threads_to_fetch.len(), attempt, max_retries, delay
+                        threads_to_fetch.len(),
+                        attempt,
+                        max_retries,
+                        delay
                     );
                     tokio::time::sleep(delay).await;
                 }
@@ -2143,7 +2141,9 @@ impl SyncManager {
             if !threads_to_fetch.is_empty() {
                 warn!(
                     "Gave up on {} threads after {} retries for user {}",
-                    threads_to_fetch.len(), max_retries, user_email
+                    threads_to_fetch.len(),
+                    max_retries,
+                    user_email
                 );
             }
 
@@ -2231,7 +2231,10 @@ impl SyncManager {
                     }
                 } else {
                     // Index thread conversation content (no attachment text)
-                    match gmail_thread.aggregate_content(&self.gmail_client, &self.sdk_client, sync_run_id).await {
+                    match gmail_thread
+                        .aggregate_content(&self.gmail_client, &self.sdk_client, sync_run_id)
+                        .await
+                    {
                         Ok(content) => {
                             if !content.trim().is_empty() {
                                 match self.sdk_client.store_content(sync_run_id, &content).await {
@@ -2418,8 +2421,13 @@ impl SyncManager {
         info!(
             "Completed Gmail processing for user {}: {} listed, {} indexed, {} updated \
             (skipped: {} deduped across users, {} unchanged, {} failed/inaccessible)",
-            user_email, total_listed, total_processed, total_updated,
-            total_deduped, total_skipped_unchanged, total_failed
+            user_email,
+            total_listed,
+            total_processed,
+            total_updated,
+            total_deduped,
+            total_skipped_unchanged,
+            total_failed
         );
 
         Ok((total_processed, total_updated))

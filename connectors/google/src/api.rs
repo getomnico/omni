@@ -25,7 +25,7 @@ use crate::models::{
 };
 use crate::sync::SyncManager;
 use shared::models::SearchOperator;
-use shared::models::{ServiceProvider, SourceType};
+use shared::models::{ServiceProvider, SourceType, SyncType};
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -66,7 +66,7 @@ pub fn build_manifest(connector_url: String) -> ConnectorManifest {
         name: "google".to_string(),
         display_name: "Google Workspace".to_string(),
         version: "1.0.0".to_string(),
-        sync_modes: vec!["full".to_string(), "incremental".to_string()],
+        sync_modes: vec![SyncType::Full, SyncType::Incremental],
         connector_id: "google".to_string(),
         connector_url,
         source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],

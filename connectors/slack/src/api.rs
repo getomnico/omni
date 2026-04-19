@@ -8,7 +8,7 @@ use axum::{
 };
 use dashmap::DashSet;
 use serde_json::json;
-use shared::models::{SearchOperator, SourceType, SyncRequest};
+use shared::models::{SearchOperator, SourceType, SyncRequest, SyncType};
 use shared::telemetry;
 use std::sync::Arc;
 use tower::ServiceBuilder;
@@ -57,7 +57,7 @@ pub fn build_manifest(connector_url: String) -> ConnectorManifest {
         name: "slack".to_string(),
         display_name: "Slack".to_string(),
         version: "1.0.0".to_string(),
-        sync_modes: vec!["full".to_string(), "incremental".to_string()],
+        sync_modes: vec![SyncType::Full, SyncType::Incremental],
         connector_id: "slack".to_string(),
         connector_url,
         source_types: vec![SourceType::Slack],

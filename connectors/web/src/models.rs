@@ -1,79 +1,12 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use omni_connector_sdk::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
-use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use spider::page::Page;
 use std::collections::HashMap;
-
-// Import SyncRequest and SyncResponse from shared crate
-pub use shared::models::{SyncRequest, SyncResponse};
-
-// ============================================================================
-// Connector Protocol Models
-// ============================================================================
-
-pub use shared::models::{ActionDefinition, ConnectorManifest};
-
-/// Extension trait for SyncResponse helper methods
-pub trait SyncResponseExt {
-    fn started() -> SyncResponse;
-    fn error(msg: impl Into<String>) -> SyncResponse;
-}
-
-impl SyncResponseExt for SyncResponse {
-    fn started() -> SyncResponse {
-        SyncResponse {
-            status: "started".to_string(),
-            message: None,
-        }
-    }
-
-    fn error(msg: impl Into<String>) -> SyncResponse {
-        SyncResponse {
-            status: "error".to_string(),
-            message: Some(msg.into()),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CancelRequest {
-    pub sync_run_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CancelResponse {
-    pub status: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionRequest {
-    pub action: String,
-    pub params: JsonValue,
-    pub credentials: JsonValue,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionResponse {
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<JsonValue>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-impl ActionResponse {
-    pub fn not_supported(action: &str) -> Self {
-        Self {
-            status: "error".to_string(),
-            result: None,
-            error: Some(format!("Action not supported: {}", action)),
-        }
-    }
-}
+use time::OffsetDateTime;
 
 // ============================================================================
 // Web Connector Models
@@ -276,10 +209,7 @@ impl WebPage {
             author: None,
             created_at: None,
             updated_at: updated_at
-                .map(|dt| {
-                    sqlx::types::time::OffsetDateTime::from_unix_timestamp(dt.timestamp()).ok()
-                })
-                .flatten(),
+                .and_then(|dt| OffsetDateTime::from_unix_timestamp(dt.timestamp()).ok()),
             content_type: Some("webpage".to_string()),
             mime_type: Some("text/html".to_string()),
             size: Some(self.raw_html.len().to_string()),
@@ -345,8 +275,18 @@ impl PageSyncState {
     }
 }
 
+/// Persistent state for the web connector, stored via
+/// `SyncContext::save_connector_state` and hydrated on the next sync. Replaces
+/// the previous per-URL Redis cache: change detection, deletion detection, and
+/// all per-page incremental state live here.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WebConnectorState {
+    /// Per-page state keyed by `url_to_document_id(url)`. Used to skip
+    /// unchanged pages on resync and to diff against the current crawl to
+    /// detect deletions.
+    #[serde(default)]
+    pub pages: HashMap<String, PageSyncState>,
+    #[serde(default)]
     pub last_sync_completed_at: Option<String>,
 }
 

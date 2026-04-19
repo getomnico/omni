@@ -6,7 +6,7 @@ use omni_connector_manager::{config::ConnectorManagerConfig, create_app, AppStat
 use redis::AsyncCommands;
 use shared::db::repositories::service_credentials::ServiceCredentialsRepo;
 use shared::models::{
-    AuthType, ConnectorManifest, ServiceCredentials, ServiceProvider, SourceType,
+    AuthType, ConnectorManifest, ServiceCredentials, ServiceProvider, SourceType, SyncType,
 };
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
@@ -66,7 +66,7 @@ pub async fn setup_test_fixture(source_type: SourceType) -> Result<TestFixture> 
         name: "atlassian".to_string(),
         display_name: "Atlassian".to_string(),
         version: "1.0.0".to_string(),
-        sync_modes: vec!["full".to_string()],
+        sync_modes: vec![SyncType::Full],
         connector_id: "atlassian".to_string(),
         connector_url: "http://127.0.0.1:1".to_string(),
         source_types: vec![SourceType::Confluence, SourceType::Jira],

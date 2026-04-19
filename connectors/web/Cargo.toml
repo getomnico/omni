@@ -10,22 +10,17 @@ name = "omni-web-connector"
 path = "src/main.rs"
 
 [dependencies]
-shared = { path = "../../shared" }
+omni-connector-sdk = { path = "../../sdk/rust" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
-dashmap = { workspace = true }
 dotenvy = { workspace = true }
-redis = { workspace = true, features = ["tokio-comp", "connection-manager"] }
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-sqlx = { workspace = true, features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid"] }
 time = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
-tower = { workspace = true }
-tower-http = { workspace = true, features = ["cors", "trace"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid = { workspace = true, features = ["v4", "serde"] }
@@ -34,9 +29,11 @@ scraper = "0.21"
 sha2 = "0.10"
 url = "2.5"
 base64 = "0.21"
-md5 = "0.7"
 
 [dev-dependencies]
+shared = { path = "../../shared" }
+sqlx = { workspace = true, features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid"] }
+redis = { workspace = true, features = ["tokio-comp", "connection-manager"] }
 testcontainers = { workspace = true }
 testcontainers-modules = { workspace = true, features = ["postgres", "redis"] }
 axum-test = { workspace = true }
