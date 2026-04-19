@@ -91,6 +91,25 @@ class DocumentsRepository:
             )
         return None
 
+    async def find_embedded_duplicate(
+        self, external_id: str, exclude_document_id: str
+    ) -> Optional[str]:
+        """Find another document with the same external_id that already has embeddings.
+
+        Used for cross-source dedup: IMAP threads from different accounts share
+        the same external_id.  Instead of regenerating embeddings for a duplicate,
+        we clone from the already-embedded document.
+
+        Returns the donor document's ID if found, None otherwise.
+        """
+        pool = await self._get_pool()
+        row = await pool.fetchrow(
+            "SELECT id FROM documents WHERE external_id = $1 AND id != $2 AND embedding_status = 'completed' LIMIT 1",
+            external_id,
+            exclude_document_id,
+        )
+        return row["id"] if row else None
+
     async def get_content_blob(self, content_id: str) -> Optional[ContentBlob]:
         """Get content blob by ID"""
         pool = await self._get_pool()

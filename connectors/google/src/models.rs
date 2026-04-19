@@ -527,7 +527,16 @@ impl GmailThread {
                                     None,
                                 )
                                 .await
-                                .unwrap_or(message_content)
+                                .unwrap_or_else(|_| {
+                                    // Fall back to built-in HTML-to-text so we
+                                    // never index raw HTML tags.
+                                    shared::content_extractor::extract_content(
+                                        message_content.as_bytes(),
+                                        "text/html",
+                                        None,
+                                    )
+                                    .unwrap_or_default()
+                                })
                         } else {
                             message_content
                         };
