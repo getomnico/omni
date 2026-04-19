@@ -9,8 +9,8 @@ use omni_connector_manager::{
 };
 use omni_connector_sdk::SyncContext;
 use omni_web_connector::config::WebSourceConfig;
+use omni_web_connector::models::WebConnectorState;
 use omni_web_connector::sync::{PageSource, SyncManager};
-use redis::Client as RedisClient;
 use shared::db::repositories::SyncRunRepository;
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
@@ -110,11 +110,6 @@ impl WebConnectorTestFixture {
         self.test_env.db_pool.pool()
     }
 
-    /// Get the Redis client
-    pub fn redis_client(&self) -> RedisClient {
-        self.test_env.redis_client.clone()
-    }
-
     /// Get the SyncRunRepository for testing sync operations
     pub fn sync_run_repo(&self) -> SyncRunRepository {
         SyncRunRepository::new(self.pool())
@@ -122,7 +117,16 @@ impl WebConnectorTestFixture {
 
     /// Create a SyncManager with the SDK client for integration testing
     pub fn create_sync_manager(&self, page_source: Arc<dyn PageSource>) -> SyncManager {
-        SyncManager::with_page_source(self.redis_client(), self.sdk_client.clone(), page_source)
+        SyncManager::with_page_source(self.sdk_client.clone(), page_source)
+    }
+
+    /// Load the persisted `WebConnectorState` for a source (returns `None`
+    /// when no state has been saved yet, e.g. before the first sync).
+    pub async fn load_web_state(&self, source_id: &str) -> Result<Option<WebConnectorState>> {
+        match self.get_connector_state(source_id).await? {
+            Some(value) => Ok(Some(serde_json::from_value(value)?)),
+            None => Ok(None),
+        }
     }
 
     /// Create a test user and return the user ID
@@ -192,21 +196,26 @@ impl WebConnectorTestFixture {
         &self,
         sync_run_id: &str,
         source_id: &str,
-    ) -> Result<(WebSourceConfig, SyncContext)> {
+    ) -> Result<(WebSourceConfig, Option<WebConnectorState>, SyncContext)> {
         let source = self
             .sdk_client
             .get_source(source_id)
             .await
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         let config = WebSourceConfig::from_json(&source.config)?;
+        let prior_state = match source.connector_state {
+            Some(value) => Some(serde_json::from_value::<WebConnectorState>(value)?),
+            None => None,
+        };
         let ctx = SyncContext::new(
             self.sdk_client.clone(),
             sync_run_id.to_string(),
             source_id.to_string(),
             source.source_type,
+            omni_connector_sdk::SyncMode::Full,
             Arc::new(AtomicBool::new(false)),
         );
-        Ok((config, ctx))
+        Ok((config, prior_state, ctx))
     }
 
     /// Create an incremental sync run for testing

@@ -1,24 +1,19 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use shared::models::SyncType;
+
+/// Wire representation of a sync mode. Matches the Python/TypeScript SDKs'
+/// `SyncMode` type and serializes as a lowercase string (`"full"`,
+/// `"incremental"`, `"realtime"`).
+pub type SyncMode = SyncType;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncRequest {
     pub sync_run_id: String,
     pub source_id: String,
-    pub sync_mode: String,
+    pub sync_mode: SyncMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_sync_at: Option<String>,
-}
-
-impl From<SyncRequest> for shared::models::SyncRequest {
-    fn from(value: SyncRequest) -> Self {
-        Self {
-            sync_run_id: value.sync_run_id,
-            source_id: value.source_id,
-            sync_mode: value.sync_mode,
-            last_sync_at: value.last_sync_at,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

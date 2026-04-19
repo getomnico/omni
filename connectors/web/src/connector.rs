@@ -1,7 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use omni_connector_sdk::{Connector, SourceType, SyncContext};
-use redis::Client as RedisClient;
+use omni_connector_sdk::{Connector, SdkClient, SourceType, SyncContext, SyncMode};
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
@@ -14,19 +13,15 @@ pub struct WebConnector {
 }
 
 impl WebConnector {
-    pub fn new(redis_client: RedisClient, sdk_client: shared::SdkClient) -> Self {
+    pub fn new(sdk_client: SdkClient) -> Self {
         Self {
-            sync_manager: SyncManager::new(redis_client, sdk_client),
+            sync_manager: SyncManager::new(sdk_client),
         }
     }
 
-    pub fn with_page_source(
-        redis_client: RedisClient,
-        sdk_client: shared::SdkClient,
-        page_source: Arc<dyn PageSource>,
-    ) -> Self {
+    pub fn with_page_source(sdk_client: SdkClient, page_source: Arc<dyn PageSource>) -> Self {
         Self {
-            sync_manager: SyncManager::with_page_source(redis_client, sdk_client, page_source),
+            sync_manager: SyncManager::with_page_source(sdk_client, page_source),
         }
     }
 }
@@ -57,8 +52,8 @@ impl Connector for WebConnector {
         Some("Index content from websites and documentation sites".to_string())
     }
 
-    fn sync_modes(&self) -> Vec<String> {
-        vec!["full".to_string(), "incremental".to_string()]
+    fn sync_modes(&self) -> Vec<SyncMode> {
+        vec![SyncMode::Full, SyncMode::Incremental]
     }
 
     fn requires_credentials(&self) -> bool {
@@ -69,9 +64,9 @@ impl Connector for WebConnector {
         &self,
         source_config: WebSourceConfig,
         _credentials: JsonValue,
-        _state: Option<WebConnectorState>,
+        state: Option<WebConnectorState>,
         ctx: SyncContext,
     ) -> Result<()> {
-        self.sync_manager.run_sync(source_config, ctx).await
+        self.sync_manager.run_sync(source_config, state, ctx).await
     }
 }

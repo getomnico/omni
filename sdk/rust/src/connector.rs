@@ -1,5 +1,5 @@
 use crate::context::SyncContext;
-use crate::models::ActionResponse;
+use crate::models::{ActionResponse, SyncMode};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
@@ -9,6 +9,14 @@ use shared::models::{
     ActionDefinition, ConnectorManifest, McpPromptDefinition, McpResourceDefinition,
     SearchOperator, SourceType,
 };
+
+fn sync_mode_wire_name(mode: SyncMode) -> &'static str {
+    match mode {
+        SyncMode::Full => "full",
+        SyncMode::Incremental => "incremental",
+        SyncMode::Realtime => "realtime",
+    }
+}
 
 #[async_trait]
 pub trait Connector: Send + Sync + 'static {
@@ -28,8 +36,8 @@ pub trait Connector: Send + Sync + 'static {
         None
     }
 
-    fn sync_modes(&self) -> Vec<String> {
-        vec!["full".to_string()]
+    fn sync_modes(&self) -> Vec<SyncMode> {
+        vec![SyncMode::Full]
     }
 
     fn actions(&self) -> Vec<ActionDefinition> {
@@ -90,11 +98,16 @@ pub trait Connector: Send + Sync + 'static {
     }
 
     async fn build_manifest(&self, connector_url: String) -> ConnectorManifest {
+        let sync_modes = self
+            .sync_modes()
+            .into_iter()
+            .map(|mode| sync_mode_wire_name(mode).to_string())
+            .collect();
         ConnectorManifest {
             name: self.name().to_string(),
             display_name: self.display_name(),
             version: self.version().to_string(),
-            sync_modes: self.sync_modes(),
+            sync_modes,
             connector_id: self.name().to_string(),
             connector_url,
             source_types: self.source_types(),

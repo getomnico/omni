@@ -1,11 +1,12 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use omni_connector_sdk::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use spider::page::Page;
 use std::collections::HashMap;
+use time::OffsetDateTime;
 
 // ============================================================================
 // Web Connector Models
@@ -208,10 +209,7 @@ impl WebPage {
             author: None,
             created_at: None,
             updated_at: updated_at
-                .map(|dt| {
-                    sqlx::types::time::OffsetDateTime::from_unix_timestamp(dt.timestamp()).ok()
-                })
-                .flatten(),
+                .and_then(|dt| OffsetDateTime::from_unix_timestamp(dt.timestamp()).ok()),
             content_type: Some("webpage".to_string()),
             mime_type: Some("text/html".to_string()),
             size: Some(self.raw_html.len().to_string()),
@@ -277,8 +275,18 @@ impl PageSyncState {
     }
 }
 
+/// Persistent state for the web connector, stored via
+/// `SyncContext::save_connector_state` and hydrated on the next sync. Replaces
+/// the previous per-URL Redis cache: change detection, deletion detection, and
+/// all per-page incremental state live here.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WebConnectorState {
+    /// Per-page state keyed by `url_to_document_id(url)`. Used to skip
+    /// unchanged pages on resync and to diff against the current crawl to
+    /// detect deletions.
+    #[serde(default)]
+    pub pages: HashMap<String, PageSyncState>,
+    #[serde(default)]
     pub last_sync_completed_at: Option<String>,
 }
 

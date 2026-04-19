@@ -3755,12 +3755,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "md5"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
-
-[[package]]
 name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4203,26 +4197,17 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "chrono",
- "docx-rs",
  "dotenvy",
- "futures",
- "governor",
  "mime_guess",
- "nonzero_ext",
  "notify",
  "omni-connector-sdk",
  "serde",
  "serde_json",
- "shared",
- "sqlx",
  "tempfile",
- "thiserror 1.0.69",
  "time",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "uuid",
  "walkdir",
 ]
 
@@ -4467,7 +4452,6 @@ dependencies = [
  "base64 0.21.7",
  "chrono",
  "dotenvy",
- "md5",
  "omni-connector-manager",
  "omni-connector-sdk",
  "redis",

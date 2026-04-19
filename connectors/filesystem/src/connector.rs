@@ -1,10 +1,12 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use omni_connector_sdk::{ActionDefinition, ActionResponse, Connector, SourceType, SyncContext};
+use omni_connector_sdk::{
+    ActionDefinition, ActionResponse, Connector, SourceType, SyncContext, SyncMode,
+};
 use serde_json::{json, Value as JsonValue};
 
 use crate::models::FileSystemConfig;
-use crate::sync;
+use crate::{sync, watcher};
 
 #[derive(Default)]
 pub struct FileSystemConnector;
@@ -25,6 +27,10 @@ impl Connector for FileSystemConnector {
 
     fn source_types(&self) -> Vec<SourceType> {
         vec![SourceType::LocalFiles, SourceType::FileSystem]
+    }
+
+    fn sync_modes(&self) -> Vec<SyncMode> {
+        vec![SyncMode::Full, SyncMode::Realtime]
     }
 
     fn display_name(&self) -> String {
@@ -67,7 +73,12 @@ impl Connector for FileSystemConnector {
         ctx: SyncContext,
     ) -> Result<()> {
         let source_name = ctx.sdk_client().get_source(ctx.source_id()).await?.name;
-        sync::run_sync(source_name, source_config, ctx).await
+        match ctx.sync_mode() {
+            SyncMode::Full | SyncMode::Incremental => {
+                sync::run_sync(source_name, source_config, ctx).await
+            }
+            SyncMode::Realtime => watcher::run_realtime(source_name, source_config, ctx).await,
+        }
     }
 
     async fn execute_action(
