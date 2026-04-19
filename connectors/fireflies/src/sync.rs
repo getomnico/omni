@@ -67,7 +67,7 @@ impl SyncManager {
             Ok(c) => c,
             Err(e) => {
                 self.sdk_client.fail(sync_run_id, &e.to_string()).await?;
-                return Err(e);
+                return Err(e.into());
             }
         };
 

@@ -76,7 +76,7 @@ pub trait Connector: Send + Sync + 'static {
         ctx: SyncContext,
     ) -> Result<()>;
 
-    fn cancel(&self, _sync_run_id: &str) -> bool {
+    async fn cancel(&self, _sync_run_id: &str) -> bool {
         false
     }
 

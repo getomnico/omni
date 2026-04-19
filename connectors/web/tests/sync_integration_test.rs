@@ -94,13 +94,10 @@ async fn test_sync_creates_events_for_crawled_pages() -> Result<()> {
     // Create sync manager with SDK client (tests the full SDK flow)
     let sync_manager = fixture.create_sync_manager(Arc::new(mock_pages));
 
-    // Create sync request
-    let sync_request = fixture.create_sync_request(&sync_run_id, &source_id);
-
-    // Trigger sync - this will:
-    // 1. Call sdk_client.get_source() -> connector-manager -> database
-    // 2. Process pages and emit events via SDK
-    sync_manager.sync_source(sync_request).await?;
+    // Drive sync through the same entry point the SDK server uses:
+    // build the (config, ctx) pair, then call run_sync.
+    let (config, ctx) = fixture.build_sync_context(&sync_run_id, &source_id).await?;
+    sync_manager.run_sync(config, ctx).await?;
 
     // Verify events were created via SDK -> connector-manager -> database
     let events = fixture.get_queued_events(&source_id).await?;
@@ -154,8 +151,10 @@ async fn test_sync_skips_unchanged_pages_on_resync() -> Result<()> {
 
     let sync_run_id_1 = fixture.create_sync_run(&source_id).await?;
     let sync_manager = fixture.create_sync_manager(Arc::new(initial_pages));
-    let sync_request = fixture.create_sync_request(&sync_run_id_1, &source_id);
-    sync_manager.sync_source(sync_request).await?;
+    let (config, ctx) = fixture
+        .build_sync_context(&sync_run_id_1, &source_id)
+        .await?;
+    sync_manager.run_sync(config, ctx).await?;
 
     let events_after_first_sync = fixture.get_queued_events(&source_id).await?;
     assert_eq!(
@@ -178,8 +177,10 @@ async fn test_sync_skips_unchanged_pages_on_resync() -> Result<()> {
 
     let sync_run_id_2 = fixture.create_sync_run(&source_id).await?;
     let sync_manager = fixture.create_sync_manager(Arc::new(same_pages));
-    let sync_request = fixture.create_sync_request(&sync_run_id_2, &source_id);
-    sync_manager.sync_source(sync_request).await?;
+    let (config, ctx) = fixture
+        .build_sync_context(&sync_run_id_2, &source_id)
+        .await?;
+    sync_manager.run_sync(config, ctx).await?;
 
     // Should still have only 2 events (no new events for unchanged pages)
     let events_after_second_sync = fixture.get_queued_events(&source_id).await?;
@@ -209,8 +210,10 @@ async fn test_sync_creates_events_for_updated_pages() -> Result<()> {
 
     let sync_run_id_1 = fixture.create_sync_run(&source_id).await?;
     let sync_manager = fixture.create_sync_manager(Arc::new(initial_pages));
-    let sync_request = fixture.create_sync_request(&sync_run_id_1, &source_id);
-    sync_manager.sync_source(sync_request).await?;
+    let (config, ctx) = fixture
+        .build_sync_context(&sync_run_id_1, &source_id)
+        .await?;
+    sync_manager.run_sync(config, ctx).await?;
 
     let events_after_first_sync = fixture.get_queued_events(&source_id).await?;
     assert_eq!(events_after_first_sync.len(), 1);
@@ -223,8 +226,10 @@ async fn test_sync_creates_events_for_updated_pages() -> Result<()> {
 
     let sync_run_id_2 = fixture.create_sync_run(&source_id).await?;
     let sync_manager = fixture.create_sync_manager(Arc::new(updated_pages));
-    let sync_request = fixture.create_sync_request(&sync_run_id_2, &source_id);
-    sync_manager.sync_source(sync_request).await?;
+    let (config, ctx) = fixture
+        .build_sync_context(&sync_run_id_2, &source_id)
+        .await?;
+    sync_manager.run_sync(config, ctx).await?;
 
     // Should now have 2 events (original + update)
     let events_after_second_sync = fixture.get_queued_events(&source_id).await?;
@@ -260,8 +265,10 @@ async fn test_sync_creates_deletion_events_for_removed_pages() -> Result<()> {
 
     let sync_run_id_1 = fixture.create_sync_run(&source_id).await?;
     let sync_manager = fixture.create_sync_manager(Arc::new(initial_pages));
-    let sync_request = fixture.create_sync_request(&sync_run_id_1, &source_id);
-    sync_manager.sync_source(sync_request).await?;
+    let (config, ctx) = fixture
+        .build_sync_context(&sync_run_id_1, &source_id)
+        .await?;
+    sync_manager.run_sync(config, ctx).await?;
 
     let events_after_first_sync = fixture.get_queued_events(&source_id).await?;
     assert_eq!(events_after_first_sync.len(), 2);
@@ -274,8 +281,10 @@ async fn test_sync_creates_deletion_events_for_removed_pages() -> Result<()> {
 
     let sync_run_id_2 = fixture.create_sync_run(&source_id).await?;
     let sync_manager = fixture.create_sync_manager(Arc::new(remaining_pages));
-    let sync_request = fixture.create_sync_request(&sync_run_id_2, &source_id);
-    sync_manager.sync_source(sync_request).await?;
+    let (config, ctx) = fixture
+        .build_sync_context(&sync_run_id_2, &source_id)
+        .await?;
+    sync_manager.run_sync(config, ctx).await?;
 
     // Should have 3 events: 2 creates + 1 delete
     let events_after_second_sync = fixture.get_queued_events(&source_id).await?;
@@ -325,8 +334,8 @@ async fn test_event_contains_correct_metadata() -> Result<()> {
 
     let sync_run_id = fixture.create_sync_run(&source_id).await?;
     let sync_manager = fixture.create_sync_manager(Arc::new(mock_pages));
-    let sync_request = fixture.create_sync_request(&sync_run_id, &source_id);
-    sync_manager.sync_source(sync_request).await?;
+    let (config, ctx) = fixture.build_sync_context(&sync_run_id, &source_id).await?;
+    sync_manager.run_sync(config, ctx).await?;
 
     let events = fixture.get_queued_events(&source_id).await?;
     assert_eq!(events.len(), 1);
@@ -369,9 +378,8 @@ async fn test_incremental_sync_saves_connector_state() -> Result<()> {
 
     let sync_run_id = fixture.create_incremental_sync_run(&source_id).await?;
     let sync_manager = fixture.create_sync_manager(Arc::new(mock_pages));
-    let sync_request =
-        fixture.create_sync_request_with_mode(&sync_run_id, &source_id, "incremental");
-    sync_manager.sync_source(sync_request).await?;
+    let (config, ctx) = fixture.build_sync_context(&sync_run_id, &source_id).await?;
+    sync_manager.run_sync(config, ctx).await?;
 
     let state = fixture.get_connector_state(&source_id).await?;
     assert!(
@@ -415,9 +423,8 @@ async fn test_incremental_sync_with_no_prior_state() -> Result<()> {
 
     let sync_run_id = fixture.create_incremental_sync_run(&source_id).await?;
     let sync_manager = fixture.create_sync_manager(Arc::new(mock_pages));
-    let sync_request =
-        fixture.create_sync_request_with_mode(&sync_run_id, &source_id, "incremental");
-    sync_manager.sync_source(sync_request).await?;
+    let (config, ctx) = fixture.build_sync_context(&sync_run_id, &source_id).await?;
+    sync_manager.run_sync(config, ctx).await?;
 
     // All pages should still be indexed even without prior state
     let events = fixture.get_queued_events(&source_id).await?;
@@ -440,7 +447,8 @@ async fn test_incremental_sync_with_no_prior_state() -> Result<()> {
 #[tokio::test]
 async fn test_full_sync_lifecycle_via_api() -> Result<()> {
     use axum_test::{TestServer, TestServerConfig};
-    use omni_web_connector::api::{create_router, ApiState};
+    use omni_connector_sdk::create_router;
+    use omni_web_connector::connector::WebConnector;
     use serde_json::json;
 
     let fixture = WebConnectorTestFixture::new().await?;
@@ -464,9 +472,18 @@ async fn test_full_sync_lifecycle_via_api() -> Result<()> {
         ),
     ]);
 
-    let sync_manager = Arc::new(fixture.create_sync_manager(Arc::new(mock_pages)));
-    let api_state = ApiState { sync_manager };
-    let app = create_router(api_state);
+    // Build the real `WebConnector` with an injected mock page source and
+    // wire it through the SDK's router — same code path production runs.
+    let web_connector = WebConnector::with_page_source(
+        fixture.redis_client(),
+        fixture.sdk_client.clone(),
+        Arc::new(mock_pages),
+    );
+    let app = create_router(
+        Arc::new(web_connector),
+        fixture.sdk_client.clone(),
+        "http://test-connector".to_string(),
+    );
 
     let config = TestServerConfig::builder()
         .default_content_type("application/json")

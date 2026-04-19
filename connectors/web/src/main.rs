@@ -6,10 +6,6 @@ use shared::telemetry::{self, TelemetryConfig};
 use shared::SdkClient;
 use tracing::info;
 
-fn get_env(name: &str) -> Result<String> {
-    std::env::var(name).with_context(|| format!("{} environment variable not set", name))
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv().ok();
@@ -24,9 +20,6 @@ async fn main() -> Result<()> {
     let redis_client = redis::Client::open(redis_url).context("Failed to create Redis client")?;
 
     let sdk_client = SdkClient::from_env()?;
-    let _ = get_env("PORT")?
-        .parse::<u16>()
-        .context("PORT must be a valid number")?;
 
     serve(WebConnector::new(redis_client, sdk_client)).await
 }

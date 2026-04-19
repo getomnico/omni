@@ -12,10 +12,11 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use serde::de::DeserializeOwned;
 use shared::telemetry;
-use shared::SdkClient;
+use shared::{SdkClient, SdkError};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::time::{interval, Duration};
@@ -25,7 +26,6 @@ use tracing::{error, info, warn};
 
 #[derive(Clone)]
 pub struct ServerConfig {
-    pub host: String,
     pub port: u16,
     pub connector_url: String,
 }
@@ -38,7 +38,6 @@ impl ServerConfig {
             .context("PORT must be a valid u16")?;
 
         Ok(Self {
-            host: "0.0.0.0".to_string(),
             port,
             connector_url: shared::build_connector_url(),
         })
@@ -50,11 +49,58 @@ struct ActiveSync {
     cancelled: Arc<AtomicBool>,
 }
 
+type ActiveSyncs = Arc<DashMap<String, ActiveSync>>;
+
+/// Reserves a slot in `active_syncs` for a source. The slot is released when
+/// this guard is dropped, including on panic inside the spawned sync task.
+/// This is the only mechanism that removes from `active_syncs` — so the entry
+/// cannot leak even if the connector's `sync()` implementation panics.
+struct ActiveSyncGuard {
+    active_syncs: ActiveSyncs,
+    source_id: String,
+}
+
+impl ActiveSyncGuard {
+    /// Atomically reserve a slot. Returns `None` if a sync is already active
+    /// for this source.
+    fn reserve(
+        active_syncs: ActiveSyncs,
+        source_id: String,
+        sync_run_id: String,
+        cancelled: Arc<AtomicBool>,
+    ) -> Option<Self> {
+        let inserted = match active_syncs.entry(source_id.clone()) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(vacant) => {
+                vacant.insert(ActiveSync {
+                    sync_run_id,
+                    cancelled,
+                });
+                true
+            }
+        };
+        if inserted {
+            Some(Self {
+                active_syncs,
+                source_id,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for ActiveSyncGuard {
+    fn drop(&mut self) {
+        self.active_syncs.remove(&self.source_id);
+    }
+}
+
 struct ServerState<C: Connector> {
     connector: Arc<C>,
     sdk_client: SdkClient,
     connector_url: String,
-    active_syncs: DashMap<String, ActiveSync>,
+    active_syncs: ActiveSyncs,
 }
 
 impl<C: Connector> ServerState<C> {
@@ -63,7 +109,7 @@ impl<C: Connector> ServerState<C> {
             connector,
             sdk_client,
             connector_url,
-            active_syncs: DashMap::new(),
+            active_syncs: Arc::new(DashMap::new()),
         }
     }
 }
@@ -103,6 +149,14 @@ where
 {
     let connector = Arc::new(connector);
     let sdk_client = SdkClient::from_env()?;
+
+    // Bind before the registration loop so that any connector-manager callback
+    // triggered by registration finds the HTTP server already accepting
+    // connections.
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.port));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    info!("HTTP server listening on {}", addr);
+
     start_registration_loop(
         Arc::clone(&connector),
         sdk_client.clone(),
@@ -110,10 +164,6 @@ where
     );
 
     let app = create_router(connector, sdk_client, config.connector_url);
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.port));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-
-    info!("HTTP server listening on {}", addr);
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -128,12 +178,23 @@ where
 {
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(30));
+        let mut last_was_ok: Option<bool> = None;
         loop {
             ticker.tick().await;
             let manifest = connector.build_manifest(connector_url.clone()).await;
             match sdk_client.register(&manifest).await {
-                Ok(()) => info!("Registered with connector manager"),
-                Err(error) => warn!("Registration failed: {}", error),
+                Ok(()) => {
+                    if last_was_ok != Some(true) {
+                        info!("Registered with connector manager");
+                    }
+                    last_was_ok = Some(true);
+                }
+                Err(error) => {
+                    if last_was_ok != Some(false) {
+                        warn!("Registration failed: {}", error);
+                    }
+                    last_was_ok = Some(false);
+                }
             }
         }
     })
@@ -176,14 +237,20 @@ where
         source_id, sync_run_id
     );
 
-    if state.active_syncs.contains_key(&source_id) {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let Some(guard) = ActiveSyncGuard::reserve(
+        Arc::clone(&state.active_syncs),
+        source_id.clone(),
+        sync_run_id.clone(),
+        Arc::clone(&cancelled),
+    ) else {
         return Err((
             StatusCode::CONFLICT,
             Json(SyncResponse::error(
                 "Sync already in progress for this source",
             )),
         ));
-    }
+    };
 
     let source = state
         .sdk_client
@@ -225,15 +292,6 @@ where
             },
         )?;
 
-    let cancelled = Arc::new(AtomicBool::new(false));
-    state.active_syncs.insert(
-        source_id.clone(),
-        ActiveSync {
-            sync_run_id: sync_run_id.clone(),
-            cancelled: Arc::clone(&cancelled),
-        },
-    );
-
     let ctx = SyncContext::new(
         state.sdk_client.clone(),
         sync_run_id.clone(),
@@ -242,9 +300,11 @@ where
         cancelled,
     );
     let connector = Arc::clone(&state.connector);
-    let state_for_task = Arc::clone(&state);
 
     tokio::spawn(async move {
+        // Moved into the task so the slot is released when this future
+        // completes — including on panic, which unwinds through locals.
+        let _slot = guard;
         let result = connector
             .sync(source_config, typed_credentials, typed_state, ctx.clone())
             .await;
@@ -257,8 +317,6 @@ where
                 }
             }
         }
-
-        state_for_task.active_syncs.remove(&source_id);
     });
 
     Ok(Json(SyncResponse::started()))
@@ -277,7 +335,7 @@ where
         if sync.sync_run_id == request.sync_run_id {
             sync.cancelled
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            let _ = state.connector.cancel(&request.sync_run_id);
+            let _ = state.connector.cancel(&request.sync_run_id).await;
 
             return Json(CancelResponse {
                 status: "cancelled".to_string(),
@@ -320,14 +378,11 @@ fn decode_optional<T: DeserializeOwned>(
     value.map(|value| decode(value, label)).transpose()
 }
 
-fn map_source_fetch_error(error: anyhow::Error) -> (StatusCode, Json<SyncResponse>) {
-    let message = error.to_string();
-    if message.contains("404") {
-        (StatusCode::NOT_FOUND, Json(SyncResponse::error(message)))
+fn map_source_fetch_error(error: SdkError) -> (StatusCode, Json<SyncResponse>) {
+    let status = if error.is_not_found() {
+        StatusCode::NOT_FOUND
     } else {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(SyncResponse::error(message)),
-        )
-    }
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    (status, Json(SyncResponse::error(error.to_string())))
 }
