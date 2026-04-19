@@ -1,6 +1,5 @@
-use crate::models::SyncMode;
 use anyhow::Result;
-use shared::models::{ConnectorEvent, SourceType};
+use shared::models::{ConnectorEvent, SourceType, SyncType};
 use shared::SdkClient;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -11,7 +10,7 @@ pub struct SyncContext {
     sync_run_id: String,
     source_id: String,
     source_type: SourceType,
-    sync_mode: SyncMode,
+    sync_mode: SyncType,
     cancelled: Arc<AtomicBool>,
 }
 
@@ -21,7 +20,7 @@ impl SyncContext {
         sync_run_id: String,
         source_id: String,
         source_type: SourceType,
-        sync_mode: SyncMode,
+        sync_mode: SyncType,
         cancelled: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -50,7 +49,7 @@ impl SyncContext {
         self.source_type
     }
 
-    pub fn sync_mode(&self) -> SyncMode {
+    pub fn sync_mode(&self) -> SyncType {
         self.sync_mode
     }
 

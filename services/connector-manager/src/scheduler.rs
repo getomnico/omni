@@ -142,10 +142,10 @@ impl Scheduler {
 /// available (the SDK's 409 guard keeps exactly one watcher alive; subsequent
 /// ticks are no-ops until the watcher exits). Else prefer Incremental, falling
 /// back to Full for connectors that only do full scans.
-fn pick_scheduled_sync_type(sync_modes: &[String]) -> SyncType {
-    if sync_modes.iter().any(|m| m == "realtime") {
+fn pick_scheduled_sync_type(sync_modes: &[SyncType]) -> SyncType {
+    if sync_modes.contains(&SyncType::Realtime) {
         SyncType::Realtime
-    } else if sync_modes.iter().any(|m| m == "incremental") {
+    } else if sync_modes.contains(&SyncType::Incremental) {
         SyncType::Incremental
     } else {
         SyncType::Full
@@ -164,19 +164,19 @@ mod tests {
 
     #[test]
     fn picks_realtime_when_declared() {
-        let modes = vec!["full".to_string(), "realtime".to_string()];
+        let modes = vec![SyncType::Full, SyncType::Realtime];
         assert_eq!(pick_scheduled_sync_type(&modes), SyncType::Realtime);
     }
 
     #[test]
     fn falls_back_to_incremental() {
-        let modes = vec!["full".to_string(), "incremental".to_string()];
+        let modes = vec![SyncType::Full, SyncType::Incremental];
         assert_eq!(pick_scheduled_sync_type(&modes), SyncType::Incremental);
     }
 
     #[test]
     fn falls_back_to_full_when_only_full() {
-        let modes = vec!["full".to_string()];
+        let modes = vec![SyncType::Full];
         assert_eq!(pick_scheduled_sync_type(&modes), SyncType::Full);
     }
 

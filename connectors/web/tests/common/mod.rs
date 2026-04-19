@@ -12,6 +12,7 @@ use omni_web_connector::config::WebSourceConfig;
 use omni_web_connector::models::WebConnectorState;
 use omni_web_connector::sync::{PageSource, SyncManager};
 use shared::db::repositories::SyncRunRepository;
+use shared::models::SyncType;
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
 use shared::{DatabaseConfig, RedisConfig, SdkClient};
@@ -180,7 +181,7 @@ impl WebConnectorTestFixture {
         )
         .bind(&sync_run_id)
         .bind(source_id)
-        .bind(shared::models::SyncType::Full)
+        .bind(SyncType::Full)
         .bind(shared::models::SyncStatus::Running)
         .execute(self.pool())
         .await?;
@@ -212,7 +213,7 @@ impl WebConnectorTestFixture {
             sync_run_id.to_string(),
             source_id.to_string(),
             source.source_type,
-            omni_connector_sdk::SyncMode::Full,
+            SyncType::Full,
             Arc::new(AtomicBool::new(false)),
         );
         Ok((config, prior_state, ctx))
@@ -227,7 +228,7 @@ impl WebConnectorTestFixture {
         )
         .bind(&sync_run_id)
         .bind(source_id)
-        .bind(shared::models::SyncType::Incremental)
+        .bind(SyncType::Incremental)
         .bind(shared::models::SyncStatus::Running)
         .execute(self.pool())
         .await?;

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use omni_connector_sdk::{Connector, SdkClient, SourceType, SyncContext, SyncMode};
+use omni_connector_sdk::{Connector, SdkClient, SourceType, SyncContext, SyncType};
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
@@ -52,8 +52,8 @@ impl Connector for WebConnector {
         Some("Index content from websites and documentation sites".to_string())
     }
 
-    fn sync_modes(&self) -> Vec<SyncMode> {
-        vec![SyncMode::Full, SyncMode::Incremental]
+    fn sync_modes(&self) -> Vec<SyncType> {
+        vec![SyncType::Full, SyncType::Incremental]
     }
 
     fn requires_credentials(&self) -> bool {

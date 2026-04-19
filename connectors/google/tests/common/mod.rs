@@ -4,7 +4,7 @@ use omni_connector_manager::{config::ConnectorManagerConfig, create_app, AppStat
 use omni_google_connector::sync::SyncManager;
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::db::repositories::SyncRunRepository;
-use shared::models::{ConnectorManifest, SourceType, SyncResponse};
+use shared::models::{ConnectorManifest, SourceType, SyncResponse, SyncType};
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
 use shared::{ObjectStorage, SdkClient};
@@ -76,7 +76,7 @@ impl GoogleConnectorTestFixture {
             name: "google".to_string(),
             display_name: "Google".to_string(),
             version: "1.0.0".to_string(),
-            sync_modes: vec!["full".to_string()],
+            sync_modes: vec![SyncType::Full],
             connector_id: "google".to_string(),
             connector_url: mock_connector_url,
             source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
@@ -196,7 +196,7 @@ impl GoogleConnectorTestFixture {
     pub async fn create_sync_run(
         &self,
         source_id: &str,
-        sync_type: shared::models::SyncType,
+        sync_type: SyncType,
         status: shared::models::SyncStatus,
         started_at: sqlx::types::time::OffsetDateTime,
     ) -> Result<String> {
@@ -219,7 +219,7 @@ impl GoogleConnectorTestFixture {
     pub async fn create_completed_sync_run(
         &self,
         source_id: &str,
-        sync_type: shared::models::SyncType,
+        sync_type: SyncType,
         completed_at: sqlx::types::time::OffsetDateTime,
         documents_processed: i32,
         documents_updated: i32,

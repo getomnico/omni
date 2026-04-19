@@ -6,7 +6,7 @@ use omni_connector_manager::{
     config::ConnectorManagerConfig, create_app, sync_manager::SyncManager, AppState,
 };
 use redis::{AsyncCommands, Client as RedisClient};
-use shared::models::{ConnectorManifest, SourceType};
+use shared::models::{ConnectorManifest, SourceType, SyncType};
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
 use shared::ObjectStorage;
@@ -49,7 +49,7 @@ pub async fn setup_test_fixture() -> Result<TestFixture> {
         name: "filesystem".to_string(),
         display_name: "Filesystem".to_string(),
         version: "1.0.0".to_string(),
-        sync_modes: vec!["full".to_string()],
+        sync_modes: vec![SyncType::Full],
         connector_id: "filesystem".to_string(),
         connector_url: mock_connector.base_url.clone(),
         source_types: vec![SourceType::LocalFiles],

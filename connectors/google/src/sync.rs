@@ -242,7 +242,7 @@ impl SyncManager {
     pub async fn sync_source_from_request(&self, request: SyncRequest) -> Result<()> {
         let sync_run_id = request.sync_run_id.clone();
         let source_id = request.source_id.clone();
-        let sync_mode = request.sync_mode.clone();
+        let sync_type = request.sync_mode;
 
         info!(
             "Starting sync for source {} (sync_run_id: {})",
@@ -262,12 +262,6 @@ impl SyncManager {
             .get_source(&source_id)
             .await
             .context("Failed to fetch source via SDK")?;
-
-        // Determine sync type from mode
-        let sync_type = match sync_mode.as_str() {
-            "incremental" => SyncType::Incremental,
-            _ => SyncType::Full,
-        };
 
         // Sync group memberships (org-wide, shared between Drive and Gmail)
         let known_groups = self.maybe_sync_groups(&source, &sync_run_id).await;

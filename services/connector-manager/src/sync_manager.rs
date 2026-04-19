@@ -113,12 +113,7 @@ impl SyncManager {
         let sync_request = SyncRequest {
             sync_run_id: sync_run.id.clone(),
             source_id: source_id.to_string(),
-            sync_mode: match effective_sync_type {
-                SyncType::Full => "full",
-                SyncType::Incremental => "incremental",
-                SyncType::Realtime => "realtime",
-            }
-            .to_string(),
+            sync_mode: effective_sync_type,
             last_sync_at,
         };
 
@@ -379,12 +374,7 @@ impl SyncManager {
         let sync_request = SyncRequest {
             sync_run_id: sync_run_id.to_string(),
             source_id: source_id.to_string(),
-            sync_mode: match sync_run.sync_type {
-                SyncType::Full => "full",
-                SyncType::Incremental => "incremental",
-                SyncType::Realtime => "realtime",
-            }
-            .to_string(),
+            sync_mode: sync_run.sync_type,
             last_sync_at,
         };
 
