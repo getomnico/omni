@@ -144,7 +144,7 @@ pub async fn run_server() -> AnyhowResult<()> {
 
     let app_state = AppState {
         db_pool: db_pool.clone(),
-        redis_client,
+        redis_client: redis_client.clone(),
         config: config.clone(),
         sync_manager: sync_manager.clone(),
         content_storage,
@@ -157,7 +157,12 @@ pub async fn run_server() -> AnyhowResult<()> {
     }
 
     // Start scheduler in background
-    let scheduler = scheduler::Scheduler::new(db_pool.pool().clone(), config.clone(), sync_manager);
+    let scheduler = scheduler::Scheduler::new(
+        db_pool.pool().clone(),
+        redis_client,
+        config.clone(),
+        sync_manager,
+    );
     tokio::spawn(async move {
         scheduler.run().await;
     });

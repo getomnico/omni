@@ -80,7 +80,6 @@ export interface FilesystemSourceConfig {
     file_extensions?: string[]
     exclude_patterns?: string[]
     max_file_size_bytes?: number
-    scan_interval_seconds?: number
 }
 
 export interface HubspotSourceConfig {

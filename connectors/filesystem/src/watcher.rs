@@ -60,18 +60,30 @@ pub async fn run_realtime(
     let mut scanned = 0i32;
     let mut updated = 0i32;
 
+    // Heartbeats keep `last_activity_at` fresh so the CM's stale-sync sweeper
+    // doesn't mark a quiet-but-healthy watcher as failed.
+    let mut heartbeat_ticker = tokio::time::interval(Duration::from_secs(30));
+    heartbeat_ticker.tick().await;
+
     while !ctx.is_cancelled() {
-        match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
-            Ok(Some(event)) => match handle_event(&ctx, &scanner, event).await {
-                Ok(Emitted::Yes) => {
-                    scanned += 1;
-                    updated += 1;
-                }
-                Ok(Emitted::Skipped) => {}
-                Err(error) => warn!("Failed to handle filesystem event: {}", error),
+        tokio::select! {
+            event = rx.recv() => match event {
+                Some(event) => match handle_event(&ctx, &scanner, event).await {
+                    Ok(Emitted::Yes) => {
+                        scanned += 1;
+                        updated += 1;
+                    }
+                    Ok(Emitted::Skipped) => {}
+                    Err(error) => warn!("Failed to handle filesystem event: {}", error),
+                },
+                None => break,
             },
-            Ok(None) => break,
-            Err(_) => {} // timeout — loop to re-check cancellation
+            _ = heartbeat_ticker.tick() => {
+                if let Err(error) = ctx.heartbeat().await {
+                    warn!("Heartbeat failed: {}", error);
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(500)) => {}
         }
     }
 
