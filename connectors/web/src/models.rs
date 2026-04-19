@@ -7,8 +7,6 @@ use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use spider::page::Page;
 use std::collections::HashMap;
 
-pub use omni_connector_sdk::SyncRequest;
-
 // ============================================================================
 // Web Connector Models
 // ============================================================================

@@ -1312,7 +1312,8 @@ impl SyncManager {
 
         self.sdk_client
             .emit_event(sync_run_id, source_id, event)
-            .await
+            .await?;
+        Ok(())
     }
 
     async fn get_service_credentials(&self, source_id: &str) -> Result<ServiceCredentials> {
@@ -2093,7 +2094,10 @@ impl SyncManager {
                     let delay = Duration::from_secs(2u64.pow(attempt as u32));
                     warn!(
                         "Retrying {} rate-limited threads (attempt {}/{}, waiting {:?})",
-                        threads_to_fetch.len(), attempt, max_retries, delay
+                        threads_to_fetch.len(),
+                        attempt,
+                        max_retries,
+                        delay
                     );
                     tokio::time::sleep(delay).await;
                 }
@@ -2143,7 +2147,9 @@ impl SyncManager {
             if !threads_to_fetch.is_empty() {
                 warn!(
                     "Gave up on {} threads after {} retries for user {}",
-                    threads_to_fetch.len(), max_retries, user_email
+                    threads_to_fetch.len(),
+                    max_retries,
+                    user_email
                 );
             }
 
@@ -2231,7 +2237,10 @@ impl SyncManager {
                     }
                 } else {
                     // Index thread conversation content (no attachment text)
-                    match gmail_thread.aggregate_content(&self.gmail_client, &self.sdk_client, sync_run_id).await {
+                    match gmail_thread
+                        .aggregate_content(&self.gmail_client, &self.sdk_client, sync_run_id)
+                        .await
+                    {
                         Ok(content) => {
                             if !content.trim().is_empty() {
                                 match self.sdk_client.store_content(sync_run_id, &content).await {
@@ -2418,8 +2427,13 @@ impl SyncManager {
         info!(
             "Completed Gmail processing for user {}: {} listed, {} indexed, {} updated \
             (skipped: {} deduped across users, {} unchanged, {} failed/inaccessible)",
-            user_email, total_listed, total_processed, total_updated,
-            total_deduped, total_skipped_unchanged, total_failed
+            user_email,
+            total_listed,
+            total_processed,
+            total_updated,
+            total_deduped,
+            total_skipped_unchanged,
+            total_failed
         );
 
         Ok((total_processed, total_updated))

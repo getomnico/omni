@@ -5,14 +5,13 @@ use redis::Client as RedisClient;
 use shared::SdkClient;
 use spider::client::StatusCode;
 use std::collections::HashSet;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, info};
 
 use crate::config::WebSourceConfig;
-use crate::models::{PageSyncState, SyncRequest, WebConnectorState, WebPage};
+use crate::models::{PageSyncState, WebConnectorState, WebPage};
 
 /// Result of a crawl operation
 pub struct CrawlResult {
@@ -200,56 +199,6 @@ impl SyncManager {
 
     pub fn sdk_client(&self) -> &SdkClient {
         &self.sdk_client
-    }
-
-    /// Execute a sync based on the request from connector-manager
-    pub async fn sync_source(&self, request: SyncRequest) -> Result<()> {
-        let sync_run_id = &request.sync_run_id;
-        let source_id = &request.source_id;
-
-        let is_incremental = request.sync_mode == "incremental";
-
-        info!(
-            "Starting {} sync for source: {} (sync_run_id: {})",
-            request.sync_mode, source_id, sync_run_id
-        );
-
-        if is_incremental {
-            match self.sdk_client.get_connector_state(source_id).await {
-                Ok(Some(_)) => {
-                    debug!("Found existing connector state for incremental sync");
-                }
-                Ok(None) => {
-                    info!("No prior connector state found for incremental sync, proceeding with full crawl");
-                }
-                Err(e) => {
-                    tracing::error!("Failed to load connector state: {}", e);
-                }
-            }
-        }
-
-        // Fetch source via SDK
-        let source = self
-            .sdk_client
-            .get_source(source_id)
-            .await
-            .context("Failed to fetch source via SDK")?;
-        let config = WebSourceConfig::from_json(&source.config)
-            .context("Failed to parse web source config")?;
-        let ctx = SyncContext::new(
-            self.sdk_client.clone(),
-            sync_run_id.clone(),
-            source_id.clone(),
-            source.source_type,
-            Arc::new(AtomicBool::new(false)),
-        );
-
-        if let Err(error) = self.run_sync(config, ctx.clone()).await {
-            let _ = ctx.fail(&error.to_string()).await;
-            return Err(error);
-        }
-
-        Ok(())
     }
 
     pub async fn run_sync(&self, config: WebSourceConfig, ctx: SyncContext) -> Result<()> {

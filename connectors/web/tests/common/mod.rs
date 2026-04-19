@@ -1,12 +1,14 @@
 use anyhow::Result;
 use std::future::Future;
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use omni_connector_manager::{
     config::ConnectorManagerConfig, create_app as create_cm_app,
     sync_manager::SyncManager as CMSyncManager, AppState as CMAppState,
 };
-use omni_web_connector::models::SyncRequest;
+use omni_connector_sdk::SyncContext;
+use omni_web_connector::config::WebSourceConfig;
 use omni_web_connector::sync::{PageSource, SyncManager};
 use redis::Client as RedisClient;
 use shared::db::repositories::SyncRunRepository;
@@ -182,24 +184,29 @@ impl WebConnectorTestFixture {
         Ok(sync_run_id)
     }
 
-    /// Create a SyncRequest for testing
-    pub fn create_sync_request(&self, sync_run_id: &str, source_id: &str) -> SyncRequest {
-        self.create_sync_request_with_mode(sync_run_id, source_id, "full")
-    }
-
-    /// Create a SyncRequest with a specific sync mode
-    pub fn create_sync_request_with_mode(
+    /// Build the config + `SyncContext` pair that a sync expects — the same
+    /// wiring the SDK performs in its `/sync` handler, pulled into tests so
+    /// they can drive `SyncManager::run_sync` directly without going through
+    /// HTTP.
+    pub async fn build_sync_context(
         &self,
         sync_run_id: &str,
         source_id: &str,
-        sync_mode: &str,
-    ) -> SyncRequest {
-        SyncRequest {
-            sync_run_id: sync_run_id.to_string(),
-            source_id: source_id.to_string(),
-            sync_mode: sync_mode.to_string(),
-            last_sync_at: None,
-        }
+    ) -> Result<(WebSourceConfig, SyncContext)> {
+        let source = self
+            .sdk_client
+            .get_source(source_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let config = WebSourceConfig::from_json(&source.config)?;
+        let ctx = SyncContext::new(
+            self.sdk_client.clone(),
+            sync_run_id.to_string(),
+            source_id.to_string(),
+            source.source_type,
+            Arc::new(AtomicBool::new(false)),
+        );
+        Ok((config, ctx))
     }
 
     /// Create an incremental sync run for testing
