@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use dashmap::DashMap;
-use shared::models::{ServiceProvider, SourceType, SyncRequest};
+use shared::models::{ServiceProvider, SourceType, SyncRequest, SyncType};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{error, info};
@@ -94,7 +94,7 @@ impl SyncManager {
         self.active_syncs
             .insert(sync_run_id.to_string(), cancelled.clone());
 
-        let is_full_sync = request.sync_mode == "full";
+        let is_full_sync = request.sync_mode == SyncType::Full;
         let from_date = if is_full_sync {
             None
         } else {

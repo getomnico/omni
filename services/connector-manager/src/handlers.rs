@@ -44,11 +44,7 @@ pub async fn trigger_sync(
         .sync_manager
         .trigger_sync(
             &request.source_id,
-            match request.sync_mode.as_deref() {
-                Some("full") => SyncType::Full,
-                Some("realtime") => SyncType::Realtime,
-                _ => SyncType::Incremental,
-            },
+            request.sync_mode.unwrap_or(SyncType::Incremental),
             TriggerType::Manual,
         )
         .await?;
@@ -844,7 +840,7 @@ pub async fn get_connector_url_for_source(
 pub async fn get_sync_modes_for_source(
     redis_client: &redis::Client,
     source_type: SourceType,
-) -> Vec<String> {
+) -> Vec<SyncType> {
     for manifest in get_registered_manifests(redis_client).await {
         if manifest.source_types.contains(&source_type) {
             return manifest.sync_modes;

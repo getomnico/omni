@@ -1,6 +1,6 @@
 //! Realtime filesystem watcher.
 //!
-//! Runs as a long-lived sync under `SyncMode::Realtime`: the connector manager
+//! Runs as a long-lived sync under `SyncType::Realtime`: the connector manager
 //! triggers `/sync` once, the SDK invokes `FileSystemConnector::sync()`, and
 //! this watcher loops emitting `ConnectorEvent`s via the `SyncContext` until
 //! `ctx.is_cancelled()` flips. All event emission and lifecycle calls go

@@ -8,7 +8,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use shared::models::{SourceType, SyncRequest};
+use shared::models::{SourceType, SyncRequest, SyncType};
 use shared::telemetry;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -93,7 +93,7 @@ pub fn build_manifest(connector_url: String) -> ConnectorManifest {
         name: "fireflies".to_string(),
         display_name: "Fireflies".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        sync_modes: vec!["full".to_string(), "incremental".to_string()],
+        sync_modes: vec![SyncType::Full, SyncType::Incremental],
         connector_id: "fireflies".to_string(),
         connector_url,
         source_types: vec![SourceType::Fireflies],

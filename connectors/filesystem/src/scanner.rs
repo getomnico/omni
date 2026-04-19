@@ -14,6 +14,8 @@ impl FileSystemScanner {
         Self { source }
     }
 
+    // TODO: stream results — materializing all FileSystemFile into a Vec
+    // doesn't scale past ~10k files. Swap to an iterator/channel.
     pub async fn scan_directory(&self) -> Result<Vec<FileSystemFile>> {
         info!("Starting filesystem scan for source: {}", self.source.name);
         let mut files = Vec::new();

@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use dashmap::DashMap;
-use shared::models::{ConnectorEvent, ServiceProvider, SourceType, SyncRequest};
+use shared::models::{ConnectorEvent, ServiceProvider, SourceType, SyncRequest, SyncType};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -104,9 +104,8 @@ impl SyncManager {
             .clone()
             .unwrap_or_else(|| source.name.clone());
 
-        let mut connector_state =
-            ImapConnectorState::from_connector_state(&source.connector_state);
-        if request.sync_mode == "full" {
+        let mut connector_state = ImapConnectorState::from_connector_state(&source.connector_state);
+        if request.sync_mode == SyncType::Full {
             info!(
                 "Full sync requested, resetting connector state for source {}",
                 source_id
@@ -272,18 +271,23 @@ impl SyncManager {
             .await
             .with_context(|| format!("Failed to examine folder '{}'", folder))?;
 
-        let folder_state = state.folders.entry(folder.to_string()).or_insert_with(|| {
-            FolderSyncState {
-                uid_validity,
-                indexed_uids: vec![],
-                messages: HashMap::new(),
-                skipped_uids: HashSet::new(),
-            }
-        });
+        let folder_state =
+            state
+                .folders
+                .entry(folder.to_string())
+                .or_insert_with(|| FolderSyncState {
+                    uid_validity,
+                    indexed_uids: vec![],
+                    messages: HashMap::new(),
+                    skipped_uids: HashSet::new(),
+                });
 
         // If UIDVALIDITY changed, all previously stored UIDs are invalid; the
         // indexed_uids set must be cleared so every message is re-fetched.
-        if uid_validity != 0 && folder_state.uid_validity != 0 && folder_state.uid_validity != uid_validity {
+        if uid_validity != 0
+            && folder_state.uid_validity != 0
+            && folder_state.uid_validity != uid_validity
+        {
             warn!(
                 "UIDVALIDITY changed for folder '{}' (was {}, now {}), performing full resync",
                 folder, folder_state.uid_validity, uid_validity
@@ -311,7 +315,9 @@ impl SyncManager {
 
         // Remove skipped UIDs that no longer exist on the server so the set
         // does not grow unboundedly on active mailboxes.
-        folder_state.skipped_uids.retain(|uid| server_uid_set.contains(uid));
+        folder_state
+            .skipped_uids
+            .retain(|uid| server_uid_set.contains(uid));
 
         let deleted_uids: Vec<u32> = folder_state
             .indexed_uids
@@ -330,7 +336,9 @@ impl SyncManager {
         let indexed_uid_set: HashSet<u32> = folder_state.indexed_uids.iter().copied().collect();
         let mut new_uids: Vec<u32> = server_uids
             .into_iter()
-            .filter(|uid| !indexed_uid_set.contains(uid) && !folder_state.skipped_uids.contains(uid))
+            .filter(|uid| {
+                !indexed_uid_set.contains(uid) && !folder_state.skipped_uids.contains(uid)
+            })
             .collect();
         new_uids.sort_unstable();
 
@@ -354,7 +362,12 @@ impl SyncManager {
         let mut thread_root_map: HashMap<u32, String> = folder_state
             .messages
             .keys()
-            .map(|&uid| (uid, resolve_thread_root(uid, &folder_state.messages, &by_message_id)))
+            .map(|&uid| {
+                (
+                    uid,
+                    resolve_thread_root(uid, &folder_state.messages, &by_message_id),
+                )
+            })
             .collect();
 
         for chunk in new_uids.chunks(FETCH_BATCH_SIZE) {
@@ -375,9 +388,7 @@ impl SyncManager {
                 scanned += 1;
 
                 // Enforce optional message size limit.
-                if config.max_message_size > 0
-                    && raw.data.len() as u64 > config.max_message_size
-                {
+                if config.max_message_size > 0 && raw.data.len() as u64 > config.max_message_size {
                     warn!(
                         "Skipping message UID {} in '{}': size {} exceeds limit {}",
                         raw.uid,
@@ -390,17 +401,17 @@ impl SyncManager {
                     continue;
                 }
 
-                let (mut email, raw_attachments) =
-                    match parse_raw_email(&raw.data, raw.uid, folder) {
-                        Ok(result) => result,
-                        Err(e) => {
-                            warn!(
-                                "Failed to parse message UID {} in '{}': {}",
-                                raw.uid, folder, e
-                            );
-                            continue;
-                        }
-                    };
+                let (mut email, raw_attachments) = match parse_raw_email(&raw.data, raw.uid, folder)
+                {
+                    Ok(result) => result,
+                    Err(e) => {
+                        warn!(
+                            "Failed to parse message UID {} in '{}': {}",
+                            raw.uid, folder, e
+                        );
+                        continue;
+                    }
+                };
                 email.flags = raw.flags.clone();
 
                 // If the email body is HTML (no plain-text alternative), convert
@@ -428,13 +439,12 @@ impl SyncManager {
                                 raw.uid, e
                             );
                             let html_bytes = email.body_text.as_bytes();
-                            email.body_text =
-                                shared::content_extractor::extract_content(
-                                    html_bytes,
-                                    "text/html",
-                                    None,
-                                )
-                                .unwrap_or_default();
+                            email.body_text = shared::content_extractor::extract_content(
+                                html_bytes,
+                                "text/html",
+                                None,
+                            )
+                            .unwrap_or_default();
                             email.body_is_html = false;
                         }
                     }
@@ -445,12 +455,7 @@ impl SyncManager {
                 for att in raw_attachments {
                     match self
                         .sdk_client
-                        .extract_text(
-                            sync_run_id,
-                            att.data,
-                            &att.mime_type,
-                            Some(&att.filename),
-                        )
+                        .extract_text(sync_run_id, att.data, &att.mime_type, Some(&att.filename))
                         .await
                     {
                         Ok(text) if !text.trim().is_empty() => {
@@ -473,13 +478,9 @@ impl SyncManager {
                 // Resolve canonical thread root with full chain-walking so that
                 // replies-to-replies without a References header are grouped
                 // correctly under the thread's original root message.
-                let thread_root = resolve_new_email_thread_root(
-                    &email,
-                    &folder_state.messages,
-                    &by_message_id,
-                );
-                let thread_existed =
-                    thread_root_map.values().any(|r| r == &thread_root);
+                let thread_root =
+                    resolve_new_email_thread_root(&email, &folder_state.messages, &by_message_id);
+                let thread_existed = thread_root_map.values().any(|r| r == &thread_root);
 
                 let mut thread_messages: Vec<ParsedEmail> = folder_state
                     .messages
@@ -492,11 +493,7 @@ impl SyncManager {
                 thread_messages.push(email.clone());
 
                 let content = generate_thread_content(&thread_messages);
-                let content_id = match self
-                    .sdk_client
-                    .store_content(sync_run_id, &content)
-                    .await
-                {
+                let content_id = match self.sdk_client.store_content(sync_run_id, &content).await {
                     Ok(id) => id,
                     Err(e) => {
                         warn!(
@@ -618,9 +615,7 @@ impl SyncManager {
                             .messages
                             .values()
                             .filter(|m| {
-                                thread_root_map
-                                    .get(&m.imap_uid)
-                                    .map(String::as_str)
+                                thread_root_map.get(&m.imap_uid).map(String::as_str)
                                     == Some(&thread_root)
                             })
                             .cloned()
@@ -681,7 +676,9 @@ impl SyncManager {
                      removing from state without emitting DocumentDeleted (orphaned index entry)",
                     uid, folder
                 );
-                folder_state.indexed_uids.retain(|indexed_uid| *indexed_uid != uid);
+                folder_state
+                    .indexed_uids
+                    .retain(|indexed_uid| *indexed_uid != uid);
                 continue;
             };
 
@@ -701,8 +698,7 @@ impl SyncManager {
                 .messages
                 .values()
                 .filter(|m| {
-                    thread_root_map.get(&m.imap_uid).map(String::as_str)
-                        == Some(&thread_root)
+                    thread_root_map.get(&m.imap_uid).map(String::as_str) == Some(&thread_root)
                         && m.imap_uid != uid
                 })
                 .cloned()
@@ -752,7 +748,9 @@ impl SyncManager {
             }
 
             folder_state.messages.remove(&uid);
-            folder_state.indexed_uids.retain(|indexed_uid| *indexed_uid != uid);
+            folder_state
+                .indexed_uids
+                .retain(|indexed_uid| *indexed_uid != uid);
         }
 
         folder_state.indexed_uids.sort_unstable();

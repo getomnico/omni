@@ -9,7 +9,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use shared::models::{ActionDefinition, ConnectorManifest, SourceType, SyncRequest};
+use shared::models::{ActionDefinition, ConnectorManifest, SourceType, SyncRequest, SyncType};
 use shared::telemetry;
 use std::sync::Arc;
 use tower::ServiceBuilder;
@@ -95,7 +95,7 @@ pub fn build_manifest(connector_url: String) -> ConnectorManifest {
         name: "nextcloud".to_string(),
         display_name: "Nextcloud".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        sync_modes: vec!["full".to_string(), "incremental".to_string()],
+        sync_modes: vec![SyncType::Full, SyncType::Incremental],
         connector_id: "nextcloud".to_string(),
         connector_url,
         source_types: vec![SourceType::Nextcloud],

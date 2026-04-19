@@ -1,7 +1,8 @@
 use anyhow::{anyhow, Result};
 use dashmap::DashMap;
 use shared::models::{
-    ConnectorEvent, DocumentMetadata, DocumentPermissions, ServiceProvider, SourceType, SyncRequest,
+    ConnectorEvent, DocumentMetadata, DocumentPermissions, ServiceProvider, SourceType,
+    SyncRequest, SyncType,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -97,7 +98,7 @@ impl SyncManager {
         }
 
         let mut state = NextcloudConnectorState::from_connector_state(&source.connector_state);
-        if request.sync_mode == "full" {
+        if request.sync_mode == SyncType::Full {
             info!(
                 "Full sync requested, resetting connector state for source {}",
                 source_id
@@ -261,8 +262,7 @@ impl SyncManager {
                             continue; // skip the parent itself
                         }
                         if entry.is_collection {
-                            let child_url =
-                                crate::client::build_child_url(&dir_url, &entry.href);
+                            let child_url = crate::client::build_child_url(&dir_url, &entry.href);
                             dir_queue.push_back(child_url);
                         } else if config.should_index_file(&entry.filename()) {
                             current_keys.insert(entry.file_key());
@@ -292,15 +292,13 @@ impl SyncManager {
         // Detect and emit deletions
         if !cancelled.load(Ordering::SeqCst) {
             let known_set: HashSet<String> = state.known_files.iter().cloned().collect();
-            let deleted_keys: Vec<String> =
-                known_set.difference(&current_keys).cloned().collect();
+            let deleted_keys: Vec<String> = known_set.difference(&current_keys).cloned().collect();
 
             for key in &deleted_keys {
                 if cancelled.load(Ordering::SeqCst) {
                     break;
                 }
-                let doc_id =
-                    format!("nextcloud:{}:{}", source_id, urlencoding::encode(key));
+                let doc_id = format!("nextcloud:{}:{}", source_id, urlencoding::encode(key));
                 let event = ConnectorEvent::DocumentDeleted {
                     sync_run_id: sync_run_id.to_string(),
                     source_id: source_id.to_string(),
@@ -376,38 +374,28 @@ impl SyncManager {
 
                 let download_url = build_download_url(&config.server_url, &entry.href);
 
-                let content_text =
-                    match download_and_extract(
-                        client,
-                        &download_url,
-                        entry,
-                        &self.sdk_client,
-                        sync_run_id,
-                    )
-                    .await
-                    {
-                        Ok(text) => text,
-                        Err(e) => {
-                            warn!("Failed to process file '{}': {}", entry.filename(), e);
-                            continue;
-                        }
-                    };
-
-                let markdown =
-                    entry.to_markdown(username, &config.server_url, &content_text);
-
-                let content_id = match self
-                    .sdk_client
-                    .store_content(sync_run_id, &markdown)
-                    .await
+                let content_text = match download_and_extract(
+                    client,
+                    &download_url,
+                    entry,
+                    &self.sdk_client,
+                    sync_run_id,
+                )
+                .await
                 {
+                    Ok(text) => text,
+                    Err(e) => {
+                        warn!("Failed to process file '{}': {}", entry.filename(), e);
+                        continue;
+                    }
+                };
+
+                let markdown = entry.to_markdown(username, &config.server_url, &content_text);
+
+                let content_id = match self.sdk_client.store_content(sync_run_id, &markdown).await {
                     Ok(id) => id,
                     Err(e) => {
-                        warn!(
-                            "Failed to store content for '{}': {}",
-                            entry.filename(),
-                            e
-                        );
+                        warn!("Failed to store content for '{}': {}", entry.filename(), e);
                         continue;
                     }
                 };
@@ -448,7 +436,6 @@ impl SyncManager {
         (scanned, processed)
     }
 }
-
 
 /// Try to parse a date string as RFC 3339 first, then RFC 2822.
 fn parse_datetime(s: &str) -> Option<time::OffsetDateTime> {
@@ -506,14 +493,8 @@ pub fn build_file_event(
     let relative_path = entry.relative_path(username);
     let filename = entry.filename();
 
-    let created_at = entry
-        .creation_date
-        .as_deref()
-        .and_then(parse_datetime);
-    let updated_at = entry
-        .last_modified
-        .as_deref()
-        .and_then(parse_datetime);
+    let created_at = entry.creation_date.as_deref().and_then(parse_datetime);
+    let updated_at = entry.last_modified.as_deref().and_then(parse_datetime);
 
     let mut extra = HashMap::new();
     if let Some(ref fid) = entry.file_id {
@@ -545,11 +526,7 @@ pub fn build_file_event(
             .map(|s| s.to_string()),
         url: Some(web_url),
         path: Some(relative_path),
-        extra: if extra.is_empty() {
-            None
-        } else {
-            Some(extra)
-        },
+        extra: if extra.is_empty() { None } else { Some(extra) },
     };
 
     let permissions = DocumentPermissions {
@@ -653,7 +630,10 @@ mod tests {
                 assert_eq!(permissions.users, vec!["alice@example.com"]);
                 assert!(!permissions.public);
                 let attrs = attributes.unwrap();
-                assert_eq!(attrs.get("file_extension").unwrap(), &serde_json::json!("pdf"));
+                assert_eq!(
+                    attrs.get("file_extension").unwrap(),
+                    &serde_json::json!("pdf")
+                );
             }
             _ => panic!("Expected DocumentCreated"),
         }
@@ -704,7 +684,10 @@ mod tests {
     fn test_parse_datetime_rfc2822_gmt() {
         // Nextcloud returns "GMT" not "+0000" — verify the parser handles it
         let dt = parse_datetime("Thu, 01 Jan 2024 00:00:00 GMT");
-        assert!(dt.is_some(), "RFC 2822 with GMT timezone must parse successfully");
+        assert!(
+            dt.is_some(),
+            "RFC 2822 with GMT timezone must parse successfully"
+        );
         assert_eq!(dt.unwrap().year(), 2024);
     }
 
@@ -725,8 +708,14 @@ mod tests {
         };
 
         let event = build_file_event(
-            &entry, "alice", "https://nc.local",
-            "run-1", "src-1", "cnt-1", None, false,
+            &entry,
+            "alice",
+            "https://nc.local",
+            "run-1",
+            "src-1",
+            "cnt-1",
+            None,
+            false,
         );
 
         match event {

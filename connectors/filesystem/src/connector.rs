@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use omni_connector_sdk::{
-    ActionDefinition, ActionResponse, Connector, SourceType, SyncContext, SyncMode,
+    ActionDefinition, ActionResponse, Connector, SourceType, SyncContext, SyncType,
 };
 use serde_json::{json, Value as JsonValue};
 
@@ -29,8 +29,8 @@ impl Connector for FileSystemConnector {
         vec![SourceType::LocalFiles, SourceType::FileSystem]
     }
 
-    fn sync_modes(&self) -> Vec<SyncMode> {
-        vec![SyncMode::Full, SyncMode::Realtime]
+    fn sync_modes(&self) -> Vec<SyncType> {
+        vec![SyncType::Full, SyncType::Realtime]
     }
 
     fn display_name(&self) -> String {
@@ -74,10 +74,10 @@ impl Connector for FileSystemConnector {
     ) -> Result<()> {
         let source_name = ctx.sdk_client().get_source(ctx.source_id()).await?.name;
         match ctx.sync_mode() {
-            SyncMode::Full | SyncMode::Incremental => {
+            SyncType::Full | SyncType::Incremental => {
                 sync::run_sync(source_name, source_config, ctx).await
             }
-            SyncMode::Realtime => watcher::run_realtime(source_name, source_config, ctx).await,
+            SyncType::Realtime => watcher::run_realtime(source_name, source_config, ctx).await,
         }
     }
 
