@@ -1,7 +1,9 @@
 use crate::config::ConnectorManagerConfig;
+use crate::handlers::get_sync_modes_for_source;
 use crate::models::TriggerType;
 use crate::source_cleanup::SourceCleanup;
 use crate::sync_manager::{SyncError, SyncManager};
+use redis::Client as RedisClient;
 use shared::db::repositories::SourceRepository;
 use shared::models::SyncType;
 use sqlx::PgPool;
@@ -12,6 +14,7 @@ use tracing::{debug, error, info, warn};
 
 pub struct Scheduler {
     pool: PgPool,
+    redis_client: RedisClient,
     config: ConnectorManagerConfig,
     sync_manager: Arc<SyncManager>,
 }
@@ -19,11 +22,13 @@ pub struct Scheduler {
 impl Scheduler {
     pub fn new(
         pool: PgPool,
+        redis_client: RedisClient,
         config: ConnectorManagerConfig,
         sync_manager: Arc<SyncManager>,
     ) -> Self {
         Self {
             pool,
+            redis_client,
             config,
             sync_manager,
         }
@@ -100,9 +105,13 @@ impl Scheduler {
                 continue;
             }
 
+            let sync_type = pick_scheduled_sync_type(
+                &get_sync_modes_for_source(&self.redis_client, source.source_type).await,
+            );
+
             match self
                 .sync_manager
-                .trigger_sync(&source.id, SyncType::Incremental, TriggerType::Scheduled)
+                .trigger_sync(&source.id, sync_type, TriggerType::Scheduled)
                 .await
             {
                 Ok(sync_run_id) => {
@@ -128,8 +137,51 @@ impl Scheduler {
     }
 }
 
+/// Pick the sync type a scheduled tick should request for a source, based on
+/// the sync modes the connector declared in its manifest. Realtime wins when
+/// available (the SDK's 409 guard keeps exactly one watcher alive; subsequent
+/// ticks are no-ops until the watcher exits). Else prefer Incremental, falling
+/// back to Full for connectors that only do full scans.
+fn pick_scheduled_sync_type(sync_modes: &[String]) -> SyncType {
+    if sync_modes.iter().any(|m| m == "realtime") {
+        SyncType::Realtime
+    } else if sync_modes.iter().any(|m| m == "incremental") {
+        SyncType::Incremental
+    } else {
+        SyncType::Full
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SchedulerError {
     #[error("Database error: {0}")]
     DatabaseError(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn picks_realtime_when_declared() {
+        let modes = vec!["full".to_string(), "realtime".to_string()];
+        assert_eq!(pick_scheduled_sync_type(&modes), SyncType::Realtime);
+    }
+
+    #[test]
+    fn falls_back_to_incremental() {
+        let modes = vec!["full".to_string(), "incremental".to_string()];
+        assert_eq!(pick_scheduled_sync_type(&modes), SyncType::Incremental);
+    }
+
+    #[test]
+    fn falls_back_to_full_when_only_full() {
+        let modes = vec!["full".to_string()];
+        assert_eq!(pick_scheduled_sync_type(&modes), SyncType::Full);
+    }
+
+    #[test]
+    fn falls_back_to_full_when_empty() {
+        assert_eq!(pick_scheduled_sync_type(&[]), SyncType::Full);
+    }
 }

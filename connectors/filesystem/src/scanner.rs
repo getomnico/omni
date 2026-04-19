@@ -227,7 +227,6 @@ mod tests {
         FileSystemSource {
             name: "Test Source".to_string(),
             base_path: dir.path().to_path_buf(),
-            scan_interval_seconds: 300,
             file_extensions: None,
             exclude_patterns: None,
             max_file_size_bytes: None,

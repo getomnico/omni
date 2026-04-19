@@ -113,6 +113,11 @@ impl SyncContext {
         Ok(())
     }
 
+    pub async fn heartbeat(&self) -> Result<()> {
+        self.sdk_client.heartbeat(&self.sync_run_id).await?;
+        Ok(())
+    }
+
     pub async fn cancel(&self) -> Result<()> {
         self.sdk_client.cancel(&self.sync_run_id).await?;
         Ok(())

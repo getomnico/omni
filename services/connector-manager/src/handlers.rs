@@ -839,6 +839,20 @@ pub async fn get_connector_url_for_source(
     None
 }
 
+/// Look up the sync modes the connector declared for a given source type.
+/// Returns an empty vec when no connector is registered for the source_type.
+pub async fn get_sync_modes_for_source(
+    redis_client: &redis::Client,
+    source_type: SourceType,
+) -> Vec<String> {
+    for manifest in get_registered_manifests(redis_client).await {
+        if manifest.source_types.contains(&source_type) {
+            return manifest.sync_modes;
+        }
+    }
+    Vec::new()
+}
+
 const VALID_DOCLING_PRESETS: &[&str] = &["fast", "balanced", "quality"];
 const DEFAULT_DOCLING_PRESET: &str = "balanced";
 

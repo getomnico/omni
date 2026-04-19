@@ -416,6 +416,11 @@ impl SyncManager {
         }
     }
 
+    /// Sweep running syncs whose `last_activity_at` hasn't advanced within the
+    /// configured timeout — mark them failed and cancel on the connector.
+    /// Realtime watchers rely on periodic `ctx.heartbeat()` calls to stay on
+    /// the right side of this check; a realtime watcher that stops
+    /// heartbeating is genuinely dead and will be (correctly) swept here.
     pub async fn detect_stale_syncs(&self) -> Result<Vec<String>, SyncError> {
         let timeout_minutes = self.config.stale_sync_timeout_minutes as i64;
         let cutoff = OffsetDateTime::now_utc() - time::Duration::minutes(timeout_minutes);
