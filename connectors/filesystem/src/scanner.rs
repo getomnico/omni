@@ -1,7 +1,7 @@
 use crate::models::{FileSystemFile, FileSystemPermissions, FileSystemSource};
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
@@ -211,143 +211,16 @@ impl FileSystemScanner {
             })
         }
     }
-
-    pub async fn read_file_content(&self, file: &FileSystemFile) -> Result<String> {
-        if file.is_directory {
-            return Ok(String::new());
-        }
-
-        const MAX_CONTENT_SIZE: u64 = 50 * 1024 * 1024; // 50MB
-        if file.size > MAX_CONTENT_SIZE {
-            warn!(
-                "File too large to read content: {} ({}MB)",
-                file.path.display(),
-                file.size / 1024 / 1024
-            );
-            return Ok(String::new());
-        }
-
-        // Source code and config files should not be indexed
-        if is_source_code_or_config(&file.path) {
-            debug!("Skipping source/config file: {}", file.path.display());
-            return Ok(String::new());
-        }
-
-        let data = std::fs::read(&file.path)
-            .with_context(|| format!("Failed to read file: {}", file.path.display()))?;
-
-        let filename = file.path.file_name().and_then(|n| n.to_str());
-
-        match shared::content_extractor::extract_content(&data, &file.mime_type, filename) {
-            Ok(content) => {
-                if !content.is_empty() {
-                    debug!(
-                        "Extracted {} bytes from {}",
-                        content.len(),
-                        file.path.display()
-                    );
-                }
-                Ok(content)
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to extract content from {}: {}",
-                    file.path.display(),
-                    e
-                );
-                Ok(String::new())
-            }
-        }
-    }
-}
-
-/// Returns true for source code and config file extensions that should not be indexed.
-fn is_source_code_or_config(path: &Path) -> bool {
-    let ext = match path.extension().and_then(|e| e.to_str()) {
-        Some(e) => e.to_lowercase(),
-        None => return false,
-    };
-
-    matches!(
-        ext.as_str(),
-        "rs" | "py"
-            | "js"
-            | "ts"
-            | "jsx"
-            | "tsx"
-            | "go"
-            | "java"
-            | "c"
-            | "cpp"
-            | "h"
-            | "hpp"
-            | "rb"
-            | "sh"
-            | "bash"
-            | "zsh"
-            | "fish"
-            | "pl"
-            | "pm"
-            | "php"
-            | "swift"
-            | "kt"
-            | "scala"
-            | "clj"
-            | "ex"
-            | "exs"
-            | "erl"
-            | "hs"
-            | "lua"
-            | "r"
-            | "m"
-            | "mm"
-            | "cs"
-            | "fs"
-            | "vb"
-            | "dart"
-            | "zig"
-            | "nim"
-            | "v"
-            | "sql"
-            | "xml"
-            | "yaml"
-            | "yml"
-            | "toml"
-            | "json"
-            | "ini"
-            | "conf"
-            | "cfg"
-            | "hocon"
-            | "properties"
-            | "html"
-            | "htm"
-            | "css"
-            | "scss"
-            | "sass"
-            | "less"
-    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::FileSystemScanner;
-    use crate::models::{FileSystemFile, FileSystemPermissions, FileSystemSource};
-    use std::path::PathBuf;
+    use crate::models::FileSystemSource;
     use tempfile::TempDir;
 
-    fn create_text_file(dir: &TempDir, name: &str, content: &str) -> PathBuf {
-        let path = dir.path().join(name);
-        std::fs::write(&path, content).unwrap();
-        path
-    }
-
-    fn create_docx_file(dir: &TempDir, name: &str, text: &str) -> PathBuf {
-        let path = dir.path().join(name);
-        let docx = docx_rs::Docx::new()
-            .add_paragraph(docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_text(text)));
-        let file = std::fs::File::create(&path).unwrap();
-        docx.build().pack(file).unwrap();
-        path
+    fn create_text_file(dir: &TempDir, name: &str, content: &str) {
+        std::fs::write(dir.path().join(name), content).unwrap();
     }
 
     fn make_source(dir: &TempDir) -> FileSystemSource {
@@ -361,36 +234,15 @@ mod tests {
         }
     }
 
-    fn make_file(path: PathBuf, mime_type: &str) -> FileSystemFile {
-        let metadata = std::fs::metadata(&path).unwrap();
-        FileSystemFile {
-            name: path.file_name().unwrap().to_string_lossy().to_string(),
-            size: metadata.len(),
-            mime_type: mime_type.to_string(),
-            created_time: metadata.created().ok(),
-            modified_time: metadata.modified().ok(),
-            is_directory: false,
-            permissions: FileSystemPermissions {
-                readable: true,
-                writable: true,
-                executable: false,
-            },
-            path,
-        }
-    }
-
     #[tokio::test]
     async fn test_scan_directory_discovers_files() {
         let dir = TempDir::new().unwrap();
         create_text_file(&dir, "notes.txt", "some text");
         create_text_file(&dir, "readme.md", "# Hello");
-        create_docx_file(&dir, "doc.docx", "word content");
 
-        let source = make_source(&dir);
-        let scanner = FileSystemScanner::new(source);
+        let scanner = FileSystemScanner::new(make_source(&dir));
         let files = scanner.scan_directory().await.unwrap();
-
-        assert_eq!(files.len(), 3);
+        assert_eq!(files.len(), 2);
     }
 
     #[tokio::test]
@@ -405,7 +257,6 @@ mod tests {
 
         let scanner = FileSystemScanner::new(source);
         let files = scanner.scan_directory().await.unwrap();
-
         assert_eq!(files.len(), 1);
         assert!(files[0].name.ends_with(".txt"));
     }
@@ -415,7 +266,6 @@ mod tests {
         let dir = TempDir::new().unwrap();
         create_text_file(&dir, "notes.txt", "text content");
 
-        // Create a subdirectory with a file
         let sub = dir.path().join("hidden");
         std::fs::create_dir(&sub).unwrap();
         std::fs::write(sub.join("secret.txt"), "secret").unwrap();
@@ -425,7 +275,6 @@ mod tests {
 
         let scanner = FileSystemScanner::new(source);
         let files = scanner.scan_directory().await.unwrap();
-
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].name, "notes.txt");
     }
@@ -443,84 +292,7 @@ mod tests {
 
         let scanner = FileSystemScanner::new(source);
         let files = scanner.scan_directory().await.unwrap();
-
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].name, "small.txt");
-    }
-
-    #[tokio::test]
-    async fn test_read_file_content_text() {
-        let dir = TempDir::new().unwrap();
-        let path = create_text_file(&dir, "notes.txt", "Hello from scanner");
-        let file = make_file(path, "text/plain");
-
-        let source = make_source(&dir);
-        let scanner = FileSystemScanner::new(source);
-        let content = scanner.read_file_content(&file).await.unwrap();
-
-        assert_eq!(content, "Hello from scanner");
-    }
-
-    #[tokio::test]
-    async fn test_read_file_content_docx() {
-        let dir = TempDir::new().unwrap();
-        let path = create_docx_file(&dir, "doc.docx", "Scanner DOCX test");
-        let file = make_file(
-            path,
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        );
-
-        let source = make_source(&dir);
-        let scanner = FileSystemScanner::new(source);
-        let content = scanner.read_file_content(&file).await.unwrap();
-
-        assert!(
-            content.contains("Scanner DOCX test"),
-            "Expected DOCX content via scanner, got: '{}'",
-            content
-        );
-    }
-
-    #[tokio::test]
-    async fn test_read_file_content_source_code_returns_empty() {
-        let dir = TempDir::new().unwrap();
-        let path = create_text_file(&dir, "main.rs", "fn main() {}");
-        let file = make_file(path, "text/plain");
-
-        let source = make_source(&dir);
-        let scanner = FileSystemScanner::new(source);
-        let content = scanner.read_file_content(&file).await.unwrap();
-
-        assert!(
-            content.is_empty(),
-            "Expected empty for source code, got: '{}'",
-            content
-        );
-    }
-
-    #[tokio::test]
-    async fn test_read_file_content_directory_returns_empty() {
-        let dir = TempDir::new().unwrap();
-
-        let file = FileSystemFile {
-            path: dir.path().to_path_buf(),
-            name: "testdir".to_string(),
-            size: 0,
-            mime_type: "inode/directory".to_string(),
-            created_time: None,
-            modified_time: None,
-            is_directory: true,
-            permissions: FileSystemPermissions {
-                readable: true,
-                writable: true,
-                executable: true,
-            },
-        };
-
-        let source = make_source(&dir);
-        let scanner = FileSystemScanner::new(source);
-        let content = scanner.read_file_content(&file).await.unwrap();
-
-        assert!(content.is_empty());
     }
 }

@@ -1,3 +1,4 @@
+use crate::models::SyncMode;
 use anyhow::Result;
 use shared::models::{ConnectorEvent, SourceType};
 use shared::SdkClient;
@@ -10,6 +11,7 @@ pub struct SyncContext {
     sync_run_id: String,
     source_id: String,
     source_type: SourceType,
+    sync_mode: SyncMode,
     cancelled: Arc<AtomicBool>,
 }
 
@@ -19,6 +21,7 @@ impl SyncContext {
         sync_run_id: String,
         source_id: String,
         source_type: SourceType,
+        sync_mode: SyncMode,
         cancelled: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -26,6 +29,7 @@ impl SyncContext {
             sync_run_id,
             source_id,
             source_type,
+            sync_mode,
             cancelled,
         }
     }
@@ -44,6 +48,10 @@ impl SyncContext {
 
     pub fn source_type(&self) -> SourceType {
         self.source_type
+    }
+
+    pub fn sync_mode(&self) -> SyncMode {
+        self.sync_mode
     }
 
     pub fn is_cancelled(&self) -> bool {

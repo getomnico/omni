@@ -297,6 +297,7 @@ where
         sync_run_id.clone(),
         source_id.clone(),
         source.source_type,
+        request.sync_mode,
         cancelled,
     );
     let connector = Arc::clone(&state.connector);

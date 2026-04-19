@@ -1,10 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use omni_connector_sdk::SyncContext;
-use redis::Client as RedisClient;
-use shared::SdkClient;
+use omni_connector_sdk::{SdkClient, SyncContext};
 use spider::client::StatusCode;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{mpsc, Mutex};
@@ -81,117 +79,18 @@ impl PageSource for SpiderPageSource {
     }
 }
 
-#[derive(Clone)]
-pub struct SyncState {
-    redis_client: RedisClient,
-}
-
-impl SyncState {
-    pub fn new(redis_client: RedisClient) -> Self {
-        Self { redis_client }
-    }
-
-    fn get_url_sync_key(&self, source_id: &str, url: &str) -> String {
-        let url_hash = format!("{:x}", md5::compute(url));
-        format!("web:sync:{}:{}", source_id, url_hash)
-    }
-
-    fn get_urls_set_key(&self, source_id: &str) -> String {
-        format!("web:urls:{}", source_id)
-    }
-
-    pub async fn get_page_sync_state(
-        &self,
-        source_id: &str,
-        url: &str,
-    ) -> Result<Option<PageSyncState>> {
-        use redis::AsyncCommands;
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        let key = self.get_url_sync_key(source_id, url);
-
-        let result: Option<String> = conn.get(&key).await?;
-        match result {
-            Some(json_str) => {
-                let state: PageSyncState = serde_json::from_str(&json_str)
-                    .context("Failed to deserialize page sync state")?;
-                Ok(Some(state))
-            }
-            None => Ok(None),
-        }
-    }
-
-    pub async fn set_page_sync_state(
-        &self,
-        source_id: &str,
-        url: &str,
-        state: &PageSyncState,
-    ) -> Result<()> {
-        use redis::AsyncCommands;
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        let key = self.get_url_sync_key(source_id, url);
-        let json_str = serde_json::to_string(state)?;
-
-        let _: () = conn.set_ex(&key, json_str, 90 * 24 * 60 * 60).await?;
-        Ok(())
-    }
-
-    pub async fn add_url_to_set(&self, source_id: &str, url: &str) -> Result<()> {
-        use redis::AsyncCommands;
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        let key = self.get_urls_set_key(source_id);
-        let document_id = WebPage::url_to_document_id(url);
-
-        let _: () = conn.sadd(&key, document_id).await?;
-        let _: () = conn.expire(&key, 90 * 24 * 60 * 60).await?;
-        Ok(())
-    }
-
-    pub async fn get_all_synced_urls(&self, source_id: &str) -> Result<HashSet<String>> {
-        use redis::AsyncCommands;
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        let key = self.get_urls_set_key(source_id);
-
-        let url_hashes: HashSet<String> = conn.smembers(&key).await?;
-        Ok(url_hashes)
-    }
-
-    pub async fn remove_url_from_set(&self, source_id: &str, url_hash: &str) -> Result<()> {
-        use redis::AsyncCommands;
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        let key = self.get_urls_set_key(source_id);
-
-        let _: () = conn.srem(&key, url_hash).await?;
-        Ok(())
-    }
-
-    pub async fn delete_page_sync_state(&self, source_id: &str, url: &str) -> Result<()> {
-        use redis::AsyncCommands;
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        let key = self.get_url_sync_key(source_id, url);
-
-        let _: () = conn.del(&key).await?;
-        Ok(())
-    }
-}
-
 pub struct SyncManager {
-    redis_client: RedisClient,
     sdk_client: SdkClient,
     page_source: Arc<dyn PageSource>,
 }
 
 impl SyncManager {
-    pub fn new(redis_client: RedisClient, sdk_client: SdkClient) -> Self {
-        Self::with_page_source(redis_client, sdk_client, Arc::new(SpiderPageSource))
+    pub fn new(sdk_client: SdkClient) -> Self {
+        Self::with_page_source(sdk_client, Arc::new(SpiderPageSource))
     }
 
-    pub fn with_page_source(
-        redis_client: RedisClient,
-        sdk_client: SdkClient,
-        page_source: Arc<dyn PageSource>,
-    ) -> Self {
+    pub fn with_page_source(sdk_client: SdkClient, page_source: Arc<dyn PageSource>) -> Self {
         Self {
-            redis_client,
             sdk_client,
             page_source,
         }
@@ -201,27 +100,37 @@ impl SyncManager {
         &self.sdk_client
     }
 
-    pub async fn run_sync(&self, config: WebSourceConfig, ctx: SyncContext) -> Result<()> {
+    pub async fn run_sync(
+        &self,
+        config: WebSourceConfig,
+        prior_state: Option<WebConnectorState>,
+        ctx: SyncContext,
+    ) -> Result<()> {
         let sync_run_id = ctx.sync_run_id().to_string();
         let source_id = ctx.source_id().to_string();
-        let sync_state = SyncState::new(self.redis_client.clone());
-        let previous_urls = sync_state.get_all_synced_urls(&source_id).await?;
-        let current_urls: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
+
+        // Hydrate prior state (empty on first sync).
+        let prior = prior_state.unwrap_or_default();
+        let previous_doc_ids: HashSet<String> = prior.pages.keys().cloned().collect();
+
+        // In-memory state accumulated during this sync run. On completion it
+        // replaces `prior` and is persisted via `ctx.save_connector_state`.
+        let state: Arc<Mutex<HashMap<String, PageSyncState>>> =
+            Arc::new(Mutex::new(prior.pages.clone()));
+        let current_doc_ids: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
         let pages_processed: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
         let pages_updated: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
 
-        // Create channel for receiving pages from the crawler
         let (tx, mut rx) = mpsc::channel::<WebPage>(32);
 
-        // Spawn page processor
         let processor_handle = {
             let source_id = source_id.clone();
             let sync_run_id = sync_run_id.clone();
-            let current_urls = current_urls.clone();
+            let current_doc_ids = current_doc_ids.clone();
+            let state = state.clone();
             let pages_processed = pages_processed.clone();
             let pages_updated = pages_updated.clone();
-            let sync_state = sync_state.clone();
             let ctx = ctx.clone();
 
             tokio::spawn(async move {
@@ -238,8 +147,8 @@ impl SyncManager {
                         &web_page,
                         &sync_run_id,
                         &source_id,
-                        &sync_state,
-                        &current_urls,
+                        &state,
+                        &current_doc_ids,
                         &pages_processed,
                         &pages_updated,
                         &ctx,
@@ -252,11 +161,9 @@ impl SyncManager {
             })
         };
 
-        // Start crawling
         info!("Setting up crawl for url {}", config.root_url);
         let crawl_result = self.page_source.crawl(&config, tx).await;
 
-        // Wait for processor to finish
         processor_handle
             .await
             .with_context(|| "Failed while waiting for page processor to complete")?;
@@ -265,38 +172,32 @@ impl SyncManager {
             return Ok(());
         }
 
-        if let Err(e) = crawl_result {
-            return Err(e);
-        }
+        crawl_result?;
 
-        debug!("Collecting final processed and updated document counts");
         let final_processed = *pages_processed.lock().await;
         let final_updated = *pages_updated.lock().await;
 
-        // Handle deleted pages
-        debug!("Collecting all URLs");
-        let current_url_hashes = current_urls.lock().await;
-        let deleted_urls: Vec<String> = previous_urls
-            .difference(&*current_url_hashes)
-            .cloned()
-            .collect();
-
+        // Deletion detection — any doc_id present in prior state but not seen
+        // in the current crawl is treated as deleted. Emit the event and drop
+        // it from the state so the next sync doesn't re-emit.
+        let current = current_doc_ids.lock().await.clone();
+        let deleted_doc_ids: Vec<String> = previous_doc_ids.difference(&current).cloned().collect();
         info!(
             "Detected {} deleted pages for source {}",
-            deleted_urls.len(),
+            deleted_doc_ids.len(),
             source_id
         );
 
-        for url_hash in &deleted_urls {
-            if let Err(e) = self
-                .publish_deletion_event(&sync_run_id, &source_id, url_hash)
-                .await
-            {
-                tracing::error!("Failed to publish deletion event: {}", e);
-            }
-
-            if let Err(e) = sync_state.remove_url_from_set(&source_id, url_hash).await {
-                tracing::error!("Failed to remove URL from set: {}", e);
+        {
+            let mut state_guard = state.lock().await;
+            for doc_id in &deleted_doc_ids {
+                if let Err(e) = self
+                    .publish_deletion_event(&sync_run_id, &source_id, doc_id)
+                    .await
+                {
+                    tracing::error!("Failed to publish deletion event: {}", e);
+                }
+                state_guard.remove(doc_id);
             }
         }
 
@@ -305,14 +206,14 @@ impl SyncManager {
             source_id,
             final_processed,
             final_updated,
-            deleted_urls.len()
+            deleted_doc_ids.len()
         );
 
-        // Save connector state
-        let connector_state = WebConnectorState {
+        let new_state = WebConnectorState {
+            pages: state.lock().await.clone(),
             last_sync_completed_at: Some(chrono::Utc::now().to_rfc3339()),
         };
-        ctx.save_connector_state(serde_json::to_value(&connector_state)?)
+        ctx.save_connector_state(serde_json::to_value(&new_state)?)
             .await?;
         ctx.complete(final_processed as i32, final_updated as i32, None)
             .await?;
@@ -323,23 +224,20 @@ impl SyncManager {
         web_page: &WebPage,
         sync_run_id: &str,
         source_id: &str,
-        sync_state: &SyncState,
-        current_urls: &Arc<Mutex<HashSet<String>>>,
+        state: &Arc<Mutex<HashMap<String, PageSyncState>>>,
+        current_doc_ids: &Arc<Mutex<HashSet<String>>>,
         pages_processed: &Arc<Mutex<usize>>,
         pages_updated: &Arc<Mutex<usize>>,
         ctx: &SyncContext,
     ) -> Result<()> {
         let url = &web_page.url;
-        let url_hash = WebPage::url_to_document_id(url);
+        let doc_id = WebPage::url_to_document_id(url);
 
-        {
-            let mut urls = current_urls.lock().await;
-            urls.insert(url_hash.clone());
-        }
+        current_doc_ids.lock().await.insert(doc_id.clone());
 
-        let should_index = match sync_state.get_page_sync_state(source_id, url).await? {
-            Some(old_state) => {
-                if old_state.has_changed(web_page) {
+        let should_index = match state.lock().await.get(&doc_id) {
+            Some(prior) => {
+                if prior.has_changed(web_page) {
                     debug!("Page {} has changed, will update", url);
                     true
                 } else {
@@ -369,19 +267,13 @@ impl SyncManager {
                 .await
                 .context("Failed to emit event")?;
 
-            let new_state = PageSyncState::new(web_page);
-            sync_state
-                .set_page_sync_state(source_id, url, &new_state)
-                .await?;
+            let new_entry = PageSyncState::new(web_page);
+            state.lock().await.insert(doc_id, new_entry);
 
-            let mut count = pages_updated.lock().await;
-            *count += 1;
+            *pages_updated.lock().await += 1;
         }
 
-        sync_state.add_url_to_set(source_id, url).await?;
-
-        let mut count = pages_processed.lock().await;
-        *count += 1;
+        *pages_processed.lock().await += 1;
 
         ctx.increment_scanned(1)
             .await
@@ -394,12 +286,12 @@ impl SyncManager {
         &self,
         sync_run_id: &str,
         source_id: &str,
-        url_hash: &str,
+        document_id: &str,
     ) -> Result<()> {
-        let event = shared::models::ConnectorEvent::DocumentDeleted {
+        let event = omni_connector_sdk::ConnectorEvent::DocumentDeleted {
             sync_run_id: sync_run_id.to_string(),
             source_id: source_id.to_string(),
-            document_id: url_hash.to_string(),
+            document_id: document_id.to_string(),
         };
 
         self.sdk_client

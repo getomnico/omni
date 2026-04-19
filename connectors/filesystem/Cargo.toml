@@ -15,27 +15,18 @@ path = "src/lib.rs"
 
 [dependencies]
 tokio = { workspace = true }
-shared = { path = "../../shared" }
 omni-connector-sdk = { path = "../../sdk/rust" }
 async-trait = { workspace = true }
-sqlx = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 dotenvy = { workspace = true }
-chrono = { workspace = true }
 anyhow = { workspace = true }
-thiserror = { workspace = true }
-uuid = { workspace = true }
 time = { workspace = true }
-futures = { workspace = true }
-governor = { workspace = true }
-nonzero_ext = { workspace = true }
 notify = "6.0"
 walkdir = "2.3"
 mime_guess = "2.0"
 
 [dev-dependencies]
 tempfile = "3"
-docx-rs = "0.4"

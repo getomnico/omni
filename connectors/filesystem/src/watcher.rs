@@ -1,412 +1,218 @@
-use crate::models::FileSystemSource;
+//! Realtime filesystem watcher.
+//!
+//! Runs as a long-lived sync under `SyncMode::Realtime`: the connector manager
+//! triggers `/sync` once, the SDK invokes `FileSystemConnector::sync()`, and
+//! this watcher loops emitting `ConnectorEvent`s via the `SyncContext` until
+//! `ctx.is_cancelled()` flips. All event emission and lifecycle calls go
+//! through the SDK — no direct database or queue access.
+
+use crate::models::{FileSystemConfig, FileSystemSource};
 use crate::scanner::FileSystemScanner;
 use anyhow::Result;
 use notify::{Config, Event, EventKind, RecursiveMode, Watcher};
-use shared::db::repositories::SyncRunRepository;
-use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions, SyncRun, SyncType};
-use shared::queue::EventQueue;
-use sqlx::PgPool;
+use omni_connector_sdk::{ConnectorEvent, DocumentMetadata, DocumentPermissions, SyncContext};
 use std::path::PathBuf;
-use std::sync::mpsc;
-use std::time::Duration;
-use tokio::sync::mpsc as tokio_mpsc;
-use tokio::time::{interval, Instant};
-use tracing::{debug, error, info, warn};
-
-pub struct FileSystemWatcher {
-    source: FileSystemSource,
-    event_sender: tokio_mpsc::UnboundedSender<FileSystemEvent>,
-}
+use std::time::{Duration, SystemTime};
+use tokio::sync::mpsc;
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone)]
-pub enum FileSystemEvent {
-    FileCreated(PathBuf),
-    FileModified(PathBuf),
-    FileDeleted(PathBuf),
+enum FsEvent {
+    Created(PathBuf),
+    Modified(PathBuf),
+    Deleted(PathBuf),
 }
 
-impl FileSystemWatcher {
-    pub fn new(
-        source: FileSystemSource,
-        event_sender: tokio_mpsc::UnboundedSender<FileSystemEvent>,
-    ) -> Self {
-        Self {
-            source,
-            event_sender,
+pub async fn run_realtime(
+    source_name: String,
+    source_config: FileSystemConfig,
+    ctx: SyncContext,
+) -> Result<()> {
+    let source = source_config.into_source(source_name);
+    let scanner = FileSystemScanner::new(source.clone());
+
+    let (tx, mut rx) = mpsc::unbounded_channel::<FsEvent>();
+
+    // PollWatcher keeps its own background thread; the callback fires there.
+    // Dropping the watcher at function exit stops polling.
+    let source_for_cb = source.clone();
+    let config = Config::default()
+        .with_poll_interval(Duration::from_secs(2))
+        .with_compare_contents(true);
+    let mut watcher = notify::PollWatcher::new(
+        move |result: notify::Result<Event>| match result {
+            Ok(event) => {
+                for fs_event in translate(&event, &source_for_cb) {
+                    let _ = tx.send(fs_event);
+                }
+            }
+            Err(error) => warn!("File watcher error: {}", error),
+        },
+        config,
+    )?;
+    watcher.watch(&source.base_path, RecursiveMode::Recursive)?;
+    info!(
+        "Realtime watcher running for source {} at {}",
+        ctx.source_id(),
+        source.base_path.display()
+    );
+
+    let mut scanned = 0i32;
+    let mut updated = 0i32;
+
+    while !ctx.is_cancelled() {
+        match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
+            Ok(Some(event)) => match handle_event(&ctx, &scanner, event).await {
+                Ok(Emitted::Yes) => {
+                    scanned += 1;
+                    updated += 1;
+                }
+                Ok(Emitted::Skipped) => {}
+                Err(error) => warn!("Failed to handle filesystem event: {}", error),
+            },
+            Ok(None) => break,
+            Err(_) => {} // timeout — loop to re-check cancellation
         }
     }
 
-    pub async fn start_watching(&self) -> Result<()> {
-        info!(
-            "Starting filesystem watcher for source: {} at path: {}",
-            self.source.name,
-            self.source.base_path.display()
-        );
+    drop(watcher);
 
-        // Create a channel for the file watcher
-        let (tx, rx) = mpsc::channel();
-        let event_sender = self.event_sender.clone();
-        let source = self.source.clone();
-
-        // Spawn a blocking task to handle the file watcher
-        let watcher_task = tokio::task::spawn_blocking(move || {
-            // Use PollWatcher for better compatibility with network filesystems
-            let config = Config::default()
-                .with_poll_interval(Duration::from_secs(2))
-                .with_compare_contents(true);
-
-            let mut watcher = notify::PollWatcher::new(
-                move |result: notify::Result<Event>| {
-                    if let Err(e) = tx.send(result) {
-                        error!("Failed to send file watcher event: {}", e);
-                    }
-                },
-                config,
-            )?;
-
-            // Start watching the base path recursively
-            watcher.watch(&source.base_path, RecursiveMode::Recursive)?;
-
-            info!("File watcher started successfully");
-
-            // Keep the watcher alive and process events
-            for event_result in rx {
-                match event_result {
-                    Ok(event) => {
-                        if let Err(e) = Self::process_file_event(&event, &source, &event_sender) {
-                            error!("Failed to process file event: {}", e);
-                        }
-                    }
-                    Err(e) => {
-                        error!("File watcher error: {}", e);
-                    }
-                }
-            }
-
-            Ok::<(), anyhow::Error>(())
-        });
-
-        // Wait for the watcher task to complete (which should be never in normal operation)
-        match watcher_task.await {
-            Ok(Ok(())) => {
-                warn!("File watcher task completed unexpectedly");
-            }
-            Ok(Err(e)) => {
-                error!("File watcher task failed: {}", e);
-                return Err(e);
-            }
-            Err(e) => {
-                error!("File watcher task panicked: {}", e);
-                return Err(anyhow::anyhow!("File watcher task panicked: {}", e));
-            }
-        }
-
-        Ok(())
+    if ctx.is_cancelled() {
+        info!("Realtime watcher cancelled for source {}", ctx.source_id());
+        ctx.cancel().await?;
+    } else {
+        ctx.complete(scanned, updated, None).await?;
     }
+    Ok(())
+}
 
-    fn process_file_event(
-        event: &Event,
-        source: &FileSystemSource,
-        event_sender: &tokio_mpsc::UnboundedSender<FileSystemEvent>,
-    ) -> Result<()> {
-        debug!("Processing file event: {:?}", event);
+enum Emitted {
+    Yes,
+    Skipped,
+}
 
-        for path in &event.paths {
-            // Check if this file should be included based on our filters
-            if !source.should_include_file(path) {
-                debug!("Skipping file event due to filters: {}", path.display());
-                continue;
-            }
+fn translate(event: &Event, source: &FileSystemSource) -> Vec<FsEvent> {
+    let mut out = Vec::new();
+    for path in &event.paths {
+        if !source.should_include_file(path) {
+            continue;
+        }
+        if path.is_dir() {
+            continue;
+        }
+        let fs_event = match event.kind {
+            EventKind::Create(_) => FsEvent::Created(path.clone()),
+            EventKind::Modify(_) => FsEvent::Modified(path.clone()),
+            EventKind::Remove(_) => FsEvent::Deleted(path.clone()),
+            _ => continue,
+        };
+        out.push(fs_event);
+    }
+    out
+}
 
-            // Skip directories
-            if path.is_dir() {
-                continue;
-            }
-
-            let filesystem_event = match event.kind {
-                EventKind::Create(_) => {
-                    debug!("File created: {}", path.display());
-                    FileSystemEvent::FileCreated(path.clone())
-                }
-                EventKind::Modify(_) => {
-                    debug!("File modified: {}", path.display());
-                    FileSystemEvent::FileModified(path.clone())
-                }
-                EventKind::Remove(_) => {
-                    debug!("File deleted: {}", path.display());
-                    FileSystemEvent::FileDeleted(path.clone())
-                }
-                _ => {
-                    // Other event types we don't care about
-                    continue;
-                }
+async fn handle_event(
+    ctx: &SyncContext,
+    scanner: &FileSystemScanner,
+    event: FsEvent,
+) -> Result<Emitted> {
+    let (path, is_created) = match event {
+        FsEvent::Deleted(path) => {
+            let connector_event = ConnectorEvent::DocumentDeleted {
+                sync_run_id: ctx.sync_run_id().to_string(),
+                source_id: ctx.source_id().to_string(),
+                document_id: path.to_string_lossy().to_string(),
             };
-
-            if let Err(e) = event_sender.send(filesystem_event) {
-                error!("Failed to send filesystem event: {}", e);
-            }
+            ctx.emit_event(connector_event).await?;
+            info!("Emitted delete event for {}", path.display());
+            return Ok(Emitted::Yes);
         }
+        FsEvent::Created(path) => (path, true),
+        FsEvent::Modified(path) => (path, false),
+    };
 
-        Ok(())
-    }
+    let file = match scanner.get_file_info(&path).await? {
+        Some(f) => f,
+        None => {
+            debug!("Skipping filtered file: {}", path.display());
+            return Ok(Emitted::Skipped);
+        }
+    };
+
+    let data = match std::fs::read(&file.path) {
+        Ok(d) if !d.is_empty() => d,
+        Ok(_) => {
+            debug!("Skipping empty file: {}", path.display());
+            return Ok(Emitted::Skipped);
+        }
+        Err(e) => {
+            warn!("Failed to read {}: {}", file.path.display(), e);
+            return Ok(Emitted::Skipped);
+        }
+    };
+
+    let file_name = file.name.clone();
+    let content_id = match ctx
+        .extract_and_store_content(data, &file.mime_type, Some(&file_name))
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            warn!("Extract/store failed for {}: {}", file.path.display(), e);
+            return Ok(Emitted::Skipped);
+        }
+    };
+
+    let connector_event = if is_created {
+        file.to_connector_event(
+            ctx.sync_run_id().to_string(),
+            ctx.source_id().to_string(),
+            content_id,
+        )
+    } else {
+        build_updated_event(&file, ctx, content_id)
+    };
+    ctx.emit_event(connector_event).await?;
+    info!(
+        "Emitted {} event for {}",
+        if is_created { "create" } else { "update" },
+        path.display()
+    );
+    Ok(Emitted::Yes)
 }
 
-pub struct FileSystemEventProcessor {
-    event_receiver: tokio_mpsc::UnboundedReceiver<FileSystemEvent>,
-    scanner: FileSystemScanner,
-    event_queue: EventQueue,
-    sdk_client: shared::SdkClient,
-    source_id: String,
-    pool: PgPool,
-    // Batched sync_run state
-    current_sync_run: Option<SyncRun>,
-    idle_timeout: Duration,
-    last_event_time: Instant,
-    events_in_batch: i32,
-}
-
-impl FileSystemEventProcessor {
-    pub fn new(
-        event_receiver: tokio_mpsc::UnboundedReceiver<FileSystemEvent>,
-        scanner: FileSystemScanner,
-        event_queue: EventQueue,
-        sdk_client: shared::SdkClient,
-        source_id: String,
-        pool: PgPool,
-        idle_timeout_secs: u64,
-    ) -> Self {
-        Self {
-            event_receiver,
-            scanner,
-            event_queue,
-            sdk_client,
-            source_id,
-            pool,
-            current_sync_run: None,
-            idle_timeout: Duration::from_secs(idle_timeout_secs),
-            last_event_time: Instant::now(),
-            events_in_batch: 0,
-        }
-    }
-
-    pub async fn process_events(&mut self) -> Result<()> {
-        info!("Starting filesystem event processor");
-
-        let mut idle_check_interval = interval(Duration::from_secs(5));
-
-        loop {
-            tokio::select! {
-                Some(event) = self.event_receiver.recv() => {
-                    self.last_event_time = Instant::now();
-                    if let Err(e) = self.handle_event(event).await {
-                        error!("Failed to handle filesystem event: {}", e);
-                    }
-                }
-                _ = idle_check_interval.tick() => {
-                    self.maybe_commit_sync_run().await;
-                }
-            }
-        }
-    }
-
-    async fn get_or_create_sync_run(&mut self) -> Result<String> {
-        if let Some(ref run) = self.current_sync_run {
-            return Ok(run.id.clone());
-        }
-
-        let sync_run_repo = SyncRunRepository::new(&self.pool);
-        let sync_run = sync_run_repo
-            .create(&self.source_id, SyncType::Incremental, "manual")
-            .await?;
-
-        info!(
-            "Created new incremental sync_run for realtime events: {}",
-            sync_run.id
-        );
-
-        self.current_sync_run = Some(sync_run.clone());
-        self.events_in_batch = 0;
-
-        Ok(sync_run.id)
-    }
-
-    async fn maybe_commit_sync_run(&mut self) {
-        if self.current_sync_run.is_none() {
-            return;
-        }
-
-        let elapsed = self.last_event_time.elapsed();
-        if elapsed < self.idle_timeout {
-            return;
-        }
-
-        if let Some(ref run) = self.current_sync_run {
-            let sync_run_repo = SyncRunRepository::new(&self.pool);
-            match sync_run_repo
-                .mark_completed(&run.id, self.events_in_batch, self.events_in_batch)
-                .await
-            {
-                Ok(_) => {
-                    info!(
-                        "Committed incremental sync_run {} with {} events",
-                        run.id, self.events_in_batch
-                    );
-                }
-                Err(e) => {
-                    error!("Failed to commit sync_run {}: {}", run.id, e);
-                }
-            }
-        }
-
-        self.current_sync_run = None;
-        self.events_in_batch = 0;
-    }
-
-    async fn handle_event(&mut self, event: FileSystemEvent) -> Result<()> {
-        match event {
-            FileSystemEvent::FileCreated(path) => {
-                info!("Handling file creation: {}", path.display());
-                self.handle_file_created_or_modified(&path, true).await?;
-            }
-            FileSystemEvent::FileModified(path) => {
-                info!("Handling file modification: {}", path.display());
-                self.handle_file_created_or_modified(&path, false).await?;
-            }
-            FileSystemEvent::FileDeleted(path) => {
-                info!("Handling file deletion: {}", path.display());
-                self.handle_file_deleted(&path).await?;
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn handle_file_created_or_modified(
-        &mut self,
-        path: &PathBuf,
-        is_created: bool,
-    ) -> Result<()> {
-        // Get or create sync_run for this batch
-        let sync_run_id = self.get_or_create_sync_run().await?;
-
-        // Get file info
-        let file = match self.scanner.get_file_info(path).await? {
-            Some(f) => f,
-            None => {
-                debug!("Skipping file (filtered or directory): {}", path.display());
-                return Ok(());
-            }
-        };
-
-        // Read raw file bytes for server-side extraction
-        let data = match std::fs::read(&file.path) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!("Failed to read file {}: {}", file.path.display(), e);
-                return Ok(());
-            }
-        };
-
-        if data.is_empty() {
-            debug!("Skipping file with empty content: {}", path.display());
-            return Ok(());
-        }
-
-        let file_name = file.name.clone();
-
-        // Extract and store content via the connector manager
-        let content_id = match self
-            .sdk_client
-            .extract_and_store_content(&sync_run_id, data, &file.mime_type, Some(&file_name))
-            .await
-        {
-            Ok(id) => id,
-            Err(e) => {
-                warn!(
-                    "Failed to extract/store content for {}: {}",
-                    file.path.display(),
-                    e
-                );
-                return Ok(());
-            }
-        };
-
-        // Create the connector event
-        let document_id = path.to_string_lossy().to_string();
-
-        let event = if is_created {
-            file.to_connector_event(sync_run_id, self.source_id.clone(), content_id)
-        } else {
-            // For updates, we create a DocumentUpdated event
-            ConnectorEvent::DocumentUpdated {
-                sync_run_id,
-                source_id: self.source_id.clone(),
-                document_id: document_id.clone(),
-                content_id,
-                metadata: DocumentMetadata {
-                    title: Some(file.name),
-                    author: None,
-                    created_at: file.created_time.and_then(|t| {
-                        t.duration_since(std::time::SystemTime::UNIX_EPOCH)
-                            .ok()
-                            .and_then(|d| {
-                                time::OffsetDateTime::from_unix_timestamp(d.as_secs() as i64).ok()
-                            })
-                    }),
-                    updated_at: file.modified_time.and_then(|t| {
-                        t.duration_since(std::time::SystemTime::UNIX_EPOCH)
-                            .ok()
-                            .and_then(|d| {
-                                time::OffsetDateTime::from_unix_timestamp(d.as_secs() as i64).ok()
-                            })
-                    }),
-                    content_type: None,
-                    mime_type: Some(file.mime_type),
-                    size: Some(file.size.to_string()),
-                    url: None,
-                    path: Some(file.path.to_string_lossy().to_string()),
-                    extra: None,
-                },
-                permissions: Some(DocumentPermissions {
-                    public: true,
-                    users: vec![],
-                    groups: vec![],
-                }),
-                attributes: None,
-            }
-        };
-
-        // Queue the event
-        self.event_queue.enqueue(&self.source_id, &event).await?;
-        self.events_in_batch += 1;
-
-        info!(
-            "Queued {} event for file: {}",
-            if is_created { "create" } else { "update" },
-            path.display()
-        );
-
-        Ok(())
-    }
-
-    async fn handle_file_deleted(&mut self, path: &PathBuf) -> Result<()> {
-        // Get or create sync_run for this batch
-        let sync_run_id = self.get_or_create_sync_run().await?;
-
-        let document_id = path.to_string_lossy().to_string();
-
-        let event = ConnectorEvent::DocumentDeleted {
-            sync_run_id,
-            source_id: self.source_id.clone(),
-            document_id: document_id.clone(),
-        };
-
-        // Queue the event
-        self.event_queue.enqueue(&self.source_id, &event).await?;
-        self.events_in_batch += 1;
-
-        info!("Queued delete event for file: {}", path.display());
-
-        Ok(())
+fn build_updated_event(
+    file: &crate::models::FileSystemFile,
+    ctx: &SyncContext,
+    content_id: String,
+) -> ConnectorEvent {
+    use time::OffsetDateTime;
+    let to_offset = |t: Option<SystemTime>| {
+        t.and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .and_then(|d| OffsetDateTime::from_unix_timestamp(d.as_secs() as i64).ok())
+    };
+    ConnectorEvent::DocumentUpdated {
+        sync_run_id: ctx.sync_run_id().to_string(),
+        source_id: ctx.source_id().to_string(),
+        document_id: file.path.to_string_lossy().to_string(),
+        content_id,
+        metadata: DocumentMetadata {
+            title: Some(file.name.clone()),
+            author: None,
+            created_at: to_offset(file.created_time),
+            updated_at: to_offset(file.modified_time),
+            content_type: None,
+            mime_type: Some(file.mime_type.clone()),
+            size: Some(file.size.to_string()),
+            url: None,
+            path: Some(file.path.to_string_lossy().to_string()),
+            extra: None,
+        },
+        permissions: Some(DocumentPermissions {
+            public: true,
+            users: vec![],
+            groups: vec![],
+        }),
+        attributes: None,
     }
 }

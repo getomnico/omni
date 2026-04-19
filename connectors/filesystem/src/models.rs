@@ -1,9 +1,9 @@
+use omni_connector_sdk::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use serde::{Deserialize, Serialize};
-use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
-use sqlx::types::time::OffsetDateTime;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::SystemTime;
+use time::OffsetDateTime;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSystemFile {
@@ -162,7 +162,7 @@ impl FileSystemSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::models::ConnectorEvent;
+    use omni_connector_sdk::ConnectorEvent;
     use std::path::PathBuf;
     use tempfile::TempDir;
 

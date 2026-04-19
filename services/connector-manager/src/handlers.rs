@@ -45,8 +45,8 @@ pub async fn trigger_sync(
         .trigger_sync(
             &request.source_id,
             match request.sync_mode.as_deref() {
-                // TODO: Use SyncType in TriggerSyncRequest
                 Some("full") => SyncType::Full,
+                Some("realtime") => SyncType::Realtime,
                 _ => SyncType::Incremental,
             },
             TriggerType::Manual,
