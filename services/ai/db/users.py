@@ -42,9 +42,8 @@ class UsersRepository:
     async def find_by_id(self, user_id: str) -> Optional[User]:
         pool = await self._get_pool()
         query = """
-            SELECT id, email, full_name, role, is_active, created_at, updated_at
-            FROM users
-            WHERE id = $1
+            SELECT id, email, full_name, role, is_active, memory_mode, created_at, updated_at
+            FROM users WHERE id = $1
         """
         async with pool.acquire() as conn:
             row = await conn.fetchrow(query, user_id)

@@ -3,7 +3,7 @@
     import type { Snippet } from 'svelte'
     import { cn } from '$lib/utils'
     import { page } from '$app/state'
-    import { ArrowLeft, Cable, Users, Shield, Cpu, ArrowUpRight, Bot, Mail, FileText } from '@lucide/svelte'
+    import { ArrowLeft, Cable, Users, Shield, Cpu, ArrowUpRight, Bot, Mail, FileText, Brain } from '@lucide/svelte'
     import Button from '$lib/components/ui/button/button.svelte'
     import type { LayoutData } from './$types.js'
 
@@ -125,6 +125,20 @@
                                     <a href="/admin/settings/document-conversion" {...props}>
                                         <FileText class="h-4 w-4" />
                                         <span>Document Conversion</span>
+                                    </a>
+                                {/snippet}
+                            </Sidebar.MenuButton>
+                        </Sidebar.MenuItem>
+                        <Sidebar.MenuItem>
+                            <Sidebar.MenuButton
+                                class={cn(
+                                    page.url.pathname === '/admin/settings/memory' &&
+                                        'bg-sidebar-accent text-sidebar-accent-foreground',
+                                )}>
+                                {#snippet child({ props })}
+                                    <a href="/admin/settings/memory" {...props}>
+                                        <Brain class="h-4 w-4" />
+                                        <span>Memory</span>
                                     </a>
                                 {/snippet}
                             </Sidebar.MenuButton>

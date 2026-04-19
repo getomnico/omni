@@ -115,6 +115,7 @@ APPROVAL_TIMEOUT_SECONDS = int(
     get_optional_env("APPROVAL_TIMEOUT_SECONDS", "600")
 )  # 10 minutes
 SANDBOX_URL: str | None = os.getenv("SANDBOX_URL") or None
+MEMORY_SERVICE_URL: str | None = os.getenv("MEMORY_SERVICE_URL") or None
 
 # Background agent scheduler
 AGENT_SCHEDULER_POLL_INTERVAL = int(

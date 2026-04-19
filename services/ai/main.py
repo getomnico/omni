@@ -25,9 +25,12 @@ from routers import (
     agents_router,
     uploads_router,
     usage_router,
+    internal_router,
+    memory_router,
 )
 
-from config import PORT
+from config import PORT, MEMORY_SERVICE_URL
+from memory.client import MemoryClient
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -47,6 +50,8 @@ app.include_router(model_providers_router)
 app.include_router(agents_router)
 app.include_router(uploads_router)
 app.include_router(usage_router)
+app.include_router(internal_router)
+app.include_router(memory_router)
 
 
 @app.on_event("startup")
@@ -62,6 +67,12 @@ async def startup_event():
             from agents.scheduler import run_agent_scheduler
 
             asyncio.create_task(run_agent_scheduler(app.state))
+
+        if MEMORY_SERVICE_URL:
+            app.state.memory_client = MemoryClient(base_url=MEMORY_SERVICE_URL)
+            logger.info(f"Memory client initialized: {MEMORY_SERVICE_URL}")
+        else:
+            logger.info("MEMORY_SERVICE_URL not set — memory feature disabled")
     except Exception as e:
         logger.error(f"Failed to initialize services: {e}")
         raise e
@@ -73,6 +84,12 @@ async def shutdown_event():
     if hasattr(app.state, "embedding_queue"):
         await app.state.embedding_queue.stop()
     await shutdown_providers(app.state)
+    memory_client = getattr(app.state, "memory_client", None)
+    if memory_client is not None:
+        try:
+            await memory_client.aclose()
+        except Exception as e:
+            logger.warning(f"Failed to close memory client: {e}")
 
 
 if __name__ == "__main__":

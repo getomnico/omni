@@ -10,6 +10,7 @@ from embeddings import EmbeddingProvider
 from providers import LLMProvider
 from tools import SearcherTool
 from storage import ContentStorage
+from memory.client import MemoryClient
 
 
 @dataclass
@@ -32,3 +33,4 @@ class AppState:
     redis_client: aioredis.Redis | None = None
     listener_task: asyncio.Task | None = None
     agent_run_queues: dict = field(default_factory=dict)  # {run_id: asyncio.Queue}
+    memory_client: MemoryClient | None = None

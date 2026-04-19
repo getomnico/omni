@@ -27,7 +27,10 @@ export function hashApiKey(key: string): string {
 export async function validateApiKey(
     key: string,
 ): Promise<{
-    user: typeof table.user.$inferSelect
+    user: Pick<
+        typeof table.user.$inferSelect,
+        'id' | 'email' | 'role' | 'isActive' | 'mustChangePassword' | 'memoryMode'
+    >
     allowedSources: string[] | null
     scope: 'public' | 'user' | 'admin'
 } | null> {
@@ -42,6 +45,7 @@ export async function validateApiKey(
                 role: table.user.role,
                 isActive: table.user.isActive,
                 mustChangePassword: table.user.mustChangePassword,
+                memoryMode: table.user.memoryMode,
             },
         })
         .from(table.apiKeys)

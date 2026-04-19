@@ -40,6 +40,7 @@
         Search,
         X,
         Bot,
+        Brain,
     } from '@lucide/svelte'
     import type { Snippet } from 'svelte'
     import { cn } from '$lib/utils'
@@ -395,6 +396,15 @@
                                 <Plug />
                                 <span class="group-data-[collapsible=icon]:hidden"
                                     >Integrations</span>
+                            </Button>
+                        </div>
+                        <div class="flex justify-start">
+                            <Button
+                                variant="ghost"
+                                href="/settings/memory"
+                                class="flex w-full justify-start has-[>svg]:px-2">
+                                <Brain />
+                                <span class="group-data-[collapsible=icon]:hidden">Memory</span>
                             </Button>
                         </div>
                     {/if}

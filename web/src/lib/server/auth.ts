@@ -66,6 +66,7 @@ export async function validateSessionToken(token: string) {
             role: table.user.role,
             isActive: table.user.isActive,
             mustChangePassword: table.user.mustChangePassword,
+            memoryMode: table.user.memoryMode,
         })
         .from(table.user)
         .where(eq(table.user.id, session.userId))
