@@ -104,6 +104,14 @@ pub struct ExecuteActionRequest {
     pub params: JsonValue,
 }
 
+/// Execute an action by source type instead of source ID.
+/// Used for pre-source flows (e.g. Telegram auth) where no source exists yet.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecuteActionByTypeRequest {
+    pub action: String,
+    pub params: JsonValue,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SdkSourceSyncConfigResponse {
     pub config: JsonValue,

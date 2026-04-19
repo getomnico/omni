@@ -87,6 +87,7 @@ pub fn build_manifest(connector_url: String) -> ConnectorManifest {
                 },
                 "required": ["file_id"]
             }),
+            authenticated: true,
         }],
         search_operators: vec![
             SearchOperator {

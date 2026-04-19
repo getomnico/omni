@@ -22,6 +22,7 @@ import notionIcon from '$lib/images/icons/notion.svg'
 import linearIcon from '$lib/images/icons/linear.svg'
 import githubIcon from '$lib/images/icons/github.svg'
 import nextcloudIcon from '$lib/images/icons/nextcloud.svg'
+import telegramIcon from '$lib/images/icons/telegram.svg'
 import paperlessIcon from '$lib/images/icons/paperless.svg'
 import imapIcon from '$lib/images/icons/imap.svg'
 
@@ -66,6 +67,7 @@ const SOURCE_TYPE_ICONS: Record<string, string> = {
     [SourceType.NOTION]: notionIcon,
     [SourceType.PAPERLESS_NGX]: paperlessIcon,
     [SourceType.NEXTCLOUD]: nextcloudIcon,
+    [SourceType.TELEGRAM]: telegramIcon,
     [SourceType.IMAP]: imapIcon,
 }
 
@@ -153,6 +155,8 @@ export function inferSourceFromUrl(url: string): SourceType | null {
         urlLower.includes('nextcloud')
     )
         return SourceType.NEXTCLOUD
+    if (urlLower.includes('t.me') || urlLower.includes('telegram.org'))
+        return SourceType.TELEGRAM
 
     return null
 }
@@ -211,6 +215,7 @@ export function getSourceDisplayName(sourceType: SourceType) {
         [SourceType.IMAP]: 'IMAP',
         [SourceType.NEXTCLOUD]: 'Nextcloud',
         [SourceType.PAPERLESS_NGX]: 'Paperless-ngx',
+        [SourceType.TELEGRAM]: 'Telegram',
     }
 
     return sourceDisplayNames[sourceType]

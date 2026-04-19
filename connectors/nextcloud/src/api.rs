@@ -107,6 +107,7 @@ pub fn build_manifest(connector_url: String) -> ConnectorManifest {
             description: "Verify that the provided Nextcloud credentials are valid".into(),
             input_schema: serde_json::json!({}),
             mode: "read".into(),
+            authenticated: true,
         }],
         search_operators: vec![],
         read_only: true,

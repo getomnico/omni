@@ -1,8 +1,8 @@
 use crate::connector_client::ConnectorClient;
 use crate::models::{
-    ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
-    ExecuteResourceRequest, PromptRequest, ResourceRequest, ScheduleInfo, SyncProgress,
-    TriggerSyncRequest, TriggerSyncResponse, TriggerType,
+    ActionRequest, ConnectorInfo, ExecuteActionByTypeRequest, ExecuteActionRequest,
+    ExecutePromptRequest, ExecuteResourceRequest, PromptRequest, ResourceRequest, ScheduleInfo,
+    SyncProgress, TriggerSyncRequest, TriggerSyncResponse, TriggerType,
 };
 use crate::sync_manager::SyncError;
 use crate::AppState;
@@ -415,6 +415,110 @@ pub async fn execute_action(
             builder = builder.header("X-File-Name", file_name);
         }
         // Forward Content-Length if present
+        if let Some(content_length) = response.headers().get("content-length") {
+            builder = builder.header("Content-Length", content_length);
+        }
+
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+        Ok(builder.body(axum::body::Body::from(bytes)).unwrap())
+    }
+}
+
+/// Execute an action by source type (not source ID).
+///
+/// Used for pre-source flows like Telegram auth where no source or credentials
+/// exist yet. Only actions marked `authenticated: false` in the connector's
+/// manifest are allowed — all others are rejected.
+pub async fn execute_action_by_source_type(
+    State(state): State<AppState>,
+    Path(source_type): Path<SourceType>,
+    Json(request): Json<ExecuteActionByTypeRequest>,
+) -> Result<axum::response::Response, ApiError> {
+    info!(
+        "Executing unauthenticated action {} for source type {:?}",
+        request.action, source_type
+    );
+
+    // Look up the connector manifest to get connector_url
+    let manifests = get_registered_manifests(&state.redis_client).await;
+    let manifest = manifests
+        .iter()
+        .find(|m| m.source_types.contains(&source_type))
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "Connector not registered for type: {:?}",
+                source_type
+            ))
+        })?;
+
+    let connector_url = manifest.connector_url.clone();
+
+    // Find the action in the manifest and verify it allows unauthenticated access
+    let action_def = manifest
+        .actions
+        .iter()
+        .find(|a| a.name == request.action)
+        .ok_or_else(|| {
+            ApiError::BadRequest(format!(
+                "Action '{}' not found in connector manifest",
+                request.action
+            ))
+        })?;
+
+    if action_def.authenticated {
+        return Err(ApiError::BadRequest(format!(
+            "Action '{}' requires authentication — use /action with a source_id instead",
+            request.action
+        )));
+    }
+
+    let client = ConnectorClient::new();
+    let action_request = ActionRequest {
+        action: request.action,
+        params: request.params,
+        credentials: json!({}),
+    };
+
+    let response = client
+        .execute_action_raw(&connector_url, &action_request)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/json")
+        .to_string();
+
+    if content_type.contains("application/json") {
+        let body = response
+            .text()
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+        let action_response: crate::models::ActionResponse =
+            serde_json::from_str(&body).map_err(|e| ApiError::Internal(e.to_string()))?;
+
+        let json_body = json!({
+            "status": action_response.status,
+            "result": action_response.result,
+            "error": action_response.error
+        });
+
+        Ok(axum::Json(json_body).into_response())
+    } else {
+        let mut builder = axum::response::Response::builder()
+            .status(axum::http::StatusCode::OK)
+            .header("Content-Type", &content_type);
+
+        if let Some(file_name) = response.headers().get("x-file-name") {
+            builder = builder.header("X-File-Name", file_name);
+        }
         if let Some(content_length) = response.headers().get("content-length") {
             builder = builder.header("Content-Length", content_length);
         }

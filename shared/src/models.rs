@@ -172,6 +172,7 @@ pub enum SourceType {
     Linear,
     PaperlessNgx,
     Nextcloud,
+    Telegram,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -193,6 +194,7 @@ pub enum ServiceProvider {
     #[serde(rename = "paperless_ngx")]
     PaperlessNgx,
     Nextcloud,
+    Telegram,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -343,10 +345,18 @@ pub struct ActionDefinition {
     pub input_schema: JsonValue,
     #[serde(default = "default_action_mode")]
     pub mode: String,
+    /// When false, connector-manager skips credential loading for this action.
+    /// Used for pre-source flows like Telegram auth (phone → SMS → 2FA).
+    #[serde(default = "default_authenticated")]
+    pub authenticated: bool,
 }
 
 fn default_action_mode() -> String {
     "write".to_string()
+}
+
+fn default_authenticated() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

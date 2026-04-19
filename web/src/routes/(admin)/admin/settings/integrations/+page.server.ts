@@ -26,6 +26,8 @@ const CONNECTOR_DISPLAY_ORDER: string[] = [
     'hubspot',
     // Meetings
     'fireflies',
+    // Communication (cont.)
+    'telegram',
     // Other
     'nextcloud',
     'web',

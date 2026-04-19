@@ -20,6 +20,7 @@ export enum SourceType {
     LINEAR = 'linear',
     PAPERLESS_NGX = 'paperless_ngx',
     NEXTCLOUD = 'nextcloud',
+    TELEGRAM = 'telegram',
 }
 
 export enum ServiceProvider {
@@ -36,6 +37,7 @@ export enum ServiceProvider {
     NOTION = 'notion',
     PAPERLESS_NGX = 'paperless_ngx',
     NEXTCLOUD = 'nextcloud',
+    TELEGRAM = 'telegram',
 }
 
 export enum AuthType {
@@ -155,6 +157,7 @@ export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.CLICKUP]: 3600,
     [SourceType.PAPERLESS_NGX]: 3600,
     [SourceType.NEXTCLOUD]: 3600,
+    [SourceType.TELEGRAM]: 1800,
 }
 
 export const EMBEDDING_PROVIDER_TYPES = ['local', 'jina', 'openai', 'cohere', 'bedrock'] as const

@@ -9,3 +9,4 @@ venv/
 .venv/
 __pycache__/
 omni-sa-key.json
+.mcp.json

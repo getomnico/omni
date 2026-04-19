@@ -47,6 +47,10 @@ pub fn create_app(state: AppState) -> Router {
         .route("/sources", get(handlers::list_sources))
         .route("/connectors", get(handlers::list_connectors))
         .route("/action", post(handlers::execute_action))
+        .route(
+            "/connectors/:source_type/action",
+            post(handlers::execute_action_by_source_type),
+        )
         .route("/actions", get(handlers::list_actions))
         .route("/resource", post(handlers::read_resource))
         .route("/resources", get(handlers::list_resources))

@@ -116,6 +116,7 @@ pub fn build_manifest(connector_url: String) -> ConnectorManifest {
                 "required": ["type"]
             }),
             mode: "read".to_string(),
+            authenticated: true,
         }],
         search_operators: vec![
             SearchOperator {

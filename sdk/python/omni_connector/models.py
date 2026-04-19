@@ -135,6 +135,7 @@ class ActionDefinition(BaseModel):
         default_factory=lambda: {"type": "object", "properties": {}}
     )
     mode: str = "write"  # "read" or "write"
+    authenticated: bool = True  # False = action can run without source credentials
 
 
 class SearchOperator(BaseModel):
