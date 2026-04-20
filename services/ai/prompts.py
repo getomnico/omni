@@ -126,13 +126,17 @@ def _format_datetime(dt: datetime | None = None) -> str:
 
 def _format_user_line(
     user_name: str | None,
-    user_email: str,
+    user_email: str | None,
     prefix: str = "User",
 ) -> str:
-    if user_name:
+    if user_name and user_email:
         identity = f"{user_name} ({user_email})"
-    else:
+    elif user_email:
         identity = user_email
+    elif user_name:
+        identity = user_name
+    else:
+        identity = "unknown"
     # Escape braces so .format() doesn't choke on user-supplied strings
     identity = identity.replace("{", "{{").replace("}", "}}")
     return f"{prefix}: {identity}"

@@ -39,10 +39,12 @@ dependencies = [
 
 [project.optional-dependencies]
 eval = [
-    "ragas>=0.2.0",
+    "ragas>=0.4.3",
     "datasets>=2.18.0",
     "pyyaml>=6.0",
     "python-dotenv>=1.0.1",
+    "tabulate>=0.9.0",
+    "langchain-text-splitters>=0.2.0",
 ]
 
 [tool.pytest.ini_options]
@@ -61,6 +63,7 @@ markers = [
     "unit: Unit tests (no external dependencies)",
     "integration: Integration tests (require DB/Redis)",
     "slow: Slow tests (skip with -m 'not slow')",
+    "evaluation: Evaluation tests (require LLM API key and running services)",
 ]
 
 [tool.coverage.run]

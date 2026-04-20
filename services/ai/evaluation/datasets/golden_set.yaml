@@ -1,15 +1,596 @@
-- id: "eval-001"
-  query: "What is Omni?"
-  task_family: "current_state"
-  temporal_type: "none"
-  reference_answer: "Omni is an open-source workplace search platform that indexes documents from multiple data sources and provides unified search with AI-powered answers."
-  reference_doc_ids: ["README.md"]
-  tags: ["basic", "intro"]
+# Auto-generated from MRQA validation split via HuggingFace.
+# To regenerate: cd services/ai && uv run python -m evaluation.datasets.generate_golden --corpus-size 5000 --golden-size 20
 
-- id: "eval-002"
-  query: "How do I build the Rust services?"
-  task_family: "current_state"
-  temporal_type: "current"
-  reference_answer: "You can build the Rust services by running `cargo build --workspace`. To test them, use `cargo test --workspace`."
-  reference_doc_ids: ["CLAUDE.md"]
-  tags: ["build", "rust"]
+- id: mrqa-10507
+  query: What will be nominated?
+  task_family: current_state
+  temporal_type: none
+  reference_answer: three different videos
+  reference_doc_ids:
+  - /data/eval-corpus/a95fd74e3c32.txt
+  context_chunks:
+  - text: '(CNN) -- What could be more powerful than the tears of a Native American
+      Indian?
+
+
+
+
+      Wax on, wax off: Does it make you want to save the rainforests?
+
+
+
+
+      Iron Eyes Cody was the face of the Keep American Beautiful campaign of 1971
+      whose tears marked the plight of the environment, but more importantly kept
+      the problems of pollution in the minds of millions.
+
+
+
+
+      From teary Native Americans to witty skits or doom-ladened eco-horror scenarios,
+      the environmental campaign video then has long been a powerful tool for environmental
+      groups to spread their message and raise pubic attention.
+
+
+
+
+      The rise of YouTube and other video sharing web sites has now meant that individuals
+      can broadcast their own eco-awareness messages and form their own social action
+      networks.
+
+
+
+
+      But what makes a good video and how '
+  tags:
+  - mrqa
+  - newsqa
+  difficulty: medium
+- id: mrqa-11108
+  query: how many dead?
+  task_family: current_state
+  temporal_type: none
+  reference_answer: two
+  reference_doc_ids:
+  - /data/eval-corpus/4e473f6e877e.txt
+  context_chunks:
+  - text: '(CNN) -- An estimated 1 million people turned out to hear Pope Benedict
+      XVI preach a Mass in Angola on Sunday, the last major event of his first trip
+      to Africa.
+
+
+
+
+      Pope Benedict XVI celebrates Mass in Angola, where he told Angolans on Sunday
+      to "trust in God''s promises."
+
+
+
+
+      He spoke of the need for reconciliation in a country that endured a brutal civil
+      war lasting nearly three decades.
+
+
+
+
+      "Look to the future with hope, trust in God''s promises and live in his truth.
+      In this way you will build something that will stand and endure ... a lasting
+      heritage of reconciliation, justice and peace," Benedict said in English to
+      polite applause.
+
+
+
+
+      The service''s Bible reading''s "vivid description of the destruction wrought
+      by war echoes the personal experiences of so many people in this country amid
+      t'
+  tags:
+  - mrqa
+  - newsqa
+  difficulty: medium
+- id: mrqa-11710
+  query: what did the witness says?
+  task_family: current_state
+  temporal_type: none
+  reference_answer: that AbdulMutallab was in the bathroom for about 15 to 20 minutes,
+  reference_doc_ids:
+  - /data/eval-corpus/e9dcdfd8d993.txt
+  context_chunks:
+  - text: 'Detroit (CNN) -- The judge in the federal trial of alleged "underwear bomber"
+      Umar Farouk AbdulMutallab refused Tuesday to prevent the prosecution from calling
+      the device he allegedly carried a "bomb."
+
+
+
+
+
+
+      U.S. District Judge Nancy Edmunds also refused to exclude a photo of AbdulMutallab''s
+      burned genitals from the evidence.
+
+
+
+
+
+
+      Before the prosecution began its opening statement, defense standby counsel
+      Anthony Chambers asked that the prosecutors not be allowed to use the words
+      "explosive device" or "bomb" during the trial. It''s up to the jury to decide
+      whether the device AbdulMutallab was carrying was a bomb, Chambers argued.
+
+
+
+
+
+
+      "I''m going to deny that motion," responded Edmunds. "It makes no sense whatsoever."
+
+
+
+
+
+
+      As for the photo, the judge said it did not seem "unusually prejudicia'
+  tags:
+  - mrqa
+  - newsqa
+  difficulty: medium
+- id: mrqa-12312
+  query: What does the "black box" label do?
+  task_family: current_state
+  temporal_type: none
+  reference_answer: alert patients of possible tendon ruptures and tendonitis.
+  reference_doc_ids:
+  - /data/eval-corpus/a2f2241efa23.txt
+  context_chunks:
+  - text: '(CNN) -- The U.S. Food and Drug Administration Tuesday ordered the makers
+      of certain antibiotics to add a "black box" label warning -- the FDA''s strongest
+      -- to alert patients of possible tendon ruptures and tendonitis.
+
+
+
+
+      Cipro is one of the drugs for which the FDA will require a "black box" label
+      warning about tendon problems.
+
+
+
+
+      "The new language will strengthen the existing warnings," said Dr. Edward Cox,
+      director of the FDA''s Office of Antimicrobial Products.
+
+
+
+
+      The FDA is requiring the label warnings and a medication guide for fluoroquinolone
+      drugs, which include Cipro, Levaquin, Avelox, Noroxin and Floxin.
+
+
+
+
+      The consumer group Public Citizen asked the FDA in August 2006 to put the "black
+      box" warning on Cipro and other fluoroquinolones, and also to warn doctors.
+      Earlier this year, '
+  tags:
+  - mrqa
+  - newsqa
+  difficulty: medium
+- id: mrqa-12913
+  query: who launches personal attack
+  task_family: current_state
+  temporal_type: none
+  reference_answer: Korea
+  reference_doc_ids:
+  - /data/eval-corpus/bdc3a6158585.txt
+  context_chunks:
+  - text: '(CNN) -- North Korea on Thursday launched a scathing personal attack on
+      U.S. Secretary of State Hillary Clinton, raising comparisons with previous colorful
+      comments about the West by the communist regime.
+
+
+
+
+      Bush: "A chicken soaked in the rain," according to a North Korean Cabinet newspaper.
+
+
+
+
+      At a meeting of southeast Asian nations in Phuket, Thailand, a North Korean
+      Foreign Ministry spokesman blasted Clinton for what he called a "spate of vulgar
+      remarks unbecoming for her position everywhere she went since she was sworn
+      in," according to the state-run KCNA news agency.
+
+
+
+
+      The spokesman called Clinton "by no means intelligent" and a "funny lady."
+
+
+
+
+      "Sometimes she looks like a primary schoolgirl and sometimes a pensioner going
+      shopping," the statement said.
+
+
+
+
+      In no particular order, her'
+  tags:
+  - mrqa
+  - newsqa
+  difficulty: medium
+- id: mrqa-13515
+  query: what does this affect?
+  task_family: current_state
+  temporal_type: none
+  reference_answer: Iraqi economy."
+  reference_doc_ids:
+  - /data/eval-corpus/05e22dc219ea.txt
+  context_chunks:
+  - text: 'ARBIL, Iraq (CNN) -- Two United Arab Emirates based companies announced
+      on Tuesday that they will be investing in the Iraq''s autonomous region of Kurdistan.
+
+
+
+
+      Nechirvan Barzani, Prime Minister of the Kurdish Regional Government, called
+      the project "a significant contribution to the Iraqi economy."
+
+
+
+
+      Four hundred and sixty one million square feet have been officially assigned
+      to "Gas Cities LLC," a joint venture between Dana Gas and Crescent Petroleum,
+      both Sharjah-based companies, to establish a new venture: "Kurdistan Gas City."
+
+
+
+
+      Kurdistan Gas City will include industrial, residential and commercial buildings
+      in an integrated city. The expected initial investment in basic infrastructure
+      is estimated at $3 billion, with further foreign direct investment exceeding
+      $40 billion during the'
+  tags:
+  - mrqa
+  - newsqa
+  difficulty: medium
+- id: mrqa-14117
+  query: What percentage of utilities were fixed to combat attacks?
+  task_family: current_state
+  temporal_type: none
+  reference_answer: 75 percent
+  reference_doc_ids:
+  - /data/eval-corpus/8aa1ab06de2b.txt
+  context_chunks:
+  - text: 'WASHINGTON (CNN)  -- The nation''s largest publicly owned utility company
+      may be vulnerable to cyber attacks, according to a new report.
+
+
+
+
+      In 2007 President Bush visited the Browns Ferry Nuclear Plant, operated by the
+      Tennessee Valley Authority.
+
+
+
+
+      The Tennessee Valley Authority, which supplies power to almost 9 million Americans,
+      "has not fully implemented appropriate security practices to protect the control
+      systems used to operate its critical infrastructures," leaving them "vulnerable
+      to disruption," the Government Accountability Office found.
+
+
+
+
+      Simply put, that means a skilled hacker could disrupt the system and cause a
+      blackout.
+
+
+
+
+      Rep. James Langevin, a Rhode Island Democrat, fears the problem is much larger
+      than just the TVA.
+
+
+
+
+      "If they are not secure, I don''t have a great deal o'
+  tags:
+  - mrqa
+  - newsqa
+  difficulty: medium
+- id: mrqa-00000
+  query: Which NFL team represented the AFC at Super Bowl 50?
+  task_family: current_state
+  temporal_type: none
+  reference_answer: Denver Broncos
+  reference_doc_ids:
+  - /data/eval-corpus/6b0af9dfa962.txt
+  context_chunks:
+  - text: Super Bowl 50 was an American football game to determine the champion of
+      the National Football League (NFL) for the 2015 season. The American Football
+      Conference (AFC) champion Denver Broncos defeated the National Football Conference
+      (NFC) champion Carolina Panthers 24–10 to earn their third Super Bowl title.
+      The game was played on February 7, 2016, at Levi's Stadium in the San Francisco
+      Bay Area at Santa Clara, California. As this was the 50th Super Bowl, the league
+      emphasized the "golden anniversary" with various gold-themed initiatives, as
+      well as temporarily suspending the tradition of naming each Super Bowl game
+      with Roman numerals (under which the game would have been known as "Super Bowl
+      L"), so that the logo could prominently feature the Arabic numerals 50.
+  tags:
+  - mrqa
+  - squad
+  difficulty: medium
+- id: mrqa-01501
+  query: What took place in his lab in 1895, causing him to lose thousands of dollars
+    of data and tools?
+  task_family: current_state
+  temporal_type: none
+  reference_answer: 5th Avenue laboratory fire of March 1895
+  reference_doc_ids:
+  - /data/eval-corpus/28178cba08a3.txt
+  context_chunks:
+  - text: Starting in 1894, Tesla began investigating what he referred to as radiant
+      energy of "invisible" kinds after he had noticed damaged film in his laboratory
+      in previous experiments (later identified as "Roentgen rays" or "X-Rays"). His
+      early experiments were with Crookes tubes, a cold cathode electrical discharge
+      tube. Soon after, much of Tesla's early research—hundreds of invention models,
+      plans, notes, laboratory data, tools, photographs, valued at $50,000—was lost
+      in the 5th Avenue laboratory fire of March 1895. Tesla is quoted by The New
+      York Times as saying, "I am in too much grief to talk. What can I say?" Tesla
+      may have inadvertently captured an X-ray image—predating, by a few weeks, Wilhelm
+      Röntgen's December 1895 announcement of the discovery of x-rays—when he tried
+      to photograph Ma
+  tags:
+  - mrqa
+  - squad
+  difficulty: medium
+- id: mrqa-03002
+  query: With what European country did the Huguenots feel kinship for emigration
+    to?
+  task_family: current_state
+  temporal_type: none
+  reference_answer: Dutch Republic
+  reference_doc_ids:
+  - /data/eval-corpus/41bdc9cfcf0d.txt
+  context_chunks:
+  - text: Stadtholder William III of Orange, who later became King of England, emerged
+      as the strongest opponent of king Louis XIV after the French attacked the Dutch
+      Republic in 1672. William formed the League of Augsburg as a coalition to oppose
+      Louis and the French state. Consequently, many Huguenots considered the wealthy
+      and Calvinist Dutch Republic, which led the opposition to Louis XIV, as the
+      most attractive country for exile after the revocation of the Edict of Nantes.
+      They also found many French-speaking Calvinist churches there.
+  tags:
+  - mrqa
+  - squad
+  difficulty: medium
+- id: mrqa-04503
+  query: What do the auricles do?
+  task_family: current_state
+  temporal_type: none
+  reference_answer: help direct microscopic prey toward the mouth
+  reference_doc_ids:
+  - /data/eval-corpus/21a862172223.txt
+  context_chunks:
+  - text: The Lobata have a pair of lobes, which are muscular, cuplike extensions
+      of the body that project beyond the mouth. Their inconspicuous tentacles originate
+      from the corners of the mouth, running in convoluted grooves and spreading out
+      over the inner surface of the lobes (rather than trailing far behind, as in
+      the Cydippida). Between the lobes on either side of the mouth, many species
+      of lobates have four auricles, gelatinous projections edged with cilia that
+      produce water currents that help direct microscopic prey toward the mouth. This
+      combination of structures enables lobates to feed continuously on suspended
+      planktonic prey.
+  tags:
+  - mrqa
+  - squad
+  difficulty: medium
+- id: mrqa-06004
+  query: What kind of programs can be credited for ABC's success in the late 1950s?
+  task_family: current_state
+  temporal_type: none
+  reference_answer: westerns and detective series
+  reference_doc_ids:
+  - /data/eval-corpus/830545e6def0.txt
+  context_chunks:
+  - text: It was not until the late 1950s that the ABC network became a serious contender
+      to NBC and CBS, and this was in large part due to the diverse range of programming
+      that met the expectations of the public, such as westerns and detective series.
+      Despite an almost 500% increase in advertising revenues between 1953 and 1958,
+      the network only had a national reach of between 10% and 18% of the total U.S.
+      population, as it still had relatively fewer affiliates than NBC and CBS. In
+      1957, ABC Entertainment president Ollie Treiz discovered that the locally produced
+      variety show Bandstand had pulled very strong ratings in the Philadelphia market
+      on WFIL-TV; Treiz ultimately negotiated a deal to take the show national, under
+      the revised title American Bandstand; the show quickly became a social phenome
+  tags:
+  - mrqa
+  - squad
+  difficulty: medium
+- id: mrqa-07505
+  query: What does it take a country with high inequality longer to achieve?
+  task_family: current_state
+  temporal_type: none
+  reference_answer: reduction
+  reference_doc_ids:
+  - /data/eval-corpus/c404fe387731.txt
+  context_chunks:
+  - text: While acknowledging the central role economic growth can potentially play
+      in human development, poverty reduction and the achievement of the Millennium
+      Development Goals, it is becoming widely understood amongst the development
+      community that special efforts must be made to ensure poorer sections of society
+      are able to participate in economic growth. The effect of economic growth on
+      poverty reduction – the growth elasticity of poverty – can depend on the existing
+      level of inequality. For instance, with low inequality a country with a growth
+      rate of 2% per head and 40% of its population living in poverty, can halve poverty
+      in ten years, but a country with high inequality would take nearly 60 years
+      to achieve the same reduction. In the words of the Secretary General of the
+      United Nations Ban
+  tags:
+  - mrqa
+  - squad
+  difficulty: medium
+- id: mrqa-09006
+  query: What must the integer m be less than or equal to when performing trial division?
+  task_family: current_state
+  temporal_type: none
+  reference_answer: less than or equal to the square root of n
+  reference_doc_ids:
+  - /data/eval-corpus/70043bcb4b37.txt
+  context_chunks:
+  - text: The most basic method of checking the primality of a given integer n is
+      called trial division. This routine consists of dividing n by each integer m
+      that is greater than 1 and less than or equal to the square root of n. If the
+      result of any of these divisions is an integer, then n is not a prime, otherwise
+      it is a prime. Indeed, if  is composite (with a and b ≠ 1) then one of the factors
+      a or b is necessarily at most . For example, for , the trial divisions are by
+      m = 2, 3, 4, 5, and 6. None of these numbers divides 37, so 37 is prime. This
+      routine can be implemented more efficiently if a complete list of primes up
+      to  is known—then trial divisions need to be checked only for those m that are
+      prime. For example, to check the primality of 37, only three divisions are necessary
+      (m = 2, 3, an
+  tags:
+  - mrqa
+  - squad
+  difficulty: medium
+- id: mrqa-14719
+  query: Who had an 80s No 1 hit with Hold On To The Nights?
+  task_family: current_state
+  temporal_type: none
+  reference_answer: richard marx
+  reference_doc_ids:
+  - /data/eval-corpus/0a05e5e6189d.txt
+  context_chunks:
+  - text: '[DOC] [TLE] Hold On to the Nights"Hold On to the Nights" is a power ballad
+      and number-one hit for American rock singer/songwriter/musician Richard Marx.  This
+      was the fourth and final single released from his self-titled debut album, and
+      the first to reach the top of the Billboard Hot 100 chart. [PAR] Written by
+      Richard Marx, "Hold On to the Nights" reached the Billboard Hot 100 number 1
+      position on July 23, 1988, preventing Def Leppard''s "Pour Some Sugar On Me"
+      from reaching the top spot that same week. The song was on the chart for twenty-one
+      weeks, and left the chart at number 65. From Marx'' debut 1987 album, Richard
+      Marx, the song also reached number three on the Billboard Adult Contemporary
+      chart. "Hold On to the Nights" has been re-released numerous albums  and is
+      included on Marx''s '
+  tags:
+  - mrqa
+  - triviaqa-web
+  difficulty: medium
+- id: mrqa-15103
+  query: What is the name of the Salvador Dali painting that shows clocks oozing over
+    a landscape?
+  task_family: current_state
+  temporal_type: none
+  reference_answer: persistence of memory
+  reference_doc_ids:
+  - /data/eval-corpus/1107ddcfa038.txt
+  context_chunks:
+  - text: '[DOC] [TLE] Salvador Dali Persistence of Memory: Meaning of the ...Salvador
+      Dali Persistence of Memory: Meaning of the Melting Clocks [PAR] Salvador Dali
+      Persistence of Memory: Meaning of the Melting Clocks [PAR] by K Shabi PUBLISHED
+      29 May 2013 [PAR] A surrealist painter, the Spanish Salvador Dali is one of
+      the most enigmatic artists of the twentieth century. Known for his weird and
+      outlandish subject matter, Dali''s most famous work of art is probably The Persistence
+      of Memory (1931), often called just "Clocks" and widely regarded as a Surrealist
+      masterpiece. But what is the meaning behind Salvador Dali''s painting The Persistence
+      of Memory? What do all of those melted clocks mean? [PAR] Salvador Dali & the
+      Surrealists [PAR] The meaning behind Surrealist Salvador Dali''s artistic masterpiec'
+  tags:
+  - mrqa
+  - triviaqa-web
+  difficulty: medium
+- id: mrqa-15488
+  query: Adam Richman takes on food challenges in which US television series?
+  task_family: current_state
+  temporal_type: none
+  reference_answer: man v food
+  reference_doc_ids:
+  - /data/eval-corpus/8a235587276f.txt
+  context_chunks:
+  - text: '[DOC] [TLE] Man V Food: Adam Richman spills the beans | Television ...Man
+      V Food: Adam Richman spills the beans | Television & radio | The Guardian [PAR]
+      Food TV [PAR] Man V Food: Adam Richman spills the beans [PAR] The cult culinary
+      series has become a cultural touchstone, but how does its host survive those
+      mammoth meat feats? [PAR] Adam Richman [PAR] Food TV [PAR] Man V Food: Adam
+      Richman spills the beans [PAR] The cult culinary series has become a cultural
+      touchstone, but how does its host survive those mammoth meat feats? [PAR] Friday
+      15 June 2012 19.05 EDT [PAR] First published on Friday 15 June 2012 19.05 EDT
+      [PAR] Share on Messenger [PAR] Close [PAR] When you ask Adam Richman what he''s
+      having for lunch, you can''t help but get your hopes up. As the host of Man
+      V Food – one of the gr'
+  tags:
+  - mrqa
+  - triviaqa-web
+  difficulty: medium
+- id: mrqa-15872
+  query: Queen Joan of Navarre, who was imprisoned for witchcraft, was the stepmother
+    of which English monarch?
+  task_family: current_state
+  temporal_type: none
+  reference_answer: henry v
+  reference_doc_ids:
+  - /data/eval-corpus/06400f3f37e7.txt
+  context_chunks:
+  - text: '[DOC] [TLE] Joan of Navarre - Susan HigginbothamMedieval Woman: Blogging
+      with Historical Novelist Susan Higginbotham: Joan of Navarre [PAR] Medieval
+      History, and Tudors Too! [PAR] Sunday, August 31, 2008 [PAR] Joan of Navarre
+      [PAR] Over the weekend (in between the excitement of using my big hole puncher),
+      I finished Witch Queen by Maureen Peters. Witch Queen is about Joan of Navarre,
+      who married the widowed Henry IV and thus became his queen and the stepmother
+      to his children, including the future Henry V. [PAR] Witch Queen follows Joan
+      from her childhood with her depraved father, nicknamed Charles the Bad, who
+      forces young Joan to learn the ways of witchcraft. It follows Joan through her
+      two marriages to the Duke of Brittany and to Henry IV, her imprisonment by Henry
+      V on trumped-up charg'
+  tags:
+  - mrqa
+  - triviaqa-web
+  difficulty: medium
+- id: mrqa-16257
+  query: Which legendary sunken land lies off the Isles of Scilly, to the south-west
+    of Cornwall?
+  task_family: current_state
+  temporal_type: none
+  reference_answer: lyonesse
+  reference_doc_ids:
+  - /data/eval-corpus/1f65e3228177.txt
+  context_chunks:
+  - text: '[DOC] [TLE] Lyonesse Archives - AtlantipediaLyonesse Archives - Atlantipedia
+      [PAR] Atlantipedia [PAR] Portugal (L) on 17 Jan 2017 [PAR] Lyonesse [PAR] Beckles
+      Willson, Henry (N) [PAR] Published November 22, 2012 [PAR] Henry Beckles Willson
+      (1869-1942) was a Canadian soldier, journalist and historian. Part of his prolific
+      output was a 1902 booklet entitled  Lost England: The Story of Our Submerged
+      Coasts, which was reprinted in 1986 as Lost Lyonesse: Evidence, Records and
+      Traditions of England’s Atlantis with an introduction by John Michell . In the
+      original book, Willson refers to the land, now lost, which stretched from Land’s
+      End to the Scilly Isles without any mention of Atlantis. That reference was
+      only used in the title of the more recent reprint. [PAR] Scilly Isles (m) [PAR]
+      Publishe'
+  tags:
+  - mrqa
+  - triviaqa-web
+  difficulty: medium
+- id: mrqa-16641
+  query: Which country left the Commonwealthin 1972 and rejoined in 1989?
+  task_family: current_state
+  temporal_type: none
+  reference_answer: pakistan
+  reference_doc_ids:
+  - /data/eval-corpus/d528109629c7.txt
+  context_chunks:
+  - text: '[DOC] [TLE] Commonwealth | association of states | Britannica.comCommonwealth
+      | association of states | Britannica.com [PAR] association of states [PAR] Alternative
+      Titles: British Commonwealth of Nations, Commonwealth of Nations [PAR] Related
+      Topics [PAR] commonwealth (political science) [PAR] Commonwealth, also called
+      Commonwealth of Nations, formerly (1931–49) British Commonwealth of Nations,  a
+      free association of sovereign states comprising the United Kingdom and a number
+      of its former dependencies who have chosen to maintain ties of friendship and
+      practical cooperation and who acknowledge the British monarch as symbolic head
+      of their association. In 1965 the Commonwealth Secretariat was established in
+      London to organize and coordinate Commonwealth activities. [PAR] Members of
+      the Com'
+  tags:
+  - mrqa
+  - triviaqa-web
+  difficulty: medium
