@@ -39,6 +39,8 @@ jobs:
       web-connector: ${{ steps.filter.outputs.web-connector }}
       clickup-connector: ${{ steps.filter.outputs.clickup-connector }}
       linear-connector: ${{ steps.filter.outputs.linear-connector }}
+      nextcloud-connector: ${{ steps.filter.outputs.nextcloud-connector }}
+      paperless-connector: ${{ steps.filter.outputs.paperless-connector }}
       docling: ${{ steps.filter.outputs.docling }}
       deployment: ${{ steps.filter.outputs.deployment }}
     steps:
@@ -180,6 +182,18 @@ jobs:
             linear-connector:
               - 'connectors/linear/**'
               - 'sdk/typescript/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-connector.yml'
+            nextcloud-connector:
+              - 'connectors/nextcloud/**'
+              - 'shared/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-connector.yml'
+            paperless-connector:
+              - 'connectors/paperless/**'
+              - 'sdk/python/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/build-connector.yml'
             deployment:
@@ -396,6 +410,15 @@ jobs:
       connector-type: rust
     secrets: inherit
 
+  build-nextcloud-connector:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.is-tag != 'true' && needs.detect-changes.outputs.nextcloud-connector == 'true'
+    uses: ./.github/workflows/build-connector.yml
+    with:
+      connector-name: nextcloud
+      connector-type: rust
+    secrets: inherit
+
   # ---------------------------------------------------------------------------
   # Connectors (Python)
   # ---------------------------------------------------------------------------
@@ -441,6 +464,15 @@ jobs:
     uses: ./.github/workflows/build-connector.yml
     with:
       connector-name: clickup
+      connector-type: python
+    secrets: inherit
+
+  build-paperless-connector:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.is-tag != 'true' && needs.detect-changes.outputs.paperless-connector == 'true'
+    uses: ./.github/workflows/build-connector.yml
+    with:
+      connector-name: paperless
       connector-type: python
     secrets: inherit
 
@@ -533,6 +565,8 @@ jobs:
             connector-type: rust
           - connector-name: web
             connector-type: rust
+          - connector-name: nextcloud
+            connector-type: rust
           - connector-name: github
             connector-type: python
           - connector-name: hubspot
@@ -542,6 +576,8 @@ jobs:
           - connector-name: notion
             connector-type: python
           - connector-name: clickup
+            connector-type: python
+          - connector-name: paperless
             connector-type: python
           - connector-name: linear
             connector-type: typescript
