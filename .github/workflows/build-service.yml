@@ -85,6 +85,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ env.IMAGE_NAME }}
           flavor: |
             suffix=${{ inputs.tag-suffix }}-${{ matrix.arch }}
+            latest=false
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
@@ -128,6 +129,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ env.IMAGE_NAME }}
           flavor: |
             suffix=${{ inputs.tag-suffix }}
+            latest=false
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}

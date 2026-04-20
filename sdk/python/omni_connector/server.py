@@ -102,6 +102,13 @@ def create_app(connector: "Connector") -> FastAPI:
         m = await connector.get_manifest(connector_url=connector_url)
         return m.model_dump()
 
+    @app.get("/sync/{sync_run_id}")
+    async def sync_status(sync_run_id: str) -> dict[str, bool]:
+        running = any(
+            ctx.sync_run_id == sync_run_id for ctx in server.active_syncs.values()
+        )
+        return {"running": running}
+
     @app.post("/sync")
     async def trigger_sync(request: SyncRequest) -> JSONResponse:
         sync_run_id = request.sync_run_id

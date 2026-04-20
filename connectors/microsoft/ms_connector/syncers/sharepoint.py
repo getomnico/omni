@@ -11,9 +11,10 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, TypeAlias, TypedDict
 
 from omni_connector import SyncContext
+from omni_connector.models import DocumentPermissions
 
 from ..graph_client import GraphClient, GraphAPIError
 from ..mappers import (
@@ -25,6 +26,59 @@ from .base import DEFAULT_MAX_AGE_DAYS
 from .onedrive import _is_indexable, _get_extension
 
 logger = logging.getLogger(__name__)
+
+
+DriveId: TypeAlias = str
+SiteId: TypeAlias = str
+Email: TypeAlias = str
+
+
+# Partial shapes of Graph API payloads — we only type the fields this module
+# touches. `total=False` because Graph omits absent fields rather than
+# returning nulls. Extra (untyped) keys are tolerated at runtime.
+
+
+class _GraphIdentity(TypedDict, total=False):
+    id: str
+    displayName: str
+
+
+class _GraphIdentitySet(TypedDict, total=False):
+    user: _GraphIdentity
+    group: _GraphIdentity
+    siteUser: _GraphIdentity
+    siteGroup: _GraphIdentity
+    application: _GraphIdentity
+
+
+class _GraphSharingLink(TypedDict, total=False):
+    scope: str
+    type: str
+    webUrl: str
+
+
+class _GraphInvitation(TypedDict, total=False):
+    email: str
+
+
+class GraphPermission(TypedDict, total=False):
+    id: str
+    roles: list[str]
+    link: _GraphSharingLink
+    grantedTo: _GraphIdentitySet
+    grantedToV2: _GraphIdentitySet
+    grantedToIdentities: list[_GraphIdentitySet]
+    grantedToIdentitiesV2: list[_GraphIdentitySet]
+    invitation: _GraphInvitation
+    inheritedFrom: dict[str, Any]
+
+
+class GraphDrive(TypedDict, total=False):
+    id: str
+    name: str
+    driveType: str
+    webUrl: str
+    owner: _GraphIdentitySet
 
 
 @dataclass(frozen=True)
@@ -95,6 +149,8 @@ class SharePointSyncer:
     ) -> dict[str, Any]:
         self._user_cache = user_cache or {}
         self._group_cache = group_cache or {}
+        self._drive_permissions: dict[DriveId, list[GraphPermission]] = {}
+        self._site_members: dict[SiteId, list[Email]] = {}
 
         delta_tokens: dict[str, str] = dict(state.get(DRIVE_DELTA_TOKENS_KEY, {}))
         skip_classifications: Counter[str] = Counter()
@@ -113,6 +169,8 @@ class SharePointSyncer:
                     client, site, e, skip_classifications, op="list_drives"
                 )
                 continue
+
+            await self._prime_site_members(client, site, raw_drives)
 
             for raw_drive in raw_drives:
                 if ctx.is_cancelled():
@@ -187,7 +245,7 @@ class SharePointSyncer:
 
             if item.get("deleted"):
                 skipped_deleted += 1
-                external_id = f"sharepoint:{site.id}:{item['id']}"
+                external_id = f"sharepoint:{site.id}:{drive.id}:{item['id']}"
                 await ctx.emit_deleted(external_id)
                 continue
 
@@ -206,7 +264,7 @@ class SharePointSyncer:
             try:
                 await self._process_item(client, site, item, ctx)
             except Exception as e:
-                external_id = f"sharepoint:{site.id}:{item['id']}"
+                external_id = f"sharepoint:{site.id}:{drive.id}:{item['id']}"
                 logger.warning("[sharepoint] Error processing %s: %s", external_id, e)
                 await ctx.emit_error(external_id, str(e))
 
@@ -266,6 +324,78 @@ class SharePointSyncer:
             )
             return None, delta_token
 
+    async def _prime_site_members(
+        self,
+        client: GraphClient,
+        site: Site,
+        raw_drives: list[GraphDrive],
+    ) -> None:
+        """Populate the per-site members cache for group-connected sites.
+
+        `list_item_permissions` frequently returns nothing for items whose
+        only access grant is site-level M365 Group membership. Graph's
+        docs are vague on whether backing-group membership surfaces as a
+        sharing permission; empirically it often doesn't, leaving docs
+        with no grantees. We resolve the backing group ourselves via the
+        drive's owner.group.id and cache the member emails as a fallback
+        permission for every doc on the site. Sites without a backing
+        group (classic, communication) are left uncached; docs from those
+        sites fall through to whatever sharing permissions exist on the
+        item itself.
+        """
+        if site.id in self._site_members:
+            return
+        group_id: str | None = None
+        for raw_drive in raw_drives:
+            owner = raw_drive.get("owner") or {}
+            group = owner.get("group") or {}
+            gid = group.get("id")
+            if gid:
+                group_id = gid
+                break
+        if not group_id:
+            self._site_members[site.id] = []
+            return
+        try:
+            members = await client.list_group_members(group_id)
+        except Exception as e:
+            logger.warning(
+                "[sharepoint] Failed to list site backing-group members "
+                "for %s (group %s): %s",
+                site.display_name,
+                group_id,
+                e,
+            )
+            self._site_members[site.id] = []
+            return
+        emails = [
+            (m.get("mail") or m.get("userPrincipalName") or "").lower() for m in members
+        ]
+        self._site_members[site.id] = sorted({e for e in emails if e})
+
+    async def _get_drive_permissions(
+        self, client: GraphClient, drive_id: DriveId
+    ) -> list[GraphPermission]:
+        """Return cached drive-root permissions, fetching on first access.
+
+        SharePoint items inherit permissions from the drive/site by default,
+        so `list_item_permissions` usually returns []. The drive-root list
+        gives us the real access grants.
+        """
+        if drive_id in self._drive_permissions:
+            return self._drive_permissions[drive_id]
+        try:
+            perms = await client.list_drive_root_permissions(drive_id)
+        except Exception as e:
+            logger.warning(
+                "[sharepoint] Failed to fetch drive permissions for %s: %s",
+                drive_id,
+                e,
+            )
+            perms = []
+        self._drive_permissions[drive_id] = perms
+        return perms
+
     async def _process_item(
         self,
         client: GraphClient,
@@ -296,15 +426,26 @@ class SharePointSyncer:
                 "[sharepoint] Failed to fetch permissions for %s: %s", item_id, e
             )
             graph_permissions = []
+
+        drive_permissions = await self._get_drive_permissions(client, drive_id)
+        combined_permissions = drive_permissions + graph_permissions
+
         doc = map_drive_item_to_document(
             item=item,
             content_id=content_id,
             source_type="share_point",
-            graph_permissions=graph_permissions,
+            graph_permissions=combined_permissions,
             user_cache=self._user_cache,
             group_cache=self._group_cache,
             site_id=site.id,
         )
+
+        perms = doc.permissions
+        if not perms.public and not perms.users and not perms.groups:
+            site_members = self._site_members.get(site.id) or []
+            if site_members:
+                doc.permissions = DocumentPermissions(public=False, users=site_members)
+
         await ctx.emit(doc)
 
     async def _extract_file_content(

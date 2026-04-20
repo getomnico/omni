@@ -129,8 +129,17 @@ export class SyncContext {
     await this.client.incrementScanned(this._syncRunId);
   }
 
+  /**
+   * Checkpoint state for resumability. Call periodically for long syncs.
+   *
+   * Persists `state` to the manager so an interrupted sync can resume from
+   * this point. Callers MUST `await` every `emit()` for documents covered
+   * by `state` before calling this — otherwise a resume could skip events
+   * that hadn't yet been enqueued.
+   */
   async saveState(state: Record<string, unknown>): Promise<void> {
     this._state = state;
+    await this.client.updateConnectorState(this._sourceId, state);
     await this.client.heartbeat(this._syncRunId);
   }
 

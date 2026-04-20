@@ -8,6 +8,25 @@
             media="(prefers-color-scheme: dark)" />
         <link rel="icon" href="%sveltekit.assets%/favicon-light.png" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <script>
+            (function () {
+                try {
+                    var prefs = JSON.parse(
+                        localStorage.getItem('omni-user-preferences') || '{}'
+                    )
+                    if (prefs.theme) {
+                        document.documentElement.setAttribute('data-theme', prefs.theme)
+                        // themeColorScheme was added later; fall back to theme-id check for migration
+                        var isDark = prefs.themeColorScheme
+                            ? prefs.themeColorScheme === 'dark'
+                            : prefs.theme !== 'bright'
+                        if (isDark) {
+                            document.documentElement.classList.add('dark')
+                        }
+                    }
+                } catch (e) {}
+            })()
+        </script>
         %sveltekit.head%
     </head>
     <body data-sveltekit-preload-data="hover">

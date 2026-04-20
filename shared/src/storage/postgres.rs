@@ -32,14 +32,28 @@ impl ObjectStorage for PostgresStorage {
         content_type: Option<&str>,
         _prefix: Option<&str>,
     ) -> Result<String, StorageError> {
-        let content_id = generate_ulid();
         let size_bytes = content.len() as i64;
 
-        // Generate SHA256 hash for potential deduplication
         let mut hasher = Sha256::new();
         hasher.update(content);
         let hash = format!("{:x}", hasher.finalize());
 
+        // Content-address: reuse existing blob when hash matches. Under concurrent
+        // writes the SELECT+INSERT race may produce a small bounded number of
+        // duplicates per hash; those are cleaned up by the orphan GC.
+        let existing: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM content_blobs WHERE sha256_hash = $1 LIMIT 1",
+        )
+        .bind(&hash)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::Backend(format!("Failed to lookup content by hash: {}", e)))?;
+
+        if let Some(id) = existing {
+            return Ok(id);
+        }
+
+        let content_id = generate_ulid();
         sqlx::query(
             r#"
             INSERT INTO content_blobs (id, content, content_type, size_bytes, sha256_hash, storage_backend)
@@ -265,20 +279,15 @@ mod tests {
         let env = TestEnvironment::new().await.unwrap();
         let storage = PostgresStorage::new(env.db_pool.pool().clone());
 
-        // Store the same content twice
         let content = "This is duplicate content";
         let content_id1 = storage.store_text(content, None).await.unwrap();
         let content_id2 = storage.store_text(content, None).await.unwrap();
 
-        // They should have different IDs but same hash
-        assert_ne!(content_id1, content_id2);
+        // Content-addressed storage: same content must produce the same id.
+        assert_eq!(content_id1, content_id2);
 
-        let metadata1 = storage.get_content_metadata(&content_id1).await.unwrap();
-        let metadata2 = storage.get_content_metadata(&content_id2).await.unwrap();
-        assert_eq!(metadata1.sha256_hash, metadata2.sha256_hash);
-
-        // Test finding by hash
-        let found_id = storage.find_by_hash(&metadata1.sha256_hash).await.unwrap();
-        assert!(found_id.is_some());
+        let metadata = storage.get_content_metadata(&content_id1).await.unwrap();
+        let found_id = storage.find_by_hash(&metadata.sha256_hash).await.unwrap();
+        assert_eq!(found_id.as_deref(), Some(content_id1.as_str()));
     }
 }

@@ -33,7 +33,7 @@
 
 {#if collapsibleCount > 0}
     <button
-        class="text-muted-foreground hover:text-foreground mb-3 flex cursor-pointer items-center gap-1 text-xs transition-colors"
+        class="text-muted-foreground hover:text-foreground hover:bg-muted/60 mb-3 flex cursor-pointer items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors"
         onclick={() => (expanded = !expanded)}>
         <ChevronRight
             class="h-3 w-3 transition-transform duration-200 {expanded ? 'rotate-90' : ''}" />
@@ -50,7 +50,7 @@
         class:max-h-0={!expanded}
         class:opacity-0={!expanded}
         class:pointer-events-none={!expanded}>
-        <div class="mb-3 max-h-64 overflow-y-auto opacity-75">
+        <div class="mb-3 max-h-64 overflow-y-auto pr-1 opacity-80">
             {#each earlierBlocks as block (block.id)}
                 {#if block.type === 'text'}
                     <MarkdownMessage

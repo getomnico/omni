@@ -168,14 +168,23 @@
                         <Card.Header class="pb-2">
                             <div class="flex items-start gap-3">
                                 {#if meta.icon}
-                                    <img
-                                        src={meta.icon}
-                                        alt={EMAIL_PROVIDER_LABELS[type]}
-                                        class="h-8 w-8" />
+                                    <div
+                                        class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
+                                        <img
+                                            src={meta.icon}
+                                            alt={EMAIL_PROVIDER_LABELS[type]}
+                                            class="h-7 w-7 object-contain" />
+                                    </div>
                                 {:else if type === 'smtp'}
-                                    <Server class="text-muted-foreground h-8 w-8" />
+                                    <div
+                                        class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
+                                        <Server class="h-6 w-6 text-slate-700" />
+                                    </div>
                                 {:else}
-                                    <Mail class="text-muted-foreground h-8 w-8" />
+                                    <div
+                                        class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
+                                        <Mail class="h-6 w-6 text-slate-700" />
+                                    </div>
                                 {/if}
                                 <div>
                                     <div class="text-base leading-tight font-semibold">
@@ -350,14 +359,23 @@
                                 <Card.Header>
                                     <div class="flex items-center gap-3">
                                         {#if meta.icon}
-                                            <img
-                                                src={meta.icon}
-                                                alt={EMAIL_PROVIDER_LABELS[type]}
-                                                class="h-8 w-8" />
+                                            <div
+                                                class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
+                                                <img
+                                                    src={meta.icon}
+                                                    alt={EMAIL_PROVIDER_LABELS[type]}
+                                                    class="h-7 w-7 object-contain" />
+                                            </div>
                                         {:else if type === 'smtp'}
-                                            <Server class="text-muted-foreground h-8 w-8" />
+                                            <div
+                                                class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
+                                                <Server class="h-6 w-6 text-slate-700" />
+                                            </div>
                                         {:else}
-                                            <Mail class="text-muted-foreground h-8 w-8" />
+                                            <div
+                                                class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
+                                                <Mail class="h-6 w-6 text-slate-700" />
+                                            </div>
                                         {/if}
                                         <div>
                                             <Card.Title class="text-sm">

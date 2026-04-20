@@ -34,6 +34,7 @@ futures = { workspace = true }
 async-trait = { workspace = true }
 async-stream = "0.3"
 time = { workspace = true }
+dashmap = { workspace = true }
 shared = { path = "../../shared" }
 
 [dev-dependencies]

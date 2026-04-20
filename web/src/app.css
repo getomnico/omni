@@ -23,6 +23,11 @@
     --accent: oklch(0.968 0.007 247.896);
     --accent-foreground: oklch(0.208 0.042 265.755);
     --destructive: oklch(0.577 0.245 27.325);
+    --destructive-foreground: oklch(0.984 0.003 247.858);
+    --warning: oklch(0.974 0.024 86);
+    --warning-foreground: oklch(0.532 0.164 68);
+    --success: oklch(0.966 0.04 146);
+    --success-foreground: oklch(0.482 0.148 146);
     --border: oklch(0.929 0.013 255.508);
     --input: oklch(0.929 0.013 255.508);
     --ring: oklch(0.704 0.04 256.788);
@@ -39,6 +44,8 @@
     --sidebar-accent-foreground: oklch(0.208 0.042 265.755);
     --sidebar-border: oklch(0.929 0.013 255.508);
     --sidebar-ring: oklch(0.704 0.04 256.788);
+    --omni-brand: oklch(0.208 0.042 265.755);
+    --omni-brand-foreground: oklch(0.984 0.003 247.858);
 }
 
 .dark {
@@ -57,6 +64,11 @@
     --accent: oklch(0.279 0.041 260.031);
     --accent-foreground: oklch(0.984 0.003 247.858);
     --destructive: oklch(0.704 0.191 22.216);
+    --destructive-foreground: oklch(0.985 0.004 255);
+    --warning: oklch(0.302 0.072 80);
+    --warning-foreground: oklch(0.822 0.144 74);
+    --success: oklch(0.264 0.074 148);
+    --success-foreground: oklch(0.786 0.152 148);
     --border: oklch(1 0 0 / 10%);
     --input: oklch(1 0 0 / 15%);
     --ring: oklch(0.551 0.027 264.364);
@@ -73,7 +85,59 @@
     --sidebar-accent-foreground: oklch(0.984 0.003 247.858);
     --sidebar-border: oklch(1 0 0 / 10%);
     --sidebar-ring: oklch(0.551 0.027 264.364);
+    --omni-brand: oklch(0.929 0.013 255.508);
+    --omni-brand-foreground: oklch(0.208 0.042 265.755);
 }
+
+:root[data-theme='dark'] {
+    --background: oklch(0.145 0.018 258);
+    --foreground: oklch(0.956 0.006 255);
+    --card: oklch(0.192 0.02 258);
+    --card-foreground: oklch(0.956 0.006 255);
+    --popover: oklch(0.202 0.022 258);
+    --popover-foreground: oklch(0.956 0.006 255);
+    --primary: oklch(0.688 0.118 242);
+    --primary-foreground: oklch(0.985 0.004 255);
+    --secondary: oklch(0.236 0.018 258);
+    --secondary-foreground: oklch(0.936 0.008 255);
+    --muted: oklch(0.218 0.015 258);
+    --muted-foreground: oklch(0.792 0.018 252);
+    --accent: oklch(0.296 0.036 244);
+    --accent-foreground: oklch(0.972 0.005 255);
+    --destructive: oklch(0.662 0.182 24);
+    --destructive-foreground: oklch(0.985 0.004 255);
+    --warning: oklch(0.302 0.072 80);
+    --warning-foreground: oklch(0.822 0.144 74);
+    --success: oklch(0.264 0.074 148);
+    --success-foreground: oklch(0.786 0.152 148);
+    --border: oklch(0.348 0.018 255 / 52%);
+    --input: oklch(0.318 0.018 255 / 68%);
+    --ring: oklch(0.688 0.104 242 / 52%);
+    --chart-1: oklch(0.688 0.118 242);
+    --chart-2: oklch(0.706 0.116 182);
+    --chart-3: oklch(0.804 0.148 84);
+    --chart-4: oklch(0.716 0.145 304);
+    --chart-5: oklch(0.706 0.15 22);
+    --sidebar: oklch(0.172 0.018 258);
+    --sidebar-foreground: oklch(0.956 0.006 255);
+    --sidebar-primary: oklch(0.688 0.118 242);
+    --sidebar-primary-foreground: oklch(0.985 0.004 255);
+    --sidebar-accent: oklch(0.266 0.028 246);
+    --sidebar-accent-foreground: oklch(0.956 0.006 255);
+    --sidebar-border: oklch(0.336 0.018 255 / 48%);
+    --sidebar-ring: oklch(0.688 0.104 242 / 52%);
+    --omni-brand: oklch(0.688 0.118 242);
+    --omni-brand-foreground: oklch(0.985 0.004 255);
+    --radius: 0.625rem;
+}
+
+/* Logo variant: dark logo hidden by default, swapped in when .dark is applied by the FOUC script */
+.omni-logo-dark { display: none; }
+.dark .omni-logo-light { display: none; }
+.dark .omni-logo-dark { display: block; }
+
+
+
 
 @theme inline {
     --default-font-family:
@@ -98,6 +162,11 @@
     --color-accent: var(--accent);
     --color-accent-foreground: var(--accent-foreground);
     --color-destructive: var(--destructive);
+    --color-destructive-foreground: var(--destructive-foreground);
+    --color-warning: var(--warning);
+    --color-warning-foreground: var(--warning-foreground);
+    --color-success: var(--success);
+    --color-success-foreground: var(--success-foreground);
     --color-border: var(--border);
     --color-input: var(--input);
     --color-ring: var(--ring);

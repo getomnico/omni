@@ -10,9 +10,10 @@
         MessageCircle,
         SendHorizontal,
         FileText,
+        Paperclip,
     } from '@lucide/svelte'
     import { cn } from '$lib/utils'
-    import type { Component } from 'svelte'
+    import type { Component, Snippet } from 'svelte'
     import * as ButtonGroup from '$lib/components/ui/button-group'
     import * as Tooltip from '$lib/components/ui/tooltip'
     import type { TypeaheadResult } from '$lib/types/search'
@@ -50,6 +51,9 @@
         models?: ModelOption[]
         selectedModelId?: string | null
         onModelChange?: (modelId: string) => void
+        onAttachClick?: () => void
+        onFilesDropped?: (files: FileList) => void
+        attachments?: Snippet
     }
 
     export type InputMode = 'search' | 'chat'
@@ -77,7 +81,47 @@
         models = [],
         selectedModelId = null,
         onModelChange,
+        onAttachClick,
+        onFilesDropped,
+        attachments,
     }: UserInputProps = $props()
+
+    let isDragging = $state(false)
+    let dragDepth = 0
+
+    function isFileDrag(e: DragEvent): boolean {
+        return !!e.dataTransfer?.types?.includes('Files')
+    }
+
+    function handleDragEnter(e: DragEvent) {
+        if (!onFilesDropped || !isFileDrag(e)) return
+        e.preventDefault()
+        dragDepth++
+        isDragging = true
+    }
+
+    function handleDragOver(e: DragEvent) {
+        if (!onFilesDropped || !isFileDrag(e)) return
+        e.preventDefault()
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+    }
+
+    function handleDragLeave(e: DragEvent) {
+        if (!onFilesDropped || !isFileDrag(e)) return
+        e.preventDefault()
+        dragDepth = Math.max(0, dragDepth - 1)
+        if (dragDepth === 0) isDragging = false
+    }
+
+    function handleDrop(e: DragEvent) {
+        if (!onFilesDropped || !isFileDrag(e)) return
+        e.preventDefault()
+        dragDepth = 0
+        isDragging = false
+        if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+            onFilesDropped(e.dataTransfer.files)
+        }
+    }
 
     let showModelSelector = $derived(models.length >= 2 && inputMode === 'chat')
 
@@ -122,9 +166,17 @@
             : popoverItems,
     )
 
-    let effectiveShowPopover = $derived(
-        mentionActive && mentionResults.length > 0 ? true : showPopover,
-    )
+    let effectiveShowPopover = $derived.by(() => {
+        if (inputMode !== 'search') {
+            return false
+        }
+
+        if (mentionActive) {
+            return mentionResults.length > 0
+        }
+
+        return showPopover
+    })
 
     $effect(() => {
         // Use innerText to match what is extracted in handleInputChange.
@@ -397,18 +449,34 @@
     </Tooltip.Provider>
 {/snippet}
 
-<div class={cn('w-full', maxWidth, containerClass)} bind:this={popoverContainer}>
+<div
+    class={cn('relative w-full', maxWidth, containerClass)}
+    bind:this={popoverContainer}
+    ondragenter={handleDragEnter}
+    ondragover={handleDragOver}
+    ondragleave={handleDragLeave}
+    ondrop={handleDrop}>
     <div
         class={cn(
-            'bg-card flex max-h-96 min-h-[1.5rem] w-full cursor-text flex-col gap-2 border border-gray-200 p-4 shadow-sm',
+            'omni-composer-shell bg-card relative isolate flex max-h-96 min-h-[1.5rem] w-full cursor-text flex-col gap-2 overflow-hidden border border-gray-200 p-4 shadow-sm transition-colors',
             effectiveShowPopover && effectivePopoverItems.length > 0
                 ? 'rounded-t-xl'
                 : 'rounded-xl',
+            isDragging && 'border-primary bg-muted/50 border-2 border-dashed',
         )}
         onclick={() => inputRef.focus()}
         onkeydown={handleKeyPress}
         role="button"
         tabindex="0">
+        {#if isDragging}
+            <div
+                class="bg-card/90 text-muted-foreground pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl text-sm font-medium">
+                Drop files to attach
+            </div>
+        {/if}
+        {#if attachments}
+            {@render attachments()}
+        {/if}
         <div
             bind:this={inputRef}
             oninput={handleInputChange}
@@ -428,6 +496,30 @@
                 {#if modeSelectorEnabled}
                     {@render modeSelector()}
                 {/if}
+                {#if onAttachClick && inputMode === 'chat'}
+                    <Tooltip.Provider delayDuration={300}>
+                        <Tooltip.Root>
+                            <Tooltip.Trigger>
+                                {#snippet child({ props })}
+                                    <Button
+                                        {...props}
+                                        type="button"
+                                        size="icon-sm"
+                                        variant="ghost"
+                                        class="text-muted-foreground cursor-pointer"
+                                        onclick={(e) => {
+                                            e.stopPropagation()
+                                            onAttachClick()
+                                        }}
+                                        aria-label="Attach file">
+                                        <Paperclip class="size-4" />
+                                    </Button>
+                                {/snippet}
+                            </Tooltip.Trigger>
+                            <Tooltip.Content>Attach file</Tooltip.Content>
+                        </Tooltip.Root>
+                    </Tooltip.Provider>
+                {/if}
             </div>
             <div class="flex w-full justify-end gap-2">
                 {#if showModelSelector}
@@ -439,7 +531,7 @@
                         }}>
                         <Select.Trigger
                             size="sm"
-                            class="hover:bg-muted text-muted-foreground h-8 max-w-[180px] cursor-pointer border-none text-sm shadow-none"
+                            class="omni-composer-model hover:bg-muted text-muted-foreground h-8 max-w-[180px] cursor-pointer border-none text-sm shadow-none"
                             onclick={(e) => e.stopPropagation()}>
                             {models.find((m) => m.id === selectedModelId)?.displayName ??
                                 'Select model'}
@@ -463,18 +555,18 @@
                 {#if isStreaming}
                     <Button
                         size="icon"
-                        class="cursor-pointer rounded-full"
+                        class="omni-composer-send cursor-pointer rounded-full"
                         onclick={handleStopClick}>
                         <CircleStop class="h-4 w-4" />
                     </Button>
                 {:else if isLoading}
-                    <Button size="icon" class="cursor-pointer" disabled>
+                    <Button size="icon" class="omni-composer-send cursor-pointer" disabled>
                         <Loader2 class="h-4 w-4 animate-spin" />
                     </Button>
                 {:else}
                     <Button
                         size="icon"
-                        class="size-8 cursor-pointer"
+                        class="omni-composer-send size-8 cursor-pointer"
                         onclick={handleSubmitClick}
                         disabled={!value.trim() || disabled}>
                         {#if inputMode === 'search'}
@@ -491,7 +583,7 @@
     {#if effectivePopoverItems.length > 0}
         <Popover.Root open={effectiveShowPopover}>
             <Popover.Content
-                class="w-2xl rounded-b-xl p-0"
+                class="omni-composer-popover w-2xl rounded-b-xl p-0"
                 align="start"
                 sideOffset={-1}
                 alignOffset={-1}
@@ -504,7 +596,7 @@
                     e.preventDefault()
                 }}
                 onFocusOutside={(e) => e.preventDefault()}>
-                <div class="max-w-2xl rounded-b-xl border bg-white">
+                <div class="bg-card max-w-2xl rounded-b-xl border">
                     <div class="py-2">
                         {#each effectivePopoverItems as item, i}
                             <button

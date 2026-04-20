@@ -4156,6 +4156,7 @@ dependencies = [
  "async-trait",
  "axum",
  "axum-test",
+ "dashmap 6.1.0",
  "dotenvy",
  "futures",
  "redis",

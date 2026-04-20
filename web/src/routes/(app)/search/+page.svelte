@@ -152,7 +152,7 @@
     <div class="mb-8">
         <div class="mb-4 flex items-center gap-4">
             <div
-                class="flex flex-1 items-center rounded-full border border-gray-300 bg-white p-2 shadow-sm">
+                class="border-border bg-background flex flex-1 items-center rounded-full border p-2 shadow-sm">
                 <div class="w-1"></div>
                 <Input
                     type="text"
@@ -187,9 +187,9 @@
         <div class="mb-6">
             <div class="flex flex-wrap gap-4">
                 {#each otherFacets as facet}
-                    <div class="min-w-48 rounded-lg border bg-white p-4">
+                    <div class="border-border bg-background min-w-48 rounded-lg border p-4">
                         <div class="mb-3 flex items-center justify-between">
-                            <h3 class="text-sm font-medium text-gray-900">
+                            <h3 class="text-foreground text-sm font-medium">
                                 {facetDisplayNames[facet.name] || facet.name}
                             </h3>
                             {#if facet.name === 'source_type' && selectedSourceTypes.size > 0}
@@ -205,7 +205,7 @@
                         <div class="max-h-32 space-y-2 overflow-y-auto">
                             {#each facet.values.slice(0, 5) as facetValue}
                                 <label
-                                    class="flex cursor-pointer items-center justify-between rounded p-1 text-xs hover:bg-gray-50">
+                                    class="hover:bg-muted flex cursor-pointer items-center justify-between rounded p-1 text-xs">
                                     <div class="flex items-center gap-2">
                                         <input
                                             type="checkbox"
@@ -219,7 +219,7 @@
                                         </span>
                                     </div>
                                     <span
-                                        class="ml-2 rounded bg-gray-100 px-1 py-0.5 text-xs text-gray-500">
+                                        class="bg-muted text-muted-foreground ml-2 rounded px-1 py-0.5 text-xs">
                                         {facetValue.count}
                                     </span>
                                 </label>
@@ -297,7 +297,7 @@
                 {:else}
                     <div class="py-12 text-center">
                         <Search class="mx-auto mb-4 h-12 w-12 text-gray-400" />
-                        <h3 class="mb-2 text-lg font-medium text-gray-900">No results found</h3>
+                        <h3 class="text-foreground mb-2 text-lg font-medium">No results found</h3>
                         <p class="mb-4 text-gray-600">
                             {#if selectedSourceTypes.size > 0}
                                 No results found with the current filters. Try clearing filters or
@@ -330,7 +330,7 @@
             {:else}
                 <div class="py-12 text-center">
                     <Search class="mx-auto mb-4 h-12 w-12 text-gray-400" />
-                    <h3 class="mb-2 text-lg font-medium text-gray-900">Enter a search query</h3>
+                    <h3 class="text-foreground mb-2 text-lg font-medium">Enter a search query</h3>
                     <p class="text-gray-600">
                         Search across your organization's documents, emails, and more.
                     </p>
@@ -369,7 +369,7 @@
                                     ? 'cursor-pointer bg-blue-50 hover:bg-blue-100'
                                     : isDisabled
                                       ? 'cursor-default opacity-50'
-                                      : 'cursor-pointer hover:bg-gray-200'}"
+                                      : 'hover:bg-muted cursor-pointer'}"
                                 onclick={() =>
                                     !isDisabled && toggleFilter('source_type', facetValue.value)}>
                                 <div class="flex items-center gap-2">
@@ -396,7 +396,7 @@
                                 <span
                                     class="rounded-full px-2 py-0.5 text-xs {isActive
                                         ? 'bg-blue-100 text-blue-700'
-                                        : 'bg-gray-100 text-gray-500'}">
+                                        : 'bg-muted text-muted-foreground'}">
                                     {facetValue.count}
                                 </span>
                             </Button>

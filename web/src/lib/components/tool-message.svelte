@@ -84,19 +84,19 @@
         { borderColor: string; bgColor: string; color: string }
     > = {
         [ToolApprovalStatus.Pending]: {
-            borderColor: 'border-amber-300',
-            bgColor: 'bg-amber-50',
-            color: 'text-amber-600',
+            borderColor: 'border-warning',
+            bgColor: 'bg-warning',
+            color: 'text-warning-foreground',
         },
         [ToolApprovalStatus.Approved]: {
-            borderColor: 'border-green-200',
-            bgColor: 'bg-green-50',
-            color: 'text-green-600',
+            borderColor: 'border-success',
+            bgColor: 'bg-success',
+            color: 'text-success-foreground',
         },
         [ToolApprovalStatus.Denied]: {
-            borderColor: 'border-red-200',
-            bgColor: 'bg-red-50',
-            color: 'text-red-600',
+            borderColor: 'border-destructive/30',
+            bgColor: 'bg-destructive/10',
+            color: 'text-destructive',
         },
     }
 
@@ -170,7 +170,7 @@
 {#if toolName === 'search_people'}
     <div
         class={cn(
-            'flex cursor-pointer items-center justify-between rounded-md border border-gray-200 px-3 py-3 text-sm hover:no-underline',
+            'flex cursor-pointer items-center justify-between rounded-md border border-border px-3 py-3 text-sm hover:no-underline',
         )}>
         <div class="flex w-full items-center justify-between">
             <div class="flex items-center gap-2">
@@ -184,7 +184,7 @@
 {:else if toolName === 'read_document'}
     <div
         class={cn(
-            'flex cursor-pointer items-center justify-between rounded-md border border-gray-200 px-3 py-3 text-sm hover:no-underline',
+            'flex cursor-pointer items-center justify-between rounded-md border border-border px-3 py-3 text-sm hover:no-underline',
         )}>
         <div class="flex w-full items-center justify-between">
             <div class="flex items-center gap-2">
@@ -199,7 +199,7 @@
     {#if toolName === 'present_artifact' && artifactData}
         <div class="mt-2">
             {#if artifactData.content_type.startsWith('image/')}
-                <figure class="rounded-lg border border-gray-200 p-2">
+                <figure class="rounded-lg border border-border p-2">
                     <img
                         src={artifactData.url}
                         alt={artifactData.title}
@@ -212,7 +212,7 @@
                 <a
                     href={artifactData.url}
                     download
-                    class="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm no-underline hover:bg-gray-50">
+                    class="border-border hover:bg-muted text-foreground inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm no-underline">
                     <Download class="h-4 w-4" />
                     <span>{artifactData.title}</span>
                     <span class="text-muted-foreground text-xs">
@@ -224,7 +224,7 @@
     {:else}
         <div
             class={cn(
-                'flex cursor-pointer items-center justify-between rounded-md border border-gray-200 px-3 py-3 text-sm hover:no-underline',
+                'flex cursor-pointer items-center justify-between rounded-md border border-border px-3 py-3 text-sm hover:no-underline',
             )}>
             <div class="flex w-full items-center justify-between">
                 <div class="flex items-center gap-2">
@@ -249,7 +249,7 @@
 {:else if toolName === 'load_skill'}
     <div
         class={cn(
-            'flex cursor-pointer items-center justify-between rounded-md border border-gray-200 px-3 py-3 text-sm hover:no-underline',
+            'flex cursor-pointer items-center justify-between rounded-md border border-border px-3 py-3 text-sm hover:no-underline',
         )}>
         <div class="flex w-full items-center justify-between">
             <div class="flex items-center gap-2">
@@ -263,7 +263,7 @@
 {:else if isConnectorAction}
     <div
         class={cn(
-            'flex cursor-pointer items-center justify-between rounded-md border border-gray-200 px-3 py-3 text-sm hover:no-underline',
+            'flex cursor-pointer items-center justify-between rounded-md border border-border px-3 py-3 text-sm hover:no-underline',
             message.approval && ToolApprovalColors[message.approval.status]?.borderColor,
             message.approval && ToolApprovalColors[message.approval.status]?.bgColor,
         )}>
@@ -297,7 +297,7 @@
         <Accordion.Item value={message.toolUse.id}>
             <Accordion.Trigger
                 class={cn(
-                    'flex cursor-pointer items-center justify-between border border-gray-200 px-3 py-3 text-sm hover:no-underline',
+                    'flex cursor-pointer items-center justify-between border border-border px-3 py-3 text-sm hover:no-underline',
                     selectedItem === message.toolUse.id && 'bg-card rounded-b-none border-b-0',
                 )}>
                 <div class="flex w-full items-center justify-between">
@@ -339,7 +339,7 @@
             </Accordion.Trigger>
             {#if message.toolResult && message.toolResult.content.length > 0}
                 <Accordion.Content
-                    class="bg-card max-h-48 overflow-y-auto rounded-b-md border border-t-0 border-gray-200">
+                    class="bg-card max-h-48 overflow-y-auto rounded-b-md border border-t-0 border-border">
                     <div class="px-4 py-2">
                         <div class="flex flex-col gap-2">
                             {#each message.toolResult.content as result}
@@ -365,7 +365,7 @@
                     </div>
                 </Accordion.Content>
             {:else}
-                <Accordion.Content class="bg-card rounded-b-md border border-t-0 border-gray-200">
+                <Accordion.Content class="bg-card rounded-b-md border border-t-0 border-border">
                     <div class="px-4 py-2 text-center text-sm">No results found</div>
                 </Accordion.Content>
             {/if}

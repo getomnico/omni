@@ -2,6 +2,7 @@
 
 import logging
 from typing import Any
+from urllib.parse import quote
 
 from starlette.responses import Response
 
@@ -143,17 +144,20 @@ class MicrosoftConnector(Connector):
         if not file_id:
             return ActionResponse.failure("Missing required parameter: file_id")
 
-        # Parse external_id: onedrive:{drive_id}:{item_id} or sharepoint:{site_id}:{item_id}
+        # Parse external_id: onedrive:{drive_id}:{item_id} or sharepoint:{site_id}:{drive_id}:{item_id}
         parts = file_id.split(":")
-        if len(parts) < 3:
+        if parts[0] == "onedrive" and len(parts) == 3:
+            drive_id = parts[1]
+            item_id = parts[2]
+        elif parts[0] == "sharepoint" and len(parts) == 4:
+            drive_id = parts[2]
+            item_id = parts[3]
+        else:
             return ActionResponse.failure(
                 f"Invalid file_id format: {file_id}. "
-                "Expected onedrive:{{drive_id}}:{{item_id}} or sharepoint:{{site_id}}:{{item_id}}"
+                "Expected onedrive:{{drive_id}}:{{item_id}} or "
+                "sharepoint:{{site_id}}:{{drive_id}}:{{item_id}}"
             )
-
-        # For both onedrive and sharepoint, the drive_id and item_id are at positions 1 and 2
-        drive_id = parts[1]
-        item_id = parts[2]
 
         try:
             raw_creds = credentials.get("credentials", credentials)
@@ -181,7 +185,7 @@ class MicrosoftConnector(Connector):
                     content=data,
                     media_type=mime_type,
                     headers={
-                        "X-File-Name": file_name,
+                        "X-File-Name": quote(file_name),
                         "Content-Length": str(len(data)),
                     },
                 )

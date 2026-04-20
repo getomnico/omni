@@ -121,12 +121,21 @@ impl ContentBlobGC {
     }
 
     async fn delete_expired_orphans(&self) -> Result<GCResult> {
-        let mut result = GCResult::default();
+        // Hard cap per invocation so a large backlog cannot monopolize the GC
+        // task for hours and delay other maintenance work. Leftover orphans are
+        // picked up on the next scheduled run.
+        const MAX_BLOBS_PER_RUN: i64 = 50_000;
 
-        loop {
+        let mut result = GCResult::default();
+        let mut processed_total: i64 = 0;
+
+        while processed_total < MAX_BLOBS_PER_RUN {
+            let remaining = MAX_BLOBS_PER_RUN - processed_total;
+            let batch_size = (self.config.batch_size as i64).min(remaining) as i32;
+
             let orphans = self
                 .repo
-                .fetch_expired_orphans(self.config.retention_days, self.config.batch_size)
+                .fetch_expired_orphans(self.config.retention_days, batch_size)
                 .await?;
 
             if orphans.is_empty() {
@@ -134,6 +143,7 @@ impl ContentBlobGC {
             }
 
             let batch_count = orphans.len();
+            processed_total += batch_count as i64;
 
             if self.config.dry_run {
                 let total_size: i64 = orphans.iter().map(|o| o.size_bytes).sum();

@@ -156,8 +156,8 @@ async def test_fail_sends_error_message(sdk_client, mock_connector_manager):
 
 
 @pytest.mark.asyncio
-async def test_save_state_sends_heartbeat(sdk_client, mock_connector_manager):
-    """Verify save_state() triggers a heartbeat."""
+async def test_save_state_persists_and_heartbeats(sdk_client, mock_connector_manager):
+    """Verify save_state() persists state to manager and triggers a heartbeat."""
     ctx = SyncContext(
         sdk_client=sdk_client,
         sync_run_id="sync-123",
@@ -167,7 +167,16 @@ async def test_save_state_sends_heartbeat(sdk_client, mock_connector_manager):
 
     await ctx.save_state({"page": 2, "cursor": "abc"})
 
-    # Should have made a heartbeat call
+    state_calls = [
+        c
+        for c in mock_connector_manager.calls
+        if "connector-state" in str(c.request.url)
+    ]
+    assert len(state_calls) == 1
+    assert "source-456" in str(state_calls[0].request.url)
+    assert state_calls[0].request.method == "PUT"
+    assert json.loads(state_calls[0].request.content) == {"page": 2, "cursor": "abc"}
+
     heartbeat_calls = [
         c for c in mock_connector_manager.calls if "heartbeat" in str(c.request.url)
     ]

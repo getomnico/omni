@@ -51,6 +51,14 @@ impl SearchRequest {
         self.limit.unwrap_or(20).min(100)
     }
 
+    /// Over-fetch limit for cross-source deduplication.
+    /// Fetches from offset 0 with enough headroom so that after collapsing
+    /// duplicates with the same external_id and skipping `offset` results,
+    /// we still return the requested number.
+    pub fn dedup_fetch_limit(&self) -> i64 {
+        ((self.offset() + self.limit()) * 3).min(600)
+    }
+
     pub fn offset(&self) -> i64 {
         self.offset.unwrap_or(0).max(0)
     }
@@ -91,6 +99,15 @@ pub struct SearchResult {
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_type: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub also_in: Vec<AlsoIn>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlsoIn {
+    pub source_id: String,
+    pub document_id: String,
+    pub score: f32,
 }
 
 #[derive(Debug, Deserialize)]

@@ -72,6 +72,18 @@ export function createServer(connector: Connector): Express {
     res.json(manifest);
   });
 
+  app.get('/sync/:syncRunId', (req: Request, res: Response) => {
+    const { syncRunId } = req.params;
+    let running = false;
+    for (const ctx of activeSyncs.values()) {
+      if (ctx.syncRunId === syncRunId) {
+        running = true;
+        break;
+      }
+    }
+    res.json({ running });
+  });
+
   app.post('/sync', async (req: Request, res: Response) => {
     const parseResult = SyncRequestSchema.safeParse(req.body);
     if (!parseResult.success) {

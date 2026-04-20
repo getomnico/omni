@@ -90,10 +90,27 @@ impl ObjectStorage for S3Storage {
         content_type: Option<&str>,
         prefix: Option<&str>,
     ) -> Result<String, StorageError> {
-        let content_id = generate_ulid(); // Internal ID
-        let storage_key = self.generate_key(prefix); // S3 key
         let size_bytes = content.len() as i64;
         let hash = self.compute_hash(content);
+
+        // Content-address: reuse existing blob when hash matches. Skip both the
+        // S3 upload and the metadata row when a blob for this hash already exists.
+        // Under concurrent writes a small bounded number of duplicates may slip
+        // through; they are cleaned up by the orphan GC.
+        let existing: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM content_blobs WHERE sha256_hash = $1 LIMIT 1",
+        )
+        .bind(&hash)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::Backend(format!("Failed to lookup content by hash: {}", e)))?;
+
+        if let Some(id) = existing {
+            return Ok(id);
+        }
+
+        let content_id = generate_ulid(); // Internal ID
+        let storage_key = self.generate_key(prefix); // S3 key
 
         // 1. Upload to S3
         let byte_stream = ByteStream::from(Bytes::copy_from_slice(content));

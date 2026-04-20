@@ -131,6 +131,5 @@ Just invoke `/build-connector <service name>` in Claude Code — e.g., `/build-c
 
 ## Getting Help
 
-- **Discord**: [Community Discord](https://discord.gg/aNr2J3xD)
 - **GitHub Issues**: Bug reports and feature requests
-- **Discussions**: Questions and ideas
+- **GitHub Discussions**: Questions and ideas

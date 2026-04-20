@@ -42,6 +42,11 @@ impl std::fmt::Display for TriggerType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncStatusResponse {
+    pub running: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncProgress {
     pub sync_run_id: String,
     pub source_id: String,

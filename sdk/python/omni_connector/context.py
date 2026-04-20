@@ -173,8 +173,15 @@ class SyncContext:
         await self._client.increment_scanned(self._sync_run_id)
 
     async def save_state(self, state: dict[str, Any]) -> None:
-        """Checkpoint state for resumability. Call periodically for long syncs."""
+        """Checkpoint state for resumability. Call periodically for long syncs.
+
+        Persists `state` to the manager so an interrupted sync can resume from
+        this point. Callers MUST `await` every `emit()` for documents covered
+        by `state` before calling this — otherwise a resume could skip events
+        that hadn't yet been enqueued.
+        """
         self._state = state
+        await self._client.update_connector_state(self._source_id, state)
         await self._client.heartbeat(self._sync_run_id)
 
     async def complete(self, new_state: dict[str, Any] | None = None) -> None:

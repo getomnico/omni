@@ -211,6 +211,23 @@ class SdkClient:
 
         return response.json()["content_id"]
 
+    async def update_connector_state(
+        self, source_id: str, state: dict[str, Any]
+    ) -> None:
+        """Persist connector state to the manager (used by save_state checkpoints)."""
+        logger.debug("SDK: Updating connector state for source=%s", source_id)
+
+        client = await self._get_client()
+        response = await client.put(
+            f"{self.base_url}/sdk/source/{source_id}/connector-state",
+            json=state,
+        )
+
+        if not response.is_success:
+            raise SdkClientError(
+                f"Failed to update connector state: {response.status_code} - {response.text}"
+            )
+
     async def heartbeat(self, sync_run_id: str) -> None:
         """Send heartbeat to update last_activity_at."""
         logger.debug("SDK: Heartbeat for sync_run=%s", sync_run_id)

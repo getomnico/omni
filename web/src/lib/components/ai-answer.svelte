@@ -182,7 +182,7 @@
                                 href={source.url}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                class="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white/80 px-2 py-1 text-xs text-gray-700 transition-all hover:bg-white hover:shadow-sm">
+                                class="border-border bg-background/80 text-muted-foreground hover:bg-accent hover:text-accent-foreground inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-all hover:shadow-sm">
                                 <ExternalLink class="h-3 w-3" />
                                 {source.title}
                             </a>

@@ -191,6 +191,11 @@ impl QueueProcessor {
         let mut gc_interval = interval(Duration::from_secs(3600 * 6)); // 6 hours
         let mut check_interval = interval(self.batch_check_interval);
 
+        // GC runs off the main select as its own task so a long sweep cannot stall
+        // event processing. The semaphore bounds concurrent runs to 1; overlapping
+        // ticks are skipped.
+        let gc_semaphore = Arc::new(Semaphore::new(1));
+
         // Batch accumulation state
         let mut accumulation_start: Option<Instant> = None;
         let mut last_notification: Option<Instant> = None;
@@ -338,23 +343,30 @@ impl QueueProcessor {
                     }
                 }
                 _ = gc_interval.tick() => {
-                    // Content blob garbage collection
-                    let gc = ContentBlobGC::new(
-                        self.state.db_pool.pool().clone(),
-                        self.state.content_storage.clone(),
-                        GCConfig::from_env(),
-                    );
-                    match gc.run().await {
-                        Ok(result) => {
-                            if result.blobs_deleted > 0 {
-                                info!(
-                                    "Content blob GC completed: deleted={}, bytes_reclaimed={}",
-                                    result.blobs_deleted, result.bytes_reclaimed
-                                );
-                            }
+                    match gc_semaphore.clone().try_acquire_owned() {
+                        Ok(permit) => {
+                            let pool = self.state.db_pool.pool().clone();
+                            let storage = self.state.content_storage.clone();
+                            tokio::spawn(async move {
+                                let _permit = permit;
+                                let gc = ContentBlobGC::new(pool, storage, GCConfig::from_env());
+                                match gc.run().await {
+                                    Ok(result) => {
+                                        if result.blobs_deleted > 0 {
+                                            info!(
+                                                "Content blob GC completed: deleted={}, bytes_reclaimed={}",
+                                                result.blobs_deleted, result.bytes_reclaimed
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("Content blob GC failed: {}", e);
+                                    }
+                                }
+                            });
                         }
-                        Err(e) => {
-                            error!("Content blob GC failed: {}", e);
+                        Err(_) => {
+                            debug!("Skipping GC tick: previous run still in progress");
                         }
                     }
                 }
@@ -368,9 +380,15 @@ impl QueueProcessor {
     }
 
     async fn process_batch(&self) -> Result<()> {
+        // Cap iterations per invocation so a full queue cannot hold this future
+        // for arbitrarily long, which would starve every other branch of the
+        // main select! loop (GC, retry, stale-recovery, heartbeat). Subsequent
+        // calls are driven by check_interval and poll_interval in the main loop.
+        const MAX_BATCHES_PER_CALL: usize = 3;
+
         let mut total_processed = 0;
 
-        loop {
+        for _ in 0..MAX_BATCHES_PER_CALL {
             let events = self.event_queue.dequeue_batch(self.batch_size).await?;
 
             if events.is_empty() {
@@ -506,6 +524,14 @@ impl QueueProcessor {
                 }
             }
         }
+
+        if total_processed > 0 {
+            info!(
+                "Processed {} events this call (cap reached, continuing next tick)",
+                total_processed
+            );
+        }
+        Ok(())
     }
 
     async fn group_events_by_type(

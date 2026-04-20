@@ -32,6 +32,9 @@ class CalendarSyncer(BaseSyncer):
     ) -> str | None:
         user_id = user["id"]
         display_name = user.get("displayName", user_id)
+        owner_email = (
+            user.get("mail") or user.get("userPrincipalName") or ""
+        ).lower() or None
         logger.info("[calendar] Syncing events for user %s", display_name)
 
         now = datetime.now(timezone.utc)
@@ -76,6 +79,7 @@ class CalendarSyncer(BaseSyncer):
                     event=item,
                     user_id=user_id,
                     content_id=content_id,
+                    owner_email=owner_email,
                 )
                 await ctx.emit(doc)
             except Exception as e:

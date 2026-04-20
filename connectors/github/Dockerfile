@@ -1,10 +1,10 @@
 # GitHub Connector Dockerfile
 
 # Stage 1: Build the official GitHub MCP server (Go binary)
-FROM golang:1.24-alpine AS mcp-builder
+FROM golang:1.25-alpine AS mcp-builder
 
 RUN apk add --no-cache git
-RUN go install github.com/github/github-mcp-server/cmd/github-mcp-server@latest
+RUN go install github.com/github/github-mcp-server/cmd/github-mcp-server@v1.0.0
 
 # Stage 2: Build Python wheels
 FROM python:3.11-slim AS builder

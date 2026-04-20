@@ -130,6 +130,23 @@ export class SdkClient {
     return data.content_id;
   }
 
+  async updateConnectorState(
+    sourceId: string,
+    state: Record<string, unknown>
+  ): Promise<void> {
+    const response = await this.put(
+      `/sdk/source/${sourceId}/connector-state`,
+      state
+    );
+    if (!response.ok) {
+      const text = await response.text();
+      throw new SdkClientError(
+        `Failed to update connector state: ${response.status} - ${text}`,
+        response.status
+      );
+    }
+  }
+
   async heartbeat(syncRunId: string): Promise<void> {
     const response = await this.post(`/sdk/sync/${syncRunId}/heartbeat`);
     if (!response.ok) {
@@ -224,6 +241,21 @@ export class SdkClient {
       method: 'GET',
       signal: AbortSignal.timeout(this.timeout),
     });
+  }
+
+  private async put(path: string, body?: unknown): Promise<Response> {
+    const url = `${this.baseUrl}${path}`;
+    const options: RequestInit = {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      signal: AbortSignal.timeout(this.timeout),
+    };
+    if (body !== undefined) {
+      options.body = JSON.stringify(body);
+    }
+    return fetch(url, options);
   }
 
   private async post(path: string, body?: unknown): Promise<Response> {

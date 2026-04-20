@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import logging
 from typing import Union
+from urllib.parse import unquote
 
 import httpx
 from anthropic.types import ToolParam
@@ -195,7 +196,8 @@ class DocumentToolHandler:
                 )
 
             binary_data = resp.content
-            file_name = resp.headers.get("x-file-name", document_name)
+            header_name = resp.headers.get("x-file-name")
+            file_name = unquote(header_name) if header_name else document_name
 
         return await write_binary_to_sandbox(
             self._sandbox_url, binary_data, file_name, context.chat_id
