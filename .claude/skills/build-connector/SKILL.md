@@ -26,7 +26,8 @@ Every new connector requires changes across these areas:
 4. **Frontend** — `SourceType` enum, icon, setup dialog, integrations page
 5. **Docker Compose** — service definition, port in `.env.example`, `ENABLED_CONNECTORS` comment
 6. **Terraform** — AWS ECS task/service, GCP Cloud Run service
-7. **Integration tests** — mock API server, test harness, sync assertions
+7. **GitHub Actions** — path filter, build job, and release matrix entry
+8. **Integration tests** — mock API server, test harness, sync assertions
 
 # Choosing a Language
 
@@ -185,6 +186,14 @@ When implementing, read these files for your chosen language:
 | AWS task definitions | `infra/aws/terraform/modules/compute/task_definitions.tf` |
 | AWS ECS services | `infra/aws/terraform/modules/compute/services.tf` |
 | GCP Cloud Run (simple connectors) | `infra/gcp/terraform/modules/compute/services.tf` (`all_simple_connectors` local) |
+
+## CI/CD
+
+| What | File |
+|---|---|
+| Path filter | `.github/workflows/ci.yml` (`detect-changes` → `filters`) |
+| Build job | `.github/workflows/ci.yml` (connector build job calling `build-connector.yml`) |
+| Release matrix | `.github/workflows/ci.yml` (`release-connectors` matrix) |
 
 ## Testing
 
