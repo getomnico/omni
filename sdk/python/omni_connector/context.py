@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from typing import Any
 
 from .client import SdkClient
@@ -9,13 +10,26 @@ from .models import (
     Document,
     EventType,
     GroupMembershipSyncEvent,
+    SyncMode,
     UserFilterMode,
 )
 from .storage import ContentStorage
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_BUFFER_FLUSH_SIZE = 500
+
+def _thresholds_for(sync_mode: SyncMode) -> tuple[int, float | None]:
+    """Buffer thresholds (size, time_secs) per sync mode.
+
+    - Full: batch aggressively, generous wait
+    - Incremental: balanced
+    - Realtime: flush on every emit (size=1, no time bound)
+    """
+    if sync_mode == SyncMode.FULL:
+        return (500, 10.0)
+    if sync_mode == SyncMode.REALTIME:
+        return (1, None)
+    return (100, 1.0)  # Incremental (default)
 
 
 class SyncContext:
@@ -31,6 +45,7 @@ class SyncContext:
         user_filter_mode: UserFilterMode = UserFilterMode.ALL,
         user_whitelist: list[str] | None = None,
         user_blacklist: list[str] | None = None,
+        sync_mode: SyncMode = SyncMode.INCREMENTAL,
     ):
         self._client = sdk_client
         self._sync_run_id = sync_run_id
@@ -44,8 +59,12 @@ class SyncContext:
         self._user_filter_mode = user_filter_mode
         self._user_whitelist = {e.lower() for e in (user_whitelist or [])}
         self._user_blacklist = {e.lower() for e in (user_blacklist or [])}
+        self._sync_mode = sync_mode
+        self._buffer_size_threshold, self._buffer_time_threshold = _thresholds_for(
+            sync_mode
+        )
         self._event_buffer: list[ConnectorEvent] = []
-        self._buffer_flush_size: int = DEFAULT_BUFFER_FLUSH_SIZE
+        self._oldest_event_at: float | None = None
 
     @property
     def sync_run_id(self) -> str:
@@ -89,13 +108,23 @@ class SyncContext:
         return True
 
     async def _buffer_event(self, event: ConnectorEvent) -> None:
-        """Append an event to the buffer and flush if we hit the threshold.
+        """Append an event to the buffer and flush if size/time threshold is hit.
 
         Auto-flush errors propagate to the caller so the connector knows an
         event was not persisted before it checkpoints past it.
         """
         self._event_buffer.append(event)
-        if len(self._event_buffer) >= self._buffer_flush_size:
+        if self._oldest_event_at is None:
+            self._oldest_event_at = time.monotonic()
+
+        size_hit = len(self._event_buffer) >= self._buffer_size_threshold
+        time_hit = (
+            self._buffer_time_threshold is not None
+            and self._oldest_event_at is not None
+            and (time.monotonic() - self._oldest_event_at)
+            >= self._buffer_time_threshold
+        )
+        if size_hit or time_hit:
             await self.flush()
 
     async def flush(self) -> None:
@@ -104,6 +133,7 @@ class SyncContext:
             return
         batch = self._event_buffer
         self._event_buffer = []
+        self._oldest_event_at = None
         await self._client.emit_event_batch(self._sync_run_id, self._source_id, batch)
 
     async def emit(self, doc: Document) -> None:

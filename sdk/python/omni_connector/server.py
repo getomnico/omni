@@ -18,6 +18,7 @@ from .models import (
     CancelResponse,
     PromptRequest,
     ResourceRequest,
+    SyncMode,
     SyncRequest,
     SyncResponse,
 )
@@ -162,6 +163,15 @@ def create_app(connector: "Connector") -> FastAPI:
         # Bootstrap MCP subprocess with credentials (populates tool cache for manifest)
         await connector.bootstrap_mcp(credentials)
 
+        try:
+            sync_mode = SyncMode(request.sync_mode)
+        except ValueError:
+            logger.warning(
+                "Unknown sync_mode %r; defaulting to Incremental batching",
+                request.sync_mode,
+            )
+            sync_mode = SyncMode.INCREMENTAL
+
         ctx = SyncContext(
             sdk_client=server.sdk_client,
             sync_run_id=sync_run_id,
@@ -171,6 +181,7 @@ def create_app(connector: "Connector") -> FastAPI:
             user_filter_mode=sync_data.user_filter_mode,
             user_whitelist=sync_data.user_whitelist,
             user_blacklist=sync_data.user_blacklist,
+            sync_mode=sync_mode,
         )
         server.active_syncs[source_id] = ctx
 

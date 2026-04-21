@@ -3,6 +3,7 @@ import { z } from 'zod';
 export const SyncMode = {
   FULL: 'full',
   INCREMENTAL: 'incremental',
+  REALTIME: 'realtime',
 } as const;
 export type SyncMode = (typeof SyncMode)[keyof typeof SyncMode];
 

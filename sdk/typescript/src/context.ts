@@ -1,6 +1,7 @@
 import type { SdkClient } from './client.js';
 import {
   EventType,
+  SyncMode,
   type Document,
   type DocumentMetadata,
   type DocumentPermissions,
@@ -12,7 +13,12 @@ import { getLogger } from './logger.js';
 
 const logger = getLogger('sdk:context');
 
-const DEFAULT_BUFFER_FLUSH_SIZE = 500;
+/** Buffer thresholds (size, timeMs) per sync mode. `null` timeMs = flush-on-emit. */
+function thresholdsFor(syncMode: SyncMode): { size: number; timeMs: number | null } {
+  if (syncMode === SyncMode.FULL) return { size: 500, timeMs: 10_000 };
+  if (syncMode === SyncMode.REALTIME) return { size: 1, timeMs: null };
+  return { size: 100, timeMs: 1_000 }; // Incremental (default)
+}
 
 export class SyncContext {
   private readonly client: SdkClient;
@@ -23,14 +29,18 @@ export class SyncContext {
   private _documentsEmitted = 0;
   private _documentsScanned = 0;
   private readonly _contentStorage: ContentStorage;
+  private readonly _syncMode: SyncMode;
+  private readonly bufferSizeThreshold: number;
+  private readonly bufferTimeThresholdMs: number | null;
   private eventBuffer: ConnectorEventPayload[] = [];
-  private readonly bufferFlushSize: number = DEFAULT_BUFFER_FLUSH_SIZE;
+  private oldestEventAt: number | null = null;
 
   constructor(
     client: SdkClient,
     syncRunId: string,
     sourceId: string,
-    state?: Record<string, unknown>
+    state?: Record<string, unknown>,
+    syncMode: SyncMode = SyncMode.INCREMENTAL
   ) {
     this.client = client;
     this._syncRunId = syncRunId;
@@ -38,6 +48,10 @@ export class SyncContext {
     this._state = state ?? {};
     this.abortController = new AbortController();
     this._contentStorage = new ContentStorage(client, syncRunId);
+    this._syncMode = syncMode;
+    const thresholds = thresholdsFor(syncMode);
+    this.bufferSizeThreshold = thresholds.size;
+    this.bufferTimeThresholdMs = thresholds.timeMs;
   }
 
   get syncRunId(): string {
@@ -66,7 +80,16 @@ export class SyncContext {
 
   private async bufferEvent(event: ConnectorEventPayload): Promise<void> {
     this.eventBuffer.push(event);
-    if (this.eventBuffer.length >= this.bufferFlushSize) {
+    if (this.oldestEventAt === null) {
+      this.oldestEventAt = Date.now();
+    }
+
+    const sizeHit = this.eventBuffer.length >= this.bufferSizeThreshold;
+    const timeHit =
+      this.bufferTimeThresholdMs !== null &&
+      this.oldestEventAt !== null &&
+      Date.now() - this.oldestEventAt >= this.bufferTimeThresholdMs;
+    if (sizeHit || timeHit) {
       await this.flush();
     }
   }
@@ -77,6 +100,7 @@ export class SyncContext {
     }
     const batch = this.eventBuffer;
     this.eventBuffer = [];
+    this.oldestEventAt = null;
     await this.client.emitEventBatch(this._syncRunId, this._sourceId, batch);
   }
 

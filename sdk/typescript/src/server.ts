@@ -4,6 +4,7 @@ import { SdkClient } from './client.js';
 import type { Connector } from './connector.js';
 import { SyncContext } from './context.js';
 import {
+  SyncMode,
   SyncRequestSchema,
   CancelRequestSchema,
   ActionRequestSchema,
@@ -91,7 +92,21 @@ export function createServer(connector: Connector): Express {
       return;
     }
 
-    const { sync_run_id: syncRunId, source_id: sourceId } = parseResult.data;
+    const {
+      sync_run_id: syncRunId,
+      source_id: sourceId,
+      sync_mode: syncModeStr,
+    } = parseResult.data;
+
+    const isValidSyncMode = (Object.values(SyncMode) as string[]).includes(syncModeStr);
+    if (!isValidSyncMode) {
+      logger.warn(
+        `Unknown sync_mode '${syncModeStr}'; defaulting to Incremental batching`
+      );
+    }
+    const syncMode: SyncMode = isValidSyncMode
+      ? (syncModeStr as SyncMode)
+      : SyncMode.INCREMENTAL;
 
     logger.info(`Sync triggered for source ${sourceId} (sync_run_id: ${syncRunId})`);
 
@@ -131,7 +146,8 @@ export function createServer(connector: Connector): Express {
       getSdkClient(),
       syncRunId,
       sourceId,
-      sourceData.state ?? undefined
+      sourceData.state ?? undefined,
+      syncMode
     );
     activeSyncs.set(sourceId, ctx);
 

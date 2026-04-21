@@ -8,6 +8,7 @@ from pydantic import BaseModel, Discriminator, Field, Tag
 class SyncMode(str, Enum):
     FULL = "full"
     INCREMENTAL = "incremental"
+    REALTIME = "realtime"
 
 
 class UserFilterMode(str, Enum):

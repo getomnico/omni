@@ -18,9 +18,10 @@ use tokio::time::{interval, Duration, MissedTickBehavior};
 use tracing::{debug, error, info, warn};
 
 // Default poll interval for draining the queue. Overridable via INDEXER_POLL_INTERVAL_SECS.
-// Trades incremental-update latency (up to one poll interval) for full-sync throughput:
-// a single tick drains everything pending as one large batch.
-const DEFAULT_POLL_INTERVAL_SECS: u64 = 30;
+// 1s matches the tightest latency target (Realtime syncs, which flush on every emit).
+// SDK-side buffering already shapes events into the right batch size per sync type,
+// so the indexer just drains whatever's there on each tick.
+const DEFAULT_POLL_INTERVAL_SECS: u64 = 1;
 
 // Batch processing types
 #[derive(Debug)]
