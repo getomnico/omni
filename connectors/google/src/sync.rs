@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use dashmap::DashMap;
+use omni_connector_sdk::SyncContext;
 use redis::{AsyncCommands, Client as RedisClient};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -15,8 +16,8 @@ use crate::cache::LruFolderCache;
 use crate::drive::{DriveClient, FileContent};
 use crate::gmail::{BatchThreadResult, GmailClient, MessageFormat};
 use crate::models::{
-    mime_type_to_content_type, GmailThread, GoogleConnectorState, SyncRequest, UserFile,
-    WebhookChannel, WebhookChannelResponse, WebhookNotification,
+    mime_type_to_content_type, GmailThread, GoogleConnectorState, UserFile, WebhookChannel,
+    WebhookChannelResponse, WebhookNotification,
 };
 use serde_json::json;
 use shared::models::{
@@ -25,10 +26,6 @@ use shared::models::{
 };
 use shared::RateLimiter;
 use shared::SdkClient;
-
-struct ActiveSync {
-    cancelled: AtomicBool,
-}
 
 pub struct WebhookDebounce {
     pub last_received: Instant,
@@ -43,7 +40,13 @@ pub struct SyncManager {
     admin_client: Arc<AdminClient>,
     pub sdk_client: SdkClient,
     folder_cache: LruFolderCache,
-    active_syncs: DashMap<String, Arc<ActiveSync>>,
+    /// Mirrors the cancellation flag owned by each in-flight sync's
+    /// `SyncContext`. Populated at the top of `run_sync` and removed on
+    /// completion — lets nested sync helpers poll cancellation by
+    /// `sync_run_id` without threading `SyncContext` through every
+    /// signature. The SDK's own guard is the source of truth for slot
+    /// reservation and panic safety.
+    active_syncs: DashMap<String, Arc<AtomicBool>>,
     webhook_url: Option<String>,
     pub webhook_debounce: DashMap<String, WebhookDebounce>,
     webhook_notify: Arc<Notify>,
@@ -238,96 +241,99 @@ impl SyncManager {
         }
     }
 
-    /// Sync a source from a SyncRequest (called by connector-manager)
-    pub async fn sync_source_from_request(&self, request: SyncRequest) -> Result<()> {
-        let sync_run_id = request.sync_run_id.clone();
-        let source_id = request.source_id.clone();
-        let sync_type = request.sync_mode;
+    /// Run a sync driven by the SDK. The SDK passes in typed Config/
+    /// Credentials/State and a `SyncContext` whose cancellation flag is
+    /// flipped by the SDK's `/cancel` handler.
+    pub async fn run_sync(
+        &self,
+        _config: serde_json::Value,
+        _credentials: serde_json::Value,
+        _state: Option<GoogleConnectorState>,
+        ctx: SyncContext,
+    ) -> Result<()> {
+        let sync_run_id = ctx.sync_run_id().to_string();
+        let source_id = ctx.source_id().to_string();
+        let sync_type = ctx.sync_mode();
 
         info!(
             "Starting sync for source {} (sync_run_id: {})",
             source_id, sync_run_id
         );
 
-        // Register this sync as active for cancellation tracking
-        let active_sync = Arc::new(ActiveSync {
-            cancelled: AtomicBool::new(false),
-        });
+        // Mirror the SDK's cancellation flag so `is_cancelled(sync_run_id)`
+        // works from nested helpers without threading `ctx` through them.
         self.active_syncs
-            .insert(sync_run_id.clone(), active_sync.clone());
+            .insert(sync_run_id.clone(), ctx.cancelled_flag());
 
-        // Get the source via SDK
+        let outcome = self
+            .run_sync_inner(&sync_run_id, &source_id, sync_type, &ctx)
+            .await;
+        self.active_syncs.remove(&sync_run_id);
+
+        match outcome {
+            Ok(Some((files_scanned, _files_processed, files_updated))) => {
+                ctx.complete(files_scanned as i32, files_updated as i32, None)
+                    .await?;
+                Ok(())
+            }
+            // Cancelled mid-sync: tell the SDK so the run is marked
+            // `cancelled` rather than `failed`. Returning Ok keeps the
+            // SDK's default-fail branch from firing.
+            Ok(None) => {
+                info!("Sync {} was cancelled", sync_run_id);
+                ctx.cancel().await?;
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Inner sync body. Returns `Ok(None)` if the sync was cancelled
+    /// mid-flight (distinct from a successful completion or a hard
+    /// failure).
+    async fn run_sync_inner(
+        &self,
+        sync_run_id: &str,
+        source_id: &str,
+        sync_type: SyncType,
+        _ctx: &SyncContext,
+    ) -> Result<Option<(usize, usize, usize)>> {
         let source = self
             .sdk_client
-            .get_source(&source_id)
+            .get_source(source_id)
             .await
             .context("Failed to fetch source via SDK")?;
 
-        // Sync group memberships (org-wide, shared between Drive and Gmail)
-        let known_groups = self.maybe_sync_groups(&source, &sync_run_id).await;
+        let known_groups = self.maybe_sync_groups(&source, sync_run_id).await;
 
-        // Run the sync
         let result = match source.source_type {
             SourceType::GoogleDrive => {
-                self.sync_drive_source_internal(&source, &sync_run_id, sync_type)
+                self.sync_drive_source_internal(&source, sync_run_id, sync_type)
                     .await
             }
             SourceType::Gmail => {
-                self.sync_gmail_source_internal(&source, &sync_run_id, sync_type, known_groups)
+                self.sync_gmail_source_internal(&source, sync_run_id, sync_type, known_groups)
                     .await
             }
             _ => Err(anyhow!("Unsupported source type: {:?}", source.source_type)),
         };
 
-        // Auto-register webhook after successful Drive sync
         if result.is_ok() && source.source_type == SourceType::GoogleDrive {
-            self.ensure_webhook_registered(&source_id).await;
+            self.ensure_webhook_registered(source_id).await;
         }
 
-        // Check if cancelled
-        if active_sync.cancelled.load(Ordering::SeqCst) {
-            info!("Sync {} was cancelled", sync_run_id);
-            let _ = self.sdk_client.cancel(&sync_run_id).await;
-            self.active_syncs.remove(&sync_run_id);
-            return Ok(());
+        if self.is_cancelled(sync_run_id) {
+            return Ok(None);
         }
 
-        // Update sync run based on result via SDK
-        match &result {
-            Ok((files_scanned, _files_processed, files_updated)) => {
-                self.sdk_client
-                    .complete(
-                        &sync_run_id,
-                        *files_scanned as i32,
-                        *files_updated as i32,
-                        None,
-                    )
-                    .await?;
-            }
-            Err(e) => {
-                self.sdk_client.fail(&sync_run_id, &e.to_string()).await?;
-            }
-        }
-
-        self.active_syncs.remove(&sync_run_id);
-        result.map(|_| ())
+        result.map(Some)
     }
 
-    /// Cancel a running sync
-    pub fn cancel_sync(&self, sync_run_id: &str) -> bool {
-        if let Some(active_sync) = self.active_syncs.get(sync_run_id) {
-            active_sync.cancelled.store(true, Ordering::SeqCst);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Check if a sync has been cancelled
+    /// Check if a sync has been cancelled.
     fn is_cancelled(&self, sync_run_id: &str) -> bool {
         self.active_syncs
             .get(sync_run_id)
-            .map(|s| s.cancelled.load(Ordering::SeqCst))
+            .map(|flag| flag.load(Ordering::SeqCst))
             .unwrap_or(false)
     }
 

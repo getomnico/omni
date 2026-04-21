@@ -16,6 +16,8 @@ path = "src/lib.rs"
 [dependencies]
 tokio = { workspace = true }
 shared = { path = "../../shared" }
+omni-connector-sdk = { path = "../../sdk/rust" }
+async-trait = { workspace = true }
 axum = { workspace = true }
 sqlx = { workspace = true }
 redis = { workspace = true }

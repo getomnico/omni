@@ -1,32 +1,22 @@
 use anyhow::Result;
-use dashmap::DashSet;
 use dotenvy::dotenv;
+use omni_connector_sdk::{serve_with_extra_routes, ServerConfig};
 use shared::models::SourceType;
 use shared::telemetry::{self, TelemetryConfig};
+use shared::SdkClient;
 use std::sync::Arc;
 use std::time::Duration;
 use time::OffsetDateTime;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
-mod admin;
-mod api;
-mod auth;
-mod cache;
-mod config;
-mod drive;
-mod gmail;
-mod models;
-mod sync;
-
-use config::GoogleConnectorConfig;
-
-use shared::SdkClient;
-
-use admin::AdminClient;
-use api::{build_manifest, create_router, ApiState};
+use omni_google_connector::admin::AdminClient;
+use omni_google_connector::config::GoogleConnectorConfig;
+use omni_google_connector::connector::GoogleConnector;
+use omni_google_connector::models;
+use omni_google_connector::routes;
+use omni_google_connector::sync::SyncManager;
 use shared::RateLimiter;
-use sync::SyncManager;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -41,7 +31,6 @@ async fn main() -> Result<()> {
 
     let redis_client = redis::Client::open(config.redis.redis_url.clone())?;
 
-    // Create shared AdminClient with rate limiter
     let api_rate_limit = std::env::var("GOOGLE_API_RATE_LIMIT")
         .unwrap_or_else(|_| "180".to_string())
         .parse::<u32>()
@@ -63,7 +52,6 @@ async fn main() -> Result<()> {
         config.webhook_url.clone(),
     ));
 
-    // Spawn webhook renewal loop if webhooks are enabled
     if config.webhook_url.is_some() {
         let renewal_sync_manager = Arc::clone(&sync_manager);
         let renewal_interval = config.webhook_renewal_interval_seconds;
@@ -78,7 +66,6 @@ async fn main() -> Result<()> {
         info!("Webhooks disabled, no renewal loop started");
     }
 
-    // Spawn webhook debounce processor
     {
         let processor_sync_manager = Arc::clone(&sync_manager);
         tokio::spawn(async move {
@@ -87,38 +74,17 @@ async fn main() -> Result<()> {
         info!("Webhook debounce processor started");
     }
 
-    // Spawn registration loop
-    shared::start_registration_loop(build_manifest(shared::build_connector_url()));
+    let extra_routes = routes::build_router(Arc::clone(&sync_manager), Arc::clone(&admin_client));
+    let connector = GoogleConnector::new(Arc::clone(&sync_manager), Arc::clone(&admin_client));
 
-    // Create API state with shared services
-    let api_state = ApiState {
-        sync_manager: Arc::clone(&sync_manager),
-        admin_client: Arc::clone(&admin_client),
-        active_syncs: Arc::new(DashSet::new()),
-    };
-
-    // Create HTTP server
-    let app = create_router(api_state);
-    let port = std::env::var("PORT")?.parse::<u16>()?;
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-
-    info!("HTTP server listening on {}", addr);
-
-    // Run HTTP server (connector-manager handles scheduling)
-    if let Err(e) = axum::serve(listener, app).await {
-        error!("HTTP server stopped: {:?}", e);
-    }
-
-    Ok(())
+    serve_with_extra_routes(connector, ServerConfig::from_env()?, extra_routes).await
 }
 
 async fn webhook_renewal_loop(sync_manager: Arc<SyncManager>, interval_seconds: u64) {
-    // Wait before first check to let the system stabilize
     sleep(Duration::from_secs(60)).await;
 
     let mut interval = tokio::time::interval(Duration::from_secs(interval_seconds));
-    interval.tick().await; // consume first immediate tick
+    interval.tick().await;
 
     loop {
         interval.tick().await;

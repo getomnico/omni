@@ -58,6 +58,14 @@ impl SyncContext {
         self.cancelled.load(Ordering::SeqCst)
     }
 
+    /// Returns a clone of the cancellation flag. Lets a connector share the
+    /// SDK's source-of-truth with nested helpers that need to poll
+    /// cancellation without threading `&SyncContext` through their
+    /// signatures.
+    pub fn cancelled_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancelled)
+    }
+
     /// Emit a single event. Events are buffered in memory and auto-flushed
     /// according to the sync's mode (see [`thresholds_for`]):
     /// - Full: 500 events or 5min, whichever first

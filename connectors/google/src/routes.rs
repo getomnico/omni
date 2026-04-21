@@ -1,176 +1,50 @@
+//! Connector-specific HTTP routes that live outside the SDK protocol
+//! surface: Google Drive push-notification webhook, admin user search, and
+//! the binary `/action` handler for `fetch_file` (which returns raw file
+//! bytes, not JSON — `GoogleConnector::owns_action_route` is true so the
+//! SDK skips its default JSON `/action`).
+
+use std::sync::Arc;
+
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    middleware,
-    response::{IntoResponse, Json},
+    response::Json,
     routing::{get, post},
     Router,
 };
-use dashmap::DashSet;
-use futures::FutureExt;
+use omni_connector_sdk::{ActionRequest, ActionResponse};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
-use shared::telemetry;
-use std::sync::Arc;
-use tower::ServiceBuilder;
-use tower_http::cors::CorsLayer;
+use shared::models::{ServiceProvider, SourceType};
 use tracing::{debug, error, info, warn};
 
 use crate::admin::AdminClient;
 use crate::auth::{GoogleAuth, ServiceAccountAuth};
 use crate::drive::DriveClient;
-use crate::models::{
-    ActionDefinition, ActionRequest, ActionResponse, CancelRequest, CancelResponse,
-    ConnectorManifest, SyncRequest, SyncResponse, SyncResponseExt, WebhookNotification,
-};
+use crate::models::WebhookNotification;
 use crate::sync::SyncManager;
-use shared::models::SearchOperator;
-use shared::models::{ServiceProvider, SourceType, SyncType};
 
 #[derive(Clone)]
-pub struct ApiState {
+pub struct RoutesState {
     pub sync_manager: Arc<SyncManager>,
     pub admin_client: Arc<AdminClient>,
-    pub active_syncs: Arc<DashSet<String>>,
 }
 
-pub fn create_router(state: ApiState) -> Router {
+pub fn build_router(sync_manager: Arc<SyncManager>, admin_client: Arc<AdminClient>) -> Router {
+    let state = RoutesState {
+        sync_manager,
+        admin_client,
+    };
     Router::new()
-        // Protocol endpoints
-        .route("/health", get(health_check))
-        .route("/manifest", get(manifest))
-        .route("/sync", post(trigger_sync))
-        .route("/cancel", post(cancel_sync))
         .route("/action", post(execute_action))
-        // Webhook endpoints
         .route("/webhook", post(handle_webhook))
-        // Admin endpoints
         .route("/users/search/:source_id", get(search_users))
-        .layer(
-            ServiceBuilder::new()
-                .layer(middleware::from_fn(telemetry::middleware::trace_layer))
-                .layer(CorsLayer::permissive()),
-        )
         .with_state(state)
 }
 
-async fn health_check() -> impl IntoResponse {
-    Json(json!({
-        "status": "healthy",
-        "service": "google-connector"
-    }))
-}
-
-pub fn build_manifest(connector_url: String) -> ConnectorManifest {
-    ConnectorManifest {
-        name: "google".to_string(),
-        display_name: "Google Workspace".to_string(),
-        version: "1.0.0".to_string(),
-        sync_modes: vec![SyncType::Full, SyncType::Incremental],
-        connector_id: "google".to_string(),
-        connector_url,
-        source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
-        description: Some(
-            "Connect to Google Drive, Docs, Gmail, and more".to_string(),
-        ),
-        actions: vec![ActionDefinition {
-            name: "fetch_file".to_string(),
-            description: "Download a file from Google Drive. Exports Google Workspace files to Office format.".to_string(),
-            mode: "read".to_string(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "file_id": {
-                        "type": "string",
-                        "description": "The Google Drive file ID"
-                    }
-                },
-                "required": ["file_id"]
-            }),
-        }],
-        search_operators: vec![
-            SearchOperator {
-                operator: "from".to_string(),
-                attribute_key: "sender".to_string(),
-                value_type: "person".to_string(),
-            },
-            SearchOperator {
-                operator: "label".to_string(),
-                attribute_key: "labels".to_string(),
-                value_type: "text".to_string(),
-            },
-        ],
-        read_only: false,
-        extra_schema: None,
-        attributes_schema: None,
-        mcp_enabled: false,
-        resources: vec![],
-        prompts: vec![],
-    }
-}
-
-async fn manifest() -> impl IntoResponse {
-    Json(build_manifest(shared::build_connector_url()))
-}
-
-async fn trigger_sync(
-    State(state): State<ApiState>,
-    Json(request): Json<SyncRequest>,
-) -> Result<Json<SyncResponse>, (StatusCode, Json<SyncResponse>)> {
-    let sync_run_id = request.sync_run_id.clone();
-    let source_id = request.source_id.clone();
-
-    info!(
-        "Sync triggered for source {} (sync_run_id: {})",
-        source_id, sync_run_id
-    );
-
-    // Check if already syncing this source
-    if state.active_syncs.contains(&source_id) {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(SyncResponse::error(
-                "Sync already in progress for this source",
-            )),
-        ));
-    }
-
-    // Mark as active
-    state.active_syncs.insert(source_id.clone());
-
-    // Spawn sync task
-    let sync_manager = state.sync_manager.clone();
-    let active_syncs = state.active_syncs.clone();
-
-    tokio::spawn(async move {
-        let result = std::panic::AssertUnwindSafe(sync_manager.sync_source_from_request(request))
-            .catch_unwind()
-            .await;
-
-        active_syncs.remove(&source_id);
-
-        match result {
-            Ok(Ok(())) => info!("Sync {} completed successfully", sync_run_id),
-            Ok(Err(e)) => error!("Sync {} failed: {}", sync_run_id, e),
-            Err(panic_err) => error!("Sync {} panicked: {:?}", sync_run_id, panic_err),
-        }
-    });
-
-    Ok(Json(SyncResponse::started()))
-}
-
-async fn cancel_sync(
-    State(state): State<ApiState>,
-    Json(request): Json<CancelRequest>,
-) -> impl IntoResponse {
-    info!("Cancel requested for sync {}", request.sync_run_id);
-
-    let cancelled = state.sync_manager.cancel_sync(&request.sync_run_id);
-
-    Json(CancelResponse {
-        status: if cancelled { "cancelled" } else { "not_found" }.to_string(),
-    })
-}
+// ---------------------------------------------------------------------------
+// /action — binary passthrough for fetch_file
+// ---------------------------------------------------------------------------
 
 async fn execute_action(
     Json(request): Json<ActionRequest>,
@@ -194,27 +68,19 @@ async fn execute_fetch_file(
         .get("file_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            let resp = ActionResponse {
-                status: "error".to_string(),
-                result: None,
-                error: Some("Missing required parameter: file_id".to_string()),
-            };
+            let resp = ActionResponse::failure("Missing required parameter: file_id".to_string());
             (StatusCode::BAD_REQUEST, Json(resp))
         })?
         .to_string();
 
-    // Extract credentials (same pattern as search_users)
     let service_account_key = request
         .credentials
         .get("credentials")
         .and_then(|c| c.get("service_account_key"))
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            let resp = ActionResponse {
-                status: "error".to_string(),
-                result: None,
-                error: Some("Missing service_account_key in credentials".to_string()),
-            };
+            let resp =
+                ActionResponse::failure("Missing service_account_key in credentials".to_string());
             (StatusCode::BAD_REQUEST, Json(resp))
         })?;
 
@@ -223,47 +89,33 @@ async fn execute_fetch_file(
         .get("principal_email")
         .and_then(|v| v.as_str())
         .ok_or_else(|| {
-            let resp = ActionResponse {
-                status: "error".to_string(),
-                result: None,
-                error: Some("Missing principal_email in credentials".to_string()),
-            };
+            let resp =
+                ActionResponse::failure("Missing principal_email in credentials".to_string());
             (StatusCode::BAD_REQUEST, Json(resp))
         })?;
 
-    // Create auth
     let scopes = crate::auth::get_scopes_for_source_type(SourceType::GoogleDrive);
     let auth = ServiceAccountAuth::new(service_account_key, scopes).map_err(|e| {
         error!("Failed to create auth: {}", e);
-        let resp = ActionResponse {
-            status: "error".to_string(),
-            result: None,
-            error: Some(format!("Authentication failed: {}", e)),
-        };
+        let resp = ActionResponse::failure(format!("Authentication failed: {}", e));
         (StatusCode::INTERNAL_SERVER_ERROR, Json(resp))
     })?;
 
     let google_auth = GoogleAuth::ServiceAccount(auth);
     let drive_client = DriveClient::new();
 
-    // Get file metadata to determine mime type
     let file_meta = drive_client
         .get_file_metadata(&google_auth, principal_email, &file_id)
         .await
         .map_err(|e| {
             error!("Failed to get file metadata: {}", e);
-            let resp = ActionResponse {
-                status: "error".to_string(),
-                result: None,
-                error: Some(format!("Failed to get file metadata: {}", e)),
-            };
+            let resp = ActionResponse::failure(format!("Failed to get file metadata: {}", e));
             (StatusCode::INTERNAL_SERVER_ERROR, Json(resp))
         })?;
 
     let mime_type = &file_meta.mime_type;
     let file_name = &file_meta.name;
 
-    // Map Google Workspace types to their export MIME type and file extension
     let export_mapping: Option<(&str, &str)> = match mime_type.as_str() {
         "application/vnd.google-apps.spreadsheet" => Some((
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -286,11 +138,7 @@ async fn execute_fetch_file(
             .await
             .map_err(|e| {
                 error!("Failed to export file: {}", e);
-                let resp = ActionResponse {
-                    status: "error".to_string(),
-                    result: None,
-                    error: Some(format!("Failed to export file: {}", e)),
-                };
+                let resp = ActionResponse::failure(format!("Failed to export file: {}", e));
                 (StatusCode::INTERNAL_SERVER_ERROR, Json(resp))
             })?;
         (
@@ -304,11 +152,7 @@ async fn execute_fetch_file(
             .await
             .map_err(|e| {
                 error!("Failed to download file: {}", e);
-                let resp = ActionResponse {
-                    status: "error".to_string(),
-                    result: None,
-                    error: Some(format!("Failed to download file: {}", e)),
-                };
+                let resp = ActionResponse::failure(format!("Failed to download file: {}", e));
                 (StatusCode::INTERNAL_SERVER_ERROR, Json(resp))
             })?;
         (bytes, mime_type.clone(), file_name.clone())
@@ -321,7 +165,6 @@ async fn execute_fetch_file(
         content_type
     );
 
-    // Return binary HTTP response with metadata headers
     let response = axum::response::Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", &content_type)
@@ -341,8 +184,12 @@ fn ensure_extension(name: &str, ext: &str) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// /webhook — Google Drive push notifications
+// ---------------------------------------------------------------------------
+
 async fn handle_webhook(
-    State(state): State<ApiState>,
+    State(state): State<RoutesState>,
     headers: HeaderMap,
 ) -> Result<StatusCode, StatusCode> {
     debug!("Received webhook notification");
@@ -375,11 +222,15 @@ async fn handle_webhook(
     Ok(StatusCode::OK)
 }
 
+// ---------------------------------------------------------------------------
+// /users/search/:source_id — admin directory user search
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Deserialize)]
 pub struct UserSearchQuery {
-    q: Option<String>,          // Search query
-    limit: Option<u32>,         // Max results (default 50, max 100)
-    page_token: Option<String>, // Pagination token
+    q: Option<String>,
+    limit: Option<u32>,
+    page_token: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -400,13 +251,12 @@ pub struct UserSearchResult {
 }
 
 async fn search_users(
-    State(state): State<ApiState>,
+    State(state): State<RoutesState>,
     Path(source_id): Path<String>,
     Query(params): Query<UserSearchQuery>,
 ) -> Result<Json<UserSearchResponse>, StatusCode> {
     info!("Searching users for source: {}", source_id);
 
-    // Get credentials via SDK
     let creds = match state
         .sync_manager
         .sdk_client
@@ -420,7 +270,6 @@ async fn search_users(
         }
     };
 
-    // Verify it's a Google credential
     if creds.provider != ServiceProvider::Google {
         error!(
             "Expected Google credentials for source {}, found {:?}",
@@ -429,7 +278,6 @@ async fn search_users(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    // Get the service account key and domain
     let service_account_key = match creds
         .credentials
         .get("service_account_key")
@@ -456,7 +304,6 @@ async fn search_users(
         }
     };
 
-    // Get user email via SDK
     let principal_email = match state
         .sync_manager
         .sdk_client
@@ -470,7 +317,6 @@ async fn search_users(
         }
     };
 
-    // Create auth with admin directory scopes
     let admin_scopes = crate::auth::get_scopes_for_source_type(SourceType::GoogleDrive);
     let auth = match ServiceAccountAuth::new(service_account_key, admin_scopes) {
         Ok(auth) => auth,
@@ -480,7 +326,6 @@ async fn search_users(
         }
     };
 
-    // Get access token for the principal user (admin)
     let token = match auth.get_access_token(&principal_email).await {
         Ok(token) => token,
         Err(e) => {
@@ -489,12 +334,10 @@ async fn search_users(
         }
     };
 
-    // Validate and set limits
     let limit = params.limit.unwrap_or(50).min(100);
     let query = params.q.as_deref();
     let page_token = params.page_token.as_deref();
 
-    // Use the admin client to search users
     match state
         .admin_client
         .search_users(&token, &domain, query, Some(limit), page_token)

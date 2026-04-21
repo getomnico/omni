@@ -9,6 +9,10 @@
 //! driven by a channel — tests can hold a sync in flight, signal it, or
 //! have it panic, to drive edge cases in the SDK server.
 
+// This module is shared across multiple integration test files; not all
+// tests use every helper.
+#![allow(dead_code)]
+
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -217,6 +221,7 @@ pub enum SyncBehavior {
 pub struct TestConnector {
     pub behavior: Arc<Mutex<SyncBehavior>>,
     pub sync_called: Arc<Mutex<u32>>,
+    pub owns_action: bool,
 }
 
 impl TestConnector {
@@ -224,7 +229,13 @@ impl TestConnector {
         Self {
             behavior: Arc::new(Mutex::new(behavior)),
             sync_called: Arc::new(Mutex::new(0)),
+            owns_action: false,
         }
+    }
+
+    pub fn with_owns_action_route(mut self, owns_action: bool) -> Self {
+        self.owns_action = owns_action;
+        self
     }
 
     pub fn sync_call_count(&self) -> u32 {
@@ -256,6 +267,10 @@ impl Connector for TestConnector {
 
     fn requires_credentials(&self) -> bool {
         false
+    }
+
+    fn owns_action_route(&self) -> bool {
+        self.owns_action
     }
 
     async fn sync(

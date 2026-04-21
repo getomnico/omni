@@ -119,13 +119,18 @@ pub fn create_router<C>(connector: Arc<C>, sdk_client: SdkClient, connector_url:
 where
     C: Connector,
 {
-    Router::new()
+    let mut router = Router::new()
         .route("/health", get(health::<C>))
         .route("/manifest", get(manifest::<C>))
         .route("/sync", post(trigger_sync::<C>))
         .route("/sync/:sync_run_id", get(sync_status::<C>))
-        .route("/cancel", post(cancel_sync::<C>))
-        .route("/action", post(execute_action::<C>))
+        .route("/cancel", post(cancel_sync::<C>));
+
+    if !connector.owns_action_route() {
+        router = router.route("/action", post(execute_action::<C>));
+    }
+
+    router
         .layer(
             ServiceBuilder::new()
                 .layer(middleware::from_fn(telemetry::middleware::trace_layer))
@@ -149,6 +154,24 @@ pub async fn serve_with_config<C>(connector: C, config: ServerConfig) -> Result<
 where
     C: Connector,
 {
+    serve_with_extra_routes(connector, config, Router::new()).await
+}
+
+/// Start the connector server with additional HTTP routes merged in alongside
+/// the SDK-provided routes. Extra paths must not collide with the SDK's
+/// reserved paths (`/health`, `/manifest`, `/sync`, `/sync/:sync_run_id`,
+/// `/cancel`, `/action`) — collisions cause axum to panic at startup. If the
+/// connector needs to own `/action` (e.g. to return non-JSON responses), set
+/// `Connector::owns_action_route` to `true` so the SDK omits its default
+/// handler, then supply a custom `/action` route via `extra_routes`.
+pub async fn serve_with_extra_routes<C>(
+    connector: C,
+    config: ServerConfig,
+    extra_routes: Router,
+) -> Result<()>
+where
+    C: Connector,
+{
     let connector = Arc::new(connector);
     let sdk_client = SdkClient::from_env()?;
 
@@ -165,7 +188,7 @@ where
         config.connector_url.clone(),
     );
 
-    let app = create_router(connector, sdk_client, config.connector_url);
+    let app = create_router(connector, sdk_client, config.connector_url).merge(extra_routes);
     axum::serve(listener, app).await?;
     Ok(())
 }

@@ -9,7 +9,7 @@ pub use models::{
     ActionRequest, ActionResponse, CancelRequest, CancelResponse, SyncRequest, SyncResponse,
     SyncStatusResponse,
 };
-pub use server::{create_router, serve, serve_with_config, ServerConfig};
+pub use server::{create_router, serve, serve_with_config, serve_with_extra_routes, ServerConfig};
 
 pub use shared::models::{
     ActionDefinition, ConnectorEvent, ConnectorManifest, DocumentMetadata, DocumentPermissions,
