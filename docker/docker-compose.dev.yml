@@ -213,6 +213,8 @@ services:
     environment:
       <<: *dev-database-url
       RUST_BACKTRACE: full
+    volumes:
+      - ../services/ai/evaluation/datasets/corpus:/data/eval-corpus:ro
 
   paperless-connector:
     image: omni-paperless-connector:dev

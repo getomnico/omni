@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import pathlib
-from typing import cast
+import re
 from dataclasses import dataclass
 
 import httpx
@@ -10,6 +10,15 @@ from fastapi import APIRouter, HTTPException, Path, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import ValidationError
 
+from agent_loop import (
+    AssistantMessageComplete,
+    LLMStreamEvent,
+    LoopComplete,
+    ToolApprovalRequired,
+    ToolResultEvent,
+    ToolResultMessageComplete,
+    run_agent_loop,
+)
 from agents.executor import _build_source_filter
 from agents.models import Agent
 from agents.repository import AgentRepository, AgentRunRepository
@@ -48,11 +57,8 @@ from services.compaction import ConversationCompactor
 from services.usage import UsageTracker, UsageContext, UsagePurpose, track_usage
 from state import AppState
 
-from anthropic import MessageStreamEvent, AsyncStream
 from anthropic.types import (
     MessageParam,
-    TextBlockParam,
-    ToolUseBlockParam,
     TextCitationParam,
     CitationCharLocationParam,
     CitationPageLocationParam,
@@ -64,6 +70,7 @@ from anthropic.types import (
     SearchResultBlockParam,
     CitationsConfigParam,
 )
+
 
 router = APIRouter(tags=["chat"])
 logger = logging.getLogger(__name__)
@@ -647,24 +654,11 @@ async def stream_chat(
 
             usage_repo = UsageRepository()
 
-            for iteration in range(AGENT_MAX_ITERATIONS):
-                # Check if client disconnected before starting expensive operations
-                if await request.is_disconnected():
-                    logger.info(
-                        f"Client disconnected, stopping stream for chat {chat_id}"
-                    )
-                    break
+            current_tracker: UsageTracker | None = None
 
-                logger.info(f"Iteration {iteration + 1}/{AGENT_MAX_ITERATIONS}")
-                content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
-
-                logger.info(f"Sending request to LLM provider")
-                logger.debug(
-                    f"Messages being sent: {json.dumps(conversation_messages, indent=2)}"
-                )
-                logger.debug(f"Tools available: {[tool['name'] for tool in all_tools]}")
-
-                tracker = UsageTracker(
+            def wrap_stream(raw_stream):
+                nonlocal current_tracker
+                current_tracker = UsageTracker(
                     usage_repo,
                     UsageContext(
                         user_id=chat.user_id,
@@ -675,221 +669,66 @@ async def stream_chat(
                         chat_id=chat_id,
                     ),
                 )
+                return current_tracker.wrap_stream(raw_stream)
 
-                raw_stream: AsyncStream[MessageStreamEvent] = (
-                    llm_provider.stream_response(
-                        prompt="",  # Not used when messages provided
-                        messages=conversation_messages,
-                        tools=all_tools,
-                        max_tokens=DEFAULT_MAX_TOKENS,
-                        temperature=DEFAULT_TEMPERATURE,
-                        top_p=DEFAULT_TOP_P,
-                        system_prompt=system_prompt,
+            async def on_iteration_end():
+                if current_tracker:
+                    current_tracker.save()
+
+            async def should_stop() -> bool:
+                disconnected = await request.is_disconnected()
+                if disconnected:
+                    logger.info(f"Client disconnected, stopping stream for chat {chat_id}")
+                return disconnected
+
+            async def approval_handler(_tool_call) -> str:
+                # Without Redis we can't persist approval state, so fall back to
+                # the legacy behavior of emitting a soft-denied tool_result and
+                # continuing the loop instead of aborting the whole stream.
+                return "pause" if redis_client else "deny"
+
+            async for ev in run_agent_loop(
+                llm_provider=llm_provider,
+                messages=conversation_messages,
+                system_prompt=system_prompt,
+                tools=all_tools,
+                registry=registry,
+                tool_context=context,
+                max_iterations=AGENT_MAX_ITERATIONS,
+                max_tokens=DEFAULT_MAX_TOKENS,
+                temperature=DEFAULT_TEMPERATURE,
+                top_p=DEFAULT_TOP_P,
+                wrap_stream=wrap_stream,
+                should_stop=should_stop,
+                on_iteration_end=on_iteration_end,
+                approval_handler=approval_handler,
+            ):
+                if isinstance(ev, LLMStreamEvent):
+                    yield f"event: message\ndata: {ev.raw_event.to_json(indent=None)}\n\n"
+                elif isinstance(ev, AssistantMessageComplete):
+                    yield f"event: save_message\ndata: {json.dumps(ev.message)}\n\n"
+                elif isinstance(ev, ToolResultEvent):
+                    yield f"event: message\ndata: {json.dumps(ev.tool_result)}\n\n"
+                elif isinstance(ev, ToolResultMessageComplete):
+                    yield f"event: save_message\ndata: {json.dumps(ev.message)}\n\n"
+                elif isinstance(ev, ToolApprovalRequired):
+                    approval_id = await _save_pending_approval(
+                        redis_client,
+                        chat_id,
+                        ev.tool_call,
+                        conversation_messages,
                     )
-                )
-
-                stream = tracker.wrap_stream(raw_stream)
-
-                event_index = 0
-                message_stop_received = False
-                async for event in stream:
-                    logger.debug(f"Received event: {event} (index: {event_index})")
-                    event_index += 1
-
-                    if event.type == "message_start":
-                        logger.info(f"Message start received.")
-
-                    if event.type == "content_block_delta":
-                        logger.debug(
-                            f"Content block delta received at index {event.index}: {event.delta}"
-                        )
-                        if event.delta.type == "text_delta":
-                            if event.index >= len(content_blocks):
-                                logger.warning(
-                                    f"Received text delta for unknown content block index {event.index}, creating new text block"
-                                )
-                                content_blocks.append(
-                                    TextBlockParam(type="text", text="")
-                                )
-                            text_block = cast(
-                                TextBlockParam, content_blocks[event.index]
-                            )
-                            text_block["text"] += event.delta.text
-                        elif event.delta.type == "input_json_delta":
-                            if event.index >= len(content_blocks):
-                                logger.warning(
-                                    f"Received input JSON delta for unknown content block index {event.index}, creating new tool use block"
-                                )
-                                content_blocks.append(
-                                    ToolUseBlockParam(
-                                        type="tool_use", id="", name="", input=""
-                                    )
-                                )
-                            tool_use_block = cast(
-                                ToolUseBlockParam, content_blocks[event.index]
-                            )
-                            tool_use_block["input"] = (
-                                cast(str, tool_use_block["input"])
-                                + event.delta.partial_json
-                            )
-                        elif event.delta.type == "citations_delta":
-                            if event.index >= len(content_blocks):
-                                logger.warning(
-                                    f"Received citations delta for unknown content block index {event.index}, creating new citations block"
-                                )
-                                content_blocks.append(
-                                    TextBlockParam(type="text", text="", citations=[])
-                                )
-                            text_block = cast(
-                                TextBlockParam, content_blocks[event.index]
-                            )
-                            if (
-                                "citations" not in text_block
-                                or not text_block["citations"]
-                            ):
-                                text_block["citations"] = []
-                            citations = cast(
-                                list[TextCitationParam], text_block["citations"]
-                            )
-                            citations.append(convert_citation_to_param(event.delta))
-                    elif event.type == "content_block_start":
-                        if event.content_block.type == "text":
-                            logger.info(f"Text block start: {event.content_block.text}")
-                            content_blocks.append(
-                                TextBlockParam(
-                                    type="text", text=event.content_block.text
-                                )
-                            )
-                        elif event.content_block.type == "tool_use":
-                            logger.info(
-                                f"Tool use block start: {event.content_block.name} (id: {event.content_block.id})"
-                            )
-                            content_blocks.append(
-                                ToolUseBlockParam(
-                                    type="tool_use",
-                                    id=event.content_block.id,
-                                    name=event.content_block.name,
-                                    input="",
-                                )
-                            )
-                    elif event.type == "citation":
-                        logger.info(f"Citation received: {event.citation}")
-                    elif event.type == "message_stop":
-                        logger.info(f"Message stop received.")
-                        message_stop_received = True
-
-                    logger.debug(
-                        f"Yielding event to client: {event.to_json(indent=None)}"
-                    )
-                    yield f"event: message\ndata: {event.to_json(indent=None)}\n\n"
-
-                    if message_stop_received:
-                        break
-
-                tracker.save()
-
-                # Parse tool call inputs. Convert to JSON.
-                tool_calls = [b for b in content_blocks if b["type"] == "tool_use"]
-                for tool_call in tool_calls:
-                    try:
-                        tool_call["input"] = json.loads(cast(str, tool_call["input"]))
-                    except json.JSONDecodeError as e:
-                        logger.error(
-                            f"Failed to parse tool call input as JSON: {tool_call['input']}. Error: {e}"
-                        )
-                        tool_call["input"] = {}
-
-                assistant_message = MessageParam(
-                    role="assistant", content=content_blocks
-                )
-                conversation_messages.append(assistant_message)
-
-                # Send complete message to omni-web for database persistence
-                yield f"event: save_message\ndata: {json.dumps(assistant_message)}\n\n"
-
-                # If no tool calls, we're done
-                if not tool_calls:
-                    logger.info(
-                        f"No tool calls in iteration {iteration + 1}, completing response"
-                    )
-                    break
-
-                logger.info(f"Processing {len(tool_calls)} tool calls")
-
-                # Check for disconnection before expensive tool execution
-                if await request.is_disconnected():
-                    logger.info(
-                        f"Client disconnected before tool execution, stopping stream for chat {chat_id}"
-                    )
-                    break
-
-                # Execute each tool call via the registry
-                tool_results: list[ToolResultBlockParam] = []
-                for tool_call in tool_calls:
-                    tool_name = tool_call["name"]
-
-                    # Check if this tool requires approval
-                    if registry.requires_approval(tool_name):
-                        logger.info(
-                            f"Tool {tool_name} requires approval, pausing stream"
-                        )
-
-                        # Save state to Redis for resume
-                        if redis_client:
-                            approval_id = await _save_pending_approval(
-                                redis_client,
-                                chat_id,
-                                tool_call,
-                                conversation_messages,
-                            )
-
-                            # Emit approval_required event
-                            approval_event = {
-                                "approval_id": approval_id,
-                                "tool_name": tool_name,
-                                "tool_input": tool_call["input"],
-                                "tool_call_id": tool_call["id"],
-                            }
-                            yield f"event: approval_required\ndata: {json.dumps(approval_event)}\n\n"
-                            yield f"event: end_of_stream\ndata: Approval required\n\n"
-                            return
-                        else:
-                            # No Redis, can't do approvals — treat as denied
-                            tool_results.append(
-                                ToolResultBlockParam(
-                                    type="tool_result",
-                                    tool_use_id=tool_call["id"],
-                                    content=[
-                                        {
-                                            "type": "text",
-                                            "text": "This action requires user approval, but the approval system is not available.",
-                                        }
-                                    ],
-                                    is_error=True,
-                                )
-                            )
-                            continue
-
-                    # Execute the tool
-                    result = await registry.execute(
-                        tool_name, tool_call["input"], context
-                    )
-
-                    tool_result = ToolResultBlockParam(
-                        type="tool_result",
-                        tool_use_id=tool_call["id"],
-                        content=result.content,
-                        is_error=result.is_error,
-                    )
-                    tool_results.append(tool_result)
-
-                    yield f"event: message\ndata: {json.dumps(tool_result)}\n\n"
-
-                tool_result_message = MessageParam(role="user", content=tool_results)
-                conversation_messages.append(tool_result_message)
-
-                # Send complete tool result message to omni-web for database persistence
-                yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
+                    approval_event = {
+                        "approval_id": approval_id,
+                        "tool_name": ev.tool_call["name"],
+                        "tool_input": ev.tool_call["input"],
+                        "tool_call_id": ev.tool_call["id"],
+                    }
+                    yield f"event: approval_required\ndata: {json.dumps(approval_event)}\n\n"
+                    yield f"event: end_of_stream\ndata: Approval required\n\n"
+                    return
+                elif isinstance(ev, LoopComplete):
+                    pass
 
             yield f"event: end_of_stream\ndata: Stream ended\n\n"
 
