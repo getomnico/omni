@@ -45,6 +45,11 @@ pub struct CancelResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncStatusResponse {
+    pub running: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionRequest {
     pub action: String,
     #[serde(default)]

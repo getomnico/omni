@@ -304,3 +304,58 @@ async fn t9_cancel_returns_not_found_for_unknown_sync() -> Result<()> {
     assert_eq!(body["status"], "not_found");
     Ok(())
 }
+
+#[tokio::test]
+async fn t10_sync_status_returns_running_while_sync_active() -> Result<()> {
+    let mock = MockConnectorManager::spawn().await;
+    mock.set_source(json!({}));
+
+    let notify = Arc::new(Notify::new());
+    let connector = Arc::new(TestConnector::new(SyncBehavior::BlockUntil(Arc::clone(
+        &notify,
+    ))));
+    let server = build_server(Arc::clone(&connector), &mock);
+
+    let resp = server
+        .post("/sync")
+        .json(&json!({
+            "sync_run_id": "run-status",
+            "source_id": "src-1",
+            "sync_mode": "full",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+
+    // Wait until the sync is actually running
+    for _ in 0..40 {
+        if connector.sync_call_count() >= 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let resp = server.get("/sync/run-status").await;
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["running"], true);
+
+    notify.notify_one();
+    wait_for_slot_release(&server, "run-2", "src-1").await;
+
+    let resp = server.get("/sync/run-status").await;
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["running"], false);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn t11_sync_status_returns_not_running_for_unknown_sync() -> Result<()> {
+    let mock = MockConnectorManager::spawn().await;
+    let connector = Arc::new(TestConnector::new(SyncBehavior::Ok));
+    let server = build_server(connector, &mock);
+
+    let resp = server.get("/sync/never-started").await;
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["running"], false);
+    Ok(())
+}

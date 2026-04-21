@@ -7,6 +7,7 @@ pub use connector::Connector;
 pub use context::SyncContext;
 pub use models::{
     ActionRequest, ActionResponse, CancelRequest, CancelResponse, SyncRequest, SyncResponse,
+    SyncStatusResponse,
 };
 pub use server::{create_router, serve, serve_with_config, ServerConfig};
 

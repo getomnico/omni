@@ -2,10 +2,11 @@ use crate::connector::Connector;
 use crate::context::SyncContext;
 use crate::models::{
     ActionRequest, ActionResponse, CancelRequest, CancelResponse, SyncRequest, SyncResponse,
+    SyncStatusResponse,
 };
 use anyhow::{Context, Result};
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
     middleware,
     response::{IntoResponse, Json},
@@ -122,6 +123,7 @@ where
         .route("/health", get(health::<C>))
         .route("/manifest", get(manifest::<C>))
         .route("/sync", post(trigger_sync::<C>))
+        .route("/sync/:sync_run_id", get(sync_status::<C>))
         .route("/cancel", post(cancel_sync::<C>))
         .route("/action", post(execute_action::<C>))
         .layer(
@@ -220,6 +222,20 @@ where
             .build_manifest(state.connector_url.clone())
             .await,
     )
+}
+
+async fn sync_status<C>(
+    State(state): State<Arc<ServerState<C>>>,
+    Path(sync_run_id): Path<String>,
+) -> impl IntoResponse
+where
+    C: Connector,
+{
+    let running = state
+        .active_syncs
+        .iter()
+        .any(|sync| sync.sync_run_id == sync_run_id);
+    Json(SyncStatusResponse { running })
 }
 
 async fn trigger_sync<C>(
