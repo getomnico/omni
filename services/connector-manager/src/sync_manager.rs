@@ -113,12 +113,7 @@ impl SyncManager {
         let sync_request = SyncRequest {
             sync_run_id: sync_run.id.clone(),
             source_id: source_id.to_string(),
-            // TODO: Change type of sync_mode to SyncType
-            sync_mode: match effective_sync_type {
-                SyncType::Full => "full",
-                SyncType::Incremental => "incremental",
-            }
-            .to_string(),
+            sync_mode: effective_sync_type,
             last_sync_at,
         };
 
@@ -379,11 +374,7 @@ impl SyncManager {
         let sync_request = SyncRequest {
             sync_run_id: sync_run_id.to_string(),
             source_id: source_id.to_string(),
-            sync_mode: match sync_run.sync_type {
-                SyncType::Full => "full",
-                SyncType::Incremental => "incremental",
-            }
-            .to_string(),
+            sync_mode: sync_run.sync_type,
             last_sync_at,
         };
 
@@ -415,6 +406,11 @@ impl SyncManager {
         }
     }
 
+    /// Sweep running syncs whose `last_activity_at` hasn't advanced within the
+    /// configured timeout — mark them failed and cancel on the connector.
+    /// Realtime watchers rely on periodic `ctx.heartbeat()` calls to stay on
+    /// the right side of this check; a realtime watcher that stops
+    /// heartbeating is genuinely dead and will be (correctly) swept here.
     pub async fn detect_stale_syncs(&self) -> Result<Vec<String>, SyncError> {
         let timeout_minutes = self.config.stale_sync_timeout_minutes as i64;
         let cutoff = OffsetDateTime::now_utc() - time::Duration::minutes(timeout_minutes);

@@ -1,9 +1,9 @@
+use omni_connector_sdk::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use serde::{Deserialize, Serialize};
-use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
-use sqlx::types::time::OffsetDateTime;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::SystemTime;
+use time::OffsetDateTime;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSystemFile {
@@ -91,14 +91,35 @@ impl FileSystemFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileSystemConfig {
+    pub base_path: PathBuf,
+    #[serde(default)]
+    pub file_extensions: Option<Vec<String>>,
+    #[serde(default)]
+    pub exclude_patterns: Option<Vec<String>>,
+    #[serde(default)]
+    pub max_file_size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
 pub struct FileSystemSource {
-    pub id: String,
     pub name: String,
     pub base_path: PathBuf,
-    pub scan_interval_seconds: u64,
     pub file_extensions: Option<Vec<String>>,
     pub exclude_patterns: Option<Vec<String>>,
     pub max_file_size_bytes: Option<u64>,
+}
+
+impl FileSystemConfig {
+    pub fn into_source(self, name: String) -> FileSystemSource {
+        FileSystemSource {
+            name,
+            base_path: self.base_path,
+            file_extensions: self.file_extensions,
+            exclude_patterns: self.exclude_patterns,
+            max_file_size_bytes: self.max_file_size_bytes,
+        }
+    }
 }
 
 impl FileSystemSource {
@@ -133,7 +154,7 @@ impl FileSystemSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::models::ConnectorEvent;
+    use omni_connector_sdk::ConnectorEvent;
     use std::path::PathBuf;
     use tempfile::TempDir;
 

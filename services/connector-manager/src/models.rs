@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use shared::models::SourceType;
+use shared::models::{SourceType, SyncType};
 
 pub use shared::models::{
     ActionDefinition, ConnectorManifest, McpPromptDefinition, McpResourceDefinition,
@@ -88,7 +88,7 @@ pub struct ConnectorInfo {
 pub struct TriggerSyncRequest {
     pub source_id: String,
     #[serde(default)]
-    pub sync_mode: Option<String>,
+    pub sync_mode: Option<SyncType>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

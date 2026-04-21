@@ -359,7 +359,7 @@ impl SyncManager {
             .insert(sync_run_id.to_string(), cancelled.clone());
 
         let sync_start = Utc::now();
-        let is_full_sync = request.sync_mode == "full";
+        let is_full_sync = request.sync_mode == SyncType::Full;
         let last_sync_time = request
             .last_sync_at
             .as_deref()

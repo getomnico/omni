@@ -1,10 +1,57 @@
-use anyhow::{Context, Result};
-use reqwest::Client;
+use anyhow::Result;
+use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use crate::models::{ConnectorEvent, ConnectorManifest, ServiceCredentials, Source, SyncType};
+
+/// Errors produced by [`SdkClient`]. Callers that use `anyhow::Result` can
+/// still bubble these up via `?` because `anyhow::Error: From<E>` for any
+/// `E: std::error::Error + Send + Sync + 'static`.
+#[derive(Debug, thiserror::Error)]
+pub enum SdkError {
+    #[error("{operation}: HTTP {status}: {body}")]
+    Http {
+        operation: &'static str,
+        status: StatusCode,
+        body: String,
+    },
+    #[error(transparent)]
+    Transport(#[from] reqwest::Error),
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
+impl SdkError {
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, SdkError::Http { status, .. } if *status == StatusCode::NOT_FOUND)
+    }
+
+    pub fn status(&self) -> Option<StatusCode> {
+        match self {
+            SdkError::Http { status, .. } => Some(*status),
+            _ => None,
+        }
+    }
+}
+
+pub type SdkResult<T> = Result<T, SdkError>;
+
+/// Return the response if the status is 2xx, otherwise capture the body and
+/// return a typed `SdkError::Http`.
+async fn ensure_ok(response: Response, operation: &'static str) -> SdkResult<Response> {
+    if response.status().is_success() {
+        return Ok(response);
+    }
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    Err(SdkError::Http {
+        operation,
+        status,
+        body,
+    })
+}
 
 /// HTTP client for communicating with connector-manager SDK endpoints.
 /// This is the standard way for connectors to interact with the connector-manager
@@ -97,8 +144,8 @@ impl SdkClient {
     }
 
     pub fn from_env() -> Result<Self> {
-        let url =
-            std::env::var("CONNECTOR_MANAGER_URL").context("CONNECTOR_MANAGER_URL not set")?;
+        let url = std::env::var("CONNECTOR_MANAGER_URL")
+            .map_err(|_| anyhow::anyhow!("CONNECTOR_MANAGER_URL not set"))?;
         Ok(Self::new(&url))
     }
 
@@ -139,7 +186,7 @@ impl SdkClient {
         data: Vec<u8>,
         mime_type: &str,
         filename: Option<&str>,
-    ) -> Result<String> {
+    ) -> SdkResult<String> {
         debug!(
             "SDK: Extracting text for sync_run={}, mime={}, size={}",
             sync_run_id,
@@ -154,15 +201,8 @@ impl SdkClient {
             .post(format!("{}/sdk/extract-text", self.base_url))
             .multipart(form)
             .send()
-            .await
-            .context("Failed to send extract text request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to extract text: {} - {}", status, body);
-        }
-
+            .await?;
+        let response = ensure_ok(response, "extract_text").await?;
         let result: ExtractTextResponse = response.json().await?;
         Ok(result.text)
     }
@@ -173,7 +213,7 @@ impl SdkClient {
         sync_run_id: &str,
         source_id: &str,
         event: ConnectorEvent,
-    ) -> Result<()> {
+    ) -> SdkResult<()> {
         debug!("SDK: Emitting event for sync_run={}", sync_run_id);
 
         let request = EmitEventRequest {
@@ -187,15 +227,8 @@ impl SdkClient {
             .post(format!("{}/sdk/events", self.base_url))
             .json(&request)
             .send()
-            .await
-            .context("Failed to send emit event request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to emit event: {} - {}", status, body);
-        }
-
+            .await?;
+        ensure_ok(response, "emit_event").await?;
         Ok(())
     }
 
@@ -211,7 +244,7 @@ impl SdkClient {
         data: Vec<u8>,
         mime_type: &str,
         filename: Option<&str>,
-    ) -> Result<String> {
+    ) -> SdkResult<String> {
         debug!(
             "SDK: Extracting content for sync_run={}, mime={}, size={}",
             sync_run_id,
@@ -226,21 +259,14 @@ impl SdkClient {
             .post(format!("{}/sdk/extract-content", self.base_url))
             .multipart(form)
             .send()
-            .await
-            .context("Failed to send extract content request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to extract content: {} - {}", status, body);
-        }
-
+            .await?;
+        let response = ensure_ok(response, "extract_and_store_content").await?;
         let result: StoreContentResponse = response.json().await?;
         Ok(result.content_id)
     }
 
     /// Store content and return content_id
-    pub async fn store_content(&self, sync_run_id: &str, content: &str) -> Result<String> {
+    pub async fn store_content(&self, sync_run_id: &str, content: &str) -> SdkResult<String> {
         debug!("SDK: Storing content for sync_run={}", sync_run_id);
 
         let request = StoreContentRequest {
@@ -254,21 +280,14 @@ impl SdkClient {
             .post(format!("{}/sdk/content", self.base_url))
             .json(&request)
             .send()
-            .await
-            .context("Failed to send store content request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to store content: {} - {}", status, body);
-        }
-
+            .await?;
+        let response = ensure_ok(response, "store_content").await?;
         let result: StoreContentResponse = response.json().await?;
         Ok(result.content_id)
     }
 
     /// Send heartbeat to update last_activity_at
-    pub async fn heartbeat(&self, sync_run_id: &str) -> Result<()> {
+    pub async fn heartbeat(&self, sync_run_id: &str) -> SdkResult<()> {
         debug!("SDK: Heartbeat for sync_run={}", sync_run_id);
 
         let response = self
@@ -278,20 +297,13 @@ impl SdkClient {
                 self.base_url, sync_run_id
             ))
             .send()
-            .await
-            .context("Failed to send heartbeat")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to heartbeat: {} - {}", status, body);
-        }
-
+            .await?;
+        ensure_ok(response, "heartbeat").await?;
         Ok(())
     }
 
     /// Increment scanned count and update heartbeat
-    pub async fn increment_scanned(&self, sync_run_id: &str, count: i32) -> Result<()> {
+    pub async fn increment_scanned(&self, sync_run_id: &str, count: i32) -> SdkResult<()> {
         debug!(
             "SDK: Incrementing scanned for sync_run={} by {}",
             sync_run_id, count
@@ -305,15 +317,8 @@ impl SdkClient {
             ))
             .json(&serde_json::json!({ "count": count }))
             .send()
-            .await
-            .context("Failed to send increment scanned")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to increment scanned: {} - {}", status, body);
-        }
-
+            .await?;
+        ensure_ok(response, "increment_scanned").await?;
         Ok(())
     }
 
@@ -324,7 +329,7 @@ impl SdkClient {
         documents_scanned: i32,
         documents_updated: i32,
         new_state: Option<serde_json::Value>,
-    ) -> Result<()> {
+    ) -> SdkResult<()> {
         debug!("SDK: Completing sync_run={}", sync_run_id);
 
         let request = CompleteRequest {
@@ -341,20 +346,13 @@ impl SdkClient {
             ))
             .json(&request)
             .send()
-            .await
-            .context("Failed to send complete request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to complete: {} - {}", status, body);
-        }
-
+            .await?;
+        ensure_ok(response, "complete").await?;
         Ok(())
     }
 
     /// Mark sync as failed
-    pub async fn fail(&self, sync_run_id: &str, error: &str) -> Result<()> {
+    pub async fn fail(&self, sync_run_id: &str, error: &str) -> SdkResult<()> {
         debug!("SDK: Failing sync_run={}: {}", sync_run_id, error);
 
         let request = FailRequest {
@@ -366,44 +364,30 @@ impl SdkClient {
             .post(format!("{}/sdk/sync/{}/fail", self.base_url, sync_run_id))
             .json(&request)
             .send()
-            .await
-            .context("Failed to send fail request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to mark as failed: {} - {}", status, body);
-        }
-
+            .await?;
+        ensure_ok(response, "fail").await?;
         Ok(())
     }
 
     /// Get source configuration
-    pub async fn get_source(&self, source_id: &str) -> Result<Source> {
+    pub async fn get_source(&self, source_id: &str) -> SdkResult<Source> {
         debug!("SDK: Getting source config for source_id={}", source_id);
 
         let response = self
             .client
             .get(format!("{}/sdk/source/{}", self.base_url, source_id))
             .send()
-            .await
-            .context("Failed to send get source request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to get source: {} - {}", status, body);
-        }
-
-        let source: Source = response
-            .json()
-            .await
-            .context("Failed to parse source response")?;
+            .await?;
+        let response = ensure_ok(response, "get_source").await?;
+        let source: Source = response.json().await?;
         Ok(source)
     }
 
     /// Get connector state for a source
-    pub async fn get_connector_state(&self, source_id: &str) -> Result<Option<serde_json::Value>> {
+    pub async fn get_connector_state(
+        &self,
+        source_id: &str,
+    ) -> SdkResult<Option<serde_json::Value>> {
         debug!("SDK: Getting connector state for source_id={}", source_id);
 
         let response = self
@@ -413,48 +397,28 @@ impl SdkClient {
                 self.base_url, source_id
             ))
             .send()
-            .await
-            .context("Failed to send get sync config request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to get sync config: {} - {}", status, body);
-        }
-
-        let config: SyncConfigResponse = response
-            .json()
-            .await
-            .context("Failed to parse sync config response")?;
+            .await?;
+        let response = ensure_ok(response, "get_connector_state").await?;
+        let config: SyncConfigResponse = response.json().await?;
         Ok(config.connector_state)
     }
 
     /// Get credentials for a source
-    pub async fn get_credentials(&self, source_id: &str) -> Result<ServiceCredentials> {
+    pub async fn get_credentials(&self, source_id: &str) -> SdkResult<ServiceCredentials> {
         debug!("SDK: Getting credentials for source_id={}", source_id);
 
         let response = self
             .client
             .get(format!("{}/sdk/credentials/{}", self.base_url, source_id))
             .send()
-            .await
-            .context("Failed to send get credentials request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to get credentials: {} - {}", status, body);
-        }
-
-        let credentials: ServiceCredentials = response
-            .json()
-            .await
-            .context("Failed to parse credentials response")?;
+            .await?;
+        let response = ensure_ok(response, "get_credentials").await?;
+        let credentials: ServiceCredentials = response.json().await?;
         Ok(credentials)
     }
 
     /// Create a new sync run for a source
-    pub async fn create_sync_run(&self, source_id: &str, sync_type: SyncType) -> Result<String> {
+    pub async fn create_sync_run(&self, source_id: &str, sync_type: SyncType) -> SdkResult<String> {
         debug!(
             "SDK: Creating sync run for source_id={}, type={:?}",
             source_id, sync_type
@@ -470,24 +434,14 @@ impl SdkClient {
             .post(format!("{}/sdk/sync/create", self.base_url))
             .json(&request)
             .send()
-            .await
-            .context("Failed to send create sync run request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to create sync run: {} - {}", status, body);
-        }
-
-        let result: CreateSyncResponse = response
-            .json()
-            .await
-            .context("Failed to parse create sync response")?;
+            .await?;
+        let response = ensure_ok(response, "create_sync_run").await?;
+        let result: CreateSyncResponse = response.json().await?;
         Ok(result.sync_run_id)
     }
 
     /// Cancel a sync run
-    pub async fn cancel(&self, sync_run_id: &str) -> Result<()> {
+    pub async fn cancel(&self, sync_run_id: &str) -> SdkResult<()> {
         debug!("SDK: Cancelling sync_run={}", sync_run_id);
 
         let request = CancelSyncRequest {
@@ -499,20 +453,13 @@ impl SdkClient {
             .post(format!("{}/sdk/sync/cancel", self.base_url))
             .json(&request)
             .send()
-            .await
-            .context("Failed to send cancel request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to cancel sync: {} - {}", status, body);
-        }
-
+            .await?;
+        ensure_ok(response, "cancel").await?;
         Ok(())
     }
 
     /// Get user email for a source
-    pub async fn get_user_email_for_source(&self, source_id: &str) -> Result<String> {
+    pub async fn get_user_email_for_source(&self, source_id: &str) -> SdkResult<String> {
         debug!("SDK: Getting user email for source_id={}", source_id);
 
         let response = self
@@ -522,25 +469,15 @@ impl SdkClient {
                 self.base_url, source_id
             ))
             .send()
-            .await
-            .context("Failed to send get user email request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to get user email: {} - {}", status, body);
-        }
-
-        let result: UserEmailResponse = response
-            .json()
-            .await
-            .context("Failed to parse user email response")?;
+            .await?;
+        let response = ensure_ok(response, "get_user_email_for_source").await?;
+        let result: UserEmailResponse = response.json().await?;
         Ok(result.email)
     }
 
     /// Notify connector-manager of a webhook event
     /// Returns the sync_run_id created for this webhook
-    pub async fn notify_webhook(&self, source_id: &str, event_type: &str) -> Result<String> {
+    pub async fn notify_webhook(&self, source_id: &str, event_type: &str) -> SdkResult<String> {
         debug!(
             "SDK: Notifying webhook for source_id={}, event_type={}",
             source_id, event_type
@@ -556,19 +493,9 @@ impl SdkClient {
             .post(format!("{}/sdk/webhook/notify", self.base_url))
             .json(&request)
             .send()
-            .await
-            .context("Failed to send webhook notification")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to notify webhook: {} - {}", status, body);
-        }
-
-        let result: WebhookNotificationResponse = response
-            .json()
-            .await
-            .context("Failed to parse webhook notification response")?;
+            .await?;
+        let response = ensure_ok(response, "notify_webhook").await?;
+        let result: WebhookNotificationResponse = response.json().await?;
         Ok(result.sync_run_id)
     }
 
@@ -577,7 +504,7 @@ impl SdkClient {
         &self,
         source_id: &str,
         state: serde_json::Value,
-    ) -> Result<()> {
+    ) -> SdkResult<()> {
         debug!("SDK: Saving connector state for source_id={}", source_id);
 
         let response = self
@@ -588,20 +515,14 @@ impl SdkClient {
             ))
             .json(&state)
             .send()
-            .await
-            .context("Failed to save connector state")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to save connector state: {} - {}", status, body);
-        }
+            .await?;
+        ensure_ok(response, "save_connector_state").await?;
 
         Ok(())
     }
 
     /// Get connector config for a provider (e.g. OAuth app credentials)
-    pub async fn get_connector_config(&self, provider: &str) -> Result<serde_json::Value> {
+    pub async fn get_connector_config(&self, provider: &str) -> SdkResult<serde_json::Value> {
         debug!("SDK: Getting connector config for provider={}", provider);
 
         let response = self
@@ -611,24 +532,14 @@ impl SdkClient {
                 self.base_url, provider
             ))
             .send()
-            .await
-            .context("Failed to get connector config")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to get connector config: {} - {}", status, body);
-        }
-
-        let config: serde_json::Value = response
-            .json()
-            .await
-            .context("Failed to parse connector config response")?;
+            .await?;
+        let response = ensure_ok(response, "get_connector_config").await?;
+        let config: serde_json::Value = response.json().await?;
         Ok(config)
     }
 
     /// Register this connector with the connector manager
-    pub async fn register(&self, manifest: &ConnectorManifest) -> Result<()> {
+    pub async fn register(&self, manifest: &ConnectorManifest) -> SdkResult<()> {
         debug!("SDK: Registering connector");
 
         let response = self
@@ -636,20 +547,13 @@ impl SdkClient {
             .post(format!("{}/sdk/register", self.base_url))
             .json(manifest)
             .send()
-            .await
-            .context("Failed to send register request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to register: {} - {}", status, body);
-        }
-
+            .await?;
+        ensure_ok(response, "register").await?;
         Ok(())
     }
 
     /// Get all active sources of a given type
-    pub async fn get_sources_by_type(&self, source_type: &str) -> Result<Vec<Source>> {
+    pub async fn get_sources_by_type(&self, source_type: &str) -> SdkResult<Vec<Source>> {
         debug!("SDK: Getting sources by type={}", source_type);
 
         let response = self
@@ -659,19 +563,9 @@ impl SdkClient {
                 self.base_url, source_type
             ))
             .send()
-            .await
-            .context("Failed to get sources by type")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to get sources by type: {} - {}", status, body);
-        }
-
-        let result: Vec<Source> = response
-            .json()
-            .await
-            .context("Failed to parse sources response")?;
+            .await?;
+        let response = ensure_ok(response, "get_sources_by_type").await?;
+        let result: Vec<Source> = response.json().await?;
         Ok(result)
     }
 }

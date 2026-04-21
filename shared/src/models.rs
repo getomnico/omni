@@ -382,7 +382,7 @@ pub struct ConnectorManifest {
     pub name: String,
     pub display_name: String,
     pub version: String,
-    pub sync_modes: Vec<String>,
+    pub sync_modes: Vec<SyncType>,
     pub connector_id: String,
     pub connector_url: String,
     #[serde(default)]
@@ -532,11 +532,20 @@ pub struct ConnectorEventQueueItem {
     pub error_message: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
+/// Type/mode of a sync run. Serializes as a lowercase string on the wire
+/// (`"full"`, `"incremental"`, `"realtime"`).
+///
+/// TODO: the Python (`sdk/python/omni_connector/models.py`) and TypeScript
+/// (`sdk/typescript/src/models.ts`) SDKs currently expose this enum as
+/// `SyncMode` with only `FULL` and `INCREMENTAL`. They should be renamed to
+/// `SyncType` and grow a `REALTIME` variant to match the Rust canonical name.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq, Eq, Hash)]
 #[sqlx(type_name = "varchar", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
 pub enum SyncType {
     Full,
     Incremental,
+    Realtime,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -574,7 +583,7 @@ pub struct SyncRun {
 pub struct SyncRequest {
     pub sync_run_id: String,
     pub source_id: String,
-    pub sync_mode: String,
+    pub sync_mode: SyncType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_sync_at: Option<String>,
 }
