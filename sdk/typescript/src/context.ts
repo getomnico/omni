@@ -15,9 +15,9 @@ const logger = getLogger('sdk:context');
 
 /** Buffer thresholds (size, timeMs) per sync mode. `null` timeMs = flush-on-emit. */
 function thresholdsFor(syncMode: SyncMode): { size: number; timeMs: number | null } {
-  if (syncMode === SyncMode.FULL) return { size: 500, timeMs: 10_000 };
+  if (syncMode === SyncMode.FULL) return { size: 500, timeMs: 300_000 };
   if (syncMode === SyncMode.REALTIME) return { size: 1, timeMs: null };
-  return { size: 100, timeMs: 1_000 }; // Incremental (default)
+  return { size: 100, timeMs: 60_000 }; // Incremental (default)
 }
 
 export class SyncContext {

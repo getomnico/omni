@@ -66,8 +66,8 @@ struct BufferEntry {
 /// Per-`SyncType` buffer thresholds: (size, time). `None` time means flush-on-emit.
 fn thresholds_for(sync_type: SyncType) -> (usize, Option<Duration>) {
     match sync_type {
-        SyncType::Full => (500, Some(Duration::from_secs(10))),
-        SyncType::Incremental => (100, Some(Duration::from_secs(1))),
+        SyncType::Full => (500, Some(Duration::from_secs(300))),
+        SyncType::Incremental => (100, Some(Duration::from_secs(60))),
         SyncType::Realtime => (1, None),
     }
 }
@@ -264,8 +264,8 @@ impl SdkClient {
 
     /// Emit a document event. Events are buffered in memory and auto-flushed
     /// according to the sync's type (see [`thresholds_for`]):
-    /// - Full: 500 events or 10s, whichever first
-    /// - Incremental: 100 events or 1s
+    /// - Full: 500 events or 5min, whichever first
+    /// - Incremental: 100 events or 60s
     /// - Realtime: flush on every emit
     ///
     /// If an auto-flush fails, the error is returned to the caller so the connector

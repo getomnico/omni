@@ -3,6 +3,7 @@ use shared::models::{ConnectorEvent, SourceType, SyncType};
 use shared::SdkClient;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tracing::warn;
 
 #[derive(Clone)]
 pub struct SyncContext {
@@ -57,10 +58,32 @@ impl SyncContext {
         self.cancelled.load(Ordering::SeqCst)
     }
 
+    /// Emit a single event. Events are buffered in memory and auto-flushed
+    /// according to the sync's mode (see [`thresholds_for`]):
+    /// - Full: 500 events or 5min, whichever first
+    /// - Incremental: 100 events or 60s
+    /// - Realtime: flush on every emit
+    ///
+    /// If an auto-flush fails, the error is returned to the caller so the
+    /// connector knows the event was not persisted before checkpointing.
     pub async fn emit_event(&self, event: ConnectorEvent) -> Result<()> {
         self.sdk_client
             .emit_event(&self.sync_run_id, &self.source_id, event)
             .await?;
+        Ok(())
+    }
+
+    /// Flush all buffered events for this (sync_run_id, source_id) pair.
+    pub async fn flush(&self) -> Result<()> {
+        self.sdk_client
+            .flush_events(&self.sync_run_id, &self.source_id)
+            .await?;
+        Ok(())
+    }
+
+    /// Flush all buffered events across all (sync_run_id, source_id) pairs.
+    pub async fn flush_all(&self) -> Result<()> {
+        self.sdk_client.flush_all().await?;
         Ok(())
     }
 
@@ -90,6 +113,8 @@ impl SyncContext {
         Ok(())
     }
 
+    /// Mark sync as completed. Flushes any buffered events first so the
+    /// completion never races ahead of the final events for this sync.
     pub async fn complete(
         &self,
         documents_scanned: i32,
@@ -107,7 +132,16 @@ impl SyncContext {
         Ok(())
     }
 
+    /// Mark sync as failed. Best-effort flush of buffered events first — if
+    /// the flush itself fails we log and proceed, because marking the sync as
+    /// failed is more important than preserving partial progress.
     pub async fn fail(&self, error: &str) -> Result<()> {
+        if let Err(e) = self.flush_all().await {
+            warn!(
+                "SDK: flush before fail() failed (continuing): sync_run={}: {}",
+                self.sync_run_id, e
+            );
+        }
         self.sdk_client.fail(&self.sync_run_id, error).await?;
         Ok(())
     }
@@ -122,6 +156,9 @@ impl SyncContext {
         Ok(())
     }
 
+    /// Checkpoint state for resumability. Flushes buffered events first —
+    /// without this, a crash after checkpointing would lose events that the
+    /// connector considered emitted (the next run resumes past them).
     pub async fn save_connector_state(&self, state: serde_json::Value) -> Result<()> {
         self.sdk_client
             .save_connector_state(&self.source_id, state)
