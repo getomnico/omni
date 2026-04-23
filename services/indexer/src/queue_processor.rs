@@ -7,7 +7,7 @@ use shared::db::repositories::{
 use shared::embedding_queue::EmbeddingQueue;
 use shared::models::{
     ConnectorEvent, ConnectorEventQueueItem, Document, DocumentAttributes, DocumentMetadata,
-    DocumentPermissions,
+    DocumentPermissions, SyncType,
 };
 use shared::queue::EventQueue;
 use shared::storage::gc::{ContentBlobGC, GCConfig};
@@ -22,6 +22,145 @@ use tracing::{debug, error, info, warn};
 // SDK-side buffering already shapes events into the right batch size per sync type,
 // so the indexer just drains whatever's there on each tick.
 const DEFAULT_POLL_INTERVAL_SECS: u64 = 1;
+
+// Per-SyncType batching thresholds for the indexer.
+//
+// The indexer polls frequently but only writes when one of these thresholds is met.
+// This lets small incremental trickles accumulate while full-sync bursts go through
+// quickly (they are already well-shaped by the connector-side SDK buffer).
+//
+// All values are overridable via environment variables.
+const DEFAULT_FULL_BATCH_SIZE: i64 = 50;
+const DEFAULT_FULL_BATCH_MAX_AGE_SECS: i64 = 60;
+const DEFAULT_INCREMENTAL_BATCH_SIZE: i64 = 200;
+const DEFAULT_INCREMENTAL_BATCH_MAX_AGE_SECS: i64 = 30;
+const DEFAULT_REALTIME_BATCH_SIZE: i64 = 1;
+const DEFAULT_REALTIME_BATCH_MAX_AGE_SECS: i64 = 5;
+const DEFAULT_GLOBAL_BATCH_MAX_AGE_SECS: i64 = 60;
+
+#[derive(Clone)]
+struct BatchingConfig {
+    full_batch_size: i64,
+    full_max_age_secs: i64,
+    incremental_batch_size: i64,
+    incremental_max_age_secs: i64,
+    realtime_batch_size: i64,
+    realtime_max_age_secs: i64,
+    global_max_age_secs: i64,
+}
+
+impl Default for BatchingConfig {
+    fn default() -> Self {
+        Self {
+            full_batch_size: DEFAULT_FULL_BATCH_SIZE,
+            full_max_age_secs: DEFAULT_FULL_BATCH_MAX_AGE_SECS,
+            incremental_batch_size: DEFAULT_INCREMENTAL_BATCH_SIZE,
+            incremental_max_age_secs: DEFAULT_INCREMENTAL_BATCH_MAX_AGE_SECS,
+            realtime_batch_size: DEFAULT_REALTIME_BATCH_SIZE,
+            realtime_max_age_secs: DEFAULT_REALTIME_BATCH_MAX_AGE_SECS,
+            global_max_age_secs: DEFAULT_GLOBAL_BATCH_MAX_AGE_SECS,
+        }
+    }
+}
+
+impl BatchingConfig {
+    fn from_env() -> Self {
+        Self {
+            full_batch_size: env_or("INDEXER_FULL_BATCH_SIZE", DEFAULT_FULL_BATCH_SIZE),
+            full_max_age_secs: env_or(
+                "INDEXER_FULL_BATCH_MAX_AGE_SECS",
+                DEFAULT_FULL_BATCH_MAX_AGE_SECS,
+            ),
+            incremental_batch_size: env_or(
+                "INDEXER_INCREMENTAL_BATCH_SIZE",
+                DEFAULT_INCREMENTAL_BATCH_SIZE,
+            ),
+            incremental_max_age_secs: env_or(
+                "INDEXER_INCREMENTAL_BATCH_MAX_AGE_SECS",
+                DEFAULT_INCREMENTAL_BATCH_MAX_AGE_SECS,
+            ),
+            realtime_batch_size: env_or("INDEXER_REALTIME_BATCH_SIZE", DEFAULT_REALTIME_BATCH_SIZE),
+            realtime_max_age_secs: env_or(
+                "INDEXER_REALTIME_BATCH_MAX_AGE_SECS",
+                DEFAULT_REALTIME_BATCH_MAX_AGE_SECS,
+            ),
+            global_max_age_secs: env_or(
+                "INDEXER_GLOBAL_BATCH_MAX_AGE_SECS",
+                DEFAULT_GLOBAL_BATCH_MAX_AGE_SECS,
+            ),
+        }
+    }
+
+    /// Returns `Some(reason)` if the pending summary meets any threshold.
+    fn should_process(&self, summary: &shared::queue::PendingSummary) -> Option<String> {
+        if summary.total_count == 0 {
+            return None;
+        }
+
+        // Events with no matching sync_run should be processed immediately.
+        // (This mainly happens in tests that enqueue directly without creating
+        // sync_run rows; in production all events should have a sync_run.)
+        if summary.orphan_count > 0 {
+            return Some(format!("{} orphan events", summary.orphan_count));
+        }
+
+        for (sync_type, pending) in &summary.by_sync_type {
+            let (size_threshold, age_threshold) = match sync_type {
+                SyncType::Full => (self.full_batch_size, self.full_max_age_secs),
+                SyncType::Incremental => {
+                    (self.incremental_batch_size, self.incremental_max_age_secs)
+                }
+                SyncType::Realtime => (self.realtime_batch_size, self.realtime_max_age_secs),
+            };
+
+            if pending.count >= size_threshold {
+                let name = match sync_type {
+                    SyncType::Full => "full",
+                    SyncType::Incremental => "incremental",
+                    SyncType::Realtime => "realtime",
+                };
+                return Some(format!(
+                    "{} count {} >= {}",
+                    name, pending.count, size_threshold
+                ));
+            }
+            if pending.oldest_age_secs >= age_threshold {
+                let name = match sync_type {
+                    SyncType::Full => "full",
+                    SyncType::Incremental => "incremental",
+                    SyncType::Realtime => "realtime",
+                };
+                return Some(format!(
+                    "{} age {}s >= {}s",
+                    name, pending.oldest_age_secs, age_threshold
+                ));
+            }
+        }
+
+        // Global safety net: never let events stall longer than this.
+        let oldest_any = summary
+            .by_sync_type
+            .values()
+            .map(|p| p.oldest_age_secs)
+            .max()
+            .unwrap_or(0);
+        if oldest_any >= self.global_max_age_secs {
+            return Some(format!(
+                "global max age {}s >= {}s",
+                oldest_any, self.global_max_age_secs
+            ));
+        }
+
+        None
+    }
+}
+
+fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
 
 // Batch processing types
 #[derive(Debug)]
@@ -86,6 +225,7 @@ pub struct QueueProcessor {
     semaphore: Arc<Semaphore>,
     processing_mutex: Arc<Mutex<()>>,
     poll_interval: Duration,
+    batching_config: BatchingConfig,
 }
 
 impl QueueProcessor {
@@ -113,6 +253,7 @@ impl QueueProcessor {
             semaphore,
             processing_mutex,
             poll_interval: Duration::from_secs(poll_interval_secs),
+            batching_config: BatchingConfig::from_env(),
         }
     }
 
@@ -129,6 +270,12 @@ impl QueueProcessor {
 
     pub fn with_poll_interval(mut self, poll_interval: Duration) -> Self {
         self.poll_interval = poll_interval;
+        self
+    }
+
+    #[allow(dead_code)]
+    fn with_batching_config(mut self, config: BatchingConfig) -> Self {
+        self.batching_config = config;
         self
     }
 
@@ -186,8 +333,16 @@ impl QueueProcessor {
         let gc_semaphore = Arc::new(Semaphore::new(1));
 
         info!(
-            "Queue processor poll interval: {:?}, batch_size: {}",
-            self.poll_interval, self.batch_size
+            "Queue processor poll interval: {:?}, batch_size: {}, batching: full={}/{}s incremental={}/{}s realtime={}/{}s global_age={}s",
+            self.poll_interval,
+            self.batch_size,
+            self.batching_config.full_batch_size,
+            self.batching_config.full_max_age_secs,
+            self.batching_config.incremental_batch_size,
+            self.batching_config.incremental_max_age_secs,
+            self.batching_config.realtime_batch_size,
+            self.batching_config.realtime_max_age_secs,
+            self.batching_config.global_max_age_secs,
         );
 
         loop {
@@ -288,8 +443,27 @@ impl QueueProcessor {
         // Cap iterations per invocation so a full queue cannot hold this future
         // for arbitrarily long, which would starve every other branch of the
         // main select! loop (GC, retry, stale-recovery, heartbeat). Subsequent
-        // calls are driven by check_interval and poll_interval in the main loop.
+        // calls are driven by poll_interval in the main loop.
         const MAX_BATCHES_PER_CALL: usize = 3;
+
+        // Sync-type-aware batching: only process if pending events meet a
+        // threshold (size or age). This lets small incremental trickles
+        // accumulate while full-sync bursts flow through quickly.
+        let summary = self.event_queue.get_pending_summary().await?;
+        if let Some(reason) = self.batching_config.should_process(&summary) {
+            info!(
+                "Processing {} pending events. Triggered by: {}",
+                summary.total_count, reason
+            );
+        } else {
+            if summary.total_count > 0 {
+                debug!(
+                    "Skipping batch: {} pending events do not meet sync-type thresholds",
+                    summary.total_count
+                );
+            }
+            return Ok(());
+        }
 
         let mut total_processed = 0;
 

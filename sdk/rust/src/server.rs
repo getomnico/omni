@@ -308,6 +308,11 @@ where
             },
         )?;
 
+    state
+        .sdk_client
+        .register_sync(&sync_run_id, request.sync_mode)
+        .await;
+
     let ctx = SyncContext::new(
         state.sdk_client.clone(),
         sync_run_id.clone(),

@@ -1,8 +1,10 @@
+use std::collections::HashMap;
+
 use anyhow::Result;
 use sqlx::{PgPool, Row};
 use ulid::Ulid;
 
-use crate::models::{ConnectorEvent, ConnectorEventQueueItem};
+use crate::models::{ConnectorEvent, ConnectorEventQueueItem, SyncType};
 
 fn event_type_str(event: &ConnectorEvent) -> &'static str {
     match event {
@@ -293,6 +295,71 @@ impl EventQueue {
         Ok(row.0)
     }
 
+    pub async fn get_pending_summary(&self) -> Result<PendingSummary> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                s.sync_type,
+                COUNT(*) as count,
+                EXTRACT(EPOCH FROM (NOW() - MIN(q.created_at)))::bigint as oldest_age_secs
+            FROM connector_events_queue q
+            LEFT JOIN sync_runs s ON q.sync_run_id = s.id
+            WHERE q.status = 'pending'
+            GROUP BY s.sync_type
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut by_sync_type = HashMap::new();
+        let mut total_count = 0;
+        let mut orphan_count = 0;
+
+        for row in rows {
+            let sync_type_str: Option<String> = row.get("sync_type");
+            let count: i64 = row.get("count");
+            let oldest_age_secs: i64 = row.get("oldest_age_secs");
+            total_count += count;
+
+            match sync_type_str.as_deref() {
+                None => orphan_count = count,
+                Some("full") => {
+                    by_sync_type.insert(
+                        SyncType::Full,
+                        SyncTypePending {
+                            count,
+                            oldest_age_secs,
+                        },
+                    );
+                }
+                Some("realtime") => {
+                    by_sync_type.insert(
+                        SyncType::Realtime,
+                        SyncTypePending {
+                            count,
+                            oldest_age_secs,
+                        },
+                    );
+                }
+                _ => {
+                    by_sync_type.insert(
+                        SyncType::Incremental,
+                        SyncTypePending {
+                            count,
+                            oldest_age_secs,
+                        },
+                    );
+                }
+            }
+        }
+
+        Ok(PendingSummary {
+            total_count,
+            orphan_count,
+            by_sync_type,
+        })
+    }
+
     pub async fn cleanup_old_events(&self, retention_days: i32) -> Result<CleanupResult> {
         let mut tx = self.pool.begin().await?;
 
@@ -432,6 +499,19 @@ impl EventQueue {
 
         Ok(result.rows_affected() as i64)
     }
+}
+
+#[derive(Debug)]
+pub struct SyncTypePending {
+    pub count: i64,
+    pub oldest_age_secs: i64,
+}
+
+#[derive(Debug)]
+pub struct PendingSummary {
+    pub total_count: i64,
+    pub orphan_count: i64,
+    pub by_sync_type: HashMap<SyncType, SyncTypePending>,
 }
 
 #[derive(Debug, serde::Serialize)]
