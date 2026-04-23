@@ -26,10 +26,10 @@ def _thresholds_for(sync_mode: SyncMode) -> tuple[int, float | None]:
     - Realtime: flush on every emit (size=1, no time bound)
     """
     if sync_mode == SyncMode.FULL:
-        return (500, 10.0)
+        return (500, 300.0)
     if sync_mode == SyncMode.REALTIME:
         return (1, None)
-    return (100, 1.0)  # Incremental (default)
+    return (100, 60.0)  # Incremental (default)
 
 
 class SyncContext:
@@ -132,9 +132,15 @@ class SyncContext:
         if not self._event_buffer:
             return
         batch = self._event_buffer
-        self._event_buffer = []
-        self._oldest_event_at = None
-        await self._client.emit_event_batch(self._sync_run_id, self._source_id, batch)
+        try:
+            await self._client.emit_event_batch(
+                self._sync_run_id, self._source_id, batch
+            )
+            self._event_buffer = []
+            self._oldest_event_at = None
+        except:
+            logger.error("Failed to flush event batch, will retry on next flush")
+            self._event_buffer = batch
 
     async def emit(self, doc: Document) -> None:
         """Push document to queue. Implicitly heartbeats (updates last_activity_at)."""
