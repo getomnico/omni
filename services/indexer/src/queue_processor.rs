@@ -90,18 +90,9 @@ impl BatchingConfig {
         }
     }
 
-    /// Returns `Some(reason)` if the pending summary meets any threshold.
-    fn should_process(&self, summary: &shared::queue::PendingSummary) -> Option<String> {
-        if summary.total_count == 0 {
-            return None;
-        }
-
-        // Events with no matching sync_run should be processed immediately.
-        // (This mainly happens in tests that enqueue directly without creating
-        // sync_run rows; in production all events should have a sync_run.)
-        if summary.orphan_count > 0 {
-            return Some(format!("{} orphan events", summary.orphan_count));
-        }
+    /// Returns the list of sync types whose pending events meet a threshold.
+    fn ready_sync_types(&self, summary: &shared::queue::PendingSummary) -> Vec<(SyncType, String)> {
+        let mut ready = Vec::new();
 
         for (sync_type, pending) in &summary.by_sync_type {
             let (size_threshold, age_threshold) = match sync_type {
@@ -118,20 +109,22 @@ impl BatchingConfig {
                     SyncType::Incremental => "incremental",
                     SyncType::Realtime => "realtime",
                 };
-                return Some(format!(
-                    "{} count {} >= {}",
-                    name, pending.count, size_threshold
+                ready.push((
+                    sync_type.clone(),
+                    format!("{} count {} >= {}", name, pending.count, size_threshold),
                 ));
-            }
-            if pending.oldest_age_secs >= age_threshold {
+            } else if pending.oldest_age_secs >= age_threshold {
                 let name = match sync_type {
                     SyncType::Full => "full",
                     SyncType::Incremental => "incremental",
                     SyncType::Realtime => "realtime",
                 };
-                return Some(format!(
-                    "{} age {}s >= {}s",
-                    name, pending.oldest_age_secs, age_threshold
+                ready.push((
+                    sync_type.clone(),
+                    format!(
+                        "{} age {}s >= {}s",
+                        name, pending.oldest_age_secs, age_threshold
+                    ),
                 ));
             }
         }
@@ -144,13 +137,20 @@ impl BatchingConfig {
             .max()
             .unwrap_or(0);
         if oldest_any >= self.global_max_age_secs {
-            return Some(format!(
-                "global max age {}s >= {}s",
-                oldest_any, self.global_max_age_secs
-            ));
+            for (sync_type, _) in &summary.by_sync_type {
+                if !ready.iter().any(|(st, _)| st == sync_type) {
+                    ready.push((
+                        sync_type.clone(),
+                        format!(
+                            "global max age {}s >= {}s",
+                            oldest_any, self.global_max_age_secs
+                        ),
+                    ));
+                }
+            }
         }
 
-        None
+        ready
     }
 }
 
@@ -432,12 +432,9 @@ impl QueueProcessor {
         // threshold (size or age). This lets small incremental trickles
         // accumulate while full-sync bursts flow through quickly.
         let summary = self.event_queue.get_pending_summary().await?;
-        if let Some(reason) = self.batching_config.should_process(&summary) {
-            info!(
-                "Processing {} pending events. Triggered by: {}",
-                summary.total_count, reason
-            );
-        } else {
+        let ready = self.batching_config.ready_sync_types(&summary);
+
+        if ready.is_empty() && summary.orphan_count == 0 {
             if summary.total_count > 0 {
                 debug!(
                     "Skipping batch: {} pending events do not meet sync-type thresholds",
@@ -448,60 +445,100 @@ impl QueueProcessor {
         }
 
         let mut total_processed = 0;
+        let mut batches_dequeued = 0;
 
-        for _ in 0..MAX_BATCHES_PER_CALL {
-            let events = self.event_queue.dequeue_batch(self.batch_size).await?;
-
+        // Process orphan events first (no valid sync_run). These mainly happen
+        // in tests that enqueue directly without creating sync_run rows.
+        while batches_dequeued < MAX_BATCHES_PER_CALL && summary.orphan_count > 0 {
+            let events = self
+                .event_queue
+                .dequeue_batch_orphans(self.batch_size)
+                .await?;
             if events.is_empty() {
-                if total_processed > 0 {
-                    info!(
-                        "Finished processing all available events. Total processed: {}",
-                        total_processed
-                    );
-                }
-                return Ok(());
+                break;
+            }
+            batches_dequeued += 1;
+            total_processed += self.process_dequeued_events(events).await?;
+        }
+
+        for (sync_type, reason) in ready {
+            if batches_dequeued >= MAX_BATCHES_PER_CALL {
+                break;
             }
 
-            let batch_start_time = std::time::Instant::now();
             info!(
-                "Processing batch of {} events using batch operations",
-                events.len()
+                "Processing pending events for {:?}. Triggered by: {}",
+                sync_type, reason
             );
 
-            // Extract sync_run_id (all events in batch are from the same sync_run)
-            let sync_run_id = events
-                .first()
-                .context("Batch has no events")?
-                .sync_run_id
-                .clone();
+            let remaining = MAX_BATCHES_PER_CALL - batches_dequeued;
+            for _ in 0..remaining {
+                let events = self
+                    .event_queue
+                    .dequeue_batch_by_sync_type(self.batch_size, sync_type)
+                    .await?;
+                if events.is_empty() {
+                    break;
+                }
+                batches_dequeued += 1;
+                total_processed += self.process_dequeued_events(events).await?;
+            }
+        }
 
-            // Store events for potential fallback processing
-            let events_clone = events.clone();
+        if total_processed > 0 {
+            info!(
+                "Processed {} events this call (cap reached, continuing next tick)",
+                total_processed
+            );
+        }
+        Ok(())
+    }
 
-            // Group events by type for batch processing
-            let batch = self.group_events_by_type(sync_run_id, events).await?;
+    async fn process_dequeued_events(&self, events: Vec<ConnectorEventQueueItem>) -> Result<usize> {
+        if events.is_empty() {
+            return Ok(0);
+        }
+
+        info!(
+            "Processing batch of {} events using batch operations",
+            events.len()
+        );
+
+        // A single dequeue may contain events from multiple sync runs (e.g.
+        // two simultaneous full syncs). Group by sync_run_id so that progress
+        // tracking and per-sync-run batching remain correct.
+        let mut by_sync_run: HashMap<String, Vec<ConnectorEventQueueItem>> = HashMap::new();
+        for ev in events {
+            by_sync_run
+                .entry(ev.sync_run_id.clone())
+                .or_default()
+                .push(ev);
+        }
+
+        let mut total_processed = 0;
+
+        for (sync_run_id, run_events) in by_sync_run {
+            let batch_start_time = std::time::Instant::now();
+            let events_clone = run_events.clone();
+            let batch = self.group_events_by_type(sync_run_id, run_events).await?;
 
             if batch.is_empty() {
                 continue;
             }
 
             info!(
-                "Batch contains: {} upsert, {} deleted documents ({} upsert events, {} deleted events)",
+                "Sync-run batch contains: {} upsert, {} deleted documents ({} upsert events, {} deleted events)",
                 batch.documents_upsert.len(),
                 batch.documents_deleted.len(),
                 batch.documents_upsert.iter().map(|(_, event_ids)| event_ids.len()).sum::<usize>(),
                 batch.documents_deleted.iter().map(|(_, _, event_ids)| event_ids.len()).sum::<usize>()
             );
 
-            // Store sync_run_id before moving batch
             let batch_sync_run_id = batch.sync_run_id.clone();
-
-            // Process the batch with fallback to individual processing
             let result = self.process_event_batch(batch).await;
 
             match result {
                 Ok(batch_result) => {
-                    // Mark events as completed/failed in batch
                     if !batch_result.successful_event_ids.is_empty() {
                         if let Err(e) = self
                             .event_queue
@@ -530,7 +567,6 @@ impl QueueProcessor {
                         }
                     }
 
-                    // Update sync run progress with document count (not event count)
                     if batch_result.successful_documents_count > 0 {
                         if let Err(e) = self
                             .sync_run_repo
@@ -547,15 +583,13 @@ impl QueueProcessor {
                         }
                     }
 
-                    // Extract people from the raw events and upsert into the people table
                     self.extract_and_upsert_people(&events_clone).await;
 
-                    let processed_count = batch_result.successful_event_ids.len();
-                    total_processed += processed_count;
+                    total_processed += batch_result.successful_event_ids.len();
 
                     let batch_duration = batch_start_time.elapsed();
                     info!(
-                        "Batch processing completed: {} successful, {} failed (took {:?}, {:.1} events/sec)",
+                        "Sync-run batch processing completed: {} successful, {} failed (took {:?}, {:.1} events/sec)",
                         batch_result.successful_event_ids.len(),
                         batch_result.failed_events.len(),
                         batch_duration,
@@ -582,13 +616,7 @@ impl QueueProcessor {
             }
         }
 
-        if total_processed > 0 {
-            info!(
-                "Processed {} events this call (cap reached, continuing next tick)",
-                total_processed
-            );
-        }
-        Ok(())
+        Ok(total_processed)
     }
 
     async fn group_events_by_type(

@@ -123,6 +123,96 @@ impl EventQueue {
         .fetch_all(&self.pool)
         .await?;
 
+        Ok(Self::map_rows_to_items(rows))
+    }
+
+    pub async fn dequeue_batch_by_sync_type(
+        &self,
+        batch_size: i32,
+        sync_type: SyncType,
+    ) -> Result<Vec<ConnectorEventQueueItem>> {
+        let rows = sqlx::query(
+            r#"
+            WITH batch AS (
+                SELECT q.id
+                FROM connector_events_queue q
+                JOIN sync_runs s ON q.sync_run_id = s.id
+                WHERE q.status = 'pending'
+                AND s.sync_type = $2
+                ORDER BY q.id
+                LIMIT $1
+                FOR UPDATE SKIP LOCKED
+            )
+            UPDATE connector_events_queue q
+            SET status = 'processing',
+                processing_started_at = NOW()
+            FROM batch
+            WHERE q.id = batch.id
+            RETURNING
+                q.id,
+                q.sync_run_id,
+                q.source_id,
+                q.event_type,
+                q.payload,
+                q.status,
+                q.retry_count,
+                q.max_retries,
+                q.created_at,
+                q.processed_at,
+                q.error_message
+            "#,
+        )
+        .bind(batch_size)
+        .bind(sync_type)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(Self::map_rows_to_items(rows))
+    }
+
+    pub async fn dequeue_batch_orphans(
+        &self,
+        batch_size: i32,
+    ) -> Result<Vec<ConnectorEventQueueItem>> {
+        let rows = sqlx::query(
+            r#"
+            WITH batch AS (
+                SELECT q.id
+                FROM connector_events_queue q
+                LEFT JOIN sync_runs s ON q.sync_run_id = s.id
+                WHERE q.status = 'pending'
+                AND s.id IS NULL
+                ORDER BY q.id
+                LIMIT $1
+                FOR UPDATE SKIP LOCKED
+            )
+            UPDATE connector_events_queue q
+            SET status = 'processing',
+                processing_started_at = NOW()
+            FROM batch
+            WHERE q.id = batch.id
+            RETURNING
+                q.id,
+                q.sync_run_id,
+                q.source_id,
+                q.event_type,
+                q.payload,
+                q.status,
+                q.retry_count,
+                q.max_retries,
+                q.created_at,
+                q.processed_at,
+                q.error_message
+            "#,
+        )
+        .bind(batch_size)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(Self::map_rows_to_items(rows))
+    }
+
+    fn map_rows_to_items(rows: Vec<sqlx::postgres::PgRow>) -> Vec<ConnectorEventQueueItem> {
         let mut events = Vec::new();
         for row in rows {
             let status_str: String = row.get("status");
@@ -149,8 +239,7 @@ impl EventQueue {
                 error_message: row.get("error_message"),
             });
         }
-
-        Ok(events)
+        events
     }
 
     pub async fn mark_completed(&self, event_id: &str) -> Result<()> {
