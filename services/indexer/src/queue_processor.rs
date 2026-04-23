@@ -18,10 +18,9 @@ use tokio::time::{interval, Duration, MissedTickBehavior};
 use tracing::{debug, error, info, warn};
 
 // Default poll interval for draining the queue. Overridable via INDEXER_POLL_INTERVAL_SECS.
-// 1s matches the tightest latency target (Realtime syncs, which flush on every emit).
 // SDK-side buffering already shapes events into the right batch size per sync type,
 // so the indexer just drains whatever's there on each tick.
-const DEFAULT_POLL_INTERVAL_SECS: u64 = 1;
+const DEFAULT_POLL_INTERVAL_SECS: u64 = 60;
 
 // Per-SyncType batching thresholds for the indexer.
 //
@@ -30,13 +29,13 @@ const DEFAULT_POLL_INTERVAL_SECS: u64 = 1;
 // quickly (they are already well-shaped by the connector-side SDK buffer).
 //
 // All values are overridable via environment variables.
-const DEFAULT_FULL_BATCH_SIZE: i64 = 50;
-const DEFAULT_FULL_BATCH_MAX_AGE_SECS: i64 = 60;
-const DEFAULT_INCREMENTAL_BATCH_SIZE: i64 = 200;
-const DEFAULT_INCREMENTAL_BATCH_MAX_AGE_SECS: i64 = 30;
+const DEFAULT_FULL_BATCH_SIZE: i64 = 1000;
+const DEFAULT_FULL_BATCH_MAX_AGE_SECS: i64 = 300;
+const DEFAULT_INCREMENTAL_BATCH_SIZE: i64 = 100;
+const DEFAULT_INCREMENTAL_BATCH_MAX_AGE_SECS: i64 = 60;
 const DEFAULT_REALTIME_BATCH_SIZE: i64 = 1;
-const DEFAULT_REALTIME_BATCH_MAX_AGE_SECS: i64 = 5;
-const DEFAULT_GLOBAL_BATCH_MAX_AGE_SECS: i64 = 60;
+const DEFAULT_REALTIME_BATCH_MAX_AGE_SECS: i64 = 0;
+const DEFAULT_GLOBAL_BATCH_MAX_AGE_SECS: i64 = 300;
 
 #[derive(Clone)]
 struct BatchingConfig {
@@ -221,8 +220,6 @@ pub struct QueueProcessor {
     pub embedding_queue: EmbeddingQueue,
     pub sync_run_repo: SyncRunRepository,
     pub batch_size: i32,
-    pub parallelism: usize,
-    semaphore: Arc<Semaphore>,
     processing_mutex: Arc<Mutex<()>>,
     poll_interval: Duration,
     batching_config: BatchingConfig,
@@ -233,34 +230,19 @@ impl QueueProcessor {
         let event_queue = EventQueue::new(state.db_pool.pool().clone());
         let embedding_queue = EmbeddingQueue::new(state.db_pool.pool().clone());
         let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
-        let parallelism = (num_cpus::get() / 2).max(1); // Half the CPU cores, minimum 1
-        let semaphore = Arc::new(Semaphore::new(parallelism));
         let processing_mutex = Arc::new(Mutex::new(()));
-        let poll_interval_secs = std::env::var("INDEXER_POLL_INTERVAL_SECS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(DEFAULT_POLL_INTERVAL_SECS);
+        let batch_size = env_or("INDEXER_BATCH_SIZE", 2000);
+        let poll_interval_secs = env_or("INDEXER_POLL_INTERVAL_SECS", DEFAULT_POLL_INTERVAL_SECS);
         Self {
             state,
             event_queue,
             embedding_queue,
             sync_run_repo,
-            batch_size: std::env::var("INDEXER_BATCH_SIZE")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(2000),
-            parallelism,
-            semaphore,
+            batch_size,
             processing_mutex,
             poll_interval: Duration::from_secs(poll_interval_secs),
             batching_config: BatchingConfig::from_env(),
         }
-    }
-
-    pub fn with_parallelism(mut self, parallelism: usize) -> Self {
-        self.parallelism = parallelism;
-        self.semaphore = Arc::new(Semaphore::new(parallelism));
-        self
     }
 
     pub fn with_batch_size(mut self, batch_size: i32) -> Self {
@@ -281,8 +263,8 @@ impl QueueProcessor {
 
     pub async fn start(&self) -> Result<()> {
         info!(
-            "Starting queue processor with batch size: {}, parallelism: {}",
-            self.batch_size, self.parallelism
+            "Starting queue processor with batch size: {}",
+            self.batch_size
         );
 
         // Recover any stale processing items from previous runs (5 minute timeout)
