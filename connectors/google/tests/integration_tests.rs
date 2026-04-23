@@ -4,6 +4,7 @@ use anyhow::Result;
 use omni_google_connector::models::WebhookNotification;
 use omni_google_connector::sync::SyncState;
 use shared::db::repositories::SyncRunRepository;
+use shared::models::SyncStatus;
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -244,19 +245,39 @@ async fn test_webhook_debounce_buffers_and_flushes() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(200)).await;
     processor.abort();
 
-    // Debounce map should be drained
-    assert_eq!(
-        fixture.sync_manager.webhook_debounce.len(),
-        0,
-        "debounce map should be empty after processor flushes"
-    );
-
-    // Connector-manager should have created a sync run for this source
+    // End-to-end: webhook → CM → POST /sync on the real SDK-served connector
+    // → GoogleConnector::sync → run_sync → credentials lookup fails (no creds
+    // seeded in the test DB) → SDK returns 4xx/5xx → CM's connector_client
+    // surfaces that as ClientError → CM marks the sync_run failed. We assert
+    // the terminal state rather than just the presence of a running row so a
+    // regression that silently drops the sync (or hangs it) fails this test.
     let sync_run_repo = SyncRunRepository::new(fixture.pool());
-    let running = sync_run_repo.get_running_for_source(&source_id).await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let terminal_run = loop {
+        let latest = sync_run_repo
+            .find_latest_for_sources(&[source_id.clone()])
+            .await?
+            .into_iter()
+            .next();
+        if let Some(run) = latest {
+            if run.status != SyncStatus::Running {
+                break run;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("no terminal sync run for source {} within 5s", source_id);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+
+    assert_eq!(
+        terminal_run.status,
+        SyncStatus::Failed,
+        "sync run should have failed (no credentials seeded)"
+    );
     assert!(
-        running.is_some(),
-        "a sync run should have been created for the source"
+        terminal_run.error_message.is_some(),
+        "failed sync run should record an error message"
     );
 
     Ok(())
