@@ -31,8 +31,8 @@ impl ContentBlobRepository {
         Self { pool: pool.clone() }
     }
 
-    /// Mark blobs as orphaned if they are not referenced by any document
-    /// or any pending/processing queue event.
+    /// Mark blobs as orphaned if they are not referenced by any document,
+    /// upload, or any pending/processing queue event.
     /// Returns the number of blobs marked.
     ///
     /// Bounded to MARK_ORPHANS_BATCH rows per call: the previous unbounded
@@ -57,6 +57,9 @@ impl ContentBlobRepository {
                       SELECT 1 FROM connector_events_queue q
                       WHERE q.status IN ('pending', 'processing')
                         AND q.payload->>'content_id' = cb.id::text
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM uploads u WHERE u.content_id = cb.id
                   )
                 LIMIT $1
             )
@@ -89,6 +92,9 @@ impl ContentBlobRepository {
                       SELECT 1 FROM connector_events_queue q
                       WHERE q.status IN ('pending', 'processing')
                         AND q.payload->>'content_id' = cb.id::text
+                  )
+                  OR EXISTS (
+                      SELECT 1 FROM uploads u WHERE u.content_id = cb.id
                   )
               )
             "#,
@@ -143,6 +149,9 @@ impl ContentBlobRepository {
                         FROM connector_events_queue
                         WHERE status IN ('pending', 'processing')
                         AND payload->>'content_id' IS NOT NULL
+                    )
+                    AND id NOT IN (
+                        SELECT DISTINCT content_id FROM uploads
                     )
                 ) as unmarked_orphans,
                 COUNT(*) FILTER (
