@@ -504,7 +504,7 @@ pub struct ChunkResult {
     pub chunk_index: i32,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq, Eq, Hash)]
 #[sqlx(type_name = "text", rename_all = "lowercase")]
 pub enum EventStatus {
     Pending,
@@ -546,6 +546,16 @@ pub enum SyncType {
     Full,
     Incremental,
     Realtime,
+}
+
+impl std::fmt::Display for SyncType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SyncType::Full => write!(f, "full"),
+            SyncType::Incremental => write!(f, "incremental"),
+            SyncType::Realtime => write!(f, "realtime"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]

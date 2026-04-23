@@ -7,7 +7,7 @@ use shared::db::repositories::{
 use shared::embedding_queue::EmbeddingQueue;
 use shared::models::{
     ConnectorEvent, ConnectorEventQueueItem, Document, DocumentAttributes, DocumentMetadata,
-    DocumentPermissions, SyncType,
+    DocumentPermissions, EventStatus, SyncType,
 };
 use shared::queue::EventQueue;
 use shared::storage::gc::{ContentBlobGC, GCConfig};
@@ -91,10 +91,14 @@ impl BatchingConfig {
     }
 
     /// Returns the list of sync types whose pending events meet a threshold.
-    fn ready_sync_types(&self, summary: &shared::queue::PendingSummary) -> Vec<(SyncType, String)> {
+    fn ready_sync_types(
+        &self,
+        by_sync_type: &HashMap<SyncType, (i64, i64)>,
+        _orphan_count: i64,
+    ) -> Vec<(SyncType, String)> {
         let mut ready = Vec::new();
 
-        for (sync_type, pending) in &summary.by_sync_type {
+        for (sync_type, (count, oldest_age_secs)) in by_sync_type {
             let (size_threshold, age_threshold) = match sync_type {
                 SyncType::Full => (self.full_batch_size, self.full_max_age_secs),
                 SyncType::Incremental => {
@@ -103,41 +107,31 @@ impl BatchingConfig {
                 SyncType::Realtime => (self.realtime_batch_size, self.realtime_max_age_secs),
             };
 
-            if pending.count >= size_threshold {
-                let name = match sync_type {
-                    SyncType::Full => "full",
-                    SyncType::Incremental => "incremental",
-                    SyncType::Realtime => "realtime",
-                };
+            if *count >= size_threshold {
                 ready.push((
                     sync_type.clone(),
-                    format!("{} count {} >= {}", name, pending.count, size_threshold),
+                    format!("{} count {} >= {}", sync_type, count, size_threshold),
                 ));
-            } else if pending.oldest_age_secs >= age_threshold {
-                let name = match sync_type {
-                    SyncType::Full => "full",
-                    SyncType::Incremental => "incremental",
-                    SyncType::Realtime => "realtime",
-                };
+            } else if *oldest_age_secs >= age_threshold {
                 ready.push((
                     sync_type.clone(),
                     format!(
                         "{} age {}s >= {}s",
-                        name, pending.oldest_age_secs, age_threshold
+                        sync_type, oldest_age_secs, age_threshold
                     ),
                 ));
             }
         }
 
         // Global safety net: never let events stall longer than this.
-        let oldest_any = summary
-            .by_sync_type
+        let oldest_any = by_sync_type
             .values()
-            .map(|p| p.oldest_age_secs)
+            .map(|(_, age)| *age)
+            .chain(std::iter::once(0))
             .max()
             .unwrap_or(0);
         if oldest_any >= self.global_max_age_secs {
-            for (sync_type, _) in &summary.by_sync_type {
+            for (sync_type, _) in by_sync_type {
                 if !ready.iter().any(|(st, _)| st == sync_type) {
                     ready.push((
                         sync_type.clone(),
@@ -152,6 +146,33 @@ impl BatchingConfig {
 
         ready
     }
+}
+
+/// Pending count and oldest age (seconds) for a sync type.
+type PendingBySyncType = HashMap<SyncType, (i64, i64)>;
+
+fn summarize_pending(summary: &shared::queue::QueueSummary) -> (PendingBySyncType, i64) {
+    let mut by_sync_type = PendingBySyncType::new();
+    let mut orphan_count = 0i64;
+
+    for entry in &summary.entries {
+        if entry.status != EventStatus::Pending {
+            continue;
+        }
+        let oldest_age_secs = entry
+            .oldest
+            .map(|t| (chrono::Utc::now() - t).num_seconds())
+            .unwrap_or(0);
+
+        match &entry.sync_type {
+            None => orphan_count = entry.count,
+            Some(st) => {
+                by_sync_type.insert(st.clone(), (entry.count, oldest_age_secs));
+            }
+        }
+    }
+
+    (by_sync_type, orphan_count)
 }
 
 fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
@@ -431,14 +452,18 @@ impl QueueProcessor {
         // Sync-type-aware batching: only process if pending events meet a
         // threshold (size or age). This lets small incremental trickles
         // accumulate while full-sync bursts flow through quickly.
-        let summary = self.event_queue.get_pending_summary().await?;
-        let ready = self.batching_config.ready_sync_types(&summary);
+        let summary = self.event_queue.get_queue_summary().await?;
+        let (by_sync_type, orphan_count) = summarize_pending(&summary);
+        let ready = self
+            .batching_config
+            .ready_sync_types(&by_sync_type, orphan_count);
 
-        if ready.is_empty() && summary.orphan_count == 0 {
-            if summary.total_count > 0 {
+        let total_pending: i64 = by_sync_type.values().map(|(c, _)| *c).sum::<i64>() + orphan_count;
+        if ready.is_empty() && orphan_count == 0 {
+            if total_pending > 0 {
                 debug!(
                     "Skipping batch: {} pending events do not meet sync-type thresholds",
-                    summary.total_count
+                    total_pending
                 );
             }
             return Ok(());
@@ -449,7 +474,7 @@ impl QueueProcessor {
 
         // Process orphan events first (no valid sync_run). These mainly happen
         // in tests that enqueue directly without creating sync_run rows.
-        while batches_dequeued < MAX_BATCHES_PER_CALL && summary.orphan_count > 0 {
+        while batches_dequeued < MAX_BATCHES_PER_CALL && orphan_count > 0 {
             let events = self
                 .event_queue
                 .dequeue_batch_orphans(self.batch_size)
