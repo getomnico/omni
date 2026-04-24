@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
-use shared::models::DocumentPermissions;
+use omni_connector_sdk::{DocumentPermissions, SdkClient};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -10,7 +10,6 @@ use tracing::{debug, error, info, warn};
 use crate::auth::AtlassianCredentials;
 use crate::client::AtlassianApi;
 use crate::models::JiraIssue;
-use shared::SdkClient;
 
 const DEFAULT_JIRA_FIELDS: &[&str] = &[
     "summary",

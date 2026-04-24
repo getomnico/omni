@@ -1,11 +1,10 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use dashmap::DashMap;
-use omni_connector_sdk::SyncContext;
-use shared::models::{
-    ConfluenceSourceConfig, ConnectorEvent, JiraSourceConfig, ServiceCredential, ServiceProvider,
-    Source, SourceType, SyncType,
+use omni_connector_sdk::{
+    ConnectorEvent, SdkClient, ServiceCredential, Source, SourceType, SyncContext, SyncType,
 };
+use shared::models::{ConfluenceSourceConfig, JiraSourceConfig, ServiceProvider};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -15,7 +14,6 @@ use crate::client::AtlassianApi;
 use crate::confluence::ConfluenceProcessor;
 use crate::jira::JiraProcessor;
 use crate::models::{AtlassianConnectorState, AtlassianWebhookEvent};
-use shared::SdkClient;
 
 pub struct SyncManager {
     pub sdk_client: SdkClient,
