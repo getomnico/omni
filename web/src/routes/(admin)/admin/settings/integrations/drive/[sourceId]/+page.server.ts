@@ -1,13 +1,15 @@
 import { error, redirect } from '@sveltejs/kit'
 import type { PageServerLoad, Actions } from './$types'
 import { requireAdmin } from '$lib/server/authHelpers'
-import { getSourceById, updateSourceById, type UserFilterMode } from '$lib/server/db/sources'
+import {
+    findActiveSourceByTypeAndCreator,
+    getSourceById,
+    updateSourceById,
+    type UserFilterMode,
+} from '$lib/server/db/sources'
+import { ServiceCredentialsRepo } from '$lib/server/db/service-credentials'
 import { getConfig } from '$lib/server/config'
 import { SourceType } from '$lib/types'
-import { db } from '$lib/server/db'
-import { serviceCredentials, sources } from '$lib/server/db/schema'
-import { and, eq } from 'drizzle-orm'
-import { encryptConfig } from '$lib/server/crypto/encryption'
 
 export const load: PageServerLoad = async ({ params, locals }) => {
     requireAdmin(locals)
@@ -22,20 +24,12 @@ export const load: PageServerLoad = async ({ params, locals }) => {
         throw error(400, 'Invalid source type for this page')
     }
 
-    const creds = await db.query.serviceCredentials.findFirst({
-        where: eq(serviceCredentials.sourceId, source.id),
-    })
+    const creds = await ServiceCredentialsRepo.getBySourceId(source.id)
 
     const credsConfig = (creds?.config as { domain?: string } | null) ?? {}
     const sourceConfig = (source.config as { domain?: string } | null) ?? {}
 
-    const gmailSibling = await db.query.sources.findFirst({
-        where: and(
-            eq(sources.sourceType, SourceType.GMAIL),
-            eq(sources.createdBy, source.createdBy),
-            eq(sources.isDeleted, false),
-        ),
-    })
+    const gmailSibling = await findActiveSourceByTypeAndCreator(SourceType.GMAIL, source.createdBy)
 
     return {
         source,
@@ -89,33 +83,25 @@ export const actions: Actions = {
             throw error(400, 'Organization domain is required')
         }
 
-        let parsedKey: Record<string, unknown> | null = null
         if (serviceAccountJson) {
             try {
-                parsedKey = JSON.parse(serviceAccountJson)
+                JSON.parse(serviceAccountJson)
             } catch {
                 throw error(400, 'Invalid service account JSON')
             }
         }
 
         try {
-            const existingCreds = await db.query.serviceCredentials.findFirst({
-                where: eq(serviceCredentials.sourceId, source.id),
-            })
+            const existingCreds = await ServiceCredentialsRepo.getBySourceId(source.id)
 
             if (existingCreds) {
-                const updates: Partial<typeof serviceCredentials.$inferInsert> = {
+                await ServiceCredentialsRepo.updateBySourceId(source.id, {
                     principalEmail,
                     config: { domain },
-                    updatedAt: new Date(),
-                }
-                if (parsedKey) {
-                    updates.credentials = encryptConfig({ service_account_key: serviceAccountJson })
-                }
-                await db
-                    .update(serviceCredentials)
-                    .set(updates)
-                    .where(eq(serviceCredentials.sourceId, source.id))
+                    credentials: serviceAccountJson
+                        ? { service_account_key: serviceAccountJson }
+                        : null,
+                })
             }
 
             await updateSourceById(source.id, {
