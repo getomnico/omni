@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use omni_connector_sdk::{
-    ActionDefinition, ActionResponse, Connector, SourceType, SyncContext, SyncType,
+    ActionDefinition, ActionResponse, ActionResult, Connector, SourceType, SyncContext, SyncType,
 };
 use serde_json::{json, Value as JsonValue};
 
@@ -86,7 +86,7 @@ impl Connector for FileSystemConnector {
         action: &str,
         params: JsonValue,
         _credentials: JsonValue,
-    ) -> Result<ActionResponse> {
+    ) -> Result<ActionResult> {
         match action {
             "validate_path" => {
                 let base_path = params
@@ -95,13 +95,13 @@ impl Connector for FileSystemConnector {
                     .ok_or_else(|| anyhow!("Missing 'base_path' in params"))?;
 
                 let path = std::path::Path::new(base_path);
-                Ok(ActionResponse::success(json!({
+                Ok(ActionResult::json(ActionResponse::success(json!({
                     "exists": path.exists(),
                     "is_directory": path.is_dir(),
                     "valid": path.exists() && path.is_dir()
-                })))
+                }))))
             }
-            other => Ok(ActionResponse::not_supported(other)),
+            other => Ok(ActionResult::not_supported(other)),
         }
     }
 }

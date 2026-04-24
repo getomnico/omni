@@ -88,3 +88,30 @@ impl ActionResponse {
         Self::failure(format!("Action not supported: {}", action))
     }
 }
+
+/// The result returned by a connector's `execute_action` method.
+///
+/// `Json` is the standard path — the SDK wraps it in a JSON response.
+/// `Binary` is for actions that return raw bytes (e.g. file downloads)
+/// — the SDK sets `Content-Type` and `Content-Length` headers automatically.
+#[derive(Debug, Clone)]
+pub enum ActionResult {
+    /// Standard JSON action response
+    Json(ActionResponse),
+    /// Binary response — bytes + content type.
+    Binary(Vec<u8>, String),
+}
+
+impl ActionResult {
+    pub fn json(resp: ActionResponse) -> Self {
+        Self::Json(resp)
+    }
+
+    pub fn binary(bytes: Vec<u8>, content_type: impl Into<String>) -> Self {
+        Self::Binary(bytes, content_type.into())
+    }
+
+    pub fn not_supported(action: &str) -> Self {
+        Self::Json(ActionResponse::not_supported(action))
+    }
+}

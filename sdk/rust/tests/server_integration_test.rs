@@ -385,39 +385,3 @@ async fn t12_extra_routes_are_served_alongside_sdk_routes() -> Result<()> {
     assert_eq!(resp.text(), "pong");
     Ok(())
 }
-
-#[tokio::test]
-async fn t13_owns_action_route_skips_sdk_action_mount() -> Result<()> {
-    // When the connector claims /action, the SDK does not mount its default
-    // JSON handler — the path is unrouted until the connector supplies one
-    // via extra_routes. Here we intentionally don't supply one and expect
-    // 404. The other SDK routes remain mounted.
-    let mock = MockConnectorManager::spawn().await;
-    let connector = Arc::new(TestConnector::new(SyncBehavior::Ok).with_owns_action_route(true));
-    let server = build_server(connector, &mock);
-
-    let resp = server
-        .post("/action")
-        .json(&json!({ "action": "whatever", "params": {}, "credentials": {} }))
-        .await;
-    assert_eq!(resp.status_code(), 404);
-
-    let resp = server.get("/health").await;
-    assert_eq!(resp.status_code(), 200);
-    Ok(())
-}
-
-#[tokio::test]
-async fn t14_owns_action_route_allows_custom_action_handler() -> Result<()> {
-    // With owns_action_route=true, a caller-supplied /action route merges
-    // in without conflicting with the SDK's default (which is skipped).
-    let mock = MockConnectorManager::spawn().await;
-    let connector = Arc::new(TestConnector::new(SyncBehavior::Ok).with_owns_action_route(true));
-    let extra = Router::new().route("/action", routing::post(|| async { "custom-action" }));
-    let server = build_server_with_extra(connector, &mock, extra);
-
-    let resp = server.post("/action").json(&json!({})).await;
-    assert_eq!(resp.status_code(), 200);
-    assert_eq!(resp.text(), "custom-action");
-    Ok(())
-}

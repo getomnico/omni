@@ -26,7 +26,7 @@ use axum::{
     routing::{get, post, put},
     Router,
 };
-use omni_connector_sdk::{ActionResponse, Connector, SourceType, SyncContext};
+use omni_connector_sdk::{ActionResult, Connector, SourceType, SyncContext};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use shared::SdkClient;
@@ -221,7 +221,6 @@ pub enum SyncBehavior {
 pub struct TestConnector {
     pub behavior: Arc<Mutex<SyncBehavior>>,
     pub sync_called: Arc<Mutex<u32>>,
-    pub owns_action: bool,
 }
 
 impl TestConnector {
@@ -229,13 +228,7 @@ impl TestConnector {
         Self {
             behavior: Arc::new(Mutex::new(behavior)),
             sync_called: Arc::new(Mutex::new(0)),
-            owns_action: false,
         }
-    }
-
-    pub fn with_owns_action_route(mut self, owns_action: bool) -> Self {
-        self.owns_action = owns_action;
-        self
     }
 
     pub fn sync_call_count(&self) -> u32 {
@@ -267,10 +260,6 @@ impl Connector for TestConnector {
 
     fn requires_credentials(&self) -> bool {
         false
-    }
-
-    fn owns_action_route(&self) -> bool {
-        self.owns_action
     }
 
     async fn sync(
@@ -305,7 +294,7 @@ impl Connector for TestConnector {
         action: &str,
         _params: JsonValue,
         _credentials: JsonValue,
-    ) -> Result<ActionResponse> {
-        Ok(ActionResponse::not_supported(action))
+    ) -> Result<ActionResult> {
+        Ok(ActionResult::not_supported(action))
     }
 }

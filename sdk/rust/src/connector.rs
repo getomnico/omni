@@ -1,5 +1,5 @@
 use crate::context::SyncContext;
-use crate::models::ActionResponse;
+use crate::models::ActionResult;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
@@ -48,14 +48,6 @@ pub trait Connector: Send + Sync + 'static {
         true
     }
 
-    /// If true, the SDK router omits its default `/action` route and the
-    /// connector is expected to mount its own `/action` handler (via the
-    /// extra routes passed to `serve_with_extra_routes`). Use this when an
-    /// action needs to return a non-JSON response (e.g. binary file bytes).
-    fn owns_action_route(&self) -> bool {
-        false
-    }
-
     fn extra_schema(&self) -> Option<JsonValue> {
         None
     }
@@ -93,8 +85,8 @@ pub trait Connector: Send + Sync + 'static {
         action: &str,
         _params: JsonValue,
         _credentials: JsonValue,
-    ) -> Result<ActionResponse> {
-        Ok(ActionResponse::not_supported(action))
+    ) -> Result<ActionResult> {
+        Ok(ActionResult::not_supported(action))
     }
 
     async fn build_manifest(&self, connector_url: String) -> ConnectorManifest {
