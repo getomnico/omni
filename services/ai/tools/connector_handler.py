@@ -307,8 +307,10 @@ class ConnectorToolHandler:
                 )
                 response.raise_for_status()
 
-                # Binary file response — connectors set x-file-name on file downloads
-                if response.headers.get("x-file-name"):
+                content_type = response.headers.get("content-type", "")
+
+                # Binary file response
+                if "application/json" not in content_type:
                     if not self._sandbox_url:
                         return ToolResult(
                             content=[
@@ -319,7 +321,7 @@ class ConnectorToolHandler:
                             ],
                             is_error=True,
                         )
-                    file_name = response.headers["x-file-name"]
+                    file_name = response.headers.get("x-file-name") or "download"
                     return await write_binary_to_sandbox(
                         self._sandbox_url,
                         response.content,
