@@ -13,6 +13,7 @@ import {
   createSyncResponseStarted,
   createSyncResponseError,
   createActionResponseFailure,
+  ActionResult,
 } from './models.js';
 import { getLogger } from './logger.js';
 
@@ -210,8 +211,22 @@ export function createServer(connector: Connector): Express {
     logger.info(`Action requested: ${action}`);
 
     try {
-      const response = await connector.executeAction(action, params, credentials);
-      res.json(response);
+      const result = await connector.executeAction(
+        action,
+        params,
+        credentials
+      );
+      if (result.binary) {
+        res.setHeader('Content-Type', result.binary.contentType);
+        res.setHeader('Content-Length', result.binary.data.length);
+        res.send(result.binary.data);
+        return;
+      }
+      if (result.json) {
+        res.json(result.json);
+        return;
+      }
+      res.json(createActionResponseFailure('Unknown action result'));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.error({ err: error }, `Action ${action} failed`);

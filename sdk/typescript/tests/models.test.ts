@@ -7,6 +7,10 @@ import {
   SyncRequestSchema,
   EventType,
   serializeConnectorEvent,
+  ActionResult,
+  createActionResponseSuccess,
+  createActionResponseFailure,
+  createActionResponseNotSupported,
   type ConnectorEventPayload,
 } from '../src/models.js';
 
@@ -132,6 +136,52 @@ describe('SyncRequestSchema', () => {
       expect(result.data.sync_run_id).toBe('sync-123');
       expect(result.data.source_id).toBe('source-456');
     }
+  });
+});
+
+describe('ActionResult', () => {
+  it('creates a JSON action result', () => {
+    const response = createActionResponseSuccess({ key: 'value' });
+    const result = ActionResult.jsonResponse(response);
+
+    expect(result.json).toEqual({ status: 'success', result: { key: 'value' } });
+    expect(result.binary).toBeUndefined();
+  });
+
+  it('creates a binary action result', () => {
+    const data = Buffer.from('hello world');
+    const result = ActionResult.binaryResponse(data, 'text/plain');
+
+    expect(result.binary).toEqual({ data, contentType: 'text/plain' });
+    expect(result.json).toBeUndefined();
+    expect(result.binary!.data).toEqual(Buffer.from('hello world'));
+  });
+
+  it('creates a not supported action result', () => {
+    const result = ActionResult.notSupported('my_action');
+
+    expect(result.json).toEqual({
+      status: 'error',
+      error: 'Action not supported: my_action',
+    });
+    expect(result.binary).toBeUndefined();
+  });
+
+  it('creates a failure action result', () => {
+    const response = createActionResponseFailure('something went wrong');
+    const result = ActionResult.jsonResponse(response);
+
+    expect(result.json).toEqual({
+      status: 'error',
+      error: 'something went wrong',
+    });
+  });
+
+  it('has both json and binary as undefined for empty result', () => {
+    const result = new ActionResult({});
+
+    expect(result.json).toBeUndefined();
+    expect(result.binary).toBeUndefined();
   });
 });
 

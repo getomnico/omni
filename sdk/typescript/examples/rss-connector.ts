@@ -21,6 +21,7 @@ import {
   type ActionDefinition,
   type ActionResponse,
   type Document,
+  ActionResult,
   createActionResponseSuccess,
   createActionResponseFailure,
   createActionResponseNotSupported,
@@ -166,27 +167,33 @@ class RSSConnector extends Connector {
     action: string,
     params: Record<string, unknown>,
     _credentials: Record<string, unknown>
-  ): Promise<ActionResponse> {
+  ): Promise<ActionResult> {
     if (action === 'validate_feed') {
       const feedUrl = params.feed_url as string | undefined;
       if (!feedUrl) {
-        return createActionResponseFailure('Missing feed_url parameter');
+        return ActionResult.jsonResponse(
+          createActionResponseFailure('Missing feed_url parameter')
+        );
       }
 
       try {
         const feed = await this.parseFeed(feedUrl);
-        return createActionResponseSuccess({
-          valid: true,
-          title: feed.title ?? 'Unknown',
-          entry_count: feed.items.length,
-        });
+        return ActionResult.jsonResponse(
+          createActionResponseSuccess({
+            valid: true,
+            title: feed.title ?? 'Unknown',
+            entry_count: feed.items.length,
+          })
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return createActionResponseFailure(`Failed to fetch feed: ${message}`);
+        return ActionResult.jsonResponse(
+          createActionResponseFailure(`Failed to fetch feed: ${message}`)
+        );
       }
     }
 
-    return createActionResponseNotSupported(action);
+    return ActionResult.notSupported(action);
   }
 
   /**

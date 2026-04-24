@@ -183,6 +183,33 @@ export function createActionResponseNotSupported(action: string): ActionResponse
   return { status: 'error', error: `Action not supported: ${action}` };
 }
 
+export class ActionResult {
+  json?: ActionResponse;
+  binary?: { data: Buffer; contentType: string };
+
+  constructor(options: {
+    json?: ActionResponse;
+    binary?: { data: Buffer; contentType: string };
+  }) {
+    this.json = options.json;
+    this.binary = options.binary;
+  }
+
+  static jsonResponse(response: ActionResponse): ActionResult {
+    return new ActionResult({ json: response });
+  }
+
+  static binaryResponse(data: Buffer, contentType: string): ActionResult {
+    return new ActionResult({ binary: { data, contentType } });
+  }
+
+  static notSupported(action: string): ActionResult {
+    return ActionResult.jsonResponse(
+      createActionResponseNotSupported(action)
+    );
+  }
+}
+
 export const ResourceRequestSchema = z.object({
   uri: z.string(),
   credentials: z.record(z.unknown()).default({}),

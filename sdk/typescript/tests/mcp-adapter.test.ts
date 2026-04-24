@@ -159,7 +159,8 @@ describe('Connector MCP integration', () => {
       { name: 'Omni' },
       {} as Record<string, unknown>
     );
-    expect(result.status).toBe('success');
+    expect(result.json).toBeDefined();
+    expect(result.json!.status).toBe('success');
   });
 
   it('returns not supported for unknown actions', async () => {
@@ -181,8 +182,9 @@ describe('Connector MCP integration', () => {
       {},
       {} as Record<string, unknown>
     );
-    expect(result.status).toBe('error');
-    expect(result.error).toContain('not supported');
+    expect(result.json).toBeDefined();
+    expect(result.json!.status).toBe('error');
+    expect(result.json!.error).toContain('not supported');
   });
 
   it('non-MCP connector has mcp_enabled=false', async () => {

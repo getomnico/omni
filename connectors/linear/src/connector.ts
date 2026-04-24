@@ -4,6 +4,7 @@ import {
   type ActionDefinition,
   type ActionResponse,
   type SearchOperator,
+  ActionResult,
   createActionResponseSuccess,
   createActionResponseFailure,
   createActionResponseNotSupported,
@@ -288,24 +289,28 @@ export class LinearConnector extends Connector<LinearSourceConfig, LinearCredent
     action: string,
     _params: Record<string, unknown>,
     credentials: LinearCredentials,
-  ): Promise<ActionResponse> {
+  ): Promise<ActionResult> {
     if (action !== 'list_teams') {
-      return createActionResponseNotSupported(action);
+      return ActionResult.notSupported(action);
     }
 
     const { api_key: apiKey } = credentials;
     if (!apiKey) {
-      return createActionResponseFailure("Missing 'api_key' in credentials");
+      return ActionResult.jsonResponse(
+        createActionResponseFailure("Missing 'api_key' in credentials"),
+      );
     }
 
     try {
       const client = new LinearApiClient(apiKey);
       const teams = await client.fetchTeams();
-      return createActionResponseSuccess({
-        teams: teams.map(t => ({ key: t.key, name: t.name })),
-      });
+      return ActionResult.jsonResponse(
+        createActionResponseSuccess({
+          teams: teams.map(t => ({ key: t.key, name: t.name })),
+        }),
+      );
     } catch (e) {
-      return createActionResponseFailure(String(e));
+      return ActionResult.jsonResponse(createActionResponseFailure(String(e)));
     }
   }
 }

@@ -5,7 +5,7 @@ import type {
   ActionResponse,
   SearchOperator,
 } from './models.js';
-import { createActionResponseNotSupported } from './models.js';
+import { createActionResponseNotSupported, ActionResult } from './models.js';
 import { createServer } from './server.js';
 import { getLogger } from './logger.js';
 
@@ -48,7 +48,17 @@ export abstract class Connector<
     return undefined;
   }
 
-  async getMcpAdapter(): Promise<{ getActionDefinitions(): Promise<ActionDefinition[]>; getResourceDefinitions(): Promise<unknown[]>; getPromptDefinitions(): Promise<unknown[]>; executeTool(name: string, params: Record<string, unknown>): Promise<ActionResponse>; readResource(uri: string): Promise<unknown>; getPrompt(name: string, args?: Record<string, string>): Promise<unknown> } | undefined> {
+  async getMcpAdapter(): Promise<{
+    getActionDefinitions(): Promise<ActionDefinition[]>;
+    getResourceDefinitions(): Promise<unknown[]>;
+    getPromptDefinitions(): Promise<unknown[]>;
+    executeTool(
+      name: string,
+      params: Record<string, unknown>
+    ): Promise<ActionResponse>;
+    readResource(uri: string): Promise<unknown>;
+    getPrompt(name: string, args?: Record<string, string>): Promise<unknown>;
+  } | undefined> {
     if (this._mcpAdapter !== null) {
       return this._mcpAdapter as ReturnType<typeof this.getMcpAdapter> extends Promise<infer T> ? T : never;
     }
@@ -116,17 +126,18 @@ export abstract class Connector<
     action: string,
     params: Record<string, unknown>,
     credentials: TCredentials
-  ): Promise<ActionResponse> {
+  ): Promise<ActionResult> {
     const adapter = await this.getMcpAdapter();
     if (adapter) {
       const mcpActions = await adapter.getActionDefinitions();
       const mcpToolNames = new Set(mcpActions.map((a) => a.name));
       if (mcpToolNames.has(action)) {
         this.prepareMcpEnv(credentials);
-        return adapter.executeTool(action, params);
+        const response = await adapter.executeTool(action, params);
+        return ActionResult.jsonResponse(response);
       }
     }
-    return createActionResponseNotSupported(action);
+    return ActionResult.notSupported(action);
   }
 
   serve(options: ServeOptions = {}): void {

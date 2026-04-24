@@ -30,6 +30,7 @@ export {
   createActionResponseSuccess,
   createActionResponseFailure,
   createActionResponseNotSupported,
+  ActionResult,
   serializeConnectorEvent,
   type DocumentMetadata,
   type DocumentPermissions,
@@ -47,6 +48,7 @@ export {
   type CancelResponse,
   type ActionRequest,
   type ActionResponse,
+  type ActionResult,
   type ConnectorEventPayload,
 } from './models.js';
 
