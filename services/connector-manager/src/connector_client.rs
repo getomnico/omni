@@ -181,6 +181,10 @@ impl ConnectorClient {
     /// Execute an action and return the raw response without parsing.
     /// The connector-manager proxies the full HTTP response (status, headers, body)
     /// back to the caller, regardless of status code.
+    ///
+    /// Returns `reqwest::Response` (the HTTP response from the connector service)
+    /// rather than `axum::response::Response` (the server-side response type).
+    /// The caller converts this into an axum response for the end client.
     pub async fn execute_action_raw(
         &self,
         connector_url: &str,

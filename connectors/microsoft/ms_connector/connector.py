@@ -104,7 +104,7 @@ class MicrosoftConnector(Connector):
         action: str,
         params: dict[str, Any],
         credentials: dict[str, Any],
-    ) -> "Response":
+    ) -> Response:
         if action == "search_users":
             return await self._action_search_users(params, credentials)
         elif action == "fetch_file":
@@ -115,9 +115,7 @@ class MicrosoftConnector(Connector):
         self,
         params: dict[str, Any],
         credentials: dict[str, Any],
-    ) -> "Response":
-        from starlette.responses import Response
-
+    ) -> Response:
         query = params.get("query", "").strip()
         if not query:
             return ActionResponse.success({"users": []}).to_response()
@@ -139,9 +137,7 @@ class MicrosoftConnector(Connector):
         self,
         params: dict[str, Any],
         credentials: dict[str, Any],
-    ) -> "Response":
-        from starlette.responses import Response
-
+    ) -> Response:
         file_id = params.get("file_id", "").strip()
         if not file_id:
             return ActionResponse.failure(

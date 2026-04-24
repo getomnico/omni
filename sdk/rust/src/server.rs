@@ -1,9 +1,9 @@
 use crate::connector::Connector;
 use crate::context::SyncContext;
 use crate::models::{
-    ActionRequest, CancelRequest, CancelResponse, SyncRequest, SyncResponse, SyncStatusResponse,
+    ActionRequest, ActionResponse, CancelRequest, CancelResponse, SyncRequest, SyncResponse,
+    SyncStatusResponse,
 };
-use crate::ActionResponse;
 use anyhow::{Context, Result};
 use axum::{
     extract::{Path, State},
@@ -394,7 +394,7 @@ where
 async fn execute_action<C>(
     State(state): State<Arc<ServerState<C>>>,
     Json(request): Json<ActionRequest>,
-) -> Result<Response, (StatusCode, Json<crate::models::ActionResponse>)>
+) -> Result<Response, (StatusCode, Json<ActionResponse>)>
 where
     C: Connector,
 {
