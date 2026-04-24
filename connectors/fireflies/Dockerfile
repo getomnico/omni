@@ -11,6 +11,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY Cargo.toml Cargo.lock ./
 COPY shared/ shared/
+COPY sdk/rust/ sdk/rust/
 COPY connectors/fireflies/ connectors/fireflies/
 RUN cargo build --release --bin omni-fireflies-connector
 
