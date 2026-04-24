@@ -20,7 +20,7 @@ use omni_atlassian_connector::models::{
 use omni_atlassian_connector::{
     AtlassianCredentials, ConfluenceProcessor, JiraProcessor, SyncManager,
 };
-use shared::models::SourceType;
+use omni_connector_sdk::SourceType;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use time::OffsetDateTime;
@@ -185,7 +185,7 @@ async fn test_confluence_full_sync_creates_events() -> Result<()> {
     let cancelled = AtomicBool::new(false);
     let sync_run_id = fixture
         .sdk_client
-        .create_sync_run(SOURCE_ID, shared::models::SyncType::Full)
+        .create_sync_run(SOURCE_ID, omni_connector_sdk::SyncType::Full)
         .await?;
 
     let creds = test_credentials();
@@ -227,7 +227,7 @@ async fn test_confluence_incremental_sync_uses_cql() -> Result<()> {
     let cancelled = AtomicBool::new(false);
     let sync_run_id = fixture
         .sdk_client
-        .create_sync_run(SOURCE_ID, shared::models::SyncType::Incremental)
+        .create_sync_run(SOURCE_ID, omni_connector_sdk::SyncType::Incremental)
         .await?;
 
     let creds = test_credentials();
@@ -283,7 +283,7 @@ async fn test_confluence_version_dedup_skips_unchanged() -> Result<()> {
     // First sync: should process both pages
     let sync_run_id = fixture
         .sdk_client
-        .create_sync_run(SOURCE_ID, shared::models::SyncType::Full)
+        .create_sync_run(SOURCE_ID, omni_connector_sdk::SyncType::Full)
         .await?;
 
     let creds = test_credentials();
@@ -299,7 +299,7 @@ async fn test_confluence_version_dedup_skips_unchanged() -> Result<()> {
     // Second sync with same versions: should skip both pages
     let sync_run_id2 = fixture
         .sdk_client
-        .create_sync_run(SOURCE_ID, shared::models::SyncType::Full)
+        .create_sync_run(SOURCE_ID, omni_connector_sdk::SyncType::Full)
         .await?;
 
     let count2 = processor
@@ -343,7 +343,7 @@ async fn test_jira_full_sync_creates_events() -> Result<()> {
     let cancelled = AtomicBool::new(false);
     let sync_run_id = fixture
         .sdk_client
-        .create_sync_run(SOURCE_ID, shared::models::SyncType::Full)
+        .create_sync_run(SOURCE_ID, omni_connector_sdk::SyncType::Full)
         .await?;
 
     let creds = test_credentials();
@@ -632,7 +632,7 @@ async fn test_confluence_sync_fetches_and_caches_space_permissions() -> Result<(
     let cancelled = AtomicBool::new(false);
     let sync_run_id = fixture
         .sdk_client
-        .create_sync_run(SOURCE_ID, shared::models::SyncType::Full)
+        .create_sync_run(SOURCE_ID, omni_connector_sdk::SyncType::Full)
         .await?;
 
     let creds = test_credentials();
@@ -738,7 +738,7 @@ async fn test_jira_sync_fetches_and_caches_project_permissions() -> Result<()> {
     let cancelled = AtomicBool::new(false);
     let sync_run_id = fixture
         .sdk_client
-        .create_sync_run(SOURCE_ID, shared::models::SyncType::Full)
+        .create_sync_run(SOURCE_ID, omni_connector_sdk::SyncType::Full)
         .await?;
 
     let creds = test_credentials();

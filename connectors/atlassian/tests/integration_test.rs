@@ -1,4 +1,4 @@
-use shared::models::{ConnectorEvent, DocumentPermissions};
+use omni_connector_sdk::{ConnectorEvent, DocumentPermissions};
 use std::collections::HashMap;
 use time::OffsetDateTime;
 

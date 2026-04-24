@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use futures::stream::StreamExt;
-use shared::models::DocumentPermissions;
+use omni_connector_sdk::{DocumentPermissions, SdkClient};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -11,7 +11,6 @@ use tracing::{debug, error, info, warn};
 use crate::auth::AtlassianCredentials;
 use crate::client::AtlassianApi;
 use crate::models::{ConfluencePage, ConfluencePageStatus, ConfluenceSpace};
-use shared::SdkClient;
 
 pub struct ConfluenceProcessor {
     client: Arc<dyn AtlassianApi>,
