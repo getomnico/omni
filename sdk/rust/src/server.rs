@@ -405,18 +405,21 @@ where
         .execute_action(&request.action, request.params, request.credentials)
         .await
     {
-        Ok(ActionResult::Json(resp)) => Response::builder()
-            .status(StatusCode::OK)
-            .header("content-type", "application/json")
-            .body(axum::body::Body::from(
-                serde_json::to_string(&resp).unwrap_or_default(),
-            ))
-            .unwrap_or_else(|_| {
-                Response::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .body(axum::body::Body::from(""))
-                    .unwrap()
-            }),
+        Ok(ActionResult::Json(value)) => {
+            let resp = ActionResponse::success(value);
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::to_string(&resp).unwrap_or_default(),
+                ))
+                .unwrap_or_else(|_| {
+                    Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(axum::body::Body::from(""))
+                        .unwrap()
+                })
+        }
         Ok(ActionResult::Binary(bytes, content_type)) => Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", content_type)

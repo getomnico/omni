@@ -86,7 +86,7 @@ pub trait Connector: Send + Sync + 'static {
         _params: JsonValue,
         _credentials: JsonValue,
     ) -> Result<ActionResult> {
-        Ok(ActionResult::not_supported(action))
+        Err(anyhow::anyhow!("Action not supported: {}", action))
     }
 
     async fn build_manifest(&self, connector_url: String) -> ConnectorManifest {

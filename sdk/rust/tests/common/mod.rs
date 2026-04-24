@@ -295,6 +295,6 @@ impl Connector for TestConnector {
         _params: JsonValue,
         _credentials: JsonValue,
     ) -> Result<ActionResult> {
-        Ok(ActionResult::not_supported(action))
+        Err(anyhow::anyhow!("Action not supported: {}", action))
     }
 }

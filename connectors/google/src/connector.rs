@@ -3,8 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 use omni_connector_sdk::{
-    ActionDefinition, ActionResponse, ActionResult, Connector, SearchOperator, SourceType,
-    SyncContext, SyncType,
+    ActionDefinition, ActionResult, Connector, SearchOperator, SourceType, SyncContext, SyncType,
 };
 use serde_json::{json, Value as JsonValue};
 use shared::models::ServiceProvider;
@@ -166,11 +165,11 @@ impl GoogleConnector {
             })
             .collect();
 
-        Ok(ActionResult::json(ActionResponse::success(json!({
+        Ok(ActionResult::json(json!({
             "users": users,
             "next_page_token": response.next_page_token,
             "has_more": response.next_page_token.is_some(),
-        }))))
+        })))
     }
 }
 
@@ -277,7 +276,7 @@ impl Connector for GoogleConnector {
         match action {
             "fetch_file" => self.execute_fetch_file(params, credentials).await,
             "search_users" => self.execute_search_users(params, credentials).await,
-            _ => Ok(ActionResult::not_supported(action)),
+            _ => Err(anyhow::anyhow!("Action not supported: {}", action)),
         }
     }
 
