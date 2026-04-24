@@ -3,7 +3,6 @@
     import { Button } from '$lib/components/ui/button'
     import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
-    import { Textarea } from '$lib/components/ui/textarea'
     import { Checkbox } from '$lib/components/ui/checkbox'
     import { AuthType } from '$lib/types'
     import { toast } from 'svelte-sonner'
@@ -11,6 +10,7 @@
     import { invalidateAll } from '$app/navigation'
     import googleDriveLogo from '$lib/images/icons/google-drive.svg'
     import gmailLogo from '$lib/images/icons/gmail.svg'
+    import GoogleServiceAccountForm from '$lib/components/google-service-account-form.svelte'
 
     interface Props {
         open: boolean
@@ -274,47 +274,7 @@
                     </div>
                 </div>
 
-                <div class="space-y-2">
-                    <Label for="service-account-json">Service Account JSON Key</Label>
-                    <Textarea
-                        id="service-account-json"
-                        bind:value={serviceAccountJson}
-                        placeholder="Paste your Google service account JSON key here..."
-                        rows={10}
-                        class="max-h-64 overflow-y-auto font-mono text-sm break-all whitespace-pre-wrap" />
-                    <p class="text-muted-foreground text-sm">
-                        Download this from the Google Cloud Console under "Service Accounts" >
-                        "Keys".
-                    </p>
-                </div>
-
-                <div class="space-y-2">
-                    <Label for="principal-email">Admin Email</Label>
-                    <Input
-                        id="principal-email"
-                        bind:value={principalEmail}
-                        placeholder="admin@yourdomain.com"
-                        type="email"
-                        required />
-                    <p class="text-muted-foreground text-sm">
-                        The admin user email that the service account will impersonate to access
-                        Google Workspace APIs.
-                    </p>
-                </div>
-
-                <div class="space-y-2">
-                    <Label for="domain">Organization Domain</Label>
-                    <Input
-                        id="domain"
-                        bind:value={domain}
-                        placeholder="yourdomain.com"
-                        type="text"
-                        required />
-                    <p class="text-muted-foreground text-sm">
-                        Your Google Workspace domain (e.g., company.com). The service account will
-                        impersonate all users in this domain.
-                    </p>
-                </div>
+                <GoogleServiceAccountForm bind:serviceAccountJson bind:principalEmail bind:domain />
             </div>
 
             <Dialog.Footer>
