@@ -1,20 +1,16 @@
 import { error, redirect } from '@sveltejs/kit'
 import type { PageServerLoad, Actions } from './$types'
 import { requireAdmin } from '$lib/server/authHelpers'
-import {
-    findActiveSourceByTypeAndCreator,
-    getSourceById,
-    updateSourceById,
-    type UserFilterMode,
-} from '$lib/server/db/sources'
-import { ServiceCredentialsRepo } from '$lib/server/db/service-credentials'
+import { updateSourceById, type UserFilterMode } from '$lib/server/db/sources'
+import { sourcesRepository } from '$lib/server/repositories/sources'
+import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
 import { getConfig } from '$lib/server/config'
-import { SourceType } from '$lib/types'
+import { AuthType, SourceType } from '$lib/types'
 
 export const load: PageServerLoad = async ({ params, locals }) => {
     requireAdmin(locals)
 
-    const source = await getSourceById(params.sourceId)
+    const source = await sourcesRepository.getById(params.sourceId)
 
     if (!source) {
         throw error(404, 'Source not found')
@@ -24,18 +20,19 @@ export const load: PageServerLoad = async ({ params, locals }) => {
         throw error(400, 'Invalid source type for this page')
     }
 
-    const creds = await ServiceCredentialsRepo.getBySourceId(source.id)
+    const creds = await serviceCredentialsRepository.getBySourceId(source.id)
 
     const credsConfig = (creds?.config as { domain?: string } | null) ?? {}
     const sourceConfig = (source.config as { domain?: string } | null) ?? {}
 
-    const driveSibling = await findActiveSourceByTypeAndCreator(
+    const driveSibling = await sourcesRepository.findActiveByTypeAndCreator(
         SourceType.GOOGLE_DRIVE,
         source.createdBy,
     )
 
     return {
         source,
+        authType: (creds?.authType as AuthType | undefined) ?? null,
         hasStoredKey: Boolean(creds),
         principalEmail: creds?.principalEmail ?? '',
         domain: credsConfig.domain ?? sourceConfig.domain ?? '',
@@ -50,7 +47,7 @@ export const actions: Actions = {
             throw error(403, 'Admin access required')
         }
 
-        const source = await getSourceById(params.sourceId)
+        const source = await sourcesRepository.getById(params.sourceId)
         if (!source) {
             throw error(404, 'Source not found')
         }
@@ -67,53 +64,59 @@ export const actions: Actions = {
             userFilterMode === 'whitelist' ? (formData.getAll('userWhitelist') as string[]) : null
         const userBlacklist =
             userFilterMode === 'blacklist' ? (formData.getAll('userBlacklist') as string[]) : null
-        const serviceAccountJson = ((formData.get('serviceAccountJson') as string) || '').trim()
-        const principalEmail = ((formData.get('principalEmail') as string) || '').trim()
-        const domain = ((formData.get('domain') as string) || '').trim()
 
-        if (
-            isActive &&
-            userFilterMode === 'whitelist' &&
-            (!userWhitelist || userWhitelist.length === 0)
-        ) {
-            throw error(400, 'Whitelist mode requires at least one user')
-        }
-
-        if (!principalEmail) {
-            throw error(400, 'Admin email is required')
-        }
-        if (!domain) {
-            throw error(400, 'Organization domain is required')
-        }
-
-        if (serviceAccountJson) {
-            try {
-                JSON.parse(serviceAccountJson)
-            } catch {
-                throw error(400, 'Invalid service account JSON')
-            }
-        }
+        const existingCreds = await serviceCredentialsRepository.getBySourceId(source.id)
+        const isJwt = existingCreds?.authType === AuthType.JWT
 
         try {
-            const existingCreds = await ServiceCredentialsRepo.getBySourceId(source.id)
+            if (isJwt) {
+                const serviceAccountJson = (
+                    (formData.get('serviceAccountJson') as string) || ''
+                ).trim()
+                const principalEmail = ((formData.get('principalEmail') as string) || '').trim()
+                const domain = ((formData.get('domain') as string) || '').trim()
 
-            if (existingCreds) {
-                await ServiceCredentialsRepo.updateBySourceId(source.id, {
+                if (
+                    isActive &&
+                    userFilterMode === 'whitelist' &&
+                    (!userWhitelist || userWhitelist.length === 0)
+                ) {
+                    throw error(400, 'Whitelist mode requires at least one user')
+                }
+                if (!principalEmail) {
+                    throw error(400, 'Admin email is required')
+                }
+                if (!domain) {
+                    throw error(400, 'Organization domain is required')
+                }
+
+                if (serviceAccountJson) {
+                    try {
+                        JSON.parse(serviceAccountJson)
+                    } catch {
+                        throw error(400, 'Invalid service account JSON')
+                    }
+                }
+
+                await serviceCredentialsRepository.updateBySourceId(source.id, {
                     principalEmail,
                     config: { domain },
                     credentials: serviceAccountJson
                         ? { service_account_key: serviceAccountJson }
                         : null,
                 })
-            }
 
-            await updateSourceById(source.id, {
-                isActive,
-                userFilterMode,
-                userWhitelist,
-                userBlacklist,
-                config: { domain },
-            })
+                await updateSourceById(source.id, {
+                    isActive,
+                    userFilterMode,
+                    userWhitelist,
+                    userBlacklist,
+                    config: { domain },
+                })
+            } else {
+                // OAuth or other auth types — admin can only toggle enabled.
+                await updateSourceById(source.id, { isActive })
+            }
 
             if (isActive) {
                 const connectorManagerUrl = getConfig().services.connectorManagerUrl

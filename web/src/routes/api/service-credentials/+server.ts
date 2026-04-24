@@ -1,7 +1,7 @@
 import { json, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
 import { getSourceById } from '$lib/server/db/sources'
-import { ServiceCredentialsRepo } from '$lib/server/db/service-credentials'
+import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
 import { ServiceProvider, AuthType } from '$lib/types'
 
 export const POST: RequestHandler = async ({ request, locals, fetch }) => {
@@ -35,7 +35,7 @@ export const POST: RequestHandler = async ({ request, locals, fetch }) => {
     }
 
     try {
-        const created = await ServiceCredentialsRepo.create({
+        const created = await serviceCredentialsRepository.create({
             sourceId,
             provider,
             authType,
@@ -96,7 +96,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     }
 
     try {
-        const creds = await ServiceCredentialsRepo.getBySourceId(sourceId)
+        const creds = await serviceCredentialsRepository.getBySourceId(sourceId)
 
         if (!creds) {
             return json({ credentials: null, hasCredentials: false })
@@ -145,7 +145,7 @@ export const PATCH: RequestHandler = async ({ request, locals, fetch }) => {
         throw error(403, 'Forbidden')
     }
 
-    const existing = await ServiceCredentialsRepo.getBySourceId(sourceId)
+    const existing = await serviceCredentialsRepository.getBySourceId(sourceId)
     if (!existing) {
         throw error(404, 'No service credentials exist for this source')
     }
@@ -154,7 +154,7 @@ export const PATCH: RequestHandler = async ({ request, locals, fetch }) => {
         credentials && typeof credentials === 'object' && Object.keys(credentials).length > 0
 
     try {
-        const updated = await ServiceCredentialsRepo.updateBySourceId(sourceId, {
+        const updated = await serviceCredentialsRepository.updateBySourceId(sourceId, {
             principalEmail: principalEmail !== undefined ? principalEmail || null : undefined,
             config: config !== undefined ? config || {} : undefined,
             credentials: hasNewCredentials ? credentials : null,
@@ -216,7 +216,7 @@ export const DELETE: RequestHandler = async ({ url, locals }) => {
     }
 
     try {
-        await ServiceCredentialsRepo.deleteBySourceId(sourceId)
+        await serviceCredentialsRepository.deleteBySourceId(sourceId)
         return json({ success: true })
     } catch (err) {
         console.error('Error deleting service credentials:', err)

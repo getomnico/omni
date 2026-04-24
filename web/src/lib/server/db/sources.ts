@@ -163,25 +163,6 @@ export async function getSourceById(sourceId: string): Promise<Source | undefine
     return result[0]
 }
 
-export async function findActiveSourceByTypeAndCreator(
-    sourceType: string,
-    createdBy: string,
-): Promise<Source | undefined> {
-    const result = await db
-        .select()
-        .from(sources)
-        .where(
-            and(
-                eq(sources.sourceType, sourceType),
-                eq(sources.createdBy, createdBy),
-                eq(sources.isDeleted, false),
-            ),
-        )
-        .limit(1)
-
-    return result[0]
-}
-
 export async function getAtlassianSources(): Promise<Source[]> {
     return await db
         .select()

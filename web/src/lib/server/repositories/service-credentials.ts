@@ -1,17 +1,18 @@
 import { eq } from 'drizzle-orm'
-import { db } from './index'
-import { serviceCredentials, type ServiceCredentials } from './schema'
+import { db } from '$lib/server/db'
+import { serviceCredentials, type ServiceCredentials } from '$lib/server/db/schema'
 import { encryptConfig } from '$lib/server/crypto/encryption'
 import { ulid } from 'ulid'
 
-export class ServiceCredentialsRepo {
-    static async getBySourceId(sourceId: string): Promise<ServiceCredentials | undefined> {
-        return await db.query.serviceCredentials.findFirst({
+export class ServiceCredentialsRepository {
+    async getBySourceId(sourceId: string): Promise<ServiceCredentials | null> {
+        const result = await db.query.serviceCredentials.findFirst({
             where: eq(serviceCredentials.sourceId, sourceId),
         })
+        return result ?? null
     }
 
-    static async create(data: {
+    async create(data: {
         sourceId: string
         provider: string
         authType: string
@@ -37,14 +38,14 @@ export class ServiceCredentialsRepo {
         return created
     }
 
-    static async updateBySourceId(
+    async updateBySourceId(
         sourceId: string,
         data: {
             principalEmail?: string | null
             credentials?: Record<string, unknown> | null
             config?: Record<string, unknown>
         },
-    ): Promise<ServiceCredentials | undefined> {
+    ): Promise<ServiceCredentials | null> {
         const updates: Partial<typeof serviceCredentials.$inferInsert> = {
             updatedAt: new Date(),
         }
@@ -65,10 +66,12 @@ export class ServiceCredentialsRepo {
             .where(eq(serviceCredentials.sourceId, sourceId))
             .returning()
 
-        return updated
+        return updated ?? null
     }
 
-    static async deleteBySourceId(sourceId: string): Promise<void> {
+    async deleteBySourceId(sourceId: string): Promise<void> {
         await db.delete(serviceCredentials).where(eq(serviceCredentials.sourceId, sourceId))
     }
 }
+
+export const serviceCredentialsRepository = new ServiceCredentialsRepository()
