@@ -1,174 +1,97 @@
-use anyhow::{anyhow, Context, Result};
-use dashmap::DashMap;
-use shared::models::{ConnectorEvent, ServiceProvider, SourceType, SyncRequest, SyncType};
+use anyhow::{Context, Result};
+use omni_connector_sdk::SyncContext;
+use shared::models::{ConnectorEvent, SyncType};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use crate::client::ImapSession;
-use crate::config::ImapAccountConfig;
+use crate::config::{ImapAccountConfig, ImapCredentials};
 use crate::models::{
     build_thread_connector_event, generate_thread_content, make_thread_document_id,
     parse_raw_email, resolve_new_email_thread_root, resolve_thread_root, FolderSyncState,
     ImapConnectorState, ParsedEmail,
 };
-use shared::SdkClient;
 
 const FETCH_BATCH_SIZE: usize = 50;
 
-pub struct SyncManager {
-    sdk_client: SdkClient,
-    active_syncs: DashMap<String, Arc<AtomicBool>>,
-}
+pub struct SyncManager;
 
 impl SyncManager {
-    pub fn new(sdk_client: SdkClient) -> Self {
-        Self {
-            sdk_client,
-            active_syncs: DashMap::new(),
-        }
+    pub fn new() -> Self {
+        Self
     }
 
-    pub fn cancel_sync(&self, sync_run_id: &str) -> bool {
-        if let Some(cancelled) = self.active_syncs.get(sync_run_id) {
-            cancelled.store(true, Ordering::SeqCst);
-            true
-        } else {
-            false
-        }
-    }
-
-    pub async fn sync_source(&self, request: SyncRequest) -> Result<()> {
-        let sync_run_id = &request.sync_run_id;
-        let source_id = &request.source_id;
+    pub async fn run_sync(
+        &self,
+        config: ImapAccountConfig,
+        credentials: ImapCredentials,
+        state: Option<ImapConnectorState>,
+        ctx: SyncContext,
+    ) -> Result<()> {
+        let sync_run_id = ctx.sync_run_id().to_string();
+        let source_id = ctx.source_id().to_string();
 
         info!(
             "Starting IMAP sync for source: {} (sync_run_id: {})",
             source_id, sync_run_id
         );
 
-        if let Err(e) = self.do_sync(&request).await {
-            let _ = self.sdk_client.fail(sync_run_id, &e.to_string()).await;
-            return Err(e);
-        }
-        Ok(())
-    }
-
-    async fn do_sync(&self, request: &SyncRequest) -> Result<()> {
-        let sync_run_id = &request.sync_run_id;
-        let source_id = &request.source_id;
-
-        let source = self.sdk_client.get_source(source_id).await?;
-        if !source.is_active {
-            return Err(anyhow!("Source is not active: {}", source_id));
-        }
-        if source.source_type != SourceType::Imap {
-            return Err(anyhow!(
-                "Invalid source type for IMAP connector: {:?}",
-                source.source_type
-            ));
-        }
-
-        let creds = self.sdk_client.get_credentials(source_id).await?;
-        if creds.provider != ServiceProvider::Imap {
-            return Err(anyhow!(
-                "Expected IMAP credentials, found {:?}",
-                creds.provider
-            ));
-        }
-
-        let username = creds
-            .credentials
-            .get("username")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing 'username' in credentials"))?
-            .to_string();
-        let password = creds
-            .credentials
-            .get("password")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing 'password' in credentials"))?
-            .to_string();
-
-        let account_config = ImapAccountConfig::from_source_config(&source.config)?;
-
-        if !account_config.sync_enabled {
+        if !config.sync_enabled {
             info!("Sync disabled for source {}, skipping", source_id);
-            let _ = self.sdk_client.complete(sync_run_id).await;
+            let _ = ctx.complete().await;
             return Ok(());
         }
 
-        let display_name = account_config
-            .display_name
-            .clone()
-            .unwrap_or_else(|| source.name.clone());
-
-        let mut connector_state = ImapConnectorState::from_connector_state(&source.connector_state);
-        if request.sync_mode == SyncType::Full {
+        let mut connector_state = if ctx.sync_mode() == SyncType::Full {
             info!(
                 "Full sync requested, resetting connector state for source {}",
                 source_id
             );
-            connector_state = ImapConnectorState::default();
-        }
+            ImapConnectorState::default()
+        } else {
+            state.unwrap_or_default()
+        };
 
-        let cancelled = Arc::new(AtomicBool::new(false));
-        self.active_syncs
-            .insert(sync_run_id.to_string(), cancelled.clone());
+        let display_name = config
+            .display_name
+            .clone()
+            .unwrap_or_else(|| "imap".to_string());
 
-        // Get the source creator's email for document permissions
-        let user_email = self
-            .sdk_client
-            .get_user_email_for_source(source_id)
-            .await
-            .ok();
+        let user_email = ctx.get_user_email_for_source().await.ok();
 
         let result = self
             .execute_sync(
-                &account_config,
-                &username,
-                &password,
-                source_id,
-                sync_run_id,
+                &config,
+                &credentials.username,
+                &credentials.password,
                 &display_name,
                 user_email.as_deref(),
                 &mut connector_state,
-                &cancelled,
+                &ctx,
             )
             .await;
 
-        if cancelled.load(Ordering::SeqCst) {
+        if ctx.is_cancelled() {
             info!("IMAP sync {} was cancelled", sync_run_id);
-            let _ = self
-                .sdk_client
-                .save_connector_state(source_id, connector_state.to_json())
-                .await;
-            let _ = self.sdk_client.cancel(sync_run_id).await;
-            self.active_syncs.remove(sync_run_id);
+            let _ = ctx.save_connector_state(connector_state.to_json()).await;
+            ctx.cancel().await?;
             return Ok(());
         }
-
-        self.active_syncs.remove(sync_run_id);
 
         match result {
             Ok((total_scanned, total_processed)) => {
                 info!(
                     "IMAP sync completed for source {}: {} scanned, {} processed",
-                    source.name, total_scanned, total_processed
+                    source_id, total_scanned, total_processed
                 );
-                self.sdk_client
-                    .save_connector_state(source_id, connector_state.to_json())
-                    .await?;
-                self.sdk_client.complete(sync_run_id).await?;
+                ctx.increment_updated(total_processed as i32).await?;
+                ctx.save_connector_state(connector_state.to_json()).await?;
+                ctx.complete().await?;
                 Ok(())
             }
             Err(e) => {
-                let _ = self
-                    .sdk_client
-                    .save_connector_state(source_id, connector_state.to_json())
-                    .await;
-                error!("IMAP sync failed for source {}: {}", source.name, e);
+                let _ = ctx.save_connector_state(connector_state.to_json()).await;
+                error!("IMAP sync failed for source {}: {}", source_id, e);
                 Err(e)
             }
         }
@@ -180,13 +103,12 @@ impl SyncManager {
         config: &ImapAccountConfig,
         username: &str,
         password: &str,
-        source_id: &str,
-        sync_run_id: &str,
         display_name: &str,
         user_email: Option<&str>,
         state: &mut ImapConnectorState,
-        cancelled: &AtomicBool,
+        ctx: &SyncContext,
     ) -> Result<(usize, usize)> {
+        let source_id = ctx.source_id();
         let mut session = ImapSession::connect(config, username, password)
             .await
             .context("Failed to connect to IMAP server")?;
@@ -211,7 +133,7 @@ impl SyncManager {
         let mut total_processed = 0usize;
 
         for folder in &folders_to_sync {
-            if cancelled.load(Ordering::SeqCst) {
+            if ctx.is_cancelled() {
                 info!("Sync cancelled during folder enumeration");
                 break;
             }
@@ -221,12 +143,10 @@ impl SyncManager {
                     &mut session,
                     config,
                     folder,
-                    source_id,
-                    sync_run_id,
                     display_name,
                     user_email,
                     state,
-                    cancelled,
+                    ctx,
                 )
                 .await
             {
@@ -255,13 +175,13 @@ impl SyncManager {
         session: &mut ImapSession,
         config: &ImapAccountConfig,
         folder: &str,
-        source_id: &str,
-        sync_run_id: &str,
         display_name: &str,
         user_email: Option<&str>,
         state: &mut ImapConnectorState,
-        cancelled: &AtomicBool,
+        ctx: &SyncContext,
     ) -> Result<(usize, usize)> {
+        let source_id = ctx.source_id();
+        let sync_run_id = ctx.sync_run_id();
         let (uid_validity, _exists) = session
             .examine_folder(folder)
             .await
@@ -367,7 +287,7 @@ impl SyncManager {
             .collect();
 
         for chunk in new_uids.chunks(FETCH_BATCH_SIZE) {
-            if cancelled.load(Ordering::SeqCst) {
+            if ctx.is_cancelled() {
                 info!("Sync cancelled during message fetch in folder '{}'", folder);
                 break;
             }
@@ -415,8 +335,8 @@ impl SyncManager {
                 // On failure, fall back to the built-in HTML-to-text extractor
                 // so we never index raw HTML tags.
                 if email.body_is_html && !email.body_text.is_empty() {
-                    match self
-                        .sdk_client
+                    match ctx
+                        .sdk_client()
                         .extract_text(
                             sync_run_id,
                             email.body_text.as_bytes().to_vec(),
@@ -449,8 +369,8 @@ impl SyncManager {
                 // Extract attachment text via the connector manager (supports
                 // Docling when enabled) and append to the email body.
                 for att in raw_attachments {
-                    match self
-                        .sdk_client
+                    match ctx
+                        .sdk_client()
                         .extract_text(sync_run_id, att.data, &att.mime_type, Some(&att.filename))
                         .await
                     {
@@ -489,7 +409,7 @@ impl SyncManager {
                 thread_messages.push(email.clone());
 
                 let content = generate_thread_content(&thread_messages);
-                let content_id = match self.sdk_client.store_content(sync_run_id, &content).await {
+                let content_id = match ctx.store_content(&content).await {
                     Ok(id) => id,
                     Err(e) => {
                         warn!(
@@ -511,11 +431,7 @@ impl SyncManager {
                     thread_existed,
                 );
 
-                if let Err(e) = self
-                    .sdk_client
-                    .emit_event(sync_run_id, source_id, event)
-                    .await
-                {
+                if let Err(e) = ctx.emit_event(event).await {
                     warn!(
                         "Failed to emit event for UID {} in '{}': {}",
                         raw.uid, folder, e
@@ -537,10 +453,7 @@ impl SyncManager {
 
             // Heartbeat / progress update.
             let batch_size = raw_messages.len() as i32;
-            let _ = self
-                .sdk_client
-                .increment_scanned(sync_run_id, batch_size)
-                .await;
+            let _ = ctx.increment_scanned(batch_size).await;
         }
 
         let deleted_count = deleted_uids.len();
@@ -562,7 +475,7 @@ impl SyncManager {
                 // Phase 1: collect all (uid, new_flags) pairs where flags changed.
                 let mut flag_changes: Vec<(u32, Vec<String>)> = Vec::new();
                 'flag_chunks: for chunk in live_indexed.chunks(FETCH_BATCH_SIZE) {
-                    if cancelled.load(Ordering::SeqCst) {
+                    if ctx.is_cancelled() {
                         break 'flag_chunks;
                     }
                     match session.fetch_flags_only(chunk).await {
@@ -604,7 +517,7 @@ impl SyncManager {
 
                     // Phase 3: one DocumentUpdated per dirty thread.
                     for thread_root in dirty_threads {
-                        if cancelled.load(Ordering::SeqCst) {
+                        if ctx.is_cancelled() {
                             break;
                         }
                         let thread_messages: Vec<ParsedEmail> = folder_state
@@ -620,18 +533,17 @@ impl SyncManager {
                             continue;
                         }
                         let content = generate_thread_content(&thread_messages);
-                        let content_id =
-                            match self.sdk_client.store_content(sync_run_id, &content).await {
-                                Ok(id) => id,
-                                Err(e) => {
-                                    warn!(
-                                        "Failed to store content for flag-updated thread \
-                                         '{}' in '{}': {}",
-                                        thread_root, folder, e
-                                    );
-                                    continue;
-                                }
-                            };
+                        let content_id = match ctx.store_content(&content).await {
+                            Ok(id) => id,
+                            Err(e) => {
+                                warn!(
+                                    "Failed to store content for flag-updated thread \
+                                     '{}' in '{}': {}",
+                                    thread_root, folder, e
+                                );
+                                continue;
+                            }
+                        };
                         let event = build_thread_connector_event(
                             &thread_messages,
                             sync_run_id.to_string(),
@@ -642,11 +554,7 @@ impl SyncManager {
                             user_email,
                             true, // always an update
                         );
-                        if let Err(e) = self
-                            .sdk_client
-                            .emit_event(sync_run_id, source_id, event)
-                            .await
-                        {
+                        if let Err(e) = ctx.emit_event(event).await {
                             warn!(
                                 "Failed to emit DocumentUpdated for flag-changed thread \
                                  '{}' in '{}': {}",
@@ -708,7 +616,7 @@ impl SyncManager {
                 }
             } else {
                 let content = generate_thread_content(&remaining_messages);
-                let content_id = match self.sdk_client.store_content(sync_run_id, &content).await {
+                let content_id = match ctx.store_content(&content).await {
                     Ok(id) => id,
                     Err(e) => {
                         warn!(
@@ -731,11 +639,7 @@ impl SyncManager {
                 )
             };
 
-            if let Err(e) = self
-                .sdk_client
-                .emit_event(sync_run_id, source_id, event)
-                .await
-            {
+            if let Err(e) = ctx.emit_event(event).await {
                 warn!(
                     "Failed to emit thread update for deleted UID {} in '{}': {}",
                     uid, folder, e
