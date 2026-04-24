@@ -1,7 +1,4 @@
-use anyhow::Result;
-use chrono::Utc;
 use shared::models::{ConnectorEvent, DocumentPermissions};
-use shared::test_environment::TestEnvironment;
 use std::collections::HashMap;
 use time::OffsetDateTime;
 
@@ -13,77 +10,6 @@ use omni_atlassian_connector::models::{
 };
 
 const TEST_BASE_URL: &str = "https://test-company.atlassian.net";
-
-#[tokio::test]
-async fn test_sync_state_operations() -> Result<()> {
-    let test_env = TestEnvironment::new().await?;
-    let redis_client = test_env.redis_client.clone();
-
-    let sync_state = omni_atlassian_connector::sync::SyncState::new(redis_client);
-
-    let source_id = "test-source-123";
-    let space_key = "TEST";
-    let project_key = "PROJ";
-
-    // Test Confluence sync state
-    let last_sync = sync_state
-        .get_confluence_last_sync(source_id, space_key)
-        .await?;
-    assert!(last_sync.is_none());
-
-    let now = Utc::now();
-    sync_state
-        .set_confluence_last_sync(source_id, space_key, now)
-        .await?;
-
-    let retrieved_sync = sync_state
-        .get_confluence_last_sync(source_id, space_key)
-        .await?;
-    assert!(retrieved_sync.is_some());
-    assert_eq!(retrieved_sync.unwrap().timestamp(), now.timestamp());
-
-    // Test JIRA sync state
-    let last_sync = sync_state
-        .get_jira_last_sync(source_id, project_key)
-        .await?;
-    assert!(last_sync.is_none());
-
-    sync_state
-        .set_jira_last_sync(source_id, project_key, now)
-        .await?;
-
-    let retrieved_sync = sync_state
-        .get_jira_last_sync(source_id, project_key)
-        .await?;
-    assert!(retrieved_sync.is_some());
-    assert_eq!(retrieved_sync.unwrap().timestamp(), now.timestamp());
-
-    // Test page version tracking
-    let page_version = sync_state
-        .get_confluence_page_version(source_id, "space1", "page1")
-        .await?;
-    assert!(page_version.is_none());
-
-    sync_state
-        .set_confluence_page_version(source_id, "space1", "page1", 5)
-        .await?;
-
-    let page_version = sync_state
-        .get_confluence_page_version(source_id, "space1", "page1")
-        .await?;
-    assert_eq!(page_version, Some(5));
-
-    // Test getting all synced resources
-    let confluence_spaces = sync_state
-        .get_all_synced_confluence_spaces(source_id)
-        .await?;
-    assert!(confluence_spaces.contains(space_key));
-
-    let jira_projects = sync_state.get_all_synced_jira_projects(source_id).await?;
-    assert!(jira_projects.contains(project_key));
-
-    Ok(())
-}
 
 #[tokio::test]
 async fn test_confluence_page_to_connector_event() {
