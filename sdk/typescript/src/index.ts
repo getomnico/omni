@@ -48,7 +48,6 @@ export {
   type CancelResponse,
   type ActionRequest,
   type ActionResponse,
-  type ActionResult,
   type ConnectorEventPayload,
 } from './models.js';
 
