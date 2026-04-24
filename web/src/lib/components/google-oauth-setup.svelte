@@ -13,12 +13,7 @@
         onCancel?: () => void
     }
 
-    let {
-        open = $bindable(false),
-        connectedSourceTypes = [],
-        onSuccess,
-        onCancel,
-    }: Props = $props()
+    let { open = false, connectedSourceTypes = [], onSuccess, onCancel }: Props = $props()
 
     let driveAlreadyConnected = $derived(connectedSourceTypes.includes('google_drive'))
     let gmailAlreadyConnected = $derived(connectedSourceTypes.includes('gmail'))
@@ -43,14 +38,13 @@
     }
 
     function handleCancel() {
-        open = false
         connectDrive = true
         connectGmail = true
         onCancel?.()
     }
 </script>
 
-<Dialog.Root bind:open>
+<Dialog.Root {open} onOpenChange={(o) => !o && handleCancel()}>
     <Dialog.Content class="max-w-md">
         <Dialog.Header>
             <Dialog.Title>Connect with Google</Dialog.Title>

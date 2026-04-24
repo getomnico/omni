@@ -19,12 +19,7 @@
         onCancel?: () => void
     }
 
-    let {
-        open = $bindable(false),
-        googleOAuthConfigured = false,
-        onSuccess,
-        onCancel,
-    }: Props = $props()
+    let { open = false, googleOAuthConfigured = false, onSuccess, onCancel }: Props = $props()
 
     let activeTab: 'service-account' | 'oauth' = $state('service-account')
 
@@ -145,7 +140,6 @@
             }
 
             toast.success('Google Workspace connected successfully!')
-            open = false
 
             // Reset form
             serviceAccountJson = ''
@@ -204,7 +198,6 @@
     }
 
     function handleCancel() {
-        open = false
         serviceAccountJson = ''
         principalEmail = ''
         domain = ''
@@ -218,7 +211,7 @@
     }
 </script>
 
-<Dialog.Root bind:open>
+<Dialog.Root {open} onOpenChange={(o) => !o && handleCancel()}>
     <Dialog.Content class="max-w-2xl">
         <Dialog.Header>
             <Dialog.Title>Connect Google Workspace</Dialog.Title>

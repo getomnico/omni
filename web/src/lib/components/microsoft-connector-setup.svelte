@@ -12,7 +12,7 @@
         onCancel?: () => void
     }
 
-    let { open = $bindable(false), onSuccess, onCancel }: Props = $props()
+    let { open = false, onSuccess, onCancel }: Props = $props()
 
     let tenantId = $state('')
     let clientId = $state('')
@@ -88,7 +88,6 @@
             }
 
             toast.success('Microsoft 365 connected successfully!')
-            open = false
 
             tenantId = ''
             clientId = ''
@@ -106,7 +105,6 @@
     }
 
     function handleCancel() {
-        open = false
         tenantId = ''
         clientId = ''
         clientSecret = ''
@@ -116,7 +114,7 @@
     }
 </script>
 
-<Dialog.Root bind:open>
+<Dialog.Root {open} onOpenChange={(o) => !o && handleCancel()}>
     <Dialog.Content class="max-w-2xl">
         <Dialog.Header>
             <Dialog.Title>Connect Microsoft 365</Dialog.Title>

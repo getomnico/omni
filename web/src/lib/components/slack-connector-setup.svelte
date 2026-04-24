@@ -12,7 +12,7 @@
         onCancel?: () => void
     }
 
-    let { open = $bindable(false), onSuccess, onCancel }: Props = $props()
+    let { open = false, onSuccess, onCancel }: Props = $props()
 
     let botToken = $state('')
     let appToken = $state('')
@@ -68,7 +68,6 @@
             }
 
             toast.success('Slack connected successfully!')
-            open = false
 
             botToken = ''
             appToken = ''
@@ -85,7 +84,6 @@
     }
 
     function handleCancel() {
-        open = false
         botToken = ''
         appToken = ''
         if (onCancel) {
@@ -94,7 +92,7 @@
     }
 </script>
 
-<Dialog.Root bind:open>
+<Dialog.Root {open} onOpenChange={(o) => !o && handleCancel()}>
     <Dialog.Content class="max-w-2xl">
         <Dialog.Header>
             <Dialog.Title>Connect Slack</Dialog.Title>

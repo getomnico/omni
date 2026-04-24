@@ -12,7 +12,7 @@
         onCancel?: () => void
     }
 
-    let { open = $bindable(false), onSuccess, onCancel }: Props = $props()
+    let { open = false, onSuccess, onCancel }: Props = $props()
 
     let accessToken = $state('')
     let isSubmitting = $state(false)
@@ -60,7 +60,6 @@
             }
 
             toast.success('HubSpot connected successfully!')
-            open = false
 
             accessToken = ''
 
@@ -76,7 +75,6 @@
     }
 
     function handleCancel() {
-        open = false
         accessToken = ''
         if (onCancel) {
             onCancel()
@@ -84,7 +82,7 @@
     }
 </script>
 
-<Dialog.Root bind:open>
+<Dialog.Root {open} onOpenChange={(o) => !o && handleCancel()}>
     <Dialog.Content class="max-w-2xl">
         <Dialog.Header>
             <Dialog.Title>Connect HubSpot</Dialog.Title>

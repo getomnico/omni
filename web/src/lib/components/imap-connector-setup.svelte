@@ -13,7 +13,7 @@
         onCancel?: () => void
     }
 
-    let { open = $bindable(false), onSuccess, onCancel }: Props = $props()
+    let { open = false, onSuccess, onCancel }: Props = $props()
 
     // Required connection fields
     let sourceName = $state('IMAP Mail')
@@ -26,7 +26,7 @@
     // Optional filters
     let folderAllowlistRaw = $state('')
     let folderDenylistRaw = $state(
-        'Trash, Spam, Junk, Junk Email, Deleted Items, Deleted Messages, [Gmail]/Trash, [Gmail]/Spam'
+        'Trash, Spam, Junk, Junk Email, Deleted Items, Deleted Messages, [Gmail]/Trash, [Gmail]/Spam',
     )
     let maxMessageSizeMb = $state(0)
 
@@ -113,7 +113,6 @@
             }
 
             toast.success('IMAP account connected successfully!')
-            open = false
             resetForm()
 
             if (onSuccess) {
@@ -141,7 +140,6 @@
     }
 
     function handleCancel() {
-        open = false
         resetForm()
         if (onCancel) {
             onCancel()
@@ -149,7 +147,7 @@
     }
 </script>
 
-<Dialog.Root bind:open>
+<Dialog.Root {open} onOpenChange={(o) => !o && handleCancel()}>
     <Dialog.Content class="max-w-lg">
         <Dialog.Header>
             <Dialog.Title>Connect IMAP Account</Dialog.Title>
@@ -198,7 +196,8 @@
                 <Label for="imap-encryption">Encryption</Label>
                 <Select.Root type="single" bind:value={encryption}>
                     <Select.Trigger id="imap-encryption" class="w-full" disabled={isSubmitting}>
-                        {#if encryption === 'tls'}TLS / SSL (recommended){:else if encryption === 'starttls'}STARTTLS{:else}None (plaintext){/if}
+                        {#if encryption === 'tls'}TLS / SSL (recommended){:else if encryption === 'starttls'}STARTTLS{:else}None
+                            (plaintext){/if}
                     </Select.Trigger>
                     <Select.Content>
                         <Select.Item value="tls">TLS / SSL (recommended, port 993)</Select.Item>
@@ -244,13 +243,14 @@
             <!-- Optional: folder filters -->
             <details class="space-y-3">
                 <summary
-                    class="text-muted-foreground hover:text-foreground cursor-pointer select-none text-sm">
+                    class="text-muted-foreground hover:text-foreground cursor-pointer text-sm select-none">
                     Advanced options (folder filters, size limit)
                 </summary>
 
                 <div class="space-y-3 pt-1">
                     <div class="space-y-1.5">
-                        <Label for="imap-allowlist">Only sync these folders (comma-separated)</Label>
+                        <Label for="imap-allowlist"
+                            >Only sync these folders (comma-separated)</Label>
                         <Input
                             id="imap-allowlist"
                             bind:value={folderAllowlistRaw}
@@ -259,7 +259,8 @@
                     </div>
 
                     <div class="space-y-1.5">
-                        <Label for="imap-denylist">Never sync these folders (comma-separated)</Label>
+                        <Label for="imap-denylist"
+                            >Never sync these folders (comma-separated)</Label>
                         <Input
                             id="imap-denylist"
                             bind:value={folderDenylistRaw}
@@ -272,7 +273,8 @@
                     </div>
 
                     <div class="space-y-1.5">
-                        <Label for="imap-maxsize">Skip messages larger than (MB, 0 = no limit)</Label>
+                        <Label for="imap-maxsize"
+                            >Skip messages larger than (MB, 0 = no limit)</Label>
                         <Input
                             id="imap-maxsize"
                             type="number"
@@ -285,7 +287,11 @@
         </div>
 
         <Dialog.Footer>
-            <Button variant="outline" onclick={handleCancel} disabled={isSubmitting} class="cursor-pointer">
+            <Button
+                variant="outline"
+                onclick={handleCancel}
+                disabled={isSubmitting}
+                class="cursor-pointer">
                 Cancel
             </Button>
             <Button onclick={handleSubmit} disabled={isSubmitting} class="cursor-pointer">

@@ -13,7 +13,7 @@
         onCancel?: () => void
     }
 
-    let { open = $bindable(false), onSuccess, onCancel }: Props = $props()
+    let { open = false, onSuccess, onCancel }: Props = $props()
 
     let token = $state('')
     let apiUrl = $state('')
@@ -68,7 +68,6 @@
             }
 
             toast.success('GitHub connected successfully!')
-            open = false
 
             token = ''
             apiUrl = ''
@@ -88,7 +87,6 @@
     }
 
     function handleCancel() {
-        open = false
         token = ''
         apiUrl = ''
         includeDiscussions = true
@@ -100,7 +98,7 @@
     }
 </script>
 
-<Dialog.Root bind:open>
+<Dialog.Root {open} onOpenChange={(o) => !o && handleCancel()}>
     <Dialog.Content class="max-w-2xl">
         <Dialog.Header>
             <Dialog.Title>Connect GitHub</Dialog.Title>

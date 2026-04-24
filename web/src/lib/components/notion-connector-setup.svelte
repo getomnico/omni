@@ -12,7 +12,7 @@
         onCancel?: () => void
     }
 
-    let { open = $bindable(false), onSuccess, onCancel }: Props = $props()
+    let { open = false, onSuccess, onCancel }: Props = $props()
 
     let token = $state('')
     let isSubmitting = $state(false)
@@ -56,7 +56,6 @@
             }
 
             toast.success('Notion connected successfully!')
-            open = false
 
             token = ''
 
@@ -72,7 +71,6 @@
     }
 
     function handleCancel() {
-        open = false
         token = ''
         if (onCancel) {
             onCancel()
@@ -80,7 +78,7 @@
     }
 </script>
 
-<Dialog.Root bind:open>
+<Dialog.Root {open} onOpenChange={(o) => !o && handleCancel()}>
     <Dialog.Content class="max-w-2xl">
         <Dialog.Header>
             <Dialog.Title>Connect Notion</Dialog.Title>
