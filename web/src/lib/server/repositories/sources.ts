@@ -49,13 +49,7 @@ export class SourcesRepository {
         return await db
             .select()
             .from(sources)
-            .where(
-                and(
-                    inArray(sources.createdBy, adminUserIds),
-                    eq(sources.isActive, true),
-                    eq(sources.isDeleted, false),
-                ),
-            )
+            .where(and(inArray(sources.createdBy, adminUserIds), eq(sources.isDeleted, false)))
             .orderBy(desc(sources.createdAt))
     }
 

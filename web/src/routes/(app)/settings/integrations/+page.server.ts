@@ -19,7 +19,7 @@ export const load: PageServerLoad = async ({ locals }) => {
     const googleConnectorConfig = await getConnectorConfigPublic('google')
 
     const userSources = await sourcesRepository.getByUserId(locals.user.id)
-    const orgWideSources = await sourcesRepository.getOrgWide()
+    const orgWideSources = (await sourcesRepository.getOrgWide()).filter((s) => s.isActive)
 
     return {
         googleOAuthConfigured: !!(
