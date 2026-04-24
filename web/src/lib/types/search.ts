@@ -132,3 +132,28 @@ export interface TypeaheadResponse {
     results: TypeaheadResult[]
     query: string
 }
+
+// ============================================================================
+// Connector Action Types
+// ============================================================================
+
+export interface GoogleDirectoryUser {
+    id: string
+    email: string
+    name: string
+    orgUnit: string
+    suspended: boolean
+    isAdmin: boolean
+}
+
+export interface SearchUsersResponse {
+    users: GoogleDirectoryUser[]
+    nextPageToken: string | null
+    hasMore: boolean
+}
+
+export interface ConnectorActionResponse<T = unknown> {
+    status: string
+    result?: T
+    error?: string
+}

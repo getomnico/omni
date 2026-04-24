@@ -9,6 +9,27 @@ use uuid::Uuid;
 
 use crate::gmail::GmailMessage;
 
+#[derive(Debug, Clone, Serialize)]
+pub struct GoogleDirectoryUser {
+    pub id: String,
+    pub email: String,
+    pub name: String,
+    #[serde(rename = "orgUnit")]
+    pub org_unit: String,
+    pub suspended: bool,
+    #[serde(rename = "isAdmin")]
+    pub is_admin: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchUsersResponse {
+    pub users: Vec<GoogleDirectoryUser>,
+    #[serde(rename = "nextPageToken")]
+    pub next_page_token: Option<String>,
+    #[serde(rename = "hasMore")]
+    pub has_more: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GoogleConnectorState {
     pub webhook_channel_id: Option<String>,

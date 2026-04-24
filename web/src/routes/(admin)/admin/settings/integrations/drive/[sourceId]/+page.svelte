@@ -12,6 +12,11 @@
     import { onMount } from 'svelte'
     import { beforeNavigate } from '$app/navigation'
     import type { PageProps } from './$types'
+    import type {
+        GoogleDirectoryUser,
+        SearchUsersResponse,
+        ConnectorActionResponse,
+    } from '$lib/types/search'
     import googleDriveLogo from '$lib/images/icons/google-drive.svg'
 
     let { data }: PageProps = $props()
@@ -21,16 +26,7 @@
     let selectedUsers = $state<string[]>([])
 
     let searchQuery = $state('')
-    let searchResults = $state<
-        Array<{
-            id: string
-            email: string
-            name: string
-            orgUnit: string
-            suspended: boolean
-            isAdmin: boolean
-        }>
-    >([])
+    let searchResults = $state<GoogleDirectoryUser[]>([])
     let isSearching = $state(false)
     let searchDebounceTimer: ReturnType<typeof setTimeout>
 
@@ -54,16 +50,25 @@
 
         isSearching = true
         try {
-            const params = new URLSearchParams({
-                q: searchQuery,
-                sourceId: data.source.id,
-                limit: '20',
+            const response = await fetch(`/api/sources/${data.source.id}/action`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: 'search_users',
+                    params: { q: searchQuery, limit: 20 },
+                }),
             })
-
-            const response = await fetch(`/api/integrations/google/users/search?${params}`)
             if (response.ok) {
-                const result = await response.json()
-                searchResults = result.users.filter((user: any) => !user.suspended)
+                const result =
+                    (await response.json()) as ConnectorActionResponse<SearchUsersResponse>
+                const statusOk = result.status === 'ok' || result.status === 'success'
+                if (statusOk && result.result?.users) {
+                    searchResults = result.result.users.filter(
+                        (user: GoogleDirectoryUser) => !user.suspended,
+                    )
+                } else {
+                    searchResults = []
+                }
             } else {
                 console.error('Failed to search users')
                 searchResults = []

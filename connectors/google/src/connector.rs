@@ -1,18 +1,16 @@
 use std::sync::Arc;
 
+use crate::admin::AdminClient;
+use crate::auth::{GoogleAuth, ServiceAccountAuth};
+use crate::drive::DriveClient;
+use crate::models::{GoogleConnectorState, GoogleDirectoryUser, SearchUsersResponse};
+use crate::sync::SyncManager;
 use anyhow::Result;
 use async_trait::async_trait;
 use omni_connector_sdk::{
     ActionDefinition, ActionResult, Connector, SearchOperator, SourceType, SyncContext, SyncType,
 };
 use serde_json::{json, Value as JsonValue};
-use shared::models::ServiceProvider;
-
-use crate::admin::AdminClient;
-use crate::auth::{GoogleAuth, ServiceAccountAuth};
-use crate::drive::DriveClient;
-use crate::models::GoogleConnectorState;
-use crate::sync::SyncManager;
 
 pub struct GoogleConnector {
     pub sync_manager: Arc<SyncManager>,
@@ -94,13 +92,8 @@ impl GoogleConnector {
     async fn execute_search_users(
         &self,
         params: JsonValue,
-        _credentials: JsonValue,
+        credentials: JsonValue,
     ) -> Result<ActionResult> {
-        let source_id = params
-            .get("source_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing required parameter: source_id"))?;
-
         let limit = params
             .get("limit")
             .and_then(|v| v.as_u64())
@@ -109,36 +102,22 @@ impl GoogleConnector {
         let query = params.get("q").and_then(|v| v.as_str());
         let page_token = params.get("page_token").and_then(|v| v.as_str());
 
-        let creds = self
-            .sync_manager
-            .sdk_client
-            .get_credentials(source_id)
-            .await?;
-        if creds.provider != ServiceProvider::Google {
-            anyhow::bail!(
-                "Expected Google credentials for source {}, found {:?}",
-                source_id,
-                creds.provider
-            );
-        }
-
-        let service_account_key = creds
-            .credentials
-            .get("service_account_key")
+        let service_account_key = credentials
+            .get("credentials")
+            .and_then(|c| c.get("service_account_key"))
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing service_account_key in credentials"))?;
 
-        let domain = creds
-            .config
-            .get("domain")
+        let domain = credentials
+            .get("config")
+            .and_then(|c| c.get("domain"))
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing domain in credentials config"))?;
 
-        let principal_email = self
-            .sync_manager
-            .sdk_client
-            .get_user_email_for_source(source_id)
-            .await?;
+        let principal_email = credentials
+            .get("principal_email")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing principal_email in credentials"))?;
 
         let admin_scopes = crate::auth::get_scopes_for_source_type(SourceType::GoogleDrive);
         let auth = ServiceAccountAuth::new(service_account_key, admin_scopes)?;
@@ -149,27 +128,32 @@ impl GoogleConnector {
             .search_users(&token, domain, query, Some(limit), page_token)
             .await?;
 
-        let users: Vec<JsonValue> = response
+        let has_more = response.next_page_token.is_some();
+
+        let users: Vec<GoogleDirectoryUser> = response
             .users
             .unwrap_or_default()
             .into_iter()
-            .map(|user| {
-                json!({
-                    "id": user.id,
-                    "email": user.primary_email,
-                    "name": user.name.and_then(|n| n.full_name).unwrap_or_else(|| "Unknown".to_string()),
-                    "org_unit": user.org_unit_path.unwrap_or_else(|| "/".to_string()),
-                    "suspended": user.suspended.unwrap_or(false),
-                    "is_admin": user.is_admin.unwrap_or(false),
-                })
+            .map(|user| GoogleDirectoryUser {
+                id: user.id,
+                email: user.primary_email,
+                name: user
+                    .name
+                    .and_then(|n| n.full_name)
+                    .unwrap_or_else(|| "Unknown".to_string()),
+                org_unit: user.org_unit_path.unwrap_or_else(|| "/".to_string()),
+                suspended: user.suspended.unwrap_or(false),
+                is_admin: user.is_admin.unwrap_or(false),
             })
             .collect();
 
-        Ok(ActionResult::json(json!({
-            "users": users,
-            "next_page_token": response.next_page_token,
-            "has_more": response.next_page_token.is_some(),
-        })))
+        let result = SearchUsersResponse {
+            users,
+            next_page_token: response.next_page_token,
+            has_more,
+        };
+
+        Ok(ActionResult::json(serde_json::to_value(result)?))
     }
 }
 
@@ -229,12 +213,11 @@ impl Connector for GoogleConnector {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "source_id": { "type": "string" },
                         "q": { "type": "string", "description": "Search query" },
                         "limit": { "type": "integer", "default": 50 },
                         "page_token": { "type": "string" }
                     },
-                    "required": ["source_id"]
+                    "required": []
                 }),
             },
         ]
