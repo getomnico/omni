@@ -5,7 +5,7 @@ import { setupServer } from 'msw/node';
 import { Connector } from '../src/connector.js';
 import { createServer } from '../src/server.js';
 import type { SyncContext } from '../src/context.js';
-import { ActionResult } from '../src/models.js';
+import { ActionResponse } from '../src/models.js';
 
 const MANAGER_URL = 'http://test-connector-manager:8080';
 
@@ -177,7 +177,7 @@ describe('Connector Server', () => {
           credentials: {},
         });
 
-      expect(response.status).toBe(200);
+      expect(response.status).toBe(404);
       expect(response.body).toEqual({
         status: 'error',
         error: 'Action not supported: unknown_action',
@@ -202,14 +202,14 @@ describe('Connector Server', () => {
           action: string,
           _params: Record<string, unknown>,
           _credentials: Record<string, unknown>
-        ): Promise<ActionResult> {
+        ): Promise<Response> {
           if (action === 'download') {
-            return ActionResult.binaryResponse(
-              Buffer.from('binary data'),
-              'application/octet-stream'
-            );
+            return new Response(Buffer.from('binary data'), {
+              status: 200,
+              headers: { 'Content-Type': 'application/octet-stream' },
+            });
           }
-          return ActionResult.notSupported(action);
+          return ActionResponse.notSupported(action).toResponse(404);
         }
       }
 
@@ -226,7 +226,6 @@ describe('Connector Server', () => {
 
       expect(response.status).toBe(200);
       expect(response.headers['content-type']).toBe('application/octet-stream');
-      expect(response.headers['content-length']).toBe('11');
       expect(response.body).toBeInstanceOf(Buffer);
       expect((response.body as Buffer).toString()).toBe('binary data');
     });

@@ -12,8 +12,7 @@ import {
   PromptRequestSchema,
   createSyncResponseStarted,
   createSyncResponseError,
-  createActionResponseFailure,
-  ActionResult,
+  ActionResponse,
 } from './models.js';
 import { getLogger } from './logger.js';
 
@@ -203,35 +202,30 @@ export function createServer(connector: Connector): Express {
   app.post('/action', async (req: Request, res: Response) => {
     const parseResult = ActionRequestSchema.safeParse(req.body);
     if (!parseResult.success) {
-      res.status(400).json(createActionResponseFailure('Invalid request body'));
+      const errorResp = ActionResponse.failure('Invalid request body');
+      res.status(400).json(errorResp);
       return;
     }
 
     const { action, params, credentials } = parseResult.data;
     logger.info(`Action requested: ${action}`);
 
-    try {
-      const result = await connector.executeAction(
-        action,
-        params,
-        credentials
-      );
-      if (result.binary) {
-        res.setHeader('Content-Type', result.binary.contentType);
-        res.setHeader('Content-Length', result.binary.data.length);
-        res.send(result.binary.data);
-        return;
-      }
-      if (result.json) {
-        res.json(result.json);
-        return;
-      }
-      res.json(createActionResponseFailure('Unknown action result'));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      logger.error({ err: error }, `Action ${action} failed`);
-      res.json(createActionResponseFailure(message));
+    const result = await connector.executeAction(
+      action,
+      params,
+      credentials
+    );
+
+    if (result instanceof Response) {
+      res.status(result.status);
+      result.headers.forEach((value, key) => res.setHeader(key, value));
+      const bodyBuffer = Buffer.from(await result.arrayBuffer());
+      res.send(bodyBuffer);
+      return;
     }
+
+    // Fallback for unexpected return types (should not happen)
+    res.status(500).json(ActionResponse.failure('Unexpected action result type'));
   });
 
   app.post('/resource', async (req: Request, res: Response) => {

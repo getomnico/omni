@@ -370,58 +370,37 @@ pub async fn execute_action(
         }),
     };
 
-    // Use raw response to support binary passthrough
+    // Proxy the connector's full HTTP response (status, headers, body) verbatim.
     let response = client
         .execute_action_raw(&connector_url, &action_request)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    let content_type = response
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("application/json")
-        .to_string();
+    let status = response.status();
+    let mut builder = axum::response::Response::builder().status(status);
 
-    // If JSON response, parse and return as before
-    if content_type.contains("application/json") {
-        let body = response
-            .text()
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
-
-        let action_response: crate::models::ActionResponse =
-            serde_json::from_str(&body).map_err(|e| ApiError::Internal(e.to_string()))?;
-
-        let json_body = json!({
-            "status": action_response.status,
-            "result": action_response.result,
-            "error": action_response.error
-        });
-
-        Ok(axum::Json(json_body).into_response())
-    } else {
-        // Binary passthrough: proxy the response body and headers
-        let mut builder = axum::response::Response::builder()
-            .status(axum::http::StatusCode::OK)
-            .header("Content-Type", &content_type);
-
-        // Forward X-File-Name header if present
-        if let Some(file_name) = response.headers().get("x-file-name") {
-            builder = builder.header("X-File-Name", file_name);
+    // Forward all headers except hop-by-hop connection headers.
+    let hop_by_hop = [
+        "connection",
+        "keep-alive",
+        "transfer-encoding",
+        "te",
+        "trailer",
+        "upgrade",
+    ];
+    for (key, value) in response.headers() {
+        let key_str = key.as_str();
+        if !hop_by_hop.contains(&key_str) {
+            builder = builder.header(key, value);
         }
-        // Forward Content-Length if present
-        if let Some(content_length) = response.headers().get("content-length") {
-            builder = builder.header("Content-Length", content_length);
-        }
-
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
-
-        Ok(builder.body(axum::body::Body::from(bytes)).unwrap())
     }
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    Ok(builder.body(axum::body::Body::from(bytes)).unwrap())
 }
 
 pub async fn list_actions(

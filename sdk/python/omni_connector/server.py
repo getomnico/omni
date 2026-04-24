@@ -12,9 +12,7 @@ from .client import SdkClient
 from .context import SyncContext
 from .exceptions import SdkClientError
 from .models import (
-    ActionResult,
     ActionRequest,
-    ActionResponse,
     CancelRequest,
     CancelResponse,
     PromptRequest,
@@ -219,24 +217,13 @@ def create_app(connector: "Connector") -> FastAPI:
         return CancelResponse(status="not_found").model_dump()
 
     @app.post("/action")
-    async def execute_action(request: ActionRequest):
+    async def execute_action(request: ActionRequest) -> Response:
         logger.info("Action requested: %s", request.action)
-
-        try:
-            result = await connector.execute_action(
-                request.action,
-                request.params,
-                request.credentials,
-            )
-            if result.binary:
-                data, content_type = result.binary
-                return Response(content=data, media_type=content_type)
-            if result.json:
-                return JSONResponse(content=result.json.model_dump())
-            return ActionResponse.failure("Unknown action result").model_dump()
-        except Exception as e:
-            logger.error("Action %s failed: %s", request.action, e)
-            return ActionResponse.failure(str(e)).model_dump()
+        return await connector.execute_action(
+            request.action,
+            request.params,
+            request.credentials,
+        )
 
     @app.post("/resource")
     async def read_resource(request: ResourceRequest) -> JSONResponse:

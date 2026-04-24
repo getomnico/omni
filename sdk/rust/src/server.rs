@@ -1,8 +1,8 @@
 use crate::connector::Connector;
 use crate::context::SyncContext;
+use crate::models::ActionResponse;
 use crate::models::{
-    ActionRequest, ActionResponse, ActionResult, CancelRequest, CancelResponse, SyncRequest,
-    SyncResponse, SyncStatusResponse,
+    ActionRequest, CancelRequest, CancelResponse, SyncRequest, SyncResponse, SyncStatusResponse,
 };
 use anyhow::{Context, Result};
 use axum::{
@@ -394,60 +394,21 @@ where
 async fn execute_action<C>(
     State(state): State<Arc<ServerState<C>>>,
     Json(request): Json<ActionRequest>,
-) -> Response
+) -> Result<Response, (StatusCode, Json<crate::models::ActionResponse>)>
 where
     C: Connector,
 {
     info!("Action requested: {}", request.action);
-
-    match state
+    state
         .connector
         .execute_action(&request.action, request.params, request.credentials)
         .await
-    {
-        Ok(ActionResult::Json(value)) => {
-            let resp = ActionResponse::success(value);
-            Response::builder()
-                .status(StatusCode::OK)
-                .header("content-type", "application/json")
-                .body(axum::body::Body::from(
-                    serde_json::to_string(&resp).unwrap_or_default(),
-                ))
-                .unwrap_or_else(|_| {
-                    Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(axum::body::Body::from(""))
-                        .unwrap()
-                })
-        }
-        Ok(ActionResult::Binary(bytes, content_type, file_name)) => Response::builder()
-            .status(StatusCode::OK)
-            .header("Content-Type", content_type)
-            .header("Content-Length", bytes.len())
-            .header("X-File-Name", file_name)
-            .body(axum::body::Body::from(bytes))
-            .unwrap_or_else(|_| {
-                Response::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .body(axum::body::Body::from(""))
-                    .unwrap()
-            }),
-        Err(error) => {
-            let resp = ActionResponse::failure(error.to_string());
-            Response::builder()
-                .status(StatusCode::OK)
-                .header("content-type", "application/json")
-                .body(axum::body::Body::from(
-                    serde_json::to_string(&resp).unwrap_or_default(),
-                ))
-                .unwrap_or_else(|_| {
-                    Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(axum::body::Body::from(""))
-                        .unwrap()
-                })
-        }
-    }
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ActionResponse::failure(error.to_string())),
+            )
+        })
 }
 
 fn decode<T: DeserializeOwned>(value: &serde_json::Value, label: &str) -> Result<T> {

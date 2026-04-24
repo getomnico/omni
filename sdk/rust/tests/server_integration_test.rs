@@ -1,27 +1,34 @@
 mod common;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
+use async_trait::async_trait;
 use axum::{routing, Router};
 use axum_test::{TestServer, TestServerConfig};
 use common::{GetSourceBehavior, MockConnectorManager, SyncBehavior, TestConnector};
-use omni_connector_sdk::create_router;
-use serde_json::json;
+use omni_connector_sdk::{create_router, Connector, SourceType, SyncContext};
+use serde_json::{json, Value as JsonValue};
 use tokio::sync::Notify;
 
 const CONNECTOR_URL: &str = "http://test-connector";
 
-fn build_server(connector: Arc<TestConnector>, mock: &MockConnectorManager) -> TestServer {
+fn build_server<C>(connector: Arc<C>, mock: &MockConnectorManager) -> TestServer
+where
+    C: Connector + 'static,
+{
     build_server_with_extra(connector, mock, Router::new())
 }
 
-fn build_server_with_extra(
-    connector: Arc<TestConnector>,
+fn build_server_with_extra<C>(
+    connector: Arc<C>,
     mock: &MockConnectorManager,
     extra: Router,
-) -> TestServer {
+) -> TestServer
+where
+    C: Connector + 'static,
+{
     let router =
         create_router(connector, mock.sdk_client(), CONNECTOR_URL.to_string()).merge(extra);
     let config = TestServerConfig::builder()
@@ -383,5 +390,193 @@ async fn t12_extra_routes_are_served_alongside_sdk_routes() -> Result<()> {
     let resp = server.get("/custom/ping").await;
     assert_eq!(resp.status_code(), 200);
     assert_eq!(resp.text(), "pong");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Action endpoint tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn t13_action_not_supported_returns_404() -> Result<()> {
+    let mock = MockConnectorManager::spawn().await;
+    let connector = Arc::new(TestConnector::new(SyncBehavior::Ok));
+    let server = build_server(connector, &mock);
+
+    let resp = server
+        .post("/action")
+        .json(&json!({
+            "action": "unknown_action",
+            "params": {},
+            "credentials": {},
+        }))
+        .await;
+
+    assert_eq!(resp.status_code(), 404);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["status"], "error");
+    assert!(body["error"].as_str().unwrap().contains("not supported"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn t14_action_success_returns_200() -> Result<()> {
+    let mock = MockConnectorManager::spawn().await;
+
+    // Connector that returns a success response for a known action.
+    struct SuccessConnector {
+        sync_called: Arc<Mutex<u32>>,
+    }
+
+    impl Default for SuccessConnector {
+        fn default() -> Self {
+            Self {
+                sync_called: Arc::new(Mutex::new(0)),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Connector for SuccessConnector {
+        type Config = JsonValue;
+        type Credentials = JsonValue;
+        type State = JsonValue;
+
+        fn name(&self) -> &'static str {
+            "success-test"
+        }
+        fn version(&self) -> &'static str {
+            "0.0.1"
+        }
+        fn source_types(&self) -> Vec<SourceType> {
+            vec![SourceType::Web]
+        }
+        fn requires_credentials(&self) -> bool {
+            false
+        }
+
+        async fn sync(
+            &self,
+            _config: Self::Config,
+            _credentials: Self::Credentials,
+            _state: Option<Self::State>,
+            _ctx: SyncContext,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn execute_action(
+            &self,
+            action: &str,
+            _params: JsonValue,
+            _credentials: JsonValue,
+        ) -> Result<axum::response::Response> {
+            use omni_connector_sdk::models::ActionResponse;
+            if action == "do_thing" {
+                Ok(ActionResponse::success(json!({"ok": true})).into_response())
+            } else {
+                Ok(ActionResponse::not_supported(action).into_response())
+            }
+        }
+    }
+
+    let connector = Arc::new(SuccessConnector::default());
+    let server = build_server(connector, &mock);
+
+    let resp = server
+        .post("/action")
+        .json(&json!({
+            "action": "do_thing",
+            "params": {},
+            "credentials": {},
+        }))
+        .await;
+
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["status"], "success");
+    assert_eq!(body["result"]["ok"], true);
+    Ok(())
+}
+
+#[tokio::test]
+async fn t15_action_exception_returns_500() -> Result<()> {
+    let mock = MockConnectorManager::spawn().await;
+
+    // Connector that panics inside execute_action.
+    struct PanicConnector {
+        sync_called: Arc<Mutex<u32>>,
+    }
+
+    impl Default for PanicConnector {
+        fn default() -> Self {
+            Self {
+                sync_called: Arc::new(Mutex::new(0)),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Connector for PanicConnector {
+        type Config = JsonValue;
+        type Credentials = JsonValue;
+        type State = JsonValue;
+
+        fn name(&self) -> &'static str {
+            "panic-test"
+        }
+        fn version(&self) -> &'static str {
+            "0.0.1"
+        }
+        fn source_types(&self) -> Vec<SourceType> {
+            vec![SourceType::Web]
+        }
+        fn requires_credentials(&self) -> bool {
+            false
+        }
+
+        async fn sync(
+            &self,
+            _config: Self::Config,
+            _credentials: Self::Credentials,
+            _state: Option<Self::State>,
+            _ctx: SyncContext,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn execute_action(
+            &self,
+            action: &str,
+            _params: JsonValue,
+            _credentials: JsonValue,
+        ) -> Result<axum::response::Response> {
+            if action == "crash_me" {
+                return Err(anyhow::anyhow!("intentional action panic"));
+            }
+            use omni_connector_sdk::models::ActionResponse;
+            Ok(ActionResponse::not_supported(action).into_response())
+        }
+    }
+
+    let connector = Arc::new(PanicConnector::default());
+    let server = build_server(connector, &mock);
+
+    let resp = server
+        .post("/action")
+        .json(&json!({
+            "action": "crash_me",
+            "params": {},
+            "credentials": {},
+        }))
+        .await;
+
+    assert_eq!(resp.status_code(), 500);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["status"], "error");
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("intentional action panic"));
     Ok(())
 }

@@ -8,7 +8,7 @@ use crate::sync::SyncManager;
 use anyhow::Result;
 use async_trait::async_trait;
 use omni_connector_sdk::{
-    ActionDefinition, ActionResult, Connector, SearchOperator, SourceType, SyncContext, SyncType,
+    ActionDefinition, ActionResponse, Connector, SearchOperator, SourceType, SyncContext, SyncType,
 };
 use serde_json::{json, Value as JsonValue};
 
@@ -29,7 +29,10 @@ impl GoogleConnector {
         &self,
         params: JsonValue,
         credentials: JsonValue,
-    ) -> Result<ActionResult> {
+    ) -> Result<axum::response::Response> {
+        use axum::http::HeaderValue;
+        use axum::response::Response;
+
         let file_id = params
             .get("file_id")
             .and_then(|v| v.as_str())
@@ -86,14 +89,21 @@ impl GoogleConnector {
             (bytes, mime_type.clone())
         };
 
-        Ok(ActionResult::binary(bytes, content_type, file_name))
+        let mut resp = Response::builder()
+            .status(200)
+            .header("Content-Type", content_type)
+            .header("Content-Length", bytes.len())
+            .header("X-File-Name", file_name);
+        let body = axum::body::Body::from(bytes);
+        resp.body(body)
+            .map_err(|e| anyhow::anyhow!("Failed to build response: {}", e))
     }
 
     async fn execute_search_users(
         &self,
         params: JsonValue,
         credentials: JsonValue,
-    ) -> Result<ActionResult> {
+    ) -> Result<axum::response::Response> {
         let limit = params
             .get("limit")
             .and_then(|v| v.as_u64())
@@ -153,7 +163,7 @@ impl GoogleConnector {
             has_more,
         };
 
-        Ok(ActionResult::json(serde_json::to_value(result)?))
+        Ok(ActionResponse::success(serde_json::to_value(result)?).into_response())
     }
 }
 
@@ -255,11 +265,15 @@ impl Connector for GoogleConnector {
         action: &str,
         params: JsonValue,
         credentials: JsonValue,
-    ) -> Result<ActionResult> {
+    ) -> Result<axum::response::Response> {
         match action {
             "fetch_file" => self.execute_fetch_file(params, credentials).await,
             "search_users" => self.execute_search_users(params, credentials).await,
-            _ => Err(anyhow::anyhow!("Action not supported: {}", action)),
+            _ => {
+                use axum::http::StatusCode;
+                Ok(ActionResponse::not_supported(action)
+                    .into_response_with_status(StatusCode::NOT_FOUND))
+            }
         }
     }
 

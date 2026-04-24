@@ -1,3 +1,5 @@
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use shared::models::SyncType;
@@ -70,7 +72,7 @@ pub struct ActionResponse {
 impl ActionResponse {
     pub fn success(result: JsonValue) -> Self {
         Self {
-            status: "ok".to_string(),
+            status: "success".to_string(),
             result: Some(result),
             error: None,
         }
@@ -87,34 +89,21 @@ impl ActionResponse {
     pub fn not_supported(action: &str) -> Self {
         Self::failure(format!("Action not supported: {}", action))
     }
-}
 
-/// The successful payload returned by a connector's `execute_action` method.
-///
-/// Errors are represented via `Result<ActionResult>` — the `Err` variant.
-/// The SDK's server builds the `ActionResponse` envelope at the HTTP boundary.
-///
-/// `Json` is the standard path — the SDK wraps it in `ActionResponse::success`.
-/// `Binary` is for actions that return raw bytes (e.g. file downloads)
-/// — the SDK sets `Content-Type`, `Content-Length`, and `X-File-Name` headers automatically.
-#[derive(Debug, Clone)]
-pub enum ActionResult {
-    /// Standard JSON action response — the SDK wraps it in `ActionResponse::success`.
-    Json(JsonValue),
-    /// Binary response — bytes + content type + file name.
-    Binary(Vec<u8>, String, String),
-}
-
-impl ActionResult {
-    pub fn json(value: JsonValue) -> Self {
-        Self::Json(value)
+    /// Serialize this ActionResponse into an axum HTTP Response with the
+    /// default status code (200 for success, 400 for error).
+    pub fn into_response(self) -> Response {
+        let status = match self.status.as_str() {
+            "success" => StatusCode::OK,
+            _ => StatusCode::BAD_REQUEST,
+        };
+        self.into_response_with_status(status)
     }
 
-    pub fn binary(
-        bytes: Vec<u8>,
-        content_type: impl Into<String>,
-        file_name: impl Into<String>,
-    ) -> Self {
-        Self::Binary(bytes, content_type.into(), file_name.into())
+    /// Serialize this ActionResponse into an axum HTTP Response with a
+    /// specific status code.
+    pub fn into_response_with_status(self, status: StatusCode) -> Response {
+        let body = serde_json::to_string(&self).unwrap_or_default();
+        (status, [("content-type", "application/json")], body).into_response()
     }
 }

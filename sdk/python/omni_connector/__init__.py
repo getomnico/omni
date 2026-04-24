@@ -8,7 +8,6 @@ from .exceptions import (
     SyncCancelledError,
 )
 from .models import (
-    ActionResult,
     ActionDefinition,
     ActionRequest,
     ActionResponse,
@@ -52,7 +51,6 @@ __all__ = [
     "EventType",
     "ActionDefinition",
     "ActionRequest",
-    "ActionResult",
     "ActionResponse",
     "ConnectorManifest",
     "SearchOperator",

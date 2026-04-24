@@ -137,6 +137,14 @@ export const SyncResponseSchema = z.object({
 });
 export type SyncResponse = z.infer<typeof SyncResponseSchema>;
 
+export function createSyncResponseStarted(): SyncResponse {
+  return { status: 'started' };
+}
+
+export function createSyncResponseError(message: string): SyncResponse {
+  return { status: 'error', message };
+}
+
 export const CancelRequestSchema = z.object({
   sync_run_id: z.string(),
 });
@@ -159,54 +167,40 @@ export const ActionResponseSchema = z.object({
   result: z.record(z.unknown()).optional(),
   error: z.string().optional(),
 });
-export type ActionResponse = z.infer<typeof ActionResponseSchema>;
-
-export function createSyncResponseStarted(): SyncResponse {
-  return { status: 'started' };
-}
-
-export function createSyncResponseError(message: string): SyncResponse {
-  return { status: 'error', message };
-}
-
-export function createActionResponseSuccess(
-  result: Record<string, unknown>
-): ActionResponse {
-  return { status: 'success', result };
-}
-
-export function createActionResponseFailure(error: string): ActionResponse {
-  return { status: 'error', error };
-}
-
-export function createActionResponseNotSupported(action: string): ActionResponse {
-  return { status: 'error', error: `Action not supported: ${action}` };
-}
-
-export class ActionResult {
-  json?: ActionResponse;
-  binary?: { data: Buffer; contentType: string };
+export class ActionResponse {
+  status: string;
+  result?: Record<string, unknown>;
+  error?: string;
 
   constructor(options: {
-    json?: ActionResponse;
-    binary?: { data: Buffer; contentType: string };
+    status: string;
+    result?: Record<string, unknown>;
+    error?: string;
   }) {
-    this.json = options.json;
-    this.binary = options.binary;
+    this.status = options.status;
+    this.result = options.result;
+    this.error = options.error;
   }
 
-  static jsonResponse(response: ActionResponse): ActionResult {
-    return new ActionResult({ json: response });
+  /** Convert this ActionResponse into a web-standard HTTP Response. */
+  toResponse(statusCode?: number): Response {
+    const status = statusCode ?? (this.status === 'success' ? 200 : 400);
+    return new Response(JSON.stringify(this), {
+      status,
+      headers: { 'Content-Type': 'application/json' },
+    });
   }
 
-  static binaryResponse(data: Buffer, contentType: string): ActionResult {
-    return new ActionResult({ binary: { data, contentType } });
+  static success(result: Record<string, unknown>): ActionResponse {
+    return new ActionResponse({ status: 'success', result });
   }
 
-  static notSupported(action: string): ActionResult {
-    return ActionResult.jsonResponse(
-      createActionResponseNotSupported(action)
-    );
+  static failure(error: string): ActionResponse {
+    return new ActionResponse({ status: 'error', error });
+  }
+
+  static notSupported(action: string): ActionResponse {
+    return new ActionResponse({ status: 'error', error: `Action not supported: ${action}` });
   }
 }
 

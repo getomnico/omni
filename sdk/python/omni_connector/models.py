@@ -231,34 +231,11 @@ class ActionResponse(BaseModel):
     def not_supported(cls, action: str) -> "ActionResponse":
         return cls(status="error", error=f"Action not supported: {action}")
 
+    def to_response(self, status_code: int = 200) -> "JSONResponse":
+        """Convert this ActionResponse into a Starlette JSONResponse."""
+        from fastapi.responses import JSONResponse
 
-class ActionResult:
-    """Result returned by `Connector.execute_action`.
-
-    `json` is the standard path — the SDK wraps it in a JSON response.
-    `binary` is for actions that return raw bytes (e.g. file downloads)
-    — the SDK sets Content-Type and Content-Length headers automatically.
-    """
-
-    def __init__(
-        self,
-        json: ActionResponse | None = None,
-        binary: tuple[bytes, str] | None = None,
-    ):
-        self.json = json
-        self.binary = binary
-
-    @classmethod
-    def json_response(cls, response: ActionResponse) -> "ActionResult":
-        return cls(json=response)
-
-    @classmethod
-    def binary_response(cls, data: bytes, content_type: str) -> "ActionResult":
-        return cls(binary=(data, content_type))
-
-    @classmethod
-    def not_supported(cls, action: str) -> "ActionResult":
-        return cls.json_response(ActionResponse.not_supported(action))
+        return JSONResponse(content=self.model_dump(), status_code=status_code)
 
 
 class ResourceRequest(BaseModel):

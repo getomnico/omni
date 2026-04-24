@@ -7,7 +7,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from omni_connector import (
-    ActionResult,
     ActionDefinition,
     ActionResponse,
     Connector,
@@ -86,15 +85,19 @@ class MockConnector(Connector):
         action: str,
         params: dict[str, Any],
         credentials: dict[str, Any],
-    ) -> ActionResult:
+    ) -> "Response":
+        from fastapi.responses import JSONResponse
+
         self.action_called = True
         self.action_args = (action, params, credentials)
 
         if action == "test_action":
-            return ActionResult.json_response(
-                ActionResponse.success({"result": "action completed"})
+            return JSONResponse(
+                content=ActionResponse.success(
+                    {"result": "action completed"}
+                ).model_dump()
             )
-        return ActionResult.not_supported(action)
+        return ActionResponse.not_supported(action).to_response(status_code=404)
 
 
 @pytest.fixture
@@ -140,9 +143,9 @@ class TestManifestEndpoint:
         action = data["actions"][0]
         assert action["name"] == "test_action"
         assert action["description"] == "A test action"
-        assert "param1" in action["parameters"]
-        assert action["parameters"]["param1"]["type"] == "string"
-        assert action["parameters"]["param1"]["required"] is True
+        assert "param1" in action["input_schema"]["properties"]
+        assert action["input_schema"]["properties"]["param1"]["type"] == "string"
+        assert "param1" in action["input_schema"]["required"]
 
 
 class TestCancelEndpoint:
@@ -267,7 +270,7 @@ class TestActionEndpoint:
             },
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 404
         data = response.json()
         assert data["status"] == "error"
         assert "not supported" in data["error"]
@@ -307,6 +310,8 @@ class TestSyncEndpoint:
         import threading
 
         monkeypatch.setenv("CONNECTOR_MANAGER_URL", "http://localhost:9000")
+        monkeypatch.setenv("CONNECTOR_HOST_NAME", "localhost")
+        monkeypatch.setenv("PORT", "8000")
 
         sync_started = threading.Event()
         sync_can_finish = threading.Event()
@@ -319,6 +324,10 @@ class TestSyncEndpoint:
             @property
             def version(self) -> str:
                 return "1.0.0"
+
+            @property
+            def source_types(self) -> list[str]:
+                return ["blocking"]
 
             async def sync(self, source_config, credentials, state, ctx):
                 sync_started.set()

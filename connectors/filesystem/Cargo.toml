@@ -17,6 +17,7 @@ path = "src/lib.rs"
 tokio = { workspace = true }
 omni-connector-sdk = { path = "../../sdk/rust" }
 async-trait = { workspace = true }
+axum = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

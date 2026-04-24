@@ -2,10 +2,9 @@ import type { SyncContext } from './context.js';
 import type {
   ConnectorManifest,
   ActionDefinition,
-  ActionResponse,
   SearchOperator,
 } from './models.js';
-import { createActionResponseNotSupported, ActionResult } from './models.js';
+import { ActionResponse } from './models.js';
 import { createServer } from './server.js';
 import { getLogger } from './logger.js';
 
@@ -126,7 +125,7 @@ export abstract class Connector<
     action: string,
     params: Record<string, unknown>,
     credentials: TCredentials
-  ): Promise<ActionResult> {
+  ): Promise<Response> {
     const adapter = await this.getMcpAdapter();
     if (adapter) {
       const mcpActions = await adapter.getActionDefinitions();
@@ -134,10 +133,10 @@ export abstract class Connector<
       if (mcpToolNames.has(action)) {
         this.prepareMcpEnv(credentials);
         const response = await adapter.executeTool(action, params);
-        return ActionResult.jsonResponse(response);
+        return response.toResponse();
       }
     }
-    return ActionResult.notSupported(action);
+    return ActionResponse.notSupported(action).toResponse(404);
   }
 
   serve(options: ServeOptions = {}): void {

@@ -1,7 +1,8 @@
 use crate::context::SyncContext;
-use crate::models::ActionResult;
 use anyhow::Result;
 use async_trait::async_trait;
+use axum::http::StatusCode;
+use axum::response::Response;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -85,8 +86,9 @@ pub trait Connector: Send + Sync + 'static {
         action: &str,
         _params: JsonValue,
         _credentials: JsonValue,
-    ) -> Result<ActionResult> {
-        Err(anyhow::anyhow!("Action not supported: {}", action))
+    ) -> Result<Response> {
+        use crate::models::ActionResponse;
+        Ok(ActionResponse::not_supported(action).into_response_with_status(StatusCode::NOT_FOUND))
     }
 
     async fn build_manifest(&self, connector_url: String) -> ConnectorManifest {

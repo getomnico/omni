@@ -9,10 +9,7 @@ import type {
   McpPromptDefinition,
   McpResourceDefinition,
 } from './models.js';
-import {
-  createActionResponseSuccess,
-  createActionResponseFailure,
-} from './models.js';
+import { ActionResponse } from './models.js';
 import { getLogger } from './logger.js';
 
 const logger = getLogger('sdk:mcp-adapter');
@@ -114,11 +111,11 @@ export class McpAdapter {
           .filter((c) => c.type === 'text')
           .map((c) => c.text ?? '')
           .join('\n');
-        return createActionResponseFailure(errorText || 'Tool execution failed');
+        return ActionResponse.failure(errorText || 'Tool execution failed');
       }
 
       if (result.structuredContent && typeof result.structuredContent === 'object') {
-        return createActionResponseSuccess(
+        return ActionResponse.success(
           result.structuredContent as Record<string, unknown>
         );
       }
@@ -131,11 +128,11 @@ export class McpAdapter {
           textParts.push(`[binary: ${block.mimeType ?? 'unknown'}]`);
         }
       }
-      return createActionResponseSuccess({ content: textParts.join('\n') });
+      return ActionResponse.success({ content: textParts.join('\n') });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.error({ err }, `MCP tool ${name} failed`);
-      return createActionResponseFailure(message);
+      return ActionResponse.failure(message);
     }
   }
 

@@ -28,7 +28,6 @@ except ImportError:
     raise
 
 from omni_connector import (
-    ActionResult,
     ActionDefinition,
     ActionResponse,
     Connector,
@@ -176,38 +175,36 @@ class RSSConnector(Connector):
         action: str,
         params: dict[str, Any],
         credentials: dict[str, Any],
-    ) -> ActionResult:
+    ) -> "Response":
+        from starlette.responses import Response
+
         if action == "validate_feed":
             feed_url = params.get("feed_url")
             if not feed_url:
-                return ActionResult.json_response(
-                    ActionResponse.failure("Missing feed_url parameter")
+                return ActionResponse.failure("Missing feed_url parameter").to_response(
+                    status_code=400
                 )
 
             try:
                 feed = feedparser.parse(feed_url)
                 if feed.bozo and feed.bozo_exception:
-                    return ActionResult.json_response(
-                        ActionResponse.failure(
-                            f"Feed parsing error: {feed.bozo_exception}"
-                        )
-                    )
+                    return ActionResponse.failure(
+                        f"Feed parsing error: {feed.bozo_exception}"
+                    ).to_response(status_code=400)
 
-                return ActionResult.json_response(
-                    ActionResponse.success(
-                        {
-                            "valid": True,
-                            "title": feed.feed.get("title", "Unknown"),
-                            "entry_count": len(feed.entries),
-                        }
-                    )
-                )
+                return ActionResponse.success(
+                    {
+                        "valid": True,
+                        "title": feed.feed.get("title", "Unknown"),
+                        "entry_count": len(feed.entries),
+                    }
+                ).to_response()
             except Exception as e:
-                return ActionResult.json_response(
-                    ActionResponse.failure(f"Failed to fetch feed: {e}")
+                return ActionResponse.failure(f"Failed to fetch feed: {e}").to_response(
+                    status_code=500
                 )
 
-        return ActionResult.not_supported(action)
+        return ActionResponse.not_supported(action).to_response(status_code=404)
 
     def _parse_entry_date(self, entry: Any) -> datetime | None:
         """Parse the published date from an RSS entry."""
