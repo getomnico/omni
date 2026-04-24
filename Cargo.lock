@@ -4610,9 +4610,10 @@ name = "omni-nextcloud-connector"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
- "dashmap 6.1.0",
  "dotenvy",
+ "omni-connector-sdk",
  "quick-xml 0.39.2",
  "reqwest 0.12.28",
  "serde",
@@ -4620,8 +4621,6 @@ dependencies = [
  "shared",
  "time",
  "tokio",
- "tower 0.5.3",
- "tower-http 0.6.8",
  "tracing",
  "tracing-subscriber",
  "urlencoding",

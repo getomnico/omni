@@ -1,436 +1,317 @@
-use anyhow::{anyhow, Result};
-use dashmap::DashMap;
-use shared::models::{
-    ConnectorEvent, DocumentMetadata, DocumentPermissions, ServiceProvider, SourceType,
-    SyncRequest, SyncType,
+use anyhow::Result;
+use omni_connector_sdk::{
+    ConnectorEvent, DocumentMetadata, DocumentPermissions, SyncContext, SyncType,
 };
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use time::format_description::well_known::{Rfc2822, Rfc3339};
 use tracing::{error, info, warn};
 
 use crate::client::NextcloudClient;
 use crate::config::NextcloudConfig;
+use crate::connector::NextcloudCredentials;
 use crate::models::{DavEntry, NextcloudConnectorState};
-use shared::SdkClient;
 
 const BATCH_SIZE: usize = 20;
 
-pub struct SyncManager {
-    sdk_client: SdkClient,
-    active_syncs: DashMap<String, Arc<AtomicBool>>,
-}
+pub async fn run_sync(
+    config: NextcloudConfig,
+    credentials: NextcloudCredentials,
+    state: Option<NextcloudConnectorState>,
+    ctx: SyncContext,
+) -> Result<()> {
+    let sync_run_id = ctx.sync_run_id().to_string();
+    let source_id = ctx.source_id().to_string();
 
-impl SyncManager {
-    pub fn new(sdk_client: SdkClient) -> Self {
-        Self {
-            sdk_client,
-            active_syncs: DashMap::new(),
-        }
+    info!(
+        "Starting Nextcloud sync for source: {} (sync_run_id: {})",
+        source_id, sync_run_id
+    );
+
+    if !config.sync_enabled {
+        info!("Sync disabled for source {}, skipping", source_id);
+        ctx.complete().await?;
+        return Ok(());
     }
 
-    pub fn cancel_sync(&self, sync_run_id: &str) -> bool {
-        if let Some(cancelled) = self.active_syncs.get(sync_run_id) {
-            cancelled.store(true, Ordering::SeqCst);
-            true
-        } else {
-            false
-        }
-    }
-
-    pub async fn sync_source(&self, request: SyncRequest) -> Result<()> {
-        let sync_run_id = &request.sync_run_id;
-        info!(
-            "Starting Nextcloud sync for source: {} (sync_run_id: {})",
-            request.source_id, sync_run_id
-        );
-
-        if let Err(e) = self.do_sync(&request).await {
-            let _ = self.sdk_client.fail(sync_run_id, &e.to_string()).await;
-            return Err(e);
-        }
-        Ok(())
-    }
-
-    async fn do_sync(&self, request: &SyncRequest) -> Result<()> {
-        let sync_run_id = &request.sync_run_id;
-        let source_id = &request.source_id;
-
-        let source = self.sdk_client.get_source(source_id).await?;
-        if !source.is_active {
-            return Err(anyhow!("Source is not active: {}", source_id));
-        }
-        if source.source_type != SourceType::Nextcloud {
-            return Err(anyhow!(
-                "Invalid source type for Nextcloud connector: {:?}",
-                source.source_type
-            ));
-        }
-
-        let creds = self.sdk_client.get_credentials(source_id).await?;
-        if creds.provider != ServiceProvider::Nextcloud {
-            return Err(anyhow!(
-                "Expected Nextcloud credentials, found {:?}",
-                creds.provider
-            ));
-        }
-
-        let username = creds
-            .credentials
-            .get("username")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing 'username' in credentials"))?
-            .to_string();
-        let password = creds
-            .credentials
-            .get("password")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing 'password' in credentials"))?
-            .to_string();
-
-        let config = NextcloudConfig::from_source_config(&source.config)?;
-
-        if !config.sync_enabled {
-            info!("Sync disabled for source {}, skipping", source_id);
-            let _ = self.sdk_client.complete(sync_run_id).await;
-            return Ok(());
-        }
-
-        let mut state = NextcloudConnectorState::from_connector_state(&source.connector_state);
-        if request.sync_mode == SyncType::Full {
+    // Full sync resets etag/known_files; incremental resumes state.
+    let mut state = match ctx.sync_mode() {
+        SyncType::Full => {
             info!(
                 "Full sync requested, resetting connector state for source {}",
                 source_id
             );
-            state = NextcloudConnectorState::default();
+            NextcloudConnectorState::default()
         }
+        _ => state.unwrap_or_default(),
+    };
 
-        let cancelled = Arc::new(AtomicBool::new(false));
-        self.active_syncs
-            .insert(sync_run_id.to_string(), cancelled.clone());
+    let user_email = ctx.get_user_email_for_source().await.ok();
 
-        let user_email = self
-            .sdk_client
-            .get_user_email_for_source(source_id)
-            .await
-            .ok();
+    let result = execute_sync(
+        &config,
+        &credentials,
+        &ctx,
+        user_email.as_deref(),
+        &mut state,
+    )
+    .await;
 
-        let result = self
-            .execute_sync(
-                &config,
-                &username,
-                &password,
-                source_id,
-                sync_run_id,
-                user_email.as_deref(),
-                &mut state,
-                &cancelled,
-            )
-            .await;
-
-        if cancelled.load(Ordering::SeqCst) {
-            info!("Nextcloud sync {} was cancelled", sync_run_id);
-            let _ = self
-                .sdk_client
-                .save_connector_state(source_id, state.to_json())
-                .await;
-            let _ = self.sdk_client.cancel(sync_run_id).await;
-            self.active_syncs.remove(sync_run_id);
-            return Ok(());
-        }
-
-        self.active_syncs.remove(sync_run_id);
-
-        match result {
-            Ok((total_scanned, total_processed)) => {
-                info!(
-                    "Nextcloud sync completed for source {}: {} scanned, {} processed",
-                    source.name, total_scanned, total_processed
-                );
-                self.sdk_client
-                    .save_connector_state(source_id, state.to_json())
-                    .await?;
-                self.sdk_client.complete(sync_run_id).await?;
-                Ok(())
-            }
-            Err(e) => {
-                let _ = self
-                    .sdk_client
-                    .save_connector_state(source_id, state.to_json())
-                    .await;
-                error!("Nextcloud sync failed for source {}: {}", source.name, e);
-                Err(e)
-            }
-        }
+    if ctx.is_cancelled() {
+        info!("Nextcloud sync {} was cancelled", sync_run_id);
+        let _ = ctx.save_connector_state(state.to_json()).await;
+        let _ = ctx.cancel().await;
+        return Ok(());
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn execute_sync(
-        &self,
-        config: &NextcloudConfig,
-        username: &str,
-        password: &str,
-        source_id: &str,
-        sync_run_id: &str,
-        user_email: Option<&str>,
-        state: &mut NextcloudConnectorState,
-        cancelled: &AtomicBool,
-    ) -> Result<(usize, usize)> {
-        let client = NextcloudClient::new(username, password);
-        let base_url = config.webdav_base_url(username);
+    match result {
+        Ok((total_scanned, total_processed)) => {
+            info!(
+                "Nextcloud sync completed for source {}: {} scanned, {} processed",
+                source_id, total_scanned, total_processed
+            );
+            ctx.save_connector_state(state.to_json()).await?;
+            ctx.complete().await?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = ctx.save_connector_state(state.to_json()).await;
+            error!("Nextcloud sync failed for source {}: {}", source_id, e);
+            Err(e)
+        }
+    }
+}
 
-        info!("Listing files from {}", base_url);
+async fn execute_sync(
+    config: &NextcloudConfig,
+    credentials: &NextcloudCredentials,
+    ctx: &SyncContext,
+    user_email: Option<&str>,
+    state: &mut NextcloudConnectorState,
+) -> Result<(usize, usize)> {
+    let client = NextcloudClient::new(&credentials.username, &credentials.password);
+    let base_url = config.webdav_base_url(&credentials.username);
 
-        let mut total_scanned = 0usize;
-        let mut total_processed = 0usize;
-        let mut current_keys = HashSet::<String>::new();
+    info!("Listing files from {}", base_url);
 
-        // Try Depth: infinity first (loads all entries at once — fast for small instances).
-        // Falls back to paginated BFS directory traversal when the server rejects it.
-        match client.try_list_all(&base_url).await {
-            Ok(entries) => {
-                let file_entries: Vec<DavEntry> = entries
-                    .into_iter()
-                    .filter(|e| !e.is_collection && config.should_index_file(&e.filename()))
-                    .collect();
+    let mut total_scanned = 0usize;
+    let mut total_processed = 0usize;
+    let mut current_keys = HashSet::<String>::new();
 
-                info!(
-                    "Found {} files to process for source {}",
-                    file_entries.len(),
-                    source_id
-                );
+    // Try Depth: infinity first (loads all entries at once — fast for small instances).
+    // Falls back to paginated BFS directory traversal when the server rejects it.
+    match client.try_list_all(&base_url).await {
+        Ok(entries) => {
+            let file_entries: Vec<DavEntry> = entries
+                .into_iter()
+                .filter(|e| !e.is_collection && config.should_index_file(&e.filename()))
+                .collect();
 
-                for entry in &file_entries {
-                    current_keys.insert(entry.file_key());
+            info!(
+                "Found {} files to process for source {}",
+                file_entries.len(),
+                ctx.source_id()
+            );
+
+            for entry in &file_entries {
+                current_keys.insert(entry.file_key());
+            }
+
+            let (s, p) = process_file_batch(
+                &file_entries,
+                &client,
+                config,
+                &credentials.username,
+                ctx,
+                user_email,
+                state,
+            )
+            .await;
+            total_scanned += s;
+            total_processed += p;
+        }
+        Err(_) => {
+            info!("Depth: infinity not supported, using paginated directory traversal");
+
+            let mut dir_queue = std::collections::VecDeque::new();
+            dir_queue.push_back(base_url.clone());
+            let mut visited = HashSet::<String>::new();
+
+            while let Some(dir_url) = dir_queue.pop_front() {
+                if ctx.is_cancelled() {
+                    break;
                 }
 
-                let (s, p) = self
-                    .process_file_batch(
-                        &file_entries,
-                        &client,
-                        config,
-                        username,
-                        source_id,
-                        sync_run_id,
-                        user_email,
-                        state,
-                        cancelled,
-                    )
-                    .await;
+                let canonical = crate::client::extract_path(&dir_url)
+                    .trim_end_matches('/')
+                    .to_string();
+                if !visited.insert(canonical.clone()) {
+                    warn!("Cycle detected: already visited {}, skipping", dir_url);
+                    continue;
+                }
+
+                let entries = match client.list_directory(&dir_url).await {
+                    Ok(e) => e,
+                    Err(e) => {
+                        warn!("Failed to list directory {}: {}", dir_url, e);
+                        continue;
+                    }
+                };
+
+                let parent_path = canonical;
+                let mut page_files = Vec::new();
+
+                for entry in entries {
+                    let entry_path = entry.href.trim_end_matches('/');
+                    if entry_path == parent_path {
+                        continue; // skip the parent itself
+                    }
+                    if entry.is_collection {
+                        let child_url = crate::client::build_child_url(&dir_url, &entry.href);
+                        dir_queue.push_back(child_url);
+                    } else if config.should_index_file(&entry.filename()) {
+                        current_keys.insert(entry.file_key());
+                        page_files.push(entry);
+                    }
+                }
+
+                let (s, p) = process_file_batch(
+                    &page_files,
+                    &client,
+                    config,
+                    &credentials.username,
+                    ctx,
+                    user_email,
+                    state,
+                )
+                .await;
                 total_scanned += s;
                 total_processed += p;
             }
-            Err(_) => {
-                info!("Depth: infinity not supported, using paginated directory traversal");
-
-                let mut dir_queue = std::collections::VecDeque::new();
-                dir_queue.push_back(base_url.clone());
-                let mut visited = HashSet::<String>::new();
-
-                while let Some(dir_url) = dir_queue.pop_front() {
-                    if cancelled.load(Ordering::SeqCst) {
-                        break;
-                    }
-
-                    let canonical = crate::client::extract_path(&dir_url)
-                        .trim_end_matches('/')
-                        .to_string();
-                    if !visited.insert(canonical.clone()) {
-                        warn!("Cycle detected: already visited {}, skipping", dir_url);
-                        continue;
-                    }
-
-                    let entries = match client.list_directory(&dir_url).await {
-                        Ok(e) => e,
-                        Err(e) => {
-                            warn!("Failed to list directory {}: {}", dir_url, e);
-                            continue;
-                        }
-                    };
-
-                    let parent_path = canonical;
-                    let mut page_files = Vec::new();
-
-                    for entry in entries {
-                        let entry_path = entry.href.trim_end_matches('/');
-                        if entry_path == parent_path {
-                            continue; // skip the parent itself
-                        }
-                        if entry.is_collection {
-                            let child_url = crate::client::build_child_url(&dir_url, &entry.href);
-                            dir_queue.push_back(child_url);
-                        } else if config.should_index_file(&entry.filename()) {
-                            current_keys.insert(entry.file_key());
-                            page_files.push(entry);
-                        }
-                    }
-
-                    let (s, p) = self
-                        .process_file_batch(
-                            &page_files,
-                            &client,
-                            config,
-                            username,
-                            source_id,
-                            sync_run_id,
-                            user_email,
-                            state,
-                            cancelled,
-                        )
-                        .await;
-                    total_scanned += s;
-                    total_processed += p;
-                }
-            }
         }
-
-        // Detect and emit deletions
-        if !cancelled.load(Ordering::SeqCst) {
-            let known_set: HashSet<String> = state.known_files.iter().cloned().collect();
-            let deleted_keys: Vec<String> = known_set.difference(&current_keys).cloned().collect();
-
-            for key in &deleted_keys {
-                if cancelled.load(Ordering::SeqCst) {
-                    break;
-                }
-                let doc_id = format!("nextcloud:{}:{}", source_id, urlencoding::encode(key));
-                let event = ConnectorEvent::DocumentDeleted {
-                    sync_run_id: sync_run_id.to_string(),
-                    source_id: source_id.to_string(),
-                    document_id: doc_id,
-                };
-                if let Err(e) = self
-                    .sdk_client
-                    .emit_event(sync_run_id, source_id, event)
-                    .await
-                {
-                    warn!("Failed to emit deletion event for {}: {}", key, e);
-                }
-            }
-
-            // Remove stale etags
-            state.etags.retain(|k, _| current_keys.contains(k));
-        }
-
-        // Persist current file key set
-        state.known_files = current_keys.into_iter().collect();
-
-        Ok((total_scanned, total_processed))
     }
 
-    /// Process a batch of file entries: check etag, download, extract, store, emit.
-    /// Returns (scanned, processed) counts.
-    #[allow(clippy::too_many_arguments)]
-    async fn process_file_batch(
-        &self,
-        entries: &[DavEntry],
-        client: &NextcloudClient,
-        config: &NextcloudConfig,
-        username: &str,
-        source_id: &str,
-        sync_run_id: &str,
-        user_email: Option<&str>,
-        state: &mut NextcloudConnectorState,
-        cancelled: &AtomicBool,
-    ) -> (usize, usize) {
-        let mut scanned = 0usize;
-        let mut processed = 0usize;
+    // Detect and emit deletions
+    if !ctx.is_cancelled() {
+        let known_set: HashSet<String> = state.known_files.iter().cloned().collect();
+        let deleted_keys: Vec<String> = known_set.difference(&current_keys).cloned().collect();
 
-        for batch in entries.chunks(BATCH_SIZE) {
-            if cancelled.load(Ordering::SeqCst) {
+        for key in &deleted_keys {
+            if ctx.is_cancelled() {
                 break;
             }
-
-            for entry in batch {
-                scanned += 1;
-                let key = entry.file_key();
-
-                // Skip unchanged files (compare effective etag — real or synthetic)
-                let effective = entry.effective_etag();
-                if let Some(ref stored) = state.etags.get(&key) {
-                    if effective.as_deref() == Some(stored.as_str()) {
-                        continue;
-                    }
-                }
-
-                let is_update = state.etags.contains_key(&key);
-
-                // Enforce file size limit
-                let file_size = entry.content_length.or(entry.oc_size).unwrap_or(0);
-                if config.max_file_size > 0 && file_size > config.max_file_size {
-                    warn!(
-                        "Skipping file '{}': size {} exceeds limit {}",
-                        entry.filename(),
-                        file_size,
-                        config.max_file_size
-                    );
-                    continue;
-                }
-
-                let download_url = build_download_url(&config.server_url, &entry.href);
-
-                let content_text = match download_and_extract(
-                    client,
-                    &download_url,
-                    entry,
-                    &self.sdk_client,
-                    sync_run_id,
-                )
-                .await
-                {
-                    Ok(text) => text,
-                    Err(e) => {
-                        warn!("Failed to process file '{}': {}", entry.filename(), e);
-                        continue;
-                    }
-                };
-
-                let markdown = entry.to_markdown(username, &config.server_url, &content_text);
-
-                let content_id = match self.sdk_client.store_content(sync_run_id, &markdown).await {
-                    Ok(id) => id,
-                    Err(e) => {
-                        warn!("Failed to store content for '{}': {}", entry.filename(), e);
-                        continue;
-                    }
-                };
-
-                let event = build_file_event(
-                    entry,
-                    username,
-                    &config.server_url,
-                    sync_run_id,
-                    source_id,
-                    &content_id,
-                    user_email,
-                    is_update,
-                );
-
-                if let Err(e) = self
-                    .sdk_client
-                    .emit_event(sync_run_id, source_id, event)
-                    .await
-                {
-                    warn!("Failed to emit event for '{}': {}", entry.filename(), e);
-                    continue;
-                }
-
-                // Store effective etag (real or synthetic)
-                if let Some(etag) = effective {
-                    state.etags.insert(key, etag);
-                }
-                processed += 1;
+            let doc_id = format!("nextcloud:{}:{}", ctx.source_id(), urlencoding::encode(key));
+            let event = ConnectorEvent::DocumentDeleted {
+                sync_run_id: ctx.sync_run_id().to_string(),
+                source_id: ctx.source_id().to_string(),
+                document_id: doc_id,
+            };
+            if let Err(e) = ctx.emit_event(event).await {
+                warn!("Failed to emit deletion event for {}: {}", key, e);
             }
-
-            let _ = self
-                .sdk_client
-                .increment_scanned(sync_run_id, batch.len() as i32)
-                .await;
         }
 
-        (scanned, processed)
+        // Remove stale etags
+        state.etags.retain(|k, _| current_keys.contains(k));
     }
+
+    // Persist current file key set
+    state.known_files = current_keys.into_iter().collect();
+
+    Ok((total_scanned, total_processed))
+}
+
+/// Process a batch of file entries: check etag, download, extract, store, emit.
+/// Returns (scanned, processed) counts.
+async fn process_file_batch(
+    entries: &[DavEntry],
+    client: &NextcloudClient,
+    config: &NextcloudConfig,
+    username: &str,
+    ctx: &SyncContext,
+    user_email: Option<&str>,
+    state: &mut NextcloudConnectorState,
+) -> (usize, usize) {
+    let mut scanned = 0usize;
+    let mut processed = 0usize;
+
+    for batch in entries.chunks(BATCH_SIZE) {
+        if ctx.is_cancelled() {
+            break;
+        }
+
+        for entry in batch {
+            scanned += 1;
+            let key = entry.file_key();
+
+            // Skip unchanged files (compare effective etag — real or synthetic)
+            let effective = entry.effective_etag();
+            if let Some(stored) = state.etags.get(&key) {
+                if effective.as_deref() == Some(stored.as_str()) {
+                    continue;
+                }
+            }
+
+            let is_update = state.etags.contains_key(&key);
+
+            // Enforce file size limit
+            let file_size = entry.content_length.or(entry.oc_size).unwrap_or(0);
+            if config.max_file_size > 0 && file_size > config.max_file_size {
+                warn!(
+                    "Skipping file '{}': size {} exceeds limit {}",
+                    entry.filename(),
+                    file_size,
+                    config.max_file_size
+                );
+                continue;
+            }
+
+            let download_url = build_download_url(&config.server_url, &entry.href);
+
+            let content_text = match download_and_extract(client, &download_url, entry, ctx).await {
+                Ok(text) => text,
+                Err(e) => {
+                    warn!("Failed to process file '{}': {}", entry.filename(), e);
+                    continue;
+                }
+            };
+
+            let markdown = entry.to_markdown(username, &config.server_url, &content_text);
+
+            let content_id = match ctx.store_content(&markdown).await {
+                Ok(id) => id,
+                Err(e) => {
+                    warn!("Failed to store content for '{}': {}", entry.filename(), e);
+                    continue;
+                }
+            };
+
+            let event = build_file_event(
+                entry,
+                username,
+                &config.server_url,
+                ctx.sync_run_id(),
+                ctx.source_id(),
+                &content_id,
+                user_email,
+                is_update,
+            );
+
+            if let Err(e) = ctx.emit_event(event).await {
+                warn!("Failed to emit event for '{}': {}", entry.filename(), e);
+                continue;
+            }
+
+            // Store effective etag (real or synthetic)
+            if let Some(etag) = effective {
+                state.etags.insert(key, etag);
+            }
+            processed += 1;
+        }
+
+        let _ = ctx.increment_scanned(batch.len() as i32).await;
+    }
+
+    (scanned, processed)
 }
 
 /// Try to parse a date string as RFC 3339 first, then RFC 2822.
@@ -454,8 +335,7 @@ async fn download_and_extract(
     client: &NextcloudClient,
     url: &str,
     entry: &DavEntry,
-    sdk_client: &SdkClient,
-    sync_run_id: &str,
+    ctx: &SyncContext,
 ) -> Result<String> {
     let data = client.download_file(url).await?;
 
@@ -465,8 +345,9 @@ async fn download_and_extract(
         .unwrap_or("application/octet-stream");
     let filename = entry.filename();
 
-    let text = sdk_client
-        .extract_text(sync_run_id, data, mime, Some(&filename))
+    let text = ctx
+        .sdk_client()
+        .extract_text(ctx.sync_run_id(), data, mime, Some(&filename))
         .await
         .unwrap_or_default();
 
