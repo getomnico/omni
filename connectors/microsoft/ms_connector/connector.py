@@ -2,8 +2,6 @@
 
 import logging
 from typing import Any
-from urllib.parse import quote
-
 from starlette.responses import Response
 
 from omni_connector import Connector, SearchOperator, SyncContext
@@ -191,7 +189,7 @@ class MicrosoftConnector(Connector):
                     content=data,
                     media_type=mime_type,
                     headers={
-                        "X-File-Name": quote(file_name),
+                        "X-File-Name": file_name,
                         "Content-Length": str(len(data)),
                     },
                 )
