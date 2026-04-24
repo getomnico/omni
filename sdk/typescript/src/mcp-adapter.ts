@@ -5,7 +5,6 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type {
   ActionDefinition,
-  ActionResponse,
   McpPromptDefinition,
   McpResourceDefinition,
 } from './models.js';
