@@ -420,10 +420,11 @@ where
                         .unwrap()
                 })
         }
-        Ok(ActionResult::Binary(bytes, content_type)) => Response::builder()
+        Ok(ActionResult::Binary(bytes, content_type, file_name)) => Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", content_type)
             .header("Content-Length", bytes.len())
+            .header("X-File-Name", file_name)
             .body(axum::body::Body::from(bytes))
             .unwrap_or_else(|_| {
                 Response::builder()

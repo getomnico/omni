@@ -58,7 +58,7 @@ impl GoogleConnector {
             .await?;
 
         let mime_type = &file_meta.mime_type;
-        let _file_name = &file_meta.name;
+        let file_name = &file_meta.name;
 
         let export_mapping: Option<(&str, &str)> = match mime_type.as_str() {
             "application/vnd.google-apps.spreadsheet" => Some((
@@ -88,7 +88,7 @@ impl GoogleConnector {
             (bytes, mime_type.clone())
         };
 
-        Ok(ActionResult::binary(bytes, content_type))
+        Ok(ActionResult::binary(bytes, content_type, file_name))
     }
 
     async fn execute_search_users(

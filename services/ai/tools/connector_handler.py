@@ -321,7 +321,7 @@ class ConnectorToolHandler:
                             ],
                             is_error=True,
                         )
-                    file_name = response.headers.get("x-file-name") or "download"
+                    file_name = response.headers.get("x-file-name", "download")
                     return await write_binary_to_sandbox(
                         self._sandbox_url,
                         response.content,
