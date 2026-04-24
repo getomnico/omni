@@ -180,13 +180,7 @@ async fn test_confluence_full_sync_creates_events() -> Result<()> {
         ],
     ];
 
-    let redis_url = fixture.state.config.redis.redis_url.clone();
-    let redis_client = redis::Client::open(redis_url)?;
-    let mut processor = ConfluenceProcessor::new(
-        fixture.mock_api.clone(),
-        fixture.sdk_client.clone(),
-        redis_client,
-    );
+    let processor = ConfluenceProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
 
     let cancelled = AtomicBool::new(false);
     let sync_run_id = fixture
@@ -201,6 +195,7 @@ async fn test_confluence_full_sync_creates_events() -> Result<()> {
 
     assert_eq!(count, 4, "Should process 4 pages across 2 spaces");
 
+    fixture.sdk_client.flush_all().await?;
     let events = get_queued_events(&fixture.pool).await?;
     assert_eq!(events.len(), 4, "Should have 4 events in queue");
 
@@ -227,13 +222,7 @@ async fn test_confluence_incremental_sync_uses_cql() -> Result<()> {
     *fixture.mock_api.cql_pages.lock().unwrap() =
         vec![make_cql_page("3001", "Modified Page", 100, "DEV", 5)];
 
-    let redis_url = fixture.state.config.redis.redis_url.clone();
-    let redis_client = redis::Client::open(redis_url)?;
-    let mut processor = ConfluenceProcessor::new(
-        fixture.mock_api.clone(),
-        fixture.sdk_client.clone(),
-        redis_client,
-    );
+    let processor = ConfluenceProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
 
     let cancelled = AtomicBool::new(false);
     let sync_run_id = fixture
@@ -266,6 +255,7 @@ async fn test_confluence_incremental_sync_uses_cql() -> Result<()> {
     let full_page_calls = fixture.mock_api.get_calls_for("get_confluence_pages");
     assert_eq!(full_page_calls.len(), 0, "Should NOT use full page listing");
 
+    fixture.sdk_client.flush_all().await?;
     let events = get_queued_events(&fixture.pool).await?;
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["type"], "document_created");
@@ -286,13 +276,7 @@ async fn test_confluence_version_dedup_skips_unchanged() -> Result<()> {
         make_confluence_page("1002", "Page 2", "100", 1),
     ]];
 
-    let redis_url = fixture.state.config.redis.redis_url.clone();
-    let redis_client = redis::Client::open(redis_url)?;
-    let mut processor = ConfluenceProcessor::new(
-        fixture.mock_api.clone(),
-        fixture.sdk_client.clone(),
-        redis_client,
-    );
+    let processor = ConfluenceProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
 
     let cancelled = AtomicBool::new(false);
 
@@ -308,6 +292,7 @@ async fn test_confluence_version_dedup_skips_unchanged() -> Result<()> {
         .await?;
     assert_eq!(count, 2, "First sync should process 2 pages");
 
+    fixture.sdk_client.flush_all().await?;
     let events_after_first = count_queued_events(&fixture.pool).await?;
     assert_eq!(events_after_first, 2);
 
@@ -322,6 +307,7 @@ async fn test_confluence_version_dedup_skips_unchanged() -> Result<()> {
         .await?;
     assert_eq!(count2, 0, "Second sync should skip unchanged pages");
 
+    fixture.sdk_client.flush_all().await?;
     let events_after_second = count_queued_events(&fixture.pool).await?;
     assert_eq!(events_after_second, 2, "No new events should be created");
 
@@ -352,7 +338,7 @@ async fn test_jira_full_sync_creates_events() -> Result<()> {
         next_page_token: None,
     });
 
-    let mut processor = JiraProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
+    let processor = JiraProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
 
     let cancelled = AtomicBool::new(false);
     let sync_run_id = fixture
@@ -367,6 +353,7 @@ async fn test_jira_full_sync_creates_events() -> Result<()> {
 
     assert_eq!(count, 3, "Should process 3 issues");
 
+    fixture.sdk_client.flush_all().await?;
     let events = get_queued_events(&fixture.pool).await?;
     assert_eq!(events.len(), 3, "Should have 3 events in queue");
 
@@ -397,15 +384,8 @@ async fn test_jira_full_sync_creates_events() -> Result<()> {
 async fn test_webhook_delete_jira_issue() -> Result<()> {
     let fixture = setup_test_fixture(SourceType::Jira).await?;
 
-    let redis_url = fixture.state.config.redis.redis_url.clone();
-    let redis_client = redis::Client::open(redis_url)?;
-
-    let mut sync_manager = SyncManager::with_client(
-        fixture.mock_api.clone(),
-        redis_client,
-        fixture.sdk_client.clone(),
-        None,
-    );
+    let sync_manager =
+        SyncManager::with_client(fixture.mock_api.clone(), fixture.sdk_client.clone(), None);
 
     let event = AtlassianWebhookEvent {
         webhook_event: "jira:issue_deleted".to_string(),
@@ -423,6 +403,7 @@ async fn test_webhook_delete_jira_issue() -> Result<()> {
 
     sync_manager.handle_webhook_event(SOURCE_ID, event).await?;
 
+    fixture.sdk_client.flush_all().await?;
     let delete_events = get_queued_events_by_type(&fixture.pool, "document_deleted").await?;
     assert_eq!(delete_events.len(), 1, "Should create 1 delete event");
     assert_eq!(delete_events[0]["document_id"], "jira_issue_PROJ_PROJ-99");
@@ -434,15 +415,8 @@ async fn test_webhook_delete_jira_issue() -> Result<()> {
 async fn test_webhook_delete_confluence_page() -> Result<()> {
     let fixture = setup_test_fixture(SourceType::Confluence).await?;
 
-    let redis_url = fixture.state.config.redis.redis_url.clone();
-    let redis_client = redis::Client::open(redis_url)?;
-
-    let mut sync_manager = SyncManager::with_client(
-        fixture.mock_api.clone(),
-        redis_client,
-        fixture.sdk_client.clone(),
-        None,
-    );
+    let sync_manager =
+        SyncManager::with_client(fixture.mock_api.clone(), fixture.sdk_client.clone(), None);
 
     let event = AtlassianWebhookEvent {
         webhook_event: "page_trashed".to_string(),
@@ -458,6 +432,7 @@ async fn test_webhook_delete_confluence_page() -> Result<()> {
 
     sync_manager.handle_webhook_event(SOURCE_ID, event).await?;
 
+    fixture.sdk_client.flush_all().await?;
     let delete_events = get_queued_events_by_type(&fixture.pool, "document_deleted").await?;
     assert_eq!(delete_events.len(), 1, "Should create 1 delete event");
     assert_eq!(
@@ -472,15 +447,8 @@ async fn test_webhook_delete_confluence_page() -> Result<()> {
 async fn test_webhook_create_triggers_notify() -> Result<()> {
     let fixture = setup_test_fixture(SourceType::Jira).await?;
 
-    let redis_url = fixture.state.config.redis.redis_url.clone();
-    let redis_client = redis::Client::open(redis_url)?;
-
-    let mut sync_manager = SyncManager::with_client(
-        fixture.mock_api.clone(),
-        redis_client,
-        fixture.sdk_client.clone(),
-        None,
-    );
+    let sync_manager =
+        SyncManager::with_client(fixture.mock_api.clone(), fixture.sdk_client.clone(), None);
 
     let event = AtlassianWebhookEvent {
         webhook_event: "jira:issue_created".to_string(),
@@ -521,12 +489,8 @@ async fn test_webhook_registration_after_sync() -> Result<()> {
 
     *fixture.mock_api.webhook_register_result.lock().unwrap() = Some(42);
 
-    let redis_url = fixture.state.config.redis.redis_url.clone();
-    let redis_client = redis::Client::open(redis_url)?;
-
     let sync_manager = SyncManager::with_client(
         fixture.mock_api.clone(),
-        redis_client,
         fixture.sdk_client.clone(),
         Some("https://example.com/webhook".to_string()),
     );
@@ -566,12 +530,8 @@ async fn test_webhook_reregistration_on_missing() -> Result<()> {
     *fixture.mock_api.webhook_exists.lock().unwrap() = false;
     *fixture.mock_api.webhook_register_result.lock().unwrap() = Some(1000);
 
-    let redis_url = fixture.state.config.redis.redis_url.clone();
-    let redis_client = redis::Client::open(redis_url)?;
-
     let sync_manager = SyncManager::with_client(
         fixture.mock_api.clone(),
-        redis_client,
         fixture.sdk_client.clone(),
         Some("https://example.com/webhook".to_string()),
     );
@@ -667,13 +627,7 @@ async fn test_confluence_sync_fetches_and_caches_space_permissions() -> Result<(
         ("user-account-2".to_string(), "bob@example.com".to_string()),
     ];
 
-    let redis_url = fixture.state.config.redis.redis_url.clone();
-    let redis_client = redis::Client::open(redis_url)?;
-    let mut processor = ConfluenceProcessor::new(
-        fixture.mock_api.clone(),
-        fixture.sdk_client.clone(),
-        redis_client,
-    );
+    let processor = ConfluenceProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
 
     let cancelled = AtomicBool::new(false);
     let sync_run_id = fixture
@@ -688,6 +642,7 @@ async fn test_confluence_sync_fetches_and_caches_space_permissions() -> Result<(
 
     assert_eq!(count, 3);
 
+    fixture.sdk_client.flush_all().await?;
     let events = get_queued_events(&fixture.pool).await?;
     assert_eq!(events.len(), 3);
 
@@ -778,7 +733,7 @@ async fn test_jira_sync_fetches_and_caches_project_permissions() -> Result<()> {
     *fixture.mock_api.bulk_users.lock().unwrap() =
         vec![("user-alice".to_string(), "alice@example.com".to_string())];
 
-    let mut processor = JiraProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
+    let processor = JiraProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
 
     let cancelled = AtomicBool::new(false);
     let sync_run_id = fixture
@@ -793,6 +748,7 @@ async fn test_jira_sync_fetches_and_caches_project_permissions() -> Result<()> {
 
     assert_eq!(count, 3);
 
+    fixture.sdk_client.flush_all().await?;
     let events = get_queued_events(&fixture.pool).await?;
     assert_eq!(events.len(), 3);
 

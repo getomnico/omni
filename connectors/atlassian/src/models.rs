@@ -1,89 +1,9 @@
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value as JsonValue};
-pub use shared::models::{ActionDefinition, ConnectorManifest};
+use serde_json::json;
 use shared::models::{ConnectorEvent, DocumentAttributes, DocumentMetadata, DocumentPermissions};
 use std::collections::HashMap;
 use time::OffsetDateTime;
-
-// ============================================================================
-// Connector Protocol Models
-// ============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncResponse {
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-impl SyncResponse {
-    pub fn started() -> Self {
-        Self {
-            status: "started".to_string(),
-            message: None,
-        }
-    }
-
-    pub fn error(msg: impl Into<String>) -> Self {
-        Self {
-            status: "error".to_string(),
-            message: Some(msg.into()),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CancelRequest {
-    pub sync_run_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CancelResponse {
-    pub status: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionRequest {
-    pub action: String,
-    pub params: JsonValue,
-    pub credentials: JsonValue,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionResponse {
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<JsonValue>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-impl ActionResponse {
-    pub fn success(result: JsonValue) -> Self {
-        Self {
-            status: "success".to_string(),
-            result: Some(result),
-            error: None,
-        }
-    }
-
-    pub fn not_supported(action: &str) -> Self {
-        Self {
-            status: "error".to_string(),
-            result: None,
-            error: Some(format!("Action not supported: {}", action)),
-        }
-    }
-
-    pub fn error(msg: impl Into<String>) -> Self {
-        Self {
-            status: "error".to_string(),
-            result: None,
-            error: Some(msg.into()),
-        }
-    }
-}
 
 // ============================================================================
 // Atlassian Models
@@ -656,6 +576,14 @@ impl ConfluenceCqlPage {
 pub struct AtlassianConnectorState {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub webhook_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_successful_sync_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Confluence page version by "{space_id}:{page_id}". Used by full-sync
+    /// dedup to skip pages whose content hasn't changed. Jira has no
+    /// equivalent — its incremental sync relies on `last_successful_sync_at`
+    /// and the indexer's idempotent upsert by document_id.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub confluence_page_versions: HashMap<String, i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
