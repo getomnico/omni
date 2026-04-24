@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use async_imap::Client;
 use async_imap::types::Fetch;
+use async_imap::Client;
 use futures::StreamExt;
 use tokio_native_tls::TlsStream;
 use tracing::{debug, info, warn};
@@ -24,7 +24,11 @@ pub struct RawMessage {
 
 impl ImapSession {
     /// Connect and authenticate, returning a read-only session.
-    pub async fn connect(config: &ImapAccountConfig, username: &str, password: &str) -> Result<Self> {
+    pub async fn connect(
+        config: &ImapAccountConfig,
+        username: &str,
+        password: &str,
+    ) -> Result<Self> {
         let addr = format!("{}:{}", config.host, config.port);
         debug!("Connecting to IMAP server: {}", addr);
 
@@ -35,8 +39,8 @@ impl ImapSession {
         let enc = config.encryption.to_ascii_lowercase();
         let tls_stream = match enc.as_str() {
             "tls" | "ssl" => {
-                let connector = native_tls::TlsConnector::new()
-                    .context("Failed to create TLS connector")?;
+                let connector =
+                    native_tls::TlsConnector::new().context("Failed to create TLS connector")?;
                 let connector = tokio_native_tls::TlsConnector::from(connector);
                 connector
                     .connect(&config.host, tcp)
