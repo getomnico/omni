@@ -4551,19 +4551,16 @@ name = "omni-fireflies-connector"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "axum",
+ "async-trait",
  "chrono",
- "dashmap 6.1.0",
  "dotenvy",
- "futures",
+ "omni-connector-sdk",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "shared",
  "time",
  "tokio",
- "tower 0.5.3",
- "tower-http 0.6.8",
  "tracing",
  "tracing-subscriber",
 ]
