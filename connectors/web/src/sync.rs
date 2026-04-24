@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use omni_connector_sdk::{SdkClient, SyncContext};
 use spider::client::StatusCode;
@@ -38,10 +38,7 @@ impl PageSource for SpiderPageSource {
     ) -> Result<CrawlResult> {
         let mut website = config.build_spider_website()?;
 
-        let mut rx = website.subscribe(32).ok_or(anyhow!(
-            "Failed to subscribe to website crawl events for root url: {}",
-            config.root_url
-        ))?;
+        let mut rx = website.subscribe(32);
 
         let processor_handle = tokio::spawn(async move {
             while let Ok(page) = rx.recv().await {
