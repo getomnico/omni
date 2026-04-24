@@ -3,6 +3,8 @@
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+from fastapi.responses import JSONResponse
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -85,9 +87,7 @@ class MockConnector(Connector):
         action: str,
         params: dict[str, Any],
         credentials: dict[str, Any],
-    ) -> "Response":
-        from fastapi.responses import JSONResponse
-
+    ) -> JSONResponse:
         self.action_called = True
         self.action_args = (action, params, credentials)
 

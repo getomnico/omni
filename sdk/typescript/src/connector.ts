@@ -8,6 +8,18 @@ import { ActionResponse } from './models.js';
 import { createServer } from './server.js';
 import { getLogger } from './logger.js';
 
+export interface McpAdapter {
+  getActionDefinitions(): Promise<ActionDefinition[]>;
+  getResourceDefinitions(): Promise<unknown[]>;
+  getPromptDefinitions(): Promise<unknown[]>;
+  executeTool(
+    name: string,
+    params: Record<string, unknown>,
+  ): Promise<ActionResponse>;
+  readResource(uri: string): Promise<unknown>;
+  getPrompt(name: string, args?: Record<string, string>): Promise<unknown>;
+}
+
 export interface ServeOptions {
   port?: number;
   host?: string;
@@ -47,17 +59,7 @@ export abstract class Connector<
     return undefined;
   }
 
-  async getMcpAdapter(): Promise<{
-    getActionDefinitions(): Promise<ActionDefinition[]>;
-    getResourceDefinitions(): Promise<unknown[]>;
-    getPromptDefinitions(): Promise<unknown[]>;
-    executeTool(
-      name: string,
-      params: Record<string, unknown>
-    ): Promise<ActionResponse>;
-    readResource(uri: string): Promise<unknown>;
-    getPrompt(name: string, args?: Record<string, string>): Promise<unknown>;
-  } | undefined> {
+  async getMcpAdapter(): Promise<McpAdapter | undefined> {
     if (this._mcpAdapter !== null) {
       return this._mcpAdapter as ReturnType<typeof this.getMcpAdapter> extends Promise<infer T> ? T : never;
     }

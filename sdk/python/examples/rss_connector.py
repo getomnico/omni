@@ -18,8 +18,12 @@ The connector expects source config with:
 import hashlib
 import logging
 import os
+
 from datetime import datetime, timezone
 from typing import Any
+
+from fastapi.responses import JSONResponse
+from starlette.responses import Response
 
 try:
     import feedparser
@@ -175,9 +179,7 @@ class RSSConnector(Connector):
         action: str,
         params: dict[str, Any],
         credentials: dict[str, Any],
-    ) -> "Response":
-        from starlette.responses import Response
-
+    ) -> JSONResponse:
         if action == "validate_feed":
             feed_url = params.get("feed_url")
             if not feed_url:

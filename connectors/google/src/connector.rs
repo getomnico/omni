@@ -7,6 +7,7 @@ use crate::models::{GoogleConnectorState, GoogleDirectoryUser, SearchUsersRespon
 use crate::sync::SyncManager;
 use anyhow::Result;
 use async_trait::async_trait;
+use axum::response::Response;
 use omni_connector_sdk::{
     ActionDefinition, ActionResponse, Connector, SearchOperator, SourceType, SyncContext, SyncType,
 };
@@ -29,10 +30,7 @@ impl GoogleConnector {
         &self,
         params: JsonValue,
         credentials: JsonValue,
-    ) -> Result<axum::response::Response> {
-        use axum::http::HeaderValue;
-        use axum::response::Response;
-
+    ) -> Result<Response> {
         let file_id = params
             .get("file_id")
             .and_then(|v| v.as_str())

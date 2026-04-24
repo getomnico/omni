@@ -15,6 +15,8 @@ from .models import (
 if TYPE_CHECKING:
     from mcp.client.stdio import StdioServerParameters
 
+    from fastapi.responses import JSONResponse
+
     from .mcp_adapter import McpAdapter
 
 logger = logging.getLogger(__name__)
@@ -216,17 +218,7 @@ class Connector(ABC):
         action: str,
         params: dict[str, Any],
         credentials: dict[str, Any],
-    ) -> "Response":
-        """
-        Execute a connector action.
-
-        Override this method to implement connector-specific actions.
-        If MCP is enabled and the action matches an MCP tool, it is
-        dispatched to the MCP server automatically.
-
-        Returns a Starlette ``Response`` (typically ``JSONResponse``).
-        """
-        from fastapi.responses import JSONResponse
+    ) -> JSONResponse:
 
         adapter = self.mcp_adapter
         if adapter is not None:

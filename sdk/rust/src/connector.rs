@@ -1,4 +1,5 @@
 use crate::context::SyncContext;
+use crate::models::ActionResponse;
 use anyhow::Result;
 use async_trait::async_trait;
 use axum::http::StatusCode;
@@ -87,7 +88,6 @@ pub trait Connector: Send + Sync + 'static {
         _params: JsonValue,
         _credentials: JsonValue,
     ) -> Result<Response> {
-        use crate::models::ActionResponse;
         Ok(ActionResponse::not_supported(action).into_response_with_status(StatusCode::NOT_FOUND))
     }
 

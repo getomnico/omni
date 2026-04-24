@@ -13,6 +13,7 @@ path = "src/lib.rs"
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
+mime = "0.3"
 dashmap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

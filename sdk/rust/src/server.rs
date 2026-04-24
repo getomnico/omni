@@ -1,9 +1,9 @@
 use crate::connector::Connector;
 use crate::context::SyncContext;
-use crate::models::ActionResponse;
 use crate::models::{
     ActionRequest, CancelRequest, CancelResponse, SyncRequest, SyncResponse, SyncStatusResponse,
 };
+use crate::ActionResponse;
 use anyhow::{Context, Result};
 use axum::{
     extract::{Path, State},

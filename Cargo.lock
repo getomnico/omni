@@ -4181,6 +4181,7 @@ dependencies = [
  "axum",
  "axum-test",
  "dashmap 6.1.0",
+ "mime",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

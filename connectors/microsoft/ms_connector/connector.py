@@ -4,6 +4,8 @@ import logging
 from typing import Any
 from urllib.parse import quote
 
+from starlette.responses import Response
+
 from omni_connector import Connector, SearchOperator, SyncContext
 from omni_connector.models import ActionDefinition, ActionResponse
 
@@ -105,8 +107,6 @@ class MicrosoftConnector(Connector):
         params: dict[str, Any],
         credentials: dict[str, Any],
     ) -> "Response":
-        from starlette.responses import Response
-
         if action == "search_users":
             return await self._action_search_users(params, credentials)
         elif action == "fetch_file":

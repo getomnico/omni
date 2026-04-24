@@ -104,6 +104,11 @@ impl ActionResponse {
     /// specific status code.
     pub fn into_response_with_status(self, status: StatusCode) -> Response {
         let body = serde_json::to_string(&self).unwrap_or_default();
-        (status, [("content-type", "application/json")], body).into_response()
+        (
+            status,
+            [("content-type", mime::APPLICATION_JSON.essence_str())],
+            body,
+        )
+            .into_response()
     }
 }
