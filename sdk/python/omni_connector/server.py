@@ -12,6 +12,7 @@ from .client import SdkClient
 from .context import SyncContext
 from .exceptions import SdkClientError
 from .models import (
+    ActionResult,
     ActionRequest,
     ActionResponse,
     CancelRequest,
@@ -222,14 +223,17 @@ def create_app(connector: "Connector") -> FastAPI:
         logger.info("Action requested: %s", request.action)
 
         try:
-            response = await connector.execute_action(
+            result = await connector.execute_action(
                 request.action,
                 request.params,
                 request.credentials,
             )
-            if isinstance(response, Response):
-                return response
-            return response.model_dump()
+            if result.binary:
+                data, content_type = result.binary
+                return Response(content=data, media_type=content_type)
+            if result.json:
+                return JSONResponse(content=result.json.model_dump())
+            return ActionResponse.failure("Unknown action result").model_dump()
         except Exception as e:
             logger.error("Action %s failed: %s", request.action, e)
             return ActionResponse.failure(str(e)).model_dump()

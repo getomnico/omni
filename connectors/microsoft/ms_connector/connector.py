@@ -4,9 +4,7 @@ import logging
 from typing import Any
 from urllib.parse import quote
 
-from starlette.responses import Response
-
-from omni_connector import Connector, SearchOperator, SyncContext
+from omni_connector import ActionResult, Connector, SearchOperator, SyncContext
 from omni_connector.models import ActionDefinition, ActionResponse
 
 from .auth import MSGraphAuth
@@ -106,21 +104,21 @@ class MicrosoftConnector(Connector):
         action: str,
         params: dict[str, Any],
         credentials: dict[str, Any],
-    ) -> ActionResponse | Response:
+    ) -> ActionResult:
         if action == "search_users":
             return await self._action_search_users(params, credentials)
         elif action == "fetch_file":
             return await self._action_fetch_file(params, credentials)
-        return ActionResponse.not_supported(action)
+        return ActionResult.not_supported(action)
 
     async def _action_search_users(
         self,
         params: dict[str, Any],
         credentials: dict[str, Any],
-    ) -> ActionResponse:
+    ) -> ActionResult:
         query = params.get("query", "").strip()
         if not query:
-            return ActionResponse.success({"users": []})
+            return ActionResult.json_response(ActionResponse.success({"users": []}))
 
         try:
             raw_creds = credentials.get("credentials", credentials)
@@ -128,21 +126,25 @@ class MicrosoftConnector(Connector):
             client = GraphClient(auth)
             try:
                 users = await client.search_users(query, limit=20)
-                return ActionResponse.success({"users": users})
+                return ActionResult.json_response(
+                    ActionResponse.success({"users": users})
+                )
             finally:
                 await client.close()
         except Exception as e:
             logger.exception("search_users action failed")
-            return ActionResponse.failure(str(e))
+            return ActionResult.json_response(ActionResponse.failure(str(e)))
 
     async def _action_fetch_file(
         self,
         params: dict[str, Any],
         credentials: dict[str, Any],
-    ) -> ActionResponse | Response:
+    ) -> ActionResult:
         file_id = params.get("file_id", "").strip()
         if not file_id:
-            return ActionResponse.failure("Missing required parameter: file_id")
+            return ActionResult.json_response(
+                ActionResponse.failure("Missing required parameter: file_id")
+            )
 
         # Parse external_id: onedrive:{drive_id}:{item_id} or sharepoint:{site_id}:{drive_id}:{item_id}
         parts = file_id.split(":")
@@ -153,10 +155,12 @@ class MicrosoftConnector(Connector):
             drive_id = parts[2]
             item_id = parts[3]
         else:
-            return ActionResponse.failure(
-                f"Invalid file_id format: {file_id}. "
-                "Expected onedrive:{{drive_id}}:{{item_id}} or "
-                "sharepoint:{{site_id}}:{{drive_id}}:{{item_id}}"
+            return ActionResult.json_response(
+                ActionResponse.failure(
+                    f"Invalid file_id format: {file_id}. "
+                    "Expected onedrive:{{drive_id}}:{{item_id}} or "
+                    "sharepoint:{{site_id}}:{{drive_id}}:{{item_id}}"
+                )
             )
 
         try:
@@ -181,19 +185,12 @@ class MicrosoftConnector(Connector):
                     mime_type,
                 )
 
-                return Response(
-                    content=data,
-                    media_type=mime_type,
-                    headers={
-                        "X-File-Name": quote(file_name),
-                        "Content-Length": str(len(data)),
-                    },
-                )
+                return ActionResult.binary_response(data, mime_type)
             finally:
                 await client.close()
         except Exception as e:
             logger.exception("fetch_file action failed")
-            return ActionResponse.failure(str(e))
+            return ActionResult.json_response(ActionResponse.failure(str(e)))
 
     async def sync(
         self,

@@ -232,6 +232,35 @@ class ActionResponse(BaseModel):
         return cls(status="error", error=f"Action not supported: {action}")
 
 
+class ActionResult:
+    """Result returned by `Connector.execute_action`.
+
+    `json` is the standard path — the SDK wraps it in a JSON response.
+    `binary` is for actions that return raw bytes (e.g. file downloads)
+    — the SDK sets Content-Type and Content-Length headers automatically.
+    """
+
+    def __init__(
+        self,
+        json: ActionResponse | None = None,
+        binary: tuple[bytes, str] | None = None,
+    ):
+        self.json = json
+        self.binary = binary
+
+    @classmethod
+    def json_response(cls, response: ActionResponse) -> "ActionResult":
+        return cls(json=response)
+
+    @classmethod
+    def binary_response(cls, data: bytes, content_type: str) -> "ActionResult":
+        return cls(binary=(data, content_type))
+
+    @classmethod
+    def not_supported(cls, action: str) -> "ActionResult":
+        return cls.json_response(ActionResponse.not_supported(action))
+
+
 class ResourceRequest(BaseModel):
     uri: str
     credentials: dict[str, Any] = Field(default_factory=dict)

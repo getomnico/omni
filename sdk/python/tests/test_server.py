@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from omni_connector import (
+    ActionResult,
     ActionDefinition,
     ActionResponse,
     Connector,
@@ -85,13 +86,15 @@ class MockConnector(Connector):
         action: str,
         params: dict[str, Any],
         credentials: dict[str, Any],
-    ) -> ActionResponse:
+    ) -> ActionResult:
         self.action_called = True
         self.action_args = (action, params, credentials)
 
         if action == "test_action":
-            return ActionResponse.success({"result": "action completed"})
-        return ActionResponse.not_supported(action)
+            return ActionResult.json_response(
+                ActionResponse.success({"result": "action completed"})
+            )
+        return ActionResult.not_supported(action)
 
 
 @pytest.fixture

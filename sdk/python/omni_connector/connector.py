@@ -5,7 +5,13 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
 from .context import SyncContext
-from .models import ActionDefinition, ActionResponse, ConnectorManifest, SearchOperator
+from .models import (
+    ActionResult,
+    ActionDefinition,
+    ActionResponse,
+    ConnectorManifest,
+    SearchOperator,
+)
 
 if TYPE_CHECKING:
     from mcp.client.stdio import StdioServerParameters
@@ -211,7 +217,7 @@ class Connector(ABC):
         action: str,
         params: dict[str, Any],
         credentials: dict[str, Any],
-    ) -> ActionResponse:
+    ) -> ActionResult:
         """
         Execute a connector action.
 
@@ -224,8 +230,9 @@ class Connector(ABC):
             env = self.prepare_mcp_env(credentials)
             mcp_tool_names = {a.name for a in await adapter.get_action_definitions(env)}
             if action in mcp_tool_names:
-                return await adapter.execute_tool(action, params, env)
-        return ActionResponse.not_supported(action)
+                response = await adapter.execute_tool(action, params, env)
+                return ActionResult.json_response(response)
+        return ActionResult.not_supported(action)
 
     def serve(self, port: int = 8000, host: str = "0.0.0.0") -> None:
         """Start the HTTP server for this connector."""

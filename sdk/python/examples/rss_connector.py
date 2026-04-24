@@ -28,6 +28,7 @@ except ImportError:
     raise
 
 from omni_connector import (
+    ActionResult,
     ActionDefinition,
     ActionResponse,
     Connector,
@@ -175,30 +176,38 @@ class RSSConnector(Connector):
         action: str,
         params: dict[str, Any],
         credentials: dict[str, Any],
-    ) -> ActionResponse:
+    ) -> ActionResult:
         if action == "validate_feed":
             feed_url = params.get("feed_url")
             if not feed_url:
-                return ActionResponse.failure("Missing feed_url parameter")
+                return ActionResult.json_response(
+                    ActionResponse.failure("Missing feed_url parameter")
+                )
 
             try:
                 feed = feedparser.parse(feed_url)
                 if feed.bozo and feed.bozo_exception:
-                    return ActionResponse.failure(
-                        f"Feed parsing error: {feed.bozo_exception}"
+                    return ActionResult.json_response(
+                        ActionResponse.failure(
+                            f"Feed parsing error: {feed.bozo_exception}"
+                        )
                     )
 
-                return ActionResponse.success(
-                    {
-                        "valid": True,
-                        "title": feed.feed.get("title", "Unknown"),
-                        "entry_count": len(feed.entries),
-                    }
+                return ActionResult.json_response(
+                    ActionResponse.success(
+                        {
+                            "valid": True,
+                            "title": feed.feed.get("title", "Unknown"),
+                            "entry_count": len(feed.entries),
+                        }
+                    )
                 )
             except Exception as e:
-                return ActionResponse.failure(f"Failed to fetch feed: {e}")
+                return ActionResult.json_response(
+                    ActionResponse.failure(f"Failed to fetch feed: {e}")
+                )
 
-        return ActionResponse.not_supported(action)
+        return ActionResult.not_supported(action)
 
     def _parse_entry_date(self, entry: Any) -> datetime | None:
         """Parse the published date from an RSS entry."""
