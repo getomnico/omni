@@ -963,7 +963,7 @@ fn is_docling_supported_extension(filename: Option<&str>) -> bool {
 use crate::models::{
     SdkCancelSyncRequest, SdkCancelSyncResponse, SdkCompleteRequest, SdkCreateSyncRequest,
     SdkCreateSyncResponse, SdkEmitBatchRequest, SdkEmitEventRequest, SdkExtractContentResponse,
-    SdkExtractTextResponse, SdkFailRequest, SdkIncrementScannedRequest,
+    SdkExtractTextResponse, SdkFailRequest, SdkIncrementScannedRequest, SdkIncrementUpdatedRequest,
     SdkSourceSyncConfigResponse, SdkStatusResponse, SdkStoreContentRequest,
     SdkStoreContentResponse, SdkUserEmailResponse, SdkWebhookNotification, SdkWebhookResponse,
 };
@@ -1370,6 +1370,27 @@ pub async fn sdk_increment_scanned(
         .increment_scanned(&sync_run_id, request.count)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to increment scanned: {}", e)))?;
+
+    Ok(Json(SdkStatusResponse {
+        status: "ok".to_string(),
+    }))
+}
+
+pub async fn sdk_increment_updated(
+    State(state): State<AppState>,
+    Path(sync_run_id): Path<String>,
+    Json(request): Json<SdkIncrementUpdatedRequest>,
+) -> Result<Json<SdkStatusResponse>, ApiError> {
+    debug!(
+        "SDK: Incrementing updated for sync_run={} by {}",
+        sync_run_id, request.count
+    );
+
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+    sync_run_repo
+        .increment_updated(&sync_run_id, request.count)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to increment updated: {}", e)))?;
 
     Ok(Json(SdkStatusResponse {
         status: "ok".to_string(),

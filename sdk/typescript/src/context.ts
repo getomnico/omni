@@ -40,7 +40,9 @@ export class SyncContext {
     syncRunId: string,
     sourceId: string,
     state?: Record<string, unknown>,
-    syncMode: SyncMode = SyncMode.INCREMENTAL
+    syncMode: SyncMode = SyncMode.INCREMENTAL,
+    documentsScanned = 0,
+    documentsUpdated = 0
   ) {
     this.client = client;
     this._syncRunId = syncRunId;
@@ -52,6 +54,10 @@ export class SyncContext {
     const thresholds = thresholdsFor(syncMode);
     this.bufferSizeThreshold = thresholds.size;
     this.bufferTimeThresholdMs = thresholds.timeMs;
+    // Seed counters from the dispatch payload so resume continues from
+    // the manager's running tally rather than restarting at zero.
+    this._documentsScanned = documentsScanned;
+    this._documentsEmitted = documentsUpdated;
   }
 
   get syncRunId(): string {

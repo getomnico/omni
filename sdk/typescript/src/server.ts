@@ -147,7 +147,9 @@ export function createServer(connector: Connector): Express {
       syncRunId,
       sourceId,
       sourceData.state ?? undefined,
-      syncMode
+      syncMode,
+      request.documents_scanned,
+      request.documents_updated
     );
     activeSyncs.set(sourceId, ctx);
 

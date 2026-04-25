@@ -4,7 +4,6 @@ use omni_connector_sdk::Connector;
 use omni_google_connector::connector::GoogleConnector;
 use omni_google_connector::routes;
 use omni_google_connector::sync::SyncManager;
-use redis::Client as RedisClient;
 use shared::db::repositories::SyncRunRepository;
 use shared::models::SyncType;
 use shared::storage::postgres::PostgresStorage;
@@ -93,7 +92,6 @@ impl GoogleConnectorTestFixture {
         let sdk_client = SdkClient::new(&cm_url);
         let admin_client = Arc::new(omni_google_connector::admin::AdminClient::new());
         let sync_manager = Arc::new(SyncManager::new(
-            test_env.redis_client.clone(),
             test_env.mock_ai_server.base_url.clone(),
             Arc::clone(&admin_client),
             sdk_client.clone(),
@@ -133,10 +131,6 @@ impl GoogleConnectorTestFixture {
 
     pub fn pool(&self) -> &PgPool {
         self.test_env.db_pool.pool()
-    }
-
-    pub fn redis_client(&self) -> RedisClient {
-        self.test_env.redis_client.clone()
     }
 
     pub fn sync_run_repo(&self) -> SyncRunRepository {

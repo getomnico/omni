@@ -115,6 +115,11 @@ impl SyncManager {
             source_id: source_id.to_string(),
             sync_mode: effective_sync_type,
             last_sync_at,
+            // Fresh sync_run was just created, counters are zero. Carrying
+            // them in the payload anyway so the wire shape matches the
+            // resume case in `handle_lost_sync`.
+            documents_scanned: sync_run.documents_scanned,
+            documents_updated: sync_run.documents_updated,
         };
 
         // Trigger sync (non-blocking call to connector)
@@ -376,6 +381,10 @@ impl SyncManager {
             source_id: source_id.to_string(),
             sync_mode: sync_run.sync_type,
             last_sync_at,
+            // Resume: forward the running tally so the connector's local
+            // counter starts at the right base rather than at zero.
+            documents_scanned: sync_run.documents_scanned,
+            documents_updated: sync_run.documents_updated,
         };
 
         match self

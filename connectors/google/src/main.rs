@@ -29,8 +29,6 @@ async fn main() -> Result<()> {
 
     let config = GoogleConnectorConfig::from_env();
 
-    let redis_client = redis::Client::open(config.redis.redis_url.clone())?;
-
     let api_rate_limit = std::env::var("GOOGLE_API_RATE_LIMIT")
         .unwrap_or_else(|_| "180".to_string())
         .parse::<u32>()
@@ -45,7 +43,6 @@ async fn main() -> Result<()> {
     let sdk_client = SdkClient::from_env()?;
 
     let sync_manager = Arc::new(SyncManager::new(
-        redis_client,
         config.ai_service_url.clone(),
         Arc::clone(&admin_client),
         sdk_client,

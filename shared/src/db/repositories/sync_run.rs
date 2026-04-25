@@ -77,6 +77,10 @@ impl SyncRunRepository {
         documents_scanned: i32,
         documents_updated: i32,
     ) -> Result<(), DatabaseError> {
+        // Plain assignment. The connector is expected to have seeded its
+        // local counters from `ctx.documents_scanned()` / `documents_updated()`
+        // on (re-)dispatch, so the absolute value sent here reflects the
+        // full cumulative tally — not just the current attempt's work.
         sqlx::query(
             "UPDATE sync_runs
              SET status = $1, completed_at = CURRENT_TIMESTAMP,
@@ -114,6 +118,21 @@ impl SyncRunRepository {
         sqlx::query(
             "UPDATE sync_runs
              SET documents_scanned = documents_scanned + $1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $2",
+        )
+        .bind(count)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn increment_updated(&self, id: &str, count: i32) -> Result<(), DatabaseError> {
+        sqlx::query(
+            "UPDATE sync_runs
+             SET documents_updated = documents_updated + $1,
                  updated_at = CURRENT_TIMESTAMP
              WHERE id = $2",
         )

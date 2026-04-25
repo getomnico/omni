@@ -128,6 +128,10 @@ export const SyncRequestSchema = z.object({
   sync_run_id: z.string(),
   source_id: z.string(),
   sync_mode: z.string(),
+  // Manager's running tally at dispatch time. Zero on a fresh sync;
+  // non-zero on resume so the connector can keep counting from there.
+  documents_scanned: z.number().int().default(0),
+  documents_updated: z.number().int().default(0),
 });
 export type SyncRequest = z.infer<typeof SyncRequestSchema>;
 

@@ -46,6 +46,8 @@ class SyncContext:
         user_whitelist: list[str] | None = None,
         user_blacklist: list[str] | None = None,
         sync_mode: SyncMode = SyncMode.INCREMENTAL,
+        documents_scanned: int = 0,
+        documents_updated: int = 0,
     ):
         self._client = sdk_client
         self._sync_run_id = sync_run_id
@@ -53,8 +55,11 @@ class SyncContext:
         self._source_type = source_type
         self._state = state or {}
         self._cancelled = asyncio.Event()
-        self._documents_emitted = 0
-        self._documents_scanned = 0
+        # Counters report seed (from the dispatch payload) plus everything
+        # incremented during this run, so resume picks up where the previous
+        # attempt left off rather than restarting at zero.
+        self._documents_emitted = documents_updated
+        self._documents_scanned = documents_scanned
         self._content_storage = ContentStorage(sdk_client, sync_run_id)
         self._user_filter_mode = user_filter_mode
         self._user_whitelist = {e.lower() for e in (user_whitelist or [])}

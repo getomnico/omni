@@ -1,7 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use dashmap::DashMap;
 use omni_connector_sdk::SyncContext;
-use redis::{AsyncCommands, Client as RedisClient};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -34,7 +33,6 @@ pub struct WebhookDebounce {
 }
 
 pub struct SyncManager {
-    redis_client: RedisClient,
     drive_client: DriveClient,
     gmail_client: GmailClient,
     admin_client: Arc<AdminClient>,
@@ -53,155 +51,8 @@ pub struct SyncManager {
     pub debounce_duration_ms: AtomicU64,
 }
 
-#[derive(Clone)]
-pub struct SyncState {
-    redis_client: RedisClient,
-}
-
-impl SyncState {
-    pub fn new(redis_client: RedisClient) -> Self {
-        Self { redis_client }
-    }
-
-    pub fn get_file_sync_key(&self, source_id: &str, file_id: &str) -> String {
-        format!("google:drive:{}:{}", source_id, file_id)
-    }
-
-    pub fn get_test_file_sync_key(&self, source_id: &str, file_id: &str) -> String {
-        format!("google:drive:test:{}:{}", source_id, file_id)
-    }
-
-    pub async fn get_file_sync_state(
-        &self,
-        source_id: &str,
-        file_id: &str,
-    ) -> Result<Option<String>> {
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        let key = self.get_file_sync_key(source_id, file_id);
-
-        let result: Option<String> = conn.get(&key).await?;
-        Ok(result)
-    }
-
-    pub async fn set_file_sync_state(
-        &self,
-        source_id: &str,
-        file_id: &str,
-        modified_time: &str,
-    ) -> Result<()> {
-        self.set_file_sync_state_with_expiry(source_id, file_id, modified_time, 30 * 24 * 60 * 60)
-            .await
-    }
-
-    pub async fn set_file_sync_state_with_expiry(
-        &self,
-        source_id: &str,
-        file_id: &str,
-        modified_time: &str,
-        expiry_seconds: u64,
-    ) -> Result<()> {
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        let key = if cfg!(test) {
-            self.get_test_file_sync_key(source_id, file_id)
-        } else {
-            self.get_file_sync_key(source_id, file_id)
-        };
-
-        let _: () = conn.set_ex(&key, modified_time, expiry_seconds).await?;
-        Ok(())
-    }
-
-    pub async fn delete_file_sync_state(&self, source_id: &str, file_id: &str) -> Result<()> {
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        let key = if cfg!(test) {
-            self.get_test_file_sync_key(source_id, file_id)
-        } else {
-            self.get_file_sync_key(source_id, file_id)
-        };
-
-        let _: () = conn.del(&key).await?;
-        Ok(())
-    }
-
-    pub async fn get_all_synced_file_ids(&self, source_id: &str) -> Result<HashSet<String>> {
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        let pattern = if cfg!(test) {
-            format!("google:drive:test:{}:*", source_id)
-        } else {
-            format!("google:drive:{}:*", source_id)
-        };
-
-        let keys: Vec<String> = conn.keys(&pattern).await?;
-        let prefix = if cfg!(test) {
-            format!("google:drive:test:{}:", source_id)
-        } else {
-            format!("google:drive:{}:", source_id)
-        };
-        let file_ids: HashSet<String> = keys
-            .into_iter()
-            .filter_map(|key| key.strip_prefix(&prefix).map(|s| s.to_string()))
-            .collect();
-
-        Ok(file_ids)
-    }
-
-    // Gmail thread sync state methods
-    pub fn get_thread_sync_key(&self, source_id: &str, thread_id: &str) -> String {
-        format!("google:gmail:sync:{}:{}", source_id, thread_id)
-    }
-
-    pub fn get_test_thread_sync_key(&self, source_id: &str, thread_id: &str) -> String {
-        format!("google:gmail:sync:test:{}:{}", source_id, thread_id)
-    }
-
-    pub async fn get_thread_sync_state(
-        &self,
-        source_id: &str,
-        thread_id: &str,
-    ) -> Result<Option<String>> {
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        let key = if cfg!(test) {
-            self.get_test_thread_sync_key(source_id, thread_id)
-        } else {
-            self.get_thread_sync_key(source_id, thread_id)
-        };
-
-        let result: Option<String> = conn.get(&key).await?;
-        Ok(result)
-    }
-
-    pub async fn set_thread_sync_state(
-        &self,
-        source_id: &str,
-        thread_id: &str,
-        latest_date: &str,
-    ) -> Result<()> {
-        self.set_thread_sync_state_with_expiry(source_id, thread_id, latest_date, 30 * 24 * 60 * 60)
-            .await
-    }
-
-    pub async fn set_thread_sync_state_with_expiry(
-        &self,
-        source_id: &str,
-        thread_id: &str,
-        latest_date: &str,
-        expiry_seconds: u64,
-    ) -> Result<()> {
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        let key = if cfg!(test) {
-            self.get_test_thread_sync_key(source_id, thread_id)
-        } else {
-            self.get_thread_sync_key(source_id, thread_id)
-        };
-
-        let _: () = conn.set_ex(&key, latest_date, expiry_seconds).await?;
-        Ok(())
-    }
-}
-
 impl SyncManager {
     pub fn new(
-        redis_client: RedisClient,
         ai_service_url: String,
         admin_client: Arc<AdminClient>,
         sdk_client: SdkClient,
@@ -227,7 +78,6 @@ impl SyncManager {
         let gmail_client = GmailClient::with_rate_limiter(rate_limiter);
 
         Self {
-            redis_client,
             drive_client,
             gmail_client,
             admin_client,
@@ -248,12 +98,11 @@ impl SyncManager {
         &self,
         _config: serde_json::Value,
         _credentials: serde_json::Value,
-        _state: Option<GoogleConnectorState>,
+        state: Option<GoogleConnectorState>,
         ctx: SyncContext,
     ) -> Result<()> {
         let sync_run_id = ctx.sync_run_id().to_string();
         let source_id = ctx.source_id().to_string();
-        let sync_type = ctx.sync_mode();
 
         info!(
             "Starting sync for source {} (sync_run_id: {})",
@@ -265,20 +114,31 @@ impl SyncManager {
         self.active_syncs
             .insert(sync_run_id.clone(), ctx.cancelled_flag());
 
-        let outcome = self
-            .run_sync_inner(&sync_run_id, &source_id, sync_type, &ctx)
-            .await;
+        let outcome = self.run_sync_inner(state, &ctx).await;
         self.active_syncs.remove(&sync_run_id);
 
         match outcome {
-            Ok(Some((files_scanned, _files_processed, files_updated))) => {
-                ctx.complete(files_scanned as i32, files_updated as i32, None)
-                    .await?;
+            Ok(Some(final_state)) => {
+                // `complete` flushes events and persists the final state in
+                // one call so the run terminates with everything durable on
+                // disk. `ctx.documents_scanned()` / `documents_updated()`
+                // already track seed (from the dispatch payload) plus every
+                // `ctx.increment_*` issued during the run, so the absolute
+                // we ship here matches the manager's running tally exactly
+                // — `mark_completed`'s overwrite is a no-op on the counters.
+                let state_json = serde_json::to_value(&final_state)?;
+                ctx.complete(
+                    ctx.documents_scanned(),
+                    ctx.documents_updated(),
+                    Some(state_json),
+                )
+                .await?;
                 Ok(())
             }
             // Cancelled mid-sync: tell the SDK so the run is marked
             // `cancelled` rather than `failed`. Returning Ok keeps the
-            // SDK's default-fail branch from firing.
+            // SDK's default-fail branch from firing. Per-user state was
+            // already checkpointed mid-sync via `ctx.save_connector_state`.
             Ok(None) => {
                 info!("Sync {} was cancelled", sync_run_id);
                 ctx.cancel().await?;
@@ -290,14 +150,17 @@ impl SyncManager {
 
     /// Inner sync body. Returns `Ok(None)` if the sync was cancelled
     /// mid-flight (distinct from a successful completion or a hard
-    /// failure).
+    /// failure). Returns `Ok(Some(state))` with the final connector state
+    /// on success, which the caller persists via `ctx.complete`.
     async fn run_sync_inner(
         &self,
-        sync_run_id: &str,
-        source_id: &str,
-        sync_type: SyncType,
-        _ctx: &SyncContext,
-    ) -> Result<Option<(usize, usize, usize)>> {
+        existing_state: Option<GoogleConnectorState>,
+        ctx: &SyncContext,
+    ) -> Result<Option<GoogleConnectorState>> {
+        let sync_run_id = ctx.sync_run_id();
+        let source_id = ctx.source_id();
+        let sync_type = ctx.sync_mode();
+
         let source = self
             .sdk_client
             .get_source(source_id)
@@ -306,14 +169,26 @@ impl SyncManager {
 
         let known_groups = self.maybe_sync_groups(&source, sync_run_id).await;
 
+        // The SDK passes us the persisted state on each (re-)dispatch — we use
+        // it directly instead of refetching via HTTP. On a fresh sync this is
+        // None; on resume after a crash, this is the last checkpoint written
+        // mid-sync.
+        let existing_state = existing_state.unwrap_or_default();
+
         let result = match source.source_type {
             SourceType::GoogleDrive => {
-                self.sync_drive_source_internal(&source, sync_run_id, sync_type)
+                self.sync_drive_source_internal(&source, sync_type, existing_state, ctx)
                     .await
             }
             SourceType::Gmail => {
-                self.sync_gmail_source_internal(&source, sync_run_id, sync_type, known_groups)
-                    .await
+                self.sync_gmail_source_internal(
+                    &source,
+                    sync_type,
+                    existing_state,
+                    known_groups,
+                    ctx,
+                )
+                .await
             }
             _ => Err(anyhow!("Unsupported source type: {:?}", source.source_type)),
         };
@@ -371,8 +246,7 @@ impl SyncManager {
         service_auth: Arc<GoogleAuth>,
         source_id: &str,
         sync_run_id: &str,
-        sync_state: &SyncState,
-        current_files: Arc<std::sync::Mutex<HashSet<String>>>,
+        ctx: &SyncContext,
         created_after: Option<&str>,
     ) -> Result<(usize, usize)> {
         info!("Processing Drive files for user: {}", user_email);
@@ -411,73 +285,35 @@ impl SyncManager {
                 page_file_count, page_token, user_email
             );
 
-            // Process files in this page
+            // Process files in this page. Indexer dedups by (external_id, modified_time);
+            // we always emit and let the indexer skip unchanged docs.
             for file in response.files {
-                // Track this file as currently existing
-                {
-                    let mut current_files_guard = current_files.lock().unwrap();
-                    current_files_guard.insert(file.id.clone());
-                }
-
                 if self.should_index_file(&file) {
-                    let should_process = if let Some(modified_time) = &file.modified_time {
-                        match sync_state.get_file_sync_state(source_id, &file.id).await {
-                            Ok(Some(last_modified)) => {
-                                if last_modified != *modified_time {
-                                    debug!(
-                                        "File {} has been modified (was: {}, now: {})",
-                                        file.name, last_modified, modified_time
-                                    );
-                                    true
-                                } else {
-                                    debug!("File {} unchanged, skipping", file.name);
-                                    false
-                                }
-                            }
-                            Ok(None) => {
-                                debug!("File {} is new, processing", file.name);
-                                true
-                            }
-                            Err(e) => {
-                                warn!("Failed to get sync state for file {}: {}", file.name, e);
-                                true // Process anyway
-                            }
-                        }
-                    } else {
-                        warn!("File {} has no modified_time, processing anyway", file.name);
-                        true
-                    };
+                    file_batch.push(UserFile {
+                        user_email: Arc::new(user_email.to_string()),
+                        file,
+                    });
 
-                    if should_process {
-                        file_batch.push(UserFile {
-                            user_email: Arc::new(user_email.to_string()),
-                            file,
-                        });
+                    if file_batch.len() >= BATCH_SIZE {
+                        let (processed, updated) = self
+                            .process_file_batch(
+                                file_batch.clone(),
+                                source_id,
+                                sync_run_id,
+                                ctx,
+                                service_auth.clone(),
+                            )
+                            .await?;
 
-                        // Process batch when it reaches the desired size
-                        if file_batch.len() >= BATCH_SIZE {
-                            let (processed, updated) = self
-                                .process_file_batch(
-                                    file_batch.clone(),
-                                    source_id,
-                                    sync_run_id,
-                                    sync_state,
-                                    service_auth.clone(),
-                                )
-                                .await?;
-
-                            total_processed += processed;
-                            total_updated += updated;
-                            file_batch.clear();
-                        }
+                        total_processed += processed;
+                        total_updated += updated;
+                        file_batch.clear();
                     }
                 }
             }
 
             // Update scanned count for this page via SDK
-            self.sdk_client
-                .increment_scanned(sync_run_id, page_file_count as i32)
-                .await?;
+            ctx.increment_scanned(page_file_count as i32).await?;
 
             // Check for cancellation
             if self.is_cancelled(sync_run_id) {
@@ -502,7 +338,7 @@ impl SyncManager {
                     file_batch,
                     source_id,
                     sync_run_id,
-                    sync_state,
+                    ctx,
                     service_auth.clone(),
                 )
                 .await?;
@@ -524,7 +360,7 @@ impl SyncManager {
         service_auth: Arc<GoogleAuth>,
         source_id: &str,
         sync_run_id: &str,
-        sync_state: &SyncState,
+        ctx: &SyncContext,
         start_page_token: &str,
     ) -> Result<(usize, usize)> {
         info!(
@@ -565,9 +401,7 @@ impl SyncManager {
             user_email
         );
 
-        self.sdk_client
-            .increment_scanned(sync_run_id, all_changes.len() as i32)
-            .await?;
+        ctx.increment_scanned(all_changes.len() as i32).await?;
 
         let mut file_batch = Vec::new();
         let mut total_processed = 0;
@@ -585,9 +419,6 @@ impl SyncManager {
                     );
                     self.publish_deletion_event(sync_run_id, source_id, file_id)
                         .await?;
-                    sync_state
-                        .delete_file_sync_state(source_id, file_id)
-                        .await?;
                 }
                 continue;
             }
@@ -597,36 +428,24 @@ impl SyncManager {
                     continue;
                 }
 
-                let should_process = if let Some(modified_time) = &file.modified_time {
-                    match sync_state.get_file_sync_state(source_id, &file.id).await {
-                        Ok(Some(last_modified)) => last_modified != *modified_time,
-                        Ok(None) => true,
-                        Err(_) => true,
-                    }
-                } else {
-                    true
-                };
+                file_batch.push(UserFile {
+                    user_email: Arc::new(user_email.to_string()),
+                    file,
+                });
 
-                if should_process {
-                    file_batch.push(UserFile {
-                        user_email: Arc::new(user_email.to_string()),
-                        file,
-                    });
-
-                    if file_batch.len() >= BATCH_SIZE {
-                        let (processed, updated) = self
-                            .process_file_batch(
-                                file_batch.clone(),
-                                source_id,
-                                sync_run_id,
-                                sync_state,
-                                service_auth.clone(),
-                            )
-                            .await?;
-                        total_processed += processed;
-                        total_updated += updated;
-                        file_batch.clear();
-                    }
+                if file_batch.len() >= BATCH_SIZE {
+                    let (processed, updated) = self
+                        .process_file_batch(
+                            file_batch.clone(),
+                            source_id,
+                            sync_run_id,
+                            ctx,
+                            service_auth.clone(),
+                        )
+                        .await?;
+                    total_processed += processed;
+                    total_updated += updated;
+                    file_batch.clear();
                 }
             }
         }
@@ -637,7 +456,7 @@ impl SyncManager {
                     file_batch,
                     source_id,
                     sync_run_id,
-                    sync_state,
+                    ctx,
                     service_auth.clone(),
                 )
                 .await?;
@@ -657,7 +476,7 @@ impl SyncManager {
         files: Vec<UserFile>,
         source_id: &str,
         sync_run_id: &str,
-        sync_state: &SyncState,
+        ctx: &SyncContext,
         service_auth: Arc<GoogleAuth>,
     ) -> Result<(usize, usize)> {
         info!("Processing batch of {} files", files.len());
@@ -665,13 +484,13 @@ impl SyncManager {
         let mut processed = 0;
         let mut updated = 0;
 
-        // Process files concurrently within the batch
         let sync_run_id_owned = sync_run_id.to_string();
+        let source_id_owned = source_id.to_string();
+
         let tasks = files.into_iter().map(|user_file| {
             let service_auth = service_auth.clone();
-            let source_id = source_id.to_string();
+            let source_id = source_id_owned.clone();
             let sync_run_id = sync_run_id_owned.clone();
-            let sync_state = sync_state.clone();
             let drive_client = self.drive_client.clone();
             let sdk_client = self.sdk_client.clone();
 
@@ -681,7 +500,6 @@ impl SyncManager {
                     user_file.file.name, user_file.file.id, user_file.user_email
                 );
 
-                // Use rate limiter for file content download
                 let result = drive_client
                     .get_file_content(&service_auth, &user_file.user_email, &user_file.file)
                     .await
@@ -719,7 +537,6 @@ impl SyncManager {
                         };
                         match store_result {
                             Ok(content_id) => {
-                                // Resolve the full path for this file
                                 let file_path = match self
                                     .resolve_file_path(
                                         &service_auth,
@@ -747,31 +564,13 @@ impl SyncManager {
                                 );
 
                                 match sdk_client.emit_event(&sync_run_id, &source_id, event).await {
-                                    Ok(_) => {
-                                        if let Some(modified_time) = &user_file.file.modified_time {
-                                            if let Err(e) = sync_state
-                                                .set_file_sync_state(
-                                                    &source_id,
-                                                    &user_file.file.id,
-                                                    modified_time,
-                                                )
-                                                .await
-                                            {
-                                                error!(
-                                                    "Failed to update sync state for file {}: {:?}",
-                                                    user_file.file.name, e
-                                                );
-                                                return (1, 0); // Processed but not updated
-                                            }
-                                        }
-                                        (1, 1) // Processed and updated
-                                    }
+                                    Ok(_) => (1, 1),
                                     Err(e) => {
                                         error!(
                                             "Failed to queue event for file {}: {:?}",
                                             user_file.file.name, e
                                         );
-                                        (1, 0) // Processed but failed
+                                        (1, 0)
                                     }
                                 }
                             }
@@ -780,7 +579,7 @@ impl SyncManager {
                                     "Failed to store content for file {}: {}",
                                     user_file.file.name, e
                                 );
-                                (1, 0) // Processed but failed
+                                (1, 0)
                             }
                         }
                     }
@@ -789,19 +588,22 @@ impl SyncManager {
                             "Failed to get content for file {} ({}): {:?}",
                             user_file.file.name, user_file.file.id, e
                         );
-                        (1, 0) // Processed but failed
+                        (1, 0)
                     }
                 }
             }
         });
 
-        // Execute all tasks concurrently
         let results = futures::future::join_all(tasks).await;
-
-        // Aggregate results
         for (p, u) in results {
             processed += p;
             updated += u;
+        }
+
+        // Push the incremental updated count to the manager so a mid-sync
+        // crash doesn't lose this batch's contribution to documents_updated.
+        if updated > 0 {
+            ctx.increment_updated(updated as i32).await?;
         }
 
         info!(
@@ -814,9 +616,12 @@ impl SyncManager {
     async fn sync_drive_source_internal(
         &self,
         source: &Source,
-        sync_run_id: &str,
         sync_type: SyncType,
-    ) -> Result<(usize, usize, usize)> {
+        existing_state: GoogleConnectorState,
+        ctx: &SyncContext,
+    ) -> Result<GoogleConnectorState> {
+        let sync_run_id = ctx.sync_run_id();
+
         let service_creds = self.get_service_credentials(&source.id).await?;
         let service_auth = Arc::new(self.create_auth(&service_creds, source.source_type).await?);
 
@@ -858,25 +663,12 @@ impl SyncManager {
 
         let is_incremental = matches!(sync_type, SyncType::Incremental);
 
-        let existing_state: GoogleConnectorState =
-            if let Ok(Some(raw_state)) = self.sdk_client.get_connector_state(&source.id).await {
-                serde_json::from_value(raw_state).unwrap_or_else(|e| {
-                    warn!(
-                        "Failed to parse connector state for Drive source {}: {}",
-                        source.id, e
-                    );
-                    GoogleConnectorState::default()
-                })
-            } else {
-                GoogleConnectorState::default()
-            };
-
+        let webhook_channel_id = existing_state.webhook_channel_id.clone();
+        let webhook_resource_id = existing_state.webhook_resource_id.clone();
+        let webhook_expires_at = existing_state.webhook_expires_at;
+        let gmail_history_ids = existing_state.gmail_history_ids.clone();
         let old_page_tokens = existing_state.drive_page_tokens.unwrap_or_default();
-        let new_page_tokens = Arc::new(std::sync::Mutex::new(HashMap::<String, String>::new()));
-
-        let sync_state = SyncState::new(self.redis_client.clone());
-        let synced_files = sync_state.get_all_synced_file_ids(&source.id).await?;
-        let current_files = Arc::new(std::sync::Mutex::new(HashSet::new()));
+        let mut new_page_tokens: HashMap<String, String> = HashMap::new();
 
         info!(
             "Starting user processing for {} users (Drive, incremental={})",
@@ -886,7 +678,6 @@ impl SyncManager {
 
         let mut total_processed = 0;
         let mut total_updated = 0;
-        let mut total_scanned = 0;
         let mut errors = 0;
 
         for cur_user_email in &user_emails {
@@ -898,19 +689,6 @@ impl SyncManager {
             match service_auth.get_access_token(cur_user_email).await {
                 Ok(access_token) => {
                     info!("Processing user: {}", cur_user_email);
-
-                    // Capture the current page token as watermark for the next sync
-                    let current_page_token =
-                        match self.drive_client.get_start_page_token(&access_token).await {
-                            Ok(token) => Some(token),
-                            Err(e) => {
-                                warn!(
-                                    "Failed to get start page token for user {}: {}",
-                                    cur_user_email, e
-                                );
-                                None
-                            }
-                        };
 
                     let stored_page_token = old_page_tokens.get(cur_user_email.as_str());
                     let use_incremental = is_incremental && stored_page_token.is_some();
@@ -927,7 +705,7 @@ impl SyncManager {
                                 service_auth.clone(),
                                 &source.id,
                                 sync_run_id,
-                                &sync_state,
+                                ctx,
                                 start_token,
                             )
                             .await
@@ -948,8 +726,7 @@ impl SyncManager {
                                         service_auth.clone(),
                                         &source.id,
                                         sync_run_id,
-                                        &sync_state,
-                                        current_files.clone(),
+                                        ctx,
                                         Some(&drive_cutoff_date),
                                     )
                                     .await
@@ -964,14 +741,13 @@ impl SyncManager {
                             service_auth.clone(),
                             &source.id,
                             sync_run_id,
-                            &sync_state,
-                            current_files.clone(),
+                            ctx,
                             Some(&drive_cutoff_date),
                         )
                         .await
                     };
 
-                    match result {
+                    let user_succeeded = match result {
                         Ok((processed, updated)) => {
                             total_processed += processed;
                             total_updated += updated;
@@ -979,18 +755,54 @@ impl SyncManager {
                                 "User {} Drive sync completed: {} processed, {} updated",
                                 cur_user_email, processed, updated
                             );
+                            true
                         }
                         Err(e) => {
                             error!("Failed to process Drive for user {}: {}", cur_user_email, e);
                             errors += 1;
+                            false
                         }
-                    }
+                    };
 
-                    if let Some(page_token) = current_page_token {
-                        new_page_tokens
-                            .lock()
-                            .unwrap()
-                            .insert(cur_user_email.clone(), page_token);
+                    // Capture the watermark AFTER the user's files are fully
+                    // processed. If we captured before and crashed mid-user,
+                    // resume would advance past the user's unprocessed files.
+                    if user_succeeded {
+                        match self.drive_client.get_start_page_token(&access_token).await {
+                            Ok(token) => {
+                                new_page_tokens.insert(cur_user_email.clone(), token);
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to get start page token for user {}: {}",
+                                    cur_user_email, e
+                                );
+                            }
+                        }
+
+                        // Per-user checkpoint: persist progress so a crash
+                        // before later users finish doesn't lose this user's
+                        // work. State-save errors are fatal (silent loss is
+                        // worse than a failed sync).
+                        let checkpoint_state = GoogleConnectorState {
+                            webhook_channel_id: webhook_channel_id.clone(),
+                            webhook_resource_id: webhook_resource_id.clone(),
+                            webhook_expires_at,
+                            gmail_history_ids: gmail_history_ids.clone(),
+                            drive_page_tokens: if new_page_tokens.is_empty() {
+                                None
+                            } else {
+                                Some(new_page_tokens.clone())
+                            },
+                        };
+                        ctx.save_connector_state(serde_json::to_value(&checkpoint_state)?)
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "Failed to checkpoint Drive state after user {}",
+                                    cur_user_email
+                                )
+                            })?;
                     }
                 }
                 Err(e) => {
@@ -1005,55 +817,6 @@ impl SyncManager {
             total_processed, total_updated, errors
         );
 
-        // Only run deletion scan during full sync; incremental handles deletions via DriveChange.removed
-        if !is_incremental {
-            let current_files_set = {
-                let current_files_guard = current_files.lock().unwrap();
-                current_files_guard.clone()
-            };
-            total_scanned = current_files_set.len();
-
-            for deleted_file_id in synced_files.difference(&current_files_set) {
-                info!(
-                    "File {} was deleted, publishing deletion event",
-                    deleted_file_id
-                );
-                self.publish_deletion_event(sync_run_id, &source.id, deleted_file_id)
-                    .await?;
-                sync_state
-                    .delete_file_sync_state(&source.id, deleted_file_id)
-                    .await?;
-            }
-        }
-
-        // Save updated connector state, preserving webhook and gmail fields
-        let final_page_tokens = {
-            let tokens = new_page_tokens.lock().unwrap();
-            tokens.clone()
-        };
-        let updated_state = GoogleConnectorState {
-            webhook_channel_id: existing_state.webhook_channel_id,
-            webhook_resource_id: existing_state.webhook_resource_id,
-            webhook_expires_at: existing_state.webhook_expires_at,
-            gmail_history_ids: existing_state.gmail_history_ids,
-            drive_page_tokens: if final_page_tokens.is_empty() {
-                None
-            } else {
-                Some(final_page_tokens)
-            },
-        };
-
-        if let Err(e) = self
-            .sdk_client
-            .save_connector_state(&source.id, serde_json::to_value(&updated_state)?)
-            .await
-        {
-            error!(
-                "Failed to save Drive page tokens in connector state for source {}: {}",
-                source.id, e
-            );
-        }
-
         info!(
             "Sync completed for source {}: {} processed, {} updated",
             source.id, total_processed, total_updated
@@ -1063,16 +826,30 @@ impl SyncManager {
         self.folder_cache.clear();
 
         info!("Completed sync for source: {}", source.id);
-        Ok((total_scanned, total_processed, total_updated))
+
+        Ok(GoogleConnectorState {
+            webhook_channel_id,
+            webhook_resource_id,
+            webhook_expires_at,
+            gmail_history_ids,
+            drive_page_tokens: if new_page_tokens.is_empty() {
+                None
+            } else {
+                Some(new_page_tokens)
+            },
+        })
     }
 
     async fn sync_gmail_source_internal(
         &self,
         source: &Source,
-        sync_run_id: &str,
         sync_type: SyncType,
+        existing_state: GoogleConnectorState,
         known_groups: HashSet<String>,
-    ) -> Result<(usize, usize, usize)> {
+        ctx: &SyncContext,
+    ) -> Result<GoogleConnectorState> {
+        let sync_run_id = ctx.sync_run_id();
+
         let service_creds = self.get_service_credentials(&source.id).await?;
         let service_auth = Arc::new(self.create_auth(&service_creds, source.source_type).await?);
 
@@ -1113,19 +890,10 @@ impl SyncManager {
 
         let is_incremental = matches!(sync_type, SyncType::Incremental);
 
-        let existing_state: GoogleConnectorState =
-            if let Ok(Some(raw_state)) = self.sdk_client.get_connector_state(&source.id).await {
-                serde_json::from_value(raw_state).unwrap_or_else(|e| {
-                    warn!(
-                        "Failed to parse connector state for Gmail source {}: {}",
-                        source.id, e
-                    );
-                    GoogleConnectorState::default()
-                })
-            } else {
-                GoogleConnectorState::default()
-            };
-
+        let webhook_channel_id = existing_state.webhook_channel_id.clone();
+        let webhook_resource_id = existing_state.webhook_resource_id.clone();
+        let webhook_expires_at = existing_state.webhook_expires_at;
+        let drive_page_tokens = existing_state.drive_page_tokens.clone();
         let old_history_ids = existing_state.gmail_history_ids.unwrap_or_default();
         let mut new_history_ids: HashMap<String, String> = HashMap::new();
 
@@ -1151,21 +919,6 @@ impl SyncManager {
                 Ok(_token) => {
                     info!("Processing user: {}", cur_user_email);
 
-                    let current_history_id = match self
-                        .gmail_client
-                        .get_profile(&service_auth, &cur_user_email)
-                        .await
-                    {
-                        Ok(profile) => Some(profile.history_id),
-                        Err(e) => {
-                            warn!(
-                                "Failed to get Gmail profile for user {}: {}",
-                                cur_user_email, e
-                            );
-                            None
-                        }
-                    };
-
                     let stored_history_id = old_history_ids.get(cur_user_email.as_str());
                     let use_incremental = is_incremental && stored_history_id.is_some();
 
@@ -1181,6 +934,7 @@ impl SyncManager {
                                 service_auth.clone(),
                                 &source.id,
                                 sync_run_id,
+                                ctx,
                                 start_id,
                                 processed_threads.clone(),
                                 known_groups.clone(),
@@ -1200,6 +954,7 @@ impl SyncManager {
                                         service_auth.clone(),
                                         &source.id,
                                         sync_run_id,
+                                        ctx,
                                         processed_threads.clone(),
                                         Some(&gmail_cutoff_date),
                                         known_groups.clone(),
@@ -1216,6 +971,7 @@ impl SyncManager {
                             service_auth.clone(),
                             &source.id,
                             sync_run_id,
+                            ctx,
                             processed_threads.clone(),
                             Some(&gmail_cutoff_date),
                             known_groups.clone(),
@@ -1223,7 +979,7 @@ impl SyncManager {
                         .await
                     };
 
-                    match result {
+                    let user_succeeded = match result {
                         Ok((processed, updated)) => {
                             total_processed += processed;
                             total_updated += updated;
@@ -1231,14 +987,53 @@ impl SyncManager {
                                 "User {} Gmail sync completed: {} processed, {} updated",
                                 cur_user_email, processed, updated
                             );
+                            true
                         }
                         Err(e) => {
                             error!("Failed to process Gmail for user {}: {}", cur_user_email, e);
+                            false
                         }
-                    }
+                    };
 
-                    if let Some(history_id) = current_history_id {
-                        new_history_ids.insert(cur_user_email.clone(), history_id);
+                    // Capture the historyId watermark AFTER the user finishes
+                    // and checkpoint immediately. Capturing before processing
+                    // would let resume skip past unprocessed history on crash.
+                    if user_succeeded {
+                        match self
+                            .gmail_client
+                            .get_profile(&service_auth, &cur_user_email)
+                            .await
+                        {
+                            Ok(profile) => {
+                                new_history_ids.insert(cur_user_email.clone(), profile.history_id);
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to get Gmail profile for user {}: {}",
+                                    cur_user_email, e
+                                );
+                            }
+                        }
+
+                        let checkpoint_state = GoogleConnectorState {
+                            webhook_channel_id: webhook_channel_id.clone(),
+                            webhook_resource_id: webhook_resource_id.clone(),
+                            webhook_expires_at,
+                            gmail_history_ids: if new_history_ids.is_empty() {
+                                None
+                            } else {
+                                Some(new_history_ids.clone())
+                            },
+                            drive_page_tokens: drive_page_tokens.clone(),
+                        };
+                        ctx.save_connector_state(serde_json::to_value(&checkpoint_state)?)
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "Failed to checkpoint Gmail state after user {}",
+                                    cur_user_email
+                                )
+                            })?;
                     }
                 }
                 Err(e) => {
@@ -1247,36 +1042,24 @@ impl SyncManager {
             }
         }
 
-        let updated_state = GoogleConnectorState {
-            webhook_channel_id: existing_state.webhook_channel_id,
-            webhook_resource_id: existing_state.webhook_resource_id,
-            webhook_expires_at: existing_state.webhook_expires_at,
-            gmail_history_ids: if new_history_ids.is_empty() {
-                None
-            } else {
-                Some(new_history_ids)
-            },
-            drive_page_tokens: existing_state.drive_page_tokens,
-        };
-
-        if let Err(e) = self
-            .sdk_client
-            .save_connector_state(&source.id, serde_json::to_value(&updated_state)?)
-            .await
-        {
-            error!(
-                "Failed to save Gmail history IDs in connector state for source {}: {}",
-                source.id, e
-            );
-        }
-
         info!(
             "Gmail sync completed for source {}: {} total processed, {} total updated",
             source.id, total_processed, total_updated
         );
 
         info!("Completed Gmail sync for source: {}", source.id);
-        Ok((total_processed, total_processed, total_updated))
+
+        Ok(GoogleConnectorState {
+            webhook_channel_id,
+            webhook_resource_id,
+            webhook_expires_at,
+            gmail_history_ids: if new_history_ids.is_empty() {
+                None
+            } else {
+                Some(new_history_ids)
+            },
+            drive_page_tokens,
+        })
     }
 
     fn should_index_file(&self, file: &crate::models::GoogleDriveFile) -> bool {
@@ -1832,6 +1615,7 @@ impl SyncManager {
         service_auth: Arc<GoogleAuth>,
         source_id: &str,
         sync_run_id: &str,
+        ctx: &SyncContext,
         processed_threads: Arc<std::sync::Mutex<HashSet<String>>>,
         created_after: Option<&str>,
         known_groups: Arc<HashSet<String>>,
@@ -1882,9 +1666,7 @@ impl SyncManager {
                 }
 
                 // Update scanned count for this page via SDK
-                self.sdk_client
-                    .increment_scanned(sync_run_id, page_thread_count as i32)
-                    .await?;
+                ctx.increment_scanned(page_thread_count as i32).await?;
             }
 
             // Check for cancellation
@@ -1915,6 +1697,7 @@ impl SyncManager {
             service_auth,
             source_id,
             sync_run_id,
+            ctx,
             processed_threads,
             known_groups,
         )
@@ -1927,6 +1710,7 @@ impl SyncManager {
         service_auth: Arc<GoogleAuth>,
         source_id: &str,
         sync_run_id: &str,
+        ctx: &SyncContext,
         start_history_id: &str,
         processed_threads: Arc<std::sync::Mutex<HashSet<String>>>,
         known_groups: Arc<HashSet<String>>,
@@ -2002,9 +1786,7 @@ impl SyncManager {
             user_email
         );
 
-        self.sdk_client
-            .increment_scanned(sync_run_id, thread_ids.len() as i32)
-            .await?;
+        ctx.increment_scanned(thread_ids.len() as i32).await?;
 
         self.process_gmail_threads(
             thread_ids,
@@ -2012,6 +1794,7 @@ impl SyncManager {
             service_auth,
             source_id,
             sync_run_id,
+            ctx,
             processed_threads,
             known_groups,
         )
@@ -2025,16 +1808,15 @@ impl SyncManager {
         service_auth: Arc<GoogleAuth>,
         source_id: &str,
         sync_run_id: &str,
+        ctx: &SyncContext,
         processed_threads: Arc<std::sync::Mutex<HashSet<String>>>,
         known_groups: Arc<HashSet<String>>,
     ) -> Result<(usize, usize)> {
         let mut total_processed = 0;
         let mut total_updated = 0;
         let mut total_deduped = 0usize;
-        let mut total_skipped_unchanged = 0usize;
         let mut total_failed = 0usize;
         let total_listed = thread_ids.len();
-        let sync_state = SyncState::new(self.redis_client.clone());
         const THREAD_BATCH_SIZE: usize = 50;
 
         for chunk in thread_ids.chunks(THREAD_BATCH_SIZE) {
@@ -2078,12 +1860,14 @@ impl SyncManager {
 
             debug!("Processing batch of {} threads", unprocessed_threads.len());
 
-            // Fetch batch with retry on 429 (up to 3 attempts with exponential backoff)
-            // When any 429s occur, pause before the NEXT batch too (adaptive backpressure)
-            let mut threads_to_fetch = unprocessed_threads.clone();
-            let mut all_successes: Vec<(String, crate::gmail::GmailThreadResponse)> = Vec::new();
+            // Fetch batch with retry on 429 (up to 3 attempts with exponential backoff).
+            // Each attempt drains its successes by-value into the per-thread processor
+            // immediately — never accumulates GmailThreadResponse bodies across
+            // attempts, which previously caused the OOM during full sync.
+            let mut threads_to_fetch = unprocessed_threads;
             let max_retries = 3;
             let mut saw_rate_limit = false;
+            let mut chunk_updated: usize = 0;
 
             for attempt in 0..=max_retries {
                 if threads_to_fetch.is_empty() {
@@ -2122,14 +1906,30 @@ impl SyncManager {
                 };
 
                 let mut rate_limited_ids = Vec::new();
+                let fetched_ids = std::mem::take(&mut threads_to_fetch);
                 for (i, result) in batch_results.into_iter().enumerate() {
-                    let thread_id = &threads_to_fetch[i];
+                    let thread_id = fetched_ids[i].clone();
                     match result {
                         BatchThreadResult::Success(response) => {
-                            all_successes.push((thread_id.clone(), response));
+                            total_processed += 1;
+                            let updated = self
+                                .process_one_gmail_thread(
+                                    &thread_id,
+                                    response,
+                                    user_email,
+                                    &service_auth,
+                                    source_id,
+                                    sync_run_id,
+                                    &known_groups,
+                                )
+                                .await;
+                            if updated {
+                                total_updated += 1;
+                                chunk_updated += 1;
+                            }
                         }
                         BatchThreadResult::RateLimited => {
-                            rate_limited_ids.push(thread_id.clone());
+                            rate_limited_ids.push(thread_id);
                         }
                         BatchThreadResult::Failed(e) => {
                             total_failed += 1;
@@ -2153,290 +1953,208 @@ impl SyncManager {
                 );
             }
 
+            // Push the chunk's contribution to documents_updated to the manager
+            // so a mid-sync crash doesn't lose it. Per-page increment_scanned
+            // already covers the scanned counter.
+            if chunk_updated > 0 {
+                ctx.increment_updated(chunk_updated as i32).await?;
+            }
+
             // Adaptive backpressure: if this batch had 429s, pause before next batch
             if saw_rate_limit {
                 debug!("Rate limit hit — pausing 3s before next batch");
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
-
-            for (thread_id, thread_response) in all_successes.iter() {
-                total_processed += 1;
-
-                let thread_response = thread_response.clone();
-
-                let mut gmail_thread = GmailThread::new(thread_id.clone());
-                for message in thread_response.messages {
-                    gmail_thread.add_message(message);
-                }
-
-                if !gmail_thread.latest_date.is_empty() {
-                    match sync_state.get_thread_sync_state(source_id, thread_id).await {
-                        Ok(Some(last_synced_date)) => {
-                            match (
-                                gmail_thread.latest_date.parse::<i64>(),
-                                last_synced_date.parse::<i64>(),
-                            ) {
-                                (Ok(latest_ts), Ok(synced_ts)) => {
-                                    if latest_ts <= synced_ts {
-                                        debug!(
-                                            "Thread {} already synced (latest: {}, last synced: {}), skipping",
-                                            thread_id, gmail_thread.latest_date, last_synced_date
-                                        );
-                                        total_skipped_unchanged += 1;
-                                        continue;
-                                    } else {
-                                        debug!(
-                                            "Thread {} has new messages (latest: {}, last synced: {}), processing",
-                                            thread_id, gmail_thread.latest_date, last_synced_date
-                                        );
-                                    }
-                                }
-                                _ => {
-                                    debug!(
-                                        "Failed to parse timestamps for thread {} (latest: {}, last synced: {}), processing to be safe",
-                                        thread_id, gmail_thread.latest_date, last_synced_date
-                                    );
-                                }
-                            }
-                        }
-                        Ok(None) => {
-                            debug!("Thread {} not previously synced, processing", thread_id);
-                        }
-                        Err(e) => {
-                            warn!("Failed to get sync state for thread {}: {}", thread_id, e);
-                        }
-                    }
-                }
-
-                if gmail_thread.total_messages == 0 {
-                    // Thread has no messages — emit deletion if previously synced
-                    if sync_state
-                        .get_thread_sync_state(source_id, thread_id)
-                        .await
-                        .ok()
-                        .flatten()
-                        .is_some()
-                    {
-                        let event = ConnectorEvent::DocumentDeleted {
-                            sync_run_id: sync_run_id.to_string(),
-                            source_id: source_id.to_string(),
-                            document_id: thread_id.clone(),
-                        };
-                        if let Err(e) = self
-                            .sdk_client
-                            .emit_event(sync_run_id, source_id, event)
-                            .await
-                        {
-                            error!(
-                                "Failed to emit deletion for empty thread {}: {}",
-                                thread_id, e
-                            );
-                        }
-                    } else {
-                        debug!("Gmail thread {} has no messages, skipping", thread_id);
-                    }
-                } else {
-                    // Index thread conversation content (no attachment text)
-                    match gmail_thread
-                        .aggregate_content(&self.gmail_client, &self.sdk_client, sync_run_id)
-                        .await
-                    {
-                        Ok(content) => {
-                            if !content.trim().is_empty() {
-                                match self.sdk_client.store_content(sync_run_id, &content).await {
-                                    Ok(content_id) => {
-                                        match gmail_thread.to_connector_event(
-                                            sync_run_id,
-                                            source_id,
-                                            &content_id,
-                                            &known_groups,
-                                        ) {
-                                            Ok(event) => {
-                                                match self
-                                                    .sdk_client
-                                                    .emit_event(sync_run_id, source_id, event)
-                                                    .await
-                                                {
-                                                    Ok(_) => {
-                                                        total_updated += 1;
-                                                        info!(
-                                                            "Successfully queued Gmail thread {}",
-                                                            thread_id
-                                                        );
-
-                                                        if let Err(e) = sync_state
-                                                            .set_thread_sync_state(
-                                                                source_id,
-                                                                thread_id,
-                                                                &gmail_thread.latest_date,
-                                                            )
-                                                            .await
-                                                        {
-                                                            error!("Failed to update sync state for Gmail thread {}: {}", thread_id, e);
-                                                        }
-                                                    }
-                                                    Err(e) => {
-                                                        error!("Failed to queue event for Gmail thread {}: {}", thread_id, e);
-                                                    }
-                                                }
-                                            }
-                                            Err(e) => {
-                                                error!("Failed to create connector event for Gmail thread {}: {}", thread_id, e);
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            "Failed to store content for Gmail thread {}: {}",
-                                            thread_id, e
-                                        );
-                                    }
-                                }
-                            } else {
-                                debug!("Gmail thread {} has empty content, skipping", thread_id);
-                            }
-                        }
-                        Err(e) => {
-                            error!(
-                                "Failed to aggregate content for Gmail thread {}: {}",
-                                thread_id, e
-                            );
-                        }
-                    }
-
-                    // Index attachments as separate documents
-                    let thread_url = gmail_thread.message_id.as_ref().map(|mid| {
-                        let clean_id = mid.trim_start_matches('<').trim_end_matches('>');
-                        let encoded = urlencoding::encode(clean_id);
-                        format!(
-                            "https://mail.google.com/mail/#search/rfc822msgid%3A{}",
-                            encoded
-                        )
-                    });
-
-                    // Build permissions once for all attachments in this thread
-                    let mut att_users = Vec::new();
-                    let mut att_groups = Vec::new();
-                    for participant in &gmail_thread.participants {
-                        if known_groups.contains(participant) {
-                            att_groups.push(participant.clone());
-                        } else {
-                            att_users.push(participant.clone());
-                        }
-                    }
-                    let att_permissions = DocumentPermissions {
-                        public: false,
-                        users: att_users,
-                        groups: att_groups,
-                    };
-
-                    for message in &gmail_thread.messages {
-                        let attachments = self
-                            .gmail_client
-                            .extract_attachments(
-                                message,
-                                &service_auth,
-                                user_email,
-                                &self.sdk_client,
-                                sync_run_id,
-                            )
-                            .await;
-
-                        for att in attachments {
-                            if att.extracted_text.trim().is_empty() {
-                                continue;
-                            }
-
-                            let att_content_id = match self
-                                .sdk_client
-                                .store_content(sync_run_id, &att.extracted_text)
-                                .await
-                            {
-                                Ok(id) => id,
-                                Err(e) => {
-                                    error!(
-                                        "Failed to store attachment content for {}: {}",
-                                        att.filename, e
-                                    );
-                                    continue;
-                                }
-                            };
-
-                            let att_doc_id = format!(
-                                "{}:att:{}:{}",
-                                thread_id, att.message_id, att.attachment_id
-                            );
-
-                            let mut att_extra = HashMap::new();
-                            att_extra.insert("parent_thread_id".to_string(), json!(thread_id));
-
-                            let att_metadata = DocumentMetadata {
-                                title: Some(att.filename.clone()),
-                                author: None,
-                                created_at: None,
-                                updated_at: None,
-                                content_type: mime_type_to_content_type(&att.mime_type),
-                                mime_type: Some(att.mime_type.clone()),
-                                size: Some(att.size.to_string()),
-                                url: thread_url.clone(),
-                                path: Some(format!(
-                                    "/Gmail/{}/{}",
-                                    gmail_thread.subject, att.filename
-                                )),
-                                extra: Some(att_extra),
-                            };
-
-                            let att_event = ConnectorEvent::DocumentCreated {
-                                sync_run_id: sync_run_id.to_string(),
-                                source_id: source_id.to_string(),
-                                document_id: att_doc_id.clone(),
-                                content_id: att_content_id,
-                                metadata: att_metadata,
-                                permissions: att_permissions.clone(),
-                                attributes: Some(HashMap::new()),
-                            };
-
-                            match self
-                                .sdk_client
-                                .emit_event(sync_run_id, source_id, att_event)
-                                .await
-                            {
-                                Ok(_) => {
-                                    debug!(
-                                        "Queued attachment {} for thread {}",
-                                        att.filename, thread_id
-                                    );
-                                }
-                                Err(e) => {
-                                    error!(
-                                        "Failed to queue attachment {} for thread {}: {}",
-                                        att.filename, thread_id, e
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-
-                drop(gmail_thread);
-            }
-
-            drop(unprocessed_threads);
         }
 
         info!(
             "Completed Gmail processing for user {}: {} listed, {} indexed, {} updated \
-            (skipped: {} deduped across users, {} unchanged, {} failed/inaccessible)",
-            user_email,
-            total_listed,
-            total_processed,
-            total_updated,
-            total_deduped,
-            total_skipped_unchanged,
-            total_failed
+            (skipped: {} deduped across users, {} failed/inaccessible)",
+            user_email, total_listed, total_processed, total_updated, total_deduped, total_failed
         );
 
         Ok((total_processed, total_updated))
+    }
+
+    /// Process a single Gmail thread response by-value: build the GmailThread,
+    /// emit the thread document and its attachments. Returns true if the
+    /// thread was emitted as an update. Consumes `response` so the response
+    /// body can drop as soon as the messages are moved into `gmail_thread`.
+    async fn process_one_gmail_thread(
+        &self,
+        thread_id: &str,
+        response: crate::gmail::GmailThreadResponse,
+        user_email: &str,
+        service_auth: &Arc<GoogleAuth>,
+        source_id: &str,
+        sync_run_id: &str,
+        known_groups: &HashSet<String>,
+    ) -> bool {
+        let mut gmail_thread = GmailThread::new(thread_id.to_string());
+        for message in response.messages {
+            gmail_thread.add_message(message);
+        }
+
+        if gmail_thread.total_messages == 0 {
+            debug!("Gmail thread {} has no messages, skipping", thread_id);
+            return false;
+        }
+
+        let mut updated = false;
+        match gmail_thread
+            .aggregate_content(&self.gmail_client, &self.sdk_client, sync_run_id)
+            .await
+        {
+            Ok(content) => {
+                if !content.trim().is_empty() {
+                    match self.sdk_client.store_content(sync_run_id, &content).await {
+                        Ok(content_id) => {
+                            match gmail_thread.to_connector_event(
+                                sync_run_id,
+                                source_id,
+                                &content_id,
+                                known_groups,
+                            ) {
+                                Ok(event) => {
+                                    match self
+                                        .sdk_client
+                                        .emit_event(sync_run_id, source_id, event)
+                                        .await
+                                    {
+                                        Ok(_) => {
+                                            updated = true;
+                                            info!("Successfully queued Gmail thread {}", thread_id);
+                                        }
+                                        Err(e) => error!(
+                                            "Failed to queue event for Gmail thread {}: {}",
+                                            thread_id, e
+                                        ),
+                                    }
+                                }
+                                Err(e) => error!(
+                                    "Failed to create connector event for Gmail thread {}: {}",
+                                    thread_id, e
+                                ),
+                            }
+                        }
+                        Err(e) => error!(
+                            "Failed to store content for Gmail thread {}: {}",
+                            thread_id, e
+                        ),
+                    }
+                } else {
+                    debug!("Gmail thread {} has empty content, skipping", thread_id);
+                }
+            }
+            Err(e) => error!(
+                "Failed to aggregate content for Gmail thread {}: {}",
+                thread_id, e
+            ),
+        }
+
+        let thread_url = gmail_thread.message_id.as_ref().map(|mid| {
+            let clean_id = mid.trim_start_matches('<').trim_end_matches('>');
+            let encoded = urlencoding::encode(clean_id);
+            format!(
+                "https://mail.google.com/mail/#search/rfc822msgid%3A{}",
+                encoded
+            )
+        });
+
+        let mut att_users = Vec::new();
+        let mut att_groups = Vec::new();
+        for participant in &gmail_thread.participants {
+            if known_groups.contains(participant) {
+                att_groups.push(participant.clone());
+            } else {
+                att_users.push(participant.clone());
+            }
+        }
+        let att_permissions = DocumentPermissions {
+            public: false,
+            users: att_users,
+            groups: att_groups,
+        };
+
+        for message in &gmail_thread.messages {
+            let attachments = self
+                .gmail_client
+                .extract_attachments(
+                    message,
+                    service_auth,
+                    user_email,
+                    &self.sdk_client,
+                    sync_run_id,
+                )
+                .await;
+
+            for att in attachments {
+                if att.extracted_text.trim().is_empty() {
+                    continue;
+                }
+
+                let att_content_id = match self
+                    .sdk_client
+                    .store_content(sync_run_id, &att.extracted_text)
+                    .await
+                {
+                    Ok(id) => id,
+                    Err(e) => {
+                        error!(
+                            "Failed to store attachment content for {}: {}",
+                            att.filename, e
+                        );
+                        continue;
+                    }
+                };
+
+                let att_doc_id =
+                    format!("{}:att:{}:{}", thread_id, att.message_id, att.attachment_id);
+
+                let mut att_extra = HashMap::new();
+                att_extra.insert("parent_thread_id".to_string(), json!(thread_id));
+
+                let att_metadata = DocumentMetadata {
+                    title: Some(att.filename.clone()),
+                    author: None,
+                    created_at: None,
+                    updated_at: None,
+                    content_type: mime_type_to_content_type(&att.mime_type),
+                    mime_type: Some(att.mime_type.clone()),
+                    size: Some(att.size.to_string()),
+                    url: thread_url.clone(),
+                    path: Some(format!("/Gmail/{}/{}", gmail_thread.subject, att.filename)),
+                    extra: Some(att_extra),
+                };
+
+                let att_event = ConnectorEvent::DocumentCreated {
+                    sync_run_id: sync_run_id.to_string(),
+                    source_id: source_id.to_string(),
+                    document_id: att_doc_id.clone(),
+                    content_id: att_content_id,
+                    metadata: att_metadata,
+                    permissions: att_permissions.clone(),
+                    attributes: Some(HashMap::new()),
+                };
+
+                match self
+                    .sdk_client
+                    .emit_event(sync_run_id, source_id, att_event)
+                    .await
+                {
+                    Ok(_) => debug!(
+                        "Queued attachment {} for thread {}",
+                        att.filename, thread_id
+                    ),
+                    Err(e) => error!(
+                        "Failed to queue attachment {} for thread {}: {}",
+                        att.filename, thread_id, e
+                    ),
+                }
+            }
+        }
+
+        updated
     }
 
     /// Sync group memberships if this is a service-account (domain-wide) source.

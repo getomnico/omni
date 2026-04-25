@@ -181,6 +181,8 @@ def create_app(connector: "Connector") -> FastAPI:
             user_whitelist=sync_data.user_whitelist,
             user_blacklist=sync_data.user_blacklist,
             sync_mode=sync_mode,
+            documents_scanned=request.documents_scanned,
+            documents_updated=request.documents_updated,
         )
         server.active_syncs[source_id] = ctx
 

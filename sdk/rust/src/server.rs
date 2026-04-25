@@ -334,6 +334,10 @@ where
         .register_sync(&sync_run_id, request.sync_mode)
         .await;
 
+    // The manager carries its running tally for this sync run in the
+    // dispatch payload — zero on a fresh sync, non-zero on resume. Use
+    // those values directly to seed the context rather than making a
+    // separate HTTP round trip.
     let ctx = SyncContext::new(
         state.sdk_client.clone(),
         sync_run_id.clone(),
@@ -341,6 +345,8 @@ where
         source.source_type,
         request.sync_mode,
         cancelled,
+        request.documents_scanned,
+        request.documents_updated,
     );
     let connector = Arc::clone(&state.connector);
 

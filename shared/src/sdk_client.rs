@@ -460,6 +460,28 @@ impl SdkClient {
         Ok(())
     }
 
+    /// Increment updated count. Use alongside `increment_scanned` so the
+    /// running tally on the manager survives mid-sync crashes — the absolute
+    /// value reported via `complete()` reflects only the current attempt.
+    pub async fn increment_updated(&self, sync_run_id: &str, count: i32) -> SdkResult<()> {
+        debug!(
+            "SDK: Incrementing updated for sync_run={} by {}",
+            sync_run_id, count
+        );
+
+        let response = self
+            .client
+            .post(format!(
+                "{}/sdk/sync/{}/updated",
+                self.base_url, sync_run_id
+            ))
+            .json(&serde_json::json!({ "count": count }))
+            .send()
+            .await?;
+        ensure_ok(response, "increment_updated").await?;
+        Ok(())
+    }
+
     /// Mark sync as completed. Flushes any buffered events first so the
     /// completion never races ahead of the final events for this sync.
     pub async fn complete(

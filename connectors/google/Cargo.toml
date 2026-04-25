@@ -20,7 +20,6 @@ omni-connector-sdk = { path = "../../sdk/rust" }
 async-trait = { workspace = true }
 axum = { workspace = true }
 sqlx = { workspace = true }
-redis = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { workspace = true }
@@ -46,3 +45,4 @@ tower-http = { workspace = true }
 
 [dev-dependencies]
 omni-connector-manager = { path = "../../services/connector-manager" }
+redis = { workspace = true }

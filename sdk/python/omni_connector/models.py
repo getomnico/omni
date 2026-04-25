@@ -186,6 +186,10 @@ class SyncRequest(BaseModel):
     sync_run_id: str
     source_id: str
     sync_mode: str
+    # Manager's running tally at dispatch time. Zero on a fresh sync;
+    # non-zero on resume so the connector can keep counting from there.
+    documents_scanned: int = 0
+    documents_updated: int = 0
 
 
 class SyncResponse(BaseModel):

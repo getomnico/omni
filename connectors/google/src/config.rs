@@ -1,4 +1,3 @@
-use shared::RedisConfig;
 use std::env;
 use std::process;
 use tracing::{error, info};
@@ -18,7 +17,6 @@ fn validate_url(url: &str, var_name: &str) -> String {
 
     if !url.starts_with("http://")
         && !url.starts_with("https://")
-        && !url.starts_with("redis://")
         && !url.starts_with("postgresql://")
     {
         error!("Invalid URL format in '{}': '{}'", var_name, url);
@@ -37,7 +35,6 @@ fn parse_port(port_str: &str, var_name: &str) -> u16 {
 
 #[derive(Debug, Clone)]
 pub struct GoogleConnectorConfig {
-    pub redis: RedisConfig,
     pub port: u16,
     pub webhook_url: Option<String>,
     pub ai_service_url: String,
@@ -46,8 +43,6 @@ pub struct GoogleConnectorConfig {
 
 impl GoogleConnectorConfig {
     pub fn from_env() -> Self {
-        let redis = RedisConfig::from_env();
-
         let port_str = get_required_env("PORT");
         let port = parse_port(&port_str, "PORT");
 
@@ -62,7 +57,6 @@ impl GoogleConnectorConfig {
             .unwrap_or(3600);
 
         Self {
-            redis,
             port,
             webhook_url,
             ai_service_url,

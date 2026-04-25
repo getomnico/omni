@@ -540,28 +540,39 @@ impl GmailThread {
                 Ok((message_content, is_html)) => {
                     if !message_content.trim().is_empty() {
                         let text = if is_html {
-                            sdk_client
+                            // Connectors only talk to the manager via the SDK
+                            // (CLAUDE.md). If `extract_text` fails, skip body
+                            // for this message — subject + headers still
+                            // index. Falling back to a local HTML→text path
+                            // would break the architectural boundary and (in
+                            // our case) was OOM-ing the connector on
+                            // pathological Outlook-style HTML.
+                            match sdk_client
                                 .extract_text(
                                     sync_run_id,
-                                    message_content.as_bytes().to_vec(),
+                                    message_content.into_bytes(),
                                     "text/html",
                                     None,
                                 )
                                 .await
-                                .unwrap_or_else(|_| {
-                                    // Fall back to built-in HTML-to-text so we
-                                    // never index raw HTML tags.
-                                    shared::content_extractor::extract_content(
-                                        message_content.as_bytes(),
-                                        "text/html",
-                                        None,
-                                    )
-                                    .unwrap_or_default()
-                                })
+                            {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        thread_id = %self.thread_id,
+                                        msg = i + 1,
+                                        error = %e,
+                                        "extract_text failed; skipping HTML body for this message"
+                                    );
+                                    String::new()
+                                }
+                            }
                         } else {
                             message_content
                         };
-                        content_parts.push(text.trim().to_string());
+                        if !text.trim().is_empty() {
+                            content_parts.push(text.trim().to_string());
+                        }
                     }
                 }
                 Err(e) => {

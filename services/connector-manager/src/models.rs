@@ -167,6 +167,12 @@ pub struct SdkIncrementScannedRequest {
     pub count: i32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdkIncrementUpdatedRequest {
+    #[serde(default = "default_count")]
+    pub count: i32,
+}
+
 fn default_count() -> i32 {
     1
 }
