@@ -540,13 +540,6 @@ impl GmailThread {
                 Ok((message_content, is_html)) => {
                     if !message_content.trim().is_empty() {
                         let text = if is_html {
-                            // Connectors only talk to the manager via the SDK
-                            // (CLAUDE.md). If `extract_text` fails, skip body
-                            // for this message — subject + headers still
-                            // index. Falling back to a local HTML→text path
-                            // would break the architectural boundary and (in
-                            // our case) was OOM-ing the connector on
-                            // pathological Outlook-style HTML.
                             match sdk_client
                                 .extract_text(
                                     sync_run_id,

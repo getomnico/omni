@@ -53,7 +53,6 @@ pub struct SyncManager {
 
 impl SyncManager {
     pub fn new(
-        ai_service_url: String,
         admin_client: Arc<AdminClient>,
         sdk_client: SdkClient,
         webhook_url: Option<String>,

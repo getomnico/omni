@@ -313,7 +313,6 @@ services:
       <<: [*redis-config, *otel-config]
       RUST_LOG: ${RUST_LOG}
       PORT: ${GOOGLE_CONNECTOR_PORT}
-      AI_SERVICE_URL: ${AI_SERVICE_URL}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
       CONNECTOR_HOST_NAME: google-connector
       GOOGLE_MAX_AGE_DAYS: ${GOOGLE_MAX_AGE_DAYS:-730}

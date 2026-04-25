@@ -375,7 +375,6 @@ resource "aws_ecs_task_definition" "google_connector" {
     environment = concat(local.connector_base_environment, local.redis_environment, [
       { name = "PORT", value = "4001" },
       { name = "CONNECTOR_HOST_NAME", value = "google-connector" },
-      { name = "AI_SERVICE_URL", value = "http://ai.omni-${var.customer_name}.local:3003" },
       { name = "GOOGLE_MAX_AGE_DAYS", value = var.google_max_age_days },
       { name = "OMNI_DOMAIN", value = var.custom_domain },
       { name = "WEBHOOK_RENEWAL_CHECK_INTERVAL_SECONDS", value = var.webhook_renewal_check_interval_seconds }

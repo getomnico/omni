@@ -43,7 +43,6 @@ async fn main() -> Result<()> {
     let sdk_client = SdkClient::from_env()?;
 
     let sync_manager = Arc::new(SyncManager::new(
-        config.ai_service_url.clone(),
         Arc::clone(&admin_client),
         sdk_client,
         config.webhook_url.clone(),

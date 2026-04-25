@@ -9,23 +9,6 @@ fn get_required_env(key: &str) -> String {
     })
 }
 
-fn validate_url(url: &str, var_name: &str) -> String {
-    if url.is_empty() {
-        error!("Environment variable '{}' cannot be empty", var_name);
-        process::exit(1);
-    }
-
-    if !url.starts_with("http://")
-        && !url.starts_with("https://")
-        && !url.starts_with("postgresql://")
-    {
-        error!("Invalid URL format in '{}': '{}'", var_name, url);
-        process::exit(1);
-    }
-
-    url.to_string()
-}
-
 fn parse_port(port_str: &str, var_name: &str) -> u16 {
     port_str.parse::<u16>().unwrap_or_else(|_| {
         error!("Invalid port number in '{}': '{}'", var_name, port_str);
@@ -37,7 +20,6 @@ fn parse_port(port_str: &str, var_name: &str) -> u16 {
 pub struct GoogleConnectorConfig {
     pub port: u16,
     pub webhook_url: Option<String>,
-    pub ai_service_url: String,
     pub webhook_renewal_interval_seconds: u64,
 }
 
@@ -48,9 +30,6 @@ impl GoogleConnectorConfig {
 
         let webhook_url = Self::derive_webhook_url();
 
-        let ai_service_url = get_required_env("AI_SERVICE_URL");
-        let ai_service_url = validate_url(&ai_service_url, "AI_SERVICE_URL");
-
         let webhook_renewal_interval_seconds = env::var("WEBHOOK_RENEWAL_CHECK_INTERVAL_SECONDS")
             .unwrap_or_else(|_| "3600".to_string())
             .parse::<u64>()
@@ -59,7 +38,6 @@ impl GoogleConnectorConfig {
         Self {
             port,
             webhook_url,
-            ai_service_url,
             webhook_renewal_interval_seconds,
         }
     }
