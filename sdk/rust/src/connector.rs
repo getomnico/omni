@@ -14,6 +14,16 @@ use shared::models::{
 
 #[async_trait]
 pub trait Connector: Send + Sync + 'static {
+    /// Shape of `source.config`. Used by the SDK to validate the config blob
+    /// at `/sync` dispatch — a decode failure rejects the request with 400
+    /// before any sync run is recorded. The decoded value is discarded; the
+    /// connector receives the full `Source` and decodes its own typed view
+    /// inside `sync()` if it needs one. Use `serde_json::Value` for connectors
+    /// that don't want validation.
+    type Config: DeserializeOwned + Send + 'static;
+    /// Shape of `service_credentials.credentials`. Validated the same way as
+    /// `Config` — see above. Use `serde_json::Value` to opt out.
+    type Credentials: DeserializeOwned + Send + 'static;
     type State: DeserializeOwned + Serialize + Send + 'static;
 
     fn name(&self) -> &'static str;

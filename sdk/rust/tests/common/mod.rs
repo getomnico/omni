@@ -29,7 +29,7 @@ use axum::{
 use omni_connector_sdk::{
     models::ActionResponse, Connector, ServiceCredentials, Source, SourceType, SyncContext,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use shared::SdkClient;
 use tokio::net::TcpListener;
@@ -55,6 +55,7 @@ pub enum GetSourceBehavior {
     },
     NotFound,
     ServerError,
+    BadConfig,
 }
 
 pub type SharedState = Arc<Mutex<MockState>>;
@@ -128,6 +129,14 @@ async fn handle_get_source(
         GetSourceBehavior::ServerError => {
             (StatusCode::INTERNAL_SERVER_ERROR, "boom").into_response()
         }
+        GetSourceBehavior::BadConfig => Json(test_source_json(
+            &id,
+            // Config is a string where we expect an object → decode into
+            // TestConfig will fail with a deserialization error.
+            JsonValue::String("not-an-object".into()),
+            None,
+        ))
+        .into_response(),
     }
 }
 
@@ -195,6 +204,12 @@ async fn handle_register(State(state): State<SharedState>) -> impl IntoResponse 
 // TestConnector
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TestConfig {
+    #[serde(default)]
+    pub label: String,
+}
+
 #[derive(Debug, Clone)]
 pub enum SyncBehavior {
     /// Succeed immediately.
@@ -229,6 +244,8 @@ impl TestConnector {
 
 #[async_trait]
 impl Connector for TestConnector {
+    type Config = TestConfig;
+    type Credentials = JsonValue;
     type State = JsonValue;
 
     fn name(&self) -> &'static str {

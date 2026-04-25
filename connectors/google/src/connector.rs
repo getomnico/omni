@@ -168,6 +168,8 @@ impl GoogleConnector {
 
 #[async_trait]
 impl Connector for GoogleConnector {
+    type Config = JsonValue;
+    type Credentials = JsonValue;
     type State = GoogleConnectorState;
 
     fn name(&self) -> &'static str {

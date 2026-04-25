@@ -219,6 +219,28 @@ async fn t5_sync_returns_500_on_upstream_error() -> Result<()> {
 }
 
 #[tokio::test]
+async fn t6_sync_returns_400_on_bad_config() -> Result<()> {
+    // TestConfig is an object, but the mock serves a string — SDK boundary
+    // decode fails before any sync is spawned.
+    let mock = MockConnectorManager::spawn().await;
+    mock.set_source_behavior(GetSourceBehavior::BadConfig);
+
+    let connector = Arc::new(TestConnector::new(SyncBehavior::Ok));
+    let server = build_server(connector, &mock);
+
+    let resp = server
+        .post("/sync")
+        .json(&json!({
+            "sync_run_id": "run-1",
+            "source_id": "src-1",
+            "sync_mode": "full",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 400);
+    Ok(())
+}
+
+#[tokio::test]
 async fn t7_panic_in_sync_clears_active_syncs() -> Result<()> {
     // Regression for issue 1b: a panic inside the spawned sync task must not
     // leak the active_syncs entry. Otherwise the source is wedged at 409.
@@ -418,6 +440,8 @@ async fn t14_action_success_returns_200() -> Result<()> {
 
     #[async_trait::async_trait]
     impl Connector for SuccessConnector {
+        type Config = JsonValue;
+        type Credentials = JsonValue;
         type State = JsonValue;
 
         fn name(&self) -> &'static str {
@@ -496,6 +520,8 @@ async fn t15_action_exception_returns_500() -> Result<()> {
 
     #[async_trait::async_trait]
     impl Connector for PanicConnector {
+        type Config = JsonValue;
+        type Credentials = JsonValue;
         type State = JsonValue;
 
         fn name(&self) -> &'static str {

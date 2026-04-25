@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use omni_connector_sdk::{
     Connector, SdkClient, ServiceCredentials, Source, SourceType, SyncContext, SyncType,
 };
+use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
 use crate::config::WebSourceConfig;
@@ -29,6 +30,8 @@ impl WebConnector {
 
 #[async_trait]
 impl Connector for WebConnector {
+    type Config = WebSourceConfig;
+    type Credentials = JsonValue;
     type State = WebConnectorState;
 
     fn name(&self) -> &'static str {

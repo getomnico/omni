@@ -307,6 +307,26 @@ where
         None
     };
 
+    // Boundary validation: probe-decode source.config and creds.credentials
+    // against the connector's declared shapes. The decoded values are dropped
+    // — the connector receives the full structs and re-decodes its typed view
+    // inside `sync()` if it wants one. This catches malformed payloads at
+    // dispatch time so a bad source returns 400 right away.
+    decode::<C::Config>(&source.config, "source config").map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(SyncResponse::error(error.to_string())),
+        )
+    })?;
+    if let Some(creds) = &credentials {
+        decode::<C::Credentials>(&creds.credentials, "credentials").map_err(|error| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(SyncResponse::error(error.to_string())),
+            )
+        })?;
+    }
+
     let typed_state =
         decode_optional::<C::State>(source.connector_state.as_ref(), "connector state").map_err(
             |error| {

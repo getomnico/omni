@@ -4,6 +4,7 @@ use omni_connector_sdk::{
     Connector, ServiceCredentials, Source, SourceType, SyncContext, SyncType,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 
 use crate::client::FirefliesClient;
 use crate::sync::run_sync;
@@ -38,6 +39,8 @@ impl Default for FirefliesConnector {
 
 #[async_trait]
 impl Connector for FirefliesConnector {
+    type Config = JsonValue;
+    type Credentials = FirefliesCredentials;
     type State = FirefliesState;
 
     fn name(&self) -> &'static str {

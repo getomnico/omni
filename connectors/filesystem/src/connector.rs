@@ -15,6 +15,8 @@ pub struct FileSystemConnector;
 
 #[async_trait]
 impl Connector for FileSystemConnector {
+    type Config = FileSystemConfig;
+    type Credentials = JsonValue;
     type State = JsonValue;
 
     fn name(&self) -> &'static str {
