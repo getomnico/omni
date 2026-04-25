@@ -4,11 +4,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
-use async_trait::async_trait;
 use axum::{routing, Router};
 use axum_test::{TestServer, TestServerConfig};
 use common::{GetSourceBehavior, MockConnectorManager, SyncBehavior, TestConnector};
-use omni_connector_sdk::{create_router, Connector, SourceType, SyncContext};
+use omni_connector_sdk::{
+    create_router, Connector, ServiceCredentials, Source, SourceType, SyncContext,
+};
 use serde_json::{json, Value as JsonValue};
 use tokio::sync::Notify;
 
@@ -218,27 +219,6 @@ async fn t5_sync_returns_500_on_upstream_error() -> Result<()> {
 }
 
 #[tokio::test]
-async fn t6_sync_returns_400_on_bad_config() -> Result<()> {
-    // TestConfig is an object, but the mock serves a string — decode fails.
-    let mock = MockConnectorManager::spawn().await;
-    mock.set_source_behavior(GetSourceBehavior::BadConfig);
-
-    let connector = Arc::new(TestConnector::new(SyncBehavior::Ok));
-    let server = build_server(connector, &mock);
-
-    let resp = server
-        .post("/sync")
-        .json(&json!({
-            "sync_run_id": "run-1",
-            "source_id": "src-1",
-            "sync_mode": "full",
-        }))
-        .await;
-    assert_eq!(resp.status_code(), 400);
-    Ok(())
-}
-
-#[tokio::test]
 async fn t7_panic_in_sync_clears_active_syncs() -> Result<()> {
     // Regression for issue 1b: a panic inside the spawned sync task must not
     // leak the active_syncs entry. Otherwise the source is wedged at 409.
@@ -438,8 +418,6 @@ async fn t14_action_success_returns_200() -> Result<()> {
 
     #[async_trait::async_trait]
     impl Connector for SuccessConnector {
-        type Config = JsonValue;
-        type Credentials = JsonValue;
         type State = JsonValue;
 
         fn name(&self) -> &'static str {
@@ -457,8 +435,8 @@ async fn t14_action_success_returns_200() -> Result<()> {
 
         async fn sync(
             &self,
-            _config: Self::Config,
-            _credentials: Self::Credentials,
+            _source: Source,
+            _credentials: Option<ServiceCredentials>,
             _state: Option<Self::State>,
             _ctx: SyncContext,
         ) -> Result<()> {
@@ -518,8 +496,6 @@ async fn t15_action_exception_returns_500() -> Result<()> {
 
     #[async_trait::async_trait]
     impl Connector for PanicConnector {
-        type Config = JsonValue;
-        type Credentials = JsonValue;
         type State = JsonValue;
 
         fn name(&self) -> &'static str {
@@ -537,8 +513,8 @@ async fn t15_action_exception_returns_500() -> Result<()> {
 
         async fn sync(
             &self,
-            _config: Self::Config,
-            _credentials: Self::Credentials,
+            _source: Source,
+            _credentials: Option<ServiceCredentials>,
             _state: Option<Self::State>,
             _ctx: SyncContext,
         ) -> Result<()> {

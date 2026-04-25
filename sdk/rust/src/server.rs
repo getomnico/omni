@@ -294,31 +294,19 @@ where
         .get_source(&source_id)
         .await
         .map_err(map_source_fetch_error)?;
-    let source_config = decode::<C::Config>(&source.config, "source config").map_err(|error| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(SyncResponse::error(error.to_string())),
-        )
-    })?;
 
-    let raw_credentials = if state.connector.requires_credentials() {
-        state
-            .sdk_client
-            .get_credentials(&source_id)
-            .await
-            .map_err(map_source_fetch_error)?
-            .credentials
+    let credentials = if state.connector.requires_credentials() {
+        Some(
+            state
+                .sdk_client
+                .get_credentials(&source_id)
+                .await
+                .map_err(map_source_fetch_error)?,
+        )
     } else {
-        serde_json::json!({})
+        None
     };
 
-    let typed_credentials =
-        decode::<C::Credentials>(&raw_credentials, "credentials").map_err(|error| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(SyncResponse::error(error.to_string())),
-            )
-        })?;
     let typed_state =
         decode_optional::<C::State>(source.connector_state.as_ref(), "connector state").map_err(
             |error| {
@@ -355,7 +343,7 @@ where
         // completes — including on panic, which unwinds through locals.
         let _slot = guard;
         let result = connector
-            .sync(source_config, typed_credentials, typed_state, ctx.clone())
+            .sync(source, credentials, typed_state, ctx.clone())
             .await;
 
         if let Err(error) = result {

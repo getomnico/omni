@@ -90,13 +90,13 @@ impl SyncManager {
         }
     }
 
-    /// Run a sync driven by the SDK. The SDK passes in typed Config/
-    /// Credentials/State and a `SyncContext` whose cancellation flag is
-    /// flipped by the SDK's `/cancel` handler.
+    /// Run a sync driven by the SDK. The SDK passes in the full Source and
+    /// optional ServiceCredentials, the persisted State, and a `SyncContext`
+    /// whose cancellation flag is flipped by the SDK's `/cancel` handler.
     pub async fn run_sync(
         &self,
-        _config: serde_json::Value,
-        _credentials: serde_json::Value,
+        source: Source,
+        credentials: Option<ServiceCredentials>,
         state: Option<GoogleConnectorState>,
         ctx: SyncContext,
     ) -> Result<()> {
@@ -108,12 +108,22 @@ impl SyncManager {
             source_id, sync_run_id
         );
 
+        let creds =
+            credentials.ok_or_else(|| anyhow!("Google sync requires service credentials"))?;
+        if creds.provider != ServiceProvider::Google {
+            return Err(anyhow!(
+                "Expected Google credentials for source {}, found {:?}",
+                source_id,
+                creds.provider
+            ));
+        }
+
         // Mirror the SDK's cancellation flag so `is_cancelled(sync_run_id)`
         // works from nested helpers without threading `ctx` through them.
         self.active_syncs
             .insert(sync_run_id.clone(), ctx.cancelled_flag());
 
-        let outcome = self.run_sync_inner(state, &ctx).await;
+        let outcome = self.run_sync_inner(&source, &creds, state, &ctx).await;
         self.active_syncs.remove(&sync_run_id);
 
         match outcome {
@@ -153,6 +163,8 @@ impl SyncManager {
     /// on success, which the caller persists via `ctx.complete`.
     async fn run_sync_inner(
         &self,
+        source: &Source,
+        service_creds: &ServiceCredentials,
         existing_state: Option<GoogleConnectorState>,
         ctx: &SyncContext,
     ) -> Result<Option<GoogleConnectorState>> {
@@ -160,13 +172,9 @@ impl SyncManager {
         let source_id = ctx.source_id();
         let sync_type = ctx.sync_mode();
 
-        let source = self
-            .sdk_client
-            .get_source(source_id)
-            .await
-            .context("Failed to fetch source via SDK")?;
-
-        let known_groups = self.maybe_sync_groups(&source, sync_run_id).await;
+        let known_groups = self
+            .maybe_sync_groups(source, service_creds, sync_run_id)
+            .await;
 
         // The SDK passes us the persisted state on each (re-)dispatch — we use
         // it directly instead of refetching via HTTP. On a fresh sync this is
@@ -176,12 +184,19 @@ impl SyncManager {
 
         let result = match source.source_type {
             SourceType::GoogleDrive => {
-                self.sync_drive_source_internal(&source, sync_type, existing_state, ctx)
-                    .await
+                self.sync_drive_source_internal(
+                    source,
+                    service_creds,
+                    sync_type,
+                    existing_state,
+                    ctx,
+                )
+                .await
             }
             SourceType::Gmail => {
                 self.sync_gmail_source_internal(
-                    &source,
+                    source,
+                    service_creds,
                     sync_type,
                     existing_state,
                     known_groups,
@@ -615,14 +630,14 @@ impl SyncManager {
     async fn sync_drive_source_internal(
         &self,
         source: &Source,
+        service_creds: &ServiceCredentials,
         sync_type: SyncType,
         existing_state: GoogleConnectorState,
         ctx: &SyncContext,
     ) -> Result<GoogleConnectorState> {
         let sync_run_id = ctx.sync_run_id();
 
-        let service_creds = self.get_service_credentials(&source.id).await?;
-        let service_auth = Arc::new(self.create_auth(&service_creds, source.source_type).await?);
+        let service_auth = Arc::new(self.create_auth(service_creds, source.source_type).await?);
 
         // Calculate cutoff date for filtering
         let (drive_cutoff_date, _gmail_cutoff_date) = self.get_cutoff_date()?;
@@ -637,7 +652,7 @@ impl SyncManager {
             info!("OAuth Drive sync for single user: {}", email);
             vec![email]
         } else {
-            let domain = self.get_domain_from_credentials(&service_creds)?;
+            let domain = self.get_domain_from_credentials(service_creds)?;
             let user_email = self.get_user_email_from_source(&source.id).await
                 .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source.id, e))?;
 
@@ -842,6 +857,7 @@ impl SyncManager {
     async fn sync_gmail_source_internal(
         &self,
         source: &Source,
+        service_creds: &ServiceCredentials,
         sync_type: SyncType,
         existing_state: GoogleConnectorState,
         known_groups: HashSet<String>,
@@ -849,8 +865,7 @@ impl SyncManager {
     ) -> Result<GoogleConnectorState> {
         let sync_run_id = ctx.sync_run_id();
 
-        let service_creds = self.get_service_credentials(&source.id).await?;
-        let service_auth = Arc::new(self.create_auth(&service_creds, source.source_type).await?);
+        let service_auth = Arc::new(self.create_auth(service_creds, source.source_type).await?);
 
         let (_drive_cutoff_date, gmail_cutoff_date) = self.get_cutoff_date()?;
         info!("Using Gmail cutoff date: {}", gmail_cutoff_date);
@@ -864,7 +879,7 @@ impl SyncManager {
             info!("OAuth Gmail sync for single user: {}", email);
             vec![email]
         } else {
-            let domain = self.get_domain_from_credentials(&service_creds)?;
+            let domain = self.get_domain_from_credentials(service_creds)?;
             let user_email = self.get_user_email_from_source(&source.id).await
                 .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source.id, e))?;
 
@@ -2158,16 +2173,13 @@ impl SyncManager {
 
     /// Sync group memberships if this is a service-account (domain-wide) source.
     /// OAuth single-user sources don't have Admin API access, so we skip them.
-    async fn maybe_sync_groups(&self, source: &Source, sync_run_id: &str) -> HashSet<String> {
-        let service_creds = match self.get_service_credentials(&source.id).await {
-            Ok(creds) => creds,
-            Err(e) => {
-                warn!("Failed to get service credentials for group sync: {}", e);
-                return HashSet::new();
-            }
-        };
-
-        let service_auth = match self.create_auth(&service_creds, source.source_type).await {
+    async fn maybe_sync_groups(
+        &self,
+        source: &Source,
+        service_creds: &ServiceCredentials,
+        sync_run_id: &str,
+    ) -> HashSet<String> {
+        let service_auth = match self.create_auth(service_creds, source.source_type).await {
             Ok(auth) => auth,
             Err(e) => {
                 warn!("Failed to create auth for group sync: {}", e);
@@ -2181,7 +2193,7 @@ impl SyncManager {
             return HashSet::new();
         }
 
-        let domain = match self.get_domain_from_credentials(&service_creds) {
+        let domain = match self.get_domain_from_credentials(service_creds) {
             Ok(d) => d,
             Err(e) => {
                 warn!("Failed to get domain for group sync: {}", e);

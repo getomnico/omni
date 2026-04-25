@@ -9,13 +9,11 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use shared::models::{
     ActionDefinition, ConnectorManifest, McpPromptDefinition, McpResourceDefinition,
-    SearchOperator, SourceType, SyncType,
+    SearchOperator, ServiceCredentials, Source, SourceType, SyncType,
 };
 
 #[async_trait]
 pub trait Connector: Send + Sync + 'static {
-    type Config: DeserializeOwned + Send + 'static;
-    type Credentials: DeserializeOwned + Send + 'static;
     type State: DeserializeOwned + Serialize + Send + 'static;
 
     fn name(&self) -> &'static str;
@@ -72,8 +70,8 @@ pub trait Connector: Send + Sync + 'static {
 
     async fn sync(
         &self,
-        source_config: Self::Config,
-        credentials: Self::Credentials,
+        source: Source,
+        credentials: Option<ServiceCredentials>,
         state: Option<Self::State>,
         ctx: SyncContext,
     ) -> Result<()>;

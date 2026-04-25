@@ -9,7 +9,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
-    ActionDefinition, ActionResponse, Connector, SearchOperator, SourceType, SyncContext, SyncType,
+    ActionDefinition, ActionResponse, Connector, SearchOperator, ServiceCredentials, Source,
+    SourceType, SyncContext, SyncType,
 };
 use serde_json::{json, Value as JsonValue};
 
@@ -167,8 +168,6 @@ impl GoogleConnector {
 
 #[async_trait]
 impl Connector for GoogleConnector {
-    type Config = JsonValue;
-    type Credentials = JsonValue;
     type State = GoogleConnectorState;
 
     fn name(&self) -> &'static str {
@@ -248,13 +247,13 @@ impl Connector for GoogleConnector {
 
     async fn sync(
         &self,
-        source_config: Self::Config,
-        credentials: Self::Credentials,
+        source: Source,
+        credentials: Option<ServiceCredentials>,
         state: Option<Self::State>,
         ctx: SyncContext,
     ) -> Result<()> {
         self.sync_manager
-            .run_sync(source_config, credentials, state, ctx)
+            .run_sync(source, credentials, state, ctx)
             .await
     }
 

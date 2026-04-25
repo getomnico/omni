@@ -1433,6 +1433,10 @@ pub async fn sdk_get_credentials(
     Ok(Json(creds))
 }
 
+// TODO: drop this endpoint once the Python SDK is updated to fetch source +
+// credentials separately (matching the Rust SDK). Today the Rust SDK passes
+// full Source/ServiceCredentials directly to Connector::sync, so it has no
+// need for this bundled endpoint — only Python connectors still call it.
 pub async fn sdk_get_source_sync_config(
     State(state): State<AppState>,
     Path(source_id): Path<String>,

@@ -1,8 +1,9 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use omni_connector_sdk::{
-    ActionDefinition, ActionResponse, Connector, SourceType, SyncContext, SyncType,
+    ActionDefinition, ActionResponse, Connector, ServiceCredentials, Source, SourceType,
+    SyncContext, SyncType,
 };
 use serde_json::{json, Value as JsonValue};
 
@@ -14,8 +15,6 @@ pub struct FileSystemConnector;
 
 #[async_trait]
 impl Connector for FileSystemConnector {
-    type Config = FileSystemConfig;
-    type Credentials = JsonValue;
     type State = JsonValue;
 
     fn name(&self) -> &'static str {
@@ -68,12 +67,14 @@ impl Connector for FileSystemConnector {
 
     async fn sync(
         &self,
-        source_config: FileSystemConfig,
-        _credentials: JsonValue,
+        source: Source,
+        _credentials: Option<ServiceCredentials>,
         _state: Option<JsonValue>,
         ctx: SyncContext,
     ) -> Result<()> {
-        let source_name = ctx.sdk_client().get_source(ctx.source_id()).await?.name;
+        let source_name = source.name.clone();
+        let source_config: FileSystemConfig = serde_json::from_value(source.config)
+            .context("Failed to decode filesystem source config")?;
         match ctx.sync_mode() {
             SyncType::Full | SyncType::Incremental => {
                 sync::run_sync(source_name, source_config, ctx).await
