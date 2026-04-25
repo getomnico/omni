@@ -91,7 +91,7 @@ fn mime_from_extension(filename: &str) -> Option<String> {
 }
 
 fn html_to_markdown(html: &str) -> String {
-    html2md::parse_html(html)
+    htmd::convert(html).unwrap_or_default()
 }
 
 fn extract_pdf_text(data: &[u8]) -> Result<String> {

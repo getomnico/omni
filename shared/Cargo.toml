@@ -46,7 +46,7 @@ calamine = "0.34"
 zip = "8.4"
 quick-xml = "0.39"
 pdf_oxide = "0.3"
-html2md = "0.2"
+htmd = "0.5"
 
 # OpenTelemetry
 opentelemetry = { workspace = true }
