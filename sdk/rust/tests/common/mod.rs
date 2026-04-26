@@ -295,7 +295,7 @@ impl Connector for TestConnector {
         &self,
         action: &str,
         _params: JsonValue,
-        _credentials: JsonValue,
+        _credentials: Option<ServiceCredentials>,
     ) -> Result<axum::response::Response> {
         Ok(ActionResponse::not_supported(action).into_response_with_status(StatusCode::NOT_FOUND))
     }

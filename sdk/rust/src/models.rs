@@ -2,7 +2,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use shared::models::SyncType;
+use shared::models::{ServiceCredentials, SyncType};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncRequest {
@@ -57,7 +57,7 @@ pub struct ActionRequest {
     #[serde(default)]
     pub params: JsonValue,
     #[serde(default)]
-    pub credentials: JsonValue,
+    pub credentials: Option<ServiceCredentials>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

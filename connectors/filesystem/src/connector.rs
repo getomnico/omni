@@ -89,7 +89,7 @@ impl Connector for FileSystemConnector {
         &self,
         action: &str,
         params: JsonValue,
-        _credentials: JsonValue,
+        _credentials: Option<ServiceCredentials>,
     ) -> Result<axum::response::Response> {
         match action {
             "validate_path" => {

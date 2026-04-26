@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use shared::models::{SourceType, SyncType};
+use shared::models::{ServiceCredentials, SourceType, SyncType};
 
 pub use shared::models::{
     ActionDefinition, ConnectorManifest, McpPromptDefinition, McpResourceDefinition,
@@ -11,7 +11,7 @@ pub use shared::models::{
 pub struct ActionRequest {
     pub action: String,
     pub params: JsonValue,
-    pub credentials: JsonValue,
+    pub credentials: Option<ServiceCredentials>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

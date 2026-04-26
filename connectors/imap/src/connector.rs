@@ -25,20 +25,11 @@ impl ImapConnector {
 
     async fn run_action(
         action: &str,
-        params: &JsonValue,
-        credentials: &JsonValue,
+        config: &ImapAccountConfig,
+        credentials: &ImapCredentials,
     ) -> Result<JsonValue> {
-        let config = ImapAccountConfig::from_source_config(params)?;
-        let username = credentials
-            .get("username")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing 'username' in credentials"))?;
-        let password = credentials
-            .get("password")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing 'password' in credentials"))?;
-
-        let mut session = ImapSession::connect(&config, username, password).await?;
+        let mut session =
+            ImapSession::connect(config, &credentials.username, &credentials.password).await?;
         let result = match action {
             "validate_credentials" => Ok(json!({ "authenticated": true })),
             "list_folders" => session
@@ -159,11 +150,30 @@ impl Connector for ImapConnector {
         &self,
         action: &str,
         params: JsonValue,
-        credentials: JsonValue,
+        credentials: Option<ServiceCredentials>,
     ) -> Result<Response> {
         match action {
             "validate_credentials" | "list_folders" => {
-                match Self::run_action(action, &params, &credentials).await {
+                let config = match ImapAccountConfig::from_source_config(&params) {
+                    Ok(c) => c,
+                    Err(e) => return Ok(ActionResponse::failure(e.to_string()).into_response()),
+                };
+                let creds = match credentials {
+                    Some(c) => c,
+                    None => {
+                        return Ok(ActionResponse::failure(
+                            "IMAP action requires credentials".to_string(),
+                        )
+                        .into_response())
+                    }
+                };
+                let typed_creds: ImapCredentials = match serde_json::from_value(creds.credentials)
+                    .context("Failed to decode IMAP credentials")
+                {
+                    Ok(c) => c,
+                    Err(e) => return Ok(ActionResponse::failure(e.to_string()).into_response()),
+                };
+                match Self::run_action(action, &config, &typed_creds).await {
                     Ok(result) => Ok(ActionResponse::success(result).into_response()),
                     Err(e) => Ok(ActionResponse::failure(e.to_string()).into_response()),
                 }

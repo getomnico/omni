@@ -410,7 +410,7 @@ async fn t13_action_not_supported_returns_404() -> Result<()> {
         .json(&json!({
             "action": "unknown_action",
             "params": {},
-            "credentials": {},
+            "credentials": null,
         }))
         .await;
 
@@ -471,7 +471,7 @@ async fn t14_action_success_returns_200() -> Result<()> {
             &self,
             action: &str,
             _params: JsonValue,
-            _credentials: JsonValue,
+            _credentials: Option<ServiceCredentials>,
         ) -> Result<axum::response::Response> {
             use omni_connector_sdk::models::ActionResponse;
             if action == "do_thing" {
@@ -490,7 +490,7 @@ async fn t14_action_success_returns_200() -> Result<()> {
         .json(&json!({
             "action": "do_thing",
             "params": {},
-            "credentials": {},
+            "credentials": null,
         }))
         .await;
 
@@ -551,7 +551,7 @@ async fn t15_action_exception_returns_500() -> Result<()> {
             &self,
             action: &str,
             _params: JsonValue,
-            _credentials: JsonValue,
+            _credentials: Option<ServiceCredentials>,
         ) -> Result<axum::response::Response> {
             if action == "crash_me" {
                 return Err(anyhow::anyhow!("intentional action panic"));
@@ -569,7 +569,7 @@ async fn t15_action_exception_returns_500() -> Result<()> {
         .json(&json!({
             "action": "crash_me",
             "params": {},
-            "credentials": {},
+            "credentials": null,
         }))
         .await;
 

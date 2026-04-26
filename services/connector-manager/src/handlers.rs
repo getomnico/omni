@@ -363,11 +363,7 @@ pub async fn execute_action(
     let action_request = ActionRequest {
         action: request.action,
         params,
-        credentials: json!({
-            "credentials": creds.credentials,
-            "config": creds.config,
-            "principal_email": creds.principal_email,
-        }),
+        credentials: Some(creds),
     };
 
     // Proxy the connector's full HTTP response (status, headers, body) verbatim.
