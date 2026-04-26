@@ -97,6 +97,12 @@ async fn execute_sync(
     let mut total_processed = 0usize;
     let mut current_keys = HashSet::<String>::new();
 
+    // TODO: this is not real incremental sync, we do a full PROPFIND every run,
+    // and skip based on e-tags. Also, we save state (checkpoint) only at the end.
+    // Things to do to make this a proper incremental sync:
+    //  (1) save state per batch so crashes don't lose progress
+    //  (2) switch to WebDAV sync-collection REPORT (RFC 6578) with a sync_token.
+
     // Try Depth: infinity first (loads all entries at once — fast for small instances).
     // Falls back to paginated BFS directory traversal when the server rejects it.
     match client.try_list_all(&base_url).await {
