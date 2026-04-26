@@ -256,7 +256,7 @@ impl SyncManager {
     ) -> Result<(usize, usize)> {
         info!("Processing Drive files for user: {}", user_email);
 
-        let mut total_processed = 0;
+        let mut total_scanned = 0;
         let mut total_updated = 0;
         let mut page_token: Option<String> = None;
         let mut file_batch = Vec::new();
@@ -300,7 +300,7 @@ impl SyncManager {
                     });
 
                     if file_batch.len() >= BATCH_SIZE {
-                        let (processed, updated) = self
+                        let (scanned, updated) = self
                             .process_file_batch(
                                 file_batch.clone(),
                                 source_id,
@@ -310,15 +310,12 @@ impl SyncManager {
                             )
                             .await?;
 
-                        total_processed += processed;
+                        total_scanned += scanned;
                         total_updated += updated;
                         file_batch.clear();
                     }
                 }
             }
-
-            // Update scanned count for this page via SDK
-            ctx.increment_scanned(page_file_count as i32).await?;
 
             // Check for cancellation
             if self.is_cancelled(sync_run_id) {
@@ -338,7 +335,7 @@ impl SyncManager {
 
         // Process any remaining files in the batch
         if !file_batch.is_empty() {
-            let (processed, updated) = self
+            let (scanned, updated) = self
                 .process_file_batch(
                     file_batch,
                     source_id,
@@ -348,15 +345,15 @@ impl SyncManager {
                 )
                 .await?;
 
-            total_processed += processed;
+            total_scanned += scanned;
             total_updated += updated;
         }
 
         info!(
-            "Completed processing user {}: {} processed, {} updated",
-            user_email, total_processed, total_updated
+            "Completed processing user {}: {} scanned, {} updated",
+            user_email, total_scanned, total_updated
         );
-        Ok((total_processed, total_updated))
+        Ok((total_scanned, total_updated))
     }
 
     async fn sync_drive_for_user_incremental(
@@ -406,10 +403,8 @@ impl SyncManager {
             user_email
         );
 
-        ctx.increment_scanned(all_changes.len() as i32).await?;
-
         let mut file_batch = Vec::new();
-        let mut total_processed = 0;
+        let mut total_scanned = 0;
         let mut total_updated = 0;
         const BATCH_SIZE: usize = 200;
 
@@ -438,7 +433,7 @@ impl SyncManager {
                 });
 
                 if file_batch.len() >= BATCH_SIZE {
-                    let (processed, updated) = self
+                    let (scanned, updated) = self
                         .process_file_batch(
                             file_batch.clone(),
                             source_id,
@@ -447,7 +442,7 @@ impl SyncManager {
                             service_auth.clone(),
                         )
                         .await?;
-                    total_processed += processed;
+                    total_scanned += scanned;
                     total_updated += updated;
                     file_batch.clear();
                 }
@@ -455,7 +450,7 @@ impl SyncManager {
         }
 
         if !file_batch.is_empty() {
-            let (processed, updated) = self
+            let (scanned, updated) = self
                 .process_file_batch(
                     file_batch,
                     source_id,
@@ -464,15 +459,15 @@ impl SyncManager {
                     service_auth.clone(),
                 )
                 .await?;
-            total_processed += processed;
+            total_scanned += scanned;
             total_updated += updated;
         }
 
         info!(
-            "Completed incremental Drive sync for user {}: {} processed, {} updated",
-            user_email, total_processed, total_updated
+            "Completed incremental Drive sync for user {}: {} scanned, {} updated",
+            user_email, total_scanned, total_updated
         );
-        Ok((total_processed, total_updated))
+        Ok((total_scanned, total_updated))
     }
 
     async fn process_file_batch(
@@ -485,7 +480,10 @@ impl SyncManager {
     ) -> Result<(usize, usize)> {
         info!("Processing batch of {} files", files.len());
 
-        let mut processed = 0;
+        // (scanned, updated): scanned counts files we read content from
+        // (regardless of store/emit outcome); updated counts files we
+        // successfully emitted as events.
+        let mut scanned = 0;
         let mut updated = 0;
 
         let sync_run_id_owned = sync_run_id.to_string();
@@ -590,22 +588,26 @@ impl SyncManager {
         });
 
         let results = futures::future::join_all(tasks).await;
-        for (p, u) in results {
-            processed += p;
+        for (s, u) in results {
+            scanned += s;
             updated += u;
         }
 
-        // Push the incremental updated count to the manager so a mid-sync
-        // crash doesn't lose this batch's contribution to documents_updated.
+        // Push counts to the manager. Note: counts can over-count on resume
+        // since save_connector_state only fires per-user; an in-flight batch
+        // re-runs after crash. Counts are advisory progress, not exact.
+        if scanned > 0 {
+            ctx.increment_scanned(scanned as i32).await?;
+        }
         if updated > 0 {
             ctx.increment_updated(updated as i32).await?;
         }
 
         info!(
-            "Batch processing complete: {} processed, {} updated",
-            processed, updated
+            "Batch processing complete: {} scanned, {} updated",
+            scanned, updated
         );
-        Ok((processed, updated))
+        Ok((scanned, updated))
     }
 
     async fn sync_drive_source_internal(
@@ -671,7 +673,7 @@ impl SyncManager {
             is_incremental
         );
 
-        let mut total_processed = 0;
+        let mut total_scanned = 0;
         let mut total_updated = 0;
         let mut errors = 0;
 
@@ -733,12 +735,12 @@ impl SyncManager {
                     };
 
                     let user_succeeded = match result {
-                        Ok((processed, updated)) => {
-                            total_processed += processed;
+                        Ok((scanned, updated)) => {
+                            total_scanned += scanned;
                             total_updated += updated;
                             info!(
-                                "User {} Drive sync completed: {} processed, {} updated",
-                                cur_user_email, processed, updated
+                                "User {} Drive sync completed: {} scanned, {} updated",
+                                cur_user_email, scanned, updated
                             );
                             true
                         }
@@ -798,13 +800,13 @@ impl SyncManager {
         }
 
         info!(
-            "User processing complete. Total: {} processed, {} updated, {} errors",
-            total_processed, total_updated, errors
+            "User processing complete. Total: {} scanned, {} updated, {} errors",
+            total_scanned, total_updated, errors
         );
 
         info!(
-            "Sync completed for source {}: {} processed, {} updated",
-            source.id, total_processed, total_updated
+            "Sync completed for source {}: {} scanned, {} updated",
+            source.id, total_scanned, total_updated
         );
 
         // Clear folder cache to free memory after sync
