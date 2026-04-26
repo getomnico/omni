@@ -5,7 +5,7 @@ from typing import Optional, List
 from dataclasses import dataclass
 from asyncpg import Pool
 
-from .connection import get_db_pool, user_db_connection
+from .connection import get_db_pool, system_db_connection, user_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -111,15 +111,38 @@ class DocumentsRepository:
         the same external_id.  Instead of regenerating embeddings for a duplicate,
         we clone from the already-embedded document.
 
+        Runs in system context so it can see embedded donors across all users.
+
         Returns the donor document's ID if found, None otherwise.
         """
-        pool = await self._get_pool()
-        row = await pool.fetchrow(
-            "SELECT id FROM documents WHERE external_id = $1 AND id != $2 AND embedding_status = 'completed' LIMIT 1",
-            external_id,
-            exclude_document_id,
-        )
+        async with system_db_connection() as conn:
+            row = await conn.fetchrow(
+                "SELECT id FROM documents WHERE external_id = $1 AND id != $2 AND embedding_status = 'completed' LIMIT 1",
+                external_id,
+                exclude_document_id,
+            )
         return row["id"] if row else None
+
+    async def update_embedding_status(
+        self, document_ids: List[str], status: str
+    ) -> None:
+        """Update embedding_status for documents (indexer/background path)."""
+        if not document_ids:
+            return
+
+        async with system_db_connection() as conn:
+            await conn.execute(
+                """
+                UPDATE documents
+                SET embedding_status = $2
+                WHERE id = ANY($1)
+                """,
+                document_ids,
+                status,
+            )
+        logger.info(
+            f"Updated {len(document_ids)} documents to embedding_status: {status}"
+        )
 
     async def get_content_blob(self, document_id: str) -> Optional[ContentBlob]:
         """Get the content blob for a document"""

@@ -61,6 +61,24 @@ async def user_db_connection(user_id: str) -> AsyncIterator[Connection]:
         await pool.release(conn)
 
 
+@asynccontextmanager
+async def system_db_connection() -> AsyncIterator[Connection]:
+    """Context manager for system-level queries that bypass per-user RLS.
+
+    Sets `app.is_admin = 'true'`, which RLS policies recognise as the
+    indexer / background-worker context (cross-user dedup, embedding
+    status updates, etc.). Use sparingly — only for code paths that
+    legitimately need to operate across all users.
+    """
+    pool = await get_db_pool()
+    conn = await pool.acquire()
+    try:
+        await conn.execute("SET app.is_admin = 'true'")
+        yield conn
+    finally:
+        await pool.release(conn)
+
+
 async def close_db_pool():
     """Close database connection pool"""
     global _db_pool
