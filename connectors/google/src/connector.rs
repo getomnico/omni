@@ -1,29 +1,18 @@
 use std::sync::Arc;
 
 use crate::admin::AdminClient;
-use crate::auth::{GoogleAuth, ServiceAccountAuth};
+use crate::auth::{create_service_auth, get_domain_from_credentials, GoogleAuth};
 use crate::drive::DriveClient;
 use crate::models::{GoogleConnectorState, GoogleDirectoryUser, SearchUsersResponse};
 use crate::sync::SyncManager;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
     ActionDefinition, ActionResponse, Connector, SearchOperator, ServiceCredentials, Source,
     SourceType, SyncContext, SyncType,
 };
-use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
-
-#[derive(Deserialize)]
-struct GoogleServiceAccountCredentials {
-    service_account_key: String,
-}
-
-#[derive(Deserialize)]
-struct GoogleConfig {
-    domain: String,
-}
 
 pub struct GoogleConnector {
     pub sync_manager: Arc<SyncManager>,
@@ -48,16 +37,12 @@ impl GoogleConnector {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Missing required parameter: file_id"))?;
 
-        let typed_creds: GoogleServiceAccountCredentials =
-            serde_json::from_value(creds.credentials.clone())
-                .context("Failed to decode Google credentials")?;
         let principal_email = creds
             .principal_email
             .as_deref()
             .ok_or_else(|| anyhow!("Missing principal_email in credentials"))?;
 
-        let scopes = crate::auth::get_scopes_for_source_type(SourceType::GoogleDrive);
-        let auth = ServiceAccountAuth::new(&typed_creds.service_account_key, scopes)?;
+        let auth = create_service_auth(creds, SourceType::GoogleDrive)?;
         let google_auth = GoogleAuth::ServiceAccount(auth);
         let drive_client = DriveClient::new();
 
@@ -119,23 +104,18 @@ impl GoogleConnector {
         let query = params.get("q").and_then(|v| v.as_str());
         let page_token = params.get("page_token").and_then(|v| v.as_str());
 
-        let typed_creds: GoogleServiceAccountCredentials =
-            serde_json::from_value(creds.credentials.clone())
-                .context("Failed to decode Google credentials")?;
-        let typed_config: GoogleConfig = serde_json::from_value(creds.config.clone())
-            .context("Failed to decode Google config")?;
         let principal_email = creds
             .principal_email
             .as_deref()
             .ok_or_else(|| anyhow!("Missing principal_email in credentials"))?;
+        let domain = get_domain_from_credentials(creds)?;
 
-        let admin_scopes = crate::auth::get_scopes_for_source_type(SourceType::GoogleDrive);
-        let auth = ServiceAccountAuth::new(&typed_creds.service_account_key, admin_scopes)?;
+        let auth = create_service_auth(creds, SourceType::GoogleDrive)?;
         let token = auth.get_access_token(principal_email).await?;
 
         let response = self
             .admin_client
-            .search_users(&token, &typed_config.domain, query, Some(limit), page_token)
+            .search_users(&token, &domain, query, Some(limit), page_token)
             .await?;
 
         let has_more = response.next_page_token.is_some();

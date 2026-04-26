@@ -3,7 +3,7 @@ use chrono::{Duration, Utc};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use shared::models::SourceType;
+use shared::models::{ServiceCredentials, SourceType};
 use shared::RateLimiter;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -422,6 +422,43 @@ pub fn get_oauth_scopes_for_source_type(source_type: SourceType) -> Vec<String> 
             ]
         }
     }
+}
+
+/// Build a `ServiceAccountAuth` from a `ServiceCredentials` JWT row. Honors a
+/// `scopes` override in `creds.config` and falls back to the per-source-type
+/// defaults from `get_scopes_for_source_type`.
+pub fn create_service_auth(
+    creds: &ServiceCredentials,
+    source_type: SourceType,
+) -> Result<ServiceAccountAuth> {
+    let service_account_json = creds
+        .credentials
+        .get("service_account_key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("Missing service_account_key in credentials"))?;
+
+    let scopes = creds
+        .config
+        .get("scopes")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| get_scopes_for_source_type(source_type));
+
+    ServiceAccountAuth::new(service_account_json, scopes)
+}
+
+/// Read the workspace `domain` from a `ServiceCredentials` config blob.
+pub fn get_domain_from_credentials(creds: &ServiceCredentials) -> Result<String> {
+    creds
+        .config
+        .get("domain")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .ok_or_else(|| anyhow!("Missing domain in service credentials config"))
 }
 
 pub fn is_auth_error(status: reqwest::StatusCode) -> bool {

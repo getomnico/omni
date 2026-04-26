@@ -10,7 +10,7 @@ use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
 
 use crate::admin::AdminClient;
-use crate::auth::{GoogleAuth, OAuthAuth, ServiceAccountAuth};
+use crate::auth::{GoogleAuth, OAuthAuth};
 use crate::cache::LruFolderCache;
 use crate::drive::{DriveClient, FileContent};
 use crate::gmail::{BatchThreadResult, GmailClient, MessageFormat};
@@ -612,7 +612,7 @@ impl SyncManager {
             info!("OAuth Drive sync for single user: {}", email);
             vec![email]
         } else {
-            let domain = self.get_domain_from_credentials(service_creds)?;
+            let domain = crate::auth::get_domain_from_credentials(service_creds)?;
             let user_email = ctx.get_user_email_for_source().await
                 .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source.id, e))?;
 
@@ -829,7 +829,7 @@ impl SyncManager {
             info!("OAuth Gmail sync for single user: {}", email);
             vec![email]
         } else {
-            let domain = self.get_domain_from_credentials(service_creds)?;
+            let domain = crate::auth::get_domain_from_credentials(service_creds)?;
             let user_email = ctx.get_user_email_for_source().await
                 .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source.id, e))?;
 
@@ -1069,32 +1069,6 @@ impl SyncManager {
         Ok(creds)
     }
 
-    fn create_service_auth(
-        &self,
-        creds: &ServiceCredentials,
-        source_type: SourceType,
-    ) -> Result<ServiceAccountAuth> {
-        let service_account_json = creds
-            .credentials
-            .get("service_account_key")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing service_account_key in credentials"))?;
-
-        // Check if custom scopes are provided in config, otherwise use defaults based on source type
-        let scopes = creds
-            .config
-            .get("scopes")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_else(|| crate::auth::get_scopes_for_source_type(source_type));
-
-        ServiceAccountAuth::new(service_account_json, scopes)
-    }
-
     /// Create GoogleAuth from credentials, branching on auth_type (JWT vs OAuth)
     async fn create_auth(
         &self,
@@ -1167,19 +1141,10 @@ impl SyncManager {
             }
             _ => {
                 // Default: JWT / service account
-                let sa = self.create_service_auth(creds, source_type)?;
+                let sa = crate::auth::create_service_auth(creds, source_type)?;
                 Ok(GoogleAuth::ServiceAccount(sa))
             }
         }
-    }
-
-    fn get_domain_from_credentials(&self, creds: &ServiceCredentials) -> Result<String> {
-        creds
-            .config
-            .get("domain")
-            .and_then(|v| v.as_str())
-            .map(String::from)
-            .ok_or_else(|| anyhow::anyhow!("Missing domain in service credentials config"))
     }
 
     async fn get_user_email_from_source(&self, source_id: &str) -> Result<String> {
@@ -1347,7 +1312,8 @@ impl SyncManager {
             };
 
         let service_creds = self.get_service_credentials(source_id).await?;
-        let service_auth = self.create_service_auth(&service_creds, SourceType::GoogleDrive)?;
+        let service_auth =
+            crate::auth::create_service_auth(&service_creds, SourceType::GoogleDrive)?;
         let user_email = self.get_user_email_from_source(source_id).await
             .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source_id, e))?;
         let access_token = service_auth.get_access_token(&user_email).await?;
@@ -1416,7 +1382,8 @@ impl SyncManager {
         resource_id: &str,
     ) -> Result<()> {
         let service_creds = self.get_service_credentials(source_id).await?;
-        let service_auth = self.create_service_auth(&service_creds, SourceType::GoogleDrive)?;
+        let service_auth =
+            crate::auth::create_service_auth(&service_creds, SourceType::GoogleDrive)?;
         let user_email = self.get_user_email_from_source(source_id).await
             .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source_id, e))?;
         let access_token = service_auth.get_access_token(&user_email).await?;
@@ -2097,7 +2064,7 @@ impl SyncManager {
             return HashSet::new();
         }
 
-        let domain = match self.get_domain_from_credentials(service_creds) {
+        let domain = match crate::auth::get_domain_from_credentials(service_creds) {
             Ok(d) => d,
             Err(e) => {
                 warn!("Failed to get domain for group sync: {}", e);
