@@ -8,6 +8,7 @@ declare global {
             apiKeyScope: 'public' | 'user' | 'admin' | null
             requestId: string
             logger: import('$lib/server/logger').Logger
+            db: typeof import('$lib/server/db').db
         }
     }
 }

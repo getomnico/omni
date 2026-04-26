@@ -15,7 +15,7 @@ initTelemetry()
 
 const handleAuth: Handle = async ({ event, resolve }) => {
     let userId: string | null = null
-    let dbConn: Awaited<ReturnType<typeof rlsClient.connect>> | null = null
+    let reserved: Awaited<ReturnType<typeof rlsClient.reserve>> | null = null
 
     try {
         // 1. Try API key auth (Authorization: Bearer omni_* or X-API-Key header)
@@ -79,19 +79,19 @@ const handleAuth: Handle = async ({ event, resolve }) => {
             }
         }
 
-        // 3. Set up RLS connection with user context
+        // 3. Set up RLS connection with user context. set_config() (instead of
+        //    SET) lets us pass the user ID as a bind parameter — SET cannot be
+        //    parameterised in Postgres.
         if (userId) {
-            dbConn = await rlsClient.connect()
-            await dbConn.query('SET app.current_user_id = $1', [userId])
-            event.locals.db = drizzle(dbConn, { schema })
+            reserved = await rlsClient.reserve()
+            await reserved`SELECT set_config('app.current_user_id', ${userId}, false)`
+            event.locals.db = drizzle(reserved, { schema })
         }
 
         return await resolve(event)
     } finally {
-        // 4. Always release the connection back to the pool
-        if (dbConn) {
-            await dbConn.end()
-        }
+        // 4. Always release the reserved connection back to the pool
+        reserved?.release()
     }
 }
 
