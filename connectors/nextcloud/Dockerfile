@@ -1,4 +1,4 @@
-FROM lukemathwalker/cargo-chef:latest-rust-bookworm AS chef
+FROM lukemathwalker/cargo-chef:latest-rust-1.91.1-bookworm AS chef
 WORKDIR /app
 
 FROM chef AS planner
@@ -11,6 +11,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY Cargo.toml Cargo.lock ./
 COPY shared/ shared/
+COPY sdk/rust/ sdk/rust/
 COPY connectors/nextcloud/ connectors/nextcloud/
 RUN cargo build --release --bin omni-nextcloud-connector
 
