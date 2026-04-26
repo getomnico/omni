@@ -1,8 +1,7 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
-use omni_connector_sdk::{DocumentPermissions, SdkClient};
-use std::sync::atomic::{AtomicBool, Ordering};
+use omni_connector_sdk::{DocumentPermissions, SdkClient, SyncContext};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
@@ -215,7 +214,7 @@ impl JiraProcessor {
         creds: &AtlassianCredentials,
         source_id: &str,
         sync_run_id: &str,
-        cancelled: &AtomicBool,
+        ctx: &SyncContext,
         project_filters: &Option<Vec<String>>,
     ) -> Result<u32> {
         info!(
@@ -248,7 +247,7 @@ impl JiraProcessor {
         let mut total_issues_processed = 0;
 
         for project in projects {
-            if cancelled.load(Ordering::SeqCst) {
+            if ctx.is_cancelled() {
                 info!(
                     "JIRA sync {} cancelled, stopping early after {} issues",
                     sync_run_id, total_issues_processed
@@ -274,7 +273,7 @@ impl JiraProcessor {
                     source_id,
                     project_key,
                     sync_run_id,
-                    cancelled,
+                    ctx,
                     Some(&custom_field_ids),
                 )
                 .await
@@ -314,7 +313,7 @@ impl JiraProcessor {
         since: DateTime<Utc>,
         project_filters: Option<&Vec<String>>,
         sync_run_id: &str,
-        cancelled: &AtomicBool,
+        ctx: &SyncContext,
     ) -> Result<u32> {
         info!(
             "Starting incremental JIRA sync for source: {} since {}{} (sync_run_id: {})",
@@ -341,7 +340,7 @@ impl JiraProcessor {
         const PAGE_SIZE: u32 = 50;
 
         loop {
-            if cancelled.load(Ordering::SeqCst) {
+            if ctx.is_cancelled() {
                 info!(
                     "JIRA incremental sync {} cancelled, stopping after {} issues",
                     sync_run_id, total_issues
@@ -395,7 +394,7 @@ impl JiraProcessor {
         source_id: &str,
         project_key: &str,
         sync_run_id: &str,
-        cancelled: &AtomicBool,
+        ctx: &SyncContext,
         custom_fields: Option<&[String]>,
     ) -> Result<u32> {
         let mut total_issues = 0;
@@ -406,7 +405,7 @@ impl JiraProcessor {
         let fields = build_fields(custom_fields);
 
         loop {
-            if cancelled.load(Ordering::SeqCst) {
+            if ctx.is_cancelled() {
                 info!(
                     "JIRA project {} sync cancelled, stopping after {} issues",
                     project_key, total_issues
