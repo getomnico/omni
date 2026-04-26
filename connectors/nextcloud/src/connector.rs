@@ -98,21 +98,18 @@ impl Connector for NextcloudConnector {
         &self,
         action: &str,
         params: JsonValue,
-        credentials: JsonValue,
+        credentials: Option<ServiceCredentials>,
     ) -> Result<Response> {
         match action {
             "validate_credentials" => {
                 let config = NextcloudConfig::from_source_config(&params)?;
-                let username = credentials
-                    .get("username")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| anyhow!("Missing 'username' in credentials"))?;
-                let password = credentials
-                    .get("password")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| anyhow!("Missing 'password' in credentials"))?;
-                let client = NextcloudClient::new(username, password);
-                let base_url = config.webdav_base_url(username);
+                let creds =
+                    credentials.ok_or_else(|| anyhow!("Nextcloud credentials are required"))?;
+                let nextcloud_creds: NextcloudCredentials =
+                    serde_json::from_value(creds.credentials)?;
+                let client =
+                    NextcloudClient::new(&nextcloud_creds.username, &nextcloud_creds.password);
+                let base_url = config.webdav_base_url(&nextcloud_creds.username);
                 let authenticated = client.validate_credentials(&base_url).await?;
                 Ok(
                     ActionResponse::success(json!({ "authenticated": authenticated }))
