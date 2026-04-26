@@ -2,9 +2,8 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use futures::stream::StreamExt;
-use omni_connector_sdk::{DocumentPermissions, SdkClient};
+use omni_connector_sdk::{DocumentPermissions, SdkClient, SyncContext};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
@@ -192,7 +191,7 @@ impl ConfluenceProcessor {
         source_id: &str,
         sync_run_id: &str,
         last_sync: DateTime<Utc>,
-        cancelled: &AtomicBool,
+        ctx: &SyncContext,
         space_filters: &Option<Vec<String>>,
     ) -> Result<u32> {
         info!(
@@ -227,7 +226,7 @@ impl ConfluenceProcessor {
         {
             let mut stream = self.client.search_confluence_pages_by_cql(creds, &cql);
             while let Some(result) = stream.next().await {
-                if cancelled.load(Ordering::SeqCst) {
+                if ctx.is_cancelled() {
                     info!(
                         "Confluence incremental sync {} cancelled after {} pages",
                         sync_run_id, total_pages_processed
@@ -274,7 +273,7 @@ impl ConfluenceProcessor {
         creds: &AtlassianCredentials,
         source_id: &str,
         sync_run_id: &str,
-        cancelled: &AtomicBool,
+        ctx: &SyncContext,
         space_filters: &Option<Vec<String>>,
     ) -> Result<u32> {
         info!(
@@ -301,7 +300,7 @@ impl ConfluenceProcessor {
         let mut total_pages_processed = 0;
 
         for space in spaces {
-            if cancelled.load(Ordering::SeqCst) {
+            if ctx.is_cancelled() {
                 info!(
                     "Confluence sync {} cancelled, stopping early after {} pages",
                     sync_run_id, total_pages_processed
@@ -315,7 +314,7 @@ impl ConfluenceProcessor {
             );
 
             match self
-                .sync_space_pages(creds, source_id, sync_run_id, &space.id, cancelled)
+                .sync_space_pages(creds, source_id, sync_run_id, &space.id, ctx)
                 .await
             {
                 Ok(pages_count) => {
@@ -348,7 +347,7 @@ impl ConfluenceProcessor {
         source_id: &str,
         sync_run_id: &str,
         space_id: &str,
-        cancelled: &AtomicBool,
+        ctx: &SyncContext,
     ) -> Result<u32> {
         let mut total_pages = 0;
 
@@ -359,7 +358,7 @@ impl ConfluenceProcessor {
         {
             let mut pages_stream = self.client.get_confluence_pages(creds, space_id);
             while let Some(page_result) = pages_stream.next().await {
-                if cancelled.load(Ordering::SeqCst) {
+                if ctx.is_cancelled() {
                     info!(
                         "Confluence sync cancelled during space {} page streaming",
                         space_id

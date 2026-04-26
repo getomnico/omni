@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use axum::http::StatusCode;
 use axum::response::Response;
 use omni_connector_sdk::{
-    ActionDefinition, ActionResponse, Connector, SearchOperator, ServiceCredential, Source,
-    SourceType, SyncContext, SyncType,
+    ActionDefinition, ActionMode, ActionResponse, Connector, SearchOperator, ServiceCredential,
+    Source, SourceType, SyncContext, SyncType,
 };
 use serde_json::{json, Value as JsonValue};
 use tracing::info;
@@ -74,7 +74,7 @@ impl Connector for AtlassianConnector {
                 },
                 "required": ["type"]
             }),
-            mode: "read".to_string(),
+            mode: ActionMode::Read,
         }]
     }
 

@@ -1,11 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
-use dashmap::DashMap;
 use omni_connector_sdk::{
     ConnectorEvent, SdkClient, ServiceCredential, Source, SourceType, SyncContext, SyncType,
 };
 use shared::models::{ConfluenceSourceConfig, JiraSourceConfig, ServiceProvider};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
@@ -19,7 +17,6 @@ pub struct SyncManager {
     pub sdk_client: SdkClient,
     auth_manager: AuthManager,
     client: Arc<dyn AtlassianApi>,
-    active_syncs: DashMap<String, Arc<AtomicBool>>,
     webhook_url: Option<String>,
 }
 
@@ -38,7 +35,6 @@ impl SyncManager {
             sdk_client,
             auth_manager: AuthManager::new(),
             client,
-            active_syncs: DashMap::new(),
             webhook_url,
         }
     }
@@ -50,7 +46,7 @@ impl SyncManager {
     pub async fn run_sync(
         &self,
         _source: Source,
-        _credentials: Option<ServiceCredentials>,
+        _credentials: Option<ServiceCredential>,
         state: Option<AtlassianConnectorState>,
         ctx: SyncContext,
     ) -> Result<()> {
@@ -62,28 +58,9 @@ impl SyncManager {
             source_id, sync_run_id
         );
 
-        // Mirror the SDK's cancellation flag so nested helpers can poll it
-        // through the existing `&AtomicBool` signatures without threading
-        // `SyncContext` everywhere.
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let cancel_bridge = {
-            let cancelled = cancelled.clone();
-            let ctx = ctx.clone();
-            tokio::spawn(async move {
-                while !ctx.is_cancelled() {
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                }
-                cancelled.store(true, Ordering::SeqCst);
-            })
-        };
-        self.active_syncs
-            .insert(sync_run_id.clone(), cancelled.clone());
-
         let outcome = self
-            .run_sync_inner(&source_id, &sync_run_id, &cancelled, &ctx, state)
+            .run_sync_inner(&source_id, &sync_run_id, &ctx, state)
             .await;
-        self.active_syncs.remove(&sync_run_id);
-        cancel_bridge.abort();
 
         match outcome {
             Ok(Some(_total_processed)) => {
@@ -106,7 +83,6 @@ impl SyncManager {
         &self,
         source_id: &str,
         sync_run_id: &str,
-        cancelled: &AtomicBool,
         ctx: &SyncContext,
         state: Option<AtlassianConnectorState>,
     ) -> Result<Option<u32>> {
@@ -179,13 +155,7 @@ impl SyncManager {
                         source.name
                     );
                     processor
-                        .sync_all_spaces(
-                            &credentials,
-                            source_id,
-                            sync_run_id,
-                            cancelled,
-                            &space_filters,
-                        )
+                        .sync_all_spaces(&credentials, source_id, sync_run_id, ctx, &space_filters)
                         .await
                 } else {
                     info!(
@@ -198,7 +168,7 @@ impl SyncManager {
                             source_id,
                             sync_run_id,
                             last_sync,
-                            cancelled,
+                            ctx,
                             &space_filters,
                         )
                         .await
@@ -215,7 +185,7 @@ impl SyncManager {
                             &credentials,
                             source_id,
                             sync_run_id,
-                            cancelled,
+                            ctx,
                             &project_filters,
                         )
                         .await
@@ -231,7 +201,7 @@ impl SyncManager {
                             last_sync,
                             project_filters.as_ref(),
                             sync_run_id,
-                            cancelled,
+                            ctx,
                         )
                         .await
                 };
@@ -241,7 +211,7 @@ impl SyncManager {
             _ => unreachable!(),
         };
 
-        if cancelled.load(Ordering::SeqCst) {
+        if ctx.is_cancelled() {
             return Ok(None);
         }
 

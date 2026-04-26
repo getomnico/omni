@@ -20,9 +20,10 @@ use omni_atlassian_connector::models::{
 use omni_atlassian_connector::{
     AtlassianCredentials, ConfluenceProcessor, JiraProcessor, SyncManager,
 };
-use omni_connector_sdk::SourceType;
+use omni_connector_sdk::{SourceType, SyncContext, SyncType};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use time::OffsetDateTime;
 
 const SOURCE_ID: &str = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
@@ -32,6 +33,22 @@ fn test_credentials() -> AtlassianCredentials {
         TEST_BASE_URL.to_string(),
         TEST_USER_EMAIL.to_string(),
         TEST_API_TOKEN.to_string(),
+    )
+}
+
+fn make_sync_context(
+    fixture: &common::TestFixture,
+    sync_run_id: &str,
+    source_type: SourceType,
+    sync_mode: SyncType,
+) -> SyncContext {
+    SyncContext::new(
+        fixture.sdk_client.clone(),
+        sync_run_id.to_string(),
+        SOURCE_ID.to_string(),
+        source_type,
+        sync_mode,
+        Arc::new(AtomicBool::new(false)),
     )
 }
 
@@ -182,15 +199,20 @@ async fn test_confluence_full_sync_creates_events() -> Result<()> {
 
     let processor = ConfluenceProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
 
-    let cancelled = AtomicBool::new(false);
     let sync_run_id = fixture
         .sdk_client
-        .create_sync_run(SOURCE_ID, omni_connector_sdk::SyncType::Full)
+        .create_sync_run(SOURCE_ID, SyncType::Full)
         .await?;
+    let ctx = make_sync_context(
+        &fixture,
+        &sync_run_id,
+        SourceType::Confluence,
+        SyncType::Full,
+    );
 
     let creds = test_credentials();
     let count = processor
-        .sync_all_spaces(&creds, SOURCE_ID, &sync_run_id, &cancelled, &None)
+        .sync_all_spaces(&creds, SOURCE_ID, &sync_run_id, &ctx, &None)
         .await?;
 
     assert_eq!(count, 4, "Should process 4 pages across 2 spaces");
@@ -224,24 +246,22 @@ async fn test_confluence_incremental_sync_uses_cql() -> Result<()> {
 
     let processor = ConfluenceProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
 
-    let cancelled = AtomicBool::new(false);
     let sync_run_id = fixture
         .sdk_client
-        .create_sync_run(SOURCE_ID, omni_connector_sdk::SyncType::Incremental)
+        .create_sync_run(SOURCE_ID, SyncType::Incremental)
         .await?;
+    let ctx = make_sync_context(
+        &fixture,
+        &sync_run_id,
+        SourceType::Confluence,
+        SyncType::Incremental,
+    );
 
     let creds = test_credentials();
     let last_sync = chrono::Utc::now() - chrono::Duration::hours(1);
 
     let count = processor
-        .sync_all_spaces_incremental(
-            &creds,
-            SOURCE_ID,
-            &sync_run_id,
-            last_sync,
-            &cancelled,
-            &None,
-        )
+        .sync_all_spaces_incremental(&creds, SOURCE_ID, &sync_run_id, last_sync, &ctx, &None)
         .await?;
 
     assert_eq!(count, 1, "Should process 1 modified page");
@@ -278,17 +298,21 @@ async fn test_confluence_version_dedup_skips_unchanged() -> Result<()> {
 
     let processor = ConfluenceProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
 
-    let cancelled = AtomicBool::new(false);
-
     // First sync: should process both pages
     let sync_run_id = fixture
         .sdk_client
-        .create_sync_run(SOURCE_ID, omni_connector_sdk::SyncType::Full)
+        .create_sync_run(SOURCE_ID, SyncType::Full)
         .await?;
+    let ctx = make_sync_context(
+        &fixture,
+        &sync_run_id,
+        SourceType::Confluence,
+        SyncType::Full,
+    );
 
     let creds = test_credentials();
     let count = processor
-        .sync_all_spaces(&creds, SOURCE_ID, &sync_run_id, &cancelled, &None)
+        .sync_all_spaces(&creds, SOURCE_ID, &sync_run_id, &ctx, &None)
         .await?;
     assert_eq!(count, 2, "First sync should process 2 pages");
 
@@ -299,11 +323,17 @@ async fn test_confluence_version_dedup_skips_unchanged() -> Result<()> {
     // Second sync with same versions: should skip both pages
     let sync_run_id2 = fixture
         .sdk_client
-        .create_sync_run(SOURCE_ID, omni_connector_sdk::SyncType::Full)
+        .create_sync_run(SOURCE_ID, SyncType::Full)
         .await?;
+    let ctx2 = make_sync_context(
+        &fixture,
+        &sync_run_id2,
+        SourceType::Confluence,
+        SyncType::Full,
+    );
 
     let count2 = processor
-        .sync_all_spaces(&creds, SOURCE_ID, &sync_run_id2, &cancelled, &None)
+        .sync_all_spaces(&creds, SOURCE_ID, &sync_run_id2, &ctx2, &None)
         .await?;
     assert_eq!(count2, 0, "Second sync should skip unchanged pages");
 
@@ -340,15 +370,15 @@ async fn test_jira_full_sync_creates_events() -> Result<()> {
 
     let processor = JiraProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
 
-    let cancelled = AtomicBool::new(false);
     let sync_run_id = fixture
         .sdk_client
-        .create_sync_run(SOURCE_ID, omni_connector_sdk::SyncType::Full)
+        .create_sync_run(SOURCE_ID, SyncType::Full)
         .await?;
+    let ctx = make_sync_context(&fixture, &sync_run_id, SourceType::Jira, SyncType::Full);
 
     let creds = test_credentials();
     let count = processor
-        .sync_all_projects(&creds, SOURCE_ID, &sync_run_id, &cancelled, &None)
+        .sync_all_projects(&creds, SOURCE_ID, &sync_run_id, &ctx, &None)
         .await?;
 
     assert_eq!(count, 3, "Should process 3 issues");
@@ -629,15 +659,20 @@ async fn test_confluence_sync_fetches_and_caches_space_permissions() -> Result<(
 
     let processor = ConfluenceProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
 
-    let cancelled = AtomicBool::new(false);
     let sync_run_id = fixture
         .sdk_client
-        .create_sync_run(SOURCE_ID, omni_connector_sdk::SyncType::Full)
+        .create_sync_run(SOURCE_ID, SyncType::Full)
         .await?;
+    let ctx = make_sync_context(
+        &fixture,
+        &sync_run_id,
+        SourceType::Confluence,
+        SyncType::Full,
+    );
 
     let creds = test_credentials();
     let count = processor
-        .sync_all_spaces(&creds, SOURCE_ID, &sync_run_id, &cancelled, &None)
+        .sync_all_spaces(&creds, SOURCE_ID, &sync_run_id, &ctx, &None)
         .await?;
 
     assert_eq!(count, 3);
@@ -735,15 +770,15 @@ async fn test_jira_sync_fetches_and_caches_project_permissions() -> Result<()> {
 
     let processor = JiraProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
 
-    let cancelled = AtomicBool::new(false);
     let sync_run_id = fixture
         .sdk_client
-        .create_sync_run(SOURCE_ID, omni_connector_sdk::SyncType::Full)
+        .create_sync_run(SOURCE_ID, SyncType::Full)
         .await?;
+    let ctx = make_sync_context(&fixture, &sync_run_id, SourceType::Jira, SyncType::Full);
 
     let creds = test_credentials();
     let count = processor
-        .sync_all_projects(&creds, SOURCE_ID, &sync_run_id, &cancelled, &None)
+        .sync_all_projects(&creds, SOURCE_ID, &sync_run_id, &ctx, &None)
         .await?;
 
     assert_eq!(count, 3);
