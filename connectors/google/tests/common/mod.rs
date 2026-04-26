@@ -92,7 +92,6 @@ impl GoogleConnectorTestFixture {
         let sdk_client = SdkClient::new(&cm_url);
         let admin_client = Arc::new(omni_google_connector::admin::AdminClient::new());
         let sync_manager = Arc::new(SyncManager::new(
-            test_env.mock_ai_server.base_url.clone(),
             Arc::clone(&admin_client),
             sdk_client.clone(),
             None,

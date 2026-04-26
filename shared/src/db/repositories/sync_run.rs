@@ -71,26 +71,17 @@ impl SyncRunRepository {
         Ok(sync_run)
     }
 
-    pub async fn mark_completed(
-        &self,
-        id: &str,
-        documents_scanned: i32,
-        documents_updated: i32,
-    ) -> Result<(), DatabaseError> {
-        // Plain assignment. The connector is expected to have seeded its
-        // local counters from `ctx.documents_scanned()` / `documents_updated()`
-        // on (re-)dispatch, so the absolute value sent here reflects the
-        // full cumulative tally — not just the current attempt's work.
+    /// Flip status to `Completed`. Counters are maintained by
+    /// `increment_scanned` / `increment_updated`, so this only touches
+    /// status fields.
+    pub async fn mark_completed(&self, id: &str) -> Result<(), DatabaseError> {
         sqlx::query(
             "UPDATE sync_runs
              SET status = $1, completed_at = CURRENT_TIMESTAMP,
-                 documents_scanned = $2, documents_updated = $3,
                  updated_at = CURRENT_TIMESTAMP
-             WHERE id = $4",
+             WHERE id = $2",
         )
         .bind(SyncStatus::Completed)
-        .bind(documents_scanned)
-        .bind(documents_updated)
         .bind(id)
         .execute(&self.pool)
         .await?;

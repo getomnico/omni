@@ -57,9 +57,6 @@ pub async fn run_realtime(
         source.base_path.display()
     );
 
-    let mut scanned = 0i32;
-    let mut updated = 0i32;
-
     // Heartbeats keep `last_activity_at` fresh so the CM's stale-sync sweeper
     // doesn't mark a quiet-but-healthy watcher as failed.
     let mut heartbeat_ticker = tokio::time::interval(Duration::from_secs(30));
@@ -70,8 +67,8 @@ pub async fn run_realtime(
             event = rx.recv() => match event {
                 Some(event) => match handle_event(&ctx, &scanner, event).await {
                     Ok(Emitted::Yes) => {
-                        scanned += 1;
-                        updated += 1;
+                        ctx.increment_scanned(1).await?;
+                        ctx.increment_updated(1).await?;
                     }
                     Ok(Emitted::Skipped) => {}
                     Err(error) => warn!("Failed to handle filesystem event: {}", error),
@@ -93,7 +90,7 @@ pub async fn run_realtime(
         info!("Realtime watcher cancelled for source {}", ctx.source_id());
         ctx.cancel().await?;
     } else {
-        ctx.complete(scanned, updated, None).await?;
+        ctx.complete().await?;
     }
     Ok(())
 }

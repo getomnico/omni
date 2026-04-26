@@ -1,7 +1,7 @@
 use anyhow::Result;
 use shared::models::{ConnectorEvent, SourceType, SyncType};
 use shared::SdkClient;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::warn;
 
@@ -13,17 +13,6 @@ pub struct SyncContext {
     source_type: SourceType,
     sync_mode: SyncType,
     cancelled: Arc<AtomicBool>,
-    /// Manager's running tally of scanned documents at the moment this
-    /// sync was (re-)dispatched. Zero for a fresh sync; non-zero on
-    /// resume — the seed off which `documents_scanned()` reports.
-    documents_scanned_initial: i32,
-    /// Same idea for updated documents.
-    documents_updated_initial: i32,
-    /// Bumped by `increment_scanned`. `documents_scanned()` returns
-    /// `documents_scanned_initial + this`, so callers always see the
-    /// cumulative tally regardless of resume state.
-    documents_scanned_delta: Arc<AtomicI64>,
-    documents_updated_delta: Arc<AtomicI64>,
 }
 
 impl SyncContext {
@@ -34,8 +23,6 @@ impl SyncContext {
         source_type: SourceType,
         sync_mode: SyncType,
         cancelled: Arc<AtomicBool>,
-        documents_scanned: i32,
-        documents_updated: i32,
     ) -> Self {
         Self {
             sdk_client,
@@ -44,24 +31,7 @@ impl SyncContext {
             source_type,
             sync_mode,
             cancelled,
-            documents_scanned_initial: documents_scanned,
-            documents_updated_initial: documents_updated,
-            documents_scanned_delta: Arc::new(AtomicI64::new(0)),
-            documents_updated_delta: Arc::new(AtomicI64::new(0)),
         }
-    }
-
-    /// Cumulative scanned-document count: the value the manager had at
-    /// dispatch time plus everything reported via `increment_scanned()`
-    /// during this run. Safe to use as the absolute value to send to
-    /// `complete()`.
-    pub fn documents_scanned(&self) -> i32 {
-        self.documents_scanned_initial + self.documents_scanned_delta.load(Ordering::Relaxed) as i32
-    }
-
-    /// Cumulative updated-document count. See [`Self::documents_scanned`].
-    pub fn documents_updated(&self) -> i32 {
-        self.documents_updated_initial + self.documents_updated_delta.load(Ordering::Relaxed) as i32
     }
 
     pub fn sdk_client(&self) -> &SdkClient {
@@ -145,8 +115,6 @@ impl SyncContext {
     }
 
     pub async fn increment_scanned(&self, count: i32) -> Result<()> {
-        self.documents_scanned_delta
-            .fetch_add(count as i64, Ordering::Relaxed);
         self.sdk_client
             .increment_scanned(&self.sync_run_id, count)
             .await?;
@@ -154,8 +122,6 @@ impl SyncContext {
     }
 
     pub async fn increment_updated(&self, count: i32) -> Result<()> {
-        self.documents_updated_delta
-            .fetch_add(count as i64, Ordering::Relaxed);
         self.sdk_client
             .increment_updated(&self.sync_run_id, count)
             .await?;
@@ -164,20 +130,10 @@ impl SyncContext {
 
     /// Mark sync as completed. Flushes any buffered events first so the
     /// completion never races ahead of the final events for this sync.
-    pub async fn complete(
-        &self,
-        documents_scanned: i32,
-        documents_updated: i32,
-        new_state: Option<serde_json::Value>,
-    ) -> Result<()> {
-        self.sdk_client
-            .complete(
-                &self.sync_run_id,
-                documents_scanned,
-                documents_updated,
-                new_state,
-            )
-            .await?;
+    /// Status flip only — counts come from `increment_scanned`/`updated`,
+    /// connector state from `save_connector_state`.
+    pub async fn complete(&self) -> Result<()> {
+        self.sdk_client.complete(&self.sync_run_id).await?;
         Ok(())
     }
 

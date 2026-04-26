@@ -128,20 +128,12 @@ impl SyncManager {
 
         match outcome {
             Ok(Some(final_state)) => {
-                // `complete` flushes events and persists the final state in
-                // one call so the run terminates with everything durable on
-                // disk. `ctx.documents_scanned()` / `documents_updated()`
-                // already track seed (from the dispatch payload) plus every
-                // `ctx.increment_*` issued during the run, so the absolute
-                // we ship here matches the manager's running tally exactly
-                // — `mark_completed`'s overwrite is a no-op on the counters.
+                // Save the final state explicitly even though run_sync_inner
+                // checkpoints mid-sync — the inner pass might have made
+                // additional state mutations after the last checkpoint.
                 let state_json = serde_json::to_value(&final_state)?;
-                ctx.complete(
-                    ctx.documents_scanned(),
-                    ctx.documents_updated(),
-                    Some(state_json),
-                )
-                .await?;
+                ctx.save_connector_state(state_json).await?;
+                ctx.complete().await?;
                 Ok(())
             }
             // Cancelled mid-sync: tell the SDK so the run is marked

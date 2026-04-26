@@ -246,8 +246,9 @@ impl SyncManager {
                 final_state.channel_timestamps = channel_timestamps;
                 let new_state = serde_json::to_value(&final_state)?;
                 self.sdk_client
-                    .complete(sync_run_id, scanned as i32, updated as i32, Some(new_state))
+                    .save_connector_state(source_id, new_state)
                     .await?;
+                self.sdk_client.complete(sync_run_id).await?;
                 Ok(())
             }
             Err(e) => {
@@ -516,9 +517,11 @@ impl SyncManager {
                 .await?;
 
             let updated = message_groups + files;
+            self.sdk_client.increment_scanned(&sync_run_id, 1).await?;
             self.sdk_client
-                .complete(&sync_run_id, 1, updated as i32, None)
+                .increment_updated(&sync_run_id, updated as i32)
                 .await?;
+            self.sdk_client.complete(&sync_run_id).await?;
 
             info!(
                 source_id,

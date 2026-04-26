@@ -961,9 +961,9 @@ fn is_docling_supported_extension(filename: Option<&str>) -> bool {
 // ============================================================================
 
 use crate::models::{
-    SdkCancelSyncRequest, SdkCancelSyncResponse, SdkCompleteRequest, SdkCreateSyncRequest,
-    SdkCreateSyncResponse, SdkEmitBatchRequest, SdkEmitEventRequest, SdkExtractContentResponse,
-    SdkExtractTextResponse, SdkFailRequest, SdkIncrementScannedRequest, SdkIncrementUpdatedRequest,
+    SdkCancelSyncRequest, SdkCancelSyncResponse, SdkCreateSyncRequest, SdkCreateSyncResponse,
+    SdkEmitBatchRequest, SdkEmitEventRequest, SdkExtractContentResponse, SdkExtractTextResponse,
+    SdkFailRequest, SdkIncrementScannedRequest, SdkIncrementUpdatedRequest,
     SdkSourceSyncConfigResponse, SdkStatusResponse, SdkStoreContentRequest,
     SdkStoreContentResponse, SdkUserEmailResponse, SdkWebhookNotification, SdkWebhookResponse,
 };
@@ -1304,31 +1304,17 @@ pub async fn sdk_heartbeat(
 pub async fn sdk_complete(
     State(state): State<AppState>,
     Path(sync_run_id): Path<String>,
-    Json(request): Json<SdkCompleteRequest>,
 ) -> Result<Json<SdkStatusResponse>, ApiError> {
     info!("SDK: Completing sync_run={}", sync_run_id);
 
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
 
-    // Mark sync as completed
+    // Status flip only. Counts come from increment_scanned/updated;
+    // connector state from save_connector_state.
     sync_run_repo
-        .mark_completed(
-            &sync_run_id,
-            request.documents_scanned.unwrap_or(0),
-            request.documents_updated.unwrap_or(0),
-        )
+        .mark_completed(&sync_run_id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to mark completed: {}", e)))?;
-
-    // Store connector state if provided
-    if let Some(new_state) = request.new_state {
-        if let Ok(Some(sync_run)) = sync_run_repo.find_by_id(&sync_run_id).await {
-            let source_repo = SourceRepository::new(state.db_pool.pool());
-            let _ = source_repo
-                .update_connector_state(&sync_run.source_id, new_state)
-                .await;
-        }
-    }
 
     Ok(Json(SdkStatusResponse {
         status: "ok".to_string(),

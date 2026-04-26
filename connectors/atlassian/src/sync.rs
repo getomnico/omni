@@ -411,14 +411,7 @@ impl SyncManager {
                     "Sync completed for source {}: {} documents processed",
                     source.name, total_processed
                 );
-                self.sdk_client
-                    .complete(
-                        sync_run_id,
-                        total_processed as i32,
-                        total_processed as i32,
-                        None,
-                    )
-                    .await?;
+                self.sdk_client.complete(sync_run_id).await?;
 
                 if let Err(e) = self
                     .ensure_webhook_registered(source_id, &credentials)
@@ -683,7 +676,11 @@ impl SyncManager {
                         .await;
 
                     match &result {
-                        Ok(_) => self.sdk_client.complete(&sync_run_id, 1, 1, None).await?,
+                        Ok(_) => {
+                            self.sdk_client.increment_scanned(&sync_run_id, 1).await?;
+                            self.sdk_client.increment_updated(&sync_run_id, 1).await?;
+                            self.sdk_client.complete(&sync_run_id).await?
+                        }
                         Err(e) => self.sdk_client.fail(&sync_run_id, &e.to_string()).await?,
                     }
                     result
@@ -715,7 +712,11 @@ impl SyncManager {
                         .await;
 
                     match &result {
-                        Ok(_) => self.sdk_client.complete(&sync_run_id, 1, 1, None).await?,
+                        Ok(_) => {
+                            self.sdk_client.increment_scanned(&sync_run_id, 1).await?;
+                            self.sdk_client.increment_updated(&sync_run_id, 1).await?;
+                            self.sdk_client.complete(&sync_run_id).await?
+                        }
                         Err(e) => self.sdk_client.fail(&sync_run_id, &e.to_string()).await?,
                     }
                     result

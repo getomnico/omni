@@ -147,16 +147,6 @@ pub struct SdkStoreContentResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SdkCompleteRequest {
-    #[serde(default)]
-    pub documents_scanned: Option<i32>,
-    #[serde(default)]
-    pub documents_updated: Option<i32>,
-    #[serde(default)]
-    pub new_state: Option<JsonValue>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SdkFailRequest {
     pub error: String,
 }

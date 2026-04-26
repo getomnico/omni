@@ -95,7 +95,7 @@ impl SyncManager {
 
         if !account_config.sync_enabled {
             info!("Sync disabled for source {}, skipping", source_id);
-            let _ = self.sdk_client.complete(sync_run_id, 0, 0, None).await;
+            let _ = self.sdk_client.complete(sync_run_id).await;
             return Ok(());
         }
 
@@ -158,13 +158,9 @@ impl SyncManager {
                     source.name, total_scanned, total_processed
                 );
                 self.sdk_client
-                    .complete(
-                        sync_run_id,
-                        total_scanned as i32,
-                        total_processed as i32,
-                        Some(connector_state.to_json()),
-                    )
+                    .save_connector_state(source_id, connector_state.to_json())
                     .await?;
+                self.sdk_client.complete(sync_run_id).await?;
                 Ok(())
             }
             Err(e) => {

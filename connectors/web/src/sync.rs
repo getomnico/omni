@@ -212,8 +212,7 @@ impl SyncManager {
         };
         ctx.save_connector_state(serde_json::to_value(&new_state)?)
             .await?;
-        ctx.complete(final_processed as i32, final_updated as i32, None)
-            .await?;
+        ctx.complete().await?;
         Ok(())
     }
 

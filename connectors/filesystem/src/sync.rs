@@ -85,7 +85,7 @@ pub async fn run_sync(
         return Ok(());
     }
 
-    ctx.complete(total_scanned as i32, total_processed as i32, None)
+    ctx.complete()
         .await
         .context("Failed to mark filesystem sync complete")?;
 

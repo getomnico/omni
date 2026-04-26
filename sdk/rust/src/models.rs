@@ -11,14 +11,6 @@ pub struct SyncRequest {
     pub sync_mode: SyncType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_sync_at: Option<String>,
-    /// Manager's running tally of scanned documents at dispatch time. Zero
-    /// for fresh syncs; non-zero on resume so the connector can seed its
-    /// local counter and keep reporting accurate cumulative numbers.
-    #[serde(default)]
-    pub documents_scanned: i32,
-    /// Same idea for documents_updated.
-    #[serde(default)]
-    pub documents_updated: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

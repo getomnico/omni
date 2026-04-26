@@ -114,13 +114,6 @@ struct StoreContentResponse {
     content_id: String,
 }
 
-#[derive(Debug, Serialize)]
-struct CompleteRequest {
-    documents_scanned: Option<i32>,
-    documents_updated: Option<i32>,
-    new_state: Option<serde_json::Value>,
-}
-
 #[derive(Debug, Deserialize)]
 struct SyncConfigResponse {
     connector_state: Option<serde_json::Value>,
@@ -484,22 +477,10 @@ impl SdkClient {
 
     /// Mark sync as completed. Flushes any buffered events first so the
     /// completion never races ahead of the final events for this sync.
-    pub async fn complete(
-        &self,
-        sync_run_id: &str,
-        documents_scanned: i32,
-        documents_updated: i32,
-        new_state: Option<serde_json::Value>,
-    ) -> SdkResult<()> {
+    pub async fn complete(&self, sync_run_id: &str) -> SdkResult<()> {
         debug!("SDK: Completing sync_run={}", sync_run_id);
 
         self.flush_all().await?;
-
-        let request = CompleteRequest {
-            documents_scanned: Some(documents_scanned),
-            documents_updated: Some(documents_updated),
-            new_state,
-        };
 
         let response = self
             .client
@@ -507,7 +488,6 @@ impl SdkClient {
                 "{}/sdk/sync/{}/complete",
                 self.base_url, sync_run_id
             ))
-            .json(&request)
             .send()
             .await?;
         ensure_ok(response, "complete").await?;
