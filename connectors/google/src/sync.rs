@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use dashmap::DashMap;
 use omni_connector_sdk::SyncContext;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use time::{self, OffsetDateTime};
@@ -39,13 +39,6 @@ pub struct SyncManager {
     // TODO: Remove this one we wire in the webhook codepath to use SyncContext as well
     pub sdk_client: SdkClient,
     folder_cache: LruFolderCache,
-    /// Mirrors the cancellation flag owned by each in-flight sync's
-    /// `SyncContext`. Populated at the top of `run_sync` and removed on
-    /// completion — lets nested sync helpers poll cancellation by
-    /// `sync_run_id` without threading `SyncContext` through every
-    /// signature. The SDK's own guard is the source of truth for slot
-    /// reservation and panic safety.
-    active_syncs: DashMap<String, Arc<AtomicBool>>,
     webhook_url: Option<String>,
     pub webhook_debounce: DashMap<String, WebhookDebounce>,
     webhook_notify: Arc<Notify>,
@@ -83,7 +76,6 @@ impl SyncManager {
             admin_client,
             sdk_client,
             folder_cache: LruFolderCache::new(10_000),
-            active_syncs: DashMap::new(),
             webhook_url,
             webhook_debounce: DashMap::new(),
             webhook_notify: Arc::new(Notify::new()),
@@ -119,13 +111,7 @@ impl SyncManager {
             ));
         }
 
-        // Mirror the SDK's cancellation flag so `is_cancelled(sync_run_id)`
-        // works from nested helpers without threading `ctx` through them.
-        self.active_syncs
-            .insert(sync_run_id.clone(), ctx.cancelled_flag());
-
         let outcome = self.run_sync_inner(&source, &creds, state, &ctx).await;
-        self.active_syncs.remove(&sync_run_id);
 
         match outcome {
             Ok(Some(final_state)) => {
@@ -161,7 +147,6 @@ impl SyncManager {
         existing_state: Option<GoogleConnectorState>,
         ctx: &SyncContext,
     ) -> Result<Option<GoogleConnectorState>> {
-        let sync_run_id = ctx.sync_run_id();
         let source_id = ctx.source_id();
         let sync_type = ctx.sync_mode();
 
@@ -202,19 +187,11 @@ impl SyncManager {
             self.ensure_webhook_registered(source_id).await;
         }
 
-        if self.is_cancelled(sync_run_id) {
+        if ctx.is_cancelled() {
             return Ok(None);
         }
 
         result.map(Some)
-    }
-
-    /// Check if a sync has been cancelled.
-    fn is_cancelled(&self, sync_run_id: &str) -> bool {
-        self.active_syncs
-            .get(sync_run_id)
-            .map(|flag| flag.load(Ordering::SeqCst))
-            .unwrap_or(false)
     }
 
     fn get_cutoff_date(&self) -> Result<(String, String)> {
@@ -318,7 +295,7 @@ impl SyncManager {
             }
 
             // Check for cancellation
-            if self.is_cancelled(sync_run_id) {
+            if ctx.is_cancelled() {
                 info!(
                     "Sync {} cancelled, stopping Drive sync for user {}",
                     sync_run_id, user_email
@@ -383,7 +360,7 @@ impl SyncManager {
 
             all_changes.extend(response.changes);
 
-            if self.is_cancelled(sync_run_id) {
+            if ctx.is_cancelled() {
                 info!(
                     "Sync {} cancelled during changes listing for user {}",
                     sync_run_id, user_email
@@ -678,7 +655,7 @@ impl SyncManager {
         let mut errors = 0;
 
         for cur_user_email in &user_emails {
-            if self.is_cancelled(sync_run_id) {
+            if ctx.is_cancelled() {
                 info!("Sync {} cancelled, stopping Drive sync early", sync_run_id);
                 break;
             }
@@ -897,7 +874,7 @@ impl SyncManager {
         let mut total_updated = 0;
 
         for cur_user_email in &user_emails {
-            if self.is_cancelled(sync_run_id) {
+            if ctx.is_cancelled() {
                 info!("Sync {} cancelled, stopping Gmail sync early", sync_run_id);
                 break;
             }
@@ -1648,7 +1625,7 @@ impl SyncManager {
             }
 
             // Check for cancellation
-            if self.is_cancelled(sync_run_id) {
+            if ctx.is_cancelled() {
                 info!(
                     "Sync {} cancelled, stopping Gmail thread listing for user {}",
                     sync_run_id, user_email
@@ -1743,7 +1720,7 @@ impl SyncManager {
                 }
             }
 
-            if self.is_cancelled(sync_run_id) {
+            if ctx.is_cancelled() {
                 info!(
                     "Sync {} cancelled during history listing for user {}",
                     sync_run_id, user_email
@@ -1798,7 +1775,7 @@ impl SyncManager {
         const THREAD_BATCH_SIZE: usize = 50;
 
         for chunk in thread_ids.chunks(THREAD_BATCH_SIZE) {
-            if self.is_cancelled(sync_run_id) {
+            if ctx.is_cancelled() {
                 info!(
                     "Sync {} cancelled, stopping Gmail thread processing for user {}",
                     sync_run_id, user_email
