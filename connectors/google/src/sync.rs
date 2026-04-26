@@ -916,8 +916,6 @@ impl SyncManager {
                                     self.sync_gmail_for_user(
                                         &cur_user_email,
                                         service_auth.clone(),
-                                        &source.id,
-                                        sync_run_id,
                                         ctx,
                                         processed_threads.clone(),
                                         Some(&gmail_cutoff_date),
@@ -933,8 +931,6 @@ impl SyncManager {
                         self.sync_gmail_for_user(
                             &cur_user_email,
                             service_auth.clone(),
-                            &source.id,
-                            sync_run_id,
                             ctx,
                             processed_threads.clone(),
                             Some(&gmail_cutoff_date),
@@ -1568,8 +1564,6 @@ impl SyncManager {
         &self,
         user_email: &str,
         service_auth: Arc<GoogleAuth>,
-        source_id: &str,
-        sync_run_id: &str,
         ctx: &SyncContext,
         processed_threads: Arc<std::sync::Mutex<HashSet<String>>>,
         created_after: Option<&str>,
@@ -1628,7 +1622,8 @@ impl SyncManager {
             if ctx.is_cancelled() {
                 info!(
                     "Sync {} cancelled, stopping Gmail thread listing for user {}",
-                    sync_run_id, user_email
+                    ctx.sync_run_id(),
+                    user_email
                 );
                 break;
             }
@@ -1650,8 +1645,6 @@ impl SyncManager {
             user_threads,
             user_email,
             service_auth,
-            source_id,
-            sync_run_id,
             ctx,
             processed_threads,
             known_groups,
@@ -1747,8 +1740,6 @@ impl SyncManager {
             thread_ids,
             user_email,
             service_auth,
-            source_id,
-            sync_run_id,
             ctx,
             processed_threads,
             known_groups,
@@ -1761,8 +1752,6 @@ impl SyncManager {
         thread_ids: Vec<String>,
         user_email: &str,
         service_auth: Arc<GoogleAuth>,
-        source_id: &str,
-        sync_run_id: &str,
         ctx: &SyncContext,
         processed_threads: Arc<std::sync::Mutex<HashSet<String>>>,
         known_groups: Arc<HashSet<String>>,
@@ -1778,7 +1767,8 @@ impl SyncManager {
             if ctx.is_cancelled() {
                 info!(
                     "Sync {} cancelled, stopping Gmail thread processing for user {}",
-                    sync_run_id, user_email
+                    ctx.sync_run_id(),
+                    user_email
                 );
                 break;
             }
@@ -1873,8 +1863,7 @@ impl SyncManager {
                                     response,
                                     user_email,
                                     &service_auth,
-                                    source_id,
-                                    sync_run_id,
+                                    ctx,
                                     &known_groups,
                                 )
                                 .await;
@@ -1941,8 +1930,7 @@ impl SyncManager {
         response: crate::gmail::GmailThreadResponse,
         user_email: &str,
         service_auth: &Arc<GoogleAuth>,
-        source_id: &str,
-        sync_run_id: &str,
+        ctx: &SyncContext,
         known_groups: &HashSet<String>,
     ) -> bool {
         let mut gmail_thread = GmailThread::new(thread_id.to_string());
@@ -1955,57 +1943,40 @@ impl SyncManager {
             return false;
         }
 
-        let mut updated = false;
-        match gmail_thread
-            .aggregate_content(&self.gmail_client, &self.sdk_client, sync_run_id)
-            .await
-        {
-            Ok(content) => {
-                if !content.trim().is_empty() {
-                    match self.sdk_client.store_content(sync_run_id, &content).await {
-                        Ok(content_id) => {
-                            match gmail_thread.to_connector_event(
-                                sync_run_id,
-                                source_id,
-                                &content_id,
-                                known_groups,
-                            ) {
-                                Ok(event) => {
-                                    match self
-                                        .sdk_client
-                                        .emit_event(sync_run_id, source_id, event)
-                                        .await
-                                    {
-                                        Ok(_) => {
-                                            updated = true;
-                                            info!("Successfully queued Gmail thread {}", thread_id);
-                                        }
-                                        Err(e) => error!(
-                                            "Failed to queue event for Gmail thread {}: {}",
-                                            thread_id, e
-                                        ),
-                                    }
-                                }
-                                Err(e) => error!(
-                                    "Failed to create connector event for Gmail thread {}: {}",
-                                    thread_id, e
-                                ),
-                            }
-                        }
-                        Err(e) => error!(
-                            "Failed to store content for Gmail thread {}: {}",
-                            thread_id, e
-                        ),
-                    }
-                } else {
-                    debug!("Gmail thread {} has empty content, skipping", thread_id);
-                }
+        let emit_result: Result<bool> = async {
+            let content = gmail_thread
+                .aggregate_content(&self.gmail_client, ctx.sdk_client(), ctx.sync_run_id())
+                .await
+                .context("aggregate content")?;
+            if content.trim().is_empty() {
+                debug!("Gmail thread {} has empty content, skipping", thread_id);
+                return Ok(false);
             }
-            Err(e) => error!(
-                "Failed to aggregate content for Gmail thread {}: {}",
-                thread_id, e
-            ),
+            let content_id = ctx.store_content(&content).await.context("store content")?;
+            let event = gmail_thread
+                .to_connector_event(
+                    ctx.sync_run_id(),
+                    ctx.source_id(),
+                    &content_id,
+                    known_groups,
+                )
+                .context("build connector event")?;
+            ctx.emit_event(event).await.context("emit event")?;
+            Ok(true)
         }
+        .await;
+
+        let updated = match emit_result {
+            Ok(true) => {
+                info!("Successfully queued Gmail thread {}", thread_id);
+                true
+            }
+            Ok(false) => false,
+            Err(e) => {
+                error!("Failed to process Gmail thread {}: {:#}", thread_id, e);
+                false
+            }
+        };
 
         let thread_url = gmail_thread.message_id.as_ref().map(|mid| {
             let clean_id = mid.trim_start_matches('<').trim_end_matches('>');
@@ -2038,8 +2009,8 @@ impl SyncManager {
                     message,
                     service_auth,
                     user_email,
-                    &self.sdk_client,
-                    sync_run_id,
+                    ctx.sdk_client(),
+                    ctx.sync_run_id(),
                 )
                 .await;
 
@@ -2048,11 +2019,7 @@ impl SyncManager {
                     continue;
                 }
 
-                let att_content_id = match self
-                    .sdk_client
-                    .store_content(sync_run_id, &att.extracted_text)
-                    .await
-                {
+                let att_content_id = match ctx.store_content(&att.extracted_text).await {
                     Ok(id) => id,
                     Err(e) => {
                         error!(
@@ -2083,8 +2050,8 @@ impl SyncManager {
                 };
 
                 let att_event = ConnectorEvent::DocumentCreated {
-                    sync_run_id: sync_run_id.to_string(),
-                    source_id: source_id.to_string(),
+                    sync_run_id: ctx.sync_run_id().to_string(),
+                    source_id: ctx.source_id().to_string(),
                     document_id: att_doc_id.clone(),
                     content_id: att_content_id,
                     metadata: att_metadata,
@@ -2092,11 +2059,7 @@ impl SyncManager {
                     attributes: Some(HashMap::new()),
                 };
 
-                match self
-                    .sdk_client
-                    .emit_event(sync_run_id, source_id, att_event)
-                    .await
-                {
+                match ctx.emit_event(att_event).await {
                     Ok(_) => debug!(
                         "Queued attachment {} for thread {}",
                         att.filename, thread_id
