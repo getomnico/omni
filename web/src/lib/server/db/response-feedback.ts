@@ -98,7 +98,7 @@ export class ResponseFeedbackRepository {
                 and(eq(responseFeedback.messageId, messageId), eq(responseFeedback.userId, userId)),
             )
 
-        return result.rowCount > 0
+        return result.count > 0
     }
 }
 

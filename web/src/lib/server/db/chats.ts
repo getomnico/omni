@@ -113,7 +113,7 @@ export class ChatRepository {
     async delete(chatId: string): Promise<boolean> {
         const result = await this.db.delete(chats).where(eq(chats.id, chatId))
 
-        return result.rowCount > 0
+        return result.count > 0
     }
 
     async search(query: string): Promise<Chat[]> {
@@ -283,7 +283,7 @@ export class ChatMessageRepository {
     async deleteByChat(chatId: string): Promise<number> {
         const result = await this.db.delete(chatMessages).where(eq(chatMessages.chatId, chatId))
 
-        return result.rowCount
+        return result.count
     }
 }
 

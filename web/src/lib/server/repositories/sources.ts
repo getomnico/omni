@@ -1,10 +1,9 @@
-import { db } from '$lib/server/db'
-import { sources, syncRuns, user } from '$lib/server/db/schema'
-import { eq, desc, sql, and, inArray, set } from 'drizzle-orm'
-import type { Source, SyncRun, PgDatabase, AnyPgColumn, PgTable } from 'drizzle-orm'
+import type { db } from '$lib/server/db'
+import { sources, syncRuns, user, type Source, type SyncRun } from '$lib/server/db/schema'
+import { eq, desc, sql, and, inArray } from 'drizzle-orm'
 
 export class SourcesRepository {
-    constructor(private db: PgDatabase) {}
+    constructor(private db: typeof db) {}
 
     async getAll(): Promise<Source[]> {
         return await this.db
@@ -23,7 +22,7 @@ export class SourcesRepository {
         sourceType: string,
         createdBy: string,
     ): Promise<Source | null> {
-        const result = await db
+        const result = await this.db
             .select()
             .from(sources)
             .where(
