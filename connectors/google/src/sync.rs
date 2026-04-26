@@ -36,6 +36,7 @@ pub struct SyncManager {
     drive_client: DriveClient,
     gmail_client: GmailClient,
     admin_client: Arc<AdminClient>,
+    // TODO: Remove this one we wire in the webhook codepath to use SyncContext as well
     pub sdk_client: SdkClient,
     folder_cache: LruFolderCache,
     /// Mirrors the cancellation flag owned by each in-flight sync's
@@ -164,9 +165,7 @@ impl SyncManager {
         let source_id = ctx.source_id();
         let sync_type = ctx.sync_mode();
 
-        let known_groups = self
-            .maybe_sync_groups(source, service_creds, sync_run_id)
-            .await;
+        let known_groups = self.maybe_sync_groups(source, service_creds, ctx).await;
 
         // The SDK passes us the persisted state on each (re-)dispatch — we use
         // it directly instead of refetching via HTTP. On a fresh sync this is
@@ -423,8 +422,7 @@ impl SyncManager {
                         "File {} was removed (incremental), publishing deletion",
                         file_id
                     );
-                    self.publish_deletion_event(sync_run_id, source_id, file_id)
-                        .await?;
+                    self.publish_deletion_event(ctx, file_id).await?;
                 }
                 continue;
             }
@@ -498,7 +496,6 @@ impl SyncManager {
             let source_id = source_id_owned.clone();
             let sync_run_id = sync_run_id_owned.clone();
             let drive_client = self.drive_client.clone();
-            let sdk_client = self.sdk_client.clone();
 
             async move {
                 debug!(
@@ -523,21 +520,13 @@ impl SyncManager {
                                 debug!("File {} has empty content, skipping", user_file.file.name);
                                 return (1, 0);
                             }
-                            FileContent::Text(text) => {
-                                sdk_client.store_content(&sync_run_id, &text).await
-                            }
+                            FileContent::Text(text) => ctx.store_content(&text).await,
                             FileContent::Binary {
                                 data,
                                 mime_type,
                                 filename,
                             } => {
-                                sdk_client
-                                    .extract_and_store_content(
-                                        &sync_run_id,
-                                        data,
-                                        &mime_type,
-                                        Some(&filename),
-                                    )
+                                ctx.extract_and_store_content(data, &mime_type, Some(&filename))
                                     .await
                             }
                         };
@@ -569,7 +558,7 @@ impl SyncManager {
                                     Some(&user_file.user_email),
                                 );
 
-                                match sdk_client.emit_event(&sync_run_id, &source_id, event).await {
+                                match ctx.emit_event(event).await {
                                     Ok(_) => (1, 1),
                                     Err(e) => {
                                         error!(
@@ -645,7 +634,7 @@ impl SyncManager {
             vec![email]
         } else {
             let domain = self.get_domain_from_credentials(service_creds)?;
-            let user_email = self.get_user_email_from_source(&source.id).await
+            let user_email = ctx.get_user_email_for_source().await
                 .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source.id, e))?;
 
             info!("Listing all users in domain: {}", domain);
@@ -718,27 +707,17 @@ impl SyncManager {
                         {
                             Ok(result) => Ok(result),
                             Err(e) => {
-                                let err_str = format!("{}", e);
-                                if err_str.contains("HTTP 404")
-                                    || err_str.contains("notFound")
-                                    || err_str.contains("pageToken")
-                                {
-                                    warn!(
-                                        "Page token expired for user {}, falling back to full sync",
-                                        cur_user_email
-                                    );
-                                    self.sync_drive_for_user(
-                                        &cur_user_email,
-                                        service_auth.clone(),
-                                        &source.id,
-                                        sync_run_id,
-                                        ctx,
-                                        Some(&drive_cutoff_date),
+                                warn!(
+                                    error = ?e,
+                                    user = %cur_user_email,
+                                    "Incremental drive sync failed."
+                                );
+                                Err(e).with_context(|| {
+                                    format!(
+                                        "Incremental drive sync failed for {} at pageToken {}",
+                                        cur_user_email, start_token
                                     )
-                                    .await
-                                } else {
-                                    Err(e)
-                                }
+                                })
                             }
                         }
                     } else {
@@ -872,7 +851,7 @@ impl SyncManager {
             vec![email]
         } else {
             let domain = self.get_domain_from_credentials(service_creds)?;
-            let user_email = self.get_user_email_from_source(&source.id).await
+            let user_email = ctx.get_user_email_for_source().await
                 .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source.id, e))?;
 
             info!("Listing all users in domain: {}", domain);
@@ -1087,22 +1066,13 @@ impl SyncManager {
         )
     }
 
-    async fn publish_deletion_event(
-        &self,
-        sync_run_id: &str,
-        source_id: &str,
-        document_id: &str,
-    ) -> Result<()> {
+    async fn publish_deletion_event(&self, ctx: &SyncContext, document_id: &str) -> Result<()> {
         let event = ConnectorEvent::DocumentDeleted {
-            sync_run_id: sync_run_id.to_string(),
-            source_id: source_id.to_string(),
+            sync_run_id: ctx.sync_run_id().to_string(),
+            source_id: ctx.source_id().to_string(),
             document_id: document_id.to_string(),
         };
-
-        self.sdk_client
-            .emit_event(sync_run_id, source_id, event)
-            .await?;
-        Ok(())
+        ctx.emit_event(event).await
     }
 
     async fn get_service_credentials(&self, source_id: &str) -> Result<ServiceCredentials> {
@@ -1919,7 +1889,7 @@ impl SyncManager {
                         BatchThreadResult::Success(response) => {
                             total_processed += 1;
                             let updated = self
-                                .process_one_gmail_thread(
+                                .process_gmail_thread(
                                     &thread_id,
                                     response,
                                     user_email,
@@ -1986,7 +1956,7 @@ impl SyncManager {
     /// emit the thread document and its attachments. Returns true if the
     /// thread was emitted as an update. Consumes `response` so the response
     /// body can drop as soon as the messages are moved into `gmail_thread`.
-    async fn process_one_gmail_thread(
+    async fn process_gmail_thread(
         &self,
         thread_id: &str,
         response: crate::gmail::GmailThreadResponse,
@@ -2169,7 +2139,7 @@ impl SyncManager {
         &self,
         source: &Source,
         service_creds: &ServiceCredentials,
-        sync_run_id: &str,
+        ctx: &SyncContext,
     ) -> HashSet<String> {
         let service_auth = match self.create_auth(service_creds, source.source_type).await {
             Ok(auth) => auth,
@@ -2193,7 +2163,7 @@ impl SyncManager {
             }
         };
 
-        let user_email = match self.get_user_email_from_source(&source.id).await {
+        let user_email = match ctx.get_user_email_for_source().await {
             Ok(email) => email,
             Err(e) => {
                 warn!("Failed to get user email for group sync: {}", e);
@@ -2210,7 +2180,7 @@ impl SyncManager {
         };
 
         match self
-            .sync_groups(&source.id, sync_run_id, &domain, &access_token)
+            .sync_groups(&source.id, ctx.sync_run_id(), &domain, &access_token)
             .await
         {
             Ok(group_emails) => group_emails,
