@@ -56,5 +56,8 @@ BEGIN
     REINDEX INDEX chat_title_search_idx;
 
     RAISE NOTICE 'pg_search upgraded to 0.23.1 — all BM25 indexes rebuilt';
+
+    -- Silence collation version mismatch after OS/libc bump between images
+    EXECUTE format('ALTER DATABASE %I REFRESH COLLATION VERSION', current_database());
 END;
 $$;
