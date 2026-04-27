@@ -2,6 +2,7 @@ import { db } from '../db'
 import { sql } from 'drizzle-orm'
 import { ulid } from 'ulid'
 import type { OAuthTokens, OAuthProfile } from './types'
+import { encrypt, decrypt, type EncryptedData } from '../crypto/encryption'
 
 export interface UserOAuthCredential {
     id: string
@@ -18,6 +19,40 @@ export interface UserOAuthCredential {
     updated_at: Date
 }
 
+interface EncryptedTokenJsonb {
+    encrypted_data: EncryptedData
+    version: number
+}
+
+function encryptToken(token: string | null | undefined): EncryptedTokenJsonb | null {
+    if (!token) return null
+    return { encrypted_data: encrypt(token), version: 1 }
+}
+
+function decryptToken(dbValue: unknown): string | undefined {
+    if (dbValue === null || dbValue === undefined) return undefined
+    const obj = dbValue as Record<string, unknown>
+    if (!obj.encrypted_data || typeof obj.encrypted_data !== 'object') return undefined
+    return decrypt(obj.encrypted_data as EncryptedData)
+}
+
+function rowToCredential(row: any): UserOAuthCredential {
+    return {
+        id: row.id,
+        user_id: row.user_id,
+        provider: row.provider,
+        provider_user_id: row.provider_user_id,
+        access_token: decryptToken(row.access_token),
+        refresh_token: decryptToken(row.refresh_token),
+        token_type: row.token_type,
+        expires_at: row.expires_at,
+        scopes: row.scopes || [],
+        profile_data: row.profile_data || {},
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    }
+}
+
 export class UserOAuthCredentialsService {
     static async saveCredentials(
         userId: string,
@@ -31,6 +66,8 @@ export class UserOAuthCredentialsService {
             : null
 
         const scopes = tokens.scope ? tokens.scope.split(' ') : []
+        const accessTokenJson = JSON.stringify(encryptToken(tokens.access_token))
+        const refreshTokenJson = JSON.stringify(encryptToken(tokens.refresh_token))
 
         await db.execute(sql`
             INSERT INTO user_oauth_credentials (
@@ -39,10 +76,10 @@ export class UserOAuthCredentialsService {
                 expires_at, scopes, profile_data
             ) VALUES (
                 ${id}, ${userId}, ${provider}, ${profile.id},
-                ${tokens.access_token}, ${tokens.refresh_token || null}, ${tokens.token_type},
+                ${accessTokenJson}::jsonb, ${refreshTokenJson}::jsonb, ${tokens.token_type},
                 ${expiresAt}, ${`{${scopes.join(',')}}`}, ${JSON.stringify(profile)}
             )
-            ON CONFLICT (user_id, provider, provider_user_id) 
+            ON CONFLICT (user_id, provider, provider_user_id)
             DO UPDATE SET
                 access_token = EXCLUDED.access_token,
                 refresh_token = COALESCE(EXCLUDED.refresh_token, user_oauth_credentials.refresh_token),
@@ -73,21 +110,7 @@ export class UserOAuthCredentialsService {
             throw new Error('OAuth credentials not found')
         }
 
-        const row = rows[0] as any
-        return {
-            id: row.id,
-            user_id: row.user_id,
-            provider: row.provider,
-            provider_user_id: row.provider_user_id,
-            access_token: row.access_token,
-            refresh_token: row.refresh_token,
-            token_type: row.token_type,
-            expires_at: row.expires_at,
-            scopes: row.scopes || [],
-            profile_data: row.profile_data || {},
-            created_at: row.created_at,
-            updated_at: row.updated_at,
-        }
+        return rowToCredential(rows[0])
     }
 
     static async getUserOAuthCredentials(userId: string): Promise<UserOAuthCredential[]> {
@@ -97,20 +120,7 @@ export class UserOAuthCredentialsService {
             ORDER BY provider, created_at
         `)
 
-        return rows.map((row: any) => ({
-            id: row.id,
-            user_id: row.user_id,
-            provider: row.provider,
-            provider_user_id: row.provider_user_id,
-            access_token: row.access_token,
-            refresh_token: row.refresh_token,
-            token_type: row.token_type,
-            expires_at: row.expires_at,
-            scopes: row.scopes || [],
-            profile_data: row.profile_data || {},
-            created_at: row.created_at,
-            updated_at: row.updated_at,
-        }))
+        return rows.map(rowToCredential)
     }
 
     static async findByProviderProfile(
@@ -128,21 +138,7 @@ export class UserOAuthCredentialsService {
             return null
         }
 
-        const row = rows[0] as any
-        return {
-            id: row.id,
-            user_id: row.user_id,
-            provider: row.provider,
-            provider_user_id: row.provider_user_id,
-            access_token: row.access_token,
-            refresh_token: row.refresh_token,
-            token_type: row.token_type,
-            expires_at: row.expires_at,
-            scopes: row.scopes || [],
-            profile_data: row.profile_data || {},
-            created_at: row.created_at,
-            updated_at: row.updated_at,
-        }
+        return rowToCredential(rows[0])
     }
 
     static async removeCredentials(
@@ -151,9 +147,9 @@ export class UserOAuthCredentialsService {
         providerUserId: string,
     ): Promise<void> {
         await db.execute(sql`
-            DELETE FROM user_oauth_credentials 
-            WHERE user_id = ${userId} 
-            AND provider = ${provider} 
+            DELETE FROM user_oauth_credentials
+            WHERE user_id = ${userId}
+            AND provider = ${provider}
             AND provider_user_id = ${providerUserId}
         `)
     }
@@ -168,16 +164,23 @@ export class UserOAuthCredentialsService {
             ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
             : null
 
+        // Refresh tokens are often omitted on token-refresh responses; in that
+        // case we leave the stored encrypted refresh_token untouched.
+        const accessTokenJson = JSON.stringify(encryptToken(tokens.access_token))
+        const refreshTokenJson = tokens.refresh_token
+            ? JSON.stringify(encryptToken(tokens.refresh_token))
+            : null
+
         await db.execute(sql`
             UPDATE user_oauth_credentials
             SET
-                access_token = ${tokens.access_token},
-                refresh_token = COALESCE(${tokens.refresh_token || null}, refresh_token),
+                access_token = ${accessTokenJson}::jsonb,
+                refresh_token = COALESCE(${refreshTokenJson}::jsonb, refresh_token),
                 token_type = ${tokens.token_type},
                 expires_at = ${expiresAt},
                 updated_at = NOW()
-            WHERE user_id = ${userId} 
-            AND provider = ${provider} 
+            WHERE user_id = ${userId}
+            AND provider = ${provider}
             AND provider_user_id = ${providerUserId}
         `)
     }

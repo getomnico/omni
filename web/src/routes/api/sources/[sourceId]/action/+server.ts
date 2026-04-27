@@ -33,6 +33,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 source_id: sourceId,
+                user_id: locals.user.id,
                 action,
                 params: actionParams || {},
             }),

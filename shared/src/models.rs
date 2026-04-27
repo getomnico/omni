@@ -50,6 +50,18 @@ pub enum UserFilterMode {
     Blacklist,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq, Eq)]
+#[sqlx(type_name = "text", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum SourceScope {
+    /// Admin-set-up source shared across the org. Sync uses the org credential;
+    /// MCP write tools require per-user credentials granted via OAuth.
+    Org,
+    /// Personal source owned by `created_by`. The single credential row covers
+    /// both reads and writes.
+    User,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Source {
     pub id: String,
@@ -58,6 +70,7 @@ pub struct Source {
     pub config: JsonValue,
     pub is_active: bool,
     pub is_deleted: bool,
+    pub scope: SourceScope,
     pub user_filter_mode: UserFilterMode,
     pub user_whitelist: Option<JsonValue>,
     pub user_blacklist: Option<JsonValue>,
@@ -213,6 +226,9 @@ pub enum AuthType {
 pub struct ServiceCredentials {
     pub id: String,
     pub source_id: String,
+    /// `Some` => per-user credential for an org-wide source (used for write tools by that user).
+    /// `None` => org-wide credential (used for sync and reads).
+    pub user_id: Option<String>,
     pub provider: ServiceProvider,
     pub auth_type: AuthType,
     pub principal_email: Option<String>,
@@ -676,6 +692,7 @@ mod tests {
             config: json!({}),
             is_active: true,
             is_deleted: false,
+            scope: SourceScope::User,
             user_filter_mode: filter_mode,
             user_whitelist: whitelist,
             user_blacklist: blacklist,

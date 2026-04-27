@@ -21,6 +21,8 @@ export const sources = pgTable('sources', {
     config: jsonb('config').notNull().default({}),
     isActive: boolean('is_active').notNull().default(true),
     isDeleted: boolean('is_deleted').notNull().default(false),
+    /// 'org' = admin-set-up source shared by all users; 'user' = personal source.
+    scope: text('scope').notNull().default('user'),
     userFilterMode: text('user_filter_mode').notNull().default('all'),
     userWhitelist: jsonb('user_whitelist').notNull().default('[]'),
     userBlacklist: jsonb('user_blacklist').notNull().default('[]'),
@@ -70,6 +72,9 @@ export const serviceCredentials = pgTable('service_credentials', {
     sourceId: text('source_id')
         .notNull()
         .references(() => sources.id, { onDelete: 'cascade' }),
+    /// NULL = org-wide cred (used for sync and reads).
+    /// NOT NULL = per-user cred for an org-wide source (used by that user's MCP write tools).
+    userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
     provider: text('provider').notNull(),
     authType: text('auth_type').notNull(),
     principalEmail: text('principal_email'),

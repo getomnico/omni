@@ -100,6 +100,11 @@ pub struct TriggerSyncResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecuteActionRequest {
     pub source_id: String,
+    /// Identifies the user invoking the action. For org-wide sources this
+    /// drives per-user credential selection (see
+    /// `ServiceCredentialsRepo::get_for_action`); for personal sources it's
+    /// recorded for attribution but doesn't change credential selection.
+    pub user_id: String,
     pub action: String,
     pub params: JsonValue,
 }

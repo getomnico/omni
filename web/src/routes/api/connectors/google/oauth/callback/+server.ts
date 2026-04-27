@@ -6,6 +6,7 @@ import { db } from '$lib/server/db'
 import { sources } from '$lib/server/db/schema'
 import { and, eq } from 'drizzle-orm'
 import { ulid } from 'ulid'
+import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
 
 const SOURCE_NAMES: Record<string, string> = {
     google_drive: 'Google Drive (OAuth)',
@@ -55,9 +56,48 @@ export const GET: RequestHandler = async ({ url, locals, fetch: svelteFetch }) =
             user_email: userEmail,
         }
 
-        // Create sources and store credentials for each service type
         for (const serviceType of serviceTypes) {
-            // Check for existing source (duplicate guard)
+            // If an org-wide source of this type exists, attach the user's tokens
+            // to it as a per-user credential rather than creating a new personal
+            // source. This is the "attach to org source" path from the plan: it
+            // means we never end up with both an org and a personal source for the
+            // same provider for the same user.
+            const [orgSource] = await db
+                .select({ id: sources.id })
+                .from(sources)
+                .where(
+                    and(
+                        eq(sources.sourceType, serviceType),
+                        eq(sources.scope, 'org'),
+                        eq(sources.isDeleted, false),
+                    ),
+                )
+                .limit(1)
+
+            if (orgSource) {
+                const expiresAt = tokens.expires_in
+                    ? new Date(Date.now() + tokens.expires_in * 1000)
+                    : null
+                const grantedScopes = (tokens.scope ?? '').split(' ').filter(Boolean)
+
+                await serviceCredentialsRepository.createForUser({
+                    sourceId: orgSource.id,
+                    userId: locals.user.id,
+                    provider: 'google',
+                    authType: 'oauth',
+                    principalEmail: userEmail,
+                    credentials,
+                    config: { granted_scopes: grantedScopes },
+                    expiresAt,
+                })
+
+                logger.info(
+                    `Attached per-user OAuth creds to org source ${orgSource.id} (${serviceType}) for user ${locals.user.id}`,
+                )
+                continue
+            }
+
+            // No org source — fall through to the existing personal-source flow.
             const [existing] = await db
                 .select({ id: sources.id })
                 .from(sources)
@@ -77,20 +117,19 @@ export const GET: RequestHandler = async ({ url, locals, fetch: svelteFetch }) =
                 continue
             }
 
-            // Create source
             const [newSource] = await db
                 .insert(sources)
                 .values({
                     id: ulid(),
                     name: SOURCE_NAMES[serviceType] || serviceType,
                     sourceType: serviceType,
+                    scope: 'user',
                     config: {},
                     createdBy: locals.user.id,
                     isActive: true,
                 })
                 .returning()
 
-            // Store credentials via API (triggers initial sync automatically)
             const credResponse = await svelteFetch('/api/service-credentials', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -106,7 +145,10 @@ export const GET: RequestHandler = async ({ url, locals, fetch: svelteFetch }) =
 
             if (!credResponse.ok) {
                 const errText = await credResponse.text()
-                logger.error(`Failed to store OAuth credentials for source ${newSource.id}:`, errText)
+                logger.error(
+                    `Failed to store OAuth credentials for source ${newSource.id}:`,
+                    errText,
+                )
                 throw new Error(`Failed to store credentials for ${serviceType}`)
             }
 

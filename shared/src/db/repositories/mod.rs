@@ -17,7 +17,7 @@ pub use embedding::EmbeddingRepository;
 pub use embedding_provider::EmbeddingProviderRepository;
 pub use group::GroupRepository;
 pub use person::{PersonRepository, PersonSearchResult, PersonUpsert};
-pub use service_credentials::ServiceCredentialsRepo;
+pub use service_credentials::{ActionMode, CredentialResolutionError, ServiceCredentialsRepo};
 pub use source::SourceRepository;
 pub use sync_run::SyncRunRepository;
 pub use user::UserRepository;
