@@ -17,7 +17,7 @@ from .seed import SeedHelper
 
 logger = logging.getLogger(__name__)
 
-PARADEDB_IMAGE = "paradedb/paradedb:0.20.6-pg17"
+PARADEDB_IMAGE = "paradedb/paradedb:0.23.1-pg17"
 POSTGRES_USER = "omni"
 POSTGRES_PASSWORD = "omni_password"
 POSTGRES_DB = "omni_test"

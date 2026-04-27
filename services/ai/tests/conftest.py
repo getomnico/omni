@@ -74,7 +74,7 @@ def postgres_container():
     import time
 
     container = (
-        DockerContainer("paradedb/paradedb:0.20.6-pg17")
+        DockerContainer("paradedb/paradedb:0.23.1-pg17")
         .with_exposed_ports(5432)
         .with_env("POSTGRES_USER", "test")
         .with_env("POSTGRES_PASSWORD", "test")
