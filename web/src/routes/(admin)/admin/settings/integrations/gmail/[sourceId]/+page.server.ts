@@ -2,7 +2,7 @@ import { error, redirect } from '@sveltejs/kit'
 import type { PageServerLoad, Actions } from './$types'
 import { requireAdmin } from '$lib/server/authHelpers'
 import { updateSourceById, type UserFilterMode } from '$lib/server/db/sources'
-import { sourcesRepository } from '$lib/server/repositories/sources'
+import { SourcesRepository } from '$lib/server/repositories/sources'
 import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
 import { userRepository } from '$lib/server/db/users'
 import { getConfig } from '$lib/server/config'
@@ -11,6 +11,7 @@ import { AuthType, SourceType } from '$lib/types'
 export const load: PageServerLoad = async ({ params, locals }) => {
     requireAdmin(locals)
 
+    const sourcesRepository = new SourcesRepository(locals.db)
     const source = await sourcesRepository.getById(params.sourceId)
 
     if (!source) {
@@ -53,6 +54,7 @@ export const actions: Actions = {
             throw error(403, 'Admin access required')
         }
 
+        const sourcesRepository = new SourcesRepository(locals.db)
         const source = await sourcesRepository.getById(params.sourceId)
         if (!source) {
             throw error(404, 'Source not found')

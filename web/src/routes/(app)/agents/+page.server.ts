@@ -4,6 +4,6 @@ import { listAgents } from '$lib/server/db/agents.js'
 
 export const load: PageServerLoad = async ({ locals }) => {
     const { user } = requireActiveUser(locals)
-    const agents = await listAgents(user.id)
+    const agents = await listAgents(locals.db)
     return { user, agents }
 }

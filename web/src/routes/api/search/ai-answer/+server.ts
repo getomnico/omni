@@ -36,6 +36,7 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
                 offset: searchRequest.offset || 0,
                 mode: 'hybrid', // Always use hybrid for AI answers
                 user_email: locals.user?.email,
+                user_id: locals.user?.id,
             }),
         })
 

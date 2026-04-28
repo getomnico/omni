@@ -1,7 +1,8 @@
 import asyncpg
-from asyncpg import Pool
-from typing import Optional
+from asyncpg import Pool, Connection
+from typing import Optional, AsyncIterator
 import os
+from contextlib import asynccontextmanager
 from urllib.parse import quote_plus
 
 from pgvector.asyncpg import register_vector
@@ -42,6 +43,40 @@ async def get_db_pool() -> Pool:
         )
 
     return _db_pool
+
+
+@asynccontextmanager
+async def user_db_connection(user_id: str) -> AsyncIterator[Connection]:
+    """Context manager that provides a DB connection with RLS context set.
+
+    Acquires a connection from the pool, sets app.current_user_id for RLS,
+    and releases it back when done.
+    """
+    pool = await get_db_pool()
+    conn = await pool.acquire()
+    try:
+        await conn.execute("SET app.current_user_id = $1", user_id)
+        yield conn
+    finally:
+        await pool.release(conn)
+
+
+@asynccontextmanager
+async def system_db_connection() -> AsyncIterator[Connection]:
+    """Context manager for system-level queries that bypass per-user RLS.
+
+    Sets `app.is_admin = 'true'`, which RLS policies recognise as the
+    indexer / background-worker context (cross-user dedup, embedding
+    status updates, etc.). Use sparingly — only for code paths that
+    legitimately need to operate across all users.
+    """
+    pool = await get_db_pool()
+    conn = await pool.acquire()
+    try:
+        await conn.execute("SET app.is_admin = 'true'")
+        yield conn
+    finally:
+        await pool.release(conn)
 
 
 async def close_db_pool():

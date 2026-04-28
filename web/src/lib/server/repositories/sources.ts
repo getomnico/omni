@@ -1,11 +1,12 @@
-import { db } from '$lib/server/db'
-import { sources, syncRuns, user } from '$lib/server/db/schema'
+import type { db } from '$lib/server/db'
+import { sources, syncRuns, user, type Source, type SyncRun } from '$lib/server/db/schema'
 import { eq, desc, sql, and, inArray } from 'drizzle-orm'
-import type { Source, SyncRun } from '$lib/server/db/schema'
 
 export class SourcesRepository {
+    constructor(private db: typeof db) {}
+
     async getAll(): Promise<Source[]> {
-        return await db
+        return await this.db
             .select()
             .from(sources)
             .where(eq(sources.isDeleted, false))
@@ -13,7 +14,7 @@ export class SourcesRepository {
     }
 
     async getById(sourceId: string): Promise<Source | null> {
-        const result = await db.select().from(sources).where(eq(sources.id, sourceId)).limit(1)
+        const result = await this.db.select().from(sources).where(eq(sources.id, sourceId)).limit(1)
         return result[0] ?? null
     }
 
@@ -21,7 +22,7 @@ export class SourcesRepository {
         sourceType: string,
         createdBy: string,
     ): Promise<Source | null> {
-        const result = await db
+        const result = await this.db
             .select()
             .from(sources)
             .where(
@@ -36,7 +37,7 @@ export class SourcesRepository {
     }
 
     async getByUserId(userId: string): Promise<Source[]> {
-        return await db
+        return await this.db
             .select()
             .from(sources)
             .where(and(eq(sources.createdBy, userId), eq(sources.isDeleted, false)))
@@ -44,9 +45,12 @@ export class SourcesRepository {
     }
 
     async getOrgWide(): Promise<Source[]> {
-        const adminUserIds = db.select({ id: user.id }).from(user).where(eq(user.role, 'admin'))
+        const adminUserIds = this.db
+            .select({ id: user.id })
+            .from(user)
+            .where(eq(user.role, 'admin'))
 
-        return await db
+        return await this.db
             .select()
             .from(sources)
             .where(and(inArray(sources.createdBy, adminUserIds), eq(sources.isDeleted, false)))
@@ -54,7 +58,7 @@ export class SourcesRepository {
     }
 
     async getLatestSyncRuns(): Promise<Map<string, SyncRun>> {
-        const rows = await db
+        const rows = await this.db
             .select()
             .from(syncRuns)
             .where(
@@ -67,6 +71,8 @@ export class SourcesRepository {
 
         return new Map(rows.map((sync) => [sync.sourceId, sync]))
     }
-}
 
-export const sourcesRepository = new SourcesRepository()
+    async updateById(sourceId: string, updates: Partial<Pick<Source, 'isActive' | 'isDeleted'>>) {
+        await this.db.update(sources).set(updates).where(eq(sources.id, sourceId))
+    }
+}

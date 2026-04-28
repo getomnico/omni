@@ -1,13 +1,17 @@
 import { json, error } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
 import type { RequestHandler } from './$types.js'
-import { chatRepository, chatMessageRepository } from '$lib/server/db/chats.js'
+import { ChatRepository, ChatMessageRepository } from '$lib/server/db/chats.js'
 import { getAgent } from '$lib/server/db/agents.js'
 
-async function triggerTitleGeneration(chatId: string, logger: any): Promise<string | null> {
+async function triggerTitleGeneration(
+    chatId: string,
+    logger: any,
+    db: any,
+): Promise<string | null> {
     try {
         // First check if title already exists
-        const chat = await chatRepository.get(chatId)
+        const chat = await new ChatRepository(db).get(chatId)
         if (chat?.title) {
             logger.debug('Chat already has a title, skipping title generation', { chatId })
             return null
@@ -49,7 +53,8 @@ export const GET: RequestHandler = async ({ params, locals }) => {
         return json({ error: 'chatId parameter is required' }, { status: 400 })
     }
 
-    const chat = await chatRepository.get(chatId)
+    const chatRepo = new ChatRepository(locals.db)
+    const chat = await chatRepo.get(chatId)
     if (!chat) {
         logger.error('Chat not found', undefined, { chatId })
         return json({ error: 'Chat not found' }, { status: 404 })
@@ -57,7 +62,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
     // Agent chats require admin access
     if (chat.agentId) {
-        const agent = await getAgent(chat.agentId)
+        const agent = await getAgent(chat.agentId, locals.db)
         if (agent?.agentType === 'org' && locals.user?.role !== 'admin') {
             throw error(403, 'Admin access required for agent chats')
         }
@@ -73,6 +78,9 @@ export const GET: RequestHandler = async ({ params, locals }) => {
             : `${env.AI_SERVICE_URL}/chat/${chatId}/stream`
         const response = await fetch(streamUrl, {
             signal: abortController.signal,
+            headers: {
+                'X-User-ID': locals.user?.id ?? '',
+            },
         })
 
         if (!response.ok) {
@@ -103,7 +111,8 @@ export const GET: RequestHandler = async ({ params, locals }) => {
         }
 
         // Track the last saved message ID to chain parent_id during streaming
-        const lastActiveMessage = await chatMessageRepository.getLastMessageInActivePath(chatId)
+        const msgRepo = new ChatMessageRepository(locals.db)
+        const lastActiveMessage = await msgRepo.getLastMessageInActivePath(chatId)
         let lastSavedMessageId: string | undefined = lastActiveMessage?.id
 
         const decoder = new TextDecoder()
@@ -115,7 +124,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
                 try {
                     if (!chat.title) {
                         logger.info('Generating title for chat', { chatId })
-                        triggerTitleGeneration(chatId, logger)
+                        triggerTitleGeneration(chatId, logger, locals.db)
                             .then((title) => {
                                 logger.info(`Generated title for chat ${chatId}: ${title}`)
                                 const event = `event: title\ndata: ${title}\n\n`
@@ -161,7 +170,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
                             if (eventType === 'save_message' && data) {
                                 try {
                                     const message = JSON.parse(data)
-                                    const { id: messageId } = await chatMessageRepository.create(
+                                    const { id: messageId } = await msgRepo.create(
                                         chatId,
                                         message,
                                         lastSavedMessageId,
@@ -191,9 +200,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
                                 try {
                                     const approvalData = JSON.parse(data)
                                     // Save approval record to database using the same ID from Redis
-                                    const { toolApprovalRepository } =
+                                    const approvalRepo = new (
                                         await import('$lib/server/db/tool-approvals.js')
-                                    await toolApprovalRepository.createWithId(
+                                    ).ToolApprovalRepository(locals.db)
+                                    await approvalRepo.createWithId(
                                         approvalData.approval_id,
                                         chatId,
                                         chat.userId,

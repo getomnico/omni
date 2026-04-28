@@ -1,4 +1,4 @@
-from .connection import get_db_pool, close_db_pool
+from .connection import get_db_pool, close_db_pool, user_db_connection
 from .models import User, Chat, ChatMessage
 from .users import UsersRepository
 from .chats import ChatsRepository
@@ -19,6 +19,7 @@ from .usage import UsageRepository, UsageSummary
 __all__ = [
     "get_db_pool",
     "close_db_pool",
+    "user_db_connection",
     "User",
     "Chat",
     "ChatMessage",

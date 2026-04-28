@@ -6,12 +6,13 @@ from asyncpg import Pool
 import json
 
 from .models import ChatMessage
-from .connection import get_db_pool
+from .connection import get_db_pool, user_db_connection
 
 
 class MessagesRepository:
-    def __init__(self, pool: Optional[Pool] = None):
+    def __init__(self, pool: Optional[Pool] = None, user_id: Optional[str] = None):
         self.pool = pool
+        self.user_id = user_id
 
     async def _get_pool(self) -> Pool:
         """Get database pool"""
@@ -51,17 +52,25 @@ class MessagesRepository:
 
     async def get_by_chat(self, chat_id: str) -> List[ChatMessage]:
         """Get all messages for a chat"""
-        pool = await self._get_pool()
-
-        query = """
-            SELECT id, chat_id, message_seq_num, message, parent_id, created_at
-            FROM chat_messages
-            WHERE chat_id = $1
-            ORDER BY message_seq_num
-        """
-
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(query, chat_id)
+        if self.user_id:
+            query = """
+                SELECT id, chat_id, message_seq_num, message, parent_id, created_at
+                FROM chat_messages
+                WHERE chat_id = $1
+                ORDER BY message_seq_num
+            """
+            async with user_db_connection(self.user_id) as conn:
+                rows = await conn.fetch(query, chat_id)
+        else:
+            pool = await self._get_pool()
+            query = """
+                SELECT id, chat_id, message_seq_num, message, parent_id, created_at
+                FROM chat_messages
+                WHERE chat_id = $1
+                ORDER BY message_seq_num
+            """
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(query, chat_id)
 
         return [ChatMessage.from_row(dict(row)) for row in rows]
 
@@ -71,35 +80,62 @@ class MessagesRepository:
         Finds the latest leaf (message with no children and highest seq num),
         then walks up via parent_id to root, and returns in root-to-leaf order.
         """
-        pool = await self._get_pool()
+        if self.user_id:
+            query = """
+                WITH RECURSIVE walk_up AS (
+                    -- Start from the latest leaf (no children, highest seq num)
+                    SELECT cm.id, cm.chat_id, cm.message_seq_num, cm.message, cm.parent_id, cm.created_at
+                    FROM (
+                        SELECT *
+                        FROM chat_messages
+                        WHERE chat_id = $1
+                        AND id NOT IN (
+                            SELECT DISTINCT parent_id FROM chat_messages
+                            WHERE chat_id = $1 AND parent_id IS NOT NULL
+                        )
+                        ORDER BY message_seq_num DESC
+                        LIMIT 1
+                    ) cm
 
-        query = """
-            WITH RECURSIVE walk_up AS (
-                -- Start from the latest leaf (no children, highest seq num)
-                SELECT cm.id, cm.chat_id, cm.message_seq_num, cm.message, cm.parent_id, cm.created_at
-                FROM (
-                    SELECT *
-                    FROM chat_messages
-                    WHERE chat_id = $1
-                    AND id NOT IN (
-                        SELECT DISTINCT parent_id FROM chat_messages
-                        WHERE chat_id = $1 AND parent_id IS NOT NULL
-                    )
-                    ORDER BY message_seq_num DESC
-                    LIMIT 1
-                ) cm
+                    UNION ALL
 
-                UNION ALL
+                    -- Walk up to root via parent_id
+                    SELECT cm.id, cm.chat_id, cm.message_seq_num, cm.message, cm.parent_id, cm.created_at
+                    FROM chat_messages cm
+                    JOIN walk_up wu ON cm.id = wu.parent_id
+                )
+                SELECT * FROM walk_up ORDER BY message_seq_num
+            """
+            async with user_db_connection(self.user_id) as conn:
+                rows = await conn.fetch(query, chat_id)
+        else:
+            pool = await self._get_pool()
+            query = """
+                WITH RECURSIVE walk_up AS (
+                    -- Start from the latest leaf (no children, highest seq num)
+                    SELECT cm.id, cm.chat_id, cm.message_seq_num, cm.message, cm.parent_id, cm.created_at
+                    FROM (
+                        SELECT *
+                        FROM chat_messages
+                        WHERE chat_id = $1
+                        AND id NOT IN (
+                            SELECT DISTINCT parent_id FROM chat_messages
+                            WHERE chat_id = $1 AND parent_id IS NOT NULL
+                        )
+                        ORDER BY message_seq_num DESC
+                        LIMIT 1
+                    ) cm
 
-                -- Walk up to root via parent_id
-                SELECT cm.id, cm.chat_id, cm.message_seq_num, cm.message, cm.parent_id, cm.created_at
-                FROM chat_messages cm
-                JOIN walk_up wu ON cm.id = wu.parent_id
-            )
-            SELECT * FROM walk_up ORDER BY message_seq_num
-        """
+                    UNION ALL
 
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(query, chat_id)
+                    -- Walk up to root via parent_id
+                    SELECT cm.id, cm.chat_id, cm.message_seq_num, cm.message, cm.parent_id, cm.created_at
+                    FROM chat_messages cm
+                    JOIN walk_up wu ON cm.id = wu.parent_id
+                )
+                SELECT * FROM walk_up ORDER BY message_seq_num
+            """
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(query, chat_id)
 
         return [ChatMessage.from_row(dict(row)) for row in rows]

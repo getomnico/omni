@@ -20,13 +20,22 @@ function extractContentText(message: MessageParam): string | null {
 }
 
 export class ChatRepository {
-    private db: PostgresJsDatabase<typeof schema>
+    private dbInstance: PostgresJsDatabase<typeof schema>
 
-    constructor(private dbInstance: PostgresJsDatabase<typeof schema> = db) {
-        this.db = dbInstance
+    constructor(dbInstance?: PostgresJsDatabase<typeof schema>) {
+        this.dbInstance = dbInstance || db
     }
 
-    async create(userId: string, title?: string, modelId?: string, agentId?: string): Promise<Chat> {
+    get db(): PostgresJsDatabase<typeof schema> {
+        return this.dbInstance
+    }
+
+    async create(
+        userId: string,
+        title?: string,
+        modelId?: string,
+        agentId?: string,
+    ): Promise<Chat> {
         const chatId = ulid()
         const [newChat] = await this.db
             .insert(chats)
@@ -48,11 +57,12 @@ export class ChatRepository {
         return chat || null
     }
 
-    async getByUserId(
-        userId: string,
-        options?: { limit?: number; offset?: number; isStarred?: boolean },
-    ): Promise<Chat[]> {
-        const conditions = [eq(chats.userId, userId)]
+    async getByUserId(options?: {
+        limit?: number
+        offset?: number
+        isStarred?: boolean
+    }): Promise<Chat[]> {
+        const conditions: any[] = []
         if (options?.isStarred !== undefined) {
             conditions.push(eq(chats.isStarred, options.isStarred))
         }
@@ -60,7 +70,7 @@ export class ChatRepository {
         let query = this.db
             .select()
             .from(chats)
-            .where(and(...conditions))
+            .where(conditions.length > 0 ? and(...conditions) : undefined)
             .orderBy(desc(chats.updatedAt))
 
         if (options?.limit !== undefined) {
@@ -103,17 +113,16 @@ export class ChatRepository {
     async delete(chatId: string): Promise<boolean> {
         const result = await this.db.delete(chats).where(eq(chats.id, chatId))
 
-        return result.rowCount > 0
+        return result.count > 0
     }
 
-    async search(userId: string, query: string): Promise<Chat[]> {
+    async search(query: string): Promise<Chat[]> {
         const results = await this.db.execute(sql`
             WITH title_matches AS (
                 SELECT c.id, c.user_id, c.title, c.is_starred, c.model_id, c.agent_id, c.created_at, c.updated_at,
                        pdb.score(c.id) AS score
                 FROM chats c
                 WHERE c.title ||| ${query}
-                  AND c.user_id = ${userId}
                 ORDER BY score DESC
                 LIMIT 20
             ),
@@ -122,7 +131,6 @@ export class ChatRepository {
                 FROM chat_messages cm
                 JOIN chats c ON c.id = cm.chat_id
                 WHERE cm.content_text ||| ${query}
-                  AND c.user_id = ${userId}
                 ORDER BY score DESC
                 LIMIT 50
             ),
@@ -164,10 +172,14 @@ export class ChatRepository {
 }
 
 export class ChatMessageRepository {
-    private db: PostgresJsDatabase<typeof schema>
+    private dbInstance: PostgresJsDatabase<typeof schema>
 
-    constructor(private dbInstance: PostgresJsDatabase<typeof schema> = db) {
-        this.db = dbInstance
+    constructor(dbInstance?: PostgresJsDatabase<typeof schema>) {
+        this.dbInstance = dbInstance || db
+    }
+
+    get db(): PostgresJsDatabase<typeof schema> {
+        return this.dbInstance
     }
 
     async create(chatId: string, message: MessageParam, parentId?: string): Promise<ChatMessage> {
@@ -271,7 +283,7 @@ export class ChatMessageRepository {
     async deleteByChat(chatId: string): Promise<number> {
         const result = await this.db.delete(chatMessages).where(eq(chatMessages.chatId, chatId))
 
-        return result.rowCount
+        return result.count
     }
 }
 

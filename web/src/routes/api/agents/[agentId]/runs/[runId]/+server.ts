@@ -8,9 +8,9 @@ export const GET: RequestHandler = async ({ params, locals }) => {
         return json({ error: 'User not authenticated' }, { status: 401 })
     }
 
-    const agent = await requireAgentAccess(params.agentId, locals.user)
+    const agent = await requireAgentAccess(params.agentId, locals.db)
 
-    const run = await getAgentRun(params.runId)
+    const run = await getAgentRun(params.runId, locals.db)
     if (!run || run.agentId !== params.agentId) {
         throw error(404, 'Run not found')
     }

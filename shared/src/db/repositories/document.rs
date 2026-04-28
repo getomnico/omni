@@ -1,11 +1,6 @@
-use crate::{
-    db::error::DatabaseError,
-    models::{AttributeFilter, DateFilter, Document},
-    SourceType,
-};
+use crate::{db::error::DatabaseError, models::Document, DatabasePool, SourceType};
 use serde_json::Value as JsonValue;
 use sqlx::{FromRow, PgPool};
-use std::collections::HashMap;
 use time::{self, OffsetDateTime};
 
 #[derive(FromRow)]
@@ -23,12 +18,6 @@ pub struct DocumentRepository {
 impl DocumentRepository {
     pub fn new(pool: &PgPool) -> Self {
         Self { pool: pool.clone() }
-    }
-
-    /// Generate SQL condition to check if user has permission to access document.
-    /// Checks: public access, direct user access, domain-wide access, and group membership.
-    fn generate_permission_filter(&self, user_email: &str, user_groups: &[String]) -> String {
-        generate_permission_filter(user_email, user_groups)
     }
 
     pub async fn find_by_id(&self, id: &str) -> Result<Option<Document>, DatabaseError> {
@@ -111,29 +100,24 @@ impl DocumentRepository {
     }
 
     pub async fn fetch_random_documents(
-        &self,
-        user_email: &str,
-        user_groups: &[String],
+        db_pool: &DatabasePool,
+        user_id: &str,
         count: usize,
     ) -> Result<Vec<Document>, DatabaseError> {
-        let permission_filter = &self.generate_permission_filter(user_email, user_groups);
+        let mut conn = db_pool.acquire_user(user_id).await?;
 
-        let query = format!(
+        let documents = sqlx::query_as::<_, Document>(
             r#"
             SELECT *
             FROM documents d
             WHERE d.content_id IS NOT NULL
-                AND {}
             ORDER BY RANDOM()
             LIMIT $1
         "#,
-            permission_filter
-        );
-
-        let documents = sqlx::query_as::<_, Document>(&query)
-            .bind(count as i32)
-            .fetch_all(&self.pool)
-            .await?;
+        )
+        .bind(count as i32)
+        .fetch_all(&mut *conn)
+        .await?;
 
         Ok(documents)
     }
@@ -186,103 +170,6 @@ impl DocumentRepository {
                 .await?;
 
         Ok(max_ts)
-    }
-
-    fn build_common_filters(
-        &self,
-        filters: &mut Vec<String>,
-        param_idx: &mut usize,
-        source_ids: &[String],
-        content_types: Option<&[String]>,
-        attribute_filters: Option<&HashMap<String, AttributeFilter>>,
-        user_email: Option<&str>,
-        user_groups: &[String],
-        date_filter: Option<&DateFilter>,
-    ) {
-        if !source_ids.is_empty() {
-            filters.push(format!("source_id = ANY(${})", param_idx));
-            *param_idx += 1;
-        }
-
-        let has_content_types = content_types.is_some_and(|ct| !ct.is_empty());
-        if has_content_types {
-            filters.push(format!("content_type = ANY(${})", param_idx));
-            *param_idx += 1;
-        }
-
-        if let Some(attr_filters) = attribute_filters {
-            for (key, filter) in attr_filters {
-                match filter {
-                    AttributeFilter::Exact(value) => {
-                        let term_value = json_value_to_term_string(value);
-                        filters.push(format!(
-                            "attributes @@@ '{}:{}'",
-                            key.replace('\'', "''"),
-                            term_value.replace('\'', "''")
-                        ));
-                    }
-                    AttributeFilter::AnyOf(values) => {
-                        let conditions: Vec<String> = values
-                            .iter()
-                            .map(|v| {
-                                let term_value = json_value_to_term_string(v);
-                                format!(
-                                    "attributes @@@ '{}:{}'",
-                                    key.replace('\'', "''"),
-                                    term_value.replace('\'', "''")
-                                )
-                            })
-                            .collect();
-                        if !conditions.is_empty() {
-                            filters.push(format!("({})", conditions.join(" OR ")));
-                        }
-                    }
-                    AttributeFilter::Range { gte, lte } => {
-                        if let Some(gte_val) = gte {
-                            let gte_str = json_value_to_term_string(gte_val);
-                            filters.push(format!(
-                                "attributes->>'{}' >= '{}'",
-                                key.replace('\'', "''"),
-                                gte_str.replace('\'', "''")
-                            ));
-                        }
-                        if let Some(lte_val) = lte {
-                            let lte_str = json_value_to_term_string(lte_val);
-                            filters.push(format!(
-                                "attributes->>'{}' <= '{}'",
-                                key.replace('\'', "''"),
-                                lte_str.replace('\'', "''")
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Some(df) = date_filter {
-            if let Some(after) = &df.after {
-                let iso = after
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .unwrap_or_default();
-                filters.push(format!(
-                    "metadata->>'updated_at' >= '{}'",
-                    iso.replace('\'', "''")
-                ));
-            }
-            if let Some(before) = &df.before {
-                let iso = before
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .unwrap_or_default();
-                filters.push(format!(
-                    "metadata->>'updated_at' <= '{}'",
-                    iso.replace('\'', "''")
-                ));
-            }
-        }
-
-        if let Some(email) = user_email {
-            filters.push(self.generate_permission_filter(email, user_groups));
-        }
     }
 
     pub async fn find_by_source(&self, source_id: &str) -> Result<Vec<Document>, DatabaseError> {
@@ -623,49 +510,5 @@ impl DocumentRepository {
             .await?;
 
         Ok(result.rows_affected() as i64)
-    }
-}
-
-/// Generate SQL condition to check if user has permission to access document.
-/// Checks: public access, direct user access, domain-wide access, and group membership.
-///
-/// Uses JSONB operators (`@>`, `?`) for exact matching instead of BM25 `@@@`
-/// because BM25 tokenizes emails (e.g. "alice@example.com" → ["alice", "example", "com"]),
-/// causing false positives when different addresses share tokens.
-pub fn generate_permission_filter(user_email: &str, user_groups: &[String]) -> String {
-    let escaped_email = user_email.replace('\'', "''");
-
-    let mut conditions = vec![
-        "permissions @> '{\"public\": true}'::jsonb".to_string(),
-        format!("permissions->'users' ? '{}'", escaped_email),
-    ];
-
-    // Domain-wide access: exact JSON containment check to avoid BM25 tokenizer
-    // splitting email addresses (e.g. "engineering@example.com" matching "example.com")
-    if let Some(domain) = user_email.split('@').nth(1) {
-        if !domain.is_empty() {
-            let escaped_domain = domain.replace('\'', "''");
-            conditions.push(format!("permissions->'groups' ? '{}'", escaped_domain));
-        }
-    }
-
-    // Group membership: match each group the user belongs to
-    for group_email in user_groups {
-        let escaped_group = group_email.replace('\'', "''");
-        conditions.push(format!("permissions->'groups' ? '{}'", escaped_group));
-    }
-
-    format!("({})", conditions.join(" OR "))
-}
-
-/// Convert a JSON value to a string suitable for ParadeDB term queries
-fn json_value_to_term_string(value: &JsonValue) -> String {
-    match value {
-        JsonValue::String(s) => s.clone(),
-        JsonValue::Number(n) => n.to_string(),
-        JsonValue::Bool(b) => b.to_string(),
-        JsonValue::Null => "null".to_string(),
-        // For arrays and objects, serialize to JSON string
-        _ => value.to_string(),
     }
 }

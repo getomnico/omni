@@ -13,11 +13,11 @@ export const GET: RequestHandler = async ({ locals, url }) => {
         if (locals.user.role !== 'admin') {
             return json({ error: 'Admin access required' }, { status: 403 })
         }
-        const agents = await listOrgAgents()
+        const agents = await listOrgAgents(locals.db)
         return json(agents)
     }
 
-    const agents = await listAgents(locals.user.id)
+    const agents = await listAgents(locals.db)
     return json(agents)
 }
 
@@ -38,17 +38,20 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     }
 
     try {
-        const agent = await createAgent({
-            userId: locals.user.id,
-            name: data.name,
-            instructions: data.instructions,
-            agentType: data.agentType || 'user',
-            scheduleType: data.scheduleType,
-            scheduleValue: data.scheduleValue,
-            modelId: data.modelId,
-            allowedSources: data.allowedSources,
-            allowedActions: data.allowedActions,
-        })
+        const agent = await createAgent(
+            {
+                userId: locals.user.id,
+                name: data.name,
+                instructions: data.instructions,
+                agentType: data.agentType || 'user',
+                scheduleType: data.scheduleType,
+                scheduleValue: data.scheduleValue,
+                modelId: data.modelId,
+                allowedSources: data.allowedSources,
+                allowedActions: data.allowedActions,
+            },
+            locals.db,
+        )
         return json(agent)
     } catch (error) {
         return json(

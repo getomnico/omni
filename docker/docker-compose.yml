@@ -85,7 +85,11 @@ services:
     image: ghcr.io/getomnico/omni/omni-migrator:${OMNI_VERSION:-latest}
     container_name: omni-migrator
     environment:
-      <<: *db-config
+      DATABASE_HOST: ${DATABASE_HOST}
+      DATABASE_PORT: ${DATABASE_PORT}
+      DATABASE_USERNAME: omni_admin
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
+      DATABASE_NAME: ${DATABASE_NAME}
     networks:
       - omni-network
     depends_on:

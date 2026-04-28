@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
-import { chatRepository } from '$lib/server/db/chats'
+import { ChatRepository } from '$lib/server/db/chats'
 
 export const POST: RequestHandler = async ({ request, locals }) => {
     const logger = locals.logger.child('chat')
@@ -23,7 +23,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     logger.debug('Creating new chat', { userId, modelId })
 
     try {
-        const chat = await chatRepository.create(userId, undefined, modelId)
+        const repo = new ChatRepository(locals.db)
+        const chat = await repo.create(userId, undefined, modelId)
 
         logger.info('Chat created successfully', {
             userId,

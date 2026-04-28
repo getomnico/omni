@@ -16,7 +16,7 @@ export const GET: RequestHandler = async ({ locals }) => {
         return json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const keys = await listApiKeys(locals.user.id)
+    const keys = await listApiKeys(locals.db)
     return json({ keys })
 }
 
@@ -51,7 +51,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     // Validate allowed_sources if provided
     let allowedSources: string[] | null = null
     if (allowed_sources != null) {
-        if (!Array.isArray(allowed_sources) || !allowed_sources.every((s) => typeof s === 'string')) {
+        if (
+            !Array.isArray(allowed_sources) ||
+            !allowed_sources.every((s) => typeof s === 'string')
+        ) {
             return json(
                 { error: 'allowed_sources must be an array of source type strings' },
                 { status: 400 },
@@ -72,7 +75,14 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     }
 
     try {
-        const result = await createApiKey(locals.user.id, name.trim(), expiresAt, allowedSources, scope)
+        const result = await createApiKey(
+            locals.user.id,
+            name.trim(),
+            expiresAt,
+            allowedSources,
+            scope,
+            locals.db,
+        )
         return json(
             {
                 id: result.id,
@@ -107,7 +117,7 @@ export const PATCH: RequestHandler = async ({ request, locals }) => {
     }
 
     if (action === 'revoke') {
-        const revoked = await revokeApiKey(id, locals.user.id)
+        const revoked = await revokeApiKey(id, locals.db)
         if (!revoked) {
             return json({ error: 'API key not found' }, { status: 404 })
         }
@@ -133,7 +143,7 @@ export const DELETE: RequestHandler = async ({ request, locals }) => {
         return json({ error: 'Invalid API key id' }, { status: 400 })
     }
 
-    const deleted = await deleteApiKey(id, locals.user.id)
+    const deleted = await deleteApiKey(id, locals.db)
     if (!deleted) {
         return json({ error: 'API key not found' }, { status: 404 })
     }

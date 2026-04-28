@@ -16,7 +16,8 @@ export class ResponseFeedbackRepository {
     }
 
     /**
-     * Create or update feedback for a message
+     * Create or update feedback for a message.
+     * userId is required for the WITH CHECK policy, but RLS handles SELECT.
      */
     async createOrUpdate(
         messageId: string,
@@ -61,7 +62,7 @@ export class ResponseFeedbackRepository {
     }
 
     /**
-     * Get all feedback for a message
+     * Get all feedback for a message. RLS filters by user_id.
      */
     async getByMessageId(messageId: string): Promise<ResponseFeedback[]> {
         return await this.db
@@ -71,7 +72,8 @@ export class ResponseFeedbackRepository {
     }
 
     /**
-     * Get specific user's feedback for a message
+     * Get specific user's feedback for a message.
+     * userId is needed for the query, but RLS would filter anyway.
      */
     async getUserFeedback(messageId: string, userId: string): Promise<ResponseFeedback | null> {
         const [feedback] = await this.db
@@ -86,7 +88,8 @@ export class ResponseFeedbackRepository {
     }
 
     /**
-     * Delete feedback for a message by a user
+     * Delete feedback for a message by a user.
+     * RLS ensures the user can only delete their own feedback.
      */
     async delete(messageId: string, userId: string): Promise<boolean> {
         const result = await this.db
@@ -95,7 +98,7 @@ export class ResponseFeedbackRepository {
                 and(eq(responseFeedback.messageId, messageId), eq(responseFeedback.userId, userId)),
             )
 
-        return result.rowCount > 0
+        return result.count > 0
     }
 }
 
