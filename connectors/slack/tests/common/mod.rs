@@ -133,6 +133,7 @@ impl SlackConnectorTestFixture {
         let creds = shared::models::ServiceCredentials {
             id: cred_id,
             source_id: source_id.to_string(),
+            user_id: None,
             provider: shared::models::ServiceProvider::Slack,
             auth_type: shared::models::AuthType::BotToken,
             principal_email: None,

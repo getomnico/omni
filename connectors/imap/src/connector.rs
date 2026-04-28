@@ -82,7 +82,7 @@ impl Connector for ImapConnector {
             ActionDefinition {
                 name: "validate_credentials".to_string(),
                 description: "Test IMAP connection with the provided credentials".to_string(),
-                mode: "read".to_string(),
+                mode: omni_connector_sdk::ActionMode::Read,
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -96,7 +96,7 @@ impl Connector for ImapConnector {
             ActionDefinition {
                 name: "list_folders".to_string(),
                 description: "List accessible IMAP mailbox folders".to_string(),
-                mode: "read".to_string(),
+                mode: omni_connector_sdk::ActionMode::Read,
                 input_schema: json!({
                     "type": "object",
                     "properties": {

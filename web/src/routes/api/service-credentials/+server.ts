@@ -35,14 +35,27 @@ export const POST: RequestHandler = async ({ request, locals, fetch }) => {
     }
 
     try {
-        const created = await serviceCredentialsRepository.create({
-            sourceId,
-            provider,
-            authType,
-            principalEmail: principalEmail || null,
-            credentials,
-            config: config || {},
-        })
+        // Personal-source creds belong to the source's owner (per-user row).
+        // Org-source creds are the shared service-account row (user_id IS NULL).
+        const created =
+            source.scope === 'user'
+                ? await serviceCredentialsRepository.createForUser({
+                      sourceId,
+                      userId: source.createdBy,
+                      provider,
+                      authType,
+                      principalEmail: principalEmail || null,
+                      credentials,
+                      config: config || {},
+                  })
+                : await serviceCredentialsRepository.create({
+                      sourceId,
+                      provider,
+                      authType,
+                      principalEmail: principalEmail || null,
+                      credentials,
+                      config: config || {},
+                  })
 
         try {
             const syncResponse = await fetch(`/api/sources/${sourceId}/sync`, {

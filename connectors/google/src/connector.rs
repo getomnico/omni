@@ -9,10 +9,11 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
-    ActionDefinition, ActionResponse, Connector, SearchOperator, ServiceCredentials, Source,
-    SourceType, SyncContext, SyncType,
+    ActionDefinition, ActionResponse, Connector, OAuthManifestConfig, OAuthScopeSet,
+    SearchOperator, ServiceCredentials, Source, SourceType, SyncContext, SyncType,
 };
 use serde_json::{json, Value as JsonValue};
+use std::collections::HashMap;
 
 pub struct GoogleConnector {
     pub sync_manager: Arc<SyncManager>,
@@ -184,7 +185,7 @@ impl Connector for GoogleConnector {
                 description:
                     "Download a file from Google Drive. Exports Google Workspace files to Office format."
                         .to_string(),
-                mode: "read".to_string(),
+                mode: omni_connector_sdk::ActionMode::Read,
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -199,7 +200,7 @@ impl Connector for GoogleConnector {
             ActionDefinition {
                 name: "search_users".to_string(),
                 description: "Search Google Admin directory users".to_string(),
-                mode: "read".to_string(),
+                mode: omni_connector_sdk::ActionMode::Read,
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -226,6 +227,46 @@ impl Connector for GoogleConnector {
                 value_type: "text".to_string(),
             },
         ]
+    }
+
+    fn oauth_config(&self) -> Option<OAuthManifestConfig> {
+        let mut scopes = HashMap::new();
+        scopes.insert(
+            "google_drive".to_string(),
+            OAuthScopeSet {
+                read: vec!["https://www.googleapis.com/auth/drive.readonly".to_string()],
+                // drive.file scopes the grant to files the app creates/opens — the
+                // safe default for MCP write tools.
+                write: vec!["https://www.googleapis.com/auth/drive.file".to_string()],
+            },
+        );
+        scopes.insert(
+            "gmail".to_string(),
+            OAuthScopeSet {
+                read: vec!["https://www.googleapis.com/auth/gmail.readonly".to_string()],
+                write: vec![
+                    "https://www.googleapis.com/auth/gmail.send".to_string(),
+                    "https://www.googleapis.com/auth/gmail.modify".to_string(),
+                ],
+            },
+        );
+
+        let mut extra_auth_params = HashMap::new();
+        extra_auth_params.insert("access_type".to_string(), "offline".to_string());
+        extra_auth_params.insert("prompt".to_string(), "consent".to_string());
+
+        Some(OAuthManifestConfig {
+            provider: "google".to_string(),
+            auth_endpoint: "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
+            token_endpoint: "https://oauth2.googleapis.com/token".to_string(),
+            userinfo_endpoint: "https://www.googleapis.com/oauth2/v3/userinfo".to_string(),
+            userinfo_email_field: "email".to_string(),
+            identity_scopes: vec!["email".to_string(), "profile".to_string()],
+            scopes,
+            extra_auth_params,
+            scope_separator: " ".to_string(),
+            enrich_endpoint: None,
+        })
     }
 
     async fn sync(

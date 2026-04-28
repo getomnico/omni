@@ -97,9 +97,9 @@ export class ServiceCredentialsRepository {
         return created
     }
 
-    /// Upsert a per-user credential for an org-wide source. Replaces any existing
-    /// per-user row for the same (source, user). Used by the per-user OAuth
-    /// callback (`/api/sources/[sourceId]/user-auth/callback`).
+    /// Upsert a per-user credential row. Replaces any existing per-user row
+    /// for the same (source, user). Used by the unified OAuth callback at
+    /// `/api/oauth/callback`.
     async createForUser(data: {
         sourceId: string
         userId: string

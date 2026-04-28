@@ -137,7 +137,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
                 {
                     error: 'org_source_exists',
                     source_id: existingOrg.id,
-                    user_auth_start_url: `/api/sources/${existingOrg.id}/user-auth/start`,
+                    user_auth_start_url: `/api/oauth/start?source_id=${existingOrg.id}`,
                 },
                 { status: 409 },
             )

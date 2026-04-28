@@ -56,7 +56,7 @@ impl Connector for FileSystemConnector {
             name: "validate_path".to_string(),
             description: "Validate that the configured filesystem path exists and is a directory"
                 .to_string(),
-            mode: "read".to_string(),
+            mode: omni_connector_sdk::ActionMode::Read,
             input_schema: json!({
                 "type": "object",
                 "properties": {

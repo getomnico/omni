@@ -12,9 +12,10 @@ pub use models::{
 pub use server::{create_router, serve, serve_with_config, serve_with_extra_routes, ServerConfig};
 
 pub use shared::models::{
-    ActionDefinition, ConnectorEvent, ConnectorManifest, DocumentMetadata, DocumentPermissions,
-    McpPromptDefinition, McpResourceDefinition, SearchOperator, ServiceCredentials, Source,
-    SourceType, SyncRun, SyncStatus, SyncType,
+    ActionDefinition, ActionMode, ConnectorEvent, ConnectorManifest, DocumentMetadata,
+    DocumentPermissions, McpPromptDefinition, McpResourceDefinition, OAuthManifestConfig,
+    OAuthScopeSet, SearchOperator, ServiceCredentials, Source, SourceType, SyncRun, SyncStatus,
+    SyncType,
 };
 pub use shared::telemetry;
 pub use shared::{build_connector_url, SdkClient, SdkError, SdkResult};

@@ -359,20 +359,12 @@ pub enum ActionMode {
     Write,
 }
 
-impl ActionMode {
-    /// Default for actions that don't declare a mode. We assume write to be on
-    /// the safe side — read-only sources/connectors will reject the action.
-    pub const DEFAULT: ActionMode = ActionMode::Write;
-}
-
-impl std::str::FromStr for ActionMode {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "read" => Ok(ActionMode::Read),
-            "write" => Ok(ActionMode::Write),
-            other => Err(format!("unknown action mode: {other}")),
-        }
+impl Default for ActionMode {
+    /// Write is the safe default for unmarked actions — read-only sources or
+    /// connectors block them, but unmarked-and-actually-mutating actions
+    /// running as read-typed would skip that check.
+    fn default() -> Self {
+        ActionMode::Write
     }
 }
 
@@ -381,12 +373,8 @@ pub struct ActionDefinition {
     pub name: String,
     pub description: String,
     pub input_schema: JsonValue,
-    #[serde(default = "default_action_mode")]
-    pub mode: String,
-}
-
-fn default_action_mode() -> String {
-    "write".to_string()
+    #[serde(default)]
+    pub mode: ActionMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -445,6 +433,66 @@ pub struct ConnectorManifest {
     pub resources: Vec<McpResourceDefinition>,
     #[serde(default)]
     pub prompts: Vec<McpPromptDefinition>,
+    /// Declarative OAuth2 config consumed by the web app's generic OAuth
+    /// service. Connectors that use OAuth populate this; the web app does no
+    /// provider-specific work beyond reading these fields.
+    #[serde(default)]
+    pub oauth: Option<OAuthManifestConfig>,
+}
+
+/// Declarative OAuth2 configuration. Provider-specific values are pure data;
+/// the web app's generic OAuth2 client uses them to drive the standard
+/// authorization-code flow. Provider quirks that can't be expressed as data
+/// (e.g., Atlassian's post-exchange `cloudId` resolution) belong on the
+/// optional `enrich_endpoint`, which the connector itself implements.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OAuthManifestConfig {
+    /// Provider identifier (matches `connector_configs.provider` for the
+    /// client_id/client_secret lookup). Stored as `service_credentials.provider`
+    /// after a successful exchange.
+    pub provider: String,
+    pub auth_endpoint: String,
+    pub token_endpoint: String,
+    /// GET endpoint that returns a JSON object with the authenticated user's
+    /// email at `userinfo_email_field`.
+    pub userinfo_endpoint: String,
+    #[serde(default = "default_email_field")]
+    pub userinfo_email_field: String,
+    /// Identity-only scopes always added to every authorization request
+    /// (e.g. ["email", "profile"]).
+    #[serde(default)]
+    pub identity_scopes: Vec<String>,
+    /// Per source_type read/write scope sets.
+    #[serde(default)]
+    pub scopes: HashMap<String, OAuthScopeSet>,
+    /// Extra static query params on the authorization URL
+    /// (e.g. {"access_type": "offline", "prompt": "consent"} for Google).
+    #[serde(default)]
+    pub extra_auth_params: HashMap<String, String>,
+    #[serde(default = "default_scope_separator")]
+    pub scope_separator: String,
+    /// Optional path on the connector hit after token exchange to resolve
+    /// provider-specific extras (e.g. Atlassian cloudId). The connector
+    /// receives `{access_token, refresh_token}` and returns
+    /// `{credentials_extra?, config_extra?}` to be merged into the row.
+    #[serde(default)]
+    pub enrich_endpoint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct OAuthScopeSet {
+    #[serde(default)]
+    pub read: Vec<String>,
+    #[serde(default)]
+    pub write: Vec<String>,
+}
+
+fn default_email_field() -> String {
+    "email".to_string()
+}
+
+fn default_scope_separator() -> String {
+    " ".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -9,7 +9,7 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use shared::models::{
     ActionDefinition, ConnectorManifest, McpPromptDefinition, McpResourceDefinition,
-    SearchOperator, ServiceCredentials, Source, SourceType, SyncType,
+    OAuthManifestConfig, SearchOperator, ServiceCredentials, Source, SourceType, SyncType,
 };
 
 #[async_trait]
@@ -78,6 +78,14 @@ pub trait Connector: Send + Sync + 'static {
         vec![]
     }
 
+    /// Declarative OAuth2 config consumed by the web app's generic OAuth
+    /// service. Override on connectors that authenticate via OAuth; the
+    /// default returns `None` for connectors that use service accounts,
+    /// API keys, or other auth schemes.
+    fn oauth_config(&self) -> Option<OAuthManifestConfig> {
+        None
+    }
+
     async fn sync(
         &self,
         source: Source,
@@ -117,6 +125,7 @@ pub trait Connector: Send + Sync + 'static {
             mcp_enabled: self.mcp_enabled(),
             resources: self.mcp_resources(),
             prompts: self.mcp_prompts(),
+            oauth: self.oauth_config(),
         }
     }
 }

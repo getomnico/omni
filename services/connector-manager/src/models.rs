@@ -100,7 +100,11 @@ pub struct TriggerSyncResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecuteActionRequest {
     pub source_id: String,
-    pub user_id: String,
+    /// Acting user. `None` for org-level / system-initiated calls (sync,
+    /// future org-level agents); `Some` for chat tool dispatch and other
+    /// user-context invocations.
+    #[serde(default)]
+    pub user_id: Option<String>,
     pub action: String,
     pub params: JsonValue,
 }

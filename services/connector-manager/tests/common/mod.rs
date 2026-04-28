@@ -62,6 +62,7 @@ pub async fn setup_test_fixture() -> Result<TestFixture> {
         mcp_enabled: false,
         prompts: vec![],
         resources: vec![],
+        oauth: None,
     };
     let manifest_json = serde_json::to_string(&manifest)?;
     let mut redis_conn = redis_client.get_multiplexed_async_connection().await?;

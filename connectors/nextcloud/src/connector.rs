@@ -72,7 +72,7 @@ impl Connector for NextcloudConnector {
             name: "validate_credentials".into(),
             description: "Verify that the provided Nextcloud credentials are valid".into(),
             input_schema: json!({}),
-            mode: "read".into(),
+            mode: omni_connector_sdk::ActionMode::Read,
         }]
     }
 

@@ -79,6 +79,7 @@ pub async fn setup_test_fixture(source_type: SourceType) -> Result<TestFixture> 
         mcp_enabled: false,
         resources: vec![],
         prompts: vec![],
+        oauth: None,
     };
     let manifest_json = serde_json::to_string(&manifest)?;
     let mut redis_conn = redis_client.get_multiplexed_async_connection().await?;
@@ -150,6 +151,7 @@ async fn seed_atlassian_source(pool: &PgPool, source_type: SourceType) -> Result
     let creds = ServiceCredentials {
         id: TEST_CRED_ID.to_string(),
         source_id: "01JGF7V3E0Y2R1X8P5Q7W9T4N7".to_string(),
+        user_id: None,
         provider: ServiceProvider::Atlassian,
         auth_type: AuthType::ApiKey,
         principal_email: Some(TEST_USER_EMAIL.to_string()),

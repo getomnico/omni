@@ -15,10 +15,6 @@ ALTER TABLE sources ADD CONSTRAINT sources_scope_check CHECK (scope IN ('org', '
 
 -- Backfill: a source is org-scoped iff it has a service-account-style credential.
 -- OAuth-typed credentials stay user-scoped (matches the existing user-OAuth flow's intent).
--- Note on auth_types: jwt/api_key/basic_auth/bearer_token/bot_token are all
--- non-OAuth, admin-supplied creds. bearer_token and bot_token coexist because
--- some providers (Slack) use a distinct token namespace ('xoxb-...') for bots
--- with different lifecycle/scopes than a generic bearer token.
 UPDATE sources SET scope = 'org'
 WHERE id IN (
     SELECT s.id

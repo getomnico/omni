@@ -22,8 +22,7 @@ use shared::clients::docling::{DoclingClient, DoclingError};
 use shared::constants::REDIS_SYSTEM_SETTINGS_KEY;
 use shared::db::repositories::SyncRunRepository;
 use shared::models::{
-    ActionMode, ConnectorManifest, SearchOperator, ServiceProvider, SourceScope, SourceType,
-    SyncType,
+    ActionMode, ConnectorManifest, SearchOperator, ServiceProvider, SourceType, SyncType,
 };
 use shared::queue::EventQueue;
 use shared::utils;
@@ -269,7 +268,7 @@ pub async fn execute_action(
     Json(request): Json<ExecuteActionRequest>,
 ) -> Result<axum::response::Response, ApiError> {
     info!(
-        "Executing action {} for source {} (user {})",
+        "Executing action {} for source {} (user {:?})",
         request.action, request.source_id, request.user_id
     );
 
@@ -295,8 +294,8 @@ pub async fn execute_action(
 
     let action_mode = manifest
         .and_then(|m| m.actions.iter().find(|a| a.name == request.action))
-        .map(|a| a.mode.parse::<ActionMode>().unwrap_or(ActionMode::DEFAULT))
-        .unwrap_or(ActionMode::DEFAULT);
+        .map(|a| a.mode)
+        .unwrap_or_default();
 
     // TODO: replace this opaque-blob `read_only` lookup with a strongly-typed
     // SourceConfig. Today every connector pokes its own keys into Source.config
@@ -318,26 +317,21 @@ pub async fn execute_action(
 
     let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let creds = match resolve_credentials(
-        &creds_repo,
-        &request.source_id,
-        &request.user_id,
-        source.scope,
-        action_mode,
-    )
-    .await?
-    {
-        CredentialResolution::Resolved(c) => c,
-        CredentialResolution::NeedsUserAuth { provider } => {
-            return Ok(needs_user_auth_response(&request.source_id, provider)?);
-        }
-        CredentialResolution::NoCredentials => {
-            return Err(ApiError::NotFound(format!(
-                "Credentials not found for source: {}",
-                request.source_id
-            )));
-        }
-    };
+    let creds =
+        match resolve_credentials(&creds_repo, &request.source_id, request.user_id.as_deref())
+            .await?
+        {
+            CredentialResolution::Resolved(c) => c,
+            CredentialResolution::NeedsUserAuth { provider } => {
+                return Ok(needs_user_auth_response(&request.source_id, provider)?);
+            }
+            CredentialResolution::NoCredentials => {
+                return Err(ApiError::NotFound(format!(
+                    "Credentials not found for source: {}",
+                    request.source_id
+                )));
+            }
+        };
 
     // Resolve Omni document ID -> source external_id.
     // TODO: replace hard-coded param names with a connector-declared resolve_params list.
@@ -406,9 +400,7 @@ pub async fn execute_action(
     Ok(builder.body(axum::body::Body::from(bytes)).unwrap())
 }
 
-/// Outcome of resolving credentials for a tool/action invocation. Lives in
-/// the handler (not the repo) because the rules — read vs write, org vs
-/// per-user — belong to the action-dispatch layer, not the data store.
+/// Outcome of resolving credentials for a tool/action invocation.
 enum CredentialResolution {
     Resolved(shared::models::ServiceCredentials),
     NeedsUserAuth { provider: ServiceProvider },
@@ -417,50 +409,31 @@ enum CredentialResolution {
 
 /// Resolve which credential to use for a tool/action invocation.
 ///
-/// * `Source.scope = User` → org row is the only row.
-/// * `Source.scope = Org`, read → per-user row if present, else org row.
-/// * `Source.scope = Org`, write → per-user row required; otherwise NeedsUserAuth.
+/// * `Some(user_id)` (chat tool, user-scoped agent) → per-user row required.
+///   No fallback to org credentials — if the user hasn't connected, return
+///   `NeedsUserAuth` so the UI can prompt. Personal sources satisfy this
+///   because their cred row is keyed on the owner's user_id (see migration
+///   087).
+/// * `None` (sync, org-level agent) → org row.
 async fn resolve_credentials(
     creds_repo: &ServiceCredentialsRepo,
     source_id: &str,
-    user_id: &str,
-    scope: SourceScope,
-    mode: ActionMode,
+    user_id: Option<&str>,
 ) -> Result<CredentialResolution, ApiError> {
     let internal = |e: anyhow::Error| ApiError::Internal(e.to_string());
 
-    match (scope, mode) {
-        (SourceScope::User, _) => Ok(creds_repo
-            .find_org_credential(source_id)
-            .await
-            .map_err(internal)?
-            .map(CredentialResolution::Resolved)
-            .unwrap_or(CredentialResolution::NoCredentials)),
-
-        (SourceScope::Org, ActionMode::Read) => {
+    match user_id {
+        Some(uid) => {
             if let Some(c) = creds_repo
-                .find_user_credential(source_id, user_id)
+                .find_user_credential(source_id, uid)
                 .await
                 .map_err(internal)?
             {
                 return Ok(CredentialResolution::Resolved(c));
             }
-            Ok(creds_repo
-                .find_org_credential(source_id)
-                .await
-                .map_err(internal)?
-                .map(CredentialResolution::Resolved)
-                .unwrap_or(CredentialResolution::NoCredentials))
-        }
-
-        (SourceScope::Org, ActionMode::Write) => {
-            if let Some(c) = creds_repo
-                .find_user_credential(source_id, user_id)
-                .await
-                .map_err(internal)?
-            {
-                return Ok(CredentialResolution::Resolved(c));
-            }
+            // No per-user row — surface a NeedsUserAuth response so the UI
+            // can prompt. Provider hint comes from the org row when present;
+            // if neither row exists the source is misconfigured.
             match creds_repo
                 .find_org_credential(source_id)
                 .await
@@ -472,6 +445,12 @@ async fn resolve_credentials(
                 None => Ok(CredentialResolution::NoCredentials),
             }
         }
+        None => Ok(creds_repo
+            .find_org_credential(source_id)
+            .await
+            .map_err(internal)?
+            .map(CredentialResolution::Resolved)
+            .unwrap_or(CredentialResolution::NoCredentials)),
     }
 }
 
@@ -493,7 +472,7 @@ fn needs_user_auth_response(
         error: "needs_user_auth",
         source_id: source_id.to_string(),
         provider,
-        oauth_start_url: format!("/api/sources/{}/user-auth/start", source_id),
+        oauth_start_url: format!("/api/oauth/start?source_id={}", source_id),
     };
     let body_json = serde_json::to_string(&body).map_err(|e| ApiError::Internal(e.to_string()))?;
     axum::response::Response::builder()
@@ -530,7 +509,7 @@ pub async fn list_actions(
     for manifest in manifests {
         for source_type in &manifest.source_types {
             for action in &manifest.actions {
-                if (manifest.read_only || source_read_only) && action.mode == "write" {
+                if (manifest.read_only || source_read_only) && action.mode == ActionMode::Write {
                     continue;
                 }
                 all_actions.push(json!({

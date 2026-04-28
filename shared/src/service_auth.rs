@@ -292,6 +292,7 @@ mod tests {
         ServiceCredentials {
             id: "test-id".to_string(),
             source_id: "test-source".to_string(),
+            user_id: None,
             provider,
             auth_type,
             principal_email: principal_email.map(String::from),
