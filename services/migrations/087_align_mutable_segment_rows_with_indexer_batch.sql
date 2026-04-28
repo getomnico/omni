@@ -1,0 +1,24 @@
+-- Lower mutable_segment_rows from 5000 to 100 to match the indexer's
+-- INCREMENTAL_BATCH_SIZE.
+--
+-- Background:
+--   041 set this to 0 (disable buffering) — caused segment proliferation.
+--   079 set it to 5000 (large buffer) — fixed proliferation but introduced
+--   a 7+ second per-query floor on idle/trickle workloads.
+--
+-- The mutable buffer is loaded and re-tokenized on every search. Its cost is
+-- linear in the buffer's row count (and total field size), regardless of
+-- query shape. With 5000, we have to pay a heavy penalty on each query
+-- regardless of query complexity.
+--
+-- Aligning the threshold with INCREMENTAL_BATCH_SIZE (100) ensures every
+-- incremental batch — whether size- or age-triggered — meets or exceeds the
+-- threshold and flushes the buffer. Steady-state buffer stays ≤100 rows,
+-- which keeps query cost in the tens of ms.
+--
+-- Invariant to maintain: mutable_segment_rows ≤ INCREMENTAL_BATCH_SIZE.
+-- If INCREMENTAL_BATCH_SIZE is changed in services/indexer, this index
+-- option must be updated in lockstep.
+-- We will start with a value of 100 and tune this in the future in needed.
+
+ALTER INDEX document_search_idx SET (mutable_segment_rows = 100);
