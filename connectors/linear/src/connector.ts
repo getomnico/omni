@@ -164,6 +164,7 @@ export class LinearConnector extends Connector<LinearSourceConfig, LinearCredent
             } else {
               await ctx.emit(doc);
             }
+            await ctx.incrementUpdated(1);
             docsSinceCheckpoint++;
             if (docsSinceCheckpoint >= CHECKPOINT_INTERVAL) {
               await ctx.saveState({ last_sync_at: new Date().toISOString() });
@@ -200,6 +201,7 @@ export class LinearConnector extends Connector<LinearSourceConfig, LinearCredent
           } else {
             await ctx.emit(doc);
           }
+          await ctx.incrementUpdated(1);
           docsSinceCheckpoint++;
 
           // Sync project updates as separate documents
@@ -215,6 +217,7 @@ export class LinearConnector extends Connector<LinearSourceConfig, LinearCredent
               } else {
                 await ctx.emit(updateDoc);
               }
+              await ctx.incrementUpdated(1);
               docsSinceCheckpoint++;
             } catch (e) {
               const eid = `linear:project_update:${update.id}`;
@@ -261,6 +264,7 @@ export class LinearConnector extends Connector<LinearSourceConfig, LinearCredent
           } else {
             await ctx.emit(omniDoc);
           }
+          await ctx.incrementUpdated(1);
           docsSinceCheckpoint++;
           if (docsSinceCheckpoint >= CHECKPOINT_INTERVAL) {
             await ctx.saveState({ last_sync_at: new Date().toISOString() });
