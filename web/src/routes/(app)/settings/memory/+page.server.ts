@@ -2,7 +2,7 @@ import { redirect, fail } from '@sveltejs/kit'
 import { getConfig } from '$lib/server/config'
 import { getConfigValue } from '$lib/server/db/configuration'
 import { getCurrentProvider } from '$lib/server/db/embedding-providers'
-import { userRepository } from '$lib/server/db/users'
+import { userPreferencesRepository } from '$lib/server/db/userPreferences'
 import type { PageServerLoad, Actions } from './$types'
 
 const MODE_RANK: Record<string, number> = { off: 0, chat: 1, full: 2 }
@@ -84,9 +84,11 @@ export const actions: Actions = {
         }
 
         try {
-            await userRepository.update(locals.user.id, {
-                memoryMode: mode === '' ? null : mode,
-            })
+            if (mode === '') {
+                await userPreferencesRepository.delete(locals.user.id, 'memory_mode')
+            } else {
+                await userPreferencesRepository.set(locals.user.id, 'memory_mode', mode)
+            }
             return { success: true }
         } catch (err) {
             console.error('Failed to update memory mode:', err)

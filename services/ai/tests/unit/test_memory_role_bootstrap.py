@@ -70,7 +70,7 @@ class TestRoleBootstrap:
     def test_raises_when_password_missing(self):
         from memory.role_bootstrap import ensure_mem0ai_role
 
-        with pytest.raises(ValueError, match="MEM0AI_DATABASE_PASSWORD"):
+        with pytest.raises(ValueError, match="MEM0AI_DATABASE_ROLE_PASSWORD"):
             ensure_mem0ai_role(
                 dsn="postgresql://omni:pw@db/omni",
                 database_name="omni",

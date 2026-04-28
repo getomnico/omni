@@ -111,7 +111,9 @@ async def build_mem0_config(
     database_host: str,
     database_port: int,
     database_name: str,
+    mem0ai_user: str,
     mem0ai_password: str,
+    history_db_path: str = "/tmp/mem0_history.db",
 ) -> dict[str, Any]:
     """Assemble the mem0 config dict from in-process AI-service state."""
     models_dict = getattr(app_state, "models", {}) or {}
@@ -158,7 +160,7 @@ async def build_mem0_config(
         "host":            database_host,
         "port":            database_port,
         "dbname":          database_name,
-        "user":            "mem0ai",
+        "user":            mem0ai_user,
         "password":        mem0ai_password,
         "collection_name": collection_name,
     }
@@ -171,5 +173,5 @@ async def build_mem0_config(
         "vector_store": {"provider": "pgvector", "config": vector_store_config},
         "llm":          _llm_block(llm_provider),
         "embedder":     embedder_block,
-        "history_db_path": "/tmp/mem0_history.db",
+        "history_db_path": history_db_path,
     }

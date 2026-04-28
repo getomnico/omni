@@ -85,7 +85,7 @@ services:
     environment:
       <<: *dev-database-url
       LOG_LEVEL: debug
-      MEM0AI_DATABASE_PASSWORD: mem0ai
+      MEM0AI_DATABASE_ROLE_PASSWORD: mem0ai
     volumes:
       - ../services/ai:/app
       - /app/.venv

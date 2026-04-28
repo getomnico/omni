@@ -1,8 +1,8 @@
 import json
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Dict, Any
 from enum import Enum
+from typing import Any
 
 from crypto import decrypt_config
 
@@ -11,10 +11,9 @@ from crypto import decrypt_config
 class User:
     id: str
     email: str
-    full_name: Optional[str]
+    full_name: str | None
     role: str
     is_active: bool
-    memory_mode: Optional[str]
     created_at: datetime
     updated_at: datetime
 
@@ -26,7 +25,6 @@ class User:
             full_name=row.get("full_name"),
             role=row["role"],
             is_active=row["is_active"],
-            memory_mode=row.get("memory_mode"),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -42,11 +40,11 @@ class ChatRole(str, Enum):
 class Chat:
     id: str
     user_id: str
-    title: Optional[str]
-    model_id: Optional[str]
+    title: str | None
+    model_id: str | None
     created_at: datetime
     updated_at: datetime
-    agent_id: Optional[str] = None
+    agent_id: str | None = None
 
     @classmethod
     def from_row(cls, row: dict) -> "Chat":
@@ -136,9 +134,9 @@ class ChatMessage:
     id: str
     chat_id: str
     message_seq_num: int
-    message: Dict[str, Any]  # Full JSONB message content
+    message: dict[str, Any]  # Full JSONB message content
     created_at: datetime
-    parent_id: Optional[str] = None
+    parent_id: str | None = None
 
     @classmethod
     def from_row(cls, row: dict) -> "ChatMessage":

@@ -122,7 +122,9 @@ Runtime variables related to memory:
 | Var | Purpose |
 | --- | --- |
 | `MEMORY_ENABLED` | Set to `true` (default) or `false` to toggle memory feature entirely |
-| `MEM0AI_DATABASE_PASSWORD` | Password for the dedicated `mem0ai` Postgres role. Required if memory is enabled |
+| `MEM0AI_DATABASE_USER` | Postgres role name for mem0 (default `mem0ai`) |
+| `MEM0AI_DATABASE_ROLE_PASSWORD` | Password for the mem0 role. Required if memory is enabled |
+| `MEM0_HISTORY_DB_PATH` | SQLite history path (default `/tmp/mem0_history.db`) |
 
 The chosen LLM and embedder configurations are inherited dynamically at startup from the admin settings available to the AI service. Supported providers:
 - **LLM**: openai, openai_compatible, anthropic, gemini, bedrock, aws_bedrock
@@ -150,7 +152,7 @@ Switching embedders automatically creates a fresh collection — no data migrati
 ## Operational notes
 
 - **Storage**: vectors live in Postgres (pgvector) in the main Omni DB, but queried only via the `mem0ai` role.
-- **History DB**: mem0 uses an SQLite event history bound to `/tmp/mem0_history.db`. This is intentionally ephemeral.
+- **History DB**: mem0 uses an SQLite event history. Path is configurable via `MEM0_HISTORY_DB_PATH` (defaults to `/tmp/mem0_history.db`). Compose mounts the `mem0_history` named volume at `/var/lib/mem0` so the file survives container restarts; vectors are in Postgres regardless.
 - **Messages ring-buffer**: mem0 keeps the last 10 raw conversation messages in the SQLite history. Our `DELETE` call clears this buffer.
 - **Failure mode**: In-process calls use exception swallowing. If the DB is down or mem0 is misconfigured, callers degrade to "no memories" smoothly without terminating the process.
 

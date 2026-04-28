@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, jsonb, bigint, integer } from 'drizzle-orm/pg-core'
+import { pgTable, text, timestamp, boolean, jsonb, bigint, integer, primaryKey } from 'drizzle-orm/pg-core'
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages.js'
 
 export const user = pgTable('users', {
@@ -10,10 +10,23 @@ export const user = pgTable('users', {
     authMethod: text('auth_method').notNull().default('password'),
     domain: text('domain'),
     mustChangePassword: boolean('must_change_password').notNull().default(false),
-    memoryMode: text('memory_mode'),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
+
+export const userPreferences = pgTable(
+    'user_preferences',
+    {
+        userId: text('user_id')
+            .notNull()
+            .references(() => user.id, { onDelete: 'cascade' }),
+        key: text('key').notNull(),
+        value: jsonb('value').notNull(),
+        createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+        updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    },
+    (table) => ({ pk: primaryKey({ columns: [table.userId, table.key] }) }),
+)
 
 export const sources = pgTable('sources', {
     id: text('id').primaryKey(),

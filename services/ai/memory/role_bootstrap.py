@@ -6,12 +6,14 @@ every boot — creates the role only if missing, re-applies the grants
 and revokes unconditionally so policy drift is self-healing.
 """
 import logging
+import re
 
 import psycopg
 
 logger = logging.getLogger(__name__)
 
-_ROLE = "mem0ai"
+# Plain unquoted Postgres identifier — safe to inline into DO blocks.
+_ROLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def ensure_mem0ai_role(
@@ -19,103 +21,97 @@ def ensure_mem0ai_role(
     database_name: str,
     database_username: str,
     mem0ai_password: str | None,
+    role_name: str = "mem0ai",
 ) -> None:
-    """Create the mem0ai role if missing and (re)apply its grants/revokes.
+    """Create the role if missing and (re)apply its grants/revokes.
 
     Args:
         dsn: Privileged connection string (the main omni role).
         database_name: Main omni DB name — used in `GRANT CONNECT`.
         database_username: Owner of public tables — used in
             `ALTER DEFAULT PRIVILEGES FOR ROLE` so future omni migrations
-            do not silently grant access to mem0ai.
-        mem0ai_password: Plaintext password for the mem0ai role login.
+            do not silently grant access to the role.
+        mem0ai_password: Plaintext password for the role login.
+        role_name: Postgres role name. Defaults to ``mem0ai``.
 
     Raises:
-        ValueError: if `mem0ai_password` is missing. This makes a silent
-            misconfig impossible — memory cannot run without it.
+        ValueError: if `mem0ai_password` is missing or `role_name` is not
+            a plain identifier.
     """
     if not mem0ai_password:
         raise ValueError(
-            "MEM0AI_DATABASE_PASSWORD is required when MEMORY_ENABLED=true"
+            "MEM0AI_DATABASE_ROLE_PASSWORD is required when MEMORY_ENABLED=true"
         )
+    if not _ROLE_NAME_RE.match(role_name):
+        raise ValueError(f"Invalid mem0ai role name: {role_name!r}")
+
+    r = role_name
 
     with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
-        cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (_ROLE,))
+        cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (r,))
         exists = cur.fetchone() is not None
 
         if not exists:
-            # Identifier (role name) is a constant; password is quoted by
-            # format() with %L which produces a safe SQL string literal.
             cur.execute(
-                "SELECT format('CREATE ROLE mem0ai LOGIN PASSWORD %%L', %s::text)",
+                f"SELECT format('CREATE ROLE {r} LOGIN PASSWORD %%L', %s::text)",
                 (mem0ai_password,),
             )
-            create_stmt = cur.fetchone()[0]
-            cur.execute(create_stmt)
-            logger.info("Created mem0ai role")
+            cur.execute(cur.fetchone()[0])
+            logger.info(f"Created {r} role")
         else:
             # Rotate the password on every startup so the env var is the
             # source of truth — operators can change it without manual SQL.
             cur.execute(
-                "SELECT format('ALTER ROLE mem0ai PASSWORD %%L', %s::text)",
+                f"SELECT format('ALTER ROLE {r} PASSWORD %%L', %s::text)",
                 (mem0ai_password,),
             )
             cur.execute(cur.fetchone()[0])
 
         # Connect and basic schema access.
-        cur.execute(
-            f'GRANT CONNECT ON DATABASE "{database_name}" TO mem0ai'
-        )
-        cur.execute("GRANT USAGE, CREATE ON SCHEMA public TO mem0ai")
+        cur.execute(f'GRANT CONNECT ON DATABASE "{database_name}" TO {r}')
+        cur.execute(f"GRANT USAGE, CREATE ON SCHEMA public TO {r}")
 
-        # Reassign any pre-existing mem0 tables to mem0ai. Guards against
-        # a prior boot creating them under the privileged role (e.g. when
-        # the initial connection config was wrong); without this, mem0
-        # fails on startup with "must be owner of table ...".
+        # Reassign mem0 tables in case a prior boot created them under another role.
         cur.execute(
-            "DO $$ DECLARE r RECORD; BEGIN "
-            "FOR r IN SELECT tablename FROM pg_tables "
-            "WHERE schemaname='public' AND tablename LIKE 'mem0%' "
-            "AND tableowner <> 'mem0ai' LOOP "
-            "EXECUTE format('ALTER TABLE public.%I OWNER TO mem0ai', r.tablename); "
-            "END LOOP; END $$;"
+            f"DO $$ DECLARE rec RECORD; BEGIN "
+            f"FOR rec IN SELECT tablename FROM pg_tables "
+            f"WHERE schemaname='public' AND tablename LIKE 'mem0%' "
+            f"AND tableowner <> '{r}' LOOP "
+            f"EXECUTE format('ALTER TABLE public.%I OWNER TO {r}', rec.tablename); "
+            f"END LOOP; END $$;"
         )
 
         # Strip grants on existing omni tables.
-        cur.execute("REVOKE ALL ON ALL TABLES    IN SCHEMA public FROM mem0ai")
-        cur.execute("REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM mem0ai")
-        cur.execute("REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM mem0ai")
+        cur.execute(f"REVOKE ALL ON ALL TABLES    IN SCHEMA public FROM {r}")
+        cur.execute(f"REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM {r}")
+        cur.execute(f"REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM {r}")
 
-        # The blanket REVOKE above also strips mem0ai's access to its own
-        # mem0_* tables (ownership remains, but the explicit-empty ACL
-        # overrides the owner's implicit grants). Restore DML privileges on
-        # every mem0* table and its sequences.
+        # Restore mem0's access to its own tables (blanket REVOKE above strips it).
         cur.execute(
-            "DO $$ DECLARE r RECORD; BEGIN "
-            "FOR r IN SELECT tablename FROM pg_tables "
-            "WHERE schemaname='public' AND tablename LIKE 'mem0%' LOOP "
-            "EXECUTE format('GRANT ALL ON TABLE public.%I TO mem0ai', r.tablename); "
-            "END LOOP; END $$;"
+            f"DO $$ DECLARE rec RECORD; BEGIN "
+            f"FOR rec IN SELECT tablename FROM pg_tables "
+            f"WHERE schemaname='public' AND tablename LIKE 'mem0%' LOOP "
+            f"EXECUTE format('GRANT ALL ON TABLE public.%I TO {r}', rec.tablename); "
+            f"END LOOP; END $$;"
         )
         cur.execute(
-            "DO $$ DECLARE r RECORD; BEGIN "
-            "FOR r IN SELECT c.relname FROM pg_class c "
-            "JOIN pg_namespace n ON n.oid = c.relnamespace "
-            "WHERE n.nspname='public' AND c.relkind='S' "
-            "AND c.relname LIKE 'mem0%' LOOP "
-            "EXECUTE format('GRANT ALL ON SEQUENCE public.%I TO mem0ai', r.relname); "
-            "END LOOP; END $$;"
+            f"DO $$ DECLARE rec RECORD; BEGIN "
+            f"FOR rec IN SELECT c.relname FROM pg_class c "
+            f"JOIN pg_namespace n ON n.oid = c.relnamespace "
+            f"WHERE n.nspname='public' AND c.relkind='S' "
+            f"AND c.relname LIKE 'mem0%' LOOP "
+            f"EXECUTE format('GRANT ALL ON SEQUENCE public.%I TO {r}', rec.relname); "
+            f"END LOOP; END $$;"
         )
 
-        # Strip default grants for tables created by the main omni role in
-        # the future (later migrations).
+        # Block future omni-owned tables from auto-granting to mem0.
         cur.execute(
             f'ALTER DEFAULT PRIVILEGES FOR ROLE "{database_username}" '
-            "IN SCHEMA public REVOKE ALL ON TABLES    FROM mem0ai"
+            f"IN SCHEMA public REVOKE ALL ON TABLES    FROM {r}"
         )
         cur.execute(
             f'ALTER DEFAULT PRIVILEGES FOR ROLE "{database_username}" '
-            "IN SCHEMA public REVOKE ALL ON SEQUENCES FROM mem0ai"
+            f"IN SCHEMA public REVOKE ALL ON SEQUENCES FROM {r}"
         )
 
-    logger.info("mem0ai role grants and revokes applied")
+    logger.info(f"{r} role grants and revokes applied")

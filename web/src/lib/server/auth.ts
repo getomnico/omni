@@ -1,5 +1,5 @@
 import type { RequestEvent } from '@sveltejs/kit'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { sha256 } from '@oslojs/crypto/sha2'
 import { encodeBase64url, encodeHexLowerCase } from '@oslojs/encoding'
 import { db } from '$lib/server/db'
@@ -66,9 +66,16 @@ export async function validateSessionToken(token: string) {
             role: table.user.role,
             isActive: table.user.isActive,
             mustChangePassword: table.user.mustChangePassword,
-            memoryMode: table.user.memoryMode,
+            memoryMode: table.userPreferences.value,
         })
         .from(table.user)
+        .leftJoin(
+            table.userPreferences,
+            and(
+                eq(table.userPreferences.userId, table.user.id),
+                eq(table.userPreferences.key, 'memory_mode'),
+            ),
+        )
         .where(eq(table.user.id, session.userId))
 
     if (!userResult) {
@@ -87,7 +94,12 @@ export async function validateSessionToken(token: string) {
         )
     }
 
-    return { session, user: userResult }
+    const user = {
+        ...userResult,
+        memoryMode:
+            typeof userResult.memoryMode === 'string' ? userResult.memoryMode : null,
+    }
+    return { session, user }
 }
 
 export type SessionValidationResult = Awaited<ReturnType<typeof validateSessionToken>>

@@ -2,70 +2,66 @@ import asyncio
 import json
 import logging
 import pathlib
-from typing import cast
 from dataclasses import dataclass
+from typing import cast
 
 import httpx
+from anthropic import AsyncStream, MessageStreamEvent
+from anthropic.types import (
+    CitationCharLocationParam,
+    CitationContentBlockLocationParam,
+    CitationPageLocationParam,
+    CitationsDelta,
+    CitationSearchResultLocationParam,
+    CitationWebSearchResultLocationParam,
+    MessageParam,
+    TextBlockParam,
+    TextCitationParam,
+    ToolResultBlockParam,
+    ToolUseBlockParam,
+)
 from fastapi import APIRouter, HTTPException, Path, Query, Request
 from fastapi.responses import Response, StreamingResponse
-from pydantic import ValidationError
 
 from agents.executor import _build_source_filter
 from agents.models import Agent
 from agents.repository import AgentRepository, AgentRunRepository
 from attachments import expand_uploads
+from config import (
+    AGENT_MAX_ITERATIONS,
+    APPROVAL_TIMEOUT_SECONDS,
+    CONNECTOR_MANAGER_URL,
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_TEMPERATURE,
+    DEFAULT_TOP_P,
+    SANDBOX_URL,
+)
 from db import ChatsRepository, MessagesRepository
+from db.configuration import ConfigurationRepository
 from db.documents import DocumentsRepository
-from db.uploads import UploadsRepository
 from db.models import Chat, Source
+from db.uploads import UploadsRepository
+from db.usage import UsageRepository
+from db.user_preferences import UserPreferencesRepository
 from db.users import UsersRepository
+from memory.mode import resolve_memory_mode
+from prompts import build_agent_chat_system_prompt, build_chat_system_prompt
+from providers import LLMProvider
+from services.compaction import ConversationCompactor
+from services.usage import UsageContext, UsagePurpose, UsageTracker, track_usage
+from state import AppState
 from tools import (
-    SearcherTool,
-    ToolRegistry,
-    ToolContext,
-    SearchToolHandler,
     ConnectorToolHandler,
     DocumentToolHandler,
     PeopleSearchHandler,
+    SearchToolHandler,
+    ToolContext,
+    ToolRegistry,
 )
 from tools.connector_handler import ConnectorAction, SearchOperator
 from tools.sandbox_handler import SandboxToolHandler
 from tools.search_handler import fetch_operator_values
 from tools.skill_handler import SkillHandler
-from config import (
-    DEFAULT_MAX_TOKENS,
-    DEFAULT_TEMPERATURE,
-    DEFAULT_TOP_P,
-    AGENT_MAX_ITERATIONS,
-    CONNECTOR_MANAGER_URL,
-    APPROVAL_TIMEOUT_SECONDS,
-    SANDBOX_URL,
-)
-from db.usage import UsageRepository
-from providers import LLMProvider
-from prompts import build_chat_system_prompt, build_agent_chat_system_prompt
-from memory.mode import resolve_memory_mode
-from db.configuration import ConfigurationRepository
-from services.compaction import ConversationCompactor
-from services.usage import UsageTracker, UsageContext, UsagePurpose, track_usage
-from state import AppState
-
-from anthropic import MessageStreamEvent, AsyncStream
-from anthropic.types import (
-    MessageParam,
-    TextBlockParam,
-    ToolUseBlockParam,
-    TextCitationParam,
-    CitationCharLocationParam,
-    CitationPageLocationParam,
-    CitationContentBlockLocationParam,
-    CitationSearchResultLocationParam,
-    CitationWebSearchResultLocationParam,
-    CitationsDelta,
-    ToolResultBlockParam,
-    SearchResultBlockParam,
-    CitationsConfigParam,
-)
 
 router = APIRouter(tags=["chat"])
 logger = logging.getLogger(__name__)
@@ -486,7 +482,10 @@ async def stream_chat(
                 effective_mode = org_default if org_default in ("chat", "full") else "off"
                 memory_key = f"org_agent:{agent.id}"
             else:
-                user_memory_mode = chat_user.memory_mode if chat_user else None
+                user_memory_mode = (
+                    await UserPreferencesRepository().get(chat_user.id, "memory_mode")
+                    if chat_user else None
+                )
                 effective_mode = resolve_memory_mode(user_memory_mode, org_default)
                 memory_key = f"user:{agent.user_id}:agent:{agent.id}"
             if effective_mode in ("chat", "full") and chat_messages:
@@ -560,7 +559,10 @@ async def stream_chat(
         effective_mode = "off"
         if memory_service and chat.user_id:
             memory_write_key = chat.user_id
-            user_memory_mode = user.memory_mode if user else None
+            user_memory_mode = (
+                await UserPreferencesRepository().get(user.id, "memory_mode")
+                if user else None
+            )
             config_repo = ConfigurationRepository()
             org_config = await config_repo.get("memory_mode_default")
             org_default = (org_config or {}).get("value")
@@ -734,7 +736,7 @@ async def stream_chat(
                 logger.info(f"Iteration {iteration + 1}/{AGENT_MAX_ITERATIONS}")
                 content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
 
-                logger.info(f"Sending request to LLM provider")
+                logger.info("Sending request to LLM provider")
                 logger.debug(
                     f"Messages being sent: {json.dumps(conversation_messages, indent=2)}"
                 )
@@ -773,7 +775,7 @@ async def stream_chat(
                     event_index += 1
 
                     if event.type == "message_start":
-                        logger.info(f"Message start received.")
+                        logger.info("Message start received.")
 
                     if event.type == "content_block_delta":
                         logger.debug(
@@ -851,7 +853,7 @@ async def stream_chat(
                     elif event.type == "citation":
                         logger.info(f"Citation received: {event.citation}")
                     elif event.type == "message_stop":
-                        logger.info(f"Message stop received.")
+                        logger.info("Message stop received.")
                         message_stop_received = True
 
                     logger.debug(
@@ -927,7 +929,7 @@ async def stream_chat(
                                 "tool_call_id": tool_call["id"],
                             }
                             yield f"event: approval_required\ndata: {json.dumps(approval_event)}\n\n"
-                            yield f"event: end_of_stream\ndata: Approval required\n\n"
+                            yield "event: end_of_stream\ndata: Approval required\n\n"
                             return
                         else:
                             # No Redis, can't do approvals — treat as denied
@@ -994,8 +996,8 @@ async def stream_chat(
                         )
                         if assistant_content:
                             turn = [
-                                {"role": "user", "content": last_user_content},
-                                {"role": "assistant", "content": assistant_content},
+                                MessageParam(role="user", content=last_user_content),
+                                MessageParam(role="assistant", content=assistant_content),
                             ]
                             asyncio.create_task(
                                 memory_service.add(messages=turn, user_id=memory_write_key)
@@ -1003,7 +1005,7 @@ async def stream_chat(
                 except Exception as e:
                     logger.warning(f"Memory write setup failed for chat {chat_id}: {e}")
 
-            yield f"event: end_of_stream\ndata: Stream ended\n\n"
+            yield "event: end_of_stream\ndata: Stream ended\n\n"
 
         except asyncio.CancelledError:
             logger.info(f"Stream cancelled for chat {chat_id}")
@@ -1012,7 +1014,7 @@ async def stream_chat(
             logger.error(
                 f"Failed to generate AI response with tools: {e}", exc_info=True
             )
-            yield f"event: error\ndata: Something went wrong, please try again later.\n\n"
+            yield "event: error\ndata: Something went wrong, please try again later.\n\n"
 
     return StreamingResponse(
         stream_generator(),

@@ -29,8 +29,8 @@ export async function validateApiKey(
 ): Promise<{
     user: Pick<
         typeof table.user.$inferSelect,
-        'id' | 'email' | 'role' | 'isActive' | 'mustChangePassword' | 'memoryMode'
-    >
+        'id' | 'email' | 'role' | 'isActive' | 'mustChangePassword'
+    > & { memoryMode: string | null }
     allowedSources: string[] | null
     scope: 'public' | 'user' | 'admin'
 } | null> {
@@ -45,11 +45,18 @@ export async function validateApiKey(
                 role: table.user.role,
                 isActive: table.user.isActive,
                 mustChangePassword: table.user.mustChangePassword,
-                memoryMode: table.user.memoryMode,
+                memoryMode: table.userPreferences.value,
             },
         })
         .from(table.apiKeys)
         .innerJoin(table.user, eq(table.apiKeys.userId, table.user.id))
+        .leftJoin(
+            table.userPreferences,
+            and(
+                eq(table.userPreferences.userId, table.user.id),
+                eq(table.userPreferences.key, 'memory_mode'),
+            ),
+        )
         .where(and(eq(table.apiKeys.keyHash, hash), eq(table.apiKeys.isActive, true)))
         .limit(1)
 
@@ -85,7 +92,12 @@ export async function validateApiKey(
         | 'public'
         | 'user'
         | 'admin'
-    return { user: result.user, allowedSources, scope }
+    const user = {
+        ...result.user,
+        memoryMode:
+            typeof result.user.memoryMode === 'string' ? result.user.memoryMode : null,
+    }
+    return { user, allowedSources, scope }
 }
 
 export async function createApiKey(

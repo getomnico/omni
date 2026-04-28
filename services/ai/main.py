@@ -3,44 +3,44 @@
 import asyncio
 import logging
 import os
+
 import uvicorn
-
 from fastapi import FastAPI
+from fastapi.concurrency import run_in_threadpool
+from mem0 import Memory
 
+from config import (
+    DATABASE_URL,
+    MEM0_HISTORY_DB_PATH,
+    MEM0AI_DATABASE_ROLE_PASSWORD,
+    MEM0AI_DATABASE_USER,
+    MEMORY_ENABLED,
+    PORT,
+)
 from logger import setup_logging
-from telemetry import init_telemetry
-from state import AppState
+from memory.bootstrap import MemoryConfigError, build_mem0_config
+from memory.role_bootstrap import ensure_mem0ai_role
+from memory.service import MemoryService
+from routers import (
+    agents_router,
+    chat_router,
+    embeddings_router,
+    health_router,
+    internal_router,
+    memory_router,
+    model_providers_router,
+    prompts_router,
+    uploads_router,
+    usage_router,
+)
 from services import (
     EmbeddingQueueService,
     initialize_providers,
     shutdown_providers,
     start_batch_processor,
 )
-from routers import (
-    chat_router,
-    health_router,
-    embeddings_router,
-    prompts_router,
-    model_providers_router,
-    agents_router,
-    uploads_router,
-    usage_router,
-    internal_router,
-    memory_router,
-)
-
-from config import (
-    PORT,
-    MEMORY_ENABLED,
-    MEM0AI_DATABASE_PASSWORD,
-    DATABASE_URL,
-)
-from fastapi.concurrency import run_in_threadpool
-from mem0 import Memory
-
-from memory.bootstrap import build_mem0_config, MemoryConfigError
-from memory.role_bootstrap import ensure_mem0ai_role
-from memory.service import MemoryService
+from state import AppState
+from telemetry import init_telemetry
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -84,14 +84,17 @@ async def startup_event():
                     dsn=DATABASE_URL,
                     database_name=os.environ["DATABASE_NAME"],
                     database_username=os.environ["DATABASE_USERNAME"],
-                    mem0ai_password=MEM0AI_DATABASE_PASSWORD,
+                    mem0ai_password=MEM0AI_DATABASE_ROLE_PASSWORD,
+                    role_name=MEM0AI_DATABASE_USER,
                 )
                 cfg = await build_mem0_config(
                     app.state,
                     database_host=os.environ["DATABASE_HOST"],
                     database_port=int(os.environ.get("DATABASE_PORT", "5432")),
                     database_name=os.environ["DATABASE_NAME"],
-                    mem0ai_password=MEM0AI_DATABASE_PASSWORD,  # type: ignore[arg-type]
+                    mem0ai_user=MEM0AI_DATABASE_USER,
+                    mem0ai_password=MEM0AI_DATABASE_ROLE_PASSWORD,  # type: ignore[arg-type]
+                    history_db_path=MEM0_HISTORY_DB_PATH,
                 )
                 memory = await run_in_threadpool(Memory.from_config, cfg)
                 app.state.memory_service = MemoryService(

@@ -27,6 +27,7 @@ from db.configuration import ConfigurationRepository
 from db.documents import DocumentsRepository
 from db.models import Source
 from db.usage import UsageRepository
+from db.user_preferences import UserPreferencesRepository
 from db.users import UsersRepository
 from memory.mode import VALID_MODES, resolve_memory_mode
 from prompts import build_agent_system_prompt
@@ -232,7 +233,10 @@ async def _run_agent_loop(
             effective_mode = org_default if org_default in VALID_MODES else "off"
             memory_key = f"org_agent:{agent.id}"
         elif agent.user_id:
-            user_memory_mode = agent_user.memory_mode if agent_user else None
+            user_memory_mode = (
+                await UserPreferencesRepository().get(agent_user.id, "memory_mode")
+                if agent_user else None
+            )
             effective_mode = resolve_memory_mode(user_memory_mode, org_default)
             memory_key = f"user:{agent.user_id}:agent:{agent.id}"
 
@@ -475,14 +479,14 @@ async def _run_agent_loop(
     if memory_service and memory_key and effective_mode == "full" and summary:
         try:
             turn = [
-                {
-                    "role": "user",
-                    "content": f"Agent task: {agent.instructions}",
-                },
-                {
-                    "role": "assistant",
-                    "content": f"Agent run summary: {summary}",
-                },
+                MessageParam(
+                    role="user",
+                    content=f"Agent task: {agent.instructions}",
+                ),
+                MessageParam(
+                    role="assistant",
+                    content=f"Agent run summary: {summary}",
+                ),
             ]
             asyncio.create_task(
                 memory_service.add(messages=turn, user_id=memory_key)

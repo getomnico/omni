@@ -116,7 +116,13 @@ APPROVAL_TIMEOUT_SECONDS = int(
 )  # 10 minutes
 SANDBOX_URL: str | None = os.getenv("SANDBOX_URL") or None
 MEMORY_ENABLED = get_optional_env("MEMORY_ENABLED", "true").lower() == "true"
-MEM0AI_DATABASE_PASSWORD: str | None = os.getenv("MEM0AI_DATABASE_PASSWORD") or None
+MEM0AI_DATABASE_USER: str = get_optional_env("MEM0AI_DATABASE_USER", "mem0ai")
+MEM0AI_DATABASE_ROLE_PASSWORD: str | None = (
+    os.getenv("MEM0AI_DATABASE_ROLE_PASSWORD") or None
+)
+MEM0_HISTORY_DB_PATH: str = get_optional_env(
+    "MEM0_HISTORY_DB_PATH", "/tmp/mem0_history.db"
+)
 
 # Background agent scheduler
 AGENT_SCHEDULER_POLL_INTERVAL = int(

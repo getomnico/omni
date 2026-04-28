@@ -1,6 +1,6 @@
 import { json, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
-import { userRepository } from '$lib/server/db/users'
+import { userPreferencesRepository } from '$lib/server/db/userPreferences'
 
 const VALID_MODES = new Set(['off', 'chat', 'full'])
 
@@ -24,7 +24,11 @@ export const PATCH: RequestHandler = async ({ request, locals }) => {
     const memoryMode: string | null =
         mode === null || mode === undefined ? null : (mode as string)
 
-    await userRepository.update(locals.user.id, { memoryMode, updatedAt: new Date() })
+    if (memoryMode === null) {
+        await userPreferencesRepository.delete(locals.user.id, 'memory_mode')
+    } else {
+        await userPreferencesRepository.set(locals.user.id, 'memory_mode', memoryMode)
+    }
 
     return json({ ok: true, mode: memoryMode })
 }

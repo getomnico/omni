@@ -11,13 +11,14 @@ import sqlite3
 from typing import Any
 
 import psycopg
+from anthropic.types import MessageParam
 from fastapi.concurrency import run_in_threadpool
 from mem0 import Memory
 
 logger = logging.getLogger(__name__)
 
 
-def _sanitize_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
+def _sanitize_messages(messages: list[MessageParam]) -> list[dict[str, str]]:
     """Flatten list content to text-only strings; drop empty messages.
 
     mem0's parse_vision_messages calls get_image_description(msg, llm=None)
@@ -26,7 +27,7 @@ def _sanitize_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
     """
     out: list[dict[str, str]] = []
     for m in messages:
-        content = m.get("content", "")
+        content: Any = m.get("content", "")
         if isinstance(content, list):
             content = " ".join(
                 b.get("text", "") for b in content
@@ -44,7 +45,7 @@ class MemoryService:
         self._mem = memory
         self._db_config = db_config
 
-    async def add(self, messages: list[dict[str, Any]], user_id: str) -> None:
+    async def add(self, messages: list[MessageParam], user_id: str) -> None:
         """Write a conversation turn to memory. Fire-and-forget."""
         sanitized = _sanitize_messages(messages)
         if not sanitized:

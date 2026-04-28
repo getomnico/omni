@@ -46,7 +46,7 @@ class TestBuildMem0Config:
                 state,
                 database_host="db", database_port=5432,
                 database_name="omni",
-                mem0ai_password="mem0ai",
+                mem0ai_user="mem0ai", mem0ai_password="mem0ai",
             )
         assert cfg["llm"]["config"]["model"] == "gpt-4o"
 
@@ -62,7 +62,7 @@ class TestBuildMem0Config:
                 state,
                 database_host="db", database_port=5432,
                 database_name="omni",
-                mem0ai_password="mem0ai",
+                mem0ai_user="mem0ai", mem0ai_password="mem0ai",
             )
         assert cfg["llm"]["config"]["model"] == "gpt-4o-mini"
 
@@ -83,7 +83,7 @@ class TestBuildMem0Config:
                 state,
                 database_host="db", database_port=5432,
                 database_name="omni",
-                mem0ai_password="mem0ai",
+                mem0ai_user="mem0ai", mem0ai_password="mem0ai",
             )
         assert cfg["embedder"]["config"]["embedding_dims"] == 768
 
@@ -97,7 +97,7 @@ class TestBuildMem0Config:
                    AsyncMock(return_value=_stub_embed_cfg())):
             cfg_a = await build_mem0_config(
                 state, database_host="db", database_port=5432,
-                database_name="omni", mem0ai_password="mem0ai",
+                database_name="omni", mem0ai_user="mem0ai", mem0ai_password="mem0ai",
             )
 
         repo2 = MagicMock()
@@ -107,7 +107,7 @@ class TestBuildMem0Config:
                    AsyncMock(return_value=_stub_embed_cfg(model="text-embedding-3-large", dims=3072))):
             cfg_b = await build_mem0_config(
                 state, database_host="db", database_port=5432,
-                database_name="omni", mem0ai_password="mem0ai",
+                database_name="omni", mem0ai_user="mem0ai", mem0ai_password="mem0ai",
             )
 
         name_a = cfg_a["vector_store"]["config"]["collection_name"]
@@ -125,7 +125,7 @@ class TestBuildMem0Config:
                    AsyncMock(return_value=_stub_embed_cfg())):
             cfg = await build_mem0_config(
                 state, database_host="db", database_port=5432,
-                database_name="omni", mem0ai_password="mem0ai-secret",
+                database_name="omni", mem0ai_user="mem0ai", mem0ai_password="mem0ai-secret",
             )
         vs = cfg["vector_store"]["config"]
         assert vs["user"] == "mem0ai"

@@ -1,13 +1,13 @@
-from typing import Optional
-from ulid import ULID
-from asyncpg import Pool
 
-from .models import User
+from asyncpg import Pool
+from ulid import ULID
+
 from .connection import get_db_pool
+from .models import User
 
 
 class UsersRepository:
-    def __init__(self, pool: Optional[Pool] = None):
+    def __init__(self, pool: Pool | None = None):
         self.pool = pool
 
     async def _get_pool(self) -> Pool:
@@ -19,7 +19,7 @@ class UsersRepository:
         self,
         email: str,
         password_hash: str,
-        full_name: Optional[str] = None,
+        full_name: str | None = None,
         role: str = "user",
     ) -> User:
         pool = await self._get_pool()
@@ -39,10 +39,10 @@ class UsersRepository:
 
         return User.from_row(dict(row))
 
-    async def find_by_id(self, user_id: str) -> Optional[User]:
+    async def find_by_id(self, user_id: str) -> User | None:
         pool = await self._get_pool()
         query = """
-            SELECT id, email, full_name, role, is_active, memory_mode, created_at, updated_at
+            SELECT id, email, full_name, role, is_active, created_at, updated_at
             FROM users WHERE id = $1
         """
         async with pool.acquire() as conn:
