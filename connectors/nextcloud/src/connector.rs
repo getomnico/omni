@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
-    ActionDefinition, ActionResponse, Connector, ServiceCredentials, Source, SourceType,
+    ActionDefinition, ActionResponse, Connector, ServiceCredential, Source, SourceType,
     SyncContext, SyncType,
 };
 use serde::Deserialize;
@@ -72,14 +72,14 @@ impl Connector for NextcloudConnector {
             name: "validate_credentials".into(),
             description: "Verify that the provided Nextcloud credentials are valid".into(),
             input_schema: json!({}),
-            mode: "read".into(),
+            mode: omni_connector_sdk::ActionMode::Read,
         }]
     }
 
     async fn sync(
         &self,
         source: Source,
-        credentials: Option<ServiceCredentials>,
+        credentials: Option<ServiceCredential>,
         state: Option<Self::State>,
         ctx: SyncContext,
     ) -> Result<()> {
@@ -98,7 +98,7 @@ impl Connector for NextcloudConnector {
         &self,
         action: &str,
         params: JsonValue,
-        credentials: Option<ServiceCredentials>,
+        credentials: Option<ServiceCredential>,
     ) -> Result<Response> {
         match action {
             "validate_credentials" => {

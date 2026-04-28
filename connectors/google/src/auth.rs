@@ -3,7 +3,7 @@ use chrono::{Duration, Utc};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use shared::models::{ServiceCredentials, SourceType};
+use shared::models::{ServiceCredential, SourceType};
 use shared::RateLimiter;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -424,11 +424,11 @@ pub fn get_oauth_scopes_for_source_type(source_type: SourceType) -> Vec<String> 
     }
 }
 
-/// Build a `ServiceAccountAuth` from a `ServiceCredentials` JWT row. Honors a
+/// Build a `ServiceAccountAuth` from a `ServiceCredential` JWT row. Honors a
 /// `scopes` override in `creds.config` and falls back to the per-source-type
 /// defaults from `get_scopes_for_source_type`.
 pub fn create_service_auth(
-    creds: &ServiceCredentials,
+    creds: &ServiceCredential,
     source_type: SourceType,
 ) -> Result<ServiceAccountAuth> {
     let service_account_json = creds
@@ -451,8 +451,8 @@ pub fn create_service_auth(
     ServiceAccountAuth::new(service_account_json, scopes)
 }
 
-/// Read the workspace `domain` from a `ServiceCredentials` config blob.
-pub fn get_domain_from_credentials(creds: &ServiceCredentials) -> Result<String> {
+/// Read the workspace `domain` from a `ServiceCredential` config blob.
+pub fn get_domain_from_credentials(creds: &ServiceCredential) -> Result<String> {
     creds
         .config
         .get("domain")
@@ -529,9 +529,9 @@ impl GoogleCredentialsService {
     pub async fn get_credentials_for_source(
         &self,
         source_id: &str,
-    ) -> Result<shared::models::ServiceCredentials> {
+    ) -> Result<shared::models::ServiceCredential> {
         self.service_credentials_repo
-            .get_by_source_id(source_id)
+            .find_org_credential(source_id)
             .await?
             .ok_or_else(|| anyhow!("Service credentials not found for source: {}", source_id))
     }
@@ -539,7 +539,7 @@ impl GoogleCredentialsService {
     /// Create ServiceAccountAuth from service credentials with appropriate scopes for the source type
     pub fn create_service_auth(
         &self,
-        creds: &shared::models::ServiceCredentials,
+        creds: &shared::models::ServiceCredential,
         source_type: SourceType,
     ) -> Result<ServiceAccountAuth> {
         let service_account_json = creds
@@ -566,7 +566,7 @@ impl GoogleCredentialsService {
     /// Get domain from service credentials
     pub fn get_domain_from_credentials(
         &self,
-        creds: &shared::models::ServiceCredentials,
+        creds: &shared::models::ServiceCredential,
     ) -> Result<String> {
         creds
             .config
@@ -579,7 +579,7 @@ impl GoogleCredentialsService {
     /// Get principal email from service credentials
     pub fn get_principal_email_from_credentials(
         &self,
-        creds: &shared::models::ServiceCredentials,
+        creds: &shared::models::ServiceCredential,
     ) -> Result<String> {
         creds
             .principal_email

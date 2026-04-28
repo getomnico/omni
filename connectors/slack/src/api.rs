@@ -74,6 +74,7 @@ pub fn build_manifest(connector_url: String) -> ConnectorManifest {
         mcp_enabled: false,
         resources: vec![],
         prompts: vec![],
+        oauth: None,
     }
 }
 

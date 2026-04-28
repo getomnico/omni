@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::models::{
-    ConfluenceSourceConfig, JiraSourceConfig, ServiceCredentials, ServiceProvider, SourceType,
+    ConfluenceSourceConfig, JiraSourceConfig, ServiceCredential, ServiceProvider, SourceType,
     SyncRequest, SyncType,
 };
 use std::collections::HashSet;
@@ -507,7 +507,7 @@ impl SyncManager {
         }
     }
 
-    async fn get_service_credentials(&self, source_id: &str) -> Result<ServiceCredentials> {
+    async fn get_service_credentials(&self, source_id: &str) -> Result<ServiceCredential> {
         let creds = self
             .sdk_client
             .get_credentials(source_id)
@@ -527,7 +527,7 @@ impl SyncManager {
 
     fn extract_atlassian_credentials(
         &self,
-        creds: &ServiceCredentials,
+        creds: &ServiceCredential,
     ) -> Result<(String, String, String)> {
         let base_url = creds
             .config

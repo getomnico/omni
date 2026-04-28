@@ -168,11 +168,11 @@ class DocumentToolHandler:
         )
 
         async with httpx.AsyncClient(timeout=120.0) as client:
-            # Call connector-manager to fetch the file
             resp = await client.post(
                 f"{self._connector_manager_url}/action",
                 json={
                     "source_id": doc.source_id,
+                    "user_id": context.user_id,
                     "action": "fetch_file",
                     "params": {"document_id": doc.id},
                 },

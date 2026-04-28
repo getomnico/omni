@@ -50,6 +50,18 @@ pub enum UserFilterMode {
     Blacklist,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq, Eq)]
+#[sqlx(type_name = "text", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum SourceScope {
+    /// Admin-set-up source shared across the org. Sync uses the org credential;
+    /// MCP write tools require per-user credentials granted via OAuth.
+    Org,
+    /// Personal source owned by `created_by`. The single credential row covers
+    /// both reads and writes.
+    User,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Source {
     pub id: String,
@@ -58,6 +70,7 @@ pub struct Source {
     pub config: JsonValue,
     pub is_active: bool,
     pub is_deleted: bool,
+    pub scope: SourceScope,
     pub user_filter_mode: UserFilterMode,
     pub user_whitelist: Option<JsonValue>,
     pub user_blacklist: Option<JsonValue>,
@@ -210,9 +223,12 @@ pub enum AuthType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct ServiceCredentials {
+pub struct ServiceCredential {
     pub id: String,
     pub source_id: String,
+    /// `Some` => per-user credential for an org-wide source (used for write tools by that user).
+    /// `None` => org-wide credential (used for sync and reads).
+    pub user_id: Option<String>,
     pub provider: ServiceProvider,
     pub auth_type: AuthType,
     pub principal_email: Option<String>,
@@ -336,17 +352,29 @@ fn default_search_operator_value_type() -> String {
     "text".to_string()
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ActionMode {
+    Read,
+    Write,
+}
+
+impl Default for ActionMode {
+    /// Write is the safe default for unmarked actions — read-only sources or
+    /// connectors block them, but unmarked-and-actually-mutating actions
+    /// running as read-typed would skip that check.
+    fn default() -> Self {
+        ActionMode::Write
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionDefinition {
     pub name: String,
     pub description: String,
     pub input_schema: JsonValue,
-    #[serde(default = "default_action_mode")]
-    pub mode: String,
-}
-
-fn default_action_mode() -> String {
-    "write".to_string()
+    #[serde(default)]
+    pub mode: ActionMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -405,6 +433,13 @@ pub struct ConnectorManifest {
     pub resources: Vec<McpResourceDefinition>,
     #[serde(default)]
     pub prompts: Vec<McpPromptDefinition>,
+    /// Declarative OAuth2 config consumed by the web app's generic OAuth
+    /// service. Connectors that use OAuth populate this. The typed shape
+    /// lives in the connector SDK (`omni_connector_sdk::OAuthManifestConfig`);
+    /// shared treats it as opaque JSON since neither shared nor
+    /// connector-manager need typed access to its fields.
+    #[serde(default)]
+    pub oauth: Option<JsonValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -676,6 +711,7 @@ mod tests {
             config: json!({}),
             is_active: true,
             is_deleted: false,
+            scope: SourceScope::User,
             user_filter_mode: filter_mode,
             user_whitelist: whitelist,
             user_blacklist: blacklist,

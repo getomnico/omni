@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use omni_connector_sdk::{
-    ActionDefinition, ActionResponse, Connector, ServiceCredentials, Source, SourceType,
+    ActionDefinition, ActionResponse, Connector, ServiceCredential, Source, SourceType,
     SyncContext, SyncType,
 };
 use serde_json::{json, Value as JsonValue};
@@ -56,7 +56,7 @@ impl Connector for FileSystemConnector {
             name: "validate_path".to_string(),
             description: "Validate that the configured filesystem path exists and is a directory"
                 .to_string(),
-            mode: "read".to_string(),
+            mode: omni_connector_sdk::ActionMode::Read,
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -70,7 +70,7 @@ impl Connector for FileSystemConnector {
     async fn sync(
         &self,
         source: Source,
-        _credentials: Option<ServiceCredentials>,
+        _credentials: Option<ServiceCredential>,
         _state: Option<JsonValue>,
         ctx: SyncContext,
     ) -> Result<()> {
@@ -89,7 +89,7 @@ impl Connector for FileSystemConnector {
         &self,
         action: &str,
         params: JsonValue,
-        _credentials: Option<ServiceCredentials>,
+        _credentials: Option<ServiceCredential>,
     ) -> Result<axum::response::Response> {
         match action {
             "validate_path" => {

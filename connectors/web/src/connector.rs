@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use omni_connector_sdk::{
-    Connector, SdkClient, ServiceCredentials, Source, SourceType, SyncContext, SyncType,
+    Connector, SdkClient, ServiceCredential, Source, SourceType, SyncContext, SyncType,
 };
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
@@ -65,7 +65,7 @@ impl Connector for WebConnector {
     async fn sync(
         &self,
         source: Source,
-        _credentials: Option<ServiceCredentials>,
+        _credentials: Option<ServiceCredential>,
         state: Option<WebConnectorState>,
         ctx: SyncContext,
     ) -> Result<()> {

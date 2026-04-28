@@ -20,7 +20,7 @@ use crate::models::{
 };
 use serde_json::json;
 use shared::models::{
-    AuthType, ConnectorEvent, DocumentMetadata, DocumentPermissions, ServiceCredentials,
+    AuthType, ConnectorEvent, DocumentMetadata, DocumentPermissions, ServiceCredential,
     ServiceProvider, Source, SourceType, SyncType,
 };
 use shared::RateLimiter;
@@ -84,12 +84,12 @@ impl SyncManager {
     }
 
     /// Run a sync driven by the SDK. The SDK passes in the full Source and
-    /// optional ServiceCredentials, the persisted State, and a `SyncContext`
+    /// optional ServiceCredential, the persisted State, and a `SyncContext`
     /// whose cancellation flag is flipped by the SDK's `/cancel` handler.
     pub async fn run_sync(
         &self,
         source: Source,
-        credentials: Option<ServiceCredentials>,
+        credentials: Option<ServiceCredential>,
         state: Option<GoogleConnectorState>,
         ctx: SyncContext,
     ) -> Result<()> {
@@ -143,7 +143,7 @@ impl SyncManager {
     async fn run_sync_inner(
         &self,
         source: &Source,
-        service_creds: &ServiceCredentials,
+        service_creds: &ServiceCredential,
         existing_state: Option<GoogleConnectorState>,
         ctx: &SyncContext,
     ) -> Result<Option<GoogleConnectorState>> {
@@ -590,7 +590,7 @@ impl SyncManager {
     async fn sync_drive_source_internal(
         &self,
         source: &Source,
-        service_creds: &ServiceCredentials,
+        service_creds: &ServiceCredential,
         sync_type: SyncType,
         existing_state: GoogleConnectorState,
         ctx: &SyncContext,
@@ -807,7 +807,7 @@ impl SyncManager {
     async fn sync_gmail_source_internal(
         &self,
         source: &Source,
-        service_creds: &ServiceCredentials,
+        service_creds: &ServiceCredential,
         sync_type: SyncType,
         existing_state: GoogleConnectorState,
         known_groups: HashSet<String>,
@@ -1050,7 +1050,7 @@ impl SyncManager {
         ctx.emit_event(event).await
     }
 
-    async fn get_service_credentials(&self, source_id: &str) -> Result<ServiceCredentials> {
+    async fn get_service_credentials(&self, source_id: &str) -> Result<ServiceCredential> {
         let creds = self
             .sdk_client
             .get_credentials(source_id)
@@ -1072,7 +1072,7 @@ impl SyncManager {
     /// Create GoogleAuth from credentials, branching on auth_type (JWT vs OAuth)
     async fn create_auth(
         &self,
-        creds: &ServiceCredentials,
+        creds: &ServiceCredential,
         source_type: SourceType,
     ) -> Result<GoogleAuth> {
         match creds.auth_type {
@@ -2047,7 +2047,7 @@ impl SyncManager {
     async fn maybe_sync_groups(
         &self,
         source: &Source,
-        service_creds: &ServiceCredentials,
+        service_creds: &ServiceCredential,
         ctx: &SyncContext,
     ) -> HashSet<String> {
         let service_auth = match self.create_auth(service_creds, source.source_type).await {

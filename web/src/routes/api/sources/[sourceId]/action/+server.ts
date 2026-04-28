@@ -3,6 +3,14 @@ import type { RequestHandler } from './$types'
 import { getConfig } from '$lib/server/config'
 import { logger } from '$lib/server/logger'
 
+// This route is only meant to handle "actions" that originate in the UI.
+//
+// For most AI-driven actions, omni-ai will directly call the connector mgr, i.e.,
+// all connector tool calls, mcp tool calls etc. do not go through here.
+//
+// This route is specifically meant for some niche interactions, e.g., search for users
+// in google workspace in the omni UI.
+// This is an action in the google connector and so we need a way to invoke this action from here.
 export const POST: RequestHandler = async ({ params, locals, request }) => {
     if (!locals.user) {
         throw error(401, 'Unauthorized')
@@ -33,6 +41,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 source_id: sourceId,
+                user_id: locals.user.id,
                 action,
                 params: actionParams || {},
             }),

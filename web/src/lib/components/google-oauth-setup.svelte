@@ -34,7 +34,7 @@
         if (connectDrive) serviceTypes.push('google_drive')
         if (connectGmail) serviceTypes.push('gmail')
 
-        window.location.href = `/api/connectors/google/oauth/start?serviceTypes=${serviceTypes.join(',')}`
+        window.location.href = `/api/oauth/start?source_types=${serviceTypes.join(',')}`
     }
 
     function handleCancel() {

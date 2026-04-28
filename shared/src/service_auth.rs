@@ -5,7 +5,7 @@ use chrono::{Duration, Utc};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
 
-use crate::models::{AuthType, ServiceCredentials, ServiceProvider};
+use crate::models::{AuthType, ServiceCredential, ServiceProvider};
 
 /// Trait for service authentication
 #[async_trait]
@@ -76,7 +76,7 @@ impl GoogleServiceAuth {
         })
     }
 
-    pub fn from_credentials(creds: &ServiceCredentials) -> Result<Self> {
+    pub fn from_credentials(creds: &ServiceCredential) -> Result<Self> {
         let service_account_json = creds
             .credentials
             .get("service_account_key")
@@ -178,7 +178,7 @@ impl ApiKeyAuth {
         Self { username, api_key }
     }
 
-    pub fn from_credentials(creds: &ServiceCredentials) -> Result<Self> {
+    pub fn from_credentials(creds: &ServiceCredential) -> Result<Self> {
         let username = creds
             .principal_email
             .as_ref()
@@ -226,7 +226,7 @@ impl BotTokenAuth {
         Self { bot_token }
     }
 
-    pub fn from_credentials(creds: &ServiceCredentials) -> Result<Self> {
+    pub fn from_credentials(creds: &ServiceCredential) -> Result<Self> {
         let bot_token = creds
             .credentials
             .get("bot_token")
@@ -257,7 +257,7 @@ impl ServiceAuth for BotTokenAuth {
 }
 
 /// Factory function to create appropriate auth implementation
-pub fn create_service_auth(creds: &ServiceCredentials) -> Result<Box<dyn ServiceAuth>> {
+pub fn create_service_auth(creds: &ServiceCredential) -> Result<Box<dyn ServiceAuth>> {
     match (creds.provider, creds.auth_type) {
         (ServiceProvider::Google, AuthType::Jwt) => {
             Ok(Box::new(GoogleServiceAuth::from_credentials(creds)?))
@@ -288,10 +288,11 @@ mod tests {
         principal_email: Option<&str>,
         credentials: serde_json::Value,
         config: serde_json::Value,
-    ) -> ServiceCredentials {
-        ServiceCredentials {
+    ) -> ServiceCredential {
+        ServiceCredential {
             id: "test-id".to_string(),
             source_id: "test-source".to_string(),
+            user_id: None,
             provider,
             auth_type,
             principal_email: principal_email.map(String::from),

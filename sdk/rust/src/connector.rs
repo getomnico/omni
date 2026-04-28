@@ -1,5 +1,6 @@
 use crate::context::SyncContext;
 use crate::models::ActionResponse;
+use crate::models::OAuthManifestConfig;
 use anyhow::Result;
 use async_trait::async_trait;
 use axum::http::StatusCode;
@@ -9,7 +10,7 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use shared::models::{
     ActionDefinition, ConnectorManifest, McpPromptDefinition, McpResourceDefinition,
-    SearchOperator, ServiceCredentials, Source, SourceType, SyncType,
+    SearchOperator, ServiceCredential, Source, SourceType, SyncType,
 };
 
 #[async_trait]
@@ -78,10 +79,18 @@ pub trait Connector: Send + Sync + 'static {
         vec![]
     }
 
+    /// Declarative OAuth2 config consumed by the web app's generic OAuth
+    /// service. Override on connectors that authenticate via OAuth; the
+    /// default returns `None` for connectors that use service accounts,
+    /// API keys, or other auth schemes.
+    fn oauth_config(&self) -> Option<OAuthManifestConfig> {
+        None
+    }
+
     async fn sync(
         &self,
         source: Source,
-        credentials: Option<ServiceCredentials>,
+        credentials: Option<ServiceCredential>,
         state: Option<Self::State>,
         ctx: SyncContext,
     ) -> Result<()>;
@@ -94,7 +103,7 @@ pub trait Connector: Send + Sync + 'static {
         &self,
         action: &str,
         _params: JsonValue,
-        _credentials: Option<ServiceCredentials>,
+        _credentials: Option<ServiceCredential>,
     ) -> Result<Response> {
         Ok(ActionResponse::not_supported(action).into_response_with_status(StatusCode::NOT_FOUND))
     }
@@ -117,6 +126,9 @@ pub trait Connector: Send + Sync + 'static {
             mcp_enabled: self.mcp_enabled(),
             resources: self.mcp_resources(),
             prompts: self.mcp_prompts(),
+            oauth: self
+                .oauth_config()
+                .and_then(|c| serde_json::to_value(c).ok()),
         }
     }
 }

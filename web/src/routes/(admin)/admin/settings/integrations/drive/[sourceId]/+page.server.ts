@@ -26,7 +26,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
         throw error(400, 'Invalid source type for this page')
     }
 
-    const creds = await serviceCredentialsRepository.getBySourceId(source.id)
+    const creds = await serviceCredentialsRepository.getOrgCredsBySourceId(source.id)
 
     const credsConfig = (creds?.config as { domain?: string } | null) ?? {}
     const sourceConfig = (source.config as { domain?: string } | null) ?? {}
@@ -76,7 +76,7 @@ export const actions: Actions = {
         const userBlacklist =
             userFilterMode === 'blacklist' ? (formData.getAll('userBlacklist') as string[]) : null
 
-        const existingCreds = await serviceCredentialsRepository.getBySourceId(source.id)
+        const existingCreds = await serviceCredentialsRepository.getOrgCredsBySourceId(source.id)
         const isJwt = existingCreds?.authType === AuthType.JWT
 
         try {

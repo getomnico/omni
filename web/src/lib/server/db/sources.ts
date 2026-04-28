@@ -53,6 +53,7 @@ export interface SourceUpdateData {
     updatedAt?: Date
 }
 
+// TODO: get rid of connector-specific functions and use the generic ones instead
 export async function getGoogleSources(): Promise<Source[]> {
     return await db
         .select()
