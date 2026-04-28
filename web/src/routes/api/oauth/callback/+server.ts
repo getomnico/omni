@@ -6,10 +6,7 @@ import { ulid } from 'ulid'
 import { exchangeCodeAndIdentify } from '$lib/server/oauth/connectorOAuth'
 import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
 import { logger } from '$lib/server/logger'
-import {
-    getActiveSourcesByTypeAndScope,
-    getActiveSourcesByTypeAndOwner,
-} from '$lib/server/db/sources'
+import { getSourcesByType } from '$lib/server/db/sources'
 
 const SOURCE_NAMES: Record<string, string> = {
     google_drive: 'Google Drive (OAuth)',
@@ -90,7 +87,8 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     // connect_source flow: for each requested source_type, attach to existing
     // org source if there is one; otherwise create a personal source.
     for (const sourceType of flow.sourceTypes) {
-        const [orgSource] = await getActiveSourcesByTypeAndScope(sourceType, 'org')
+        const sourcesOfType = await getSourcesByType(sourceType)
+        const orgSource = sourcesOfType.find((s) => s.scope === 'org')
 
         if (orgSource) {
             await serviceCredentialsRepository.createForUser({
@@ -109,7 +107,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
             continue
         }
 
-        const [existing] = await getActiveSourcesByTypeAndOwner(sourceType, locals.user.id)
+        const existing = sourcesOfType.find((s) => s.createdBy === locals.user.id)
 
         if (existing) {
             // Source already exists for this user — refresh its creds in place.

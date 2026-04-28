@@ -6,10 +6,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm'
 import { ulid } from 'ulid'
 import { logger } from '$lib/server/logger'
 import { SourceType, DEFAULT_SYNC_INTERVAL_SECONDS } from '$lib/types'
-import {
-    getActiveSourcesByTypeAndScope,
-    getActiveSourcesByTypeAndOwner,
-} from '$lib/server/db/sources'
+import { getSourcesByType } from '$lib/server/db/sources'
 
 export const GET: RequestHandler = async ({ locals }) => {
     if (!locals.user) {
@@ -91,11 +88,12 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         throw error(403, 'Only admins can create org-wide sources')
     }
 
+    const sourcesOfType = await getSourcesByType(sourceType)
+
     if (scope === 'org') {
         // Admin is setting up an org-wide source for this source_type. Reject if any
         // personal sources of the same type already exist — they must be removed first
-        // (per Q1 of the design: block-and-list).
-        const personalSources = await getActiveSourcesByTypeAndScope(sourceType, 'user')
+        const personalSources = sourcesOfType.filter((s) => s.scope === 'user')
 
         if (personalSources.length > 0) {
             const userIds = personalSources.map((s) => s.createdBy)
@@ -115,7 +113,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     } else {
         // User is creating a personal source. Reject if an org-wide source for this type
         // already exists; redirect them to the user-auth flow against that source.
-        const [existingOrg] = await getActiveSourcesByTypeAndScope(sourceType, 'org')
+        const existingOrg = sourcesOfType.find((s) => s.scope === 'org')
 
         if (existingOrg) {
             return json(
@@ -133,8 +131,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         // TODO: Consider adding other OAuth connectors (e.g. Outlook, Slack) as they support user-level OAuth.
         const uniqueSourceTypes: string[] = [SourceType.GOOGLE_DRIVE, SourceType.GMAIL]
         if (uniqueSourceTypes.includes(sourceType)) {
-            const existing = await getActiveSourcesByTypeAndOwner(sourceType, locals.user.id)
-            if (existing.length > 0) {
+            const existingForUser = sourcesOfType.find((s) => s.createdBy === locals.user.id)
+            if (existingForUser) {
                 throw error(409, `A ${sourceType} source already exists`)
             }
         }

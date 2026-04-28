@@ -1,6 +1,6 @@
 import { redirect, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
-import { getActiveSourceById } from '$lib/server/db/sources'
+import { getSourceById } from '$lib/server/db/sources'
 import {
     generateAuthUrl,
     generateAuthUrlForUserWrite,
@@ -22,8 +22,8 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     const returnTo = url.searchParams.get('return_to') ?? undefined
 
     if (sourceId) {
-        const source = await getActiveSourceById(sourceId)
-        if (!source) throw error(404, 'Source not found')
+        const source = await getSourceById(sourceId)
+        if (!source || source.isDeleted) throw error(404, 'Source not found')
         if (source.scope !== 'org') {
             throw error(
                 400,
