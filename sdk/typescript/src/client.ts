@@ -184,7 +184,16 @@ export class SdkClient {
   }
 
   async incrementScanned(syncRunId: string): Promise<void> {
-    const response = await this.post(`/sdk/sync/${syncRunId}/scanned`);
+    // Send an explicit `{ count: 1 }` body. The connector-manager handler
+    // extracts `Json<SdkIncrementScannedRequest>`, which fails to parse an
+    // empty body even though the struct uses `#[serde(default)]` — the
+    // default applies to a missing field within a parsed JSON object, not
+    // to a missing body. Without this, every call returns 400 "EOF while
+    // parsing a value" and the catch block in connectors mis-logs the
+    // failure as if the preceding emit failed.
+    const response = await this.post(`/sdk/sync/${syncRunId}/scanned`, {
+      count: 1,
+    });
     if (!response.ok) {
       const text = await response.text();
       throw new SdkClientError(

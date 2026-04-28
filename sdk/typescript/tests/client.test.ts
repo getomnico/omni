@@ -137,12 +137,14 @@ describe('SdkClient', () => {
   });
 
   describe('incrementScanned', () => {
-    it('calls correct endpoint', async () => {
+    it('calls correct endpoint with { count: 1 } body', async () => {
       let calledPath = '';
+      let capturedBody: unknown;
 
       server.use(
-        http.post(`${BASE_URL}/sdk/sync/:id/scanned`, ({ params }) => {
+        http.post(`${BASE_URL}/sdk/sync/:id/scanned`, async ({ params, request }) => {
           calledPath = `/sdk/sync/${params.id}/scanned`;
+          capturedBody = await request.json();
           return HttpResponse.json({ success: true });
         })
       );
@@ -151,6 +153,10 @@ describe('SdkClient', () => {
       await client.incrementScanned('sync-run-abc');
 
       expect(calledPath).toBe('/sdk/sync/sync-run-abc/scanned');
+      // Body MUST be sent — connector-manager's Json<T> extractor rejects
+      // an empty body with 400 even though the underlying struct has a
+      // serde default for `count`.
+      expect(capturedBody).toEqual({ count: 1 });
     });
   });
 
