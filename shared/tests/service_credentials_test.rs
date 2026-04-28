@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 mod tests {
-    use shared::models::{AuthType, ServiceCredentials, ServiceProvider};
+    use shared::models::{AuthType, ServiceCredential, ServiceProvider};
     use shared::test_environment::TestEnvironment;
     use shared::ServiceCredentialsRepo;
     use sqlx::PgPool;
@@ -56,9 +56,9 @@ mod tests {
         source_id: &str,
         user_id: Option<&str>,
         auth_type: AuthType,
-    ) -> ServiceCredentials {
+    ) -> ServiceCredential {
         let now = OffsetDateTime::now_utc();
-        ServiceCredentials {
+        ServiceCredential {
             id: id.to_string(),
             source_id: source_id.to_string(),
             user_id: user_id.map(|s| s.to_string()),

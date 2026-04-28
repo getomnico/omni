@@ -223,7 +223,7 @@ pub enum AuthType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct ServiceCredentials {
+pub struct ServiceCredential {
     pub id: String,
     pub source_id: String,
     /// `Some` => per-user credential for an org-wide source (used for write tools by that user).
@@ -434,65 +434,12 @@ pub struct ConnectorManifest {
     #[serde(default)]
     pub prompts: Vec<McpPromptDefinition>,
     /// Declarative OAuth2 config consumed by the web app's generic OAuth
-    /// service. Connectors that use OAuth populate this; the web app does no
-    /// provider-specific work beyond reading these fields.
+    /// service. Connectors that use OAuth populate this. The typed shape
+    /// lives in the connector SDK (`omni_connector_sdk::OAuthManifestConfig`);
+    /// shared treats it as opaque JSON since neither shared nor
+    /// connector-manager need typed access to its fields.
     #[serde(default)]
-    pub oauth: Option<OAuthManifestConfig>,
-}
-
-/// Declarative OAuth2 configuration. Provider-specific values are pure data;
-/// the web app's generic OAuth2 client uses them to drive the standard
-/// authorization-code flow. Provider quirks that can't be expressed as data
-/// (e.g., Atlassian's post-exchange `cloudId` resolution) belong on the
-/// optional `enrich_endpoint`, which the connector itself implements.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct OAuthManifestConfig {
-    /// Provider identifier (matches `connector_configs.provider` for the
-    /// client_id/client_secret lookup). Stored as `service_credentials.provider`
-    /// after a successful exchange.
-    pub provider: String,
-    pub auth_endpoint: String,
-    pub token_endpoint: String,
-    /// GET endpoint that returns a JSON object with the authenticated user's
-    /// email at `userinfo_email_field`.
-    pub userinfo_endpoint: String,
-    #[serde(default = "default_email_field")]
-    pub userinfo_email_field: String,
-    /// Identity-only scopes always added to every authorization request
-    /// (e.g. ["email", "profile"]).
-    #[serde(default)]
-    pub identity_scopes: Vec<String>,
-    /// Per source_type read/write scope sets.
-    #[serde(default)]
-    pub scopes: HashMap<String, OAuthScopeSet>,
-    /// Extra static query params on the authorization URL
-    /// (e.g. {"access_type": "offline", "prompt": "consent"} for Google).
-    #[serde(default)]
-    pub extra_auth_params: HashMap<String, String>,
-    #[serde(default = "default_scope_separator")]
-    pub scope_separator: String,
-    /// Optional path on the connector hit after token exchange to resolve
-    /// provider-specific extras (e.g. Atlassian cloudId). The connector
-    /// receives `{access_token, refresh_token}` and returns
-    /// `{credentials_extra?, config_extra?}` to be merged into the row.
-    #[serde(default)]
-    pub enrich_endpoint: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct OAuthScopeSet {
-    #[serde(default)]
-    pub read: Vec<String>,
-    #[serde(default)]
-    pub write: Vec<String>,
-}
-
-fn default_email_field() -> String {
-    "email".to_string()
-}
-
-fn default_scope_separator() -> String {
-    " ".to_string()
+    pub oauth: Option<JsonValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

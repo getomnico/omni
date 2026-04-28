@@ -1,14 +1,12 @@
 import { redirect, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
-import { db } from '$lib/server/db'
-import { sources } from '$lib/server/db/schema'
-import { and, eq } from 'drizzle-orm'
+import { getActiveSourceById } from '$lib/server/db/sources'
 import {
     generateAuthUrl,
     generateAuthUrlForUserWrite,
     isProviderConfigured,
     getOAuthManifestForSourceType,
-} from '$lib/server/oauth/manifestOAuth'
+} from '$lib/server/oauth/connectorOAuth'
 
 /// Unified OAuth start route. Two flows, disambiguated by query params:
 ///   ?source_types=google_drive,gmail          → connect_source flow
@@ -24,17 +22,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     const returnTo = url.searchParams.get('return_to') ?? undefined
 
     if (sourceId) {
-        const [source] = await db
-            .select({
-                id: sources.id,
-                sourceType: sources.sourceType,
-                scope: sources.scope,
-                isDeleted: sources.isDeleted,
-            })
-            .from(sources)
-            .where(and(eq(sources.id, sourceId), eq(sources.isDeleted, false)))
-            .limit(1)
-
+        const source = await getActiveSourceById(sourceId)
         if (!source) throw error(404, 'Source not found')
         if (source.scope !== 'org') {
             throw error(

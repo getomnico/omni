@@ -163,6 +163,51 @@ export async function getSourceById(sourceId: string): Promise<Source | undefine
     return result[0]
 }
 
+/// Active (not soft-deleted) source by id. Used by routes that should treat
+/// deleted sources as not-found.
+export async function getActiveSourceById(sourceId: string): Promise<Source | undefined> {
+    const [row] = await db
+        .select()
+        .from(sources)
+        .where(and(eq(sources.id, sourceId), eq(sources.isDeleted, false)))
+        .limit(1)
+    return row
+}
+
+/// Active (not soft-deleted) sources for a given (source_type, scope) pair.
+export async function getActiveSourcesByTypeAndScope(
+    sourceType: string,
+    scope: 'org' | 'user',
+): Promise<Source[]> {
+    return await db
+        .select()
+        .from(sources)
+        .where(
+            and(
+                eq(sources.sourceType, sourceType),
+                eq(sources.scope, scope),
+                eq(sources.isDeleted, false),
+            ),
+        )
+}
+
+/// Active sources of a given type owned by a specific user.
+export async function getActiveSourcesByTypeAndOwner(
+    sourceType: string,
+    ownerId: string,
+): Promise<Source[]> {
+    return await db
+        .select()
+        .from(sources)
+        .where(
+            and(
+                eq(sources.sourceType, sourceType),
+                eq(sources.createdBy, ownerId),
+                eq(sources.isDeleted, false),
+            ),
+        )
+}
+
 export async function getAtlassianSources(): Promise<Source[]> {
     return await db
         .select()

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// IMAP credentials stored in `ServiceCredentials.credentials`.
+/// IMAP credentials stored in `ServiceCredential.credentials`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImapCredentials {
     pub username: String,

@@ -3,7 +3,7 @@ use serde_json::Value as JsonValue;
 use sqlx::PgPool;
 
 use crate::encryption::{EncryptedData, EncryptionService};
-use crate::models::ServiceCredentials;
+use crate::models::ServiceCredential;
 
 /// Service credentials repository with encryption support.
 pub struct ServiceCredentialsRepo {
@@ -21,8 +21,8 @@ impl ServiceCredentialsRepo {
     }
 
     /// Fetch the org-wide credential row for a source (`user_id IS NULL`).
-    pub async fn find_org_credential(&self, source_id: &str) -> Result<Option<ServiceCredentials>> {
-        let mut creds = sqlx::query_as::<_, ServiceCredentials>(
+    pub async fn find_org_credential(&self, source_id: &str) -> Result<Option<ServiceCredential>> {
+        let mut creds = sqlx::query_as::<_, ServiceCredential>(
             "SELECT * FROM service_credentials WHERE source_id = $1 AND user_id IS NULL",
         )
         .bind(source_id)
@@ -41,8 +41,8 @@ impl ServiceCredentialsRepo {
         &self,
         source_id: &str,
         user_id: &str,
-    ) -> Result<Option<ServiceCredentials>> {
-        let mut creds = sqlx::query_as::<_, ServiceCredentials>(
+    ) -> Result<Option<ServiceCredential>> {
+        let mut creds = sqlx::query_as::<_, ServiceCredential>(
             "SELECT * FROM service_credentials WHERE source_id = $1 AND user_id = $2",
         )
         .bind(source_id)
@@ -57,7 +57,7 @@ impl ServiceCredentialsRepo {
         Ok(creds)
     }
 
-    fn decrypt_credentials_in_place(&self, creds: &mut ServiceCredentials) -> Result<()> {
+    fn decrypt_credentials_in_place(&self, creds: &mut ServiceCredential) -> Result<()> {
         if let Some(encrypted_data) = creds.credentials.get("encrypted_data") {
             let encrypted_data: EncryptedData = serde_json::from_value(encrypted_data.clone())?;
             let decrypted_credentials: JsonValue =
@@ -67,7 +67,7 @@ impl ServiceCredentialsRepo {
         Ok(())
     }
 
-    fn encrypt_credentials(&self, creds: &ServiceCredentials) -> Result<JsonValue> {
+    fn encrypt_credentials(&self, creds: &ServiceCredential) -> Result<JsonValue> {
         let encrypted_data = self.encryption_service.encrypt_json(&creds.credentials)?;
         Ok(serde_json::json!({
             "encrypted_data": encrypted_data,
@@ -75,10 +75,10 @@ impl ServiceCredentialsRepo {
         }))
     }
 
-    pub async fn create(&self, creds: ServiceCredentials) -> Result<ServiceCredentials> {
+    pub async fn create(&self, creds: ServiceCredential) -> Result<ServiceCredential> {
         let encrypted_credentials = self.encrypt_credentials(&creds)?;
 
-        let mut created_creds = sqlx::query_as::<_, ServiceCredentials>(
+        let mut created_creds = sqlx::query_as::<_, ServiceCredential>(
             r#"
             INSERT INTO service_credentials
             (id, source_id, user_id, provider, auth_type, principal_email, credentials, config, expires_at, last_validated_at)
@@ -138,7 +138,7 @@ impl ServiceCredentialsRepo {
     }
 
     /// Update credentials and refresh-related fields on a credential row.
-    pub async fn update_credentials(&self, creds: &ServiceCredentials) -> Result<()> {
+    pub async fn update_credentials(&self, creds: &ServiceCredential) -> Result<()> {
         let encrypted_credentials = self.encrypt_credentials(creds)?;
 
         sqlx::query(
@@ -161,7 +161,7 @@ impl ServiceCredentialsRepo {
     pub async fn encrypt_existing_credentials(&self) -> Result<usize> {
         let mut count = 0;
 
-        let unencrypted_creds = sqlx::query_as::<_, ServiceCredentials>(
+        let unencrypted_creds = sqlx::query_as::<_, ServiceCredential>(
             "SELECT * FROM service_credentials WHERE NOT (credentials ? 'encrypted_data')",
         )
         .fetch_all(&self.pool)

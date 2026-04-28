@@ -130,7 +130,7 @@ impl SlackConnectorTestFixture {
         let credentials = serde_json::json!({ "bot_token": bot_token });
 
         let creds_repo = shared::ServiceCredentialsRepo::new(self.pool().clone())?;
-        let creds = shared::models::ServiceCredentials {
+        let creds = shared::models::ServiceCredential {
             id: cred_id,
             source_id: source_id.to_string(),
             user_id: None,

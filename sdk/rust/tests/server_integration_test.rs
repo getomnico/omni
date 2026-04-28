@@ -8,7 +8,7 @@ use axum::{routing, Router};
 use axum_test::{TestServer, TestServerConfig};
 use common::{GetSourceBehavior, MockConnectorManager, SyncBehavior, TestConnector};
 use omni_connector_sdk::{
-    create_router, Connector, ServiceCredentials, Source, SourceType, SyncContext,
+    create_router, Connector, ServiceCredential, Source, SourceType, SyncContext,
 };
 use serde_json::{json, Value as JsonValue};
 use tokio::sync::Notify;
@@ -460,7 +460,7 @@ async fn t14_action_success_returns_200() -> Result<()> {
         async fn sync(
             &self,
             _source: Source,
-            _credentials: Option<ServiceCredentials>,
+            _credentials: Option<ServiceCredential>,
             _state: Option<Self::State>,
             _ctx: SyncContext,
         ) -> Result<()> {
@@ -471,7 +471,7 @@ async fn t14_action_success_returns_200() -> Result<()> {
             &self,
             action: &str,
             _params: JsonValue,
-            _credentials: Option<ServiceCredentials>,
+            _credentials: Option<ServiceCredential>,
         ) -> Result<axum::response::Response> {
             use omni_connector_sdk::models::ActionResponse;
             if action == "do_thing" {
@@ -540,7 +540,7 @@ async fn t15_action_exception_returns_500() -> Result<()> {
         async fn sync(
             &self,
             _source: Source,
-            _credentials: Option<ServiceCredentials>,
+            _credentials: Option<ServiceCredential>,
             _state: Option<Self::State>,
             _ctx: SyncContext,
         ) -> Result<()> {
@@ -551,7 +551,7 @@ async fn t15_action_exception_returns_500() -> Result<()> {
             &self,
             action: &str,
             _params: JsonValue,
-            _credentials: Option<ServiceCredentials>,
+            _credentials: Option<ServiceCredential>,
         ) -> Result<axum::response::Response> {
             if action == "crash_me" {
                 return Err(anyhow::anyhow!("intentional action panic"));

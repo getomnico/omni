@@ -27,7 +27,7 @@ use axum::{
     Router,
 };
 use omni_connector_sdk::{
-    models::ActionResponse, Connector, ServiceCredentials, Source, SourceType, SyncContext,
+    models::ActionResponse, Connector, ServiceCredential, Source, SourceType, SyncContext,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
@@ -267,7 +267,7 @@ impl Connector for TestConnector {
     async fn sync(
         &self,
         _source: Source,
-        _credentials: Option<ServiceCredentials>,
+        _credentials: Option<ServiceCredential>,
         _state: Option<Self::State>,
         ctx: SyncContext,
     ) -> Result<()> {
@@ -295,7 +295,7 @@ impl Connector for TestConnector {
         &self,
         action: &str,
         _params: JsonValue,
-        _credentials: Option<ServiceCredentials>,
+        _credentials: Option<ServiceCredential>,
     ) -> Result<axum::response::Response> {
         Ok(ActionResponse::not_supported(action).into_response_with_status(StatusCode::NOT_FOUND))
     }

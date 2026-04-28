@@ -40,6 +40,17 @@ COMMENT ON COLUMN sources.scope IS
 ALTER TABLE service_credentials
     ADD COLUMN user_id CHAR(26) REFERENCES users(id) ON DELETE CASCADE;
 
+-- Backfill: personal source credentials were stored as "org rows" (user_id IS
+-- NULL) historically. Move them to per-user rows owned by the source's
+-- creator so credential resolution can be: user_id Some -> per-user row
+-- required; user_id None -> org-wide row.
+UPDATE service_credentials sc
+SET user_id = s.created_by
+FROM sources s
+WHERE sc.source_id = s.id
+  AND s.scope = 'user'
+  AND sc.user_id IS NULL;
+
 -- Replace the (source_id, provider) unique with two partial uniques on user_id.
 -- One org-wide row per source (user_id IS NULL), and at most one per-user row per (source, user).
 DROP INDEX IF EXISTS idx_service_credentials_source_provider;

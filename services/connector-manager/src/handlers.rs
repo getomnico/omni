@@ -402,7 +402,7 @@ pub async fn execute_action(
 
 /// Outcome of resolving credentials for a tool/action invocation.
 enum CredentialResolution {
-    Resolved(shared::models::ServiceCredentials),
+    Resolved(shared::models::ServiceCredential),
     NeedsUserAuth { provider: ServiceProvider },
     NoCredentials,
 }
@@ -1484,7 +1484,7 @@ pub async fn sdk_get_source(
 pub async fn sdk_get_credentials(
     State(state): State<AppState>,
     Path(source_id): Path<String>,
-) -> Result<Json<shared::models::ServiceCredentials>, ApiError> {
+) -> Result<Json<shared::models::ServiceCredential>, ApiError> {
     debug!("SDK: Getting credentials for source_id={}", source_id);
 
     let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
@@ -1503,7 +1503,7 @@ pub async fn sdk_get_credentials(
 
 // TODO: drop this endpoint once the Python SDK is updated to fetch source +
 // credentials separately (matching the Rust SDK). Today the Rust SDK passes
-// full Source/ServiceCredentials directly to Connector::sync, so it has no
+// full Source/ServiceCredential directly to Connector::sync, so it has no
 // need for this bundled endpoint — only Python connectors still call it.
 pub async fn sdk_get_source_sync_config(
     State(state): State<AppState>,

@@ -2,11 +2,14 @@ import { error, redirect } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
 import { db } from '$lib/server/db'
 import { sources } from '$lib/server/db/schema'
-import { and, eq } from 'drizzle-orm'
 import { ulid } from 'ulid'
-import { exchangeCodeAndIdentify } from '$lib/server/oauth/manifestOAuth'
+import { exchangeCodeAndIdentify } from '$lib/server/oauth/connectorOAuth'
 import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
 import { logger } from '$lib/server/logger'
+import {
+    getActiveSourcesByTypeAndScope,
+    getActiveSourcesByTypeAndOwner,
+} from '$lib/server/db/sources'
 
 const SOURCE_NAMES: Record<string, string> = {
     google_drive: 'Google Drive (OAuth)',
@@ -87,17 +90,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     // connect_source flow: for each requested source_type, attach to existing
     // org source if there is one; otherwise create a personal source.
     for (const sourceType of flow.sourceTypes) {
-        const [orgSource] = await db
-            .select({ id: sources.id })
-            .from(sources)
-            .where(
-                and(
-                    eq(sources.sourceType, sourceType),
-                    eq(sources.scope, 'org'),
-                    eq(sources.isDeleted, false),
-                ),
-            )
-            .limit(1)
+        const [orgSource] = await getActiveSourcesByTypeAndScope(sourceType, 'org')
 
         if (orgSource) {
             await serviceCredentialsRepository.createForUser({
@@ -116,17 +109,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
             continue
         }
 
-        const [existing] = await db
-            .select({ id: sources.id })
-            .from(sources)
-            .where(
-                and(
-                    eq(sources.sourceType, sourceType),
-                    eq(sources.createdBy, locals.user.id),
-                    eq(sources.isDeleted, false),
-                ),
-            )
-            .limit(1)
+        const [existing] = await getActiveSourcesByTypeAndOwner(sourceType, locals.user.id)
 
         if (existing) {
             // Source already exists for this user — refresh its creds in place.

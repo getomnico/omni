@@ -6,6 +6,10 @@ import { and, eq, inArray, sql } from 'drizzle-orm'
 import { ulid } from 'ulid'
 import { logger } from '$lib/server/logger'
 import { SourceType, DEFAULT_SYNC_INTERVAL_SECONDS } from '$lib/types'
+import {
+    getActiveSourcesByTypeAndScope,
+    getActiveSourcesByTypeAndOwner,
+} from '$lib/server/db/sources'
 
 export const GET: RequestHandler = async ({ locals }) => {
     if (!locals.user) {
@@ -91,16 +95,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         // Admin is setting up an org-wide source for this source_type. Reject if any
         // personal sources of the same type already exist — they must be removed first
         // (per Q1 of the design: block-and-list).
-        const personalSources = await db
-            .select({ createdBy: sources.createdBy })
-            .from(sources)
-            .where(
-                and(
-                    eq(sources.sourceType, sourceType),
-                    eq(sources.scope, 'user'),
-                    eq(sources.isDeleted, false),
-                ),
-            )
+        const personalSources = await getActiveSourcesByTypeAndScope(sourceType, 'user')
 
         if (personalSources.length > 0) {
             const userIds = personalSources.map((s) => s.createdBy)
@@ -120,17 +115,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     } else {
         // User is creating a personal source. Reject if an org-wide source for this type
         // already exists; redirect them to the user-auth flow against that source.
-        const [existingOrg] = await db
-            .select({ id: sources.id })
-            .from(sources)
-            .where(
-                and(
-                    eq(sources.sourceType, sourceType),
-                    eq(sources.scope, 'org'),
-                    eq(sources.isDeleted, false),
-                ),
-            )
-            .limit(1)
+        const [existingOrg] = await getActiveSourcesByTypeAndScope(sourceType, 'org')
 
         if (existingOrg) {
             return json(
@@ -148,19 +133,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         // TODO: Consider adding other OAuth connectors (e.g. Outlook, Slack) as they support user-level OAuth.
         const uniqueSourceTypes: string[] = [SourceType.GOOGLE_DRIVE, SourceType.GMAIL]
         if (uniqueSourceTypes.includes(sourceType)) {
-            const [existing] = await db
-                .select({ id: sources.id })
-                .from(sources)
-                .where(
-                    and(
-                        eq(sources.sourceType, sourceType),
-                        eq(sources.createdBy, locals.user.id),
-                        eq(sources.isDeleted, false),
-                    ),
-                )
-                .limit(1)
-
-            if (existing) {
+            const existing = await getActiveSourcesByTypeAndOwner(sourceType, locals.user.id)
+            if (existing.length > 0) {
                 throw error(409, `A ${sourceType} source already exists`)
             }
         }

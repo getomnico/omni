@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
     ActionDefinition, ActionResponse, Connector, OAuthManifestConfig, OAuthScopeSet,
-    SearchOperator, ServiceCredentials, Source, SourceType, SyncContext, SyncType,
+    SearchOperator, ServiceCredential, Source, SourceType, SyncContext, SyncType,
 };
 use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
@@ -31,7 +31,7 @@ impl GoogleConnector {
     async fn execute_fetch_file(
         &self,
         params: JsonValue,
-        creds: &ServiceCredentials,
+        creds: &ServiceCredential,
     ) -> Result<Response> {
         let file_id = params
             .get("file_id")
@@ -95,7 +95,7 @@ impl GoogleConnector {
     async fn execute_search_users(
         &self,
         params: JsonValue,
-        creds: &ServiceCredentials,
+        creds: &ServiceCredential,
     ) -> Result<axum::response::Response> {
         let limit = params
             .get("limit")
@@ -272,7 +272,7 @@ impl Connector for GoogleConnector {
     async fn sync(
         &self,
         source: Source,
-        credentials: Option<ServiceCredentials>,
+        credentials: Option<ServiceCredential>,
         state: Option<Self::State>,
         ctx: SyncContext,
     ) -> Result<()> {
@@ -285,7 +285,7 @@ impl Connector for GoogleConnector {
         &self,
         action: &str,
         params: JsonValue,
-        credentials: Option<ServiceCredentials>,
+        credentials: Option<ServiceCredential>,
     ) -> Result<axum::response::Response> {
         let creds = match credentials {
             Some(c) => c,

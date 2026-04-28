@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use crate::models::{ConnectorEvent, ConnectorManifest, ServiceCredentials, Source, SyncType};
+use crate::models::{ConnectorEvent, ConnectorManifest, ServiceCredential, Source, SyncType};
 
 /// Errors produced by [`SdkClient`]. Callers that use `anyhow::Result` can
 /// still bubble these up via `?` because `anyhow::Error: From<E>` for any
@@ -556,7 +556,7 @@ impl SdkClient {
     }
 
     /// Get credentials for a source
-    pub async fn get_credentials(&self, source_id: &str) -> SdkResult<ServiceCredentials> {
+    pub async fn get_credentials(&self, source_id: &str) -> SdkResult<ServiceCredential> {
         debug!("SDK: Getting credentials for source_id={}", source_id);
 
         let response = self
@@ -565,7 +565,7 @@ impl SdkClient {
             .send()
             .await?;
         let response = ensure_ok(response, "get_credentials").await?;
-        let credentials: ServiceCredentials = response.json().await?;
+        let credentials: ServiceCredential = response.json().await?;
         Ok(credentials)
     }
 

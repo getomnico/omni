@@ -1,8 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
-use omni_connector_sdk::{
-    Connector, ServiceCredentials, Source, SourceType, SyncContext, SyncType,
-};
+use omni_connector_sdk::{Connector, ServiceCredential, Source, SourceType, SyncContext, SyncType};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
@@ -70,7 +68,7 @@ impl Connector for FirefliesConnector {
     async fn sync(
         &self,
         _source: Source,
-        credentials: Option<ServiceCredentials>,
+        credentials: Option<ServiceCredential>,
         state: Option<Self::State>,
         ctx: SyncContext,
     ) -> Result<()> {
