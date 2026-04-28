@@ -8,7 +8,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use shared::models::{SearchOperator, SourceType, SyncRequest};
+use shared::models::{SearchOperator, SourceType, SyncRequest, SyncType};
 use shared::telemetry;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -93,7 +93,7 @@ pub fn build_manifest(connector_url: String) -> ConnectorManifest {
         name: "atlassian".to_string(),
         display_name: "Atlassian".to_string(),
         version: "1.0.0".to_string(),
-        sync_modes: vec!["full".to_string(), "incremental".to_string()],
+        sync_modes: vec![SyncType::Full, SyncType::Incremental],
         connector_id: "atlassian".to_string(),
         connector_url,
         source_types: vec![SourceType::Confluence, SourceType::Jira],
@@ -115,7 +115,7 @@ pub fn build_manifest(connector_url: String) -> ConnectorManifest {
                 },
                 "required": ["type"]
             }),
-            mode: "read".to_string(),
+            mode: shared::models::ActionMode::Read,
         }],
         search_operators: vec![
             SearchOperator {
@@ -145,6 +145,7 @@ pub fn build_manifest(connector_url: String) -> ConnectorManifest {
         mcp_enabled: false,
         resources: vec![],
         prompts: vec![],
+        oauth: None,
     }
 }
 

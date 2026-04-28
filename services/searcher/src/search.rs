@@ -1,5 +1,5 @@
 use crate::models::{
-    RecentSearchesResponse, SearchMode, SearchRequest, SearchResponse, SearchResult,
+    AlsoIn, RecentSearchesResponse, SearchMode, SearchRequest, SearchResponse, SearchResult,
 };
 use crate::operator_registry::OperatorRegistry;
 use crate::query_parser;
@@ -19,6 +19,7 @@ use shared::{
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -389,10 +390,24 @@ impl SearchEngine {
         if !parsed.boosted_source_types.is_empty() || !parsed.person_boosts.is_empty() {
             results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
         }
+
+        // Deduplicate cross-source results sharing the same external_id.
+        // IMAP email threads from different accounts but the same mailing list
+        // produce identical external_ids (source_id is not part of the ID).
+        // Keep the highest-scoring result per group; apply offset+limit after
+        // dedup so duplicates are consistent across pages.
+        let (mut results, dedup_removed) = Self::deduplicate_cross_source(
+            results,
+            request.offset() as usize,
+            request.limit() as usize,
+        );
+
         let total_count: i64 = filtered_facets
             .iter()
             .flat_map(|f| f.values.iter().filter_map(|fv| fv.count))
-            .sum();
+            .sum::<i64>()
+            .saturating_sub(dedup_removed as i64)
+            .max(0);
         let has_more = total_count >= limit;
         let query_time = start_time.elapsed().as_millis() as u64;
 
@@ -456,8 +471,8 @@ impl SearchEngine {
                 source_ids,
                 content_types,
                 attribute_filters,
-                request.limit(),
-                request.offset(),
+                request.dedup_fetch_limit(),
+                0,
                 request.user_email().map(|e| e.as_str()),
                 user_groups,
                 request.document_id.as_deref(),
@@ -492,6 +507,7 @@ impl SearchEngine {
                 match_type: "fulltext".to_string(),
                 content: None,
                 source_type: None,
+                also_in: Vec::new(),
             });
         }
 
@@ -530,8 +546,8 @@ impl SearchEngine {
                 query_embedding,
                 sources,
                 content_types,
-                request.limit(),
-                request.offset(),
+                request.dedup_fetch_limit(),
+                0,
                 request.user_email().map(|e| e.as_str()),
                 request.document_id.as_deref(),
                 self.config.recency_boost_weight,
@@ -606,6 +622,7 @@ impl SearchEngine {
                     match_type: "semantic".to_string(),
                     content: None,
                     source_type: None,
+                    also_in: Vec::new(),
                 });
             }
         }
@@ -670,6 +687,7 @@ impl SearchEngine {
                             match_type: "full_content".to_string(),
                             content: None,
                             source_type: None,
+                            also_in: Vec::new(),
                         }]
                     } else {
                         // Check if specific line range is requested
@@ -732,6 +750,7 @@ impl SearchEngine {
                                     match_type: "line_range".to_string(),
                                     content: None,
                                     source_type: None,
+                                    also_in: Vec::new(),
                                 }]
                             }
                             _ => {
@@ -832,6 +851,7 @@ impl SearchEngine {
                     match_type: "fulltext".to_string(),
                     content: None,
                     source_type: None,
+                    also_in: Vec::new(),
                 }]
             } else {
                 error!(
@@ -970,6 +990,7 @@ impl SearchEngine {
                     match_type: "semantic".to_string(),
                     content: None,
                     source_type: None,
+                    also_in: Vec::new(),
                 });
             }
         }
@@ -1055,6 +1076,7 @@ impl SearchEngine {
                     match_type: "fulltext".to_string(),
                     content: result.content,
                     source_type: None,
+                    also_in: Vec::new(),
                 },
             );
         }
@@ -1084,6 +1106,7 @@ impl SearchEngine {
                         match_type: "semantic".to_string(),
                         content: result.content,
                         source_type: None,
+                        also_in: Vec::new(),
                     }
                 });
         }
@@ -1098,8 +1121,8 @@ impl SearchEngine {
             .collect();
         final_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
 
-        if final_results.len() > request.limit() as usize {
-            final_results.truncate(request.limit() as usize);
+        if final_results.len() > request.dedup_fetch_limit() as usize {
+            final_results.truncate(request.dedup_fetch_limit() as usize);
         }
 
         info!(
@@ -1107,6 +1130,108 @@ impl SearchEngine {
             start_time.elapsed().as_millis()
         );
         Ok(final_results)
+    }
+
+    /// Deduplicate search results that share the same `external_id`.
+    ///
+    /// IMAP email threads from different accounts but the same mailing list
+    /// produce identical `external_id` values (source_id is not baked in).
+    /// Only results whose `external_id` starts with a known dedup-eligible
+    /// prefix participate; all others pass through unchanged.
+    ///
+    /// The highest-scoring result per group is kept (tiebreaker: `updated_at`).
+    /// Collapsed duplicates are recorded in `also_in` on the winner.
+    /// Permissions are NOT mutated — the SQL layer already filters by the
+    /// requesting user's access.
+    ///
+    /// Pagination (`offset` / `limit`) is applied **after** dedup so that
+    /// cross-page results are consistent (no duplicates across pages).
+    fn deduplicate_cross_source(
+        results: Vec<SearchResult>,
+        offset: usize,
+        limit: usize,
+    ) -> (Vec<SearchResult>, usize) {
+        // Group indices by external_id for dedup-eligible results only.
+        let mut dedup_groups: HashMap<String, Vec<usize>> = HashMap::new();
+        for (idx, result) in results.iter().enumerate() {
+            if result.document.external_id.starts_with("imap-thread:") {
+                dedup_groups
+                    .entry(result.document.external_id.clone())
+                    .or_default()
+                    .push(idx);
+            }
+        }
+
+        // Fast path: nothing to deduplicate
+        if dedup_groups.values().all(|indices| indices.len() <= 1) {
+            let mut results = results;
+            let end = results.len().min(offset + limit);
+            let start = offset.min(end);
+            return (results.drain(start..end).collect(), 0);
+        }
+
+        // Map from best_idx -> list of AlsoIn entries for its collapsed duplicates
+        let mut also_in_map: HashMap<usize, Vec<AlsoIn>> = HashMap::new();
+        let mut remove_indices: HashSet<usize> = HashSet::new();
+
+        for indices in dedup_groups.values() {
+            if indices.len() <= 1 {
+                continue;
+            }
+
+            // Find the best result: highest score, then most recently updated
+            let best_idx = *indices
+                .iter()
+                .max_by(|&&a, &&b| {
+                    let score_cmp = results[a]
+                        .score
+                        .partial_cmp(&results[b].score)
+                        .unwrap_or(Ordering::Equal);
+                    if score_cmp != Ordering::Equal {
+                        return score_cmp;
+                    }
+                    results[a]
+                        .document
+                        .updated_at
+                        .cmp(&results[b].document.updated_at)
+                })
+                .expect("indices is non-empty");
+
+            let entries = also_in_map.entry(best_idx).or_default();
+            for &idx in indices {
+                if idx != best_idx {
+                    entries.push(AlsoIn {
+                        source_id: results[idx].document.source_id.clone(),
+                        document_id: results[idx].document.id.clone(),
+                        score: results[idx].score,
+                    });
+                    remove_indices.insert(idx);
+                }
+            }
+        }
+
+        let deduped: Vec<SearchResult> = results
+            .into_iter()
+            .enumerate()
+            .filter(|(idx, _)| !remove_indices.contains(idx))
+            .map(|(idx, mut result)| {
+                if let Some(entries) = also_in_map.remove(&idx) {
+                    result.also_in = entries;
+                }
+                result
+            })
+            .skip(offset)
+            .take(limit)
+            .collect();
+
+        debug!(
+            "Cross-source dedup removed {} duplicates, returning {} results (offset={})",
+            remove_indices.len(),
+            deduped.len(),
+            offset,
+        );
+
+        (deduped, remove_indices.len())
     }
 
     fn generate_cache_key(&self, request: &SearchRequest) -> String {

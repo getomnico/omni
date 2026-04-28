@@ -1,0 +1,36 @@
+[package]
+name = "omni-connector-sdk"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "omni_connector_sdk"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+http = "1"
+mime = "0.3"
+dashmap = { workspace = true }
+reqwest = { workspace = true }
+rmcp = { version = "1.5", features = [
+    "client",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+shared = { path = "../../shared" }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true, features = ["cors", "trace"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+axum-test = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true, features = ["derive"] }

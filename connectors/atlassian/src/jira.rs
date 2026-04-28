@@ -436,7 +436,9 @@ impl JiraProcessor {
         // Mark sync as completed or failed via SDK
         match &result {
             Ok(_) => {
-                self.sdk_client.complete(&sync_run_id, 1, 1, None).await?;
+                self.sdk_client.increment_scanned(&sync_run_id, 1).await?;
+                self.sdk_client.increment_updated(&sync_run_id, 1).await?;
+                self.sdk_client.complete(&sync_run_id).await?;
             }
             Err(e) => {
                 self.sdk_client.fail(&sync_run_id, &e.to_string()).await?;
@@ -539,9 +541,10 @@ impl JiraProcessor {
         // Mark sync as completed or failed via SDK
         match &result {
             Ok(count) => {
-                self.sdk_client
-                    .complete(&sync_run_id, *count as i32, *count as i32, None)
-                    .await?;
+                let n = *count as i32;
+                self.sdk_client.increment_scanned(&sync_run_id, n).await?;
+                self.sdk_client.increment_updated(&sync_run_id, n).await?;
+                self.sdk_client.complete(&sync_run_id).await?;
             }
             Err(e) => {
                 self.sdk_client.fail(&sync_run_id, &e.to_string()).await?;

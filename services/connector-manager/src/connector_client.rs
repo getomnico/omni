@@ -179,7 +179,12 @@ impl ConnectorClient {
     }
 
     /// Execute an action and return the raw response without parsing.
-    /// Used for binary passthrough when the connector returns non-JSON responses.
+    /// The connector-manager proxies the full HTTP response (status, headers, body)
+    /// back to the caller, regardless of status code.
+    ///
+    /// Returns `reqwest::Response` (the HTTP response from the connector service)
+    /// rather than `axum::response::Response` (the server-side response type).
+    /// The caller converts this into an axum response for the end client.
     pub async fn execute_action_raw(
         &self,
         connector_url: &str,
@@ -196,16 +201,8 @@ impl ConnectorClient {
             .await
             .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            error!("Failed to execute action (raw): {} - {}", status, body);
-            return Err(ClientError::ConnectorError {
-                status: status.as_u16(),
-                message: body,
-            });
-        }
-
+        // Return the raw response regardless of status code so the handler
+        // can proxy status, headers, and body verbatim.
         Ok(response)
     }
 

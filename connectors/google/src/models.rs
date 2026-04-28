@@ -9,6 +9,27 @@ use uuid::Uuid;
 
 use crate::gmail::GmailMessage;
 
+#[derive(Debug, Clone, Serialize)]
+pub struct GoogleDirectoryUser {
+    pub id: String,
+    pub email: String,
+    pub name: String,
+    #[serde(rename = "orgUnit")]
+    pub org_unit: String,
+    pub suspended: bool,
+    #[serde(rename = "isAdmin")]
+    pub is_admin: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchUsersResponse {
+    pub users: Vec<GoogleDirectoryUser>,
+    #[serde(rename = "nextPageToken")]
+    pub next_page_token: Option<String>,
+    #[serde(rename = "hasMore")]
+    pub has_more: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GoogleConnectorState {
     pub webhook_channel_id: Option<String>,
@@ -519,19 +540,32 @@ impl GmailThread {
                 Ok((message_content, is_html)) => {
                     if !message_content.trim().is_empty() {
                         let text = if is_html {
-                            sdk_client
+                            match sdk_client
                                 .extract_text(
                                     sync_run_id,
-                                    message_content.as_bytes().to_vec(),
+                                    message_content.into_bytes(),
                                     "text/html",
                                     None,
                                 )
                                 .await
-                                .unwrap_or(message_content)
+                            {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        thread_id = %self.thread_id,
+                                        msg = i + 1,
+                                        error = %e,
+                                        "extract_text failed; skipping HTML body for this message"
+                                    );
+                                    String::new()
+                                }
+                            }
                         } else {
                             message_content
                         };
-                        content_parts.push(text.trim().to_string());
+                        if !text.trim().is_empty() {
+                            content_parts.push(text.trim().to_string());
+                        }
                     }
                 }
                 Err(e) => {
@@ -1092,7 +1126,9 @@ mod tests {
         match event {
             ConnectorEvent::DocumentCreated { permissions, .. } => {
                 assert!(permissions.users.contains(&"owner@example.com".to_string()));
-                assert!(permissions.users.contains(&"viewer@example.com".to_string()));
+                assert!(permissions
+                    .users
+                    .contains(&"viewer@example.com".to_string()));
                 assert_eq!(permissions.users.len(), 2);
             }
             _ => panic!("Expected DocumentCreated event"),
@@ -1172,69 +1208,5 @@ mod tests {
     fn test_gmail_thread_new_has_no_message_id() {
         let thread = GmailThread::new("t1".to_string());
         assert!(thread.message_id.is_none());
-    }
-}
-
-// ============================================================================
-// Connector Protocol Models
-// ============================================================================
-
-pub use shared::models::{ActionDefinition, ConnectorManifest, SyncRequest, SyncResponse};
-
-/// Extension trait for SyncResponse helper methods
-pub trait SyncResponseExt {
-    fn started() -> SyncResponse;
-    fn error(msg: impl Into<String>) -> SyncResponse;
-}
-
-impl SyncResponseExt for SyncResponse {
-    fn started() -> SyncResponse {
-        SyncResponse {
-            status: "started".to_string(),
-            message: None,
-        }
-    }
-
-    fn error(msg: impl Into<String>) -> SyncResponse {
-        SyncResponse {
-            status: "error".to_string(),
-            message: Some(msg.into()),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CancelRequest {
-    pub sync_run_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CancelResponse {
-    pub status: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionRequest {
-    pub action: String,
-    pub params: serde_json::Value,
-    pub credentials: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionResponse {
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-impl ActionResponse {
-    pub fn not_supported(action: &str) -> Self {
-        Self {
-            status: "error".to_string(),
-            result: None,
-            error: Some(format!("Action not supported: {}", action)),
-        }
     }
 }

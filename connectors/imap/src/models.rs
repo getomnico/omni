@@ -161,13 +161,8 @@ pub fn make_document_id(source_id: &str, folder: &str, uid: u32) -> String {
     format!("imap:{}:{}:{}", source_id, urlenc(folder), uid)
 }
 
-pub fn make_thread_document_id(source_id: &str, folder: &str, thread_id: &str) -> String {
-    format!(
-        "imap-thread:{}:{}:{}",
-        source_id,
-        urlenc(folder),
-        encode(thread_id)
-    )
+pub fn make_thread_document_id(folder: &str, thread_id: &str) -> String {
+    format!("imap-thread:{}:{}", urlenc(folder), encode(thread_id))
 }
 
 pub fn generate_thread_content(messages: &[ParsedEmail]) -> String {
@@ -229,7 +224,7 @@ pub fn build_thread_connector_event(
     // relying on first.thread_id(), which is order-dependent and can return an
     // intermediate message-ID when a dateless reply-without-References sorts first.
     let thread_id = derive_thread_root(&sorted_messages);
-    let document_id = make_thread_document_id(&source_id, &first.folder, &thread_id);
+    let document_id = make_thread_document_id(&first.folder, &thread_id);
 
     let title = sorted_messages
         .iter()
@@ -394,8 +389,13 @@ pub fn build_thread_connector_event(
     }
 }
 
-/// Parse a raw RFC 2822 email message into a `ParsedEmail`.
-pub fn parse_raw_email(raw: &[u8], uid: u32, folder: &str) -> Result<ParsedEmail> {
+/// Parse a raw RFC 2822 email message into a `ParsedEmail` and collect raw
+/// attachment bytes in one pass (avoids a redundant second MIME parse).
+pub fn parse_raw_email(
+    raw: &[u8],
+    uid: u32,
+    folder: &str,
+) -> Result<(ParsedEmail, Vec<crate::attachment::RawAttachment>)> {
     let parsed = mailparse::parse_mail(raw).context("Failed to parse email")?;
 
     let headers = parsed.get_headers();
@@ -430,24 +430,28 @@ pub fn parse_raw_email(raw: &[u8], uid: u32, folder: &str) -> Result<ParsedEmail
         .and_then(parse_email_date);
 
     let (body_text, body_is_html) = extract_body_text(&parsed);
+    let attachments = collect_raw_attachments(&parsed);
     let size = raw.len();
 
-    Ok(ParsedEmail {
-        message_id,
-        in_reply_to,
-        references,
-        imap_uid: uid,
-        folder: folder.to_string(),
-        subject,
-        from,
-        to,
-        cc,
-        date,
-        body_text,
-        body_is_html,
-        flags: vec![],
-        size,
-    })
+    Ok((
+        ParsedEmail {
+            message_id,
+            in_reply_to,
+            references,
+            imap_uid: uid,
+            folder: folder.to_string(),
+            subject,
+            from,
+            to,
+            cc,
+            date,
+            body_text,
+            body_is_html,
+            flags: vec![],
+            size,
+        },
+        attachments,
+    ))
 }
 
 /// Extract the best available plain-text body from a parsed email.

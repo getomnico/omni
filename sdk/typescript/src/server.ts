@@ -4,6 +4,7 @@ import { SdkClient } from './client.js';
 import type { Connector } from './connector.js';
 import { SyncContext } from './context.js';
 import {
+  SyncMode,
   SyncRequestSchema,
   CancelRequestSchema,
   ActionRequestSchema,
@@ -11,7 +12,7 @@ import {
   PromptRequestSchema,
   createSyncResponseStarted,
   createSyncResponseError,
-  createActionResponseFailure,
+  ActionResponse,
 } from './models.js';
 import { getLogger } from './logger.js';
 
@@ -91,7 +92,23 @@ export function createServer(connector: Connector): Express {
       return;
     }
 
-    const { sync_run_id: syncRunId, source_id: sourceId } = parseResult.data;
+    const {
+      sync_run_id: syncRunId,
+      source_id: sourceId,
+      sync_mode: syncModeStr,
+      documents_scanned: documentsScanned,
+      documents_updated: documentsUpdated,
+    } = parseResult.data;
+
+    const isValidSyncMode = (Object.values(SyncMode) as string[]).includes(syncModeStr);
+    if (!isValidSyncMode) {
+      logger.warn(
+        `Unknown sync_mode '${syncModeStr}'; defaulting to Incremental batching`
+      );
+    }
+    const syncMode: SyncMode = isValidSyncMode
+      ? (syncModeStr as SyncMode)
+      : SyncMode.INCREMENTAL;
 
     logger.info(`Sync triggered for source ${sourceId} (sync_run_id: ${syncRunId})`);
 
@@ -131,7 +148,10 @@ export function createServer(connector: Connector): Express {
       getSdkClient(),
       syncRunId,
       sourceId,
-      sourceData.state ?? undefined
+      sourceData.state ?? undefined,
+      syncMode,
+      documentsScanned,
+      documentsUpdated
     );
     activeSyncs.set(sourceId, ctx);
 
@@ -186,21 +206,30 @@ export function createServer(connector: Connector): Express {
   app.post('/action', async (req: Request, res: Response) => {
     const parseResult = ActionRequestSchema.safeParse(req.body);
     if (!parseResult.success) {
-      res.status(400).json(createActionResponseFailure('Invalid request body'));
+      const errorResp = ActionResponse.failure('Invalid request body');
+      res.status(400).json(errorResp);
       return;
     }
 
     const { action, params, credentials } = parseResult.data;
     logger.info(`Action requested: ${action}`);
 
-    try {
-      const response = await connector.executeAction(action, params, credentials);
-      res.json(response);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      logger.error({ err: error }, `Action ${action} failed`);
-      res.json(createActionResponseFailure(message));
+    const result = await connector.executeAction(
+      action,
+      params,
+      credentials
+    );
+
+    if (result instanceof Response) {
+      res.status(result.status);
+      result.headers.forEach((value, key) => res.setHeader(key, value));
+      const bodyBuffer = Buffer.from(await result.arrayBuffer());
+      res.send(bodyBuffer);
+      return;
     }
+
+    // Fallback for unexpected return types (should not happen)
+    res.status(500).json(ActionResponse.failure('Unexpected action result type'));
   });
 
   app.post('/resource', async (req: Request, res: Response) => {
@@ -220,8 +249,8 @@ export function createServer(connector: Connector): Express {
     logger.info(`Resource requested: ${uri}`);
 
     try {
-      connector.prepareMcpEnv(credentials as any);
-      const result = await adapter.readResource(uri);
+      const { env, headers } = connector.prepareMcpAuth(credentials);
+      const result = await adapter.readResource(uri, env, headers);
       res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -247,8 +276,13 @@ export function createServer(connector: Connector): Express {
     logger.info(`Prompt requested: ${name}`);
 
     try {
-      connector.prepareMcpEnv(credentials as any);
-      const result = await adapter.getPrompt(name, args as Record<string, string> | undefined);
+      const { env, headers } = connector.prepareMcpAuth(credentials);
+      const result = await adapter.getPrompt(
+        name,
+        args as Record<string, string> | undefined,
+        env,
+        headers
+      );
       res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

@@ -55,6 +55,7 @@ pub fn create_app(state: AppState) -> Router {
         // SDK endpoints - called by connectors
         .route("/sdk/register", post(handlers::sdk_register))
         .route("/sdk/events", post(handlers::sdk_emit_event))
+        .route("/sdk/events/batch", post(handlers::sdk_emit_batch))
         .route("/sdk/content", post(handlers::sdk_store_content))
         .route(
             "/sdk/extract-content",
@@ -70,6 +71,10 @@ pub fn create_app(state: AppState) -> Router {
         .route(
             "/sdk/sync/:id/scanned",
             post(handlers::sdk_increment_scanned),
+        )
+        .route(
+            "/sdk/sync/:id/updated",
+            post(handlers::sdk_increment_updated),
         )
         .route("/sdk/source/:source_id", get(handlers::sdk_get_source))
         .route(
@@ -144,7 +149,7 @@ pub async fn run_server() -> AnyhowResult<()> {
 
     let app_state = AppState {
         db_pool: db_pool.clone(),
-        redis_client,
+        redis_client: redis_client.clone(),
         config: config.clone(),
         sync_manager: sync_manager.clone(),
         content_storage,
@@ -157,7 +162,12 @@ pub async fn run_server() -> AnyhowResult<()> {
     }
 
     // Start scheduler in background
-    let scheduler = scheduler::Scheduler::new(db_pool.pool().clone(), config.clone(), sync_manager);
+    let scheduler = scheduler::Scheduler::new(
+        db_pool.pool().clone(),
+        redis_client,
+        config.clone(),
+        sync_manager,
+    );
     tokio::spawn(async move {
         scheduler.run().await;
     });

@@ -57,11 +57,9 @@ impl DavEntry {
     pub fn relative_path(&self, username: &str) -> String {
         let prefix = format!("/remote.php/dav/files/{}", username);
         let path = self.href.trim_end_matches('/');
-        let decoded = urlencoding::decode(
-            path.strip_prefix(&prefix).unwrap_or(path),
-        )
-        .unwrap_or_default()
-        .into_owned();
+        let decoded = urlencoding::decode(path.strip_prefix(&prefix).unwrap_or(path))
+            .unwrap_or_default()
+            .into_owned();
         if decoded.is_empty() {
             "/".to_string()
         } else {
@@ -81,9 +79,7 @@ impl DavEntry {
 
     /// Stable key for change tracking (prefer file_id, fall back to href).
     pub fn file_key(&self) -> String {
-        self.file_id
-            .clone()
-            .unwrap_or_else(|| self.href.clone())
+        self.file_id.clone().unwrap_or_else(|| self.href.clone())
     }
 
     /// Returns the real etag if available, or a synthetic one derived from
@@ -101,10 +97,7 @@ impl DavEntry {
 
     /// Build the document ID used within Omni. Deterministic and stable.
     pub fn document_id(&self, source_id: &str) -> String {
-        let key = self
-            .file_id
-            .as_deref()
-            .unwrap_or(&self.href);
+        let key = self.file_id.as_deref().unwrap_or(&self.href);
         format!("nextcloud:{}:{}", source_id, urlencoding::encode(key))
     }
 

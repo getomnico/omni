@@ -607,7 +607,7 @@ Report issues at: https://github.com/getomnico/omni/issues
 
 ### Community
 
-Join discussions: [Discord/Slack link]
+Join discussions: https://github.com/getomnico/omni/discussions
 
 ## License
 

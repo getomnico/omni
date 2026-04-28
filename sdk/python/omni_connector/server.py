@@ -13,11 +13,11 @@ from .context import SyncContext
 from .exceptions import SdkClientError
 from .models import (
     ActionRequest,
-    ActionResponse,
     CancelRequest,
     CancelResponse,
     PromptRequest,
     ResourceRequest,
+    SyncMode,
     SyncRequest,
     SyncResponse,
 )
@@ -162,6 +162,15 @@ def create_app(connector: "Connector") -> FastAPI:
         # Bootstrap MCP subprocess with credentials (populates tool cache for manifest)
         await connector.bootstrap_mcp(credentials)
 
+        try:
+            sync_mode = SyncMode(request.sync_mode)
+        except ValueError:
+            logger.warning(
+                "Unknown sync_mode %r; defaulting to Incremental batching",
+                request.sync_mode,
+            )
+            sync_mode = SyncMode.INCREMENTAL
+
         ctx = SyncContext(
             sdk_client=server.sdk_client,
             sync_run_id=sync_run_id,
@@ -171,6 +180,9 @@ def create_app(connector: "Connector") -> FastAPI:
             user_filter_mode=sync_data.user_filter_mode,
             user_whitelist=sync_data.user_whitelist,
             user_blacklist=sync_data.user_blacklist,
+            sync_mode=sync_mode,
+            documents_scanned=request.documents_scanned,
+            documents_updated=request.documents_updated,
         )
         server.active_syncs[source_id] = ctx
 
@@ -207,21 +219,13 @@ def create_app(connector: "Connector") -> FastAPI:
         return CancelResponse(status="not_found").model_dump()
 
     @app.post("/action")
-    async def execute_action(request: ActionRequest):
+    async def execute_action(request: ActionRequest) -> Response:
         logger.info("Action requested: %s", request.action)
-
-        try:
-            response = await connector.execute_action(
-                request.action,
-                request.params,
-                request.credentials,
-            )
-            if isinstance(response, Response):
-                return response
-            return response.model_dump()
-        except Exception as e:
-            logger.error("Action %s failed: %s", request.action, e)
-            return ActionResponse.failure(str(e)).model_dump()
+        return await connector.execute_action(
+            request.action,
+            request.params,
+            request.credentials,
+        )
 
     @app.post("/resource")
     async def read_resource(request: ResourceRequest) -> JSONResponse:
@@ -233,8 +237,8 @@ def create_app(connector: "Connector") -> FastAPI:
             )
         logger.info("Resource requested: %s", request.uri)
         try:
-            env = connector.prepare_mcp_env(request.credentials)
-            result = await adapter.read_resource(request.uri, env=env)
+            auth = connector._prepare_mcp_auth(request.credentials)
+            result = await adapter.read_resource(request.uri, **auth)
             return JSONResponse(status_code=status.HTTP_200_OK, content=result)
         except Exception as e:
             logger.error("Resource read failed for %s: %s", request.uri, e)
@@ -253,8 +257,8 @@ def create_app(connector: "Connector") -> FastAPI:
             )
         logger.info("Prompt requested: %s", request.name)
         try:
-            env = connector.prepare_mcp_env(request.credentials)
-            result = await adapter.get_prompt(request.name, request.arguments, env=env)
+            auth = connector._prepare_mcp_auth(request.credentials)
+            result = await adapter.get_prompt(request.name, request.arguments, **auth)
             return JSONResponse(status_code=status.HTTP_200_OK, content=result)
         except Exception as e:
             logger.error("Prompt get failed for %s: %s", request.name, e)

@@ -8,7 +8,7 @@ use mock_slack::{
 };
 use omni_slack_connector::models::{SlackConnectorState, SlackMessage};
 use omni_slack_connector::sync::SyncManager;
-use shared::models::SyncRequest;
+use shared::models::{SyncRequest, SyncType};
 
 /// Use a fixed base timestamp (2025-01-15 12:00:00 UTC) so all messages
 /// fall on the same calendar day.
@@ -38,7 +38,7 @@ async fn setup_full_sync(
     let request = SyncRequest {
         sync_run_id: sync_run_id.clone(),
         source_id: source_id.clone(),
-        sync_mode: "full".to_string(),
+        sync_mode: SyncType::Full,
         last_sync_at: None,
     };
 
@@ -219,7 +219,7 @@ async fn test_sync_persists_state_for_incremental() {
     let request = SyncRequest {
         sync_run_id: sync_run_id_2.clone(),
         source_id: source_id.clone(),
-        sync_mode: "incremental".to_string(),
+        sync_mode: SyncType::Incremental,
         last_sync_at: None,
     };
     sync_manager

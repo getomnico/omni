@@ -1,25 +1,105 @@
-use anyhow::{Context, Result};
-use reqwest::Client;
+use anyhow::Result;
+use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use crate::models::{ConnectorEvent, ConnectorManifest, ServiceCredentials, Source, SyncType};
+use crate::models::{ConnectorEvent, ConnectorManifest, ServiceCredential, Source, SyncType};
+
+/// Errors produced by [`SdkClient`]. Callers that use `anyhow::Result` can
+/// still bubble these up via `?` because `anyhow::Error: From<E>` for any
+/// `E: std::error::Error + Send + Sync + 'static`.
+#[derive(Debug, thiserror::Error)]
+pub enum SdkError {
+    #[error("{operation}: HTTP {status}: {body}")]
+    Http {
+        operation: &'static str,
+        status: StatusCode,
+        body: String,
+    },
+    #[error(transparent)]
+    Transport(#[from] reqwest::Error),
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
+impl SdkError {
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, SdkError::Http { status, .. } if *status == StatusCode::NOT_FOUND)
+    }
+
+    pub fn status(&self) -> Option<StatusCode> {
+        match self {
+            SdkError::Http { status, .. } => Some(*status),
+            _ => None,
+        }
+    }
+}
+
+pub type SdkResult<T> = Result<T, SdkError>;
+
+/// Return the response if the status is 2xx, otherwise capture the body and
+/// return a typed `SdkError::Http`.
+async fn ensure_ok(response: Response, operation: &'static str) -> SdkResult<Response> {
+    if response.status().is_success() {
+        return Ok(response);
+    }
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    Err(SdkError::Http {
+        operation,
+        status,
+        body,
+    })
+}
+
+type BufferKey = (String, String); // (sync_run_id, source_id)
+
+struct BufferEntry {
+    events: Vec<ConnectorEvent>,
+    oldest_at: Instant,
+}
+
+/// Per-`SyncType` buffer thresholds: (size, time). `None` time means flush-on-emit.
+fn thresholds_for(sync_type: SyncType) -> (usize, Option<Duration>) {
+    match sync_type {
+        SyncType::Full => (500, Some(Duration::from_secs(300))),
+        SyncType::Incremental => (100, Some(Duration::from_secs(60))),
+        SyncType::Realtime => (1, None),
+    }
+}
 
 /// HTTP client for communicating with connector-manager SDK endpoints.
 /// This is the standard way for connectors to interact with the connector-manager
 /// for emitting events, storing content, and reporting sync status.
+///
+/// `emit_event()` buffers events in memory and auto-flushes using per-`SyncType`
+/// rules (see [`thresholds_for`]). All clones share the buffer.
+///
+/// The SDK learns each sync's type from `create_sync_run` (auto-registered) or
+/// from an explicit `register_sync` call (used by connectors whose sync was
+/// created by connector-manager, e.g. scheduled or webhook-triggered syncs).
+/// Unknown sync_run_ids default to `Incremental` — safe middle ground.
+///
+/// **Invariant**: any operation that persists a checkpoint or terminates a sync
+/// (`save_connector_state`, `complete`, `fail`) must flush the relevant buffered
+/// events first — otherwise a crash after checkpoint would lose those events forever.
 #[derive(Clone)]
 pub struct SdkClient {
     client: Client,
     base_url: String,
+    event_buffer: Arc<Mutex<HashMap<BufferKey, BufferEntry>>>,
+    sync_types: Arc<Mutex<HashMap<String, SyncType>>>,
 }
 
 #[derive(Debug, Serialize)]
-struct EmitEventRequest {
+struct EmitBatchRequest {
     sync_run_id: String,
     source_id: String,
-    event: ConnectorEvent,
+    events: Vec<ConnectorEvent>,
 }
 
 #[derive(Debug, Serialize)]
@@ -32,13 +112,6 @@ struct StoreContentRequest {
 #[derive(Debug, Deserialize)]
 struct StoreContentResponse {
     content_id: String,
-}
-
-#[derive(Debug, Serialize)]
-struct CompleteRequest {
-    documents_scanned: Option<i32>,
-    documents_updated: Option<i32>,
-    new_state: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,12 +166,34 @@ impl SdkClient {
         Self {
             client: Client::new(),
             base_url: connector_manager_url.trim_end_matches('/').to_string(),
+            event_buffer: Arc::new(Mutex::new(HashMap::new())),
+            sync_types: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
+    /// Register a sync's type so subsequent `emit_event` calls apply the right
+    /// batching rule. Call this from your sync handler before emitting — or,
+    /// if you created the sync via `create_sync_run`, the registration happens
+    /// automatically.
+    pub async fn register_sync(&self, sync_run_id: &str, sync_type: SyncType) {
+        self.sync_types
+            .lock()
+            .await
+            .insert(sync_run_id.to_string(), sync_type);
+    }
+
+    async fn sync_type_for(&self, sync_run_id: &str) -> SyncType {
+        self.sync_types
+            .lock()
+            .await
+            .get(sync_run_id)
+            .copied()
+            .unwrap_or(SyncType::Incremental)
+    }
+
     pub fn from_env() -> Result<Self> {
-        let url =
-            std::env::var("CONNECTOR_MANAGER_URL").context("CONNECTOR_MANAGER_URL not set")?;
+        let url = std::env::var("CONNECTOR_MANAGER_URL")
+            .map_err(|_| anyhow::anyhow!("CONNECTOR_MANAGER_URL not set"))?;
         Ok(Self::new(&url))
     }
 
@@ -139,7 +234,7 @@ impl SdkClient {
         data: Vec<u8>,
         mime_type: &str,
         filename: Option<&str>,
-    ) -> Result<String> {
+    ) -> SdkResult<String> {
         debug!(
             "SDK: Extracting text for sync_run={}, mime={}, size={}",
             sync_run_id,
@@ -154,48 +249,117 @@ impl SdkClient {
             .post(format!("{}/sdk/extract-text", self.base_url))
             .multipart(form)
             .send()
-            .await
-            .context("Failed to send extract text request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to extract text: {} - {}", status, body);
-        }
-
+            .await?;
+        let response = ensure_ok(response, "extract_text").await?;
         let result: ExtractTextResponse = response.json().await?;
         Ok(result.text)
     }
 
-    /// Emit a document event to the queue
+    /// Emit a document event. Events are buffered in memory and auto-flushed
+    /// according to the sync's type (see [`thresholds_for`]):
+    /// - Full: 500 events or 5min, whichever first
+    /// - Incremental: 100 events or 60s
+    /// - Realtime: flush on every emit
+    ///
+    /// If an auto-flush fails, the error is returned to the caller so the connector
+    /// knows the event was not persisted before checkpointing.
     pub async fn emit_event(
         &self,
         sync_run_id: &str,
         source_id: &str,
         event: ConnectorEvent,
-    ) -> Result<()> {
-        debug!("SDK: Emitting event for sync_run={}", sync_run_id);
+    ) -> SdkResult<()> {
+        let sync_type = self.sync_type_for(sync_run_id).await;
+        let (size_threshold, time_threshold) = thresholds_for(sync_type);
 
-        let request = EmitEventRequest {
+        let key = (sync_run_id.to_string(), source_id.to_string());
+        let should_flush = {
+            let mut buffer = self.event_buffer.lock().await;
+            let entry = buffer.entry(key).or_insert_with(|| BufferEntry {
+                events: Vec::new(),
+                oldest_at: Instant::now(),
+            });
+            entry.events.push(event);
+
+            let size_hit = entry.events.len() >= size_threshold;
+            let time_hit = time_threshold
+                .map(|t| entry.oldest_at.elapsed() >= t)
+                .unwrap_or(false);
+            size_hit || time_hit
+        };
+
+        if should_flush {
+            self.flush_events(sync_run_id, source_id).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Flush buffered events for a specific (sync_run_id, source_id) pair.
+    pub async fn flush_events(&self, sync_run_id: &str, source_id: &str) -> Result<()> {
+        let key = (sync_run_id.to_string(), source_id.to_string());
+        let events = {
+            let mut buffer = self.event_buffer.lock().await;
+            buffer
+                .remove(&key)
+                .map(|entry| entry.events)
+                .unwrap_or_default()
+        };
+
+        if events.is_empty() {
+            return Ok(());
+        }
+
+        let batch_size = events.len();
+        debug!(
+            "SDK: Flushing {} events for sync_run={}, source={}",
+            batch_size, sync_run_id, source_id
+        );
+
+        let request = EmitBatchRequest {
             sync_run_id: sync_run_id.to_string(),
             source_id: source_id.to_string(),
-            event,
+            events,
         };
 
         let response = self
             .client
-            .post(format!("{}/sdk/events", self.base_url))
+            .post(format!("{}/sdk/events/batch", self.base_url))
             .json(&request)
             .send()
-            .await
-            .context("Failed to send emit event request")?;
+            .await?;
+        ensure_ok(response, "flush_events").await?;
+        Ok(())
+    }
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to emit event: {} - {}", status, body);
+    /// Flush all buffered events for a given source_id across any sync_runs.
+    /// Used before persisting connector state for that source.
+    pub async fn flush_source(&self, source_id: &str) -> Result<()> {
+        let keys: Vec<BufferKey> = {
+            let buffer = self.event_buffer.lock().await;
+            buffer
+                .keys()
+                .filter(|(_, sid)| sid == source_id)
+                .cloned()
+                .collect()
+        };
+
+        for (sync_run_id, sid) in keys {
+            self.flush_events(&sync_run_id, &sid).await?;
         }
+        Ok(())
+    }
 
+    /// Flush all buffered events across all (sync_run_id, source_id) pairs.
+    pub async fn flush_all(&self) -> Result<()> {
+        let keys: Vec<BufferKey> = {
+            let buffer = self.event_buffer.lock().await;
+            buffer.keys().cloned().collect()
+        };
+
+        for (sync_run_id, source_id) in keys {
+            self.flush_events(&sync_run_id, &source_id).await?;
+        }
         Ok(())
     }
 
@@ -211,7 +375,7 @@ impl SdkClient {
         data: Vec<u8>,
         mime_type: &str,
         filename: Option<&str>,
-    ) -> Result<String> {
+    ) -> SdkResult<String> {
         debug!(
             "SDK: Extracting content for sync_run={}, mime={}, size={}",
             sync_run_id,
@@ -226,21 +390,14 @@ impl SdkClient {
             .post(format!("{}/sdk/extract-content", self.base_url))
             .multipart(form)
             .send()
-            .await
-            .context("Failed to send extract content request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to extract content: {} - {}", status, body);
-        }
-
+            .await?;
+        let response = ensure_ok(response, "extract_and_store_content").await?;
         let result: StoreContentResponse = response.json().await?;
         Ok(result.content_id)
     }
 
     /// Store content and return content_id
-    pub async fn store_content(&self, sync_run_id: &str, content: &str) -> Result<String> {
+    pub async fn store_content(&self, sync_run_id: &str, content: &str) -> SdkResult<String> {
         debug!("SDK: Storing content for sync_run={}", sync_run_id);
 
         let request = StoreContentRequest {
@@ -254,21 +411,14 @@ impl SdkClient {
             .post(format!("{}/sdk/content", self.base_url))
             .json(&request)
             .send()
-            .await
-            .context("Failed to send store content request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to store content: {} - {}", status, body);
-        }
-
+            .await?;
+        let response = ensure_ok(response, "store_content").await?;
         let result: StoreContentResponse = response.json().await?;
         Ok(result.content_id)
     }
 
     /// Send heartbeat to update last_activity_at
-    pub async fn heartbeat(&self, sync_run_id: &str) -> Result<()> {
+    pub async fn heartbeat(&self, sync_run_id: &str) -> SdkResult<()> {
         debug!("SDK: Heartbeat for sync_run={}", sync_run_id);
 
         let response = self
@@ -278,20 +428,13 @@ impl SdkClient {
                 self.base_url, sync_run_id
             ))
             .send()
-            .await
-            .context("Failed to send heartbeat")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to heartbeat: {} - {}", status, body);
-        }
-
+            .await?;
+        ensure_ok(response, "heartbeat").await?;
         Ok(())
     }
 
     /// Increment scanned count and update heartbeat
-    pub async fn increment_scanned(&self, sync_run_id: &str, count: i32) -> Result<()> {
+    pub async fn increment_scanned(&self, sync_run_id: &str, count: i32) -> SdkResult<()> {
         debug!(
             "SDK: Incrementing scanned for sync_run={} by {}",
             sync_run_id, count
@@ -305,33 +448,39 @@ impl SdkClient {
             ))
             .json(&serde_json::json!({ "count": count }))
             .send()
-            .await
-            .context("Failed to send increment scanned")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to increment scanned: {} - {}", status, body);
-        }
-
+            .await?;
+        ensure_ok(response, "increment_scanned").await?;
         Ok(())
     }
 
-    /// Mark sync as completed
-    pub async fn complete(
-        &self,
-        sync_run_id: &str,
-        documents_scanned: i32,
-        documents_updated: i32,
-        new_state: Option<serde_json::Value>,
-    ) -> Result<()> {
+    /// Increment updated count. Use alongside `increment_scanned` so the
+    /// running tally on the manager survives mid-sync crashes — the absolute
+    /// value reported via `complete()` reflects only the current attempt.
+    pub async fn increment_updated(&self, sync_run_id: &str, count: i32) -> SdkResult<()> {
+        debug!(
+            "SDK: Incrementing updated for sync_run={} by {}",
+            sync_run_id, count
+        );
+
+        let response = self
+            .client
+            .post(format!(
+                "{}/sdk/sync/{}/updated",
+                self.base_url, sync_run_id
+            ))
+            .json(&serde_json::json!({ "count": count }))
+            .send()
+            .await?;
+        ensure_ok(response, "increment_updated").await?;
+        Ok(())
+    }
+
+    /// Mark sync as completed. Flushes any buffered events first so the
+    /// completion never races ahead of the final events for this sync.
+    pub async fn complete(&self, sync_run_id: &str) -> SdkResult<()> {
         debug!("SDK: Completing sync_run={}", sync_run_id);
 
-        let request = CompleteRequest {
-            documents_scanned: Some(documents_scanned),
-            documents_updated: Some(documents_updated),
-            new_state,
-        };
+        self.flush_all().await?;
 
         let response = self
             .client
@@ -339,23 +488,24 @@ impl SdkClient {
                 "{}/sdk/sync/{}/complete",
                 self.base_url, sync_run_id
             ))
-            .json(&request)
             .send()
-            .await
-            .context("Failed to send complete request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to complete: {} - {}", status, body);
-        }
-
+            .await?;
+        ensure_ok(response, "complete").await?;
         Ok(())
     }
 
-    /// Mark sync as failed
-    pub async fn fail(&self, sync_run_id: &str, error: &str) -> Result<()> {
+    /// Mark sync as failed. Best-effort flush of buffered events first — if
+    /// the flush itself fails we log and proceed, because marking the sync as
+    /// failed is more important than preserving partial progress.
+    pub async fn fail(&self, sync_run_id: &str, error: &str) -> SdkResult<()> {
         debug!("SDK: Failing sync_run={}: {}", sync_run_id, error);
+
+        if let Err(e) = self.flush_all().await {
+            warn!(
+                "SDK: flush before fail() failed (continuing): sync_run={}: {}",
+                sync_run_id, e
+            );
+        }
 
         let request = FailRequest {
             error: error.to_string(),
@@ -366,44 +516,30 @@ impl SdkClient {
             .post(format!("{}/sdk/sync/{}/fail", self.base_url, sync_run_id))
             .json(&request)
             .send()
-            .await
-            .context("Failed to send fail request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to mark as failed: {} - {}", status, body);
-        }
-
+            .await?;
+        ensure_ok(response, "fail").await?;
         Ok(())
     }
 
     /// Get source configuration
-    pub async fn get_source(&self, source_id: &str) -> Result<Source> {
+    pub async fn get_source(&self, source_id: &str) -> SdkResult<Source> {
         debug!("SDK: Getting source config for source_id={}", source_id);
 
         let response = self
             .client
             .get(format!("{}/sdk/source/{}", self.base_url, source_id))
             .send()
-            .await
-            .context("Failed to send get source request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to get source: {} - {}", status, body);
-        }
-
-        let source: Source = response
-            .json()
-            .await
-            .context("Failed to parse source response")?;
+            .await?;
+        let response = ensure_ok(response, "get_source").await?;
+        let source: Source = response.json().await?;
         Ok(source)
     }
 
     /// Get connector state for a source
-    pub async fn get_connector_state(&self, source_id: &str) -> Result<Option<serde_json::Value>> {
+    pub async fn get_connector_state(
+        &self,
+        source_id: &str,
+    ) -> SdkResult<Option<serde_json::Value>> {
         debug!("SDK: Getting connector state for source_id={}", source_id);
 
         let response = self
@@ -413,48 +549,28 @@ impl SdkClient {
                 self.base_url, source_id
             ))
             .send()
-            .await
-            .context("Failed to send get sync config request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to get sync config: {} - {}", status, body);
-        }
-
-        let config: SyncConfigResponse = response
-            .json()
-            .await
-            .context("Failed to parse sync config response")?;
+            .await?;
+        let response = ensure_ok(response, "get_connector_state").await?;
+        let config: SyncConfigResponse = response.json().await?;
         Ok(config.connector_state)
     }
 
     /// Get credentials for a source
-    pub async fn get_credentials(&self, source_id: &str) -> Result<ServiceCredentials> {
+    pub async fn get_credentials(&self, source_id: &str) -> SdkResult<ServiceCredential> {
         debug!("SDK: Getting credentials for source_id={}", source_id);
 
         let response = self
             .client
             .get(format!("{}/sdk/credentials/{}", self.base_url, source_id))
             .send()
-            .await
-            .context("Failed to send get credentials request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to get credentials: {} - {}", status, body);
-        }
-
-        let credentials: ServiceCredentials = response
-            .json()
-            .await
-            .context("Failed to parse credentials response")?;
+            .await?;
+        let response = ensure_ok(response, "get_credentials").await?;
+        let credentials: ServiceCredential = response.json().await?;
         Ok(credentials)
     }
 
     /// Create a new sync run for a source
-    pub async fn create_sync_run(&self, source_id: &str, sync_type: SyncType) -> Result<String> {
+    pub async fn create_sync_run(&self, source_id: &str, sync_type: SyncType) -> SdkResult<String> {
         debug!(
             "SDK: Creating sync run for source_id={}, type={:?}",
             source_id, sync_type
@@ -470,24 +586,15 @@ impl SdkClient {
             .post(format!("{}/sdk/sync/create", self.base_url))
             .json(&request)
             .send()
-            .await
-            .context("Failed to send create sync run request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to create sync run: {} - {}", status, body);
-        }
-
-        let result: CreateSyncResponse = response
-            .json()
-            .await
-            .context("Failed to parse create sync response")?;
+            .await?;
+        let response = ensure_ok(response, "create_sync_run").await?;
+        let result: CreateSyncResponse = response.json().await?;
+        self.register_sync(&result.sync_run_id, sync_type).await;
         Ok(result.sync_run_id)
     }
 
     /// Cancel a sync run
-    pub async fn cancel(&self, sync_run_id: &str) -> Result<()> {
+    pub async fn cancel(&self, sync_run_id: &str) -> SdkResult<()> {
         debug!("SDK: Cancelling sync_run={}", sync_run_id);
 
         let request = CancelSyncRequest {
@@ -499,20 +606,13 @@ impl SdkClient {
             .post(format!("{}/sdk/sync/cancel", self.base_url))
             .json(&request)
             .send()
-            .await
-            .context("Failed to send cancel request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to cancel sync: {} - {}", status, body);
-        }
-
+            .await?;
+        ensure_ok(response, "cancel").await?;
         Ok(())
     }
 
     /// Get user email for a source
-    pub async fn get_user_email_for_source(&self, source_id: &str) -> Result<String> {
+    pub async fn get_user_email_for_source(&self, source_id: &str) -> SdkResult<String> {
         debug!("SDK: Getting user email for source_id={}", source_id);
 
         let response = self
@@ -522,25 +622,15 @@ impl SdkClient {
                 self.base_url, source_id
             ))
             .send()
-            .await
-            .context("Failed to send get user email request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to get user email: {} - {}", status, body);
-        }
-
-        let result: UserEmailResponse = response
-            .json()
-            .await
-            .context("Failed to parse user email response")?;
+            .await?;
+        let response = ensure_ok(response, "get_user_email_for_source").await?;
+        let result: UserEmailResponse = response.json().await?;
         Ok(result.email)
     }
 
     /// Notify connector-manager of a webhook event
     /// Returns the sync_run_id created for this webhook
-    pub async fn notify_webhook(&self, source_id: &str, event_type: &str) -> Result<String> {
+    pub async fn notify_webhook(&self, source_id: &str, event_type: &str) -> SdkResult<String> {
         debug!(
             "SDK: Notifying webhook for source_id={}, event_type={}",
             source_id, event_type
@@ -556,29 +646,24 @@ impl SdkClient {
             .post(format!("{}/sdk/webhook/notify", self.base_url))
             .json(&request)
             .send()
-            .await
-            .context("Failed to send webhook notification")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to notify webhook: {} - {}", status, body);
-        }
-
-        let result: WebhookNotificationResponse = response
-            .json()
-            .await
-            .context("Failed to parse webhook notification response")?;
+            .await?;
+        let response = ensure_ok(response, "notify_webhook").await?;
+        let result: WebhookNotificationResponse = response.json().await?;
         Ok(result.sync_run_id)
     }
 
-    /// Save connector state for a source
+    /// Save connector state for a source. **Critical**: buffered events for
+    /// this source are flushed before the checkpoint is persisted. Without
+    /// this, a crash after save_state could lose events that the connector
+    /// already considers emitted (the next run resumes past them).
     pub async fn save_connector_state(
         &self,
         source_id: &str,
         state: serde_json::Value,
-    ) -> Result<()> {
+    ) -> SdkResult<()> {
         debug!("SDK: Saving connector state for source_id={}", source_id);
+
+        self.flush_source(source_id).await?;
 
         let response = self
             .client
@@ -588,20 +673,14 @@ impl SdkClient {
             ))
             .json(&state)
             .send()
-            .await
-            .context("Failed to save connector state")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to save connector state: {} - {}", status, body);
-        }
+            .await?;
+        ensure_ok(response, "save_connector_state").await?;
 
         Ok(())
     }
 
     /// Get connector config for a provider (e.g. OAuth app credentials)
-    pub async fn get_connector_config(&self, provider: &str) -> Result<serde_json::Value> {
+    pub async fn get_connector_config(&self, provider: &str) -> SdkResult<serde_json::Value> {
         debug!("SDK: Getting connector config for provider={}", provider);
 
         let response = self
@@ -611,24 +690,14 @@ impl SdkClient {
                 self.base_url, provider
             ))
             .send()
-            .await
-            .context("Failed to get connector config")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to get connector config: {} - {}", status, body);
-        }
-
-        let config: serde_json::Value = response
-            .json()
-            .await
-            .context("Failed to parse connector config response")?;
+            .await?;
+        let response = ensure_ok(response, "get_connector_config").await?;
+        let config: serde_json::Value = response.json().await?;
         Ok(config)
     }
 
     /// Register this connector with the connector manager
-    pub async fn register(&self, manifest: &ConnectorManifest) -> Result<()> {
+    pub async fn register(&self, manifest: &ConnectorManifest) -> SdkResult<()> {
         debug!("SDK: Registering connector");
 
         let response = self
@@ -636,20 +705,13 @@ impl SdkClient {
             .post(format!("{}/sdk/register", self.base_url))
             .json(manifest)
             .send()
-            .await
-            .context("Failed to send register request")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to register: {} - {}", status, body);
-        }
-
+            .await?;
+        ensure_ok(response, "register").await?;
         Ok(())
     }
 
     /// Get all active sources of a given type
-    pub async fn get_sources_by_type(&self, source_type: &str) -> Result<Vec<Source>> {
+    pub async fn get_sources_by_type(&self, source_type: &str) -> SdkResult<Vec<Source>> {
         debug!("SDK: Getting sources by type={}", source_type);
 
         let response = self
@@ -659,19 +721,9 @@ impl SdkClient {
                 self.base_url, source_type
             ))
             .send()
-            .await
-            .context("Failed to get sources by type")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("Failed to get sources by type: {} - {}", status, body);
-        }
-
-        let result: Vec<Source> = response
-            .json()
-            .await
-            .context("Failed to parse sources response")?;
+            .await?;
+        let response = ensure_ok(response, "get_sources_by_type").await?;
+        let result: Vec<Source> = response.json().await?;
         Ok(result)
     }
 }

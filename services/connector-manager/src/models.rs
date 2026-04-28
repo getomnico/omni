@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use shared::models::SourceType;
+use shared::models::{ServiceCredential, SourceType, SyncType};
 
 pub use shared::models::{
     ActionDefinition, ConnectorManifest, McpPromptDefinition, McpResourceDefinition,
@@ -11,7 +11,7 @@ pub use shared::models::{
 pub struct ActionRequest {
     pub action: String,
     pub params: JsonValue,
-    pub credentials: JsonValue,
+    pub credentials: Option<ServiceCredential>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,7 +88,7 @@ pub struct ConnectorInfo {
 pub struct TriggerSyncRequest {
     pub source_id: String,
     #[serde(default)]
-    pub sync_mode: Option<String>,
+    pub sync_mode: Option<SyncType>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +100,11 @@ pub struct TriggerSyncResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecuteActionRequest {
     pub source_id: String,
+    /// Acting user. `None` for org-level / system-initiated calls (sync,
+    /// future org-level agents); `Some` for chat tool dispatch and other
+    /// user-context invocations.
+    #[serde(default)]
+    pub user_id: Option<String>,
     pub action: String,
     pub params: JsonValue,
 }
@@ -127,6 +132,13 @@ pub struct SdkEmitEventRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdkEmitBatchRequest {
+    pub sync_run_id: String,
+    pub source_id: String,
+    pub events: Vec<shared::models::ConnectorEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SdkStoreContentRequest {
     pub sync_run_id: String,
     pub content: String,
@@ -140,22 +152,18 @@ pub struct SdkStoreContentResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SdkCompleteRequest {
-    #[serde(default)]
-    pub documents_scanned: Option<i32>,
-    #[serde(default)]
-    pub documents_updated: Option<i32>,
-    #[serde(default)]
-    pub new_state: Option<JsonValue>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SdkFailRequest {
     pub error: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SdkIncrementScannedRequest {
+    #[serde(default = "default_count")]
+    pub count: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SdkIncrementUpdatedRequest {
     #[serde(default = "default_count")]
     pub count: i32,
 }

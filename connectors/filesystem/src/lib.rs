@@ -1,4 +1,4 @@
-pub mod api;
+pub mod connector;
 pub mod models;
 pub mod scanner;
 pub mod sync;

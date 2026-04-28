@@ -166,9 +166,17 @@
             : popoverItems,
     )
 
-    let effectiveShowPopover = $derived(
-        mentionActive && mentionResults.length > 0 ? true : showPopover,
-    )
+    let effectiveShowPopover = $derived.by(() => {
+        if (inputMode !== 'search') {
+            return false
+        }
+
+        if (mentionActive) {
+            return mentionResults.length > 0
+        }
+
+        return showPopover
+    })
 
     $effect(() => {
         // Use innerText to match what is extracted in handleInputChange.
@@ -572,7 +580,7 @@
         </div>
     </div>
 
-    {#if effectivePopoverItems.length > 0 && inputMode !== 'chat'}
+    {#if effectivePopoverItems.length > 0}
         <Popover.Root open={effectiveShowPopover}>
             <Popover.Content
                 class="omni-composer-popover w-2xl rounded-b-xl p-0"
@@ -588,7 +596,7 @@
                     e.preventDefault()
                 }}
                 onFocusOutside={(e) => e.preventDefault()}>
-                <div class="bg-background max-w-2xl rounded-b-xl border">
+                <div class="bg-card max-w-2xl rounded-b-xl border">
                     <div class="py-2">
                         {#each effectivePopoverItems as item, i}
                             <button

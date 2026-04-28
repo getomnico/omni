@@ -12,7 +12,7 @@
         onCancel?: () => void
     }
 
-    let { open = $bindable(false), onSuccess, onCancel }: Props = $props()
+    let { open = false, onSuccess, onCancel }: Props = $props()
 
     let apiKey = $state('')
     let isSubmitting = $state(false)
@@ -56,7 +56,6 @@
             }
 
             toast.success('Linear connected successfully!')
-            open = false
 
             apiKey = ''
 
@@ -72,7 +71,6 @@
     }
 
     function handleCancel() {
-        open = false
         apiKey = ''
         if (onCancel) {
             onCancel()
@@ -80,7 +78,7 @@
     }
 </script>
 
-<Dialog.Root bind:open>
+<Dialog.Root {open} onOpenChange={(o) => !o && handleCancel()}>
     <Dialog.Content class="max-w-2xl">
         <Dialog.Header>
             <Dialog.Title>Connect Linear</Dialog.Title>

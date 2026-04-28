@@ -12,7 +12,7 @@
         onCancel?: () => void
     }
 
-    let { open = $bindable(false), onSuccess, onCancel }: Props = $props()
+    let { open = false, onSuccess, onCancel }: Props = $props()
 
     let sourceName = $state('Nextcloud Files')
     let serverUrl = $state('')
@@ -131,7 +131,6 @@
             }
 
             toast.success('Nextcloud connected successfully!')
-            open = false
             resetForm()
 
             if (onSuccess) {
@@ -157,7 +156,6 @@
     }
 
     function handleCancel() {
-        open = false
         resetForm()
         if (onCancel) {
             onCancel()
@@ -165,7 +163,7 @@
     }
 </script>
 
-<Dialog.Root bind:open>
+<Dialog.Root {open} onOpenChange={(o) => !o && handleCancel()}>
     <Dialog.Content class="max-w-lg">
         <Dialog.Header>
             <Dialog.Title>Connect Nextcloud</Dialog.Title>
@@ -223,15 +221,15 @@
                     disabled={isSubmitting}
                     required />
                 <p class="text-muted-foreground text-xs">
-                    If two-factor authentication is enabled, create an app password in your Nextcloud
-                    Security settings.
+                    If two-factor authentication is enabled, create an app password in your
+                    Nextcloud Security settings.
                 </p>
             </div>
 
             <!-- Optional: advanced options -->
             <details class="space-y-3">
                 <summary
-                    class="text-muted-foreground hover:text-foreground cursor-pointer select-none text-sm">
+                    class="text-muted-foreground hover:text-foreground cursor-pointer text-sm select-none">
                     Advanced options (base path, file filters, size limit)
                 </summary>
 
@@ -244,12 +242,14 @@
                             placeholder="/ (entire file tree)"
                             disabled={isSubmitting} />
                         <p class="text-muted-foreground text-xs">
-                            Only sync files under this path (e.g. /Documents). Leave as / for everything.
+                            Only sync files under this path (e.g. /Documents). Leave as / for
+                            everything.
                         </p>
                     </div>
 
                     <div class="space-y-1.5">
-                        <Label for="nc-allowlist">Only sync these file extensions (comma-separated)</Label>
+                        <Label for="nc-allowlist"
+                            >Only sync these file extensions (comma-separated)</Label>
                         <Input
                             id="nc-allowlist"
                             bind:value={extensionAllowlistRaw}
@@ -258,7 +258,8 @@
                     </div>
 
                     <div class="space-y-1.5">
-                        <Label for="nc-denylist">Never sync these file extensions (comma-separated)</Label>
+                        <Label for="nc-denylist"
+                            >Never sync these file extensions (comma-separated)</Label>
                         <Input
                             id="nc-denylist"
                             bind:value={extensionDenylistRaw}
@@ -280,7 +281,11 @@
         </div>
 
         <Dialog.Footer>
-            <Button variant="outline" onclick={handleCancel} disabled={isSubmitting} class="cursor-pointer">
+            <Button
+                variant="outline"
+                onclick={handleCancel}
+                disabled={isSubmitting}
+                class="cursor-pointer">
                 Cancel
             </Button>
             <Button onclick={handleSubmit} disabled={isSubmitting} class="cursor-pointer">

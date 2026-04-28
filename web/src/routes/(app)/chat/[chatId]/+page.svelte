@@ -69,11 +69,13 @@
 
     let { data }: PageProps = $props()
     let chatMessages = $state<ChatMessage[]>([...data.messages])
+    let uploadFilenames = $state<Record<string, string>>({ ...data.uploadFilenames })
 
     afterNavigate(() => {
         chatMessages = [...data.messages]
         branchSelections = {}
         editingMessageId = null
+        uploadFilenames = { ...data.uploadFilenames }
     })
 
     let userMessage = $state('')
@@ -120,7 +122,7 @@
                 console.error(err)
                 pendingUploads = pendingUploads.filter((u) => u.id !== placeholder.id)
                 toast.error(`Failed to upload ${file.name}`, {
-                    classes: { title: 'truncate' },
+                    classes: { title: 'break-all' },
                 })
             }
         }
@@ -1094,6 +1096,9 @@
 
         let messageContent: string | UserMessageBlock[]
         if (attachmentIds.length > 0) {
+            for (const up of pendingUploads) {
+                uploadFilenames[up.id] = up.filename
+            }
             const blocks: UserMessageBlock[] = attachmentIds.map((id) => ({
                 type: 'document',
                 source: { type: 'omni_upload', upload_id: id },
@@ -1275,9 +1280,9 @@
         )}
         <div class="flex max-w-[80%] flex-col items-end gap-1">
             {#if uploads.length > 0}
-                <div class="flex flex-wrap justify-end gap-1">
+                <div class="mb-2 flex flex-wrap justify-end gap-1">
                     {#each uploads as up (up.uploadId)}
-                        <UploadChip uploadId={up.uploadId} />
+                        <UploadChip filename={uploadFilenames[up.uploadId]} />
                     {/each}
                 </div>
             {/if}

@@ -2,8 +2,16 @@ export { Connector, type ServeOptions } from './connector.js';
 export { SyncContext } from './context.js';
 export { ContentStorage } from './storage.js';
 export { SdkClient } from './client.js';
-// McpAdapter is not re-exported here to avoid requiring @modelcontextprotocol/sdk
-// as a mandatory dependency. Import directly from './mcp-adapter.js' when needed.
+// McpAdapter (the runtime class) is not re-exported here to avoid requiring
+// @modelcontextprotocol/sdk as a mandatory dependency. Import directly from
+// './mcp-adapter.js' when needed. Type-only exports for the server config
+// types are safe to surface here since they have no runtime cost.
+export type {
+  HttpMcpServer,
+  McpAdapter,
+  McpServer,
+  StdioMcpServer,
+} from './mcp-adapter.js';
 export { createServer } from './server.js';
 
 export {
@@ -27,9 +35,7 @@ export {
   ActionResponseSchema,
   createSyncResponseStarted,
   createSyncResponseError,
-  createActionResponseSuccess,
-  createActionResponseFailure,
-  createActionResponseNotSupported,
+  ActionResponse,
   serializeConnectorEvent,
   type DocumentMetadata,
   type DocumentPermissions,
@@ -46,7 +52,6 @@ export {
   type CancelRequest,
   type CancelResponse,
   type ActionRequest,
-  type ActionResponse,
   type ConnectorEventPayload,
 } from './models.js';
 

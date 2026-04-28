@@ -54,7 +54,8 @@ impl NextcloudClient {
                 debug!("Depth: infinity not supported, falling back to recursive descent");
                 let mut all = Vec::new();
                 let mut visited = std::collections::HashSet::new();
-                self.list_recursive(base_url, &mut all, 0, &mut visited).await?;
+                self.list_recursive(base_url, &mut all, 0, &mut visited)
+                    .await?;
                 Ok(all)
             }
         }
@@ -85,7 +86,11 @@ impl NextcloudClient {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
         Box::pin(async move {
             if depth > Self::MAX_RECURSION_DEPTH {
-                warn!("Maximum recursion depth ({}) reached at {}, skipping", Self::MAX_RECURSION_DEPTH, url);
+                warn!(
+                    "Maximum recursion depth ({}) reached at {}, skipping",
+                    Self::MAX_RECURSION_DEPTH,
+                    url
+                );
                 return Ok(());
             }
 
@@ -107,7 +112,8 @@ impl NextcloudClient {
                 if entry.is_collection {
                     // Recurse into subdirectory
                     let child_url = build_child_url(url, &entry.href);
-                    self.list_recursive(&child_url, out, depth + 1, visited).await?;
+                    self.list_recursive(&child_url, out, depth + 1, visited)
+                        .await?;
                 } else {
                     out.push(entry);
                 }
@@ -135,7 +141,10 @@ impl NextcloudClient {
             anyhow::bail!("PROPFIND failed with status {}: {}", status, body);
         }
 
-        let xml = response.text().await.context("Failed to read PROPFIND response body")?;
+        let xml = response
+            .text()
+            .await
+            .context("Failed to read PROPFIND response body")?;
         parse_multistatus(&xml)
     }
 
@@ -154,7 +163,10 @@ impl NextcloudClient {
             anyhow::bail!("File download failed with status {}", status);
         }
 
-        let bytes = response.bytes().await.context("Failed to read file bytes")?;
+        let bytes = response
+            .bytes()
+            .await
+            .context("Failed to read file bytes")?;
         Ok(bytes.to_vec())
     }
 
@@ -189,7 +201,11 @@ pub(crate) fn build_child_url(parent_url: &str, child_href: &str) -> String {
         }
     }
     // Fallback: just use parent + child
-    format!("{}/{}", parent_url.trim_end_matches('/'), child_href.trim_start_matches('/'))
+    format!(
+        "{}/{}",
+        parent_url.trim_end_matches('/'),
+        child_href.trim_start_matches('/')
+    )
 }
 
 /// Extract path component from a URL (e.g. "http://host/path" → "/path").
@@ -435,10 +451,7 @@ mod tests {
             extract_path("https://cloud.example.com/remote.php/dav/files/alice/"),
             "/remote.php/dav/files/alice/"
         );
-        assert_eq!(
-            extract_path("http://localhost:8080/foo"),
-            "/foo"
-        );
+        assert_eq!(extract_path("http://localhost:8080/foo"), "/foo");
         assert_eq!(extract_path("/just/a/path"), "/just/a/path");
     }
 

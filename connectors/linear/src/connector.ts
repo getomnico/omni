@@ -2,11 +2,8 @@ import {
   Connector,
   type SyncContext,
   type ActionDefinition,
-  type ActionResponse,
   type SearchOperator,
-  createActionResponseSuccess,
-  createActionResponseFailure,
-  createActionResponseNotSupported,
+  ActionResponse,
   getLogger,
 } from '@getomnico/connector';
 import { LinearApiClient } from './client.js';
@@ -288,24 +285,24 @@ export class LinearConnector extends Connector<LinearSourceConfig, LinearCredent
     action: string,
     _params: Record<string, unknown>,
     credentials: LinearCredentials,
-  ): Promise<ActionResponse> {
+  ): Promise<Response> {
     if (action !== 'list_teams') {
-      return createActionResponseNotSupported(action);
+      return ActionResponse.notSupported(action).toResponse(404);
     }
 
     const { api_key: apiKey } = credentials;
     if (!apiKey) {
-      return createActionResponseFailure("Missing 'api_key' in credentials");
+      return ActionResponse.failure("Missing 'api_key' in credentials").toResponse(400);
     }
 
     try {
       const client = new LinearApiClient(apiKey);
       const teams = await client.fetchTeams();
-      return createActionResponseSuccess({
+      return ActionResponse.success({
         teams: teams.map(t => ({ key: t.key, name: t.name })),
-      });
+      }).toResponse();
     } catch (e) {
-      return createActionResponseFailure(String(e));
+      return ActionResponse.failure(String(e)).toResponse(500);
     }
   }
 }

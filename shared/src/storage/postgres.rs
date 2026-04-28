@@ -41,13 +41,14 @@ impl ObjectStorage for PostgresStorage {
         // Content-address: reuse existing blob when hash matches. Under concurrent
         // writes the SELECT+INSERT race may produce a small bounded number of
         // duplicates per hash; those are cleaned up by the orphan GC.
-        let existing: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM content_blobs WHERE sha256_hash = $1 LIMIT 1",
-        )
-        .bind(&hash)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| StorageError::Backend(format!("Failed to lookup content by hash: {}", e)))?;
+        let existing: Option<String> =
+            sqlx::query_scalar("SELECT id FROM content_blobs WHERE sha256_hash = $1 LIMIT 1")
+                .bind(&hash)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| {
+                    StorageError::Backend(format!("Failed to lookup content by hash: {}", e))
+                })?;
 
         if let Some(id) = existing {
             return Ok(id);

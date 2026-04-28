@@ -1,28 +1,186 @@
 use crate::people_extractor;
 use crate::AppState;
 use anyhow::{Context, Result};
-use futures::future::join_all;
 use shared::db::repositories::{
     DocumentRepository, EmbeddingRepository, GroupRepository, PersonRepository, SyncRunRepository,
 };
 use shared::embedding_queue::EmbeddingQueue;
 use shared::models::{
     ConnectorEvent, ConnectorEventQueueItem, Document, DocumentAttributes, DocumentMetadata,
-    DocumentPermissions,
+    DocumentPermissions, EventStatus, SyncType,
 };
 use shared::queue::EventQueue;
 use shared::storage::gc::{ContentBlobGC, GCConfig};
-use sqlx::postgres::PgListener;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
-use tokio::time::{interval, Duration, Instant};
+use tokio::time::{interval, Duration, MissedTickBehavior};
 use tracing::{debug, error, info, warn};
 
-// Adaptive batch accumulation constants
-const IDLE_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_ACCUMULATION_WAIT: Duration = Duration::from_secs(300); // 5 minutes
-const BATCH_CHECK_INTERVAL: Duration = Duration::from_millis(500);
+// Default poll interval for draining the queue. Overridable via INDEXER_POLL_INTERVAL_SECS.
+// SDK-side buffering already shapes events into the right batch size per sync type,
+// so the indexer just drains whatever's there on each tick.
+const DEFAULT_POLL_INTERVAL_SECS: u64 = 60;
+
+// Per-SyncType batching thresholds for the indexer.
+//
+// The indexer polls frequently but only writes when one of these thresholds is met.
+// This lets small incremental trickles accumulate while full-sync bursts go through
+// quickly (they are already well-shaped by the connector-side SDK buffer).
+//
+// All values are overridable via environment variables.
+const DEFAULT_FULL_BATCH_SIZE: i64 = 1000;
+const DEFAULT_FULL_BATCH_MAX_AGE_SECS: i64 = 300;
+const DEFAULT_INCREMENTAL_BATCH_SIZE: i64 = 100;
+const DEFAULT_INCREMENTAL_BATCH_MAX_AGE_SECS: i64 = 60;
+const DEFAULT_REALTIME_BATCH_SIZE: i64 = 1;
+const DEFAULT_REALTIME_BATCH_MAX_AGE_SECS: i64 = 0;
+const DEFAULT_GLOBAL_BATCH_MAX_AGE_SECS: i64 = 300;
+
+#[derive(Clone)]
+struct BatchingConfig {
+    full_batch_size: i64,
+    full_max_age_secs: i64,
+    incremental_batch_size: i64,
+    incremental_max_age_secs: i64,
+    realtime_batch_size: i64,
+    realtime_max_age_secs: i64,
+    global_max_age_secs: i64,
+}
+
+impl Default for BatchingConfig {
+    fn default() -> Self {
+        Self {
+            full_batch_size: DEFAULT_FULL_BATCH_SIZE,
+            full_max_age_secs: DEFAULT_FULL_BATCH_MAX_AGE_SECS,
+            incremental_batch_size: DEFAULT_INCREMENTAL_BATCH_SIZE,
+            incremental_max_age_secs: DEFAULT_INCREMENTAL_BATCH_MAX_AGE_SECS,
+            realtime_batch_size: DEFAULT_REALTIME_BATCH_SIZE,
+            realtime_max_age_secs: DEFAULT_REALTIME_BATCH_MAX_AGE_SECS,
+            global_max_age_secs: DEFAULT_GLOBAL_BATCH_MAX_AGE_SECS,
+        }
+    }
+}
+
+impl BatchingConfig {
+    fn from_env() -> Self {
+        Self {
+            full_batch_size: env_or("INDEXER_FULL_BATCH_SIZE", DEFAULT_FULL_BATCH_SIZE),
+            full_max_age_secs: env_or(
+                "INDEXER_FULL_BATCH_MAX_AGE_SECS",
+                DEFAULT_FULL_BATCH_MAX_AGE_SECS,
+            ),
+            incremental_batch_size: env_or(
+                "INDEXER_INCREMENTAL_BATCH_SIZE",
+                DEFAULT_INCREMENTAL_BATCH_SIZE,
+            ),
+            incremental_max_age_secs: env_or(
+                "INDEXER_INCREMENTAL_BATCH_MAX_AGE_SECS",
+                DEFAULT_INCREMENTAL_BATCH_MAX_AGE_SECS,
+            ),
+            realtime_batch_size: env_or("INDEXER_REALTIME_BATCH_SIZE", DEFAULT_REALTIME_BATCH_SIZE),
+            realtime_max_age_secs: env_or(
+                "INDEXER_REALTIME_BATCH_MAX_AGE_SECS",
+                DEFAULT_REALTIME_BATCH_MAX_AGE_SECS,
+            ),
+            global_max_age_secs: env_or(
+                "INDEXER_GLOBAL_BATCH_MAX_AGE_SECS",
+                DEFAULT_GLOBAL_BATCH_MAX_AGE_SECS,
+            ),
+        }
+    }
+
+    /// Returns the list of sync types whose pending events meet a threshold.
+    fn ready_sync_types(
+        &self,
+        by_sync_type: &HashMap<SyncType, (i64, i64)>,
+        _orphan_count: i64,
+    ) -> Vec<(SyncType, String)> {
+        let mut ready = Vec::new();
+
+        for (sync_type, (count, oldest_age_secs)) in by_sync_type {
+            let (size_threshold, age_threshold) = match sync_type {
+                SyncType::Full => (self.full_batch_size, self.full_max_age_secs),
+                SyncType::Incremental => {
+                    (self.incremental_batch_size, self.incremental_max_age_secs)
+                }
+                SyncType::Realtime => (self.realtime_batch_size, self.realtime_max_age_secs),
+            };
+
+            if *count >= size_threshold {
+                ready.push((
+                    sync_type.clone(),
+                    format!("{} count {} >= {}", sync_type, count, size_threshold),
+                ));
+            } else if *oldest_age_secs >= age_threshold {
+                ready.push((
+                    sync_type.clone(),
+                    format!(
+                        "{} age {}s >= {}s",
+                        sync_type, oldest_age_secs, age_threshold
+                    ),
+                ));
+            }
+        }
+
+        // Global safety net: never let events stall longer than this.
+        let oldest_any = by_sync_type
+            .values()
+            .map(|(_, age)| *age)
+            .chain(std::iter::once(0))
+            .max()
+            .unwrap_or(0);
+        if oldest_any >= self.global_max_age_secs {
+            for (sync_type, _) in by_sync_type {
+                if !ready.iter().any(|(st, _)| st == sync_type) {
+                    ready.push((
+                        sync_type.clone(),
+                        format!(
+                            "global max age {}s >= {}s",
+                            oldest_any, self.global_max_age_secs
+                        ),
+                    ));
+                }
+            }
+        }
+
+        ready
+    }
+}
+
+/// Pending count and oldest age (seconds) for a sync type.
+type PendingBySyncType = HashMap<SyncType, (i64, i64)>;
+
+fn summarize_pending(summary: &shared::queue::QueueSummary) -> (PendingBySyncType, i64) {
+    let mut by_sync_type = PendingBySyncType::new();
+    let mut orphan_count = 0i64;
+
+    for entry in &summary.entries {
+        if entry.status != EventStatus::Pending {
+            continue;
+        }
+        let oldest_age_secs = entry
+            .oldest
+            .map(|t| (chrono::Utc::now() - t).num_seconds())
+            .unwrap_or(0);
+
+        match &entry.sync_type {
+            None => orphan_count = entry.count,
+            Some(st) => {
+                by_sync_type.insert(st.clone(), (entry.count, oldest_age_secs));
+            }
+        }
+    }
+
+    (by_sync_type, orphan_count)
+}
+
+fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
 
 // Batch processing types
 #[derive(Debug)]
@@ -83,12 +241,9 @@ pub struct QueueProcessor {
     pub embedding_queue: EmbeddingQueue,
     pub sync_run_repo: SyncRunRepository,
     pub batch_size: i32,
-    pub parallelism: usize,
-    semaphore: Arc<Semaphore>,
     processing_mutex: Arc<Mutex<()>>,
-    idle_timeout: Duration,
-    max_accumulation_wait: Duration,
-    batch_check_interval: Duration,
+    poll_interval: Duration,
+    batching_config: BatchingConfig,
 }
 
 impl QueueProcessor {
@@ -96,31 +251,19 @@ impl QueueProcessor {
         let event_queue = EventQueue::new(state.db_pool.pool().clone());
         let embedding_queue = EmbeddingQueue::new(state.db_pool.pool().clone());
         let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
-        let parallelism = (num_cpus::get() / 2).max(1); // Half the CPU cores, minimum 1
-        let semaphore = Arc::new(Semaphore::new(parallelism));
         let processing_mutex = Arc::new(Mutex::new(()));
+        let batch_size = env_or("INDEXER_BATCH_SIZE", 2000);
+        let poll_interval_secs = env_or("INDEXER_POLL_INTERVAL_SECS", DEFAULT_POLL_INTERVAL_SECS);
         Self {
             state,
             event_queue,
             embedding_queue,
             sync_run_repo,
-            batch_size: std::env::var("INDEXER_BATCH_SIZE")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(1000),
-            parallelism,
-            semaphore,
+            batch_size,
             processing_mutex,
-            idle_timeout: IDLE_TIMEOUT,
-            max_accumulation_wait: MAX_ACCUMULATION_WAIT,
-            batch_check_interval: BATCH_CHECK_INTERVAL,
+            poll_interval: Duration::from_secs(poll_interval_secs),
+            batching_config: BatchingConfig::from_env(),
         }
-    }
-
-    pub fn with_parallelism(mut self, parallelism: usize) -> Self {
-        self.parallelism = parallelism;
-        self.semaphore = Arc::new(Semaphore::new(parallelism));
-        self
     }
 
     pub fn with_batch_size(mut self, batch_size: i32) -> Self {
@@ -128,22 +271,21 @@ impl QueueProcessor {
         self
     }
 
-    pub fn with_accumulation_config(
-        mut self,
-        idle_timeout: Duration,
-        max_accumulation_wait: Duration,
-        batch_check_interval: Duration,
-    ) -> Self {
-        self.idle_timeout = idle_timeout;
-        self.max_accumulation_wait = max_accumulation_wait;
-        self.batch_check_interval = batch_check_interval;
+    pub fn with_poll_interval(mut self, poll_interval: Duration) -> Self {
+        self.poll_interval = poll_interval;
+        self
+    }
+
+    #[allow(dead_code)]
+    fn with_batching_config(mut self, config: BatchingConfig) -> Self {
+        self.batching_config = config;
         self
     }
 
     pub async fn start(&self) -> Result<()> {
         info!(
-            "Starting queue processor with batch size: {}, parallelism: {}",
-            self.batch_size, self.parallelism
+            "Starting queue processor with batch size: {}",
+            self.batch_size
         );
 
         // Recover any stale processing items from previous runs (5 minute timeout)
@@ -180,116 +322,37 @@ impl QueueProcessor {
             }
         }
 
-        let mut listener = PgListener::connect_with(self.state.db_pool.pool()).await?;
-        listener.listen("indexer_queue").await?;
-
-        let mut poll_interval = interval(Duration::from_secs(60)); // Backup polling every minute
+        let mut poll_interval = interval(self.poll_interval);
+        poll_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut heartbeat_interval = interval(Duration::from_secs(300));
         let mut retry_interval = interval(Duration::from_secs(300)); // 5 minutes
         let mut cleanup_interval = interval(Duration::from_secs(3600)); // 1 hour
         let mut recovery_interval = interval(Duration::from_secs(300)); // 5 minutes
         let mut gc_interval = interval(Duration::from_secs(3600 * 6)); // 6 hours
-        let mut check_interval = interval(self.batch_check_interval);
 
         // GC runs off the main select as its own task so a long sweep cannot stall
         // event processing. The semaphore bounds concurrent runs to 1; overlapping
         // ticks are skipped.
         let gc_semaphore = Arc::new(Semaphore::new(1));
 
-        // Batch accumulation state
-        let mut accumulation_start: Option<Instant> = None;
-        let mut last_notification: Option<Instant> = None;
-
-        // Process any existing events first
-        if let Err(e) = self.process_batch_safe().await {
-            error!("Failed to process initial batch: {}", e);
-        }
+        info!(
+            "Queue processor poll interval: {:?}, batch_size: {}, batching: full={}/{}s incremental={}/{}s realtime={}/{}s global_age={}s",
+            self.poll_interval,
+            self.batch_size,
+            self.batching_config.full_batch_size,
+            self.batching_config.full_max_age_secs,
+            self.batching_config.incremental_batch_size,
+            self.batching_config.incremental_max_age_secs,
+            self.batching_config.realtime_batch_size,
+            self.batching_config.realtime_max_age_secs,
+            self.batching_config.global_max_age_secs,
+        );
 
         loop {
             tokio::select! {
-                notification = listener.recv() => {
-                    match notification {
-                        Ok(_) => {
-                            let now = Instant::now();
-
-                            // Enter accumulation mode on first notification
-                            if accumulation_start.is_none() {
-                                accumulation_start = Some(now);
-                                debug!("Entered accumulation mode");
-                            }
-
-                            // Track last notification time for idle detection
-                            last_notification = Some(now);
-                        }
-                        Err(e) => {
-                            error!("Failed to receive notification: {}", e);
-                            // Reconnect listener
-                            if let Ok(mut new_listener) = PgListener::connect_with(self.state.db_pool.pool()).await {
-                                if new_listener.listen("indexer_queue").await.is_ok() {
-                                    listener = new_listener;
-                                    info!("Reconnected to notification listener");
-                                }
-                            }
-                        }
-                    }
-                }
-                _ = check_interval.tick() => {
-                    if let Some(start) = accumulation_start {
-                        let now = Instant::now();
-                        let accumulation_elapsed = start.elapsed();
-                        let idle_elapsed = last_notification
-                            .map(|t| now.duration_since(t))
-                            .unwrap_or(Duration::ZERO);
-
-                        // Check if idle timeout reached (incremental sync detected)
-                        let idle_triggered = idle_elapsed >= self.idle_timeout;
-
-                        // Check if max timeout reached (safety net)
-                        let max_timeout_triggered = accumulation_elapsed >= self.max_accumulation_wait;
-
-                        // Check if threshold reached (full batch ready)
-                        let threshold_triggered = if !idle_triggered && !max_timeout_triggered {
-                            match self.event_queue.get_pending_count().await {
-                                Ok(count) => count >= self.batch_size as i64,
-                                Err(e) => {
-                                    error!("Failed to get pending count: {}", e);
-                                    false
-                                }
-                            }
-                        } else {
-                            false
-                        };
-
-                        if idle_triggered || max_timeout_triggered || threshold_triggered {
-                            let reason = if idle_triggered {
-                                "idle timeout (incremental sync)"
-                            } else if threshold_triggered {
-                                "threshold reached (bulk sync)"
-                            } else {
-                                "max timeout"
-                            };
-
-                            debug!(
-                                "Processing batch: reason={}, accumulated={:?}, idle={:?}",
-                                reason, accumulation_elapsed, idle_elapsed
-                            );
-
-                            // Reset accumulation state
-                            accumulation_start = None;
-                            last_notification = None;
-
-                            if let Err(e) = self.process_batch_safe().await {
-                                error!("Failed to process batch: {}", e);
-                            }
-                        }
-                    }
-                }
                 _ = poll_interval.tick() => {
-                    // Backup polling - only if not in accumulation mode
-                    if accumulation_start.is_none() {
-                        if let Err(e) = self.process_batch_safe().await {
-                            error!("Failed to process batch during backup poll: {}", e);
-                        }
+                    if let Err(e) = self.process_batch_safe().await {
+                        error!("Failed to process batch: {}", e);
                     }
                 }
                 _ = heartbeat_interval.tick() => {
@@ -380,61 +443,127 @@ impl QueueProcessor {
     }
 
     async fn process_batch(&self) -> Result<()> {
+        // Cap iterations per invocation so a full queue cannot hold this future
+        // for arbitrarily long, which would starve every other branch of the
+        // main select! loop (GC, retry, stale-recovery, heartbeat). Subsequent
+        // calls are driven by poll_interval in the main loop.
+        const MAX_BATCHES_PER_CALL: usize = 3;
+
+        // Sync-type-aware batching: only process if pending events meet a
+        // threshold (size or age). This lets small incremental trickles
+        // accumulate while full-sync bursts flow through quickly.
+        let summary = self.event_queue.get_queue_summary().await?;
+        let (by_sync_type, orphan_count) = summarize_pending(&summary);
+        let ready = self
+            .batching_config
+            .ready_sync_types(&by_sync_type, orphan_count);
+
+        let total_pending: i64 = by_sync_type.values().map(|(c, _)| *c).sum::<i64>() + orphan_count;
+        if ready.is_empty() && orphan_count == 0 {
+            if total_pending > 0 {
+                debug!(
+                    "Skipping batch: {} pending events do not meet sync-type thresholds",
+                    total_pending
+                );
+            }
+            return Ok(());
+        }
+
         let mut total_processed = 0;
+        let mut batches_dequeued = 0;
 
-        loop {
-            let events = self.event_queue.dequeue_batch(self.batch_size).await?;
-
+        // Process orphan events first (no valid sync_run). These mainly happen
+        // in tests that enqueue directly without creating sync_run rows.
+        while batches_dequeued < MAX_BATCHES_PER_CALL && orphan_count > 0 {
+            let events = self
+                .event_queue
+                .dequeue_batch_orphans(self.batch_size)
+                .await?;
             if events.is_empty() {
-                if total_processed > 0 {
-                    info!(
-                        "Finished processing all available events. Total processed: {}",
-                        total_processed
-                    );
-                }
-                return Ok(());
+                break;
+            }
+            batches_dequeued += 1;
+            total_processed += self.process_dequeued_events(events).await?;
+        }
+
+        for (sync_type, reason) in ready {
+            if batches_dequeued >= MAX_BATCHES_PER_CALL {
+                break;
             }
 
-            let batch_start_time = std::time::Instant::now();
             info!(
-                "Processing batch of {} events using batch operations",
-                events.len()
+                "Processing pending events for {:?}. Triggered by: {}",
+                sync_type, reason
             );
 
-            // Extract sync_run_id (all events in batch are from the same sync_run)
-            let sync_run_id = events
-                .first()
-                .context("Batch has no events")?
-                .sync_run_id
-                .clone();
+            let remaining = MAX_BATCHES_PER_CALL - batches_dequeued;
+            for _ in 0..remaining {
+                let events = self
+                    .event_queue
+                    .dequeue_batch_by_sync_type(self.batch_size, sync_type)
+                    .await?;
+                if events.is_empty() {
+                    break;
+                }
+                batches_dequeued += 1;
+                total_processed += self.process_dequeued_events(events).await?;
+            }
+        }
 
-            // Store events for potential fallback processing
-            let events_clone = events.clone();
+        if total_processed > 0 {
+            info!(
+                "Processed {} events this call (cap reached, continuing next tick)",
+                total_processed
+            );
+        }
+        Ok(())
+    }
 
-            // Group events by type for batch processing
-            let batch = self.group_events_by_type(sync_run_id, events).await?;
+    async fn process_dequeued_events(&self, events: Vec<ConnectorEventQueueItem>) -> Result<usize> {
+        if events.is_empty() {
+            return Ok(0);
+        }
+
+        info!(
+            "Processing batch of {} events using batch operations",
+            events.len()
+        );
+
+        // A single dequeue may contain events from multiple sync runs (e.g.
+        // two simultaneous full syncs). Group by sync_run_id so that progress
+        // tracking and per-sync-run batching remain correct.
+        let mut by_sync_run: HashMap<String, Vec<ConnectorEventQueueItem>> = HashMap::new();
+        for ev in events {
+            by_sync_run
+                .entry(ev.sync_run_id.clone())
+                .or_default()
+                .push(ev);
+        }
+
+        let mut total_processed = 0;
+
+        for (sync_run_id, run_events) in by_sync_run {
+            let batch_start_time = std::time::Instant::now();
+            let events_clone = run_events.clone();
+            let batch = self.group_events_by_type(sync_run_id, run_events).await?;
 
             if batch.is_empty() {
                 continue;
             }
 
             info!(
-                "Batch contains: {} upsert, {} deleted documents ({} upsert events, {} deleted events)",
+                "Sync-run batch contains: {} upsert, {} deleted documents ({} upsert events, {} deleted events)",
                 batch.documents_upsert.len(),
                 batch.documents_deleted.len(),
                 batch.documents_upsert.iter().map(|(_, event_ids)| event_ids.len()).sum::<usize>(),
                 batch.documents_deleted.iter().map(|(_, _, event_ids)| event_ids.len()).sum::<usize>()
             );
 
-            // Store sync_run_id before moving batch
             let batch_sync_run_id = batch.sync_run_id.clone();
-
-            // Process the batch with fallback to individual processing
             let result = self.process_event_batch(batch).await;
 
             match result {
                 Ok(batch_result) => {
-                    // Mark events as completed/failed in batch
                     if !batch_result.successful_event_ids.is_empty() {
                         if let Err(e) = self
                             .event_queue
@@ -463,7 +592,6 @@ impl QueueProcessor {
                         }
                     }
 
-                    // Update sync run progress with document count (not event count)
                     if batch_result.successful_documents_count > 0 {
                         if let Err(e) = self
                             .sync_run_repo
@@ -480,15 +608,13 @@ impl QueueProcessor {
                         }
                     }
 
-                    // Extract people from the raw events and upsert into the people table
                     self.extract_and_upsert_people(&events_clone).await;
 
-                    let processed_count = batch_result.successful_event_ids.len();
-                    total_processed += processed_count;
+                    total_processed += batch_result.successful_event_ids.len();
 
                     let batch_duration = batch_start_time.elapsed();
                     info!(
-                        "Batch processing completed: {} successful, {} failed (took {:?}, {:.1} events/sec)",
+                        "Sync-run batch processing completed: {} successful, {} failed (took {:?}, {:.1} events/sec)",
                         batch_result.successful_event_ids.len(),
                         batch_result.failed_events.len(),
                         batch_duration,
@@ -496,28 +622,26 @@ impl QueueProcessor {
                     );
                 }
                 Err(e) => {
-                    error!(
-                        "Batch processing failed, falling back to individual processing: {}",
-                        e
-                    );
-
-                    // Fall back to individual processing for this batch
-                    let fallback_result = self.process_events_individually(events_clone).await;
-                    match fallback_result {
-                        Ok(processed_count) => {
-                            total_processed += processed_count;
-                            info!(
-                                "Fallback processing completed successfully: {} events",
-                                processed_count
-                            );
-                        }
-                        Err(fallback_error) => {
-                            error!("Fallback processing also failed: {}", fallback_error);
-                        }
+                    error!("Batch processing failed: {}", e);
+                    let err_msg = e.to_string();
+                    let failed: Vec<(String, String)> = events_clone
+                        .iter()
+                        .map(|ev| (ev.id.clone(), err_msg.clone()))
+                        .collect();
+                    if let Err(mark_err) =
+                        self.event_queue.mark_events_dead_letter_batch(failed).await
+                    {
+                        error!(
+                            "Failed to mark {} events as failed after batch error: {}",
+                            events_clone.len(),
+                            mark_err
+                        );
                     }
                 }
             }
         }
+
+        Ok(total_processed)
     }
 
     async fn group_events_by_type(
@@ -1061,383 +1185,5 @@ impl QueueProcessor {
         }
 
         Ok(successful_event_ids)
-    }
-
-    // Fallback method for individual processing when batch operations fail
-    async fn process_events_individually(
-        &self,
-        events: Vec<ConnectorEventQueueItem>,
-    ) -> Result<usize> {
-        info!(
-            "Processing {} events individually as fallback",
-            events.len()
-        );
-
-        // Process events concurrently using the original individual approach
-        let mut tasks = Vec::new();
-
-        for event_item in events {
-            let event_id = event_item.id.clone();
-            let payload = event_item.payload.clone();
-            let state = self.state.clone();
-            let event_queue = self.event_queue.clone();
-            let semaphore = self.semaphore.clone();
-
-            let task = tokio::spawn(async move {
-                // Acquire semaphore permit to limit concurrency
-                let _permit = semaphore.acquire().await.unwrap();
-
-                info!("Processing event {} individually", event_id);
-
-                let processor = ProcessorContext::new(state);
-                match processor.process_event(&payload).await {
-                    Ok(_) => {
-                        if let Err(e) = event_queue.mark_completed(&event_id).await {
-                            error!("Failed to mark event {} as completed: {}", event_id, e);
-                            false
-                        } else {
-                            true
-                        }
-                    }
-                    Err(e) => {
-                        error!("Failed to process event {}: {}", event_id, e);
-                        if let Err(mark_err) =
-                            event_queue.mark_failed(&event_id, &e.to_string()).await
-                        {
-                            error!("Failed to mark event {} as failed: {}", event_id, mark_err);
-                        }
-                        false
-                    }
-                }
-            });
-
-            tasks.push(task);
-        }
-
-        // Wait for all tasks to complete
-        let results = join_all(tasks).await;
-
-        // Count successful processes
-        let processed_count = results
-            .iter()
-            .filter_map(|r| r.as_ref().ok())
-            .filter(|&&success| success)
-            .count();
-
-        info!(
-            "Individual processing completed: {} successful out of {} events",
-            processed_count,
-            results.len()
-        );
-        Ok(processed_count)
-    }
-}
-
-// Context for processing individual events concurrently
-struct ProcessorContext {
-    state: AppState,
-    sync_run_repo: SyncRunRepository,
-}
-
-impl ProcessorContext {
-    fn new(state: AppState) -> Self {
-        let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
-        Self {
-            state,
-            sync_run_repo,
-        }
-    }
-
-    async fn process_event(&self, payload: &serde_json::Value) -> Result<()> {
-        let start_time = std::time::Instant::now();
-        let event: ConnectorEvent = serde_json::from_value(payload.clone())?;
-        let sync_run_id = event.sync_run_id().to_string();
-        debug!("Started processing event, sync_run_id: {}", sync_run_id);
-
-        // Update sync run progress
-        let sync_update_start = std::time::Instant::now();
-        if let Err(e) = self.increment_sync_run_progress(&sync_run_id).await {
-            warn!(
-                "Failed to update sync run progress for {}: {}",
-                sync_run_id, e
-            );
-        }
-        debug!(
-            "Sync run progress update took: {:?}",
-            sync_update_start.elapsed()
-        );
-
-        match event {
-            ConnectorEvent::DocumentCreated {
-                sync_run_id: _,
-                source_id,
-                document_id,
-                content_id,
-                metadata,
-                permissions,
-                attributes,
-            } => {
-                self.handle_document_created(
-                    source_id,
-                    document_id,
-                    content_id,
-                    metadata,
-                    permissions,
-                    attributes,
-                )
-                .await?;
-            }
-            ConnectorEvent::DocumentUpdated {
-                sync_run_id: _,
-                source_id,
-                document_id,
-                content_id,
-                metadata,
-                permissions,
-                attributes,
-            } => {
-                self.handle_document_updated(
-                    source_id,
-                    document_id,
-                    content_id,
-                    metadata,
-                    permissions,
-                    attributes,
-                )
-                .await?;
-            }
-            ConnectorEvent::DocumentDeleted {
-                sync_run_id: _,
-                source_id,
-                document_id,
-            } => {
-                self.handle_document_deleted(source_id, document_id).await?;
-            }
-            ConnectorEvent::GroupMembershipSync {
-                source_id,
-                group_email,
-                group_name,
-                member_emails,
-                ..
-            } => {
-                let group_repo = GroupRepository::new(self.state.db_pool.pool());
-                let group = group_repo
-                    .upsert_group(&source_id, &group_email, group_name.as_deref(), None)
-                    .await?;
-                group_repo
-                    .sync_group_members(&group.id, &member_emails)
-                    .await?;
-                info!(
-                    "Synced group {} with {} members",
-                    group_email,
-                    member_emails.len()
-                );
-            }
-        }
-
-        debug!("Total event processing time: {:?}", start_time.elapsed());
-        Ok(())
-    }
-
-    async fn handle_document_created(
-        &self,
-        source_id: String,
-        document_id: String,
-        content_id: String,
-        metadata: DocumentMetadata,
-        permissions: DocumentPermissions,
-        attributes: Option<DocumentAttributes>,
-    ) -> Result<()> {
-        info!(
-            "Processing document created/updated: {} from source {}",
-            document_id, source_id
-        );
-
-        let now = sqlx::types::time::OffsetDateTime::now_utc();
-        let metadata_json = serde_json::to_value(&metadata)?;
-        let permissions_json = serde_json::to_value(&permissions)?;
-        let attributes_json = serde_json::to_value(&attributes.unwrap_or_default())?;
-
-        // Extract file extension from URL or mime type
-        let file_extension = metadata.url.as_ref().and_then(|url| {
-            url.split('.')
-                .last()
-                .filter(|ext| !ext.contains('/') && !ext.contains('?'))
-                .map(|ext| ext.to_lowercase())
-        });
-
-        // Parse file size from string to i64
-        let file_size = metadata
-            .size
-            .as_ref()
-            .and_then(|size_str| size_str.parse::<i64>().ok());
-
-        let document = Document {
-            id: ulid::Ulid::new().to_string(),
-            source_id: source_id.clone(),
-            external_id: document_id.clone(),
-            title: metadata.title.unwrap_or_else(|| "Untitled".to_string()),
-            content_id: Some(content_id.clone()),
-            content_type: metadata.content_type.clone().or(metadata.mime_type.clone()),
-            file_size,
-            file_extension,
-            url: metadata.url.clone(),
-            metadata: metadata_json,
-            permissions: permissions_json,
-            attributes: attributes_json,
-            created_at: now,
-            updated_at: now,
-            last_indexed_at: now,
-        };
-
-        // Fetch content from storage for tsvector generation and embedding queueing
-        let content = match self.state.content_storage.get_text(&content_id).await {
-            Ok(content) => content,
-            Err(e) => {
-                error!(
-                    "Failed to fetch content from storage for document {}: {}",
-                    document_id, e
-                );
-                return Err(e.into());
-            }
-        };
-
-        let repo = DocumentRepository::new(self.state.db_pool.pool());
-        let upsert_start = std::time::Instant::now();
-        let upserted = repo.upsert(document, &content).await?;
-        debug!("Document upsert took: {:?}", upsert_start.elapsed());
-
-        // Queue embeddings for async generation instead of generating them synchronously
-        if content.trim().is_empty() {
-            info!(
-                "Skipping embedding queue for document {} - no content",
-                document_id
-            );
-        } else {
-            let queue_start = std::time::Instant::now();
-            if let Err(e) = self
-                .state
-                .embedding_queue
-                .enqueue(upserted.id.clone())
-                .await
-            {
-                error!(
-                    "Failed to queue embeddings for document {}: {}",
-                    document_id, e
-                );
-            } else {
-                debug!(
-                    "Embeddings queued for document {} (took: {:?})",
-                    document_id,
-                    queue_start.elapsed()
-                );
-            }
-        }
-
-        info!("Document upserted successfully: {}", document_id);
-        Ok(())
-    }
-
-    async fn handle_document_updated(
-        &self,
-        source_id: String,
-        document_id: String,
-        content_id: String,
-        metadata: DocumentMetadata,
-        permissions: Option<DocumentPermissions>,
-        attributes: Option<DocumentAttributes>,
-    ) -> Result<()> {
-        info!(
-            "Processing document updated: {} from source {}",
-            document_id, source_id
-        );
-
-        let repo = DocumentRepository::new(self.state.db_pool.pool());
-
-        if let Some(mut document) = repo.find_by_external_id(&source_id, &document_id).await? {
-            let now = sqlx::types::time::OffsetDateTime::now_utc();
-            let metadata_json = serde_json::to_value(&metadata)?;
-            let doc_id = document.id.clone();
-
-            document.title = metadata.title.unwrap_or(document.title);
-            document.content_id = Some(content_id.clone());
-            document.metadata = metadata_json;
-            if let Some(perms) = permissions {
-                document.permissions = serde_json::to_value(&perms)?;
-            }
-            if let Some(attrs) = attributes {
-                document.attributes = serde_json::to_value(&attrs)?;
-            }
-            document.updated_at = now;
-
-            // Fetch content from storage for tsvector generation and embedding queueing
-            let content = match self.state.content_storage.get_text(&content_id).await {
-                Ok(content) => content,
-                Err(e) => {
-                    error!(
-                        "Failed to fetch content from storage for document {}: {}",
-                        document_id, e
-                    );
-                    return Err(e.into());
-                }
-            };
-
-            let updated_document = repo.update(&doc_id, document, &content).await?;
-
-            // Queue embeddings for async generation
-            if let Some(_updated_doc) = &updated_document {
-                if !content.trim().is_empty() {
-                    if let Err(e) = self.state.embedding_queue.enqueue(doc_id.clone()).await {
-                        error!(
-                            "Failed to queue embeddings for updated document {}: {}",
-                            document_id, e
-                        );
-                    }
-                }
-            }
-
-            info!("Document updated successfully: {}", document_id);
-        } else {
-            warn!(
-                "Document not found for update: {} from source {}",
-                document_id, source_id
-            );
-        }
-
-        Ok(())
-    }
-
-    async fn handle_document_deleted(&self, source_id: String, document_id: String) -> Result<()> {
-        info!(
-            "Processing document deleted: {} from source {}",
-            document_id, source_id
-        );
-
-        let repo = DocumentRepository::new(self.state.db_pool.pool());
-
-        if let Some(document) = repo.find_by_external_id(&source_id, &document_id).await? {
-            // Delete embeddings first
-            let embedding_repo = EmbeddingRepository::new(self.state.db_pool.pool());
-            embedding_repo.delete_by_document_id(&document.id).await?;
-
-            // Then delete the document
-            repo.delete(&document.id).await?;
-            info!(
-                "Document and embeddings deleted successfully: {}",
-                document_id
-            );
-        } else {
-            warn!(
-                "Document not found for deletion: {} from source {}",
-                document_id, source_id
-            );
-        }
-
-        Ok(())
-    }
-
-    async fn increment_sync_run_progress(&self, sync_run_id: &str) -> Result<()> {
-        self.sync_run_repo.increment_progress(sync_run_id).await?;
-        Ok(())
     }
 }

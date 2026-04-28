@@ -13,12 +13,7 @@
         onCancel?: () => void
     }
 
-    let {
-        open = $bindable(false),
-        connectedSourceTypes = [],
-        onSuccess,
-        onCancel,
-    }: Props = $props()
+    let { open = false, connectedSourceTypes = [], onSuccess, onCancel }: Props = $props()
 
     let driveAlreadyConnected = $derived(connectedSourceTypes.includes('google_drive'))
     let gmailAlreadyConnected = $derived(connectedSourceTypes.includes('gmail'))
@@ -39,18 +34,17 @@
         if (connectDrive) serviceTypes.push('google_drive')
         if (connectGmail) serviceTypes.push('gmail')
 
-        window.location.href = `/api/connectors/google/oauth/start?serviceTypes=${serviceTypes.join(',')}`
+        window.location.href = `/api/oauth/start?source_types=${serviceTypes.join(',')}`
     }
 
     function handleCancel() {
-        open = false
         connectDrive = true
         connectGmail = true
         onCancel?.()
     }
 </script>
 
-<Dialog.Root bind:open>
+<Dialog.Root {open} onOpenChange={(o) => !o && handleCancel()}>
     <Dialog.Content class="max-w-md">
         <Dialog.Header>
             <Dialog.Title>Connect with Google</Dialog.Title>

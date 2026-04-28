@@ -112,14 +112,17 @@ async fn test_sync_lifecycle() {
         .unwrap();
     assert_eq!(run.documents_scanned, 8);
 
-    // SDK complete
+    // Save connector state — its own endpoint, decoupled from complete.
+    server
+        .put(&format!("/sdk/source/{}/connector-state", TEST_SOURCE_ID))
+        .json(&json!({"cursor": "abc"}))
+        .await
+        .assert_status(StatusCode::OK);
+
+    // SDK complete is a status-only flip. Counts come from increment_*;
+    // connector state from save_connector_state.
     server
         .post(&format!("/sdk/sync/{}/complete", sync_run_id))
-        .json(&json!({
-            "documents_scanned": 42,
-            "documents_updated": 10,
-            "new_state": {"cursor": "abc"}
-        }))
         .await
         .assert_status(StatusCode::OK);
 
@@ -129,8 +132,8 @@ async fn test_sync_lifecycle() {
         .unwrap()
         .unwrap();
     assert_eq!(run.status, SyncStatus::Completed);
-    assert_eq!(run.documents_scanned, 42);
-    assert_eq!(run.documents_updated, 10);
+    assert_eq!(run.documents_scanned, 8);
+    assert_eq!(run.documents_updated, 0);
 
     let source_row: (Option<serde_json::Value>,) =
         sqlx::query_as("SELECT connector_state FROM sources WHERE id = $1")

@@ -1,8 +1,19 @@
+use std::collections::HashMap;
+
 use anyhow::Result;
 use sqlx::{PgPool, Row};
 use ulid::Ulid;
 
-use crate::models::{ConnectorEvent, ConnectorEventQueueItem};
+use crate::models::{ConnectorEvent, ConnectorEventQueueItem, EventStatus, SyncType};
+
+fn event_type_str(event: &ConnectorEvent) -> &'static str {
+    match event {
+        ConnectorEvent::DocumentCreated { .. } => "document_created",
+        ConnectorEvent::DocumentUpdated { .. } => "document_updated",
+        ConnectorEvent::DocumentDeleted { .. } => "document_deleted",
+        ConnectorEvent::GroupMembershipSync { .. } => "group_membership_sync",
+    }
+}
 
 #[derive(Clone)]
 pub struct EventQueue {
@@ -16,14 +27,7 @@ impl EventQueue {
 
     pub async fn enqueue(&self, source_id: &str, event: &ConnectorEvent) -> Result<String> {
         let id = Ulid::new().to_string();
-        let event_type = match event {
-            ConnectorEvent::DocumentCreated { .. } => "document_created",
-            ConnectorEvent::DocumentUpdated { .. } => "document_updated",
-            ConnectorEvent::DocumentDeleted { .. } => "document_deleted",
-            ConnectorEvent::GroupMembershipSync { .. } => "group_membership_sync",
-        };
-
-        let mut tx = self.pool.begin().await?;
+        let event_type = event_type_str(event);
 
         sqlx::query(
             r#"
@@ -36,37 +40,63 @@ impl EventQueue {
         .bind(source_id)
         .bind(event_type)
         .bind(serde_json::to_value(event)?)
-        .execute(&mut *tx)
+        .execute(&self.pool)
         .await?;
-
-        sqlx::query("NOTIFY indexer_queue")
-            .execute(&mut *tx)
-            .await?;
-
-        tx.commit().await?;
 
         Ok(id)
     }
 
+    pub async fn enqueue_batch(
+        &self,
+        source_id: &str,
+        events: &[ConnectorEvent],
+    ) -> Result<Vec<String>> {
+        if events.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut ids: Vec<String> = Vec::with_capacity(events.len());
+        let mut sync_run_ids: Vec<String> = Vec::with_capacity(events.len());
+        let mut source_ids: Vec<String> = Vec::with_capacity(events.len());
+        let mut event_types: Vec<String> = Vec::with_capacity(events.len());
+        let mut payloads: Vec<serde_json::Value> = Vec::with_capacity(events.len());
+
+        for event in events {
+            ids.push(Ulid::new().to_string());
+            sync_run_ids.push(event.sync_run_id().to_string());
+            source_ids.push(source_id.to_string());
+            event_types.push(event_type_str(event).to_string());
+            payloads.push(serde_json::to_value(event)?);
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO connector_events_queue (id, sync_run_id, source_id, event_type, payload)
+            SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::jsonb[])
+            "#,
+        )
+        .bind(&ids)
+        .bind(&sync_run_ids)
+        .bind(&source_ids)
+        .bind(&event_types)
+        .bind(&payloads)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(ids)
+    }
+
     pub async fn dequeue_batch(&self, batch_size: i32) -> Result<Vec<ConnectorEventQueueItem>> {
-        // Dequeue events from a single sync_run (the one with most pending events)
-        // This ensures each batch contains events from only one sync_run
+        // Dequeue the oldest N pending events across all sync_runs (ordered by id = ULID,
+        // which is time-sortable). Downstream processing groups by sync_run_id for
+        // progress updates.
         let rows = sqlx::query(
             r#"
-            WITH target_sync_run AS (
-                SELECT sync_run_id
-                FROM connector_events_queue
-                WHERE status = 'pending'
-                GROUP BY sync_run_id
-                ORDER BY COUNT(*) DESC
-                LIMIT 1
-            ),
-            batch AS (
+            WITH batch AS (
                 SELECT id
                 FROM connector_events_queue
                 WHERE status = 'pending'
-                  AND sync_run_id = (SELECT sync_run_id FROM target_sync_run)
-                ORDER BY created_at
+                ORDER BY id
                 LIMIT $1
                 FOR UPDATE SKIP LOCKED
             )
@@ -93,6 +123,96 @@ impl EventQueue {
         .fetch_all(&self.pool)
         .await?;
 
+        Ok(Self::map_rows_to_items(rows))
+    }
+
+    pub async fn dequeue_batch_by_sync_type(
+        &self,
+        batch_size: i32,
+        sync_type: SyncType,
+    ) -> Result<Vec<ConnectorEventQueueItem>> {
+        let rows = sqlx::query(
+            r#"
+            WITH batch AS (
+                SELECT q.id
+                FROM connector_events_queue q
+                JOIN sync_runs s ON q.sync_run_id = s.id
+                WHERE q.status = 'pending'
+                AND s.sync_type = $2
+                ORDER BY q.id
+                LIMIT $1
+                FOR UPDATE OF q SKIP LOCKED
+            )
+            UPDATE connector_events_queue q
+            SET status = 'processing',
+                processing_started_at = NOW()
+            FROM batch
+            WHERE q.id = batch.id
+            RETURNING
+                q.id,
+                q.sync_run_id,
+                q.source_id,
+                q.event_type,
+                q.payload,
+                q.status,
+                q.retry_count,
+                q.max_retries,
+                q.created_at,
+                q.processed_at,
+                q.error_message
+            "#,
+        )
+        .bind(batch_size)
+        .bind(sync_type)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(Self::map_rows_to_items(rows))
+    }
+
+    pub async fn dequeue_batch_orphans(
+        &self,
+        batch_size: i32,
+    ) -> Result<Vec<ConnectorEventQueueItem>> {
+        let rows = sqlx::query(
+            r#"
+            WITH batch AS (
+                SELECT q.id
+                FROM connector_events_queue q
+                LEFT JOIN sync_runs s ON q.sync_run_id = s.id
+                WHERE q.status = 'pending'
+                AND s.id IS NULL
+                ORDER BY q.id
+                LIMIT $1
+                FOR UPDATE OF q SKIP LOCKED
+            )
+            UPDATE connector_events_queue q
+            SET status = 'processing',
+                processing_started_at = NOW()
+            FROM batch
+            WHERE q.id = batch.id
+            RETURNING
+                q.id,
+                q.sync_run_id,
+                q.source_id,
+                q.event_type,
+                q.payload,
+                q.status,
+                q.retry_count,
+                q.max_retries,
+                q.created_at,
+                q.processed_at,
+                q.error_message
+            "#,
+        )
+        .bind(batch_size)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(Self::map_rows_to_items(rows))
+    }
+
+    fn map_rows_to_items(rows: Vec<sqlx::postgres::PgRow>) -> Vec<ConnectorEventQueueItem> {
         let mut events = Vec::new();
         for row in rows {
             let status_str: String = row.get("status");
@@ -119,8 +239,7 @@ impl EventQueue {
                 error_message: row.get("error_message"),
             });
         }
-
-        Ok(events)
+        events
     }
 
     pub async fn mark_completed(&self, event_id: &str) -> Result<()> {
@@ -255,6 +374,57 @@ impl EventQueue {
             failed,
             dead_letter,
         })
+    }
+
+    pub async fn get_queue_summary(&self) -> Result<QueueSummary> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                s.sync_type,
+                q.status,
+                COUNT(*) as count,
+                MIN(q.created_at) as oldest
+            FROM connector_events_queue q
+            LEFT JOIN sync_runs s ON q.sync_run_id = s.id
+            GROUP BY s.sync_type, q.status
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut entries = Vec::new();
+
+        for row in rows {
+            let sync_type_str: Option<String> = row.get("sync_type");
+            let status_str: String = row.get("status");
+            let count: i64 = row.get("count");
+            let oldest: Option<chrono::DateTime<chrono::Utc>> = row.get("oldest");
+
+            let sync_type = match sync_type_str.as_deref() {
+                None => None,
+                Some("full") => Some(SyncType::Full),
+                Some("realtime") => Some(SyncType::Realtime),
+                Some(_) => Some(SyncType::Incremental),
+            };
+
+            let status = match status_str.as_str() {
+                "pending" => EventStatus::Pending,
+                "processing" => EventStatus::Processing,
+                "completed" => EventStatus::Completed,
+                "failed" => EventStatus::Failed,
+                "dead_letter" => EventStatus::DeadLetter,
+                _ => continue,
+            };
+
+            entries.push(QueueSummaryEntry {
+                sync_type,
+                status,
+                count,
+                oldest,
+            });
+        }
+
+        Ok(QueueSummary { entries })
     }
 
     pub async fn get_pending_count(&self) -> Result<i64> {
@@ -406,6 +576,22 @@ impl EventQueue {
     }
 }
 
+#[derive(Debug)]
+pub struct QueueSummaryEntry {
+    pub sync_type: Option<SyncType>,
+    pub status: EventStatus,
+    pub count: i64,
+    pub oldest: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug)]
+pub struct QueueSummary {
+    pub entries: Vec<QueueSummaryEntry>,
+}
+
+// TODO: consolidate QueueStats and QueueSummary into a single type.
+// QueueStats is flat (count only) and QueueSummary is keyed by EventStatus
+// with count + oldest. Merge them and update callers in a follow-up PR.
 #[derive(Debug, serde::Serialize)]
 pub struct QueueStats {
     pub pending: i64,

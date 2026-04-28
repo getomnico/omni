@@ -6,7 +6,7 @@ use omni_connector_manager::{config::ConnectorManagerConfig, create_app, AppStat
 use redis::AsyncCommands;
 use shared::db::repositories::service_credentials::ServiceCredentialsRepo;
 use shared::models::{
-    AuthType, ConnectorManifest, ServiceCredentials, ServiceProvider, SourceType,
+    AuthType, ConnectorManifest, ServiceCredential, ServiceProvider, SourceType, SyncType,
 };
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
@@ -66,7 +66,7 @@ pub async fn setup_test_fixture(source_type: SourceType) -> Result<TestFixture> 
         name: "atlassian".to_string(),
         display_name: "Atlassian".to_string(),
         version: "1.0.0".to_string(),
-        sync_modes: vec!["full".to_string()],
+        sync_modes: vec![SyncType::Full],
         connector_id: "atlassian".to_string(),
         connector_url: "http://127.0.0.1:1".to_string(),
         source_types: vec![SourceType::Confluence, SourceType::Jira],
@@ -79,6 +79,7 @@ pub async fn setup_test_fixture(source_type: SourceType) -> Result<TestFixture> 
         mcp_enabled: false,
         resources: vec![],
         prompts: vec![],
+        oauth: None,
     };
     let manifest_json = serde_json::to_string(&manifest)?;
     let mut redis_conn = redis_client.get_multiplexed_async_connection().await?;
@@ -147,9 +148,10 @@ async fn seed_atlassian_source(pool: &PgPool, source_type: SourceType) -> Result
     .await?;
 
     let creds_repo = ServiceCredentialsRepo::new(pool.clone())?;
-    let creds = ServiceCredentials {
+    let creds = ServiceCredential {
         id: TEST_CRED_ID.to_string(),
         source_id: "01JGF7V3E0Y2R1X8P5Q7W9T4N7".to_string(),
+        user_id: None,
         provider: ServiceProvider::Atlassian,
         auth_type: AuthType::ApiKey,
         principal_email: Some(TEST_USER_EMAIL.to_string()),

@@ -7,6 +7,7 @@ import {
   SyncRequestSchema,
   EventType,
   serializeConnectorEvent,
+  ActionResponse,
   type ConnectorEventPayload,
 } from '../src/models.js';
 
@@ -132,6 +133,53 @@ describe('SyncRequestSchema', () => {
       expect(result.data.sync_run_id).toBe('sync-123');
       expect(result.data.source_id).toBe('source-456');
     }
+  });
+});
+
+describe('ActionResponse', () => {
+  it('creates a success response', () => {
+    const response = ActionResponse.success({ key: 'value' });
+
+    expect(response.status).toBe('success');
+    expect(response.result).toEqual({ key: 'value' });
+    expect(response.error).toBeUndefined();
+  });
+
+  it('creates a failure response', () => {
+    const response = ActionResponse.failure('something went wrong');
+
+    expect(response.status).toBe('error');
+    expect(response.error).toBe('something went wrong');
+    expect(response.result).toBeUndefined();
+  });
+
+  it('creates a not supported response', () => {
+    const response = ActionResponse.notSupported('my_action');
+
+    expect(response.status).toBe('error');
+    expect(response.error).toBe('Action not supported: my_action');
+  });
+
+  it('toResponse returns a web Response with correct status', () => {
+    const successResp = ActionResponse.success({ data: 'ok' });
+    const successWebResp = successResp.toResponse();
+    expect(successWebResp.status).toBe(200);
+
+    const failureResp = ActionResponse.failure('bad param');
+    const failureWebResp = failureResp.toResponse();
+    expect(failureWebResp.status).toBe(400);
+
+    const customStatusResp = ActionResponse.failure('bad param').toResponse(422);
+    expect(customStatusResp.status).toBe(422);
+  });
+
+  it('toResponse returns JSON with correct content type', async () => {
+    const response = ActionResponse.success({ key: 'value' });
+    const webResp = response.toResponse();
+
+    expect(webResp.headers.get('content-type')).toBe('application/json');
+    const body = JSON.parse(await webResp.text());
+    expect(body).toEqual({ status: 'success', result: { key: 'value' } });
   });
 });
 

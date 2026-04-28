@@ -63,11 +63,7 @@ fn collect_attachments(mail: &ParsedMail, out: &mut Vec<RawAttachment>) {
         if is_supported(&effective_ct) {
             match mail.get_body_raw() {
                 Ok(data) if !data.is_empty() => {
-                    debug!(
-                        "Collected {} bytes from attachment '{}'",
-                        data.len(),
-                        name
-                    );
+                    debug!("Collected {} bytes from attachment '{}'", data.len(), name);
                     out.push(RawAttachment {
                         filename: name,
                         mime_type: effective_ct,

@@ -2,8 +2,6 @@
 
 import logging
 from typing import Any
-from urllib.parse import quote
-
 from starlette.responses import Response
 
 from omni_connector import Connector, SearchOperator, SyncContext
@@ -106,21 +104,21 @@ class MicrosoftConnector(Connector):
         action: str,
         params: dict[str, Any],
         credentials: dict[str, Any],
-    ) -> ActionResponse | Response:
+    ) -> Response:
         if action == "search_users":
             return await self._action_search_users(params, credentials)
         elif action == "fetch_file":
             return await self._action_fetch_file(params, credentials)
-        return ActionResponse.not_supported(action)
+        return ActionResponse.not_supported(action).to_response(status_code=404)
 
     async def _action_search_users(
         self,
         params: dict[str, Any],
         credentials: dict[str, Any],
-    ) -> ActionResponse:
+    ) -> Response:
         query = params.get("query", "").strip()
         if not query:
-            return ActionResponse.success({"users": []})
+            return ActionResponse.success({"users": []}).to_response()
 
         try:
             raw_creds = credentials.get("credentials", credentials)
@@ -128,21 +126,23 @@ class MicrosoftConnector(Connector):
             client = GraphClient(auth)
             try:
                 users = await client.search_users(query, limit=20)
-                return ActionResponse.success({"users": users})
+                return ActionResponse.success({"users": users}).to_response()
             finally:
                 await client.close()
         except Exception as e:
             logger.exception("search_users action failed")
-            return ActionResponse.failure(str(e))
+            return ActionResponse.failure(str(e)).to_response(status_code=500)
 
     async def _action_fetch_file(
         self,
         params: dict[str, Any],
         credentials: dict[str, Any],
-    ) -> ActionResponse | Response:
+    ) -> Response:
         file_id = params.get("file_id", "").strip()
         if not file_id:
-            return ActionResponse.failure("Missing required parameter: file_id")
+            return ActionResponse.failure(
+                "Missing required parameter: file_id"
+            ).to_response(status_code=400)
 
         # Parse external_id: onedrive:{drive_id}:{item_id} or sharepoint:{site_id}:{drive_id}:{item_id}
         parts = file_id.split(":")
@@ -157,7 +157,7 @@ class MicrosoftConnector(Connector):
                 f"Invalid file_id format: {file_id}. "
                 "Expected onedrive:{{drive_id}}:{{item_id}} or "
                 "sharepoint:{{site_id}}:{{drive_id}}:{{item_id}}"
-            )
+            ).to_response(status_code=400)
 
         try:
             raw_creds = credentials.get("credentials", credentials)
@@ -185,7 +185,7 @@ class MicrosoftConnector(Connector):
                     content=data,
                     media_type=mime_type,
                     headers={
-                        "X-File-Name": quote(file_name),
+                        "X-File-Name": file_name,
                         "Content-Length": str(len(data)),
                     },
                 )
@@ -193,7 +193,7 @@ class MicrosoftConnector(Connector):
                 await client.close()
         except Exception as e:
             logger.exception("fetch_file action failed")
-            return ActionResponse.failure(str(e))
+            return ActionResponse.failure(str(e)).to_response(status_code=500)
 
     async def sync(
         self,

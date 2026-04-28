@@ -1,11 +1,8 @@
 import { json, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
-import { db } from '$lib/server/db'
-import { serviceCredentials, sources } from '$lib/server/db/schema'
-import { eq } from 'drizzle-orm'
+import { getSourceById } from '$lib/server/db/sources'
+import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
 import { ServiceProvider, AuthType } from '$lib/types'
-import { ulid } from 'ulid'
-import { encryptConfig } from '$lib/server/crypto/encryption'
 
 export const POST: RequestHandler = async ({ request, locals, fetch }) => {
     if (!locals.user) {
@@ -15,12 +12,10 @@ export const POST: RequestHandler = async ({ request, locals, fetch }) => {
     const { sourceId, provider, authType, principalEmail, credentials, config } =
         await request.json()
 
-    // Validate required fields
     if (!sourceId || !provider || !authType || !credentials) {
         throw error(400, 'Missing required fields')
     }
 
-    // Validate provider and auth type
     if (!Object.values(ServiceProvider).includes(provider)) {
         throw error(400, 'Invalid provider')
     }
@@ -29,43 +24,39 @@ export const POST: RequestHandler = async ({ request, locals, fetch }) => {
         throw error(400, 'Invalid auth type')
     }
 
-    // Check if source exists
-    const source = await db.query.sources.findFirst({
-        where: eq(sources.id, sourceId),
-    })
-
+    const source = await getSourceById(sourceId)
     if (!source) {
         throw error(404, 'Source not found')
     }
 
-    // Allow source owner in addition to admins (e.g. OAuth callback for non-admin users)
     const isOwner = source.createdBy === locals.user.id
     if (locals.user.role !== 'admin' && !isOwner) {
         throw error(403, 'Forbidden')
     }
 
     try {
-        // Delete existing credentials for this source
-        await db.delete(serviceCredentials).where(eq(serviceCredentials.sourceId, sourceId))
+        // Personal-source creds belong to the source's owner (per-user row).
+        // Org-source creds are the shared service-account row (user_id IS NULL).
+        const created =
+            source.scope === 'user'
+                ? await serviceCredentialsRepository.createForUser({
+                      sourceId,
+                      userId: source.createdBy,
+                      provider,
+                      authType,
+                      principalEmail: principalEmail || null,
+                      credentials,
+                      config: config || {},
+                  })
+                : await serviceCredentialsRepository.create({
+                      sourceId,
+                      provider,
+                      authType,
+                      principalEmail: principalEmail || null,
+                      credentials,
+                      config: config || {},
+                  })
 
-        // Encrypt and insert new credentials directly
-        const id = ulid()
-        const encryptedCredentials = encryptConfig(credentials)
-
-        const [created] = await db
-            .insert(serviceCredentials)
-            .values({
-                id,
-                sourceId,
-                provider,
-                authType,
-                principalEmail: principalEmail || null,
-                credentials: encryptedCredentials,
-                config: config || {},
-            })
-            .returning()
-
-        // Trigger initial sync after credentials are saved
         try {
             const syncResponse = await fetch(`/api/sources/${sourceId}/sync`, {
                 method: 'POST',
@@ -118,15 +109,14 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     }
 
     try {
-        const creds = await db.query.serviceCredentials.findFirst({
-            where: eq(serviceCredentials.sourceId, sourceId),
-        })
+        const creds = await serviceCredentialsRepository.getOrgCredsBySourceId(sourceId)
 
         if (!creds) {
-            return json({ credentials: null })
+            return json({ credentials: null, hasCredentials: false })
         }
 
         return json({
+            hasCredentials: true,
             credentials: {
                 id: creds.id,
                 sourceId: creds.sourceId,
@@ -147,6 +137,82 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     }
 }
 
+export const PATCH: RequestHandler = async ({ request, locals, fetch }) => {
+    if (!locals.user) {
+        throw error(401, 'Unauthorized')
+    }
+
+    const { sourceId, principalEmail, credentials, config } = await request.json()
+
+    if (!sourceId) {
+        throw error(400, 'Missing sourceId')
+    }
+
+    const source = await getSourceById(sourceId)
+    if (!source) {
+        throw error(404, 'Source not found')
+    }
+
+    const isOwner = source.createdBy === locals.user.id
+    if (locals.user.role !== 'admin' && !isOwner) {
+        throw error(403, 'Forbidden')
+    }
+
+    const existing = await serviceCredentialsRepository.getOrgCredsBySourceId(sourceId)
+    if (!existing) {
+        throw error(404, 'No service credentials exist for this source')
+    }
+
+    const hasNewCredentials =
+        credentials && typeof credentials === 'object' && Object.keys(credentials).length > 0
+
+    try {
+        const updated = await serviceCredentialsRepository.updateBySourceId(sourceId, {
+            principalEmail: principalEmail !== undefined ? principalEmail || null : undefined,
+            config: config !== undefined ? config || {} : undefined,
+            credentials: hasNewCredentials ? credentials : null,
+        })
+
+        if (hasNewCredentials) {
+            try {
+                const syncResponse = await fetch(`/api/sources/${sourceId}/sync`, {
+                    method: 'POST',
+                })
+                if (!syncResponse.ok) {
+                    console.warn(
+                        `Failed to trigger sync after credential update for source ${sourceId}:`,
+                        await syncResponse.text(),
+                    )
+                }
+            } catch (syncError) {
+                console.warn(
+                    `Error triggering sync after credential update for source ${sourceId}:`,
+                    syncError,
+                )
+            }
+        }
+
+        return json({
+            success: true,
+            credentials: updated && {
+                id: updated.id,
+                sourceId: updated.sourceId,
+                provider: updated.provider,
+                authType: updated.authType,
+                principalEmail: updated.principalEmail,
+                config: updated.config,
+                expiresAt: updated.expiresAt,
+                lastValidatedAt: updated.lastValidatedAt,
+                createdAt: updated.createdAt,
+                updatedAt: updated.updatedAt,
+            },
+        })
+    } catch (err) {
+        console.error('Error updating service credentials:', err)
+        throw error(500, 'Failed to update service credentials')
+    }
+}
+
 export const DELETE: RequestHandler = async ({ url, locals }) => {
     if (!locals.user) {
         throw error(401, 'Unauthorized')
@@ -163,8 +229,7 @@ export const DELETE: RequestHandler = async ({ url, locals }) => {
     }
 
     try {
-        await db.delete(serviceCredentials).where(eq(serviceCredentials.sourceId, sourceId))
-
+        await serviceCredentialsRepository.deleteBySourceId(sourceId)
         return json({ success: true })
     } catch (err) {
         console.error('Error deleting service credentials:', err)

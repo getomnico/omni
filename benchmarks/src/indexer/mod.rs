@@ -227,11 +227,6 @@ impl BenchmarkIndexer {
             // tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
-        // Notify indexer to start processing the queued events
-        sqlx::query("NOTIFY indexer_queue")
-            .execute(&self.db_pool)
-            .await?;
-
         info!("Dataset indexing completed: {}", dataset.name);
         Ok(source_id)
     }
@@ -304,11 +299,6 @@ impl BenchmarkIndexer {
                 );
             }
         }
-
-        // Notify indexer to start processing the queued events
-        sqlx::query("NOTIFY indexer_queue")
-            .execute(&self.db_pool)
-            .await?;
 
         info!(
             "Document stream indexing completed: {} (total documents: {})",
@@ -648,11 +638,6 @@ impl BenchmarkIndexer {
         }
 
         let queue_time_secs = queue_start.elapsed().as_secs_f64();
-
-        // Notify indexer to start processing the queued events
-        sqlx::query("NOTIFY indexer_queue")
-            .execute(&self.db_pool)
-            .await?;
 
         info!(
             "Document stream queuing completed: {} docs in {:.2}s ({:.1} docs/sec)",

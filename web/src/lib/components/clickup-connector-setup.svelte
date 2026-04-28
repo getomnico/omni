@@ -13,7 +13,7 @@
         onCancel?: () => void
     }
 
-    let { open = $bindable(false), onSuccess, onCancel }: Props = $props()
+    let { open = false, onSuccess, onCancel }: Props = $props()
 
     let token = $state('')
     let includeDocs = $state(true)
@@ -58,7 +58,6 @@
             }
 
             toast.success('ClickUp connected successfully!')
-            open = false
 
             token = ''
             includeDocs = true
@@ -75,7 +74,6 @@
     }
 
     function handleCancel() {
-        open = false
         token = ''
         includeDocs = true
         if (onCancel) {
@@ -84,7 +82,7 @@
     }
 </script>
 
-<Dialog.Root bind:open>
+<Dialog.Root {open} onOpenChange={(o) => !o && handleCancel()}>
     <Dialog.Content class="max-w-2xl">
         <Dialog.Header>
             <Dialog.Title>Connect ClickUp</Dialog.Title>

@@ -71,22 +71,17 @@ impl SyncRunRepository {
         Ok(sync_run)
     }
 
-    pub async fn mark_completed(
-        &self,
-        id: &str,
-        documents_scanned: i32,
-        documents_updated: i32,
-    ) -> Result<(), DatabaseError> {
+    /// Flip status to `Completed`. Counters are maintained by
+    /// `increment_scanned` / `increment_updated`, so this only touches
+    /// status fields.
+    pub async fn mark_completed(&self, id: &str) -> Result<(), DatabaseError> {
         sqlx::query(
             "UPDATE sync_runs
              SET status = $1, completed_at = CURRENT_TIMESTAMP,
-                 documents_scanned = $2, documents_updated = $3,
                  updated_at = CURRENT_TIMESTAMP
-             WHERE id = $4",
+             WHERE id = $2",
         )
         .bind(SyncStatus::Completed)
-        .bind(documents_scanned)
-        .bind(documents_updated)
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -114,6 +109,21 @@ impl SyncRunRepository {
         sqlx::query(
             "UPDATE sync_runs
              SET documents_scanned = documents_scanned + $1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $2",
+        )
+        .bind(count)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn increment_updated(&self, id: &str, count: i32) -> Result<(), DatabaseError> {
+        sqlx::query(
+            "UPDATE sync_runs
+             SET documents_updated = documents_updated + $1,
                  updated_at = CURRENT_TIMESTAMP
              WHERE id = $2",
         )

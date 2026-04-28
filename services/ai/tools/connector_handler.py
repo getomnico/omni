@@ -301,14 +301,37 @@ class ConnectorToolHandler:
                     f"{self._connector_manager_url}/action",
                     json={
                         "source_id": action.source_id,
+                        "user_id": self._user_id,
                         "action": action.action_name,
                         "params": tool_input,
                     },
                 )
+
+                # 412 = needs_user_auth: the user has no per-user credential for an
+                # org-wide source. Surface a structured prompt so the chat UI can
+                # render a "Connect <provider>" CTA instead of a raw error.
+                if response.status_code == 412:
+                    body = response.json()
+                    return ToolResult(
+                        content=[
+                            {
+                                "type": "text",
+                                "text": (
+                                    f"This action needs your authorization for "
+                                    f"{body.get('provider', 'the source')}. "
+                                    f"Open this link to connect: {body.get('oauth_start_url', '')}"
+                                ),
+                            }
+                        ],
+                        is_error=True,
+                    )
+
                 response.raise_for_status()
 
-                # Binary file response — connectors set x-file-name on file downloads
-                if response.headers.get("x-file-name"):
+                content_type = response.headers.get("content-type", "")
+
+                # Binary file response
+                if "application/json" not in content_type:
                     if not self._sandbox_url:
                         return ToolResult(
                             content=[
@@ -319,7 +342,7 @@ class ConnectorToolHandler:
                             ],
                             is_error=True,
                         )
-                    file_name = response.headers["x-file-name"]
+                    file_name = response.headers.get("x-file-name", "download")
                     return await write_binary_to_sandbox(
                         self._sandbox_url,
                         response.content,

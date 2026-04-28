@@ -5,8 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from mcp.client.stdio import StdioServerParameters
-from omni_connector import Connector, SearchOperator, SyncContext
+from omni_connector import Connector, SearchOperator, StdioMcpServer, SyncContext
 
 from .client import AuthenticationError, GitHubClient, GitHubError, GitHubRepo
 from .models import GitHubCredentials, GitHubSourceConfig
@@ -69,8 +68,8 @@ class GitHubConnector(Connector):
         ]
 
     @property
-    def mcp_command(self) -> StdioServerParameters:
-        return StdioServerParameters(
+    def mcp_server(self) -> StdioMcpServer:
+        return StdioMcpServer(
             command="github-mcp-server",
             args=["stdio", "--toolsets", "all"],
         )

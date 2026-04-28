@@ -40,7 +40,6 @@
     let maxFileSizeMb = $state(
         config.max_file_size_bytes ? Math.round(config.max_file_size_bytes / (1024 * 1024)) : 10,
     )
-    let scanIntervalSeconds = $state(config.scan_interval_seconds ?? 300)
     let isSubmitting = $state(false)
     let formErrors = $state<string[]>([])
     let hasUnsavedChanges = $state(false)
@@ -54,7 +53,6 @@
     let originalFileExtensions: string[] = [...fileExtensions]
     let originalExcludePatterns: string[] = [...excludePatterns]
     let originalMaxFileSizeMb = maxFileSizeMb
-    let originalScanIntervalSeconds = scanIntervalSeconds
 
     function validateForm() {
         formErrors = []
@@ -74,11 +72,6 @@
 
         if (maxFileSizeMb < 1) {
             formErrors = [...formErrors, 'Max file size must be at least 1 MB']
-            return false
-        }
-
-        if (scanIntervalSeconds < 60) {
-            formErrors = [...formErrors, 'Scan interval must be at least 60 seconds']
             return false
         }
 
@@ -125,7 +118,6 @@
             filesystemEnabled !== originalFilesystemEnabled ||
             basePath !== originalBasePath ||
             maxFileSizeMb !== originalMaxFileSizeMb ||
-            scanIntervalSeconds !== originalScanIntervalSeconds ||
             extensionsChanged ||
             patternsChanged
     })
@@ -210,7 +202,6 @@
                         bind:fileExtensions
                         bind:excludePatterns
                         bind:maxFileSizeMb
-                        bind:scanIntervalSeconds
                         disabled={!filesystemEnabled} />
                 </Card.Content>
                 <Card.Footer class="flex justify-end">

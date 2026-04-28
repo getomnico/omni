@@ -8,7 +8,7 @@
         onCancel?: () => void
     }
 
-    let { open = $bindable(false), onSuccess, onCancel }: Props = $props()
+    let { open = false, onSuccess, onCancel }: Props = $props()
 
     function handleSuccess() {
         open = false
@@ -18,14 +18,13 @@
     }
 
     function handleCancel() {
-        open = false
         if (onCancel) {
             onCancel()
         }
     }
 </script>
 
-<Dialog.Root bind:open>
+<Dialog.Root {open} onOpenChange={(o) => !o && handleCancel()}>
     <Dialog.Content class="max-w-2xl">
         <Dialog.Header>
             <Dialog.Title>Connect Web</Dialog.Title>

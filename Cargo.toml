@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "sdk/rust",
     "services/searcher",
     "services/indexer",
     "services/connector-manager",

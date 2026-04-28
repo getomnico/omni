@@ -34,9 +34,11 @@ pub use db::{DatabaseError, DatabasePool};
 pub use embedding_queue::{EmbeddingQueue, EmbeddingQueueItem};
 pub use encryption::{EncryptedData, EncryptionService};
 pub use models::*;
-pub use queue::{EventQueue, QueueStats};
+pub use queue::{EventQueue, QueueStats, QueueSummary};
 pub use rate_limiter::{RateLimiter, RetryableError};
-pub use sdk_client::{build_connector_url, start_registration_loop, SdkClient};
+pub use sdk_client::{
+    build_connector_url, start_registration_loop, SdkClient, SdkError, SdkResult,
+};
 pub use service_auth::{create_service_auth, ServiceAuth};
 pub use storage::{
     factory::{StorageBackend, StorageFactory},

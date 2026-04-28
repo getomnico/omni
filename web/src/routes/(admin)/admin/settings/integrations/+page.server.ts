@@ -48,7 +48,7 @@ interface ConnectorInfo {
 export const load: PageServerLoad = async ({ locals }) => {
     requireAdmin(locals)
 
-    const connectedSources = await sourcesRepository.getAll()
+    const connectedSources = await sourcesRepository.getOrgWide()
     const latestSyncRuns = await sourcesRepository.getLatestSyncRuns()
     const googleConnectorConfig = await getConnectorConfigPublic('google')
 

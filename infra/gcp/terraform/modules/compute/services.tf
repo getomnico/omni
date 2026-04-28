@@ -575,7 +575,6 @@ resource "google_cloud_run_v2_service" "google_connector" {
           PORT                                   = "4001"
           CONNECTOR_HOST_NAME                    = "google-connector"
           CONNECTOR_MANAGER_URL                  = local.service_url["connector-mgr"]
-          AI_SERVICE_URL                         = local.service_url["ai"]
           GOOGLE_MAX_AGE_DAYS                    = var.google_max_age_days
           OMNI_DOMAIN                            = var.custom_domain
           WEBHOOK_RENEWAL_CHECK_INTERVAL_SECONDS = var.webhook_renewal_check_interval_seconds

@@ -12,7 +12,7 @@
         onCancel?: () => void
     }
 
-    let { open = $bindable(false), onSuccess, onCancel }: Props = $props()
+    let { open = false, onSuccess, onCancel }: Props = $props()
 
     let principalEmail = $state('')
     let apiToken = $state('')
@@ -118,7 +118,6 @@
             }
 
             toast.success('Atlassian connected successfully!')
-            open = false
 
             // Reset form
             principalEmail = ''
@@ -138,7 +137,6 @@
     }
 
     function handleCancel() {
-        open = false
         principalEmail = ''
         apiToken = ''
         domain = ''
@@ -148,7 +146,7 @@
     }
 </script>
 
-<Dialog.Root bind:open>
+<Dialog.Root {open} onOpenChange={(o) => !o && handleCancel()}>
     <Dialog.Content class="max-w-2xl">
         <Dialog.Header>
             <Dialog.Title>Connect Atlassian</Dialog.Title>

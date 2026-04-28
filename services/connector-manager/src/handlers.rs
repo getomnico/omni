@@ -21,7 +21,9 @@ use serde_json::json;
 use shared::clients::docling::{DoclingClient, DoclingError};
 use shared::constants::REDIS_SYSTEM_SETTINGS_KEY;
 use shared::db::repositories::SyncRunRepository;
-use shared::models::{ConnectorManifest, SearchOperator, SourceType, SyncType};
+use shared::models::{
+    ActionMode, ConnectorManifest, SearchOperator, ServiceProvider, SourceType, SyncType,
+};
 use shared::queue::EventQueue;
 use shared::utils;
 use shared::{DocumentRepository, Repository, ServiceCredentialsRepo, SourceRepository};
@@ -44,11 +46,7 @@ pub async fn trigger_sync(
         .sync_manager
         .trigger_sync(
             &request.source_id,
-            match request.sync_mode.as_deref() {
-                // TODO: Use SyncType in TriggerSyncRequest
-                Some("full") => SyncType::Full,
-                _ => SyncType::Incremental,
-            },
+            request.sync_mode.unwrap_or(SyncType::Incremental),
             TriggerType::Manual,
         )
         .await?;
@@ -270,71 +268,70 @@ pub async fn execute_action(
     Json(request): Json<ExecuteActionRequest>,
 ) -> Result<axum::response::Response, ApiError> {
     info!(
-        "Executing action {} for source {}",
-        request.action, request.source_id
+        "Executing action {} for source {} (user {:?})",
+        request.action, request.source_id, request.user_id
     );
 
-    // Get source to determine connector type and config
-    let source: Option<(SourceType, serde_json::Value)> =
-        sqlx::query_as("SELECT source_type, config FROM sources WHERE id = $1")
-            .bind(&request.source_id)
-            .fetch_optional(state.db_pool.pool())
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
-
-    let (source_type, source_config) = source
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let source = source_repo
+        .find_by_id(request.source_id.clone())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
 
     // Look up the connector manifest to get connector_url and read_only flag
     let manifests = get_registered_manifests(&state.redis_client).await;
     let manifest = manifests
         .iter()
-        .find(|m| m.source_types.contains(&source_type));
+        .find(|m| m.source_types.contains(&source.source_type));
 
     let connector_url = manifest.map(|m| m.connector_url.clone()).ok_or_else(|| {
         ApiError::NotFound(format!(
             "Connector not registered for type: {:?}",
-            source_type
+            source.source_type
         ))
     })?;
 
-    // Enforce read_only: block write-mode actions if connector or source is read-only
-    let source_read_only = source_config
+    let action_mode = manifest
+        .and_then(|m| m.actions.iter().find(|a| a.name == request.action))
+        .map(|a| a.mode)
+        .unwrap_or_default();
+
+    // TODO: replace this opaque-blob `read_only` lookup with a strongly-typed
+    // SourceConfig. Today every connector pokes its own keys into Source.config
+    // unchecked — `read_only` is the only key the manager itself reads.
+    let source_read_only = source
+        .config
         .get("read_only")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
     if let Some(m) = manifest {
-        if m.read_only || source_read_only {
-            let action_mode = m
-                .actions
-                .iter()
-                .find(|a| a.name == request.action)
-                .map(|a| a.mode.as_str())
-                .unwrap_or("write");
-
-            if action_mode == "write" {
-                return Err(ApiError::BadRequest(format!(
-                    "Action '{}' is not allowed: source is read-only",
-                    request.action
-                )));
-            }
+        if (m.read_only || source_read_only) && action_mode == ActionMode::Write {
+            return Err(ApiError::BadRequest(format!(
+                "Action '{}' is not allowed: source is read-only",
+                request.action
+            )));
         }
     }
 
-    // Get credentials
     let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let creds = creds_repo
-        .get_by_source_id(&request.source_id)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| {
-            ApiError::NotFound(format!(
-                "Credentials not found for source: {}",
-                request.source_id
-            ))
-        })?;
+    let creds =
+        match resolve_credentials(&creds_repo, &request.source_id, request.user_id.as_deref())
+            .await?
+        {
+            CredentialResolution::Resolved(c) => c,
+            CredentialResolution::NeedsUserAuth { provider } => {
+                return Ok(needs_user_auth_response(&request.source_id, provider)?);
+            }
+            CredentialResolution::NoCredentials => {
+                return Err(ApiError::NotFound(format!(
+                    "Credentials not found for source: {}",
+                    request.source_id
+                )));
+            }
+        };
 
     // Resolve Omni document ID -> source external_id.
     // TODO: replace hard-coded param names with a connector-declared resolve_params list.
@@ -367,65 +364,125 @@ pub async fn execute_action(
     let action_request = ActionRequest {
         action: request.action,
         params,
-        credentials: json!({
-            "credentials": creds.credentials,
-            "config": creds.config,
-            "principal_email": creds.principal_email,
-        }),
+        credentials: Some(creds),
     };
 
-    // Use raw response to support binary passthrough
+    // Proxy the connector's full HTTP response (status, headers, body) verbatim.
     let response = client
         .execute_action_raw(&connector_url, &action_request)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    let content_type = response
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("application/json")
-        .to_string();
+    let status = response.status();
+    let mut builder = axum::response::Response::builder().status(status);
 
-    // If JSON response, parse and return as before
-    if content_type.contains("application/json") {
-        let body = response
-            .text()
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
-
-        let action_response: crate::models::ActionResponse =
-            serde_json::from_str(&body).map_err(|e| ApiError::Internal(e.to_string()))?;
-
-        let json_body = json!({
-            "status": action_response.status,
-            "result": action_response.result,
-            "error": action_response.error
-        });
-
-        Ok(axum::Json(json_body).into_response())
-    } else {
-        // Binary passthrough: proxy the response body and headers
-        let mut builder = axum::response::Response::builder()
-            .status(axum::http::StatusCode::OK)
-            .header("Content-Type", &content_type);
-
-        // Forward X-File-Name header if present
-        if let Some(file_name) = response.headers().get("x-file-name") {
-            builder = builder.header("X-File-Name", file_name);
+    // Forward all headers except hop-by-hop connection headers.
+    let hop_by_hop = [
+        "connection",
+        "keep-alive",
+        "transfer-encoding",
+        "te",
+        "trailer",
+        "upgrade",
+    ];
+    for (key, value) in response.headers() {
+        let key_str = key.as_str();
+        if !hop_by_hop.contains(&key_str) {
+            builder = builder.header(key, value);
         }
-        // Forward Content-Length if present
-        if let Some(content_length) = response.headers().get("content-length") {
-            builder = builder.header("Content-Length", content_length);
-        }
-
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
-
-        Ok(builder.body(axum::body::Body::from(bytes)).unwrap())
     }
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    Ok(builder.body(axum::body::Body::from(bytes)).unwrap())
+}
+
+/// Outcome of resolving credentials for a tool/action invocation.
+enum CredentialResolution {
+    Resolved(shared::models::ServiceCredential),
+    NeedsUserAuth { provider: ServiceProvider },
+    NoCredentials,
+}
+
+/// Resolve which credential to use for a tool/action invocation.
+///
+/// * `Some(user_id)` (chat tool, user-scoped agent) → per-user row required.
+///   No fallback to org credentials — if the user hasn't connected, return
+///   `NeedsUserAuth` so the UI can prompt. Personal sources satisfy this
+///   because their cred row is keyed on the owner's user_id (see migration
+///   087).
+/// * `None` (sync, org-level agent) → org row.
+async fn resolve_credentials(
+    creds_repo: &ServiceCredentialsRepo,
+    source_id: &str,
+    user_id: Option<&str>,
+) -> Result<CredentialResolution, ApiError> {
+    let internal = |e: anyhow::Error| ApiError::Internal(e.to_string());
+
+    match user_id {
+        Some(uid) => {
+            if let Some(c) = creds_repo
+                .find_user_credential(source_id, uid)
+                .await
+                .map_err(internal)?
+            {
+                return Ok(CredentialResolution::Resolved(c));
+            }
+            // No per-user row — surface a NeedsUserAuth response so the UI
+            // can prompt. Provider hint comes from the org row when present;
+            // if neither row exists the source is misconfigured.
+            match creds_repo
+                .find_org_credential(source_id)
+                .await
+                .map_err(internal)?
+            {
+                Some(org) => Ok(CredentialResolution::NeedsUserAuth {
+                    provider: org.provider,
+                }),
+                None => Ok(CredentialResolution::NoCredentials),
+            }
+        }
+        None => Ok(creds_repo
+            .find_org_credential(source_id)
+            .await
+            .map_err(internal)?
+            .map(CredentialResolution::Resolved)
+            .unwrap_or(CredentialResolution::NoCredentials)),
+    }
+}
+
+/// Wire shape for the 412 "needs user auth" response. Stable contract used by
+/// the web layer and AI service to drive the "Connect <provider>" CTA.
+#[derive(Debug, serde::Serialize)]
+struct NeedsUserAuthResponse {
+    error: &'static str,
+    source_id: String,
+    provider: ServiceProvider,
+    oauth_start_url: String,
+}
+
+fn needs_user_auth_response(
+    source_id: &str,
+    provider: ServiceProvider,
+) -> Result<axum::response::Response, ApiError> {
+    let body = NeedsUserAuthResponse {
+        error: "needs_user_auth",
+        source_id: source_id.to_string(),
+        provider,
+        oauth_start_url: format!("/api/oauth/start?source_id={}", source_id),
+    };
+    let body_json = serde_json::to_string(&body).map_err(|e| ApiError::Internal(e.to_string()))?;
+    axum::response::Response::builder()
+        .status(StatusCode::PRECONDITION_FAILED)
+        .header(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )
+        .body(axum::body::Body::from(body_json))
+        .map_err(|e| ApiError::Internal(e.to_string()))
 }
 
 pub async fn list_actions(
@@ -452,7 +509,7 @@ pub async fn list_actions(
     for manifest in manifests {
         for source_type in &manifest.source_types {
             for action in &manifest.actions {
-                if (manifest.read_only || source_read_only) && action.mode == "write" {
+                if (manifest.read_only || source_read_only) && action.mode == ActionMode::Write {
                     continue;
                 }
                 all_actions.push(json!({
@@ -529,30 +586,26 @@ pub async fn read_resource(
         request.uri, request.source_id
     );
 
-    let source: Option<(SourceType,)> =
-        sqlx::query_as("SELECT source_type FROM sources WHERE id = $1")
-            .bind(&request.source_id)
-            .fetch_optional(state.db_pool.pool())
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let source = source_repo
+        .find_by_id(request.source_id.clone())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
 
-    let source_type = source
-        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?
-        .0;
-
-    let connector_url = get_connector_url_for_source(&state.redis_client, source_type)
+    let connector_url = get_connector_url_for_source(&state.redis_client, source.source_type)
         .await
         .ok_or_else(|| {
             ApiError::NotFound(format!(
                 "Connector not registered for type: {:?}",
-                source_type
+                source.source_type
             ))
         })?;
 
     let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let creds = creds_repo
-        .get_by_source_id(&request.source_id)
+        .find_owner_credential(&source)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| {
@@ -589,30 +642,26 @@ pub async fn get_prompt(
         request.name, request.source_id
     );
 
-    let source: Option<(SourceType,)> =
-        sqlx::query_as("SELECT source_type FROM sources WHERE id = $1")
-            .bind(&request.source_id)
-            .fetch_optional(state.db_pool.pool())
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let source = source_repo
+        .find_by_id(request.source_id.clone())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
 
-    let source_type = source
-        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?
-        .0;
-
-    let connector_url = get_connector_url_for_source(&state.redis_client, source_type)
+    let connector_url = get_connector_url_for_source(&state.redis_client, source.source_type)
         .await
         .ok_or_else(|| {
             ApiError::NotFound(format!(
                 "Connector not registered for type: {:?}",
-                source_type
+                source.source_type
             ))
         })?;
 
     let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let creds = creds_repo
-        .get_by_source_id(&request.source_id)
+        .find_owner_credential(&source)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| {
@@ -839,6 +888,20 @@ pub async fn get_connector_url_for_source(
     None
 }
 
+/// Look up the sync modes the connector declared for a given source type.
+/// Returns an empty vec when no connector is registered for the source_type.
+pub async fn get_sync_modes_for_source(
+    redis_client: &redis::Client,
+    source_type: SourceType,
+) -> Vec<SyncType> {
+    for manifest in get_registered_manifests(redis_client).await {
+        if manifest.source_types.contains(&source_type) {
+            return manifest.sync_modes;
+        }
+    }
+    Vec::new()
+}
+
 const VALID_DOCLING_PRESETS: &[&str] = &["fast", "balanced", "quality"];
 const DEFAULT_DOCLING_PRESET: &str = "balanced";
 
@@ -972,11 +1035,11 @@ fn is_docling_supported_extension(filename: Option<&str>) -> bool {
 // ============================================================================
 
 use crate::models::{
-    SdkCancelSyncRequest, SdkCancelSyncResponse, SdkCompleteRequest, SdkCreateSyncRequest,
-    SdkCreateSyncResponse, SdkEmitEventRequest, SdkExtractContentResponse, SdkExtractTextResponse,
-    SdkFailRequest, SdkIncrementScannedRequest, SdkSourceSyncConfigResponse, SdkStatusResponse,
-    SdkStoreContentRequest, SdkStoreContentResponse, SdkUserEmailResponse, SdkWebhookNotification,
-    SdkWebhookResponse,
+    SdkCancelSyncRequest, SdkCancelSyncResponse, SdkCreateSyncRequest, SdkCreateSyncResponse,
+    SdkEmitBatchRequest, SdkEmitEventRequest, SdkExtractContentResponse, SdkExtractTextResponse,
+    SdkFailRequest, SdkIncrementScannedRequest, SdkIncrementUpdatedRequest,
+    SdkSourceSyncConfigResponse, SdkStatusResponse, SdkStoreContentRequest,
+    SdkStoreContentResponse, SdkUserEmailResponse, SdkWebhookNotification, SdkWebhookResponse,
 };
 
 pub async fn sdk_emit_event(
@@ -997,6 +1060,35 @@ pub async fn sdk_emit_event(
         .map_err(|e| ApiError::Internal(format!("Failed to enqueue event: {}", e)))?;
 
     // Update heartbeat
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+    sync_run_repo
+        .update_activity(&request.sync_run_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to update activity: {}", e)))?;
+
+    Ok(Json(SdkStatusResponse {
+        status: "ok".to_string(),
+    }))
+}
+
+pub async fn sdk_emit_batch(
+    State(state): State<AppState>,
+    Json(request): Json<SdkEmitBatchRequest>,
+) -> Result<Json<SdkStatusResponse>, ApiError> {
+    debug!(
+        "SDK: Emitting batch of {} events for sync_run={}, source={}",
+        request.events.len(),
+        request.sync_run_id,
+        request.source_id
+    );
+
+    let event_queue = EventQueue::new(state.db_pool.pool().clone());
+
+    event_queue
+        .enqueue_batch(&request.source_id, &request.events)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to enqueue event batch: {}", e)))?;
+
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
     sync_run_repo
         .update_activity(&request.sync_run_id)
@@ -1286,31 +1378,17 @@ pub async fn sdk_heartbeat(
 pub async fn sdk_complete(
     State(state): State<AppState>,
     Path(sync_run_id): Path<String>,
-    Json(request): Json<SdkCompleteRequest>,
 ) -> Result<Json<SdkStatusResponse>, ApiError> {
     info!("SDK: Completing sync_run={}", sync_run_id);
 
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
 
-    // Mark sync as completed
+    // Status flip only. Counts come from increment_scanned/updated;
+    // connector state from save_connector_state.
     sync_run_repo
-        .mark_completed(
-            &sync_run_id,
-            request.documents_scanned.unwrap_or(0),
-            request.documents_updated.unwrap_or(0),
-        )
+        .mark_completed(&sync_run_id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to mark completed: {}", e)))?;
-
-    // Store connector state if provided
-    if let Some(new_state) = request.new_state {
-        if let Ok(Some(sync_run)) = sync_run_repo.find_by_id(&sync_run_id).await {
-            let source_repo = SourceRepository::new(state.db_pool.pool());
-            let _ = source_repo
-                .update_connector_state(&sync_run.source_id, new_state)
-                .await;
-        }
-    }
 
     Ok(Json(SdkStatusResponse {
         status: "ok".to_string(),
@@ -1358,6 +1436,27 @@ pub async fn sdk_increment_scanned(
     }))
 }
 
+pub async fn sdk_increment_updated(
+    State(state): State<AppState>,
+    Path(sync_run_id): Path<String>,
+    Json(request): Json<SdkIncrementUpdatedRequest>,
+) -> Result<Json<SdkStatusResponse>, ApiError> {
+    debug!(
+        "SDK: Incrementing updated for sync_run={} by {}",
+        sync_run_id, request.count
+    );
+
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+    sync_run_repo
+        .increment_updated(&sync_run_id, request.count)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to increment updated: {}", e)))?;
+
+    Ok(Json(SdkStatusResponse {
+        status: "ok".to_string(),
+    }))
+}
+
 pub async fn sdk_get_source(
     State(state): State<AppState>,
     Path(source_id): Path<String>,
@@ -1377,14 +1476,21 @@ pub async fn sdk_get_source(
 pub async fn sdk_get_credentials(
     State(state): State<AppState>,
     Path(source_id): Path<String>,
-) -> Result<Json<shared::models::ServiceCredentials>, ApiError> {
+) -> Result<Json<shared::models::ServiceCredential>, ApiError> {
     debug!("SDK: Getting credentials for source_id={}", source_id);
+
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let source = source_repo
+        .find_by_id(source_id.clone())
+        .await
+        .map_err(|e| ApiError::Internal(format!("Database error: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
 
     let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
         .map_err(|e| ApiError::Internal(format!("Failed to create credentials repo: {}", e)))?;
 
     let creds = creds_repo
-        .get_by_source_id(&source_id)
+        .find_owner_credential(&source)
         .await
         .map_err(|e| ApiError::Internal(format!("Database error: {}", e)))?
         .ok_or_else(|| {
@@ -1394,6 +1500,10 @@ pub async fn sdk_get_credentials(
     Ok(Json(creds))
 }
 
+// TODO: drop this endpoint once the Python SDK is updated to fetch source +
+// credentials separately (matching the Rust SDK). Today the Rust SDK passes
+// full Source/ServiceCredential directly to Connector::sync, so it has no
+// need for this bundled endpoint — only Python connectors still call it.
 pub async fn sdk_get_source_sync_config(
     State(state): State<AppState>,
     Path(source_id): Path<String>,
@@ -1414,7 +1524,7 @@ pub async fn sdk_get_source_sync_config(
         .map_err(|e| ApiError::Internal(format!("Failed to create credentials repo: {}", e)))?;
 
     let credentials = creds_repo
-        .get_by_source_id(&source_id)
+        .find_owner_credential(&source)
         .await
         .map_err(|e| ApiError::Internal(format!("Database error: {}", e)))?
         .map(|c| c.credentials)

@@ -36,7 +36,7 @@ x-logging: &default-logging
 
 services:
   postgres:
-    image: paradedb/paradedb:0.20.6-pg17
+    image: paradedb/paradedb:0.23.1-pg17
     shm_size: 4gb
     container_name: omni-postgres
     command:
@@ -318,7 +318,6 @@ services:
       <<: [*redis-config, *otel-config]
       RUST_LOG: ${RUST_LOG}
       PORT: ${GOOGLE_CONNECTOR_PORT}
-      AI_SERVICE_URL: ${AI_SERVICE_URL}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
       CONNECTOR_HOST_NAME: google-connector
       GOOGLE_MAX_AGE_DAYS: ${GOOGLE_MAX_AGE_DAYS:-730}

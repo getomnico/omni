@@ -1,15 +1,18 @@
 use anyhow::Result;
 use std::future::Future;
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use omni_connector_manager::{
     config::ConnectorManagerConfig, create_app as create_cm_app,
     sync_manager::SyncManager as CMSyncManager, AppState as CMAppState,
 };
-use omni_web_connector::models::SyncRequest;
+use omni_connector_sdk::SyncContext;
+use omni_web_connector::config::WebSourceConfig;
+use omni_web_connector::models::WebConnectorState;
 use omni_web_connector::sync::{PageSource, SyncManager};
-use redis::Client as RedisClient;
 use shared::db::repositories::SyncRunRepository;
+use shared::models::SyncType;
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
 use shared::{DatabaseConfig, RedisConfig, SdkClient};
@@ -108,11 +111,6 @@ impl WebConnectorTestFixture {
         self.test_env.db_pool.pool()
     }
 
-    /// Get the Redis client
-    pub fn redis_client(&self) -> RedisClient {
-        self.test_env.redis_client.clone()
-    }
-
     /// Get the SyncRunRepository for testing sync operations
     pub fn sync_run_repo(&self) -> SyncRunRepository {
         SyncRunRepository::new(self.pool())
@@ -120,7 +118,16 @@ impl WebConnectorTestFixture {
 
     /// Create a SyncManager with the SDK client for integration testing
     pub fn create_sync_manager(&self, page_source: Arc<dyn PageSource>) -> SyncManager {
-        SyncManager::with_page_source(self.redis_client(), self.sdk_client.clone(), page_source)
+        SyncManager::with_page_source(self.sdk_client.clone(), page_source)
+    }
+
+    /// Load the persisted `WebConnectorState` for a source (returns `None`
+    /// when no state has been saved yet, e.g. before the first sync).
+    pub async fn load_web_state(&self, source_id: &str) -> Result<Option<WebConnectorState>> {
+        match self.get_connector_state(source_id).await? {
+            Some(value) => Ok(Some(serde_json::from_value(value)?)),
+            None => Ok(None),
+        }
     }
 
     /// Create a test user and return the user ID
@@ -174,7 +181,7 @@ impl WebConnectorTestFixture {
         )
         .bind(&sync_run_id)
         .bind(source_id)
-        .bind(shared::models::SyncType::Full)
+        .bind(SyncType::Full)
         .bind(shared::models::SyncStatus::Running)
         .execute(self.pool())
         .await?;
@@ -182,24 +189,34 @@ impl WebConnectorTestFixture {
         Ok(sync_run_id)
     }
 
-    /// Create a SyncRequest for testing
-    pub fn create_sync_request(&self, sync_run_id: &str, source_id: &str) -> SyncRequest {
-        self.create_sync_request_with_mode(sync_run_id, source_id, "full")
-    }
-
-    /// Create a SyncRequest with a specific sync mode
-    pub fn create_sync_request_with_mode(
+    /// Build the config + `SyncContext` pair that a sync expects — the same
+    /// wiring the SDK performs in its `/sync` handler, pulled into tests so
+    /// they can drive `SyncManager::run_sync` directly without going through
+    /// HTTP.
+    pub async fn build_sync_context(
         &self,
         sync_run_id: &str,
         source_id: &str,
-        sync_mode: &str,
-    ) -> SyncRequest {
-        SyncRequest {
-            sync_run_id: sync_run_id.to_string(),
-            source_id: source_id.to_string(),
-            sync_mode: sync_mode.to_string(),
-            last_sync_at: None,
-        }
+    ) -> Result<(WebSourceConfig, Option<WebConnectorState>, SyncContext)> {
+        let source = self
+            .sdk_client
+            .get_source(source_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let config = WebSourceConfig::from_json(&source.config)?;
+        let prior_state = match source.connector_state {
+            Some(value) => Some(serde_json::from_value::<WebConnectorState>(value)?),
+            None => None,
+        };
+        let ctx = SyncContext::new(
+            self.sdk_client.clone(),
+            sync_run_id.to_string(),
+            source_id.to_string(),
+            source.source_type,
+            SyncType::Full,
+            Arc::new(AtomicBool::new(false)),
+        );
+        Ok((config, prior_state, ctx))
     }
 
     /// Create an incremental sync run for testing
@@ -211,7 +228,7 @@ impl WebConnectorTestFixture {
         )
         .bind(&sync_run_id)
         .bind(source_id)
-        .bind(shared::models::SyncType::Incremental)
+        .bind(SyncType::Incremental)
         .bind(shared::models::SyncStatus::Running)
         .execute(self.pool())
         .await?;

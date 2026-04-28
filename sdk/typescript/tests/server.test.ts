@@ -5,6 +5,7 @@ import { setupServer } from 'msw/node';
 import { Connector } from '../src/connector.js';
 import { createServer } from '../src/server.js';
 import type { SyncContext } from '../src/context.js';
+import { ActionResponse } from '../src/models.js';
 
 const MANAGER_URL = 'http://test-connector-manager:8080';
 
@@ -84,8 +85,14 @@ describe('Connector Server', () => {
         display_name: 'mock-connector',
         version: '1.0.0',
         sync_modes: ['full', 'incremental'],
+        connector_id: 'mock-connector',
+        connector_url: 'http://localhost:8000',
+        description: '',
         actions: [],
         search_operators: [],
+        mcp_enabled: false,
+        resources: [],
+        prompts: [],
       });
     });
   });
@@ -170,7 +177,7 @@ describe('Connector Server', () => {
           credentials: {},
         });
 
-      expect(response.status).toBe(200);
+      expect(response.status).toBe(404);
       expect(response.body).toEqual({
         status: 'error',
         error: 'Action not supported: unknown_action',
@@ -186,6 +193,41 @@ describe('Connector Server', () => {
         .send({ invalid: 'data' });
 
       expect(response.status).toBe(400);
+    });
+
+    it('returns binary response for binary action result', async () => {
+      class BinaryActionConnector extends MockConnector {
+        name = 'binary-action-connector';
+        async executeAction(
+          action: string,
+          _params: Record<string, unknown>,
+          _credentials: Record<string, unknown>
+        ): Promise<Response> {
+          if (action === 'download') {
+            return new Response(Buffer.from('binary data'), {
+              status: 200,
+              headers: { 'Content-Type': 'application/octet-stream' },
+            });
+          }
+          return ActionResponse.notSupported(action).toResponse(404);
+        }
+      }
+
+      const connector = new BinaryActionConnector();
+      const app = createServer(connector);
+
+      const response = await request(app)
+        .post('/action')
+        .send({
+          action: 'download',
+          params: {},
+          credentials: {},
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.headers['content-type']).toBe('application/octet-stream');
+      expect(response.body).toBeInstanceOf(Buffer);
+      expect((response.body as Buffer).toString()).toBe('binary data');
     });
   });
 });

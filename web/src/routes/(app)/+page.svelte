@@ -76,7 +76,7 @@
                 console.error(err)
                 pendingUploads = pendingUploads.filter((u) => u.id !== placeholder.id)
                 toast.error(`Failed to upload ${file.name}`, {
-                    classes: { title: 'truncate' },
+                    classes: { title: 'break-all' },
                 })
             }
         }

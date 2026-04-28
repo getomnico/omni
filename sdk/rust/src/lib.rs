@@ -1,0 +1,22 @@
+pub mod connector;
+pub mod context;
+pub mod mcp_adapter;
+pub mod models;
+pub mod server;
+
+pub use connector::Connector;
+pub use context::SyncContext;
+pub use mcp_adapter::{HttpMcpServer, McpAdapter, McpCredentials, McpServer, StdioMcpServer};
+pub use models::{
+    ActionRequest, ActionResponse, CancelRequest, CancelResponse, OAuthManifestConfig,
+    OAuthScopeSet, PromptRequest, ResourceRequest, SyncRequest, SyncResponse, SyncStatusResponse,
+};
+pub use server::{create_router, serve, serve_with_config, serve_with_extra_routes, ServerConfig};
+
+pub use shared::models::{
+    ActionDefinition, ActionMode, ConnectorEvent, ConnectorManifest, DocumentMetadata,
+    DocumentPermissions, McpPromptDefinition, McpResourceDefinition, SearchOperator,
+    ServiceCredential, Source, SourceType, SyncRun, SyncStatus, SyncType,
+};
+pub use shared::telemetry;
+pub use shared::{build_connector_url, SdkClient, SdkError, SdkResult};

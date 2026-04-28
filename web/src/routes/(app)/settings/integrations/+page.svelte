@@ -168,7 +168,7 @@
 </div>
 
 <GoogleOAuthSetup
-    bind:open={showGoogleOAuthSetup}
+    open={showGoogleOAuthSetup}
     connectedSourceTypes={data.userSources.map((s) => s.sourceType)}
     onSuccess={handleGoogleOAuthSetupSuccess}
     onCancel={() => (showGoogleOAuthSetup = false)} />

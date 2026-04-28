@@ -19,11 +19,8 @@ import {
   Connector,
   type SyncContext,
   type ActionDefinition,
-  type ActionResponse,
   type Document,
-  createActionResponseSuccess,
-  createActionResponseFailure,
-  createActionResponseNotSupported,
+  ActionResponse,
 } from '../src/index.js';
 
 // You'll need to install rss-parser: npm install rss-parser
@@ -166,27 +163,27 @@ class RSSConnector extends Connector {
     action: string,
     params: Record<string, unknown>,
     _credentials: Record<string, unknown>
-  ): Promise<ActionResponse> {
+  ): Promise<Response> {
     if (action === 'validate_feed') {
       const feedUrl = params.feed_url as string | undefined;
       if (!feedUrl) {
-        return createActionResponseFailure('Missing feed_url parameter');
+        return ActionResponse.failure('Missing feed_url parameter').toResponse(400);
       }
 
       try {
         const feed = await this.parseFeed(feedUrl);
-        return createActionResponseSuccess({
+        return ActionResponse.success({
           valid: true,
           title: feed.title ?? 'Unknown',
           entry_count: feed.items.length,
-        });
+        }).toResponse();
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return createActionResponseFailure(`Failed to fetch feed: ${message}`);
+        return ActionResponse.failure(`Failed to fetch feed: ${message}`).toResponse(500);
       }
     }
 
-    return createActionResponseNotSupported(action);
+    return ActionResponse.notSupported(action).toResponse(404);
   }
 
   /**

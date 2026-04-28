@@ -523,7 +523,9 @@ impl GmailClient {
                                 );
                                 results.push(BatchThreadResult::Failed(anyhow!(
                                     "Gmail API error for thread {}: {} - {}",
-                                    thread_ids[i], code, msg
+                                    thread_ids[i],
+                                    code,
+                                    msg
                                 )));
                             }
                             continue;
@@ -721,12 +723,7 @@ impl GmailClient {
                 Ok(data) => {
                     let size = data.len() as u64;
                     let extracted_text = sdk_client
-                        .extract_text(
-                            sync_run_id,
-                            data,
-                            &att.mime_type,
-                            Some(&att.filename),
-                        )
+                        .extract_text(sync_run_id, data, &att.mime_type, Some(&att.filename))
                         .await
                         .unwrap_or_default();
 

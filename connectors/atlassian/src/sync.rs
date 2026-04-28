@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::models::{
-    ConfluenceSourceConfig, JiraSourceConfig, ServiceCredentials, ServiceProvider, SourceType,
+    ConfluenceSourceConfig, JiraSourceConfig, ServiceCredential, ServiceProvider, SourceType,
     SyncRequest, SyncType,
 };
 use std::collections::HashSet;
@@ -359,7 +359,7 @@ impl SyncManager {
             .insert(sync_run_id.to_string(), cancelled.clone());
 
         let sync_start = Utc::now();
-        let is_full_sync = request.sync_mode == "full";
+        let is_full_sync = request.sync_mode == SyncType::Full;
         let last_sync_time = request
             .last_sync_at
             .as_deref()
@@ -411,14 +411,7 @@ impl SyncManager {
                     "Sync completed for source {}: {} documents processed",
                     source.name, total_processed
                 );
-                self.sdk_client
-                    .complete(
-                        sync_run_id,
-                        total_processed as i32,
-                        total_processed as i32,
-                        None,
-                    )
-                    .await?;
+                self.sdk_client.complete(sync_run_id).await?;
 
                 if let Err(e) = self
                     .ensure_webhook_registered(source_id, &credentials)
@@ -514,7 +507,7 @@ impl SyncManager {
         }
     }
 
-    async fn get_service_credentials(&self, source_id: &str) -> Result<ServiceCredentials> {
+    async fn get_service_credentials(&self, source_id: &str) -> Result<ServiceCredential> {
         let creds = self
             .sdk_client
             .get_credentials(source_id)
@@ -534,7 +527,7 @@ impl SyncManager {
 
     fn extract_atlassian_credentials(
         &self,
-        creds: &ServiceCredentials,
+        creds: &ServiceCredential,
     ) -> Result<(String, String, String)> {
         let base_url = creds
             .config
@@ -683,7 +676,11 @@ impl SyncManager {
                         .await;
 
                     match &result {
-                        Ok(_) => self.sdk_client.complete(&sync_run_id, 1, 1, None).await?,
+                        Ok(_) => {
+                            self.sdk_client.increment_scanned(&sync_run_id, 1).await?;
+                            self.sdk_client.increment_updated(&sync_run_id, 1).await?;
+                            self.sdk_client.complete(&sync_run_id).await?
+                        }
                         Err(e) => self.sdk_client.fail(&sync_run_id, &e.to_string()).await?,
                     }
                     result
@@ -715,7 +712,11 @@ impl SyncManager {
                         .await;
 
                     match &result {
-                        Ok(_) => self.sdk_client.complete(&sync_run_id, 1, 1, None).await?,
+                        Ok(_) => {
+                            self.sdk_client.increment_scanned(&sync_run_id, 1).await?;
+                            self.sdk_client.increment_updated(&sync_run_id, 1).await?;
+                            self.sdk_client.complete(&sync_run_id).await?
+                        }
                         Err(e) => self.sdk_client.fail(&sync_run_id, &e.to_string()).await?,
                     }
                     result

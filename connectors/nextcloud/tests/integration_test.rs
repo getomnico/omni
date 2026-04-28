@@ -5,11 +5,11 @@
 //! and connector event creation — exercising multiple modules working together
 //! as they would in a real sync.
 
+use omni_connector_sdk::ConnectorEvent;
 use omni_nextcloud_connector::client::parse_multistatus;
 use omni_nextcloud_connector::config::NextcloudConfig;
 use omni_nextcloud_connector::models::{DavEntry, NextcloudConnectorState};
 use omni_nextcloud_connector::sync::build_file_event;
-use shared::models::ConnectorEvent;
 use std::collections::{HashMap, HashSet};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -160,7 +160,10 @@ fn test_parse_full_propfind_response() {
     assert_eq!(entries[1].content_length, Some(51200));
     assert_eq!(entries[1].etag.as_deref(), Some("etag-10"));
     assert_eq!(entries[1].owner_id.as_deref(), Some("alice"));
-    assert_eq!(entries[1].owner_display_name.as_deref(), Some("Alice Smith"));
+    assert_eq!(
+        entries[1].owner_display_name.as_deref(),
+        Some("Alice Smith")
+    );
     assert_eq!(entries[1].permissions.as_deref(), Some("RGDNVW"));
 
     // Third entry: markdown file
@@ -198,7 +201,10 @@ fn test_parse_non_self_closing_collection_tag() {
 
     let entries = parse_multistatus(&xml).unwrap();
     assert_eq!(entries.len(), 1);
-    assert!(entries[0].is_collection, "non-self-closing <d:collection></d:collection> must be recognised");
+    assert!(
+        entries[0].is_collection,
+        "non-self-closing <d:collection></d:collection> must be recognised"
+    );
     assert_eq!(entries[0].filename(), "Docs");
 }
 
@@ -232,15 +238,15 @@ fn test_incremental_sync_etag_detection() {
     assert_eq!(file_entries.len(), 2);
 
     // Build current file keys
-    let current_keys: HashSet<String> = file_entries
-        .iter()
-        .map(|e| e.file_key())
-        .collect();
+    let current_keys: HashSet<String> = file_entries.iter().map(|e| e.file_key()).collect();
 
     // Deletion detection
     let known_set: HashSet<String> = state.known_files.iter().cloned().collect();
     let deleted: Vec<String> = known_set.difference(&current_keys).cloned().collect();
-    assert!(deleted.is_empty(), "File 42 still exists, no deletions expected");
+    assert!(
+        deleted.is_empty(),
+        "File 42 still exists, no deletions expected"
+    );
 
     // Change detection
     let mut changed = Vec::new();
@@ -466,7 +472,9 @@ fn test_build_file_event_created_integration() {
         href: "/remote.php/dav/files/alice/Documents/spec.docx".into(),
         is_collection: false,
         display_name: Some("spec.docx".into()),
-        content_type: Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document".into()),
+        content_type: Some(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into(),
+        ),
         content_length: Some(98304),
         etag: Some("etag-999".into()),
         file_id: Some("100".into()),
@@ -552,7 +560,10 @@ fn test_build_file_event_updated_integration() {
             metadata,
             ..
         } => {
-            assert!(permissions.unwrap().users.is_empty(), "No user email → empty users");
+            assert!(
+                permissions.unwrap().users.is_empty(),
+                "No user email → empty users"
+            );
             assert_eq!(metadata.title.as_deref(), Some("notes.txt"));
         }
         other => panic!("Expected DocumentUpdated, got {:?}", other),
@@ -580,12 +591,20 @@ fn test_build_file_event_no_file_id() {
     );
 
     match event {
-        ConnectorEvent::DocumentCreated { document_id, metadata, .. } => {
+        ConnectorEvent::DocumentCreated {
+            document_id,
+            metadata,
+            ..
+        } => {
             // Document ID derived from href
             assert!(document_id.starts_with("nextcloud:src-1:"));
             assert!(!document_id.contains("None"));
             // URL falls back to href-based URL (no file_id)
-            assert!(metadata.url.as_ref().unwrap().contains("/remote.php/dav/files/bob/readme.md"));
+            assert!(metadata
+                .url
+                .as_ref()
+                .unwrap()
+                .contains("/remote.php/dav/files/bob/readme.md"));
         }
         _ => panic!("Expected DocumentCreated"),
     }
@@ -690,10 +709,7 @@ async fn test_list_files_via_wiremock() {
     Mock::given(method("PROPFIND"))
         .and(path("/remote.php/dav/files/alice/"))
         .and(header("Depth", "infinity"))
-        .respond_with(
-            ResponseTemplate::new(207)
-                .set_body_string(xml_body.clone()),
-        )
+        .respond_with(ResponseTemplate::new(207).set_body_string(xml_body.clone()))
         .mount(&server)
         .await;
 
@@ -749,10 +765,7 @@ async fn test_list_files_fallback_to_depth_1() {
     Mock::given(method("PROPFIND"))
         .and(path("/remote.php/dav/files/alice/"))
         .and(header("Depth", "1"))
-        .respond_with(
-            ResponseTemplate::new(207)
-                .set_body_string(root_xml),
-        )
+        .respond_with(ResponseTemplate::new(207).set_body_string(root_xml))
         .mount(&server)
         .await;
 
@@ -772,10 +785,7 @@ async fn test_download_file_via_wiremock() {
 
     Mock::given(method("GET"))
         .and(path("/remote.php/dav/files/alice/hello.txt"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("Hello, Nextcloud!"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_string("Hello, Nextcloud!"))
         .mount(&server)
         .await;
 
@@ -793,8 +803,8 @@ async fn test_validate_credentials_success() {
     Mock::given(method("PROPFIND"))
         .and(path("/remote.php/dav/files/alice/"))
         .and(header("Depth", "0"))
-        .respond_with(ResponseTemplate::new(207).set_body_string(
-            multistatus_xml(&response_xml(
+        .respond_with(
+            ResponseTemplate::new(207).set_body_string(multistatus_xml(&response_xml(
                 "/remote.php/dav/files/alice/",
                 "alice",
                 true,
@@ -802,8 +812,8 @@ async fn test_validate_credentials_success() {
                 "root",
                 "",
                 0,
-            )),
-        ))
+            ))),
+        )
         .mount(&server)
         .await;
 

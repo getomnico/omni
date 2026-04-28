@@ -17,6 +17,24 @@ export class SourcesRepository {
         return result[0] ?? null
     }
 
+    async findActiveByTypeAndCreator(
+        sourceType: string,
+        createdBy: string,
+    ): Promise<Source | null> {
+        const result = await db
+            .select()
+            .from(sources)
+            .where(
+                and(
+                    eq(sources.sourceType, sourceType),
+                    eq(sources.createdBy, createdBy),
+                    eq(sources.isDeleted, false),
+                ),
+            )
+            .limit(1)
+        return result[0] ?? null
+    }
+
     async getByUserId(userId: string): Promise<Source[]> {
         return await db
             .select()
@@ -31,13 +49,7 @@ export class SourcesRepository {
         return await db
             .select()
             .from(sources)
-            .where(
-                and(
-                    inArray(sources.createdBy, adminUserIds),
-                    eq(sources.isActive, true),
-                    eq(sources.isDeleted, false),
-                ),
-            )
+            .where(and(inArray(sources.createdBy, adminUserIds), eq(sources.isDeleted, false)))
             .orderBy(desc(sources.createdAt))
     }
 

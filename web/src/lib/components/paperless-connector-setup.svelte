@@ -12,7 +12,7 @@
         onCancel?: () => void
     }
 
-    let { open = $bindable(false), onSuccess, onCancel }: Props = $props()
+    let { open = false, onSuccess, onCancel }: Props = $props()
 
     let sourceName = $state('Paperless-ngx')
     let baseUrl = $state('')
@@ -72,7 +72,6 @@
             }
 
             toast.success('Paperless-ngx connected successfully!')
-            open = false
             resetForm()
 
             if (onSuccess) {
@@ -93,7 +92,6 @@
     }
 
     function handleCancel() {
-        open = false
         resetForm()
         if (onCancel) {
             onCancel()
@@ -101,13 +99,13 @@
     }
 </script>
 
-<Dialog.Root bind:open>
+<Dialog.Root {open} onOpenChange={(o) => !o && handleCancel()}>
     <Dialog.Content class="max-w-lg">
         <Dialog.Header>
             <Dialog.Title>Connect Paperless-ngx</Dialog.Title>
             <Dialog.Description>
-                Index documents and their OCR content from your paperless-ngx instance.
-                Credentials are stored encrypted and never leave the server.
+                Index documents and their OCR content from your paperless-ngx instance. Credentials
+                are stored encrypted and never leave the server.
             </Dialog.Description>
         </Dialog.Header>
 

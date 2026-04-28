@@ -1,13 +1,15 @@
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal, Self, Union
 
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Discriminator, Field, Tag
 
 
 class SyncMode(str, Enum):
     FULL = "full"
     INCREMENTAL = "incremental"
+    REALTIME = "realtime"
 
 
 class UserFilterMode(str, Enum):
@@ -184,6 +186,10 @@ class SyncRequest(BaseModel):
     sync_run_id: str
     source_id: str
     sync_mode: str
+    # Manager's running tally at dispatch time. Zero on a fresh sync;
+    # non-zero on resume so the connector can keep counting from there.
+    documents_scanned: int = 0
+    documents_updated: int = 0
 
 
 class SyncResponse(BaseModel):
@@ -223,12 +229,16 @@ class ActionResponse(BaseModel):
         return cls(status="success", result=result)
 
     @classmethod
-    def failure(cls, error: str) -> "ActionResponse":
+    def failure(cls, error: str) -> Self:
         return cls(status="error", error=error)
 
     @classmethod
-    def not_supported(cls, action: str) -> "ActionResponse":
+    def not_supported(cls, action: str) -> Self:
         return cls(status="error", error=f"Action not supported: {action}")
+
+    def to_response(self, status_code: int = 200) -> JSONResponse:
+        """Convert this ActionResponse into a Starlette JSONResponse."""
+        return JSONResponse(content=self.model_dump(), status_code=status_code)
 
 
 class ResourceRequest(BaseModel):
