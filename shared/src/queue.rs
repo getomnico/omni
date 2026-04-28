@@ -131,6 +131,12 @@ impl EventQueue {
         batch_size: i32,
         sync_type: SyncType,
     ) -> Result<Vec<ConnectorEventQueueItem>> {
+        // `FOR UPDATE OF q` scopes the row lock to the queue rows we're
+        // about to mark as 'processing'. The inner join to sync_runs is
+        // read-only metadata; locking those rows would create needless
+        // contention with concurrent sync_run status updates. Same scoping
+        // we use in dequeue_batch_orphans, where it's mandatory rather
+        // than just hygienic.
         let rows = sqlx::query(
             r#"
             WITH batch AS (
@@ -141,7 +147,7 @@ impl EventQueue {
                 AND s.sync_type = $2
                 ORDER BY q.id
                 LIMIT $1
-                FOR UPDATE SKIP LOCKED
+                FOR UPDATE OF q SKIP LOCKED
             )
             UPDATE connector_events_queue q
             SET status = 'processing',
@@ -174,6 +180,15 @@ impl EventQueue {
         &self,
         batch_size: i32,
     ) -> Result<Vec<ConnectorEventQueueItem>> {
+        // `FOR UPDATE OF q` (not bare `FOR UPDATE`) is mandatory here:
+        // Postgres rejects `FOR UPDATE` on a query whose FROM list contains
+        // the nullable side of an outer join — and our filter is literally
+        // `s.id IS NULL`, so by definition the s side has no row to lock.
+        // We only need a lock on the queue rows we're about to mark as
+        // 'processing' anyway. Without `OF q` the planner errors with
+        // "FOR UPDATE cannot be applied to the nullable side of an outer
+        // join" and the entire process_batch tick fails — which also
+        // starves the non-orphan dequeue path that runs after this one.
         let rows = sqlx::query(
             r#"
             WITH batch AS (
@@ -184,7 +199,7 @@ impl EventQueue {
                 AND s.id IS NULL
                 ORDER BY q.id
                 LIMIT $1
-                FOR UPDATE SKIP LOCKED
+                FOR UPDATE OF q SKIP LOCKED
             )
             UPDATE connector_events_queue q
             SET status = 'processing',

@@ -252,4 +252,92 @@ mod tests {
         queue.dequeue_batch(2).await.unwrap();
         assert_eq!(queue.get_pending_count().await.unwrap(), 3);
     }
+
+    /// Regression test: events whose `sync_run_id` no longer exists in
+    /// `sync_runs` (e.g. because the sync_run row was GC'd or the source
+    /// was deleted but the queue rows weren't) must be drainable via
+    /// `dequeue_batch_orphans`. Before the `FOR UPDATE OF q SKIP LOCKED`
+    /// fix, this query failed at parse time with "FOR UPDATE cannot be
+    /// applied to the nullable side of an outer join", which propagated
+    /// up through `process_batch` and starved the entire indexer.
+    #[tokio::test]
+    async fn test_dequeue_batch_orphans_drains_events_with_missing_sync_run() {
+        let env = TestEnvironment::new().await.unwrap();
+        let queue = EventQueue::new(env.db_pool.pool().clone());
+
+        // Enqueue events under sync_run_ids that have no row in sync_runs —
+        // exactly the orphan condition produced when a source is deleted
+        // and its sync_runs cascade away faster than the queue is drained.
+        for i in 0..3 {
+            let event = make_event("nonexistent-run", &format!("orphan-doc-{}", i));
+            queue.enqueue(TEST_SOURCE_ID, &event).await.unwrap();
+        }
+
+        let batch = queue.dequeue_batch_orphans(10).await.unwrap();
+        assert_eq!(batch.len(), 3);
+        for item in &batch {
+            assert!(matches!(item.status, EventStatus::Processing));
+        }
+
+        // Re-running should return empty — claimed rows are now `processing`.
+        let again = queue.dequeue_batch_orphans(10).await.unwrap();
+        assert!(again.is_empty());
+    }
+
+    /// Companion: `dequeue_batch_by_sync_type` must continue to work for
+    /// events whose sync_run row exists. We applied the same `FOR UPDATE
+    /// OF q` scoping there for hygiene; this test pins that the inner
+    /// join + per-sync-type filter still routes correctly.
+    #[tokio::test]
+    async fn test_dequeue_batch_by_sync_type_routes_by_sync_runs() {
+        use shared::models::SyncType;
+
+        let env = TestEnvironment::new().await.unwrap();
+        let pool = env.db_pool.pool().clone();
+        let queue = EventQueue::new(pool.clone());
+
+        // Insert two sync_runs with different sync_types.
+        let full_run = ulid::Ulid::new().to_string();
+        let inc_run = ulid::Ulid::new().to_string();
+        for (id, sync_type) in [(&full_run, "full"), (&inc_run, "incremental")] {
+            sqlx::query(
+                r#"
+                INSERT INTO sync_runs (id, source_id, sync_type, status, started_at, created_at, updated_at)
+                VALUES ($1, $2, $3, 'running', NOW(), NOW(), NOW())
+                "#,
+            )
+            .bind(id)
+            .bind(TEST_SOURCE_ID)
+            .bind(sync_type)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        // Two events under the full sync_run, one under incremental.
+        for i in 0..2 {
+            let event = make_event(&full_run, &format!("full-doc-{}", i));
+            queue.enqueue(TEST_SOURCE_ID, &event).await.unwrap();
+        }
+        let event_inc = make_event(&inc_run, "inc-doc-1");
+        queue.enqueue(TEST_SOURCE_ID, &event_inc).await.unwrap();
+
+        // Asking for `Full` should pick up only the full-run events.
+        let full_batch = queue
+            .dequeue_batch_by_sync_type(10, SyncType::Full)
+            .await
+            .unwrap();
+        assert_eq!(full_batch.len(), 2);
+        for item in &full_batch {
+            assert_eq!(item.sync_run_id, full_run);
+        }
+
+        // The incremental event remains and is picked up by its own filter.
+        let inc_batch = queue
+            .dequeue_batch_by_sync_type(10, SyncType::Incremental)
+            .await
+            .unwrap();
+        assert_eq!(inc_batch.len(), 1);
+        assert_eq!(inc_batch[0].sync_run_id, inc_run);
+    }
 }
