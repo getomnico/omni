@@ -3,7 +3,7 @@ use serde_json::Value as JsonValue;
 use sqlx::PgPool;
 
 use crate::encryption::{EncryptedData, EncryptionService};
-use crate::models::ServiceCredential;
+use crate::models::{ServiceCredential, Source, SourceScope};
 
 /// Service credentials repository with encryption support.
 pub struct ServiceCredentialsRepo {
@@ -34,6 +34,23 @@ impl ServiceCredentialsRepo {
         }
 
         Ok(creds)
+    }
+
+    /// Fetch the credential row that "owns" a source — the one used for sync
+    /// and any non-user-attributed action. Org sources own a `user_id IS NULL`
+    /// row; personal (`scope='user'`) sources own a row keyed on the source
+    /// creator's `user_id`. Migration 086 enforces this invariant.
+    pub async fn find_owner_credential(
+        &self,
+        source: &Source,
+    ) -> Result<Option<ServiceCredential>> {
+        match source.scope {
+            SourceScope::Org => self.find_org_credential(&source.id).await,
+            SourceScope::User => {
+                self.find_user_credential(&source.id, &source.created_by)
+                    .await
+            }
+        }
     }
 
     /// Fetch the per-user credential row for an org-wide source.

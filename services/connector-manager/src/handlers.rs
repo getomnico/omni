@@ -586,30 +586,26 @@ pub async fn read_resource(
         request.uri, request.source_id
     );
 
-    let source: Option<(SourceType,)> =
-        sqlx::query_as("SELECT source_type FROM sources WHERE id = $1")
-            .bind(&request.source_id)
-            .fetch_optional(state.db_pool.pool())
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let source = source_repo
+        .find_by_id(request.source_id.clone())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
 
-    let source_type = source
-        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?
-        .0;
-
-    let connector_url = get_connector_url_for_source(&state.redis_client, source_type)
+    let connector_url = get_connector_url_for_source(&state.redis_client, source.source_type)
         .await
         .ok_or_else(|| {
             ApiError::NotFound(format!(
                 "Connector not registered for type: {:?}",
-                source_type
+                source.source_type
             ))
         })?;
 
     let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let creds = creds_repo
-        .find_org_credential(&request.source_id)
+        .find_owner_credential(&source)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| {
@@ -646,30 +642,26 @@ pub async fn get_prompt(
         request.name, request.source_id
     );
 
-    let source: Option<(SourceType,)> =
-        sqlx::query_as("SELECT source_type FROM sources WHERE id = $1")
-            .bind(&request.source_id)
-            .fetch_optional(state.db_pool.pool())
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let source = source_repo
+        .find_by_id(request.source_id.clone())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
 
-    let source_type = source
-        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?
-        .0;
-
-    let connector_url = get_connector_url_for_source(&state.redis_client, source_type)
+    let connector_url = get_connector_url_for_source(&state.redis_client, source.source_type)
         .await
         .ok_or_else(|| {
             ApiError::NotFound(format!(
                 "Connector not registered for type: {:?}",
-                source_type
+                source.source_type
             ))
         })?;
 
     let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let creds = creds_repo
-        .find_org_credential(&request.source_id)
+        .find_owner_credential(&source)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| {
@@ -1487,11 +1479,18 @@ pub async fn sdk_get_credentials(
 ) -> Result<Json<shared::models::ServiceCredential>, ApiError> {
     debug!("SDK: Getting credentials for source_id={}", source_id);
 
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let source = source_repo
+        .find_by_id(source_id.clone())
+        .await
+        .map_err(|e| ApiError::Internal(format!("Database error: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
+
     let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
         .map_err(|e| ApiError::Internal(format!("Failed to create credentials repo: {}", e)))?;
 
     let creds = creds_repo
-        .find_org_credential(&source_id)
+        .find_owner_credential(&source)
         .await
         .map_err(|e| ApiError::Internal(format!("Database error: {}", e)))?
         .ok_or_else(|| {
@@ -1525,7 +1524,7 @@ pub async fn sdk_get_source_sync_config(
         .map_err(|e| ApiError::Internal(format!("Failed to create credentials repo: {}", e)))?;
 
     let credentials = creds_repo
-        .find_org_credential(&source_id)
+        .find_owner_credential(&source)
         .await
         .map_err(|e| ApiError::Internal(format!("Database error: {}", e)))?
         .map(|c| c.credentials)
