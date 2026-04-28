@@ -16,9 +16,9 @@
         } catch {}
         setTimeout(() => {
             try {
-                // window.close()
+                window.close()
             } catch {}
-        }, 50)
+        }, 1000)
     })
 </script>
 
