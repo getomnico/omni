@@ -111,13 +111,21 @@ export class SyncContext {
   }
 
   async emit(doc: Document): Promise<void> {
+    // Shim Document.title into metadata.title — the indexer reads only
+    // metadata.title and falls back to "Untitled" otherwise. Non-mutating
+    // spread so the caller's Document is never modified (broader than
+    // Python's conditional shim, which skips bare-metadata docs).
+    const metadata: DocumentMetadata = { ...(doc.metadata ?? {}) };
+    if (!metadata.title) {
+      metadata.title = doc.title;
+    }
     const event: ConnectorEventPayload = {
       type: EventType.DOCUMENT_CREATED,
       sync_run_id: this._syncRunId,
       source_id: this._sourceId,
       document_id: doc.external_id,
       content_id: doc.content_id,
-      metadata: doc.metadata,
+      metadata,
       permissions: doc.permissions,
       attributes: doc.attributes,
     };
@@ -126,13 +134,17 @@ export class SyncContext {
   }
 
   async emitUpdated(doc: Document): Promise<void> {
+    const metadata: DocumentMetadata = { ...(doc.metadata ?? {}) };
+    if (!metadata.title) {
+      metadata.title = doc.title;
+    }
     const event: ConnectorEventPayload = {
       type: EventType.DOCUMENT_UPDATED,
       sync_run_id: this._syncRunId,
       source_id: this._sourceId,
       document_id: doc.external_id,
       content_id: doc.content_id,
-      metadata: doc.metadata,
+      metadata,
       permissions: doc.permissions,
       attributes: doc.attributes,
     };
