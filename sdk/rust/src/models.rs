@@ -61,6 +61,8 @@ fn default_scope_separator() -> String {
     " ".to_string()
 }
 
+use crate::mcp_adapter::McpCredentials;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncRequest {
     pub sync_run_id: String,
@@ -115,6 +117,22 @@ pub struct ActionRequest {
     pub params: JsonValue,
     #[serde(default)]
     pub credentials: Option<ServiceCredential>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceRequest {
+    pub uri: String,
+    #[serde(default)]
+    pub credentials: McpCredentials,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptRequest {
+    pub name: String,
+    #[serde(default)]
+    pub arguments: Option<JsonValue>,
+    #[serde(default)]
+    pub credentials: McpCredentials,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

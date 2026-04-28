@@ -237,8 +237,8 @@ def create_app(connector: "Connector") -> FastAPI:
             )
         logger.info("Resource requested: %s", request.uri)
         try:
-            env = connector.prepare_mcp_env(request.credentials)
-            result = await adapter.read_resource(request.uri, env=env)
+            auth = connector._prepare_mcp_auth(request.credentials)
+            result = await adapter.read_resource(request.uri, **auth)
             return JSONResponse(status_code=status.HTTP_200_OK, content=result)
         except Exception as e:
             logger.error("Resource read failed for %s: %s", request.uri, e)
@@ -257,8 +257,8 @@ def create_app(connector: "Connector") -> FastAPI:
             )
         logger.info("Prompt requested: %s", request.name)
         try:
-            env = connector.prepare_mcp_env(request.credentials)
-            result = await adapter.get_prompt(request.name, request.arguments, env=env)
+            auth = connector._prepare_mcp_auth(request.credentials)
+            result = await adapter.get_prompt(request.name, request.arguments, **auth)
             return JSONResponse(status_code=status.HTTP_200_OK, content=result)
         except Exception as e:
             logger.error("Prompt get failed for %s: %s", request.name, e)

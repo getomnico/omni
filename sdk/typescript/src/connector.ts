@@ -1,4 +1,5 @@
 import type { SyncContext } from './context.js';
+import type { McpAdapter, McpServer } from './mcp-adapter.js';
 import type {
   ConnectorManifest,
   ActionDefinition,
@@ -8,17 +9,7 @@ import { ActionResponse } from './models.js';
 import { createServer } from './server.js';
 import { getLogger } from './logger.js';
 
-export interface McpAdapter {
-  getActionDefinitions(): Promise<ActionDefinition[]>;
-  getResourceDefinitions(): Promise<unknown[]>;
-  getPromptDefinitions(): Promise<unknown[]>;
-  executeTool(
-    name: string,
-    params: Record<string, unknown>,
-  ): Promise<ActionResponse>;
-  readResource(uri: string): Promise<unknown>;
-  getPrompt(name: string, args?: Record<string, string>): Promise<unknown>;
-}
+const logger = getLogger('sdk:connector');
 
 export interface ServeOptions {
   port?: number;
@@ -51,25 +42,64 @@ export abstract class Connector<
   readonly attributesSchema?: Record<string, unknown>;
 
   /**
-   * Return an MCP McpServer instance if this connector supports MCP.
-   * Override this getter to enable MCP support.
+   * Return MCP server config (stdio or Streamable HTTP) if this connector
+   * supports MCP. Override this getter to enable MCP support.
    * Requires @modelcontextprotocol/sdk as a dependency.
+   *
+   * @example
+   * get mcpServer(): McpServer {
+   *   return { transport: 'stdio', command: 'github-mcp-server', args: ['stdio'] };
+   * }
+   *
+   * @example
+   * get mcpServer(): McpServer {
+   *   return { transport: 'http', url: 'https://api.example.com/mcp' };
+   * }
    */
-  get mcpServer(): unknown | undefined {
+  get mcpServer(): McpServer | undefined {
     return undefined;
   }
 
   async getMcpAdapter(): Promise<McpAdapter | undefined> {
     if (this._mcpAdapter !== null) {
-      return this._mcpAdapter as ReturnType<typeof this.getMcpAdapter> extends Promise<infer T> ? T : never;
+      return this._mcpAdapter as McpAdapter;
     }
     const server = this.mcpServer;
     if (!server) {
       return undefined;
     }
     const { McpAdapter } = await import('./mcp-adapter.js');
-    this._mcpAdapter = new McpAdapter(server as any);
-    return this._mcpAdapter as any;
+    this._mcpAdapter = new McpAdapter(server);
+    return this._mcpAdapter as McpAdapter;
+  }
+
+  /**
+   * Discover MCP tools/resources/prompts and cache them. Called when
+   * credentials first become available (e.g., during initial sync).
+   */
+  async bootstrapMcp(credentials: TCredentials): Promise<void> {
+    const adapter = await this.getMcpAdapter();
+    if (!adapter) {
+      return;
+    }
+    const { env, headers } = this.prepareMcpAuth(credentials);
+    logger.info('Bootstrapping MCP: discovering tools');
+    try {
+      await adapter.discover(env, headers);
+    } catch (err) {
+      logger.warn({ err }, 'MCP bootstrap failed');
+    }
+  }
+
+  prepareMcpAuth(credentials: TCredentials): {
+    env?: Record<string, string>;
+    headers?: Record<string, string>;
+  } {
+    const server = this.mcpServer;
+    if (server?.transport === 'http') {
+      return { headers: this.prepareMcpHeaders(credentials) };
+    }
+    return { env: this.prepareMcpEnv(credentials) };
   }
 
   private async getAllActions(): Promise<ActionDefinition[]> {
@@ -99,8 +129,8 @@ export abstract class Connector<
       extra_schema: this.extraSchema,
       attributes_schema: this.attributesSchema,
       mcp_enabled: adapter !== undefined,
-      resources: adapter ? await adapter.getResourceDefinitions() as any[] : [],
-      prompts: adapter ? await adapter.getPromptDefinitions() as any[] : [],
+      resources: adapter ? await adapter.getResourceDefinitions() : [],
+      prompts: adapter ? await adapter.getPromptDefinitions() : [],
     };
   }
 
@@ -116,11 +146,29 @@ export abstract class Connector<
   }
 
   /**
-   * Set up environment for MCP tool/resource/prompt calls.
-   * Override to bridge Omni credentials to the env vars your MCP server expects.
+   * Return env vars for a stdio MCP subprocess. Used only when
+   * `mcpServer` returns a `StdioMcpServer`.
+   *
+   * @example
+   * prepareMcpEnv(credentials) {
+   *   return { GITHUB_PERSONAL_ACCESS_TOKEN: credentials.token };
+   * }
    */
-  prepareMcpEnv(_credentials: TCredentials): void {
-    // no-op by default
+  prepareMcpEnv(_credentials: TCredentials): Record<string, string> {
+    return {};
+  }
+
+  /**
+   * Return HTTP headers for a remote MCP server. Used only when
+   * `mcpServer` returns an `HttpMcpServer`.
+   *
+   * @example
+   * prepareMcpHeaders(credentials) {
+   *   return { Authorization: `Bearer ${credentials.token}` };
+   * }
+   */
+  prepareMcpHeaders(_credentials: TCredentials): Record<string, string> {
+    return {};
   }
 
   async executeAction(
@@ -130,11 +178,11 @@ export abstract class Connector<
   ): Promise<Response> {
     const adapter = await this.getMcpAdapter();
     if (adapter) {
-      const mcpActions = await adapter.getActionDefinitions();
+      const { env, headers } = this.prepareMcpAuth(credentials);
+      const mcpActions = await adapter.getActionDefinitions(env, headers);
       const mcpToolNames = new Set(mcpActions.map((a) => a.name));
       if (mcpToolNames.has(action)) {
-        this.prepareMcpEnv(credentials);
-        const response = await adapter.executeTool(action, params);
+        const response = await adapter.executeTool(action, params, env, headers);
         return response.toResponse();
       }
     }

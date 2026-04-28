@@ -249,8 +249,8 @@ export function createServer(connector: Connector): Express {
     logger.info(`Resource requested: ${uri}`);
 
     try {
-      connector.prepareMcpEnv(credentials as any);
-      const result = await adapter.readResource(uri);
+      const { env, headers } = connector.prepareMcpAuth(credentials);
+      const result = await adapter.readResource(uri, env, headers);
       res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -276,8 +276,13 @@ export function createServer(connector: Connector): Express {
     logger.info(`Prompt requested: ${name}`);
 
     try {
-      connector.prepareMcpEnv(credentials as any);
-      const result = await adapter.getPrompt(name, args as Record<string, string> | undefined);
+      const { env, headers } = connector.prepareMcpAuth(credentials);
+      const result = await adapter.getPrompt(
+        name,
+        args as Record<string, string> | undefined,
+        env,
+        headers
+      );
       res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
