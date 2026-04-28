@@ -7,6 +7,7 @@ from .exceptions import (
     SdkClientError,
     SyncCancelledError,
 )
+from .mcp_adapter import HttpMcpServer, McpServer, StdioMcpServer
 from .models import (
     ActionDefinition,
     ActionRequest,
@@ -61,6 +62,10 @@ __all__ = [
     "UserFilterMode",
     "CancelRequest",
     "CancelResponse",
+    # MCP server config
+    "McpServer",
+    "StdioMcpServer",
+    "HttpMcpServer",
     # MCP models
     "McpResourceDefinition",
     "McpPromptDefinition",

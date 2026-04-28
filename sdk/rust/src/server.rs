@@ -1,8 +1,9 @@
 use crate::connector::Connector;
 use crate::context::SyncContext;
+use crate::mcp_adapter::{McpAdapter, McpCredentials, McpServer};
 use crate::models::{
-    ActionRequest, ActionResponse, CancelRequest, CancelResponse, SyncRequest, SyncResponse,
-    SyncStatusResponse,
+    ActionRequest, ActionResponse, CancelRequest, CancelResponse, PromptRequest, ResourceRequest,
+    SyncRequest, SyncResponse, SyncStatusResponse,
 };
 use anyhow::{Context, Result};
 use axum::{
@@ -18,8 +19,9 @@ use dashmap::DashMap;
 use serde::de::DeserializeOwned;
 use shared::telemetry;
 use shared::{SdkClient, SdkError};
+use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::time::{interval, Duration};
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
@@ -102,6 +104,7 @@ struct ServerState<C: Connector> {
     sdk_client: SdkClient,
     connector_url: String,
     active_syncs: ActiveSyncs,
+    mcp_adapter: OnceLock<Option<Arc<McpAdapter>>>,
 }
 
 impl<C: Connector> ServerState<C> {
@@ -111,7 +114,34 @@ impl<C: Connector> ServerState<C> {
             sdk_client,
             connector_url,
             active_syncs: Arc::new(DashMap::new()),
+            mcp_adapter: OnceLock::new(),
         }
+    }
+
+    fn mcp_adapter(&self) -> Option<&Arc<McpAdapter>> {
+        self.mcp_adapter
+            .get_or_init(|| {
+                self.connector
+                    .mcp_server()
+                    .map(|server| Arc::new(McpAdapter::new(server)))
+            })
+            .as_ref()
+    }
+}
+
+/// Build the env-vs-headers tuple to pass to the MCP adapter, dispatching
+/// based on the configured transport variant.
+fn build_mcp_auth<C: Connector>(
+    connector: &C,
+    credentials: &McpCredentials,
+) -> (
+    Option<HashMap<String, String>>,
+    Option<HashMap<String, String>>,
+) {
+    match connector.mcp_server() {
+        Some(McpServer::Http(_)) => (None, Some(connector.prepare_mcp_headers(credentials))),
+        Some(McpServer::Stdio(_)) => (Some(connector.prepare_mcp_env(credentials)), None),
+        None => (None, None),
     }
 }
 
@@ -125,7 +155,9 @@ where
         .route("/sync", post(trigger_sync::<C>))
         .route("/sync/:sync_run_id", get(sync_status::<C>))
         .route("/cancel", post(cancel_sync::<C>))
-        .route("/action", post(execute_action::<C>));
+        .route("/action", post(execute_action::<C>))
+        .route("/resource", post(read_resource::<C>))
+        .route("/prompt", post(get_prompt::<C>));
 
     router
         .layer(
@@ -157,7 +189,8 @@ where
 /// Start the connector server with additional HTTP routes merged in alongside
 /// the SDK-provided routes. Extra paths must not collide with the SDK's
 /// reserved paths (`/health`, `/manifest`, `/sync`, `/sync/:sync_run_id`,
-/// `/cancel`, `/action`) — collisions cause axum to panic at startup.
+/// `/cancel`, `/action`, `/resource`, `/prompt`) — collisions cause axum to
+/// panic at startup.
 ///
 /// Connectors that need to return binary data from actions should return
 /// `ActionResult::Binary` from `execute_action` instead of using extra routes
@@ -237,12 +270,37 @@ async fn manifest<C>(State(state): State<Arc<ServerState<C>>>) -> impl IntoRespo
 where
     C: Connector,
 {
-    Json(
-        state
-            .connector
-            .build_manifest(state.connector_url.clone())
-            .await,
-    )
+    let mut manifest = state
+        .connector
+        .build_manifest(state.connector_url.clone())
+        .await;
+
+    // If MCP is configured, layer the cached tools/resources/prompts from the
+    // adapter on top of any actions the connector defined manually.
+    if let Some(adapter) = state.mcp_adapter() {
+        match adapter.get_action_definitions(None, None).await {
+            Ok(mcp_actions) => {
+                let manual: std::collections::HashSet<String> =
+                    manifest.actions.iter().map(|a| a.name.clone()).collect();
+                for action in mcp_actions {
+                    if !manual.contains(&action.name) {
+                        manifest.actions.push(action);
+                    }
+                }
+            }
+            Err(e) => warn!("Failed to merge MCP actions into manifest: {}", e),
+        }
+        match adapter.get_resource_definitions(None, None).await {
+            Ok(resources) => manifest.resources = resources,
+            Err(e) => warn!("Failed to fetch MCP resources for manifest: {}", e),
+        }
+        match adapter.get_prompt_definitions(None, None).await {
+            Ok(prompts) => manifest.prompts = prompts,
+            Err(e) => warn!("Failed to fetch MCP prompts for manifest: {}", e),
+        }
+    }
+
+    Json(manifest)
 }
 
 async fn sync_status<C>(
@@ -337,6 +395,20 @@ where
             },
         )?;
 
+    // Bootstrap MCP discovery now that we have credentials. Populates the
+    // adapter's cache so subsequent /manifest reads (which run without creds)
+    // can return the live tool/resource/prompt list.
+    if let Some(adapter) = state.mcp_adapter() {
+        let creds = credentials
+            .as_ref()
+            .map(McpCredentials::from_service_credential)
+            .unwrap_or_default();
+        let (env, headers) = build_mcp_auth(&*state.connector, &creds);
+        if let Err(e) = adapter.discover(env, headers).await {
+            warn!("MCP bootstrap failed: {}", e);
+        }
+    }
+
     state
         .sdk_client
         .register_sync(&sync_run_id, request.sync_mode)
@@ -407,6 +479,36 @@ where
     C: Connector,
 {
     info!("Action requested: {}", request.action);
+
+    // MCP-first dispatch: if the action matches a tool exposed by the
+    // connector's MCP server, delegate to the adapter. Falls through to the
+    // connector's own `execute_action` for connector-defined actions.
+    if let Some(adapter) = state.mcp_adapter() {
+        let creds = request
+            .credentials
+            .as_ref()
+            .map(McpCredentials::from_service_credential)
+            .unwrap_or_default();
+        let (env, headers) = build_mcp_auth(&*state.connector, &creds);
+        match adapter
+            .get_action_definitions(env.clone(), headers.clone())
+            .await
+        {
+            Ok(actions) if actions.iter().any(|a| a.name == request.action) => {
+                let response = adapter
+                    .execute_tool(&request.action, request.params.clone(), env, headers)
+                    .await;
+                let status = match response.status.as_str() {
+                    "success" => StatusCode::OK,
+                    _ => StatusCode::BAD_REQUEST,
+                };
+                return Ok(response.into_response_with_status(status));
+            }
+            Ok(_) => { /* not an MCP tool — fall through */ }
+            Err(e) => warn!("MCP action lookup failed; falling back to connector: {}", e),
+        }
+    }
+
     state
         .connector
         .execute_action(&request.action, request.params, request.credentials)
@@ -415,6 +517,62 @@ where
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ActionResponse::failure(error.to_string())),
+            )
+        })
+}
+
+async fn read_resource<C>(
+    State(state): State<Arc<ServerState<C>>>,
+    Json(request): Json<ResourceRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)>
+where
+    C: Connector,
+{
+    info!("Resource requested: {}", request.uri);
+    let adapter = state.mcp_adapter().ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "MCP not enabled for this connector" })),
+        )
+    })?;
+    let (env, headers) = build_mcp_auth(&*state.connector, &request.credentials);
+    adapter
+        .read_resource(&request.uri, env, headers)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            error!("Resource read failed for {}: {}", request.uri, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+        })
+}
+
+async fn get_prompt<C>(
+    State(state): State<Arc<ServerState<C>>>,
+    Json(request): Json<PromptRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)>
+where
+    C: Connector,
+{
+    info!("Prompt requested: {}", request.name);
+    let adapter = state.mcp_adapter().ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "MCP not enabled for this connector" })),
+        )
+    })?;
+    let (env, headers) = build_mcp_auth(&*state.connector, &request.credentials);
+    adapter
+        .get_prompt(&request.name, request.arguments, env, headers)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            error!("Prompt get failed for {}: {}", request.name, e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
             )
         })
 }

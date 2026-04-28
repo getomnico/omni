@@ -1,4 +1,10 @@
-"""A minimal MCP server used as a subprocess for testing the stdio adapter."""
+"""A minimal MCP server used as a subprocess for testing the SDK's adapter.
+
+Supports both transports:
+
+- ``python test_mcp_server.py``                     # stdio (default)
+- ``python test_mcp_server.py http <port>``         # Streamable HTTP
+"""
 
 import sys
 
@@ -33,4 +39,10 @@ def summarize(text: str) -> str:
 
 
 if __name__ == "__main__":
-    server.run(transport="stdio")
+    if len(sys.argv) > 1 and sys.argv[1] == "http":
+        port = int(sys.argv[2]) if len(sys.argv) > 2 else 8765
+        server.settings.host = "127.0.0.1"
+        server.settings.port = port
+        server.run(transport="streamable-http")
+    else:
+        server.run(transport="stdio")

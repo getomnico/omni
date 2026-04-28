@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+
 use crate::context::SyncContext;
+use crate::mcp_adapter::{McpCredentials, McpServer};
 use crate::models::ActionResponse;
 use crate::models::OAuthManifestConfig;
 use anyhow::Result;
@@ -9,8 +12,8 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use shared::models::{
-    ActionDefinition, ConnectorManifest, McpPromptDefinition, McpResourceDefinition,
-    SearchOperator, ServiceCredential, Source, SourceType, SyncType,
+    ActionDefinition, ConnectorManifest, SearchOperator, ServiceCredential, Source, SourceType,
+    SyncType,
 };
 
 #[async_trait]
@@ -67,16 +70,25 @@ pub trait Connector: Send + Sync + 'static {
         None
     }
 
-    fn mcp_enabled(&self) -> bool {
-        false
+    /// Return MCP server config (stdio or Streamable HTTP) to enable MCP
+    /// support. Returning `None` (the default) disables MCP for this connector.
+    fn mcp_server(&self) -> Option<McpServer> {
+        None
     }
 
-    fn mcp_resources(&self) -> Vec<McpResourceDefinition> {
-        vec![]
+    /// Return env vars for a stdio MCP subprocess. Used only when
+    /// `mcp_server()` returns `Some(McpServer::Stdio(_))`. The `credentials`
+    /// argument is the wire-format wrapper forwarded by the connector-manager
+    /// (`{credentials, config, principal_email}`). Connectors typically
+    /// deserialize `credentials.credentials` into their own typed struct.
+    fn prepare_mcp_env(&self, _credentials: &McpCredentials) -> HashMap<String, String> {
+        HashMap::new()
     }
 
-    fn mcp_prompts(&self) -> Vec<McpPromptDefinition> {
-        vec![]
+    /// Return HTTP headers for a remote MCP server. Used only when
+    /// `mcp_server()` returns `Some(McpServer::Http(_))`.
+    fn prepare_mcp_headers(&self, _credentials: &McpCredentials) -> HashMap<String, String> {
+        HashMap::new()
     }
 
     /// Declarative OAuth2 config consumed by the web app's generic OAuth
@@ -108,6 +120,11 @@ pub trait Connector: Send + Sync + 'static {
         Ok(ActionResponse::not_supported(action).into_response_with_status(StatusCode::NOT_FOUND))
     }
 
+    /// Build the connector's static manifest (its name, version, manually-defined
+    /// actions, search operators, etc.). When `mcp_server()` is `Some`, the SDK's
+    /// `/manifest` handler additionally layers MCP-discovered tools, resources,
+    /// and prompts on top of the value returned here — connectors don't need to
+    /// override this method to surface MCP data.
     async fn build_manifest(&self, connector_url: String) -> ConnectorManifest {
         ConnectorManifest {
             name: self.name().to_string(),
@@ -123,9 +140,9 @@ pub trait Connector: Send + Sync + 'static {
             read_only: self.read_only(),
             extra_schema: self.extra_schema(),
             attributes_schema: self.attributes_schema(),
-            mcp_enabled: self.mcp_enabled(),
-            resources: self.mcp_resources(),
-            prompts: self.mcp_prompts(),
+            mcp_enabled: self.mcp_server().is_some(),
+            resources: vec![],
+            prompts: vec![],
             oauth: self
                 .oauth_config()
                 .and_then(|c| serde_json::to_value(c).ok()),

@@ -13,8 +13,15 @@ path = "src/lib.rs"
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
+http = "1"
 mime = "0.3"
 dashmap = { workspace = true }
+reqwest = { workspace = true }
+rmcp = { version = "1.5", features = [
+    "client",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 shared = { path = "../../shared" }
