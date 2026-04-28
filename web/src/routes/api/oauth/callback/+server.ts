@@ -52,14 +52,15 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     const flow = state.metadata.flow
     const grantedScopes = (tokens.scope ?? '').split(config.scope_separator).filter(Boolean)
     const requiredScopes = state.metadata.requiredScopes
-    if (state.metadata.strictScopeCheck) {
+    if (state.metadata.strictScopeCheck && flow.type === 'user_write') {
         const missing = requiredScopes.filter((s) => !grantedScopes.includes(s))
         if (missing.length > 0) {
-            return userWriteResultResponse({
-                ok: false,
-                sourceId: flow.type === 'user_write' ? flow.sourceId : null,
+            const params = new URLSearchParams({
+                ok: 'false',
+                sourceId: flow.sourceId,
                 message: `Missing required scopes: ${missing.join(', ')}`,
             })
+            throw redirect(302, `/oauth/done?${params}`)
         }
     }
 
@@ -81,7 +82,8 @@ export const GET: RequestHandler = async ({ url, locals }) => {
             config: { granted_scopes: grantedScopes },
             expiresAt,
         })
-        return userWriteResultResponse({ ok: true, sourceId: flow.sourceId })
+        const params = new URLSearchParams({ ok: 'true', sourceId: flow.sourceId })
+        throw redirect(302, `/oauth/done?${params}`)
     }
 
     // connect_source flow: for each requested source_type, attach to existing
@@ -154,37 +156,4 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     }
 
     throw redirect(302, flow.returnTo ?? '/settings/integrations?success=connected')
-}
-
-/// Broadcasts the result to the opener (chat) tab and closes this tab.
-/// No visible UI — the chat tab's BroadcastChannel listener handles both
-/// success (flip card to pending_approval) and failure (show error in card).
-function userWriteResultResponse(opts: {
-    ok: boolean
-    sourceId: string | null
-    message?: string
-}): Response {
-    const payload = JSON.stringify({
-        type: 'omni:user-auth-result',
-        ok: opts.ok,
-        sourceId: opts.sourceId,
-        message: opts.message ?? null,
-    })
-
-    const html = `<!doctype html>
-<html><body>
-<script>
-try {
-  const ch = new BroadcastChannel('omni-user-auth');
-  ch.postMessage(${payload});
-  ch.close();
-} catch (e) {}
-setTimeout(() => { try { window.close(); } catch (e) {} }, 50);
-</script>
-</body></html>`
-
-    return new Response(html, {
-        status: 200,
-        headers: { 'Content-Type': 'text/html; charset=utf-8' },
-    })
 }
