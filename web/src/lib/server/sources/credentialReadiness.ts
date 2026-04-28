@@ -1,6 +1,5 @@
-import { and, eq, isNull } from 'drizzle-orm'
-import { db } from '$lib/server/db'
-import { sources, serviceCredentials } from '$lib/server/db/schema'
+import { getSourceById } from '$lib/server/db/sources'
+import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
 
 export type CredentialReadiness =
     | { ready: true }
@@ -25,35 +24,19 @@ export async function getCredentialReadiness(
     sourceId: string,
     userId: string,
 ): Promise<CredentialReadiness> {
-    const [source] = await db
-        .select({ id: sources.id, isDeleted: sources.isDeleted })
-        .from(sources)
-        .where(eq(sources.id, sourceId))
-        .limit(1)
-
+    const source = await getSourceById(sourceId)
     if (!source || source.isDeleted) {
         return { ready: false, reason: 'source_not_found' }
     }
 
-    const [perUserCred] = await db
-        .select({ id: serviceCredentials.id })
-        .from(serviceCredentials)
-        .where(
-            and(eq(serviceCredentials.sourceId, sourceId), eq(serviceCredentials.userId, userId)),
-        )
-        .limit(1)
-
+    const perUserCred = await serviceCredentialsRepository.getByUserAndSource(sourceId, userId)
     if (perUserCred) {
         return { ready: true }
     }
 
     // Disambiguate: if there isn't even an org row to derive a provider from,
     // the source itself is misconfigured rather than just missing user auth.
-    const [orgRow] = await db
-        .select({ id: serviceCredentials.id })
-        .from(serviceCredentials)
-        .where(and(eq(serviceCredentials.sourceId, sourceId), isNull(serviceCredentials.userId)))
-        .limit(1)
+    const orgRow = await serviceCredentialsRepository.getOrgCredsBySourceId(sourceId)
     if (!orgRow) {
         return { ready: false, reason: 'no_org_credentials' }
     }
