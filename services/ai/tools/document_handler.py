@@ -168,11 +168,6 @@ class DocumentToolHandler:
         )
 
         async with httpx.AsyncClient(timeout=120.0) as client:
-            # Call connector-manager to fetch the file. fetch_file is a read action,
-            # so the connector-manager will fall back to org-wide credentials when no
-            # per-user row exists for this user — but user_id is still required by
-            # ExecuteActionRequest so the resolver can prefer per-user creds when
-            # they're present.
             resp = await client.post(
                 f"{self._connector_manager_url}/action",
                 json={

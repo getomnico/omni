@@ -531,7 +531,7 @@ impl GoogleCredentialsService {
         source_id: &str,
     ) -> Result<shared::models::ServiceCredentials> {
         self.service_credentials_repo
-            .get_org_for_source(source_id)
+            .find_org_credential(source_id)
             .await?
             .ok_or_else(|| anyhow!("Service credentials not found for source: {}", source_id))
     }

@@ -15,6 +15,10 @@ ALTER TABLE sources ADD CONSTRAINT sources_scope_check CHECK (scope IN ('org', '
 
 -- Backfill: a source is org-scoped iff it has a service-account-style credential.
 -- OAuth-typed credentials stay user-scoped (matches the existing user-OAuth flow's intent).
+-- Note on auth_types: jwt/api_key/basic_auth/bearer_token/bot_token are all
+-- non-OAuth, admin-supplied creds. bearer_token and bot_token coexist because
+-- some providers (Slack) use a distinct token namespace ('xoxb-...') for bots
+-- with different lifecycle/scopes than a generic bearer token.
 UPDATE sources SET scope = 'org'
 WHERE id IN (
     SELECT s.id
@@ -23,10 +27,10 @@ WHERE id IN (
     WHERE sc.auth_type IN ('jwt', 'api_key', 'basic_auth', 'bearer_token', 'bot_token')
 );
 
--- At most one org-wide source per source_type (excluding soft-deleted).
-CREATE UNIQUE INDEX one_org_source_per_type
-    ON sources (source_type)
-    WHERE scope = 'org' AND is_deleted = false;
+-- Uniqueness of org sources per source_type is enforced at the application
+-- layer (see web/src/routes/api/sources/+server.ts) — some source_types
+-- legitimately allow multiple org-wide sources (e.g., 'web' for indexing
+-- multiple sites).
 
 CREATE INDEX idx_sources_scope ON sources (scope);
 
@@ -52,6 +56,9 @@ CREATE UNIQUE INDEX service_credentials_source_org_uniq
     ON service_credentials (source_id)
     WHERE user_id IS NULL;
 
+-- Non-unique index for "list all credentials owned by a given user" lookups.
+-- Uniqueness is on (source_id, user_id) above — a user can hold multiple
+-- credentials, but at most one per source.
 CREATE INDEX service_credentials_user_id_idx
     ON service_credentials (user_id) WHERE user_id IS NOT NULL;
 

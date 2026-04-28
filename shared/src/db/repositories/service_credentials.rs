@@ -3,43 +3,7 @@ use serde_json::Value as JsonValue;
 use sqlx::PgPool;
 
 use crate::encryption::{EncryptedData, EncryptionService};
-use crate::models::{ServiceCredentials, ServiceProvider};
-
-/// Outcome of resolving credentials for a tool/action invocation.
-///
-/// `NeedsUserAuth` is the recoverable case where an org-wide source has no
-/// per-user credential for the acting user; the caller surfaces this to the UI
-/// as a "Connect <provider>" CTA. `NoCredentials` is a misconfiguration — the
-/// source itself has no credentials and the call cannot proceed.
-#[derive(Debug, thiserror::Error)]
-pub enum CredentialResolutionError {
-    #[error("user authorization required for source {source_id} ({provider:?})")]
-    NeedsUserAuth {
-        source_id: String,
-        provider: ServiceProvider,
-    },
-    #[error("no credentials configured for source {0}")]
-    NoCredentials(String),
-    #[error("database error: {0}")]
-    Db(#[from] anyhow::Error),
-}
-
-/// Action mode for credential resolution. Mirrors the manifest action `mode`
-/// field; we only need the read/write distinction here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActionMode {
-    Read,
-    Write,
-}
-
-impl ActionMode {
-    pub fn from_manifest_mode(mode: &str) -> Self {
-        match mode {
-            "read" => ActionMode::Read,
-            _ => ActionMode::Write,
-        }
-    }
-}
+use crate::models::ServiceCredentials;
 
 /// Service credentials repository with encryption support.
 pub struct ServiceCredentialsRepo {
@@ -57,9 +21,7 @@ impl ServiceCredentialsRepo {
     }
 
     /// Fetch the org-wide credential row for a source (`user_id IS NULL`).
-    /// Used by sync and by reads on org-wide sources when no per-user row
-    /// exists.
-    pub async fn get_org_for_source(&self, source_id: &str) -> Result<Option<ServiceCredentials>> {
+    pub async fn find_org_credential(&self, source_id: &str) -> Result<Option<ServiceCredentials>> {
         let mut creds = sqlx::query_as::<_, ServiceCredentials>(
             "SELECT * FROM service_credentials WHERE source_id = $1 AND user_id IS NULL",
         )
@@ -74,8 +36,8 @@ impl ServiceCredentialsRepo {
         Ok(creds)
     }
 
-    /// Fetch the per-user credential row for a source.
-    pub async fn get_for_user(
+    /// Fetch the per-user credential row for an org-wide source.
+    pub async fn find_user_credential(
         &self,
         source_id: &str,
         user_id: &str,
@@ -93,69 +55,6 @@ impl ServiceCredentialsRepo {
         }
 
         Ok(creds)
-    }
-
-    /// Resolve which credential to use for a tool/action invocation.
-    ///
-    /// Rules (see also the plan file):
-    /// * `Source.scope = 'user'` → use the org row (`user_id IS NULL`); it's
-    ///   the only row for personal sources.
-    /// * `Source.scope = 'org'`, action mode `read` → per-user row if present,
-    ///   else org row.
-    /// * `Source.scope = 'org'`, action mode `write` → per-user row required;
-    ///   if absent, return `NeedsUserAuth`.
-    pub async fn get_for_action(
-        &self,
-        source_id: &str,
-        acting_user_id: &str,
-        source_scope: crate::models::SourceScope,
-        action_mode: ActionMode,
-    ) -> Result<ServiceCredentials, CredentialResolutionError> {
-        use crate::models::SourceScope;
-
-        match (source_scope, action_mode) {
-            (SourceScope::User, _) => self
-                .get_org_for_source(source_id)
-                .await
-                .map_err(CredentialResolutionError::Db)?
-                .ok_or_else(|| CredentialResolutionError::NoCredentials(source_id.to_string())),
-
-            (SourceScope::Org, ActionMode::Read) => {
-                if let Some(per_user) = self
-                    .get_for_user(source_id, acting_user_id)
-                    .await
-                    .map_err(CredentialResolutionError::Db)?
-                {
-                    return Ok(per_user);
-                }
-                self.get_org_for_source(source_id)
-                    .await
-                    .map_err(CredentialResolutionError::Db)?
-                    .ok_or_else(|| CredentialResolutionError::NoCredentials(source_id.to_string()))
-            }
-
-            (SourceScope::Org, ActionMode::Write) => {
-                if let Some(per_user) = self
-                    .get_for_user(source_id, acting_user_id)
-                    .await
-                    .map_err(CredentialResolutionError::Db)?
-                {
-                    return Ok(per_user);
-                }
-                let provider = self
-                    .get_org_for_source(source_id)
-                    .await
-                    .map_err(CredentialResolutionError::Db)?
-                    .map(|c| c.provider)
-                    .ok_or_else(|| {
-                        CredentialResolutionError::NoCredentials(source_id.to_string())
-                    })?;
-                Err(CredentialResolutionError::NeedsUserAuth {
-                    source_id: source_id.to_string(),
-                    provider,
-                })
-            }
-        }
     }
 
     fn decrypt_credentials_in_place(&self, creds: &mut ServiceCredentials) -> Result<()> {

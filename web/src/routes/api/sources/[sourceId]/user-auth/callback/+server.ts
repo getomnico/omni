@@ -3,13 +3,13 @@ import type { RequestHandler } from './$types'
 import { db } from '$lib/server/db'
 import { sources } from '$lib/server/db/schema'
 import { and, eq } from 'drizzle-orm'
-import { GoogleConnectorOAuthService } from '$lib/server/oauth/googleConnector'
+import { getUserAuthAdapter } from '$lib/server/oauth/userAuthAdapters'
 import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
 import { logger } from '$lib/server/logger'
 
-/// Per-user OAuth callback. Exchanges the code for tokens, validates the user
-/// granted the required write scopes, and writes a per-user
-/// service_credentials row attached to the org-wide source.
+/// Per-user OAuth callback. Provider-specific token exchange is delegated to
+/// the adapter for this source_type — this route handles state/scope
+/// validation, credential persistence, and the close-and-notify HTML page.
 export const GET: RequestHandler = async ({ params, locals, url }) => {
     if (!locals.user) {
         throw error(401, 'Unauthorized')
@@ -53,21 +53,14 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
         throw error(400, 'Per-user authentication only applies to org-wide sources')
     }
 
-    const sourceType = source.sourceType
-    if (sourceType !== 'google_drive' && sourceType !== 'gmail') {
-        throw error(501, `Per-user OAuth is not implemented for source_type=${sourceType}`)
+    const adapter = getUserAuthAdapter(source.sourceType)
+    if (!adapter) {
+        throw error(501, `Per-user OAuth is not implemented for source_type=${source.sourceType}`)
     }
 
-    let tokens
-    let state
+    let exchange
     try {
-        const result = await GoogleConnectorOAuthService.exchangeUserWriteCode(
-            sourceId,
-            code,
-            stateToken,
-        )
-        tokens = result.tokens
-        state = result.state
+        exchange = await adapter.exchangeCode({ sourceId, code, stateToken })
     } catch (err) {
         logger.error('user-auth callback token exchange failed', { sourceId, err: String(err) })
         return successPage({
@@ -76,6 +69,8 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
             message: 'Failed to exchange OAuth code. Please try again.',
         })
     }
+
+    const { tokens, state, principalEmail } = exchange
 
     if (state.user_id !== locals.user.id) {
         throw error(403, 'OAuth state does not match the signed-in user')
@@ -92,13 +87,12 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
         })
     }
 
-    const principalEmail = await GoogleConnectorOAuthService.fetchUserEmail(tokens.access_token)
     const expiresAt = tokens.expires_in ? new Date(Date.now() + tokens.expires_in * 1000) : null
 
     await serviceCredentialsRepository.createForUser({
         sourceId,
         userId: locals.user.id,
-        provider: 'google',
+        provider: adapter.provider,
         authType: 'oauth',
         principalEmail,
         credentials: {

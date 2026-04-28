@@ -3,12 +3,11 @@ import type { RequestHandler } from './$types'
 import { db } from '$lib/server/db'
 import { sources } from '$lib/server/db/schema'
 import { and, eq } from 'drizzle-orm'
-import { GoogleConnectorOAuthService } from '$lib/server/oauth/googleConnector'
+import { getUserAuthAdapter } from '$lib/server/oauth/userAuthAdapters'
 
 /// Initiates the per-user OAuth flow that attaches the acting user's write
-/// credentials to an existing org-wide source. Redirects to the provider's
-/// consent screen with write scopes; the callback writes a per-user
-/// service_credentials row scoped to (source_id, user_id).
+/// credentials to an existing org-wide source. Provider dispatch lives in
+/// `userAuthAdapters` — this route stays connector-agnostic.
 export const GET: RequestHandler = async ({ params, locals, url }) => {
     if (!locals.user) {
         throw error(401, 'Unauthorized')
@@ -40,29 +39,28 @@ export const GET: RequestHandler = async ({ params, locals, url }) => {
         )
     }
 
-    const returnTo = url.searchParams.get('return_to') ?? undefined
-
-    // Provider-specific dispatch. v1 supports Google source types; extend as we
-    // wire up additional connectors for write tools.
-    const sourceType = source.sourceType
-    if (sourceType === 'google_drive' || sourceType === 'gmail') {
-        const isConfigured = await GoogleConnectorOAuthService.isConfigured()
-        if (!isConfigured) {
-            throw error(
-                412,
-                'Google OAuth client is not configured. Ask an admin to set it up under Admin → Settings → Integrations.',
-            )
-        }
-
-        const { url: authUrl } = await GoogleConnectorOAuthService.generateUserWriteAuthUrl(
-            sourceId,
-            sourceType,
-            locals.user.id,
-            returnTo,
+    const adapter = getUserAuthAdapter(source.sourceType)
+    if (!adapter) {
+        throw error(
+            501,
+            `Per-user OAuth is not implemented for source_type=${source.sourceType} yet.`,
         )
-
-        throw redirect(302, authUrl)
     }
 
-    throw error(501, `Per-user OAuth is not implemented for source_type=${sourceType} yet.`)
+    if (!(await adapter.isConfigured())) {
+        throw error(
+            412,
+            `OAuth client for ${source.sourceType} is not configured. Ask an admin to set it up under Admin → Settings → Integrations.`,
+        )
+    }
+
+    const returnTo = url.searchParams.get('return_to') ?? undefined
+    const { url: authUrl } = await adapter.generateAuthUrl({
+        sourceId,
+        sourceType: source.sourceType,
+        userId: locals.user.id,
+        returnTo,
+    })
+
+    throw redirect(302, authUrl)
 }

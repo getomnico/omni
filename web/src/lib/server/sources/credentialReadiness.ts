@@ -19,9 +19,9 @@ export type CredentialReadiness =
 ///   * the chat tool-approval card (renders Connect-CTA when not ready)
 ///   * the (app)/settings/integrations page (Connected / Connect status)
 ///
-/// Mirrors the Rust-side resolution rule in
-/// `ServiceCredentialsRepo::get_for_action`. Read-mode actions don't need this
-/// check — they fall back to org credentials and won't 412.
+/// Mirrors the Rust-side resolution rule in `resolve_credentials`
+/// (services/connector-manager/src/handlers.rs). Read-mode actions don't need
+/// this check — they fall back to org credentials and won't 412.
 export async function getCredentialReadiness(
     sourceId: string,
     userId: string,

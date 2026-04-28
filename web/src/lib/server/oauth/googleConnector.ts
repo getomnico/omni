@@ -2,16 +2,17 @@ import { getConnectorConfig } from '../db/connector-configs'
 import { app } from '../config'
 import { OAuthStateManager } from './state'
 import type { OAuthTokens, OAuthError } from './types'
+import { SourceType } from '$lib/types'
 
 const GOOGLE_AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth'
 const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 const GOOGLE_USERINFO_ENDPOINT = 'https://www.googleapis.com/oauth2/v3/userinfo'
 
-function getScopesForSourceType(sourceType: string): string[] {
+function getScopesForSourceType(sourceType: SourceType | string): string[] {
     switch (sourceType) {
-        case 'google_drive':
+        case SourceType.GOOGLE_DRIVE:
             return ['https://www.googleapis.com/auth/drive.readonly']
-        case 'gmail':
+        case SourceType.GMAIL:
             return ['https://www.googleapis.com/auth/gmail.readonly']
         default:
             return [
@@ -24,14 +25,14 @@ function getScopesForSourceType(sourceType: string): string[] {
 /// Scopes required for per-user write actions (MCP write tools) against a
 /// connected Google source. Used by the `/api/sources/[sourceId]/user-auth/...`
 /// flow that attaches per-user credentials to org-wide sources.
-export function getWriteScopesForSourceType(sourceType: string): string[] {
+export function getWriteScopesForSourceType(sourceType: SourceType | string): string[] {
     switch (sourceType) {
-        case 'google_drive':
+        case SourceType.GOOGLE_DRIVE:
             // drive.file scopes the grant to files the app creates/opens — the safe
             // default for MCP write tools. Switch to 'drive' if a connector needs
             // full-mailbox-style access.
             return ['https://www.googleapis.com/auth/drive.file']
-        case 'gmail':
+        case SourceType.GMAIL:
             // gmail.send covers send-as; gmail.modify is needed for label/thread
             // mutations. Start with both and trim when a write tool needs less.
             return [

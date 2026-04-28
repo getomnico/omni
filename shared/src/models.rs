@@ -352,6 +352,30 @@ fn default_search_operator_value_type() -> String {
     "text".to_string()
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ActionMode {
+    Read,
+    Write,
+}
+
+impl ActionMode {
+    /// Default for actions that don't declare a mode. We assume write to be on
+    /// the safe side — read-only sources/connectors will reject the action.
+    pub const DEFAULT: ActionMode = ActionMode::Write;
+}
+
+impl std::str::FromStr for ActionMode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "read" => Ok(ActionMode::Read),
+            "write" => Ok(ActionMode::Write),
+            other => Err(format!("unknown action mode: {other}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionDefinition {
     pub name: String,

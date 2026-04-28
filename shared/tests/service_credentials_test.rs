@@ -1,17 +1,13 @@
-//! Tests for ServiceCredentialsRepo's per-user credential resolution rules.
-//!
-//! These map 1:1 onto the four cases in the lookup rule (see plan):
-//!   * personal source                              → org row
-//!   * org source, read,  per-user row exists       → per-user row
-//!   * org source, read,  per-user row absent       → org row (fallback)
-//!   * org source, write, per-user row exists       → per-user row
-//!   * org source, write, per-user row absent       → NeedsUserAuth
+//! Tests for ServiceCredentialsRepo's basic getters. The org/user resolution
+//! rules now live in connector-manager (see `resolve_credentials` in
+//! `services/connector-manager/src/handlers.rs`); this suite only verifies the
+//! repo's two raw getters.
 
 #[cfg(test)]
 mod tests {
-    use shared::models::{AuthType, ServiceCredentials, ServiceProvider, SourceScope};
+    use shared::models::{AuthType, ServiceCredentials, ServiceProvider};
     use shared::test_environment::TestEnvironment;
-    use shared::{ActionMode, CredentialResolutionError, ServiceCredentialsRepo};
+    use shared::ServiceCredentialsRepo;
     use sqlx::PgPool;
     use time::OffsetDateTime;
 
@@ -79,12 +75,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn personal_source_uses_org_row() {
+    async fn find_org_credential_returns_org_row() {
         ensure_encryption_env();
         let env = TestEnvironment::new().await.unwrap();
         let repo = ServiceCredentialsRepo::new(env.db_pool.pool().clone()).unwrap();
 
-        // Personal source already seeded; insert the lone org-row credential.
         repo.create(make_creds(
             "01CRED_PERSONAL_ORG",
             SEED_SOURCE_ID,
@@ -95,21 +90,16 @@ mod tests {
         .unwrap();
 
         let creds = repo
-            .get_for_action(
-                SEED_SOURCE_ID,
-                SEED_USER_ID,
-                SourceScope::User,
-                ActionMode::Read,
-            )
+            .find_org_credential(SEED_SOURCE_ID)
             .await
-            .expect("expected the seed (org) row to be returned for a personal source");
-
+            .unwrap()
+            .expect("expected an org credential row");
         assert!(creds.user_id.is_none());
         assert_eq!(creds.source_id, SEED_SOURCE_ID);
     }
 
     #[tokio::test]
-    async fn org_source_read_falls_back_to_org_row() {
+    async fn find_user_credential_returns_per_user_row() {
         ensure_encryption_env();
         let env = TestEnvironment::new().await.unwrap();
         seed_org_source(env.db_pool.pool()).await;
@@ -117,35 +107,6 @@ mod tests {
 
         repo.create(make_creds(
             "01CRED_ORG_ORG",
-            ORG_SOURCE_ID,
-            None,
-            AuthType::Jwt,
-        ))
-        .await
-        .unwrap();
-
-        let creds = repo
-            .get_for_action(
-                ORG_SOURCE_ID,
-                SEED_USER_ID,
-                SourceScope::Org,
-                ActionMode::Read,
-            )
-            .await
-            .expect("read on org source with no per-user cred should fall back to org row");
-
-        assert!(creds.user_id.is_none());
-    }
-
-    #[tokio::test]
-    async fn org_source_read_prefers_per_user_row_when_present() {
-        ensure_encryption_env();
-        let env = TestEnvironment::new().await.unwrap();
-        seed_org_source(env.db_pool.pool()).await;
-        let repo = ServiceCredentialsRepo::new(env.db_pool.pool().clone()).unwrap();
-
-        repo.create(make_creds(
-            "01CRED_ORG_ORG2",
             ORG_SOURCE_ID,
             None,
             AuthType::Jwt,
@@ -162,115 +123,44 @@ mod tests {
         .unwrap();
 
         let creds = repo
-            .get_for_action(
-                ORG_SOURCE_ID,
-                SEED_USER_ID,
-                SourceScope::Org,
-                ActionMode::Read,
-            )
+            .find_user_credential(ORG_SOURCE_ID, SEED_USER_ID)
             .await
-            .expect("read should pick per-user row when it exists");
-
+            .unwrap()
+            .expect("expected per-user row");
         assert_eq!(creds.user_id.as_deref(), Some(SEED_USER_ID));
     }
 
     #[tokio::test]
-    async fn org_source_write_with_per_user_row_succeeds() {
+    async fn find_user_credential_returns_none_when_absent() {
         ensure_encryption_env();
         let env = TestEnvironment::new().await.unwrap();
         seed_org_source(env.db_pool.pool()).await;
         let repo = ServiceCredentialsRepo::new(env.db_pool.pool().clone()).unwrap();
 
         repo.create(make_creds(
-            "01CRED_ORG_ORG3",
+            "01CRED_ORG_ORG2",
             ORG_SOURCE_ID,
             None,
             AuthType::Jwt,
-        ))
-        .await
-        .unwrap();
-        repo.create(make_creds(
-            "01CRED_ORG_PER_USER2",
-            ORG_SOURCE_ID,
-            Some(SEED_USER_ID),
-            AuthType::OAuth,
         ))
         .await
         .unwrap();
 
         let creds = repo
-            .get_for_action(
-                ORG_SOURCE_ID,
-                SEED_USER_ID,
-                SourceScope::Org,
-                ActionMode::Write,
-            )
+            .find_user_credential(ORG_SOURCE_ID, SEED_USER_ID)
             .await
-            .expect("write with per-user row present should succeed");
-
-        assert_eq!(creds.user_id.as_deref(), Some(SEED_USER_ID));
+            .unwrap();
+        assert!(creds.is_none());
     }
 
     #[tokio::test]
-    async fn org_source_write_without_per_user_row_returns_needs_user_auth() {
+    async fn find_org_credential_returns_none_when_absent() {
         ensure_encryption_env();
         let env = TestEnvironment::new().await.unwrap();
         seed_org_source(env.db_pool.pool()).await;
         let repo = ServiceCredentialsRepo::new(env.db_pool.pool().clone()).unwrap();
 
-        // Org row exists but no per-user row for SEED_USER_ID.
-        repo.create(make_creds(
-            "01CRED_ORG_ORG4",
-            ORG_SOURCE_ID,
-            None,
-            AuthType::Jwt,
-        ))
-        .await
-        .unwrap();
-
-        let result = repo
-            .get_for_action(
-                ORG_SOURCE_ID,
-                SEED_USER_ID,
-                SourceScope::Org,
-                ActionMode::Write,
-            )
-            .await;
-
-        match result {
-            Err(CredentialResolutionError::NeedsUserAuth {
-                source_id,
-                provider,
-            }) => {
-                assert_eq!(source_id, ORG_SOURCE_ID);
-                assert_eq!(provider, ServiceProvider::Google);
-            }
-            other => panic!("expected NeedsUserAuth, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn org_source_write_without_org_creds_returns_no_credentials() {
-        ensure_encryption_env();
-        let env = TestEnvironment::new().await.unwrap();
-        seed_org_source(env.db_pool.pool()).await;
-        let repo = ServiceCredentialsRepo::new(env.db_pool.pool().clone()).unwrap();
-
-        // No credentials at all on the org source.
-        let result = repo
-            .get_for_action(
-                ORG_SOURCE_ID,
-                SEED_USER_ID,
-                SourceScope::Org,
-                ActionMode::Write,
-            )
-            .await;
-
-        match result {
-            Err(CredentialResolutionError::NoCredentials(id)) => {
-                assert_eq!(id, ORG_SOURCE_ID);
-            }
-            other => panic!("expected NoCredentials, got {other:?}"),
-        }
+        let creds = repo.find_org_credential(ORG_SOURCE_ID).await.unwrap();
+        assert!(creds.is_none());
     }
 }

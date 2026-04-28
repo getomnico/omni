@@ -1,13 +1,20 @@
 import { and, eq, isNull, isNotNull } from 'drizzle-orm'
 import { db } from '$lib/server/db'
-import { serviceCredentials, type ServiceCredentials } from '$lib/server/db/schema'
+import { serviceCredentials, type ServiceCredential } from '$lib/server/db/schema'
 import { encryptConfig } from '$lib/server/crypto/encryption'
 import { ulid } from 'ulid'
+
+/// Public view of a per-user credential row used by admin/source UIs to list
+/// "who has connected" without exposing secret material.
+export type UserCredentialSummary = Pick<
+    ServiceCredential,
+    'userId' | 'principalEmail' | 'createdAt'
+> & { userId: string }
 
 export class ServiceCredentialsRepository {
     /// Fetch the org-wide credential (`user_id IS NULL`) for a source. Org-wide
     /// rows back sync and serve as the read fallback for org-scoped sources.
-    async getBySourceId(sourceId: string): Promise<ServiceCredentials | null> {
+    async getOrgCredsBySourceId(sourceId: string): Promise<ServiceCredential | null> {
         const result = await db.query.serviceCredentials.findFirst({
             where: and(
                 eq(serviceCredentials.sourceId, sourceId),
@@ -18,7 +25,7 @@ export class ServiceCredentialsRepository {
     }
 
     /// Fetch a per-user credential for an org-wide source.
-    async getByUserAndSource(sourceId: string, userId: string): Promise<ServiceCredentials | null> {
+    async getByUserAndSource(sourceId: string, userId: string): Promise<ServiceCredential | null> {
         const result = await db.query.serviceCredentials.findFirst({
             where: and(
                 eq(serviceCredentials.sourceId, sourceId),
@@ -28,11 +35,9 @@ export class ServiceCredentialsRepository {
         return result ?? null
     }
 
-    /// List per-user credential rows for a source (e.g. for an admin UI showing
-    /// who has connected). Returns rows without secret material.
-    async listUserCredentialsForSource(
-        sourceId: string,
-    ): Promise<Array<{ userId: string; principalEmail: string | null; createdAt: Date }>> {
+    /// List per-user credential rows for a source — used by admin UI to show
+    /// who has connected. Strips secret material.
+    async listUserCredentialsForSource(sourceId: string): Promise<UserCredentialSummary[]> {
         const rows = await db
             .select({
                 userId: serviceCredentials.userId,
@@ -47,9 +52,9 @@ export class ServiceCredentialsRepository {
                 ),
             )
         return rows
-            .filter((r) => r.userId !== null)
+            .filter((r): r is UserCredentialSummary => r.userId !== null)
             .map((r) => ({
-                userId: r.userId as string,
+                userId: r.userId,
                 principalEmail: r.principalEmail,
                 createdAt: r.createdAt,
             }))
@@ -65,7 +70,7 @@ export class ServiceCredentialsRepository {
         principalEmail: string | null
         credentials: Record<string, unknown>
         config: Record<string, unknown>
-    }): Promise<ServiceCredentials> {
+    }): Promise<ServiceCredential> {
         await db
             .delete(serviceCredentials)
             .where(
@@ -104,7 +109,7 @@ export class ServiceCredentialsRepository {
         credentials: Record<string, unknown>
         config: Record<string, unknown>
         expiresAt?: Date | null
-    }): Promise<ServiceCredentials> {
+    }): Promise<ServiceCredential> {
         await db
             .delete(serviceCredentials)
             .where(
@@ -139,7 +144,7 @@ export class ServiceCredentialsRepository {
             credentials?: Record<string, unknown> | null
             config?: Record<string, unknown>
         },
-    ): Promise<ServiceCredentials | null> {
+    ): Promise<ServiceCredential | null> {
         const updates: Partial<typeof serviceCredentials.$inferInsert> = {
             updatedAt: new Date(),
         }

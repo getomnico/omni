@@ -96,7 +96,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     }
 
     try {
-        const creds = await serviceCredentialsRepository.getBySourceId(sourceId)
+        const creds = await serviceCredentialsRepository.getOrgCredsBySourceId(sourceId)
 
         if (!creds) {
             return json({ credentials: null, hasCredentials: false })
@@ -145,7 +145,7 @@ export const PATCH: RequestHandler = async ({ request, locals, fetch }) => {
         throw error(403, 'Forbidden')
     }
 
-    const existing = await serviceCredentialsRepository.getBySourceId(sourceId)
+    const existing = await serviceCredentialsRepository.getOrgCredsBySourceId(sourceId)
     if (!existing) {
         throw error(404, 'No service credentials exist for this source')
     }
