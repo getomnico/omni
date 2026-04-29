@@ -13,6 +13,7 @@ import {
   createSyncResponseStarted,
   createSyncResponseError,
   ActionResponse,
+  type SdkSourceSyncData,
 } from './models.js';
 import { getLogger } from './logger.js';
 
@@ -119,7 +120,7 @@ export function createServer(connector: Connector): Express {
       return;
     }
 
-    let sourceData: import('./models.js').SdkSourceSyncData;
+    let sourceData: SdkSourceSyncData;
     try {
       sourceData = await getSdkClient().fetchSourceConfig(sourceId);
     } catch (error) {
