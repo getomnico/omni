@@ -297,6 +297,8 @@ export class McpAdapter {
         description: tool.description ?? '',
         input_schema: tool.inputSchema ?? { type: 'object', properties: {} },
         mode: isReadOnly ? 'read' : 'write',
+        source_types: [],
+        admin_only: false,
       });
     }
     return actions;
