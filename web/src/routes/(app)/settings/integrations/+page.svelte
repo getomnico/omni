@@ -14,8 +14,28 @@
     import GoogleOAuthSetup from '$lib/components/google-oauth-setup.svelte'
     import { getSourceIconPath } from '$lib/utils/icons'
     import { enhance } from '$app/forms'
+    import { toast } from 'svelte-sonner'
 
     let { data }: PageProps = $props()
+
+    async function handleDisconnect(sourceId: string, sourceName: string) {
+        if (!confirm(`Disconnect ${sourceName}? This will stop syncing data from this source.`)) {
+            return
+        }
+        try {
+            const response = await fetch(`/api/sources/${sourceId}`, {
+                method: 'DELETE',
+            })
+            if (!response.ok) {
+                const data = await response.json().catch(() => null)
+                throw new Error(data?.message || 'Failed to disconnect source')
+            }
+            toast.success(`${sourceName} has been disconnected`)
+            window.location.reload()
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : 'Failed to disconnect source')
+        }
+    }
 
     let showGoogleOAuthSetup = $state(false)
 
@@ -99,19 +119,29 @@
                                     {source.isActive ? 'Enabled' : 'Disabled'}
                                 </span>
                             </div>
-                            <form
-                                method="POST"
-                                action="?/{source.isActive ? 'disable' : 'enable'}"
-                                use:enhance>
-                                <input type="hidden" name="sourceId" value={source.id} />
+                            <div class="flex gap-2">
+                                <form
+                                    method="POST"
+                                    action="?/{source.isActive ? 'disable' : 'enable'}"
+                                    use:enhance
+                                    class="flex-1">
+                                    <input type="hidden" name="sourceId" value={source.id} />
+                                    <Button
+                                        type="submit"
+                                        variant={source.isActive ? 'secondary' : 'default'}
+                                        size="sm"
+                                        class="w-full cursor-pointer">
+                                        {source.isActive ? 'Disable' : 'Enable'}
+                                    </Button>
+                                </form>
                                 <Button
-                                    type="submit"
-                                    variant={source.isActive ? 'outline' : 'default'}
                                     size="sm"
-                                    class="w-full cursor-pointer">
-                                    {source.isActive ? 'Disable' : 'Enable'}
+                                    variant="ghost"
+                                    class="text-destructive hover:text-destructive hover:bg-destructive/10 cursor-pointer"
+                                    onclick={() => handleDisconnect(source.id, source.name)}>
+                                    Disconnect
                                 </Button>
-                            </form>
+                            </div>
                         </div>
                     {/each}
                 </div>
@@ -143,7 +173,7 @@
                         <CardContent class="flex-1" />
                         <CardFooter>
                             {#if hasAllGoogleSources}
-                                <span class="text-sm font-medium text-green-500"> Connected </span>
+                                <span class="text-sm font-medium text-green-500">Connected</span>
                             {:else}
                                 <Button
                                     size="sm"

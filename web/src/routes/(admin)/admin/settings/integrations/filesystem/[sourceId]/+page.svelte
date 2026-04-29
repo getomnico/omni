@@ -5,7 +5,7 @@
     import { Switch } from '$lib/components/ui/switch'
     import * as Card from '$lib/components/ui/card'
     import * as Alert from '$lib/components/ui/alert'
-    import { ArrowLeft, AlertCircle, Loader2, HardDrive, Trash2 } from '@lucide/svelte'
+    import { ArrowLeft, AlertCircle, Loader2, HardDrive } from '@lucide/svelte'
     import RemoveSourceDialog from '../../remove-source-dialog.svelte'
     import { onMount } from 'svelte'
     import { beforeNavigate } from '$app/navigation'
@@ -231,7 +231,6 @@
                     variant="destructive"
                     class="cursor-pointer"
                     onclick={() => (showRemoveDialog = true)}>
-                    <Trash2 class="mr-2 h-4 w-4" />
                     Delete Permanently
                 </Button>
             </Card.Content>

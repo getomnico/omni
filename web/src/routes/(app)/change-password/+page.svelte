@@ -42,18 +42,6 @@
         return { strength, label: 'Strong', color: 'text-green-600' }
     }
 
-    $effect(() => {
-        if (form?.success) {
-            isSubmitting = false
-            toast.success('Password changed successfully')
-            setTimeout(() => {
-                goto('/')
-            }, 1000)
-        } else if (form?.error) {
-            isSubmitting = false
-        }
-    })
-
     let passwordStrength = $derived(getPasswordStrength(newPassword))
 </script>
 
@@ -83,8 +71,14 @@
                 method="POST"
                 use:enhance={() => {
                     isSubmitting = true
-                    return async ({ update }) => {
+                    return async ({ result, update }) => {
+                        if (result.type === 'success') {
+                            toast.success('Password changed successfully')
+                            goto('/')
+                            return
+                        }
                         await update()
+                        isSubmitting = false
                     }
                 }}>
                 <div class="space-y-4">

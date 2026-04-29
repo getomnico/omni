@@ -3,6 +3,11 @@ import { env } from '$env/dynamic/private'
 import type { RequestHandler } from './$types.js'
 import { chatRepository, chatMessageRepository } from '$lib/server/db/chats.js'
 import { getAgent } from '$lib/server/db/agents.js'
+import type {
+    ContentBlockParam,
+    ToolResultBlockParam,
+    ToolUseBlockParam,
+} from '@anthropic-ai/sdk/resources/messages'
 
 async function triggerTitleGeneration(chatId: string, logger: any): Promise<string | null> {
     try {
@@ -283,10 +288,64 @@ export const GET: RequestHandler = async ({ params, locals }) => {
                     controller.error(error)
                 }
             },
-            cancel() {
+            async cancel() {
                 logger.info('Client disconnected, cancelling stream', { chatId })
                 reader.cancel()
                 abortController.abort()
+
+                // Clean up any incomplete tool uses from the interrupted stream
+                try {
+                    const lastMessage =
+                        await chatMessageRepository.getLastMessageInActivePath(chatId)
+                    if (!lastMessage || lastMessage.message.role !== 'assistant') return
+
+                    const content = lastMessage.message.content
+                    const contentBlocks: ContentBlockParam[] = Array.isArray(content) ? content : []
+                    const toolUseBlocks = contentBlocks.filter(
+                        (b): b is ToolUseBlockParam => b.type === 'tool_use',
+                    )
+                    if (toolUseBlocks.length === 0) return
+
+                    const allMessages = await chatMessageRepository.getByChatId(chatId)
+                    const toolResultMsgs = allMessages.filter((m) => m.parentId === lastMessage.id)
+                    const existingToolUseIds = new Set<string>()
+                    for (const msg of toolResultMsgs) {
+                        if (msg.message.role === 'user' && Array.isArray(msg.message.content)) {
+                            for (const block of msg.message.content) {
+                                if (block.type === 'tool_result') {
+                                    existingToolUseIds.add(block.tool_use_id)
+                                }
+                            }
+                        }
+                    }
+
+                    const missingToolUses = toolUseBlocks.filter(
+                        (tu) => !existingToolUseIds.has(tu.id),
+                    )
+                    if (missingToolUses.length === 0) return
+
+                    const syntheticToolResults: ToolResultBlockParam[] = missingToolUses.map(
+                        (tu) => ({
+                            type: 'tool_result',
+                            tool_use_id: tu.id,
+                            content: [{ type: 'text', text: 'Tool response was interrupted' }],
+                            is_error: true,
+                        }),
+                    )
+
+                    await chatMessageRepository.create(
+                        chatId,
+                        { role: 'user', content: syntheticToolResults },
+                        lastMessage.id,
+                    )
+
+                    logger.info('Cleaned up interrupted stream', {
+                        chatId,
+                        missingToolCount: missingToolUses.length,
+                    })
+                } catch (err) {
+                    logger.error('Error cleaning up interrupted stream', err, { chatId })
+                }
             },
         })
 

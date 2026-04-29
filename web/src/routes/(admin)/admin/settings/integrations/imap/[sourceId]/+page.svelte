@@ -7,7 +7,7 @@
     import * as Card from '$lib/components/ui/card'
     import * as Alert from '$lib/components/ui/alert'
     import * as Select from '$lib/components/ui/select'
-    import { ArrowLeft, AlertCircle, Loader2, Mail, X, Trash2 } from '@lucide/svelte'
+    import { ArrowLeft, AlertCircle, Loader2, Mail, X } from '@lucide/svelte'
     import RemoveSourceDialog from '../../remove-source-dialog.svelte'
     import { onMount } from 'svelte'
     import { beforeNavigate } from '$app/navigation'
@@ -248,7 +248,8 @@
                             <Label for="encryption">Encryption</Label>
                             <Select.Root type="single" bind:value={encryption} name="encryption">
                                 <Select.Trigger id="encryption" class="w-full">
-                                    {#if encryption === 'tls'}TLS / SSL (recommended){:else if encryption === 'starttls'}STARTTLS{:else}None (plaintext){/if}
+                                    {#if encryption === 'tls'}TLS / SSL (recommended){:else if encryption === 'starttls'}STARTTLS{:else}None
+                                        (plaintext){/if}
                                 </Select.Trigger>
                                 <Select.Content>
                                     <Select.Item value="tls"
@@ -386,10 +387,7 @@
                             {#if folderDenylist.length > 0}
                                 <div class="flex flex-wrap gap-2">
                                     {#each folderDenylist as folder}
-                                        <input
-                                            type="hidden"
-                                            name="folderDenylist"
-                                            value={folder} />
+                                        <input type="hidden" name="folderDenylist" value={folder} />
                                         <div
                                             class="bg-secondary text-secondary-foreground inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium">
                                             <span>{folder}</span>
@@ -452,7 +450,6 @@
                     variant="destructive"
                     class="cursor-pointer"
                     onclick={() => (showRemoveDialog = true)}>
-                    <Trash2 class="mr-2 h-4 w-4" />
                     Delete Permanently
                 </Button>
             </Card.Content>
