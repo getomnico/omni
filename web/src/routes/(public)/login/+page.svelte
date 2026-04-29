@@ -27,7 +27,7 @@
 
 <Card class="w-full">
     <CardHeader class="text-center">
-        <CardTitle class="text-2xl">Login to Omni</CardTitle>
+        <CardTitle class="text-2xl">Welcome back</CardTitle>
         <CardDescription>Sign in to your Omni account</CardDescription>
     </CardHeader>
     <CardContent>
@@ -94,8 +94,10 @@
                 method="POST"
                 use:enhance={() => {
                     loading = true
-                    return async ({ update }) => {
-                        loading = false
+                    return async ({ result, update }) => {
+                        if (result.type !== 'redirect') {
+                            loading = false
+                        }
                         await update()
                     }
                 }}
@@ -106,7 +108,8 @@
                         id="email"
                         name="email"
                         type="email"
-                        placeholder="Enter your email"
+                        placeholder="Your work email"
+                        class="bg-transparent"
                         value={form?.email ?? ''}
                         required
                         disabled={loading} />
@@ -118,7 +121,8 @@
                         id="password"
                         name="password"
                         type="password"
-                        placeholder="Enter your password"
+                        class="bg-transparent"
+                        placeholder="Your password"
                         required
                         disabled={loading} />
                 </div>

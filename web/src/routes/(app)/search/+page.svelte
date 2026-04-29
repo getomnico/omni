@@ -152,13 +152,13 @@
     <div class="mb-8">
         <div class="mb-4 flex items-center gap-4">
             <div
-                class="border-border bg-background flex flex-1 items-center rounded-full border p-2 shadow-sm">
+                class="border-border bg-card flex flex-1 items-center rounded-full border p-2 shadow-sm">
                 <div class="w-1"></div>
                 <Input
                     type="text"
                     bind:value={inputQuery}
                     placeholder="Search across your organization..."
-                    class="flex-1 border-none bg-transparent shadow-none focus:ring-0 focus-visible:ring-0"
+                    class="bg-card flex-1 border-none shadow-none focus:ring-0 focus-visible:ring-0"
                     onkeypress={handleKeyPress} />
                 <Button size="icon" variant="link" onclick={handleSearch} disabled={isLoading}>
                     <Search class="h-6 w-6" />
@@ -405,13 +405,13 @@
                 </div>
 
                 {#if selectedSourceTypes.size > 0}
-                    <div class="mt-4">
+                    <div class="mt-4 text-right">
                         <Button
-                            variant="outline"
+                            variant="link"
                             size="sm"
                             onclick={clearFilters}
-                            class="w-full cursor-pointer">
-                            Clear All Filters
+                            class="cursor-pointer text-xs">
+                            Clear all filters
                         </Button>
                     </div>
                 {/if}

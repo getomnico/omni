@@ -11,10 +11,6 @@ export const DELETE: RequestHandler = async ({ params, locals, fetch }) => {
         throw error(401, 'Unauthorized')
     }
 
-    if (locals.user.role !== 'admin') {
-        throw error(403, 'Admin access required')
-    }
-
     const sourceId = params.sourceId
 
     const source = await db.query.sources.findFirst({
@@ -23,6 +19,10 @@ export const DELETE: RequestHandler = async ({ params, locals, fetch }) => {
 
     if (!source) {
         throw error(404, 'Source not found')
+    }
+
+    if (locals.user.role !== 'admin' && source.createdBy !== locals.user.id) {
+        throw error(403, 'Admin access required')
     }
 
     const config = getConfig()

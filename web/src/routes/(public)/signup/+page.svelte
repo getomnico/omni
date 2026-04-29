@@ -25,10 +25,10 @@
     <CardHeader class="text-center">
         {#if data.isFirstUser}
             <CardTitle class="text-xl">Create admin account to get started</CardTitle>
-            <CardDescription>Create an admin account to get started.</CardDescription>
+            <CardDescription>Create an admin account to get started</CardDescription>
         {:else}
             <CardTitle class="text-2xl">Create your account</CardTitle>
-            <CardDescription>Get started with Omni Enterprise Search</CardDescription>
+            <CardDescription>Get started using Omni</CardDescription>
         {/if}
     </CardHeader>
     <CardContent>
@@ -36,8 +36,10 @@
             method="POST"
             use:enhance={() => {
                 loading = true
-                return async ({ update }) => {
-                    loading = false
+                return async ({ result, update }) => {
+                    if (result.type !== 'redirect') {
+                        loading = false
+                    }
                     await update()
                 }
             }}
@@ -56,7 +58,8 @@
                     id="email"
                     name="email"
                     type="email"
-                    placeholder="Enter your email"
+                    placeholder="Enter your work email"
+                    class="bg-transparent"
                     value={form?.email ?? ''}
                     required
                     disabled={loading} />
@@ -69,6 +72,7 @@
                     name="password"
                     type="password"
                     placeholder="Create a password"
+                    class="bg-transparent"
                     required
                     disabled={loading} />
                 <p class="text-muted-foreground text-xs">At least 8 characters</p>
@@ -81,6 +85,7 @@
                     name="confirmPassword"
                     type="password"
                     placeholder="Confirm your password"
+                    class="bg-transparent"
                     required
                     disabled={loading} />
             </div>

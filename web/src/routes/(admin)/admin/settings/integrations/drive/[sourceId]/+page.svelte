@@ -1,13 +1,14 @@
 <script lang="ts">
     import { enhance } from '$app/forms'
     import { Button } from '$lib/components/ui/button'
+    import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
     import { Switch } from '$lib/components/ui/switch'
     import * as RadioGroup from '$lib/components/ui/radio-group'
     import * as Card from '$lib/components/ui/card'
     import * as Alert from '$lib/components/ui/alert'
     import { Badge } from '$lib/components/ui/badge'
-    import { ArrowLeft, Search, X, AlertCircle, Info, Loader2, Trash2 } from '@lucide/svelte'
+    import { ArrowLeft, Search, X, AlertCircle, Info, Loader2 } from '@lucide/svelte'
     import RemoveSourceDialog from '../../remove-source-dialog.svelte'
     import GoogleServiceAccountForm from '$lib/components/google-service-account-form.svelte'
     import { onMount } from 'svelte'
@@ -379,12 +380,11 @@
                                         <div class="relative">
                                             <Search
                                                 class="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
-                                            <input
-                                                type="text"
+                                            <Input
                                                 bind:value={searchQuery}
                                                 oninput={handleSearchInput}
                                                 placeholder="Search users..."
-                                                class="border-input bg-background ring-offset-background placeholder:text-muted-foreground focus-visible:ring-ring flex h-9 w-full rounded-md border px-10 py-1 text-sm focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none" />
+                                                class="px-10 py-1" />
                                             {#if isSearching}
                                                 <Loader2
                                                     class="absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 animate-spin" />
@@ -483,7 +483,6 @@
                     variant="destructive"
                     class="cursor-pointer"
                     onclick={() => (showRemoveDialog = true)}>
-                    <Trash2 class="mr-2 h-4 w-4" />
                     Delete Permanently
                 </Button>
             </Card.Content>
