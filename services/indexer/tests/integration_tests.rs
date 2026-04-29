@@ -180,6 +180,23 @@ async fn test_event_driven_document_lifecycle() {
     assert_eq!(updated_permissions["groups"].as_array().unwrap().len(), 2);
     assert!(updated_doc.updated_at > document.updated_at);
 
+    // Regression: ON CONFLICT DO UPDATE must propagate denormalized columns
+    // (url, file_size, file_extension, content_type), not just metadata jsonb.
+    // Before this fix, the upsert only refreshed `metadata`, leaving the
+    // column copies stale — searcher reads `doc.url` (the column) at
+    // services/searcher/src/search.rs:87, so search hits would still link
+    // to the old URL after re-emit.
+    assert_eq!(
+        updated_doc.url,
+        Some("https://example.com/docs/report-v2.md".to_string()),
+        "documents.url column must reflect the latest metadata.url after upsert"
+    );
+    assert_eq!(
+        updated_doc.file_extension,
+        Some("md".to_string()),
+        "documents.file_extension column must update when URL extension changes"
+    );
+
     // --- Delete ---
     let delete_event = ConnectorEvent::DocumentDeleted {
         sync_run_id: "sync_lifecycle".to_string(),

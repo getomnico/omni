@@ -480,6 +480,10 @@ impl DocumentRepository {
             DO UPDATE SET
                 title = COALESCE(NULLIF(EXCLUDED.title, ''), documents.title),
                 content_id = EXCLUDED.content_id,
+                content_type = COALESCE(EXCLUDED.content_type, documents.content_type),
+                file_size = COALESCE(EXCLUDED.file_size, documents.file_size),
+                file_extension = COALESCE(EXCLUDED.file_extension, documents.file_extension),
+                url = COALESCE(EXCLUDED.url, documents.url),
                 metadata = EXCLUDED.metadata,
                 permissions = COALESCE(EXCLUDED.permissions, documents.permissions),
                 attributes = COALESCE(EXCLUDED.attributes, documents.attributes),
@@ -579,6 +583,10 @@ impl DocumentRepository {
             DO UPDATE SET
                 title = COALESCE(NULLIF(EXCLUDED.title, ''), documents.title),
                 content_id = EXCLUDED.content_id,
+                content_type = COALESCE(EXCLUDED.content_type, documents.content_type),
+                file_size = COALESCE(EXCLUDED.file_size, documents.file_size),
+                file_extension = COALESCE(EXCLUDED.file_extension, documents.file_extension),
+                url = COALESCE(EXCLUDED.url, documents.url),
                 metadata = EXCLUDED.metadata,
                 permissions = COALESCE(EXCLUDED.permissions, documents.permissions),
                 attributes = COALESCE(EXCLUDED.attributes, documents.attributes),
