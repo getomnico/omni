@@ -4,6 +4,7 @@ import {
   type ActionDefinition,
   type SearchOperator,
   ActionResponse,
+  SyncMode,
   getLogger,
 } from '@getomnico/connector';
 import { LinearApiClient } from './client.js';
@@ -106,8 +107,16 @@ export class LinearConnector extends Connector<LinearSourceConfig, LinearCredent
       return;
     }
 
-    const lastSyncAt = state?.last_sync_at;
-    const isIncremental = !!lastSyncAt;
+    // Honor the dispatcher's sync mode rather than inferring from state
+    // presence. A manual "Full" trigger from the UI carries existing
+    // `state.last_sync_at` but should still re-fetch everything from
+    // Linear and run delete reconciliation. The previous `!!lastSyncAt`
+    // heuristic silently demoted those runs to incremental — Linear's
+    // server-side `updatedAt`-since filter would skip unchanged docs and
+    // hard-deletes upstream stayed forever in Omni until state was
+    // wiped by hand.
+    const isIncremental = ctx.syncMode !== SyncMode.FULL;
+    const lastSyncAt = isIncremental ? state?.last_sync_at : undefined;
     let docsSinceCheckpoint = 0;
 
     try {
