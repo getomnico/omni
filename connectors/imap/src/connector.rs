@@ -92,6 +92,8 @@ impl Connector for ImapConnector {
                     },
                     "required": ["host"]
                 }),
+                source_types: Vec::new(),
+                admin_only: false,
             },
             ActionDefinition {
                 name: "list_folders".to_string(),
@@ -106,6 +108,8 @@ impl Connector for ImapConnector {
                     },
                     "required": ["host"]
                 }),
+                source_types: Vec::new(),
+                admin_only: false,
             },
         ]
     }

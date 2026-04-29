@@ -516,7 +516,7 @@ where
         .map_err(|error| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ActionResponse::failure(error.to_string())),
+                Json(ActionResponse::failure(format!("{:#}", error))),
             )
         })
 }

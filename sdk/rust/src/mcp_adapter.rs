@@ -472,6 +472,8 @@ async fn fetch_actions(client: &RmcpClient) -> Result<Vec<ActionDefinition>> {
             } else {
                 ActionMode::Write
             },
+            source_types: Vec::new(),
+            admin_only: false,
         });
     }
     Ok(actions)

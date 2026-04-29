@@ -8,30 +8,59 @@
         CardFooter,
     } from '$lib/components/ui/card'
     import { Button } from '$lib/components/ui/button'
+    import { Badge } from '$lib/components/ui/badge'
+    import { Switch } from '$lib/components/ui/switch'
+    import * as AlertDialog from '$lib/components/ui/alert-dialog'
     import type { PageProps } from './$types'
     import googleLogo from '$lib/images/icons/google.svg'
-    import { Globe, HardDrive, Mail } from '@lucide/svelte'
+    import { Globe, HardDrive, Mail, Trash2 } from '@lucide/svelte'
     import GoogleOAuthSetup from '$lib/components/google-oauth-setup.svelte'
     import { getSourceIconPath } from '$lib/utils/icons'
-    import { enhance } from '$app/forms'
+    import { invalidateAll } from '$app/navigation'
     import { toast } from 'svelte-sonner'
 
     let { data }: PageProps = $props()
 
-    async function handleDisconnect(sourceId: string, sourceName: string) {
-        if (!confirm(`Disconnect ${sourceName}? This will stop syncing data from this source.`)) {
-            return
-        }
+    type UserSource = (typeof data.userSources)[number]
+
+    let sourceToDisconnect = $state<UserSource | null>(null)
+    let togglingSourceId = $state<string | null>(null)
+
+    async function toggleSource(source: UserSource, nextActive: boolean) {
+        togglingSourceId = source.id
         try {
-            const response = await fetch(`/api/sources/${sourceId}`, {
+            const formData = new FormData()
+            formData.append('sourceId', source.id)
+            const response = await fetch(`?/${nextActive ? 'enable' : 'disable'}`, {
+                method: 'POST',
+                body: formData,
+                headers: { 'x-sveltekit-action': 'true' },
+            })
+            if (!response.ok) {
+                throw new Error('Failed to update source')
+            }
+            await invalidateAll()
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : 'Failed to update source')
+        } finally {
+            togglingSourceId = null
+        }
+    }
+
+    async function confirmDisconnect() {
+        const source = sourceToDisconnect
+        if (!source) return
+        sourceToDisconnect = null
+        try {
+            const response = await fetch(`/api/sources/${source.id}`, {
                 method: 'DELETE',
             })
             if (!response.ok) {
-                const data = await response.json().catch(() => null)
-                throw new Error(data?.message || 'Failed to disconnect source')
+                const body = await response.json().catch(() => null)
+                throw new Error(body?.message || 'Failed to disconnect source')
             }
-            toast.success(`${sourceName} has been disconnected`)
-            window.location.reload()
+            toast.success(`${source.name} has been disconnected`)
+            await invalidateAll()
         } catch (err) {
             toast.error(err instanceof Error ? err.message : 'Failed to disconnect source')
         }
@@ -45,13 +74,7 @@
 
     function handleGoogleOAuthSetupSuccess() {
         showGoogleOAuthSetup = false
-        window.location.reload()
-    }
-
-    function getStatusColor(isActive: boolean) {
-        return isActive
-            ? 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400'
-            : 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300'
+        invalidateAll()
     }
 </script>
 
@@ -73,19 +96,22 @@
                 <h2 class="text-xl font-semibold">Organization</h2>
                 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                     {#each data.orgWideSources as source}
-                        <div class="flex items-center gap-3 rounded-lg border p-4">
-                            {#if getSourceIconPath(source.sourceType)}
-                                <img
-                                    src={getSourceIconPath(source.sourceType)}
-                                    alt={source.name}
-                                    class="h-6 w-6" />
-                            {:else if source.sourceType === 'web'}
-                                <Globe class="text-muted-foreground h-6 w-6" />
-                            {:else if source.sourceType === 'local_files'}
-                                <HardDrive class="text-muted-foreground h-6 w-6" />
-                            {:else if source.sourceType === 'imap'}
-                                <Mail class="text-muted-foreground h-6 w-6" />
-                            {/if}
+                        <div class="bg-card flex items-center gap-3 rounded-lg border p-4">
+                            <div
+                                class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm dark:border-white/10 dark:shadow-none">
+                                {#if getSourceIconPath(source.sourceType)}
+                                    <img
+                                        src={getSourceIconPath(source.sourceType)}
+                                        alt={source.name}
+                                        class="h-6 w-6 object-contain" />
+                                {:else if source.sourceType === 'web'}
+                                    <Globe class="h-6 w-6 text-slate-700" />
+                                {:else if source.sourceType === 'local_files'}
+                                    <HardDrive class="h-6 w-6 text-slate-700" />
+                                {:else if source.sourceType === 'imap'}
+                                    <Mail class="h-6 w-6 text-slate-700" />
+                                {/if}
+                            </div>
                             <span class="truncate font-medium">{source.name}</span>
                         </div>
                     {/each}
@@ -99,56 +125,57 @@
                 <h2 class="text-xl font-semibold">Your Connections</h2>
                 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                     {#each data.userSources as source}
-                        <div class="flex flex-col gap-3 rounded-lg border p-4">
-                            <div class="flex items-center gap-3">
-                                {#if getSourceIconPath(source.sourceType)}
-                                    <img
-                                        src={getSourceIconPath(source.sourceType)}
-                                        alt={source.name}
-                                        class="h-6 w-6" />
-                                {:else if source.sourceType === 'web'}
-                                    <Globe class="text-muted-foreground h-6 w-6" />
-                                {:else if source.sourceType === 'local_files'}
-                                    <HardDrive class="text-muted-foreground h-6 w-6" />
-                                {:else if source.sourceType === 'imap'}
-                                    <Mail class="text-muted-foreground h-6 w-6" />
-                                {/if}
+                        <Card
+                            class="group hover:border-foreground/20 flex flex-col gap-0 py-0 transition-colors">
+                            <CardHeader class="flex items-center gap-3 px-4 py-4">
+                                <div
+                                    class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm dark:border-white/10 dark:shadow-none">
+                                    {#if getSourceIconPath(source.sourceType)}
+                                        <img
+                                            src={getSourceIconPath(source.sourceType)}
+                                            alt={source.name}
+                                            class="h-6 w-6 object-contain" />
+                                    {:else if source.sourceType === 'web'}
+                                        <Globe class="h-6 w-6 text-slate-700" />
+                                    {:else if source.sourceType === 'local_files'}
+                                        <HardDrive class="h-6 w-6 text-slate-700" />
+                                    {:else if source.sourceType === 'imap'}
+                                        <Mail class="h-6 w-6 text-slate-700" />
+                                    {/if}
+                                </div>
                                 <span class="truncate font-medium">{source.name}</span>
-                                <span
-                                    class={`ml-auto inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(source.isActive)}`}>
-                                    {source.isActive ? 'Enabled' : 'Disabled'}
-                                </span>
-                            </div>
-                            <div class="flex gap-2">
-                                <form
-                                    method="POST"
-                                    action="?/{source.isActive ? 'disable' : 'enable'}"
-                                    use:enhance
-                                    class="flex-1">
-                                    <input type="hidden" name="sourceId" value={source.id} />
-                                    <Button
-                                        type="submit"
-                                        variant={source.isActive ? 'secondary' : 'default'}
-                                        size="sm"
-                                        class="w-full cursor-pointer">
-                                        {source.isActive ? 'Disable' : 'Enable'}
-                                    </Button>
-                                </form>
+                                <Badge
+                                    variant={source.isActive ? 'default' : 'secondary'}
+                                    class="ml-auto">
+                                    {source.isActive ? 'Enabled' : 'Paused'}
+                                </Badge>
+                            </CardHeader>
+                            <CardFooter class="flex items-center justify-between px-4 py-2">
+                                <label class="flex cursor-pointer items-center gap-2 text-sm">
+                                    <Switch
+                                        checked={source.isActive}
+                                        disabled={togglingSourceId === source.id}
+                                        onCheckedChange={(next) => toggleSource(source, next)}
+                                        class="cursor-pointer" />
+                                    <span class="text-muted-foreground">Sync</span>
+                                </label>
                                 <Button
-                                    size="sm"
+                                    size="icon"
                                     variant="ghost"
-                                    class="text-destructive hover:text-destructive hover:bg-destructive/10 cursor-pointer"
-                                    onclick={() => handleDisconnect(source.id, source.name)}>
-                                    Disconnect
+                                    class="text-muted-foreground hover:text-destructive cursor-pointer"
+                                    aria-label="Disconnect {source.name}"
+                                    onclick={() => (sourceToDisconnect = source)}>
+                                    <Trash2 class="h-4 w-4" />
                                 </Button>
-                            </div>
-                        </div>
+                            </CardFooter>
+                        </Card>
                     {/each}
                 </div>
             </div>
         {/if}
 
         <!-- Available Connections -->
+        <!-- TODO: Move google-specific stuff out of here -->
         {#if data.googleOAuthConfigured}
             <div class="space-y-4">
                 <div>
@@ -162,27 +189,38 @@
                     <Card class="flex flex-col">
                         <CardHeader>
                             <CardTitle class="flex items-center gap-3">
-                                <img src={googleLogo} alt="Google" class="h-6 w-6" />
+                                <div
+                                    class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm dark:border-white/10 dark:shadow-none">
+                                    <img
+                                        src={googleLogo}
+                                        alt="Google"
+                                        class="h-6 w-6 object-contain" />
+                                </div>
                                 <span>Google</span>
+                                {#if hasAllGoogleSources}
+                                    <span
+                                        class="ml-auto inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/20 dark:text-green-400">
+                                        Connected
+                                    </span>
+                                {/if}
                             </CardTitle>
-                            <CardDescription>
+                        </CardHeader>
+                        <CardContent class="flex-1">
+                            <p class="text-muted-foreground text-sm">
                                 Connect your Google Drive and Gmail with read-only access. Your data
                                 stays private to you.
-                            </CardDescription>
-                        </CardHeader>
-                        <CardContent class="flex-1" />
-                        <CardFooter>
-                            {#if hasAllGoogleSources}
-                                <span class="text-sm font-medium text-green-500">Connected</span>
-                            {:else}
+                            </p>
+                        </CardContent>
+                        {#if !hasAllGoogleSources}
+                            <CardFooter>
                                 <Button
                                     size="sm"
                                     class="cursor-pointer"
                                     onclick={() => (showGoogleOAuthSetup = true)}>
                                     Connect with Google
                                 </Button>
-                            {/if}
-                        </CardFooter>
+                            </CardFooter>
+                        {/if}
                     </Card>
                 </div>
             </div>
@@ -202,3 +240,22 @@
     connectedSourceTypes={data.userSources.map((s) => s.sourceType)}
     onSuccess={handleGoogleOAuthSetupSuccess}
     onCancel={() => (showGoogleOAuthSetup = false)} />
+
+<AlertDialog.Root
+    open={sourceToDisconnect !== null}
+    onOpenChange={(open) => {
+        if (!open) sourceToDisconnect = null
+    }}>
+    <AlertDialog.Content>
+        <AlertDialog.Header>
+            <AlertDialog.Title>Disconnect {sourceToDisconnect?.name}?</AlertDialog.Title>
+            <AlertDialog.Description>
+                This will stop syncing data from this source. You can reconnect at any time.
+            </AlertDialog.Description>
+        </AlertDialog.Header>
+        <AlertDialog.Footer>
+            <AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+            <AlertDialog.Action onclick={confirmDisconnect}>Disconnect</AlertDialog.Action>
+        </AlertDialog.Footer>
+    </AlertDialog.Content>
+</AlertDialog.Root>
