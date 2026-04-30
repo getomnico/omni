@@ -143,6 +143,7 @@ class GeminiProvider(LLMProvider):
     """Provider for Google Gemini API."""
 
     def __init__(self, api_key: str, model: str):
+        self.api_key = api_key
         self.client = genai.Client(api_key=api_key)
         self.model = model
 

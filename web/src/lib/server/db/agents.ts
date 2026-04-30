@@ -42,7 +42,6 @@ async function seedAgentMemory(agent: Agent) {
                     'x-user-role': 'admin',
                 },
                 body: JSON.stringify({
-                    owner_user_id: agent.agentType === 'org' ? null : agent.userId,
                     name: agent.name,
                     instructions: agent.instructions,
                     schedule_type: agent.scheduleType,
@@ -107,7 +106,13 @@ export async function updateAgent(
         .set({ ...data, updatedAt: new Date() })
         .where(and(eq(agents.id, agentId), eq(agents.isDeleted, false)))
         .returning()
-    if (agent && (data.name !== undefined || data.instructions !== undefined || data.scheduleType !== undefined || data.scheduleValue !== undefined)) {
+    if (
+        agent &&
+        (data.name !== undefined ||
+            data.instructions !== undefined ||
+            data.scheduleType !== undefined ||
+            data.scheduleValue !== undefined)
+    ) {
         await seedAgentMemory(agent)
     }
     return agent
@@ -121,19 +126,18 @@ export async function deleteAgent(agentId: string) {
         .where(eq(agents.id, agentId))
         .returning()
 
-    // Purge the mem0 namespace. Best-effort — never block delete.
+    // Purge the agent memory namespace. Best-effort — never block delete.
     if (existing) {
         try {
             const { getConfig } = await import('../config.js')
             const { services } = getConfig()
-            const url =
-                existing.agentType === 'org'
-                    ? `${services.aiServiceUrl}/memories/org-agent/${encodeURIComponent(agentId)}`
-                    : `${services.aiServiceUrl}/memories/user-agent/${encodeURIComponent(agentId)}?owner_user_id=${encodeURIComponent(existing.userId ?? '')}`
-            const resp = await fetch(url, {
-                method: 'DELETE',
-                headers: { 'x-user-id': 'system', 'x-user-role': 'admin' },
-            })
+            const resp = await fetch(
+                `${services.aiServiceUrl}/memories/agent/${encodeURIComponent(agentId)}`,
+                {
+                    method: 'DELETE',
+                    headers: { 'x-user-id': 'system', 'x-user-role': 'admin' },
+                },
+            )
             if (!resp.ok && resp.status !== 503) {
                 console.warn(`Agent memory purge returned ${resp.status} for ${agentId}`)
             }

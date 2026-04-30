@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, jsonb, bigint, integer, primaryKey } from 'drizzle-orm/pg-core'
+import { pgTable, text, timestamp, boolean, jsonb, bigint, integer } from 'drizzle-orm/pg-core'
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages.js'
 
 export const user = pgTable('users', {
@@ -14,19 +14,14 @@ export const user = pgTable('users', {
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
 
-export const userPreferences = pgTable(
-    'user_preferences',
-    {
-        userId: text('user_id')
-            .notNull()
-            .references(() => user.id, { onDelete: 'cascade' }),
-        key: text('key').notNull(),
-        value: jsonb('value').notNull(),
-        createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
-        updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
-    },
-    (table) => ({ pk: primaryKey({ columns: [table.userId, table.key] }) }),
-)
+export const configuration = pgTable('configuration', {
+    scope: text('scope').notNull(),
+    userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    value: jsonb('value').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+})
 
 export const sources = pgTable('sources', {
     id: text('id').primaryKey(),
@@ -318,15 +313,6 @@ export const apiKeys = pgTable('api_keys', {
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
-
-export const configuration = pgTable('configuration', {
-    key: text('key').primaryKey(),
-    value: jsonb('value').notNull().$type<Record<string, unknown>>(),
-    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
-    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
-})
-
-export type Configuration = typeof configuration.$inferSelect
 
 export type User = typeof user.$inferSelect
 export type Source = typeof sources.$inferSelect

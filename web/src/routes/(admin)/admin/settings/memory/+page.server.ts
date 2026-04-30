@@ -1,7 +1,7 @@
 import { fail } from '@sveltejs/kit'
 import { requireAdmin } from '$lib/server/authHelpers'
 import { getConfig } from '$lib/server/config'
-import { getConfigValue, setConfigValue } from '$lib/server/db/configuration'
+import { getGlobal, setGlobal } from '$lib/server/db/configuration'
 import { listAllActiveModels } from '$lib/server/db/model-providers'
 import { getCurrentProvider } from '$lib/server/db/embedding-providers'
 import type { PageServerLoad, Actions } from './$types'
@@ -29,8 +29,8 @@ export const load: PageServerLoad = async ({ locals }) => {
     requireAdmin(locals)
 
     const [orgDefaultConfig, memoryLlmConfig, models, embedder, memories] = await Promise.all([
-        getConfigValue('memory_mode_default'),
-        getConfigValue('memory_llm_id'),
+        getGlobal('memory_mode_default'),
+        getGlobal('memory_llm_id'),
         listAllActiveModels(),
         getCurrentProvider(),
         fetchMemories(locals.user!.id),
@@ -64,7 +64,8 @@ export const actions: Actions = {
             )
             if (!resp.ok) {
                 return fail(resp.status === 404 ? 404 : 502, {
-                    deleteError: resp.status === 404 ? 'Memory not found' : 'Failed to delete memory',
+                    deleteError:
+                        resp.status === 404 ? 'Memory not found' : 'Failed to delete memory',
                 })
             }
             return { deleted: true }
@@ -113,10 +114,10 @@ export const actions: Actions = {
 
         try {
             await Promise.all([
-                setConfigValue('memory_mode_default', { value: mode }),
+                setGlobal('memory_mode_default', { value: mode }),
                 llmId
-                    ? setConfigValue('memory_llm_id', { value: llmId })
-                    : setConfigValue('memory_llm_id', { value: '' }),
+                    ? setGlobal('memory_llm_id', { value: llmId })
+                    : setGlobal('memory_llm_id', { value: '' }),
             ])
             return { success: true }
         } catch (err) {

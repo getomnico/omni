@@ -23,13 +23,12 @@ from config import (
     DEFAULT_TOP_P,
     SANDBOX_URL,
 )
-from db.configuration import ConfigurationRepository
 from db.documents import DocumentsRepository
 from db.models import Source
+from db.configuration import ConfigurationRepository
 from db.usage import UsageRepository
-from db.user_preferences import UserPreferencesRepository
 from db.users import UsersRepository
-from memory.mode import VALID_MODES, resolve_memory_mode
+from memory import MemoryMode, agent_key, parse_org_default, resolve_memory_mode
 from prompts import build_agent_system_prompt
 from providers import LLMProvider
 from services.compaction import ConversationCompactor
@@ -226,32 +225,30 @@ async def _run_agent_loop(
             agent_user_email = agent_user.email
             agent_user_name = agent_user.full_name
 
-    # Memory: resolve effective mode and fetch prior-run memories.
-    # UC-A personal agent: user mode capped by org ceiling, scoped to `user:<owner>:agent:<id>`
-    # UC-B org agent:      org default only, scoped to `org_agent:<id>`
-    memory_service = getattr(app_state, "memory_service", None)
-    memory_key: str | None = None
-    effective_mode = "off"
+    # Memory: resolve effective mode and fetch prior-run memories. Both
+    # personal and org agents share the `agent:<id>` namespace; the
+    # difference is only in how the effective mode is computed.
+    memory_provider = app_state.memory_provider
+    memory_namespace: str | None = None
+    effective_mode = MemoryMode.OFF
     memories: list[str] = []
-    if memory_service:
+    if memory_provider is not None:
         config_repo = ConfigurationRepository()
-        org_config = await config_repo.get("memory_mode_default")
-        org_default = (org_config or {}).get("value")
+        org_default = parse_org_default(
+            await config_repo.get_global("memory_mode_default")
+        )
         if is_org_agent:
-            effective_mode = org_default if org_default in VALID_MODES else "off"
-            memory_key = f"org_agent:{agent.id}"
-        elif agent.user_id:
-            user_memory_mode = (
-                await UserPreferencesRepository().get(agent_user.id, "memory_mode")
-                if agent_user else None
-            )
+            effective_mode = org_default
+        elif agent_user is not None:
+            user_memory_mode = await config_repo.get_user_memory_mode(agent_user.id)
             effective_mode = resolve_memory_mode(user_memory_mode, org_default)
-            memory_key = f"user:{agent.user_id}:agent:{agent.id}"
+        memory_namespace = agent_key(agent.id)
 
-        if effective_mode == "full" and memory_key and agent.instructions:
-            memories = await memory_service.search(
-                query=agent.instructions, user_id=memory_key, limit=5
+        if effective_mode == MemoryMode.FULL and agent.instructions:
+            hits = await memory_provider.search(
+                query=agent.instructions, key=memory_namespace, limit=5
             )
+            memories = [h.record.text for h in hits if h.record.text]
 
     # Build system prompt
     active_sources = [s for s in (sources or []) if s.is_active and not s.is_deleted]
@@ -484,7 +481,12 @@ async def _run_agent_loop(
     summary = "".join(summary_blocks).strip()
 
     # Memory write (fire-and-forget) — only in 'full' mode
-    if memory_service and memory_key and effective_mode == "full" and summary:
+    if (
+        memory_provider is not None
+        and memory_namespace is not None
+        and effective_mode == MemoryMode.FULL
+        and summary
+    ):
         try:
             turn = [
                 MessageParam(
@@ -497,7 +499,7 @@ async def _run_agent_loop(
                 ),
             ]
             asyncio.create_task(
-                memory_service.add(messages=turn, user_id=memory_key)
+                memory_provider.add(messages=turn, key=memory_namespace)
             )
         except Exception as e:
             logger.warning(f"Memory write setup failed for agent {agent.id}: {e}")

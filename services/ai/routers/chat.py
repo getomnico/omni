@@ -37,14 +37,19 @@ from config import (
     SANDBOX_URL,
 )
 from db import ChatsRepository, MessagesRepository
-from db.configuration import ConfigurationRepository
 from db.documents import DocumentsRepository
 from db.models import Chat, Source
+from db.configuration import ConfigurationRepository
 from db.uploads import UploadsRepository
 from db.usage import UsageRepository
-from db.user_preferences import UserPreferencesRepository
 from db.users import UsersRepository
-from memory.mode import resolve_memory_mode
+from memory import (
+    MemoryMode,
+    agent_key,
+    parse_org_default,
+    resolve_memory_mode,
+    user_key,
+)
 from prompts import build_agent_chat_system_prompt, build_chat_system_prompt
 from providers import LLMProvider
 from services.compaction import ConversationCompactor
@@ -421,10 +426,12 @@ async def stream_chat(
     chat_messages = await messages_repo.get_active_path(chat_id)
 
     # Memory state — populated in both agent and regular chat branches
-    memory_service = None
-    effective_mode = "off"
+    memory_provider = None
+    effective_mode = MemoryMode.OFF
     memories: list[str] = []
-    memory_write_key: str | None = None  # None = no write (e.g. agent chats are read-only)
+    memory_write_key: str | None = (
+        None  # None = no write (e.g. agent chats are read-only)
+    )
 
     if chat.agent_id:
         # --- Agent chat setup ---
@@ -479,24 +486,21 @@ async def stream_chat(
         ]
 
         # Memory: fetch agent-scoped memories (same scoping as background executor)
-        memory_service = getattr(request.app.state, "memory_service", None)
-        effective_mode = "off"
-        memories: list[str] = []
-        if memory_service:
+        memory_provider = request.app.state.memory_provider
+        effective_mode = MemoryMode.OFF
+        memories = []
+        if memory_provider is not None:
             config_repo = ConfigurationRepository()
-            org_config = await config_repo.get("memory_mode_default")
-            org_default = (org_config or {}).get("value")
+            org_default = parse_org_default(
+                await config_repo.get_global("memory_mode_default")
+            )
             if is_org_agent:
-                effective_mode = org_default if org_default in ("chat", "full") else "off"
-                memory_key = f"org_agent:{agent.id}"
-            else:
-                user_memory_mode = (
-                    await UserPreferencesRepository().get(chat_user.id, "memory_mode")
-                    if chat_user else None
-                )
+                effective_mode = org_default
+            elif chat_user is not None:
+                user_memory_mode = await config_repo.get_user_memory_mode(chat_user.id)
                 effective_mode = resolve_memory_mode(user_memory_mode, org_default)
-                memory_key = f"user:{agent.user_id}:agent:{agent.id}"
-            if effective_mode in ("chat", "full") and chat_messages:
+            memory_namespace = agent_key(agent.id)
+            if effective_mode >= MemoryMode.CHAT and chat_messages:
                 last_user_text = ""
                 for msg in reversed(chat_messages):
                     m = msg.message
@@ -506,14 +510,16 @@ async def stream_chat(
                             last_user_text = content
                         elif isinstance(content, list):
                             last_user_text = " ".join(
-                                b.get("text", "") for b in content
+                                b.get("text", "")
+                                for b in content
                                 if isinstance(b, dict) and b.get("type") == "text"
                             )
                         break
                 if last_user_text:
-                    memories = await memory_service.search(
-                        query=last_user_text, user_id=memory_key, limit=5
+                    hits = await memory_provider.search(
+                        query=last_user_text, key=memory_namespace, limit=5
                     )
+                    memories = [h.record.text for h in hits if h.record.text]
 
         system_prompt = build_agent_chat_system_prompt(
             agent,
@@ -564,20 +570,22 @@ async def stream_chat(
         ]
 
         # Memory: resolve mode and fetch relevant memories
-        memory_service = getattr(request.app.state, "memory_service", None)
+        memory_provider = request.app.state.memory_provider
         memories = []
-        effective_mode = "off"
-        if memory_service and chat.user_id:
-            memory_write_key = chat.user_id
-            user_memory_mode = (
-                await UserPreferencesRepository().get(user.id, "memory_mode")
-                if user else None
-            )
+        effective_mode = MemoryMode.OFF
+        if memory_provider is not None and chat.user_id:
+            memory_write_key = user_key(chat.user_id)
             config_repo = ConfigurationRepository()
-            org_config = await config_repo.get("memory_mode_default")
-            org_default = (org_config or {}).get("value")
+            user_memory_mode = (
+                await config_repo.get_user_memory_mode(user.id)
+                if user is not None
+                else None
+            )
+            org_default = parse_org_default(
+                await config_repo.get_global("memory_mode_default")
+            )
             effective_mode = resolve_memory_mode(user_memory_mode, org_default)
-            if effective_mode in ("chat", "full"):
+            if effective_mode >= MemoryMode.CHAT:
                 last_user_text = ""
                 for msg in reversed(chat_messages):
                     m = msg.message
@@ -587,14 +595,18 @@ async def stream_chat(
                             last_user_text = content
                         elif isinstance(content, list):
                             last_user_text = " ".join(
-                                b.get("text", "") for b in content
+                                b.get("text", "")
+                                for b in content
                                 if isinstance(b, dict) and b.get("type") == "text"
                             )
                         break
                 if last_user_text:
-                    memories = await memory_service.search(
-                        query=last_user_text, user_id=chat.user_id, limit=5
+                    hits = await memory_provider.search(
+                        query=last_user_text,
+                        key=user_key(chat.user_id),
+                        limit=5,
                     )
+                    memories = [h.record.text for h in hits if h.record.text]
 
         system_prompt = build_chat_system_prompt(
             active_sources,
@@ -980,7 +992,11 @@ async def stream_chat(
                 yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
 
             # Memory write (fire-and-forget)
-            if memory_service and memory_write_key and effective_mode in ("chat", "full"):
+            if (
+                memory_provider is not None
+                and memory_write_key
+                and effective_mode >= MemoryMode.CHAT
+            ):
                 try:
                     last_user_content = None
                     for msg in reversed(conversation_messages):
@@ -989,9 +1005,10 @@ async def stream_chat(
                             raw = m.get("content", "")
                             if isinstance(raw, list):
                                 # Extract text blocks only — skip image/tool_result blocks
-                                # so mem0 never tries to call its vision LLM (which may be None).
+                                # so the provider never sees non-text content blocks.
                                 raw = " ".join(
-                                    b.get("text", "") for b in raw
+                                    b.get("text", "")
+                                    for b in raw
                                     if isinstance(b, dict) and b.get("type") == "text"
                                 )
                             if not raw:
@@ -1001,16 +1018,19 @@ async def stream_chat(
                             break
                     if last_user_content and assistant_message:
                         assistant_content = "".join(
-                            b.get("text", "") for b in assistant_message.get("content", [])
+                            b.get("text", "")
+                            for b in assistant_message.get("content", [])
                             if isinstance(b, dict) and b.get("type") == "text"
                         )
                         if assistant_content:
                             turn = [
                                 MessageParam(role="user", content=last_user_content),
-                                MessageParam(role="assistant", content=assistant_content),
+                                MessageParam(
+                                    role="assistant", content=assistant_content
+                                ),
                             ]
                             asyncio.create_task(
-                                memory_service.add(messages=turn, user_id=memory_write_key)
+                                memory_provider.add(messages=turn, key=memory_write_key)
                             )
                 except Exception as e:
                     logger.warning(f"Memory write setup failed for chat {chat_id}: {e}")

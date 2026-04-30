@@ -19,12 +19,23 @@ class TokenUsage:
 
 
 class LLMProvider(ABC):
-    """Abstract base class for LLM providers."""
+    """Abstract base class for LLM providers.
+
+    TODO: model_record_id / model_name should not live on the provider —
+    a provider represents the connection (endpoint + credentials), not a
+    specific model. Move model selection to a request-time parameter on
+    the stream/generate calls and let one provider serve many models.
+    """
 
     # ID of this model's record in the models table
     model_record_id: str | None = None
     model_name: str | None = None
     provider_type: str | None = None
+    # Wire-level config exposed for downstream integrations (e.g. mem0
+    # which needs to talk to the same endpoint with the same credentials).
+    # Subclasses set these in __init__; left None when not applicable.
+    api_key: str | None = None
+    base_url: str | None = None
 
     @abstractmethod
     async def stream_response(

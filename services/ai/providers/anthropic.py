@@ -18,6 +18,7 @@ class AnthropicProvider(LLMProvider):
     """Provider for Anthropic Claude API."""
 
     def __init__(self, api_key: str, model: str):
+        self.api_key = api_key
         self.client = AsyncAnthropic(api_key=api_key)
         self.model = model
 

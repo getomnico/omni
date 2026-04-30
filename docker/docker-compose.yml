@@ -168,9 +168,7 @@ services:
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
       SANDBOX_URL: ${SANDBOX_URL:-}
       MEMORY_ENABLED: ${MEMORY_ENABLED:-true}
-      MEM0AI_DATABASE_USER: ${MEM0AI_DATABASE_USER:-mem0ai}
-      MEM0AI_DATABASE_ROLE_PASSWORD: ${MEM0AI_DATABASE_ROLE_PASSWORD}
-      MEM0_HISTORY_DB_PATH: /var/lib/mem0/history.db
+      MEMORY_PROVIDER: ${MEMORY_PROVIDER:-mem0}
       AGENT_MAX_ITERATIONS: ${AGENT_MAX_ITERATIONS:-15}
       APPROVAL_TIMEOUT_SECONDS: ${APPROVAL_TIMEOUT_SECONDS:-600}
       AGENTS_ENABLED: ${AGENTS_ENABLED:-false}
@@ -181,7 +179,6 @@ services:
       - sandbox-net
     volumes:
       - ai_models:/models
-      - mem0_history:/var/lib/mem0
     depends_on:
       postgres:
         condition: service_healthy
@@ -717,5 +714,3 @@ volumes:
     name: omni-caddy-config
   sandbox_data:
     name: omni-sandbox-data
-  mem0_history:
-    name: omni-mem0-history

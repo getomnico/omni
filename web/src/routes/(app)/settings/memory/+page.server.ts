@@ -1,8 +1,7 @@
 import { redirect, fail } from '@sveltejs/kit'
 import { getConfig } from '$lib/server/config'
-import { getConfigValue } from '$lib/server/db/configuration'
+import { deleteUser, getGlobal, setUser } from '$lib/server/db/configuration'
 import { getCurrentProvider } from '$lib/server/db/embedding-providers'
-import { userPreferencesRepository } from '$lib/server/db/userPreferences'
 import type { PageServerLoad, Actions } from './$types'
 
 const MODE_RANK: Record<string, number> = { off: 0, chat: 1, full: 2 }
@@ -38,7 +37,7 @@ export const load: PageServerLoad = async ({ locals }) => {
     }
 
     const [orgDefaultConfig, embedder, memories] = await Promise.all([
-        getConfigValue('memory_mode_default'),
+        getGlobal('memory_mode_default'),
         getCurrentProvider(),
         fetchMemories(locals.user.id),
     ])
@@ -66,7 +65,7 @@ export const actions: Actions = {
         }
 
         const [orgDefaultConfig, embedder] = await Promise.all([
-            getConfigValue('memory_mode_default'),
+            getGlobal('memory_mode_default'),
             getCurrentProvider(),
         ])
         const orgDefault = (orgDefaultConfig?.value as string) ?? 'off'
@@ -85,9 +84,9 @@ export const actions: Actions = {
 
         try {
             if (mode === '') {
-                await userPreferencesRepository.delete(locals.user.id, 'memory_mode')
+                await deleteUser(locals.user.id, 'memory_mode')
             } else {
-                await userPreferencesRepository.set(locals.user.id, 'memory_mode', mode)
+                await setUser(locals.user.id, 'memory_mode', { value: mode })
             }
             return { success: true }
         } catch (err) {
@@ -119,9 +118,7 @@ export const actions: Actions = {
             if (!resp.ok) {
                 return fail(resp.status === 404 ? 404 : 502, {
                     deleteError:
-                        resp.status === 404
-                            ? 'Memory not found'
-                            : 'Failed to delete memory',
+                        resp.status === 404 ? 'Memory not found' : 'Failed to delete memory',
                 })
             }
             return { deleted: true }

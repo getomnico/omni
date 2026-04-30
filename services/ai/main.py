@@ -6,21 +6,14 @@ import os
 
 import uvicorn
 from fastapi import FastAPI
-from fastapi.concurrency import run_in_threadpool
-from mem0 import Memory
 
 from config import (
-    DATABASE_URL,
-    MEM0_HISTORY_DB_PATH,
-    MEM0AI_DATABASE_ROLE_PASSWORD,
-    MEM0AI_DATABASE_USER,
     MEMORY_ENABLED,
+    MEMORY_PROVIDER,
     PORT,
 )
 from logger import setup_logging
-from memory.bootstrap import MemoryConfigError, build_mem0_config
-from memory.role_bootstrap import sync_mem0ai_password
-from memory.service import MemoryService
+from memory.providers import build_memory_provider
 from routers import (
     agents_router,
     chat_router,
@@ -80,30 +73,21 @@ async def startup_event():
 
         if MEMORY_ENABLED:
             try:
-                sync_mem0ai_password(
-                    dsn=DATABASE_URL,
-                    mem0ai_password=MEM0AI_DATABASE_ROLE_PASSWORD,
-                    role_name=MEM0AI_DATABASE_USER,
+                app.state.memory_provider = await build_memory_provider(
+                    MEMORY_PROVIDER, app.state
                 )
-                cfg = await build_mem0_config(
-                    app.state,
-                    database_host=os.environ["DATABASE_HOST"],
-                    database_port=int(os.environ.get("DATABASE_PORT", "5432")),
-                    database_name=os.environ["DATABASE_NAME"],
-                    mem0ai_user=MEM0AI_DATABASE_USER,
-                    mem0ai_password=MEM0AI_DATABASE_ROLE_PASSWORD,  # type: ignore[arg-type]
-                    history_db_path=MEM0_HISTORY_DB_PATH,
-                )
-                memory = await run_in_threadpool(Memory.from_config, cfg)
-                app.state.memory_service = MemoryService(
-                    memory, cfg["vector_store"]["config"]
-                )
-                logger.info("Memory service initialized (in-process)")
-            except (MemoryConfigError, Exception) as e:
-                app.state.memory_service = None
+                if app.state.memory_provider is not None:
+                    logger.info(f"Memory provider initialized: {MEMORY_PROVIDER}")
+                else:
+                    logger.warning(f"Memory provider {MEMORY_PROVIDER!r} returned None")
+            except ValueError:
+                # Unknown provider name — fail fast at startup.
+                raise
+            except Exception as e:
+                app.state.memory_provider = None
                 logger.warning(f"Memory initialization failed: {e}")
         else:
-            app.state.memory_service = None
+            app.state.memory_provider = None
             logger.info("MEMORY_ENABLED=false — memory feature disabled")
     except Exception as e:
         logger.error(f"Failed to initialize services: {e}")
