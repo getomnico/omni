@@ -222,7 +222,7 @@
                         {@const noun = getSourceNoun(source.sourceType as SourceType)}
                         {@const sync = latestSyncRuns.get(source.id)}
                         <div
-                            class="flex items-center justify-between gap-4 rounded-lg border px-4 py-3">
+                            class="bg-card flex items-center justify-between gap-4 rounded-lg border px-4 py-3">
                             <div class="flex flex-1 items-start gap-3">
                                 {#if getSourceIconPath(source.sourceType as SourceType)}
                                     <img
@@ -286,7 +286,7 @@
                             <div class="flex gap-2">
                                 {#if source.isActive}
                                     <Button
-                                        variant="outline"
+                                        variant="default"
                                         size="sm"
                                         class="cursor-pointer"
                                         disabled={latestSyncRuns.get(source.id)?.status ===
@@ -296,7 +296,7 @@
                                     </Button>
                                 {/if}
                                 <Button
-                                    variant="outline"
+                                    variant="ghost"
                                     size="sm"
                                     class="cursor-pointer"
                                     href={getConfigureUrl(
@@ -323,7 +323,7 @@
             <div>
                 <h2 class="text-xl font-semibold">Available Integrations</h2>
                 <p class="text-muted-foreground text-sm">
-                    Connect new data sources to search across them and take action.
+                    Connect your apps to sync their data and take action with Omni
                 </p>
             </div>
 

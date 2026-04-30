@@ -37,6 +37,8 @@ export {
   createSyncResponseError,
   ActionResponse,
   serializeConnectorEvent,
+  UserFilterMode,
+  SdkSourceSyncDataSchema,
   type DocumentMetadata,
   type DocumentPermissions,
   type Document,
@@ -53,6 +55,7 @@ export {
   type CancelResponse,
   type ActionRequest,
   type ConnectorEventPayload,
+  type SdkSourceSyncData,
 } from './models.js';
 
 export {

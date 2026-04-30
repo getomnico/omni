@@ -125,6 +125,60 @@ describe('Connector Server', () => {
       expect(response.status).toBe(200);
       expect(response.body.status).toBe('started');
     });
+
+    it('plumbs user_filter_mode/whitelist into SyncContext.shouldIndexUser', async () => {
+      let recorded: { alice: boolean; bob: boolean; sourceType: string | null } | null = null;
+
+      const connector = new MockConnector();
+      connector.syncFn = async (ctx) => {
+        recorded = {
+          alice: ctx.shouldIndexUser('alice@example.com'),
+          bob: ctx.shouldIndexUser('bob@example.com'),
+          sourceType: ctx.sourceType,
+        };
+      };
+      const app = createServer(connector);
+
+      // Override the default sync-config handler with a payload that
+      // pins user_filter_mode=whitelist and only admits alice.
+      mockServer.use(
+        http.get(
+          `${MANAGER_URL}/sdk/source/source-filter/sync-config`,
+          () =>
+            HttpResponse.json({
+              config: {},
+              credentials: {},
+              connector_state: null,
+              source_type: 'linear',
+              user_filter_mode: 'whitelist',
+              user_whitelist: ['alice@example.com'],
+              user_blacklist: null,
+            })
+        )
+      );
+
+      const response = await request(app)
+        .post('/sync')
+        .send({
+          sync_run_id: 'sync-filter',
+          source_id: 'source-filter',
+          sync_mode: 'incremental',
+        });
+
+      expect(response.status).toBe(200);
+
+      // sync runs in the background; poll briefly for completion.
+      for (let i = 0; i < 50; i++) {
+        if (recorded !== null) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+
+      expect(recorded).toEqual({
+        alice: true,
+        bob: false,
+        sourceType: 'linear',
+      });
+    });
   });
 
   describe('GET /sync/:syncRunId', () => {

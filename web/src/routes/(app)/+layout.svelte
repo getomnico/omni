@@ -250,7 +250,8 @@
                         src={themeStore.current.omniLogoDark}
                         alt="Omni logo"
                         class="omni-logo-dark ml-1 h-5 w-5 rounded-sm" />
-                    <span class="text-xl font-bold group-data-[collapsible=icon]:hidden">{themeStore.current.omniName}</span>
+                    <span class="text-xl font-bold group-data-[collapsible=icon]:hidden"
+                        >{themeStore.current.omniName}</span>
                 </a>
                 <TooltipProvider delayDuration={300}>
                     <Tooltip>
@@ -293,7 +294,7 @@
                         placeholder="Search chats..."
                         value={searchQuery}
                         oninput={(e) => handleSearchInput(e.currentTarget.value)}
-                        class="h-8 pr-8 pl-8 text-xs" />
+                        class="bg-card h-8 pr-8 pl-8 text-xs" />
                     {#if searchQuery}
                         <button
                             class="text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2 cursor-pointer"

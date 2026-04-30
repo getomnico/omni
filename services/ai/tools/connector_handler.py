@@ -47,6 +47,7 @@ class ConnectorAction:
     description: str
     input_schema: dict
     mode: SourceMode
+    admin_only: bool = False
 
 
 class ConnectorToolHandler:
@@ -62,6 +63,7 @@ class ConnectorToolHandler:
         action_whitelist: list[str] | None = None,
         documents_repo: DocumentsRepository | None = None,
         sandbox_url: str | None = None,
+        is_admin: bool = False,
     ) -> None:
         self._connector_manager_url = connector_manager_url.rstrip("/")
         self._sandbox_url = sandbox_url.rstrip("/") if sandbox_url else None
@@ -71,6 +73,7 @@ class ConnectorToolHandler:
         self._source_filter = source_filter
         self._action_whitelist = action_whitelist  # ["gmail__send_email"]
         self._documents_repo = documents_repo
+        self._is_admin = is_admin
         self._actions: dict[str, ConnectorAction] = {}
         self._tools: list[ToolParam] = []
         self._search_operators: list[SearchOperator] = []
@@ -183,6 +186,9 @@ class ConnectorToolHandler:
                 continue
 
             for action_def in manifest.get("actions", []):
+                action_source_types = action_def.get("source_types") or []
+                if action_source_types and source_type not in action_source_types:
+                    continue
                 # Find matching active sources for this connector type
                 for source in source_by_type.get(source_type, []):
                     actions.append(
@@ -196,6 +202,7 @@ class ConnectorToolHandler:
                                 "input_schema", {"type": "object", "properties": {}}
                             ),
                             mode=action_def.get("mode", "write"),
+                            admin_only=action_def.get("admin_only", False),
                         )
                     )
 
@@ -211,6 +218,10 @@ class ConnectorToolHandler:
 
         seen_tools: set[str] = set()
         for action in actions:
+            # Hide admin-only actions (e.g. admin-directory ops) from non-admins.
+            if action.admin_only and not self._is_admin:
+                continue
+
             # Apply source_filter: skip actions not in allowed sources or modes
             if self._source_filter is not None:
                 if action.source_id not in self._source_filter:
@@ -352,9 +363,9 @@ class ConnectorToolHandler:
 
                 result = response.json()
         except Exception as e:
-            logger.error(f"Connector action failed: {e}")
+            logger.error(f"Connector action failed: {e.response.text}")
             return ToolResult(
-                content=[{"type": "text", "text": f"Action failed: {str(e)}"}],
+                content=[{"type": "text", "text": f"Action failed: {e.response.text}"}],
                 is_error=True,
             )
 

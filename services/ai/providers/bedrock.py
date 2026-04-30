@@ -94,7 +94,11 @@ class BedrockProvider(LLMProvider):
         self.region_name = region_name
 
         if self.model_family == "anthropic":
-            self.client = AnthropicBedrock()
+            self.client = (
+                AnthropicBedrock(aws_region=region_name)
+                if region_name
+                else AnthropicBedrock()
+            )
         else:
             self.client = boto3.client("bedrock-runtime", region_name=region_name)
 

@@ -2,6 +2,7 @@ import type { SdkClient } from './client.js';
 import {
   EventType,
   SyncMode,
+  UserFilterMode,
   type Document,
   type DocumentMetadata,
   type DocumentPermissions,
@@ -34,6 +35,10 @@ export class SyncContext {
   private readonly bufferTimeThresholdMs: number | null;
   private eventBuffer: ConnectorEventPayload[] = [];
   private oldestEventAt: number | null = null;
+  private readonly _sourceType: string | null;
+  private readonly _userFilterMode: UserFilterMode;
+  private readonly _userWhitelist: ReadonlySet<string>;
+  private readonly _userBlacklist: ReadonlySet<string>;
 
   constructor(
     client: SdkClient,
@@ -42,7 +47,13 @@ export class SyncContext {
     state?: Record<string, unknown>,
     syncMode: SyncMode = SyncMode.INCREMENTAL,
     documentsScanned = 0,
-    documentsUpdated = 0
+    documentsUpdated = 0,
+    options?: {
+      sourceType?: string | null;
+      userFilterMode?: UserFilterMode;
+      userWhitelist?: string[] | null;
+      userBlacklist?: string[] | null;
+    }
   ) {
     this.client = client;
     this._syncRunId = syncRunId;
@@ -58,6 +69,17 @@ export class SyncContext {
     // the manager's running tally rather than restarting at zero.
     this._documentsScanned = documentsScanned;
     this._documentsEmitted = documentsUpdated;
+    this._sourceType = options?.sourceType ?? null;
+    this._userFilterMode = options?.userFilterMode ?? UserFilterMode.ALL;
+    // Store as lowercased set so shouldIndexUser is case-insensitive
+    // (mirrors Python's should_index_user; deliberately differs from
+    // Rust's case-sensitive Source::should_index_user).
+    this._userWhitelist = new Set(
+      (options?.userWhitelist ?? []).map((e) => e.toLowerCase())
+    );
+    this._userBlacklist = new Set(
+      (options?.userBlacklist ?? []).map((e) => e.toLowerCase())
+    );
   }
 
   get syncRunId(): string {
@@ -82,6 +104,21 @@ export class SyncContext {
 
   get documentsScanned(): number {
     return this._documentsScanned;
+  }
+
+  /**
+   * The sync mode the manager dispatched this run with — full, incremental,
+   * or realtime. Connectors should branch reset/resume behavior on this,
+   * not on `state` presence: a manual "Full" trigger from the UI carries
+   * existing state but should still reset cursors and run delete
+   * reconciliation.
+   */
+  get syncMode(): SyncMode {
+    return this._syncMode;
+  }
+  
+  get sourceType(): string | null {
+    return this._sourceType;
   }
 
   private async bufferEvent(event: ConnectorEventPayload): Promise<void> {
@@ -111,13 +148,21 @@ export class SyncContext {
   }
 
   async emit(doc: Document): Promise<void> {
+    // Shim Document.title into metadata.title — the indexer reads only
+    // metadata.title and falls back to "Untitled" otherwise. Non-mutating
+    // spread so the caller's Document is never modified (broader than
+    // Python's conditional shim, which skips bare-metadata docs).
+    const metadata: DocumentMetadata = { ...(doc.metadata ?? {}) };
+    if (!metadata.title) {
+      metadata.title = doc.title;
+    }
     const event: ConnectorEventPayload = {
       type: EventType.DOCUMENT_CREATED,
       sync_run_id: this._syncRunId,
       source_id: this._sourceId,
       document_id: doc.external_id,
       content_id: doc.content_id,
-      metadata: doc.metadata,
+      metadata,
       permissions: doc.permissions,
       attributes: doc.attributes,
     };
@@ -126,13 +171,17 @@ export class SyncContext {
   }
 
   async emitUpdated(doc: Document): Promise<void> {
+    const metadata: DocumentMetadata = { ...(doc.metadata ?? {}) };
+    if (!metadata.title) {
+      metadata.title = doc.title;
+    }
     const event: ConnectorEventPayload = {
       type: EventType.DOCUMENT_UPDATED,
       sync_run_id: this._syncRunId,
       source_id: this._sourceId,
       document_id: doc.external_id,
       content_id: doc.content_id,
-      metadata: doc.metadata,
+      metadata,
       permissions: doc.permissions,
       attributes: doc.attributes,
     };
@@ -176,6 +225,46 @@ export class SyncContext {
   }
 
   /**
+   * Bump the server-side documents_updated counter for this sync run.
+   *
+   * Mirrors Rust SDK's increment_updated. The connector author chooses
+   * what counts as "updated" — typically called once per successfully
+   * persisted emit/emitUpdated, or batched (e.g. once per processed
+   * chunk). Errors propagate so the caller can decide whether a stat
+   * miss should fail the sync or be swallowed.
+   */
+  async incrementUpdated(count: number): Promise<void> {
+    if (count <= 0) return;
+    await this.client.incrementUpdated(this._syncRunId, count);
+  }
+
+  /**
+   * Check whether a user should be indexed under this source's user-filter
+   * settings. Mirrors the Python SDK's should_index_user.
+   *
+   * Connectors call this themselves before emitting per-user records — the
+   * SDK does NOT auto-skip on emit, since the connector knows whether a
+   * given doc is "owned by a user" or workspace-shared.
+   *
+   * Empty email: ALL admits, WHITELIST/BLACKLIST reject (matches Python).
+   * Comparison is case-insensitive (Rust's equivalent is case-sensitive —
+   * deliberate divergence; lowercasing here is the friendlier default and
+   * matches operator expectations).
+   */
+  shouldIndexUser(userEmail: string): boolean {
+    if (this._userFilterMode === UserFilterMode.ALL) return true;
+    const email = userEmail.toLowerCase();
+    if (!email) return false;
+    if (this._userFilterMode === UserFilterMode.WHITELIST) {
+      return this._userWhitelist.has(email);
+    }
+    if (this._userFilterMode === UserFilterMode.BLACKLIST) {
+      return !this._userBlacklist.has(email);
+    }
+    return true;
+  }
+
+  /**
    * Checkpoint state for resumability. Call periodically for long syncs.
    *
    * Flushes buffered events first — without this, a crash right after
@@ -191,12 +280,14 @@ export class SyncContext {
 
   async complete(newState?: Record<string, unknown>): Promise<void> {
     await this.flush();
-    await this.client.complete(
-      this._syncRunId,
-      this._documentsScanned,
-      this._documentsEmitted,
-      newState
-    );
+    // sdk_complete is body-less since 7c21fd10 — newState in the /complete
+    // body is silently dropped server-side. Persist via the connector-state
+    // endpoint instead (same path saveState() takes).
+    if (newState !== undefined) {
+      this._state = newState;
+      await this.client.updateConnectorState(this._sourceId, newState);
+    }
+    await this.client.complete(this._syncRunId);
   }
 
   async fail(error: string): Promise<void> {

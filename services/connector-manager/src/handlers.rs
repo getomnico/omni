@@ -512,12 +512,16 @@ pub async fn list_actions(
                 if (manifest.read_only || source_read_only) && action.mode == ActionMode::Write {
                     continue;
                 }
+                if !action.source_types.is_empty() && !action.source_types.contains(source_type) {
+                    continue;
+                }
                 all_actions.push(json!({
                     "source_type": source_type,
                     "name": action.name,
                     "description": action.description,
                     "input_schema": action.input_schema,
-                    "mode": action.mode
+                    "mode": action.mode,
+                    "admin_only": action.admin_only,
                 }));
             }
         }

@@ -5,7 +5,7 @@ use crate::auth::{create_service_auth, get_domain_from_credentials, GoogleAuth};
 use crate::drive::DriveClient;
 use crate::models::{GoogleConnectorState, GoogleDirectoryUser, SearchUsersResponse};
 use crate::sync::SyncManager;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
@@ -14,6 +14,7 @@ use omni_connector_sdk::{
 };
 use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
+use tracing::debug;
 
 pub struct GoogleConnector {
     pub sync_manager: Arc<SyncManager>,
@@ -33,6 +34,7 @@ impl GoogleConnector {
         params: JsonValue,
         creds: &ServiceCredential,
     ) -> Result<Response> {
+        debug!("Executing fetch_file with params: {:?}", params);
         let file_id = params
             .get("file_id")
             .and_then(|v| v.as_str())
@@ -43,13 +45,20 @@ impl GoogleConnector {
             .as_deref()
             .ok_or_else(|| anyhow!("Missing principal_email in credentials"))?;
 
-        let auth = create_service_auth(creds, SourceType::GoogleDrive)?;
-        let google_auth = GoogleAuth::ServiceAccount(auth);
+        // TODO: connector impl shouldn't depend on sync_manager for auth wiring.
+        // Move `create_auth` (and the per-creds dispatch) into `auth.rs` and call
+        // it from here directly.
+        let google_auth = self
+            .sync_manager
+            .create_auth(creds, SourceType::GoogleDrive)
+            .await?;
         let drive_client = DriveClient::new();
 
         let file_meta = drive_client
             .get_file_metadata(&google_auth, principal_email, file_id)
-            .await?;
+            .await
+            .context("Failed to read file metadata")?;
+        debug!("Retrieved file metadata: {:?}", file_meta);
 
         let mime_type = &file_meta.mime_type;
         let file_name = &file_meta.name;
@@ -71,11 +80,19 @@ impl GoogleConnector {
         };
 
         let (bytes, content_type) = if let Some((export_mime, _ext)) = export_mapping {
+            debug!(
+                "Using export_file to fetch file contents for file_id: {}",
+                file_id
+            );
             let bytes = drive_client
                 .export_file(&google_auth, principal_email, file_id, export_mime)
                 .await?;
             (bytes, export_mime.to_string())
         } else {
+            debug!(
+                "Using download_file_binary to fetch file contents for file_id: {}",
+                file_id
+            );
             let bytes = drive_client
                 .download_file_binary(&google_auth, principal_email, file_id)
                 .await?;
@@ -196,6 +213,8 @@ impl Connector for GoogleConnector {
                     },
                     "required": ["file_id"]
                 }),
+                source_types: vec![SourceType::GoogleDrive],
+                admin_only: false,
             },
             ActionDefinition {
                 name: "search_users".to_string(),
@@ -210,6 +229,8 @@ impl Connector for GoogleConnector {
                     },
                     "required": []
                 }),
+                source_types: vec![SourceType::GoogleDrive],
+                admin_only: true,
             },
         ]
     }

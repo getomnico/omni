@@ -73,6 +73,8 @@ export const ActionDefinitionSchema = z.object({
   description: z.string(),
   input_schema: z.record(z.any()).default({ type: 'object', properties: {} }),
   mode: z.enum(['read', 'write']).default('write'),
+  source_types: z.array(z.string()).default([]),
+  admin_only: z.boolean().default(false),
 });
 export type ActionDefinition = z.infer<typeof ActionDefinitionSchema>;
 
@@ -275,3 +277,31 @@ export function serializeConnectorEvent(event: ConnectorEventPayload): Record<st
 
   return base;
 }
+
+export const UserFilterMode = {
+  ALL: 'all',
+  WHITELIST: 'whitelist',
+  BLACKLIST: 'blacklist',
+} as const;
+export type UserFilterMode = (typeof UserFilterMode)[keyof typeof UserFilterMode];
+
+/**
+ * Wire shape of GET /sdk/source/:source_id/sync-config from connector-manager.
+ *
+ * Defaults match the manager's own defaults: `user_filter_mode = 'all'` admits
+ * every user; `user_whitelist` / `user_blacklist` are nullable since the
+ * server stores them as `Option<JsonValue>`. `source_type` is nullable to
+ * tolerate older payload shapes — connector-manager always sets it today.
+ */
+export const SdkSourceSyncDataSchema = z.object({
+  config: z.record(z.unknown()).default({}),
+  credentials: z.record(z.unknown()).default({}),
+  connector_state: z.record(z.unknown()).nullable().default(null),
+  source_type: z.string().nullable().default(null),
+  user_filter_mode: z
+    .enum([UserFilterMode.ALL, UserFilterMode.WHITELIST, UserFilterMode.BLACKLIST])
+    .default(UserFilterMode.ALL),
+  user_whitelist: z.array(z.string()).nullable().default(null),
+  user_blacklist: z.array(z.string()).nullable().default(null),
+});
+export type SdkSourceSyncData = z.infer<typeof SdkSourceSyncDataSchema>;

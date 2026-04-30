@@ -1070,7 +1070,7 @@ impl SyncManager {
     }
 
     /// Create GoogleAuth from credentials, branching on auth_type (JWT vs OAuth)
-    async fn create_auth(
+    pub async fn create_auth(
         &self,
         creds: &ServiceCredential,
         source_type: SourceType,

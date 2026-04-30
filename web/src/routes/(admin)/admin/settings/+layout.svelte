@@ -3,8 +3,27 @@
     import type { Snippet } from 'svelte'
     import { cn } from '$lib/utils'
     import { page } from '$app/state'
-    import { ArrowLeft, Cable, Users, Shield, Cpu, ArrowUpRight, Bot, Mail, FileText, Brain } from '@lucide/svelte'
+    import {
+        ArrowLeft,
+        Cable,
+        Users,
+        Shield,
+        Cpu,
+        ArrowUpRight,
+        Bot,
+        Mail,
+        FileText,
+        LogOut,
+        Brain,
+    } from '@lucide/svelte'
     import Button from '$lib/components/ui/button/button.svelte'
+    import * as Avatar from '$lib/components/ui/avatar'
+    import {
+        Tooltip,
+        TooltipProvider,
+        TooltipContent,
+        TooltipTrigger,
+    } from '$lib/components/ui/tooltip/index.js'
     import type { LayoutData } from './$types.js'
 
     interface Props {
@@ -13,10 +32,17 @@
     }
 
     let { data, children }: Props = $props()
+
+    async function logout() {
+        await fetch('/logout', {
+            method: 'POST',
+        })
+        window.location.href = '/login'
+    }
 </script>
 
 <Sidebar.Provider>
-    <Sidebar.Root variant="floating" collapsible="none" class="h-svh border-r">
+    <Sidebar.Root variant="floating" collapsible="none" class="h-svh shrink-0 border-r">
         <Sidebar.Header class="flex justify-start">
             <Button
                 variant="ghost"
@@ -163,6 +189,35 @@
                 </Sidebar.GroupContent>
             </Sidebar.Group>
         </Sidebar.Content>
+        <Sidebar.Footer>
+            <div class="flex items-center justify-between py-2">
+                <div class="flex min-w-0 flex-1 items-center gap-1.5">
+                    <Avatar.Root>
+                        <Avatar.Fallback
+                            >{data.user.email.slice(0, 2).toLocaleUpperCase()}</Avatar.Fallback>
+                    </Avatar.Root>
+                    <span class="text-muted-foreground truncate overflow-hidden text-sm">
+                        {data.user.email}
+                    </span>
+                </div>
+                <TooltipProvider delayDuration={300}>
+                    <Tooltip>
+                        <TooltipTrigger>
+                            <Button
+                                size="icon"
+                                variant="ghost"
+                                class="cursor-pointer"
+                                onclick={logout}>
+                                <LogOut class="h-4 w-4" />
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                            <p>Logout</p>
+                        </TooltipContent>
+                    </Tooltip>
+                </TooltipProvider>
+            </div>
+        </Sidebar.Footer>
         <Sidebar.Rail />
     </Sidebar.Root>
 

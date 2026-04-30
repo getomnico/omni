@@ -339,14 +339,14 @@
             }
         }
 
-        if (event.key === 'Enter' && !event.shiftKey) {
+        if (event.key === 'Enter' && !event.shiftKey && !isStreaming) {
             event.preventDefault()
             handleSubmitClick()
         }
     }
 
     async function handleSubmitClick() {
-        if (value.trim() && !disabled && !isLoading) {
+        if (value.trim() && !disabled && !isLoading && !isStreaming) {
             await onSubmit()
         }
     }

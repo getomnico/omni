@@ -1,6 +1,10 @@
 import { SdkClientError, ConfigurationError } from './errors.js';
-import type { ConnectorEventPayload } from './models.js';
-import { serializeConnectorEvent } from './models.js';
+import {
+  SdkSourceSyncDataSchema,
+  serializeConnectorEvent,
+  type ConnectorEventPayload,
+  type SdkSourceSyncData,
+} from './models.js';
 
 export class SdkClient {
   private readonly baseUrl: string;
@@ -196,21 +200,19 @@ export class SdkClient {
     }
   }
 
-  async complete(
-    syncRunId: string,
-    documentsScanned: number,
-    documentsUpdated: number,
-    newState?: Record<string, unknown>
-  ): Promise<void> {
-    const payload: Record<string, unknown> = {
-      documents_scanned: documentsScanned,
-      documents_updated: documentsUpdated,
-    };
-    if (newState !== undefined) {
-      payload.new_state = newState;
+  async incrementUpdated(syncRunId: string, count: number): Promise<void> {
+    const response = await this.post(`/sdk/sync/${syncRunId}/updated`, { count });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new SdkClientError(
+        `Failed to increment updated: ${response.status} - ${text}`,
+        response.status
+      );
     }
+  }
 
-    const response = await this.post(`/sdk/sync/${syncRunId}/complete`, payload);
+  async complete(syncRunId: string): Promise<void> {
+    const response = await this.post(`/sdk/sync/${syncRunId}/complete`);
     if (!response.ok) {
       const text = await response.text();
       throw new SdkClientError(
@@ -242,11 +244,7 @@ export class SdkClient {
     }
   }
 
-  async fetchSourceConfig(sourceId: string): Promise<{
-    config: Record<string, unknown>;
-    credentials: Record<string, unknown>;
-    connector_state: Record<string, unknown> | null;
-  }> {
+  async fetchSourceConfig(sourceId: string): Promise<SdkSourceSyncData> {
     const response = await this.get(`/sdk/source/${sourceId}/sync-config`);
     if (!response.ok) {
       const text = await response.text();
@@ -255,11 +253,8 @@ export class SdkClient {
         response.status
       );
     }
-    return response.json() as Promise<{
-      config: Record<string, unknown>;
-      credentials: Record<string, unknown>;
-      connector_state: Record<string, unknown> | null;
-    }>;
+    const raw = (await response.json()) as unknown;
+    return SdkSourceSyncDataSchema.parse(raw);
   }
 
   private async get(path: string): Promise<Response> {

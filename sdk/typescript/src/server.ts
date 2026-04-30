@@ -13,6 +13,7 @@ import {
   createSyncResponseStarted,
   createSyncResponseError,
   ActionResponse,
+  type SdkSourceSyncData,
 } from './models.js';
 import { getLogger } from './logger.js';
 
@@ -119,18 +120,9 @@ export function createServer(connector: Connector): Express {
       return;
     }
 
-    let sourceData: {
-      config: Record<string, unknown>;
-      credentials: Record<string, unknown>;
-      state: Record<string, unknown> | null;
-    };
+    let sourceData: SdkSourceSyncData;
     try {
-      const data = await getSdkClient().fetchSourceConfig(sourceId);
-      sourceData = {
-        config: data.config,
-        credentials: data.credentials,
-        state: data.connector_state,
-      };
+      sourceData = await getSdkClient().fetchSourceConfig(sourceId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes('404')) {
@@ -148,10 +140,16 @@ export function createServer(connector: Connector): Express {
       getSdkClient(),
       syncRunId,
       sourceId,
-      sourceData.state ?? undefined,
+      sourceData.connector_state ?? undefined,
       syncMode,
       documentsScanned,
-      documentsUpdated
+      documentsUpdated,
+      {
+        sourceType: sourceData.source_type,
+        userFilterMode: sourceData.user_filter_mode,
+        userWhitelist: sourceData.user_whitelist,
+        userBlacklist: sourceData.user_blacklist,
+      }
     );
     activeSyncs.set(sourceId, ctx);
 
@@ -160,7 +158,7 @@ export function createServer(connector: Connector): Express {
         await connector.sync(
           sourceData.config,
           sourceData.credentials,
-          sourceData.state,
+          sourceData.connector_state,
           ctx
         );
       } catch (error) {

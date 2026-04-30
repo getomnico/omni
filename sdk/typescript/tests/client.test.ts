@@ -160,45 +160,54 @@ describe('SdkClient', () => {
     });
   });
 
-  describe('complete', () => {
-    it('sends correct payload with state', async () => {
+  describe('complete (status-flip-only post-7c21fd10)', () => {
+    it('POSTs an empty body to /sdk/sync/:id/complete', async () => {
       let capturedBody: unknown;
+      let capturedMethod: string | null = null;
 
       server.use(
-        http.post(`${BASE_URL}/sdk/sync/:id/complete`, async ({ request }) => {
-          capturedBody = await request.json();
-          return HttpResponse.json({ success: true });
+        http.post(`${BASE_URL}/sdk/sync/sync-1/complete`, async ({ request }) => {
+          capturedMethod = request.method;
+          const text = await request.text();
+          capturedBody = text === '' ? null : JSON.parse(text);
+          return HttpResponse.json({ status: 'ok' });
         })
       );
 
       const client = new SdkClient(BASE_URL);
-      await client.complete('sync-123', 100, 50, { cursor: 'abc123' });
+      await client.complete('sync-1');
 
-      expect(capturedBody).toEqual({
-        documents_scanned: 100,
-        documents_updated: 50,
-        new_state: { cursor: 'abc123' },
-      });
+      expect(capturedMethod).toBe('POST');
+      // Body is either absent or an empty object — server ignores it either way.
+      // Plan picks "no body sent" to match Rust SDK's complete signature.
+      expect(capturedBody).toBeNull();
+    });
+  });
+
+  describe('incrementUpdated', () => {
+    it('POSTs {count} to /sdk/sync/:id/updated', async () => {
+      let captured: unknown;
+      server.use(
+        http.post(`${BASE_URL}/sdk/sync/sync-1/updated`, async ({ request }) => {
+          captured = await request.json();
+          return HttpResponse.json({ status: 'ok' });
+        })
+      );
+      const client = new SdkClient(BASE_URL);
+      await client.incrementUpdated('sync-1', 7);
+      expect(captured).toEqual({ count: 7 });
     });
 
-    it('sends payload without state when not provided', async () => {
-      let capturedBody: unknown;
-
+    it('throws SdkClientError on non-OK response', async () => {
       server.use(
-        http.post(`${BASE_URL}/sdk/sync/:id/complete`, async ({ request }) => {
-          capturedBody = await request.json();
-          return HttpResponse.json({ success: true });
-        })
+        http.post(`${BASE_URL}/sdk/sync/sync-1/updated`, () =>
+          HttpResponse.text('boom', { status: 500 })
+        )
       );
-
       const client = new SdkClient(BASE_URL);
-      await client.complete('sync-123', 100, 50);
-
-      expect(capturedBody).toEqual({
-        documents_scanned: 100,
-        documents_updated: 50,
-      });
-      expect((capturedBody as Record<string, unknown>).new_state).toBeUndefined();
+      await expect(client.incrementUpdated('sync-1', 1)).rejects.toThrow(
+        /Failed to increment updated/
+      );
     });
   });
 
@@ -239,7 +248,7 @@ describe('SdkClient', () => {
       const client = new SdkClient(BASE_URL);
       const result = await client.fetchSourceConfig('source-123');
 
-      expect(result).toEqual(mockData);
+      expect(result).toMatchObject(mockData);
     });
 
     it('throws SdkClientError on 404', async () => {
@@ -256,6 +265,69 @@ describe('SdkClient', () => {
       await expect(
         client.fetchSourceConfig('nonexistent')
       ).rejects.toThrow('Failed to fetch source config: 404');
+    });
+
+    it('defaults missing user-filter fields to ALL/null', async () => {
+      server.use(
+        http.get(`${BASE_URL}/sdk/source/source-min/sync-config`, () =>
+          HttpResponse.json({
+            config: {},
+            credentials: {},
+            connector_state: null,
+          })
+        )
+      );
+
+      const client = new SdkClient(BASE_URL);
+      const cfg = await client.fetchSourceConfig('source-min');
+
+      expect(cfg.user_filter_mode).toBe('all');
+      expect(cfg.user_whitelist).toBeNull();
+      expect(cfg.user_blacklist).toBeNull();
+      expect(cfg.source_type).toBeNull();
+    });
+
+    it('rejects an unknown user_filter_mode at parse time', async () => {
+      server.use(
+        http.get(`${BASE_URL}/sdk/source/source-bad/sync-config`, () =>
+          HttpResponse.json({
+            config: {},
+            credentials: {},
+            connector_state: null,
+            user_filter_mode: 'invalid_mode',
+          })
+        )
+      );
+
+      const client = new SdkClient(BASE_URL);
+      await expect(client.fetchSourceConfig('source-bad')).rejects.toThrow();
+    });
+
+    it('parses a fully populated sync-config', async () => {
+      server.use(
+        http.get(`${BASE_URL}/sdk/source/source-full/sync-config`, () =>
+          HttpResponse.json({
+            config: { workspaces: ['ws1'] },
+            credentials: { token: 'redacted' },
+            connector_state: { cursor: 'abc' },
+            source_type: 'linear',
+            user_filter_mode: 'whitelist',
+            user_whitelist: ['alice@example.com', 'bob@example.com'],
+            user_blacklist: null,
+          })
+        )
+      );
+
+      const client = new SdkClient(BASE_URL);
+      const cfg = await client.fetchSourceConfig('source-full');
+
+      expect(cfg.config).toEqual({ workspaces: ['ws1'] });
+      expect(cfg.credentials).toEqual({ token: 'redacted' });
+      expect(cfg.connector_state).toEqual({ cursor: 'abc' });
+      expect(cfg.source_type).toBe('linear');
+      expect(cfg.user_filter_mode).toBe('whitelist');
+      expect(cfg.user_whitelist).toEqual(['alice@example.com', 'bob@example.com']);
+      expect(cfg.user_blacklist).toBeNull();
     });
   });
 
