@@ -9,7 +9,7 @@
     import * as Alert from '$lib/components/ui/alert'
     import * as AlertDialog from '$lib/components/ui/alert-dialog'
     import * as Dialog from '$lib/components/ui/dialog'
-    import { Loader2, Info, Pencil, Trash2, Server } from '@lucide/svelte'
+    import { Loader2, Info, Pencil, Trash2, Server, CircleAlert, CircleCheck } from '@lucide/svelte'
     import { cn } from '$lib/utils'
     import { toast } from 'svelte-sonner'
     import type { PageData } from './$types'
@@ -72,6 +72,12 @@
     let isSubmitting = $state(false)
     let editingHasApiKey = $state(false)
 
+    type TestResult =
+        | { ok: true; message: string }
+        | { ok: false; message: string; detail: string | null }
+    let isTesting = $state(false)
+    let testResult = $state<TestResult | null>(null)
+
     let modelDialogOpen = $state(false)
     let modelFormState = $state<ModelFormState>({ ...emptyModelForm })
     let isModelSubmitting = $state(false)
@@ -89,6 +95,20 @@
         confirmDescription = description
         confirmFormRef = formEl
         confirmDialogOpen = true
+    }
+
+    type ActionMessageData = { message?: string; error?: string }
+
+    function actionMessage(
+        resultData: unknown,
+        field: keyof ActionMessageData,
+        fallback: string,
+    ): string {
+        if (resultData && typeof resultData === 'object') {
+            const value = (resultData as ActionMessageData)[field]
+            if (typeof value === 'string') return value
+        }
+        return fallback
     }
 
     const showApiKey = (p: ProviderType) =>
@@ -176,6 +196,7 @@
     function openSetupDialog(type: ProviderType) {
         editMode = false
         editingHasApiKey = false
+        testResult = null
         formState = {
             ...emptyProviderForm,
             providerType: type,
@@ -187,6 +208,7 @@
     function openEditDialog(provider: (typeof data.providers)[0]) {
         editMode = true
         editingHasApiKey = provider.hasApiKey
+        testResult = null
         formState = {
             id: provider.id,
             name: provider.name,
@@ -520,6 +542,7 @@
                 </Dialog.Header>
 
                 <form
+                    id="llm-provider-form"
                     method="POST"
                     action={editMode ? '?/edit' : '?/add'}
                     use:enhance={() => {
@@ -530,10 +553,16 @@
                             dialogOpen = false
                             if (result.type === 'success') {
                                 toast.success(
-                                    result.data?.message || 'Operation completed successfully',
+                                    actionMessage(
+                                        result.data,
+                                        'message',
+                                        'Operation completed successfully',
+                                    ),
                                 )
                             } else if (result.type === 'failure') {
-                                toast.error(result.data?.error || 'Something went wrong')
+                                toast.error(
+                                    actionMessage(result.data, 'error', 'Something went wrong'),
+                                )
                             }
                         }
                     }}
@@ -668,25 +697,113 @@
                             </Alert.Description>
                         </Alert.Root>
                     {/if}
+                </form>
 
-                    <Dialog.Footer>
+                {#if testResult}
+                    {#if testResult.ok}
+                        <Alert.Root
+                            class="border-green-500/50 bg-green-50 text-green-900 dark:border-green-500/40 dark:bg-green-950/40 dark:text-green-100">
+                            <CircleCheck class="h-4 w-4" />
+                            <Alert.Title>{testResult.message}</Alert.Title>
+                        </Alert.Root>
+                    {:else}
+                        <Alert.Root variant="destructive">
+                            <CircleAlert class="h-4 w-4" />
+                            <Alert.Title>{testResult.message}</Alert.Title>
+                            {#if testResult.detail}
+                                <Alert.Description>{testResult.detail}</Alert.Description>
+                            {/if}
+                        </Alert.Root>
+                    {/if}
+                {/if}
+
+                <Dialog.Footer>
+                    <Button
+                        variant="outline"
+                        type="button"
+                        class="cursor-pointer"
+                        onclick={() => (dialogOpen = false)}>
+                        Cancel
+                    </Button>
+
+                    <form
+                        method="POST"
+                        action="?/testConnection"
+                        use:enhance={() => {
+                            isTesting = true
+                            testResult = null
+                            return async ({ result }) => {
+                                isTesting = false
+                                if (result.type === 'success') {
+                                    testResult = {
+                                        ok: true,
+                                        message:
+                                            (result.data?.message as string) ||
+                                            'Connection successful',
+                                    }
+                                } else if (result.type === 'failure') {
+                                    const data = result.data as
+                                        | {
+                                              error?: string
+                                              provider?: string | null
+                                              statusCode?: number | null
+                                              model?: string | null
+                                          }
+                                        | undefined
+                                    const detailParts: string[] = []
+                                    if (data?.provider) detailParts.push(data.provider)
+                                    if (data?.model) detailParts.push(data.model)
+                                    if (data?.statusCode)
+                                        detailParts.push(`HTTP ${data.statusCode}`)
+                                    testResult = {
+                                        ok: false,
+                                        message: data?.error || 'Connection failed',
+                                        detail: detailParts.length ? detailParts.join(' · ') : null,
+                                    }
+                                } else {
+                                    testResult = {
+                                        ok: false,
+                                        message: 'Connection failed',
+                                        detail: null,
+                                    }
+                                }
+                            }
+                        }}>
+                        {#if editMode}
+                            <input type="hidden" name="id" value={formState.id} />
+                        {/if}
+                        <input type="hidden" name="providerType" value={formState.providerType} />
+                        <input type="hidden" name="apiKey" value={formState.apiKey} />
+                        <input type="hidden" name="apiUrl" value={formState.apiUrl} />
+                        <input type="hidden" name="regionName" value={formState.regionName} />
+                        <input type="hidden" name="projectId" value={formState.projectId} />
                         <Button
-                            variant="outline"
-                            type="button"
-                            class="cursor-pointer"
-                            onclick={() => (dialogOpen = false)}>
-                            Cancel
-                        </Button>
-                        <Button type="submit" disabled={isSubmitting} class="cursor-pointer">
-                            {#if isSubmitting}
+                            type="submit"
+                            variant="secondary"
+                            disabled={isTesting || isSubmitting}
+                            class="cursor-pointer">
+                            {#if isTesting}
                                 <Loader2 class="mr-2 h-4 w-4 animate-spin" />
-                                Saving...
+                                Testing...
                             {:else}
-                                {editMode ? 'Update' : 'Connect'}
+                                Test connection
                             {/if}
                         </Button>
-                    </Dialog.Footer>
-                </form>
+                    </form>
+
+                    <Button
+                        type="submit"
+                        form="llm-provider-form"
+                        disabled={isSubmitting || isTesting}
+                        class="cursor-pointer">
+                        {#if isSubmitting}
+                            <Loader2 class="mr-2 h-4 w-4 animate-spin" />
+                            Saving...
+                        {:else}
+                            {editMode ? 'Update' : 'Connect'}
+                        {/if}
+                    </Button>
+                </Dialog.Footer>
             </Dialog.Content>
         </Dialog.Root>
 
@@ -728,9 +845,17 @@
                             isModelSubmitting = false
                             modelDialogOpen = false
                             if (result.type === 'success') {
-                                toast.success(result.data?.message || 'Model added successfully')
+                                toast.success(
+                                    actionMessage(
+                                        result.data,
+                                        'message',
+                                        'Model added successfully',
+                                    ),
+                                )
                             } else if (result.type === 'failure') {
-                                toast.error(result.data?.error || 'Something went wrong')
+                                toast.error(
+                                    actionMessage(result.data, 'error', 'Something went wrong'),
+                                )
                             }
                         }
                     }}

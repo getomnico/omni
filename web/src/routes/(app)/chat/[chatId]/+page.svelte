@@ -102,6 +102,7 @@
             activeStreamChatId = null
             isStreaming = false
             error = null
+            errorDetail = null
             stopThinkingText()
             chatMessages = [...data.messages]
             branchSelections = {}
@@ -173,6 +174,7 @@
 
     let isStreaming = $state(false)
     let error = $state<string | null>(null)
+    let errorDetail = $state<string | null>(null)
     let eventSource: EventSource | null = $state(null)
     let activeStreamChatId: string | null = null
 
@@ -203,14 +205,33 @@
         }
     }
 
-    type StreamErrorPayload = { message: string }
+    type StreamErrorPayload = {
+        message: string
+        provider?: string | null
+        model?: string | null
+        statusCode?: number | null
+    }
 
-    function streamErrorMessage(event: MessageEvent<string>): string {
+    function streamErrorMessage(event: MessageEvent<string>): {
+        message: string
+        detail: string | null
+    } {
         try {
             const payload = JSON.parse(event.data) as StreamErrorPayload
-            return payload.message
+            const detailParts = [
+                payload.provider,
+                payload.model,
+                payload.statusCode ? `HTTP ${payload.statusCode}` : null,
+            ].filter((part): part is string => !!part)
+            return {
+                message: payload.message,
+                detail: detailParts.length ? detailParts.join(' · ') : null,
+            }
         } catch {
-            return event.data || 'Failed to generate response. Please try again.'
+            return {
+                message: event.data || 'Failed to generate response. Please try again.',
+                detail: null,
+            }
         }
     }
 
@@ -449,6 +470,7 @@
         // Reset all stream state so the input is immediately ready for a new message.
         isStreaming = false
         error = null
+        errorDetail = null
         activeStreamingMessageId = null
         stopThinkingText()
         refreshProcessedMessages()
@@ -1141,6 +1163,7 @@
         activeStreamChatId = chatId
         activeStreamingMessageId = null
         error = null
+        errorDetail = null
         startThinkingText()
 
         const toolUseStateByIndex = new Map<
@@ -1586,10 +1609,14 @@
 
         const handleStreamError = (event: Event) => {
             streamCompleted = true
-            error =
-                event instanceof MessageEvent
-                    ? streamErrorMessage(event as MessageEvent<string>)
-                    : 'Failed to generate response. Please try again.'
+            if (event instanceof MessageEvent) {
+                const streamError = streamErrorMessage(event as MessageEvent<string>)
+                error = streamError.message
+                errorDetail = streamError.detail
+            } else {
+                error = 'Failed to generate response. Please try again.'
+                errorDetail = null
+            }
             isStreaming = false
             activeStreamingMessageId = null
             refreshProcessedMessages()
@@ -1629,6 +1656,7 @@
                 messageEventsReceived > 0
                     ? 'Response stream disconnected before it finished. Please try again.'
                     : 'Failed to connect to the response stream. Please try again.'
+            errorDetail = null
             isStreaming = false
             activeStreamingMessageId = null
             refreshProcessedMessages()
@@ -2187,6 +2215,9 @@
                                     <Alert.Root variant="destructive" title={error}>
                                         <CircleAlert />
                                         <Alert.Title>{error}</Alert.Title>
+                                        {#if errorDetail}
+                                            <Alert.Description>{errorDetail}</Alert.Description>
+                                        {/if}
                                     </Alert.Root>
                                 </div>
                             {/if}
@@ -2292,6 +2323,9 @@
                             <Alert.Root variant="destructive" title={error}>
                                 <CircleAlert />
                                 <Alert.Title>{error}</Alert.Title>
+                                {#if errorDetail}
+                                    <Alert.Description>{errorDetail}</Alert.Description>
+                                {/if}
                             </Alert.Root>
                         {:else if isStreaming}
                             <span class="thinking-container mt-2 flex items-center gap-1.5">

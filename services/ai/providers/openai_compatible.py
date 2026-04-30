@@ -10,9 +10,9 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
-from openai import AsyncOpenAI
+from openai import APIStatusError, AsyncOpenAI
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
     ChatCompletionChunk,
@@ -47,7 +47,13 @@ from anthropic.types import (
 from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic.types.raw_message_delta_event import Delta
 
-from . import LLMProvider, LLMProviderEmptyResponseError, LLMProviderStreamError, TokenUsage
+from . import LLMProvider, LLMProviderEmptyResponseError, TokenUsage
+from .types import ProviderError, ProviderType
+
+
+def _openai_compat_status_code(e: BaseException) -> int | None:
+    return e.status_code if isinstance(e, APIStatusError) else None
+
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +231,7 @@ class OpenAICompatibleProvider(LLMProvider):
     Completions with full tool/function-calling support.
     """
 
+    provider_type: ClassVar[ProviderType] = ProviderType.OPENAI_COMPATIBLE
     PERSISTED_BLOCK_EXTRAS = ASSISTANT_MESSAGE_PASSTHROUGH_KEYS
 
     def __init__(
@@ -233,6 +240,7 @@ class OpenAICompatibleProvider(LLMProvider):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self.model_name = model
         # Some keyless local endpoints (vLLM without --api-key, Ollama, etc.)
         # still require the SDK to send *something* — fall back to a placeholder.
         self.client = AsyncOpenAI(
@@ -442,7 +450,13 @@ class OpenAICompatibleProvider(LLMProvider):
                 f"Failed to stream from OpenAI-compatible endpoint: {e}",
                 exc_info=True,
             )
-            raise LLMProviderStreamError(str(e)) from e
+            raise ProviderError(
+                str(e),
+                provider_type=self.provider_type,
+                model=self.model_name,
+                status_code=_openai_compat_status_code(e),
+                cause=e,
+            ) from e
 
     async def generate_response(
         self,
@@ -491,9 +505,16 @@ class OpenAICompatibleProvider(LLMProvider):
         except LLMProviderEmptyResponseError:
             raise
         except Exception as e:
-            raise Exception(
+            logger.error(
                 f"Failed to generate response from OpenAI-compatible endpoint: {e}"
             )
+            raise ProviderError(
+                str(e),
+                provider_type=self.provider_type,
+                model=self.model_name,
+                status_code=_openai_compat_status_code(e),
+                cause=e,
+            ) from e
 
     async def health_check(self) -> bool:
         """Liveness is determined by inference calls themselves; no separate probe

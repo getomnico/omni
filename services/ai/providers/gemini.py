@@ -16,10 +16,11 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, ClassVar
 
 from google import genai
 from google.genai import types
+from google.genai.errors import APIError
 from anthropic.types import (
     Message,
     MessageDeltaUsage,
@@ -37,7 +38,13 @@ from anthropic.types import (
 from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic.types.raw_message_delta_event import Delta
 
-from . import LLMProvider, LLMProviderStreamError, TokenUsage
+from . import LLMProvider, TokenUsage
+from .types import ProviderError, ProviderType
+
+
+def _gemini_status_code(e: BaseException) -> int | None:
+    return e.code if isinstance(e, APIError) else None
+
 
 logger = logging.getLogger(__name__)
 
@@ -177,12 +184,14 @@ def _convert_messages_to_gemini(
 class GeminiProvider(LLMProvider):
     """Provider for Google Gemini API."""
 
+    provider_type: ClassVar[ProviderType] = ProviderType.GEMINI
     PERSISTED_BLOCK_EXTRAS = (THOUGHT_SIGNATURE_KEY,)
 
     def __init__(self, api_key: str, model: str):
         self.api_key = api_key
         self.client = genai.Client(api_key=api_key)
         self.model = model
+        self.model_name = model
 
     async def stream_response(
         self,
@@ -348,7 +357,13 @@ class GeminiProvider(LLMProvider):
 
         except Exception as e:
             logger.error(f"Failed to stream from Gemini: {str(e)}", exc_info=True)
-            raise LLMProviderStreamError(str(e)) from e
+            raise ProviderError(
+                str(e),
+                provider_type=self.provider_type,
+                model=self.model_name,
+                status_code=_gemini_status_code(e),
+                cause=e,
+            ) from e
 
     async def generate_response(
         self,
@@ -388,7 +403,13 @@ class GeminiProvider(LLMProvider):
 
         except Exception as e:
             logger.error(f"Failed to generate response: {str(e)}")
-            raise Exception(f"Failed to generate response: {str(e)}")
+            raise ProviderError(
+                str(e),
+                provider_type=self.provider_type,
+                model=self.model_name,
+                status_code=_gemini_status_code(e),
+                cause=e,
+            ) from e
 
     async def health_check(self) -> bool:
         """Check if Gemini API is accessible."""

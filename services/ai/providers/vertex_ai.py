@@ -8,7 +8,7 @@ Uses Application Default Credentials (ADC) for authentication — no API key nee
 
 import logging
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, ClassVar
 
 from anthropic import AsyncAnthropicVertex, MessageStreamEvent
 from google import genai
@@ -16,6 +16,7 @@ from google import genai
 from . import LLMProvider, TokenUsage
 from .anthropic import AnthropicProvider
 from .gemini import GeminiProvider
+from .types import ProviderError, ProviderType
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +34,13 @@ class VertexAIProvider(LLMProvider):
     and authenticates via Application Default Credentials (ADC).
     """
 
+    provider_type: ClassVar[ProviderType] = ProviderType.VERTEX_AI
+
     def __init__(self, region: str, project_id: str, model: str):
         self.region = region
         self.project_id = project_id
         self.model = model
+        self.model_name = model
 
         if _is_claude_model(model):
             client = AsyncAnthropicVertex(region=region, project_id=project_id)
@@ -63,16 +67,25 @@ class VertexAIProvider(LLMProvider):
         messages: list[dict[str, Any]] | None = None,
         system_prompt: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
-        async for event in self._delegate.stream_response(
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            tools=tools,
-            messages=messages,
-            system_prompt=system_prompt,
-        ):
-            yield event
+        try:
+            async for event in self._delegate.stream_response(
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                tools=tools,
+                messages=messages,
+                system_prompt=system_prompt,
+            ):
+                yield event
+        except ProviderError as e:
+            raise ProviderError(
+                e.message,
+                provider_type=self.provider_type,
+                model=self.model_name,
+                status_code=e.status_code,
+                cause=e,
+            ) from e
 
     async def generate_response(
         self,
@@ -81,12 +94,21 @@ class VertexAIProvider(LLMProvider):
         temperature: float | None = None,
         top_p: float | None = None,
     ) -> tuple[str, TokenUsage]:
-        return await self._delegate.generate_response(
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-        )
+        try:
+            return await self._delegate.generate_response(
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+            )
+        except ProviderError as e:
+            raise ProviderError(
+                e.message,
+                provider_type=self.provider_type,
+                model=self.model_name,
+                status_code=e.status_code,
+                cause=e,
+            ) from e
 
     async def health_check(self) -> bool:
         return await self._delegate.health_check()

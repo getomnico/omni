@@ -12,7 +12,7 @@ For OpenAI models, uses the v1 API (no dated api-version required):
 import asyncio
 import logging
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, ClassVar
 
 from anthropic import AsyncAnthropicFoundry, MessageStreamEvent
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
@@ -21,6 +21,7 @@ from openai import AsyncOpenAI
 from . import LLMProvider, TokenUsage
 from .anthropic import AnthropicProvider
 from .openai import OpenAIProvider
+from .types import ProviderError, ProviderType
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +42,12 @@ class AzureFoundryProvider(LLMProvider):
     and authenticates via Azure Managed Identity (DefaultAzureCredential).
     """
 
+    provider_type: ClassVar[ProviderType] = ProviderType.AZURE_FOUNDRY
+
     def __init__(self, endpoint_url: str, model: str):
         self.endpoint_url = endpoint_url.rstrip("/")
         self.model = model
+        self.model_name = model
 
         credential = DefaultAzureCredential()
 
@@ -88,16 +92,25 @@ class AzureFoundryProvider(LLMProvider):
         messages: list[dict[str, Any]] | None = None,
         system_prompt: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
-        async for event in self._delegate.stream_response(
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            tools=tools,
-            messages=messages,
-            system_prompt=system_prompt,
-        ):
-            yield event
+        try:
+            async for event in self._delegate.stream_response(
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                tools=tools,
+                messages=messages,
+                system_prompt=system_prompt,
+            ):
+                yield event
+        except ProviderError as e:
+            raise ProviderError(
+                e.message,
+                provider_type=self.provider_type,
+                model=self.model_name,
+                status_code=e.status_code,
+                cause=e,
+            ) from e
 
     async def generate_response(
         self,
@@ -106,12 +119,21 @@ class AzureFoundryProvider(LLMProvider):
         temperature: float | None = None,
         top_p: float | None = None,
     ) -> tuple[str, TokenUsage]:
-        return await self._delegate.generate_response(
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-        )
+        try:
+            return await self._delegate.generate_response(
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+            )
+        except ProviderError as e:
+            raise ProviderError(
+                e.message,
+                provider_type=self.provider_type,
+                model=self.model_name,
+                status_code=e.status_code,
+                cause=e,
+            ) from e
 
     async def health_check(self) -> bool:
         return await self._delegate.health_check()
