@@ -137,6 +137,11 @@ class ActionDefinition(BaseModel):
         default_factory=lambda: {"type": "object", "properties": {}}
     )
     mode: str = "write"  # "read" or "write"
+    # TODO: kept as list[str] on purpose — the SourceType enum lives in the Rust
+    # `shared` crate (source of truth) and we don't want to hand-mirror it here.
+    # Revisit if/when we generate Python types from the Rust models.
+    source_types: list[str] = Field(default_factory=list)
+    admin_only: bool = False
 
 
 class SearchOperator(BaseModel):

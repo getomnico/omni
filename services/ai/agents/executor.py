@@ -102,6 +102,13 @@ async def _build_agent_registry(
     source_filter = _build_source_filter(agent) if agent.agent_type == "user" else None
     action_whitelist = agent.allowed_actions if agent.agent_type == "org" else None
 
+    # Org agents are admin-controlled; user agents take their owner's role.
+    if agent.agent_type == "org":
+        is_admin = True
+    else:
+        owner = await UsersRepository().find_by_id(agent.user_id)
+        is_admin = bool(owner and owner.role == "admin")
+
     connector_actions: list[ConnectorAction] | None = None
 
     if CONNECTOR_MANAGER_URL:
@@ -114,6 +121,7 @@ async def _build_agent_registry(
             action_whitelist=action_whitelist,
             documents_repo=DocumentsRepository(),
             sandbox_url=SANDBOX_URL,
+            is_admin=is_admin,
         )
         await connector_handler._ensure_initialized()
         registry.register(connector_handler)

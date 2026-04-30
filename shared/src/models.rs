@@ -375,6 +375,14 @@ pub struct ActionDefinition {
     pub input_schema: JsonValue,
     #[serde(default)]
     pub mode: ActionMode,
+    /// Restrict this action to a subset of the connector's `source_types`.
+    /// Empty = applies to all source_types the connector supports.
+    #[serde(default)]
+    pub source_types: Vec<SourceType>,
+    /// Hide this action from non-admin users in LLM tool exposure (e.g.
+    /// admin-directory ops that require a service-account credential).
+    #[serde(default)]
+    pub admin_only: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

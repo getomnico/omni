@@ -116,6 +116,8 @@ pub fn build_manifest(connector_url: String) -> ConnectorManifest {
                 "required": ["type"]
             }),
             mode: shared::models::ActionMode::Read,
+            source_types: Vec::new(),
+            admin_only: false,
         }],
         search_operators: vec![
             SearchOperator {

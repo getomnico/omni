@@ -64,6 +64,8 @@ impl Connector for FileSystemConnector {
                 },
                 "required": ["base_path"]
             }),
+            source_types: Vec::new(),
+            admin_only: false,
         }]
     }
 
