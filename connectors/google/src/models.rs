@@ -538,6 +538,7 @@ impl GmailThread {
 
             match gmail_client.extract_message_content(message) {
                 Ok((message_content, is_html)) => {
+                    let raw_len = message_content.len();
                     if !message_content.trim().is_empty() {
                         let text = if is_html {
                             match sdk_client
@@ -565,6 +566,15 @@ impl GmailThread {
                         };
                         if !text.trim().is_empty() {
                             content_parts.push(text.trim().to_string());
+                        } else {
+                            tracing::warn!(
+                                thread_id = %self.thread_id,
+                                message_id = %message.id,
+                                msg = i + 1,
+                                is_html,
+                                raw_len,
+                                "Indexed body is empty despite a non-empty source payload"
+                            );
                         }
                     }
                 }
