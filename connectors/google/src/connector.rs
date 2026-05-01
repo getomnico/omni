@@ -84,6 +84,12 @@ impl GoogleConnector {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Missing required parameter: file_id"))?;
 
+        // Gmail attachment external_ids carry a `:att:` marker. Drive file IDs
+        // never contain colons, so the substring check is a safe dispatcher.
+        if file_id.contains(":att:") {
+            return self.execute_fetch_attachment(params, creds).await;
+        }
+
         let principal_email = creds
             .principal_email
             .as_deref()
@@ -305,7 +311,7 @@ impl Connector for GoogleConnector {
             ActionDefinition {
                 name: "fetch_file".to_string(),
                 description:
-                    "Download a file from Google Drive. Exports Google Workspace files to Office format."
+                    "Download a file from Google Drive (Workspace files exported to Office format) or a Gmail attachment."
                         .to_string(),
                 mode: omni_connector_sdk::ActionMode::Read,
                 input_schema: json!({
@@ -313,31 +319,12 @@ impl Connector for GoogleConnector {
                     "properties": {
                         "file_id": {
                             "type": "string",
-                            "description": "The Google Drive file ID"
+                            "description": "Drive file ID, or a Gmail attachment composite ID (thread_id:att:message_id:attachment_id)"
                         }
                     },
                     "required": ["file_id"]
                 }),
-                source_types: vec![SourceType::GoogleDrive],
-                admin_only: false,
-            },
-            ActionDefinition {
-                name: "fetch_attachment".to_string(),
-                description:
-                    "Download a Gmail message attachment by its document ID."
-                        .to_string(),
-                mode: omni_connector_sdk::ActionMode::Read,
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "file_id": {
-                            "type": "string",
-                            "description": "The attachment document ID (composite: thread_id:att:message_id:attachment_id)"
-                        }
-                    },
-                    "required": ["file_id"]
-                }),
-                source_types: vec![SourceType::Gmail],
+                source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
                 admin_only: false,
             },
             ActionDefinition {
@@ -443,7 +430,6 @@ impl Connector for GoogleConnector {
         };
         match action {
             "fetch_file" => self.execute_fetch_file(params, &creds).await,
-            "fetch_attachment" => self.execute_fetch_attachment(params, &creds).await,
             "search_users" => self.execute_search_users(params, &creds).await,
             _ => {
                 use axum::http::StatusCode;

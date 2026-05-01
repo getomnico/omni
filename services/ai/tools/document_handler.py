@@ -163,11 +163,8 @@ class DocumentToolHandler:
         self, doc, document_name: str, context: ToolContext
     ) -> ToolResult:
         """Fetch binary file from source via connector-manager and write to sandbox."""
-        # Gmail attachments use the indexer convention `<thread>:att:<msg>:<att>`
-        # for their external_id, so a `:att:` substring is a stable signal.
-        action = "fetch_attachment" if ":att:" in (doc.id or "") else "fetch_file"
         logger.info(
-            f"Fetching binary file '{document_name}' (id={doc.id}) from source {doc.source_id} via action={action}"
+            f"Fetching binary file '{document_name}' (id={doc.id}) from source {doc.source_id}"
         )
 
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -176,7 +173,7 @@ class DocumentToolHandler:
                 json={
                     "source_id": doc.source_id,
                     "user_id": context.user_id,
-                    "action": action,
+                    "action": "fetch_file",
                     "params": {"document_id": doc.id},
                 },
             )
