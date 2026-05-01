@@ -83,6 +83,10 @@ impl SyncManager {
         }
     }
 
+    pub fn gmail_client(&self) -> &GmailClient {
+        &self.gmail_client
+    }
+
     /// Run a sync driven by the SDK. The SDK passes in the full Source and
     /// optional ServiceCredential, the persisted State, and a `SyncContext`
     /// whose cancellation flag is flipped by the SDK's `/cancel` handler.
