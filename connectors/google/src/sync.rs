@@ -1926,7 +1926,14 @@ impl SyncManager {
 
         // Extract attachments and store their content first, so the thread
         // document can carry pointers to its attachments in metadata.extra.
+        //
+        // Within a thread, dedup by (filename, size): the same file forwarded
+        // across multiple replies would otherwise produce one document per
+        // occurrence (different message_id → different composite), flooding
+        // the BM25 index with copies of identical content. First occurrence
+        // wins; the kept message_id is the one fetch_file will use.
         let mut stored_attachments: Vec<(ExtractedAttachment, String)> = Vec::new();
+        let mut seen: HashSet<(String, u64)> = HashSet::new();
         for message in &gmail_thread.messages {
             let attachments = self
                 .gmail_client
@@ -1941,6 +1948,14 @@ impl SyncManager {
 
             for att in attachments {
                 if att.extracted_text.trim().is_empty() {
+                    continue;
+                }
+
+                if !seen.insert((att.filename.clone(), att.size)) {
+                    debug!(
+                        "Skipping duplicate attachment {} (size {}) in thread {}",
+                        att.filename, att.size, thread_id
+                    );
                     continue;
                 }
 
