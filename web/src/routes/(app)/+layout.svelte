@@ -65,6 +65,7 @@
     let searchTimeout: ReturnType<typeof setTimeout> | undefined
 
     let deleteTargetChat = $state<Chat | null>(null)
+    let deleteTargetTitle = $state('')
     let renameTargetChat = $state<Chat | null>(null)
     let renameValue = $state('')
 
@@ -195,8 +196,7 @@
         <AlertDialog.Header>
             <AlertDialog.Title>Delete chat</AlertDialog.Title>
             <AlertDialog.Description>
-                This will permanently delete "{deleteTargetChat?.title || 'Untitled'}". This action
-                cannot be undone.
+                This will permanently delete "{deleteTargetTitle}". This action cannot be undone.
             </AlertDialog.Description>
         </AlertDialog.Header>
         <AlertDialog.Footer>
@@ -525,15 +525,16 @@
                         <span>Star</span>
                     {/if}
                 </DropdownMenu.Item>
-                <DropdownMenu.Item onclick={() => openRenameDialog(chat)} class="cursor-pointer">
+                <DropdownMenu.Item onSelect={() => openRenameDialog(chat)} class="cursor-pointer">
                     <Pencil class="h-4 w-4" />
                     <span>Rename</span>
                 </DropdownMenu.Item>
                 <DropdownMenu.Separator />
                 <DropdownMenu.Item
                     class="text-destructive focus:text-destructive cursor-pointer"
-                    onclick={() => {
+                    onSelect={() => {
                         deleteTargetChat = chat
+                        deleteTargetTitle = chat.title || 'Untitled'
                     }}>
                     <Trash2 class="h-4 w-4" />
                     <span>Delete</span>
