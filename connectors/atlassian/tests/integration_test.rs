@@ -1,7 +1,4 @@
-use anyhow::Result;
-use chrono::Utc;
-use shared::models::ConnectorEvent;
-use shared::test_environment::TestEnvironment;
+use omni_connector_sdk::{ConnectorEvent, DocumentPermissions};
 use std::collections::HashMap;
 use time::OffsetDateTime;
 
@@ -15,85 +12,21 @@ use omni_atlassian_connector::models::{
 const TEST_BASE_URL: &str = "https://test-company.atlassian.net";
 
 #[tokio::test]
-async fn test_sync_state_operations() -> Result<()> {
-    let test_env = TestEnvironment::new().await?;
-    let redis_client = test_env.redis_client.clone();
-
-    let sync_state = omni_atlassian_connector::sync::SyncState::new(redis_client);
-
-    let source_id = "test-source-123";
-    let space_key = "TEST";
-    let project_key = "PROJ";
-
-    // Test Confluence sync state
-    let last_sync = sync_state
-        .get_confluence_last_sync(source_id, space_key)
-        .await?;
-    assert!(last_sync.is_none());
-
-    let now = Utc::now();
-    sync_state
-        .set_confluence_last_sync(source_id, space_key, now)
-        .await?;
-
-    let retrieved_sync = sync_state
-        .get_confluence_last_sync(source_id, space_key)
-        .await?;
-    assert!(retrieved_sync.is_some());
-    assert_eq!(retrieved_sync.unwrap().timestamp(), now.timestamp());
-
-    // Test JIRA sync state
-    let last_sync = sync_state
-        .get_jira_last_sync(source_id, project_key)
-        .await?;
-    assert!(last_sync.is_none());
-
-    sync_state
-        .set_jira_last_sync(source_id, project_key, now)
-        .await?;
-
-    let retrieved_sync = sync_state
-        .get_jira_last_sync(source_id, project_key)
-        .await?;
-    assert!(retrieved_sync.is_some());
-    assert_eq!(retrieved_sync.unwrap().timestamp(), now.timestamp());
-
-    // Test page version tracking
-    let page_version = sync_state
-        .get_confluence_page_version(source_id, "space1", "page1")
-        .await?;
-    assert!(page_version.is_none());
-
-    sync_state
-        .set_confluence_page_version(source_id, "space1", "page1", 5)
-        .await?;
-
-    let page_version = sync_state
-        .get_confluence_page_version(source_id, "space1", "page1")
-        .await?;
-    assert_eq!(page_version, Some(5));
-
-    // Test getting all synced resources
-    let confluence_spaces = sync_state
-        .get_all_synced_confluence_spaces(source_id)
-        .await?;
-    assert!(confluence_spaces.contains(space_key));
-
-    let jira_projects = sync_state.get_all_synced_jira_projects(source_id).await?;
-    assert!(jira_projects.contains(project_key));
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn test_confluence_page_to_connector_event() {
     let page = make_test_confluence_page();
+
+    let permissions = DocumentPermissions {
+        public: false,
+        users: vec!["user@example.com".to_string()],
+        groups: vec![],
+    };
 
     let event = page.to_connector_event(
         "sync-run-1".to_string(),
         "source-123".to_string(),
         TEST_BASE_URL,
         "content-abc".to_string(),
+        permissions,
     );
 
     match event {
@@ -103,6 +36,7 @@ async fn test_confluence_page_to_connector_event() {
             document_id,
             content_id,
             metadata,
+            permissions,
             ..
         } => {
             assert_eq!(sync_run_id, "sync-run-1");
@@ -111,6 +45,8 @@ async fn test_confluence_page_to_connector_event() {
             assert_eq!(content_id, "content-abc");
             assert_eq!(metadata.title, Some("Test Page".to_string()));
             assert!(metadata.url.unwrap().contains("/wiki"));
+            assert!(!permissions.public);
+            assert_eq!(permissions.users, vec!["user@example.com"]);
         }
         _ => panic!("Expected DocumentCreated event"),
     }
@@ -120,23 +56,34 @@ async fn test_confluence_page_to_connector_event() {
 async fn test_jira_issue_to_connector_event() {
     let issue = make_test_jira_issue();
 
+    let permissions = DocumentPermissions {
+        public: false,
+        users: vec!["dev@example.com".to_string()],
+        groups: vec!["developers".to_string()],
+    };
+
     let event = issue.to_connector_event(
         "sync-run-2".to_string(),
         "source-456".to_string(),
         TEST_BASE_URL,
         "content-def".to_string(),
+        permissions,
     );
 
     match event {
         ConnectorEvent::DocumentCreated {
             document_id,
             metadata,
+            permissions,
             attributes,
             ..
         } => {
             assert_eq!(document_id, "jira_issue_PROJ_PROJ-123");
             assert_eq!(metadata.title, Some("PROJ-123 - Test Issue".to_string()));
             assert!(metadata.url.unwrap().contains("/browse/PROJ-123"));
+            assert!(!permissions.public);
+            assert_eq!(permissions.users, vec!["dev@example.com"]);
+            assert_eq!(permissions.groups, vec!["developers"]);
 
             let attrs = attributes.unwrap();
             assert_eq!(attrs.get("issue_type").unwrap(), "Bug");

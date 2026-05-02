@@ -1,14 +1,14 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Duration, Utc};
-use shared::models::{ConnectorEvent, SyncType};
-use std::sync::atomic::{AtomicBool, Ordering};
+use dashmap::DashMap;
+use omni_connector_sdk::{DocumentPermissions, SdkClient, SyncContext};
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::auth::AtlassianCredentials;
 use crate::client::AtlassianApi;
 use crate::models::JiraIssue;
-use shared::SdkClient;
 
 const DEFAULT_JIRA_FIELDS: &[&str] = &[
     "summary",
@@ -39,7 +39,8 @@ fn build_fields(custom_fields: Option<&[String]>) -> Vec<String> {
 pub struct JiraProcessor {
     client: Arc<dyn AtlassianApi>,
     sdk_client: SdkClient,
-    cached_custom_fields: Option<(Vec<String>, DateTime<Utc>)>,
+    cached_custom_fields: RwLock<Option<(Vec<String>, DateTime<Utc>)>>,
+    project_permissions_cache: DashMap<String, DocumentPermissions>,
 }
 
 const CUSTOM_FIELDS_CACHE_TTL_DAYS: i64 = 1;
@@ -49,14 +50,144 @@ impl JiraProcessor {
         Self {
             client,
             sdk_client,
-            cached_custom_fields: None,
+            cached_custom_fields: RwLock::new(None),
+            project_permissions_cache: DashMap::new(),
         }
     }
 
-    async fn get_custom_field_ids(&mut self, creds: &AtlassianCredentials) -> Vec<String> {
-        if let Some((ref ids, fetched_at)) = self.cached_custom_fields {
-            if Utc::now() - fetched_at < Duration::days(CUSTOM_FIELDS_CACHE_TTL_DAYS) {
-                return ids.clone();
+    async fn get_project_permissions(
+        &self,
+        creds: &AtlassianCredentials,
+        project_key: &str,
+    ) -> DocumentPermissions {
+        if let Some(cached) = self.project_permissions_cache.get(project_key) {
+            return cached.clone();
+        }
+
+        let perms = match self.fetch_project_permissions(creds, project_key).await {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(
+                    "Failed to fetch permissions for project {}, defaulting to public: {}",
+                    project_key, e
+                );
+                DocumentPermissions {
+                    public: true,
+                    users: vec![],
+                    groups: vec![],
+                }
+            }
+        };
+
+        self.project_permissions_cache
+            .insert(project_key.to_string(), perms.clone());
+        perms
+    }
+
+    async fn fetch_project_permissions(
+        &self,
+        creds: &AtlassianCredentials,
+        project_key: &str,
+    ) -> Result<DocumentPermissions> {
+        // TODO(perms): Role-actor aggregation is an approximation. Proper
+        // resolution requires fetching the project's permission scheme
+        // (GET /rest/api/3/project/{key}/permissionscheme), reading the
+        // BROWSE_PROJECTS grant, and expanding its holders. Roles that don't
+        // grant BROWSE are over-permissive here; permission-scheme grants to
+        // anonymous or applicationRole principals are missed entirely. We also
+        // don't enforce Atlassian org domain restrictions.
+        let role_response = self
+            .client
+            .get_jira_project_roles(creds, project_key)
+            .await?;
+
+        let mut user_account_ids = Vec::new();
+        let mut group_names = Vec::new();
+
+        // Fetch actors for each role
+        for (_role_name, role_url) in &role_response.roles {
+            // Extract role ID from URL (e.g., ".../role/10002")
+            let role_id = role_url.rsplit('/').next().unwrap_or_default();
+
+            if role_id.is_empty() {
+                continue;
+            }
+
+            match self
+                .client
+                .get_jira_project_role_actors(creds, project_key, role_id)
+                .await
+            {
+                Ok(role_actors) => {
+                    for actor in &role_actors.actors {
+                        match actor.actor_type.as_str() {
+                            "atlassian-user-role-actor" => {
+                                if let Some(user) = &actor.actor_user {
+                                    user_account_ids.push(user.account_id.clone());
+                                }
+                            }
+                            "atlassian-group-role-actor" => {
+                                if let Some(group) = &actor.actor_group {
+                                    group_names.push(group.name.clone());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to fetch actors for role {} in project {}: {}",
+                        role_id, project_key, e
+                    );
+                }
+            }
+        }
+
+        // Resolve accountIds to emails
+        let mut user_emails = Vec::new();
+        if !user_account_ids.is_empty() {
+            user_account_ids.sort();
+            user_account_ids.dedup();
+            match self
+                .client
+                .get_jira_users_bulk(creds, &user_account_ids)
+                .await
+            {
+                Ok(id_email_pairs) => {
+                    user_emails.extend(id_email_pairs.into_iter().map(|(_, email)| email));
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to resolve user emails for project {}: {}",
+                        project_key, e
+                    );
+                }
+            }
+        }
+
+        user_emails.sort();
+        user_emails.dedup();
+        group_names.sort();
+        group_names.dedup();
+
+        // TODO(perms): Jira group names are emitted as-is; the authz service
+        // needs to expand them to members at query time (or we need to expand
+        // pre-emission like Confluence does via get_confluence_group_members).
+        Ok(DocumentPermissions {
+            public: false,
+            users: user_emails,
+            groups: group_names,
+        })
+    }
+
+    async fn get_custom_field_ids(&self, creds: &AtlassianCredentials) -> Vec<String> {
+        {
+            let cache = self.cached_custom_fields.read().await;
+            if let Some((ids, fetched_at)) = cache.as_ref() {
+                if Utc::now() - *fetched_at < Duration::days(CUSTOM_FIELDS_CACHE_TTL_DAYS) {
+                    return ids.clone();
+                }
             }
         }
 
@@ -68,7 +199,7 @@ impl JiraProcessor {
                     .map(|f| f.id)
                     .collect();
                 debug!("Discovered {} custom fields", custom.len());
-                self.cached_custom_fields = Some((custom.clone(), Utc::now()));
+                *self.cached_custom_fields.write().await = Some((custom.clone(), Utc::now()));
                 custom
             }
             Err(e) => {
@@ -79,11 +210,11 @@ impl JiraProcessor {
     }
 
     pub async fn sync_all_projects(
-        &mut self,
+        &self,
         creds: &AtlassianCredentials,
         source_id: &str,
         sync_run_id: &str,
-        cancelled: &AtomicBool,
+        ctx: &SyncContext,
         project_filters: &Option<Vec<String>>,
     ) -> Result<u32> {
         info!(
@@ -116,7 +247,7 @@ impl JiraProcessor {
         let mut total_issues_processed = 0;
 
         for project in projects {
-            if cancelled.load(Ordering::SeqCst) {
+            if ctx.is_cancelled() {
                 info!(
                     "JIRA sync {} cancelled, stopping early after {} issues",
                     sync_run_id, total_issues_processed
@@ -142,7 +273,7 @@ impl JiraProcessor {
                     source_id,
                     project_key,
                     sync_run_id,
-                    cancelled,
+                    ctx,
                     Some(&custom_field_ids),
                 )
                 .await
@@ -176,13 +307,13 @@ impl JiraProcessor {
     }
 
     pub async fn sync_issues_updated_since(
-        &mut self,
+        &self,
         creds: &AtlassianCredentials,
         source_id: &str,
         since: DateTime<Utc>,
         project_filters: Option<&Vec<String>>,
         sync_run_id: &str,
-        cancelled: &AtomicBool,
+        ctx: &SyncContext,
     ) -> Result<u32> {
         info!(
             "Starting incremental JIRA sync for source: {} since {}{} (sync_run_id: {})",
@@ -209,7 +340,7 @@ impl JiraProcessor {
         const PAGE_SIZE: u32 = 50;
 
         loop {
-            if cancelled.load(Ordering::SeqCst) {
+            if ctx.is_cancelled() {
                 info!(
                     "JIRA incremental sync {} cancelled, stopping after {} issues",
                     sync_run_id, total_issues
@@ -228,7 +359,13 @@ impl JiraProcessor {
 
             let issues_count = response.issues.len();
             let count = self
-                .process_issues(response.issues, source_id, &creds.base_url, sync_run_id)
+                .process_issues(
+                    response.issues,
+                    source_id,
+                    &creds.base_url,
+                    sync_run_id,
+                    creds,
+                )
                 .await?;
 
             total_issues += count;
@@ -252,12 +389,12 @@ impl JiraProcessor {
     }
 
     async fn sync_project_issues(
-        &mut self,
+        &self,
         creds: &AtlassianCredentials,
         source_id: &str,
         project_key: &str,
         sync_run_id: &str,
-        cancelled: &AtomicBool,
+        ctx: &SyncContext,
         custom_fields: Option<&[String]>,
     ) -> Result<u32> {
         let mut total_issues = 0;
@@ -268,7 +405,7 @@ impl JiraProcessor {
         let fields = build_fields(custom_fields);
 
         loop {
-            if cancelled.load(Ordering::SeqCst) {
+            if ctx.is_cancelled() {
                 info!(
                     "JIRA project {} sync cancelled, stopping after {} issues",
                     project_key, total_issues
@@ -287,7 +424,13 @@ impl JiraProcessor {
 
             let issues_count = response.issues.len();
             let count = self
-                .process_issues(response.issues, source_id, &creds.base_url, sync_run_id)
+                .process_issues(
+                    response.issues,
+                    source_id,
+                    &creds.base_url,
+                    sync_run_id,
+                    creds,
+                )
                 .await?;
 
             total_issues += count;
@@ -307,7 +450,7 @@ impl JiraProcessor {
     }
 
     async fn get_accessible_projects(
-        &mut self,
+        &self,
         creds: &AtlassianCredentials,
     ) -> Result<Vec<serde_json::Value>> {
         let expand = vec!["description", "lead", "issueTypes"];
@@ -323,6 +466,7 @@ impl JiraProcessor {
         source_id: &str,
         base_url: &str,
         sync_run_id: &str,
+        creds: &AtlassianCredentials,
     ) -> Result<u32> {
         let mut count = 0;
 
@@ -352,11 +496,16 @@ impl JiraProcessor {
                 }
             };
 
+            let permissions = self
+                .get_project_permissions(creds, &issue.fields.project.key)
+                .await;
+
             let event = issue.to_connector_event(
                 sync_run_id.to_string(),
                 source_id.to_string(),
                 base_url,
                 content_id,
+                permissions,
             );
 
             // Emit event via SDK
@@ -373,216 +522,5 @@ impl JiraProcessor {
         }
 
         Ok(count)
-    }
-
-    pub async fn sync_single_issue(
-        &mut self,
-        creds: &AtlassianCredentials,
-        source_id: &str,
-        issue_key: &str,
-    ) -> Result<()> {
-        info!("Syncing single JIRA issue: {}", issue_key);
-
-        let custom_field_ids = self.get_custom_field_ids(creds).await;
-
-        // Create sync run via SDK
-        let sync_run_id = self
-            .sdk_client
-            .create_sync_run(source_id, SyncType::Incremental)
-            .await
-            .map_err(|e| anyhow!("Failed to create sync run via SDK: {}", e))?;
-
-        let fields = build_fields(Some(&custom_field_ids));
-
-        let result: Result<()> = async {
-            let issue = self
-                .client
-                .get_jira_issue_by_key(creds, issue_key, &fields)
-                .await?;
-
-            let content = issue.to_document_content();
-            if content.trim().is_empty() {
-                warn!("Issue {} has no content, skipping", issue_key);
-                return Ok(());
-            }
-
-            let content_id = self
-                .sdk_client
-                .store_content(&sync_run_id, &content)
-                .await
-                .map_err(|e| {
-                    anyhow!(
-                        "Failed to store content via SDK for Jira issue {}: {}",
-                        issue.key,
-                        e
-                    )
-                })?;
-
-            let event = issue.to_connector_event(
-                sync_run_id.clone(),
-                source_id.to_string(),
-                &creds.base_url,
-                content_id,
-            );
-            self.sdk_client
-                .emit_event(&sync_run_id, source_id, event)
-                .await?;
-
-            info!("Successfully queued issue: {}", issue.fields.summary);
-            Ok(())
-        }
-        .await;
-
-        // Mark sync as completed or failed via SDK
-        match &result {
-            Ok(_) => {
-                self.sdk_client.increment_scanned(&sync_run_id, 1).await?;
-                self.sdk_client.increment_updated(&sync_run_id, 1).await?;
-                self.sdk_client.complete(&sync_run_id).await?;
-            }
-            Err(e) => {
-                self.sdk_client.fail(&sync_run_id, &e.to_string()).await?;
-            }
-        }
-
-        result
-    }
-
-    pub async fn delete_issue(
-        &self,
-        source_id: &str,
-        sync_run_id: &str,
-        project_key: &str,
-        issue_key: &str,
-    ) -> Result<()> {
-        info!("Deleting JIRA issue: {}", issue_key);
-
-        let document_id = format!("jira_issue_{}_{}", project_key, issue_key);
-        let event = ConnectorEvent::DocumentDeleted {
-            sync_run_id: sync_run_id.to_string(),
-            source_id: source_id.to_string(),
-            document_id,
-        };
-
-        self.sdk_client
-            .emit_event(sync_run_id, source_id, event)
-            .await?;
-        info!("Successfully queued deletion for issue: {}", issue_key);
-        Ok(())
-    }
-
-    pub async fn sync_issues_by_jql(
-        &mut self,
-        creds: &AtlassianCredentials,
-        source_id: &str,
-        jql: &str,
-        max_results: Option<u32>,
-    ) -> Result<u32> {
-        info!("Syncing JIRA issues by JQL: {}", jql);
-
-        let custom_field_ids = self.get_custom_field_ids(creds).await;
-
-        // Create sync run via SDK
-        let sync_run_id = self
-            .sdk_client
-            .create_sync_run(source_id, SyncType::Incremental)
-            .await
-            .map_err(|e| anyhow!("Failed to create sync run via SDK: {}", e))?;
-
-        let mut total_issues = 0;
-        let mut next_page_token: Option<String> = None;
-        const PAGE_SIZE: u32 = 50;
-        let max_results = max_results.unwrap_or(u32::MAX);
-
-        let fields = build_fields(Some(&custom_field_ids));
-
-        let result: Result<u32> = async {
-            loop {
-                if total_issues >= max_results {
-                    break;
-                }
-
-                let page_size = std::cmp::min(PAGE_SIZE, max_results - total_issues);
-                let response = self
-                    .client
-                    .get_jira_issues(creds, jql, page_size, next_page_token.as_deref(), &fields)
-                    .await?;
-
-                if response.issues.is_empty() {
-                    break;
-                }
-
-                let issues_count = response.issues.len();
-                let count = self
-                    .process_issues(response.issues, source_id, &creds.base_url, &sync_run_id)
-                    .await?;
-
-                total_issues += count;
-
-                debug!(
-                    "Processed {} issues from JQL query, total: {}",
-                    issues_count, total_issues
-                );
-
-                if response.is_last || response.next_page_token.is_none() {
-                    break;
-                }
-                next_page_token = response.next_page_token;
-            }
-
-            info!(
-                "Completed JQL-based JIRA sync. Issues processed: {}",
-                total_issues
-            );
-            Ok(total_issues)
-        }
-        .await;
-
-        // Mark sync as completed or failed via SDK
-        match &result {
-            Ok(count) => {
-                let n = *count as i32;
-                self.sdk_client.increment_scanned(&sync_run_id, n).await?;
-                self.sdk_client.increment_updated(&sync_run_id, n).await?;
-                self.sdk_client.complete(&sync_run_id).await?;
-            }
-            Err(e) => {
-                self.sdk_client.fail(&sync_run_id, &e.to_string()).await?;
-            }
-        }
-
-        result
-    }
-
-    pub async fn sync_issues_by_status(
-        &mut self,
-        creds: &AtlassianCredentials,
-        source_id: &str,
-        status: &str,
-        project_key: Option<&str>,
-    ) -> Result<u32> {
-        let mut jql = format!("status = '{}'", status);
-
-        if let Some(project) = project_key {
-            jql = format!("project = {} AND {}", project, jql);
-        }
-
-        self.sync_issues_by_jql(creds, source_id, &jql, None).await
-    }
-
-    pub async fn sync_issues_assigned_to(
-        &mut self,
-        creds: &AtlassianCredentials,
-        source_id: &str,
-        assignee: &str,
-        project_key: Option<&str>,
-    ) -> Result<u32> {
-        let mut jql = format!("assignee = '{}'", assignee);
-
-        if let Some(project) = project_key {
-            jql = format!("project = {} AND {}", project, jql);
-        }
-
-        self.sync_issues_by_jql(creds, source_id, &jql, None).await
     }
 }

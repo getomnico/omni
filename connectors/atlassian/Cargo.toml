@@ -9,9 +9,14 @@ license.workspace = true
 name = "omni-atlassian-connector"
 path = "src/main.rs"
 
+[lib]
+name = "omni_atlassian_connector"
+path = "src/lib.rs"
+
 [dependencies]
 tokio = { workspace = true, features = ["full"] }
 shared = { path = "../../shared" }
+omni-connector-sdk = { path = "../../sdk/rust" }
 anyhow = { workspace = true }
 time = { workspace = true }
 axum = { workspace = true }
@@ -20,12 +25,8 @@ dotenvy = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-sqlx = { workspace = true, features = ["postgres", "runtime-tokio-rustls", "chrono", "uuid"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-redis = { workspace = true, features = ["tokio-comp"] }
-tower = { workspace = true }
-tower-http = { workspace = true, features = ["cors", "trace"] }
 regex = "1.10"
 base64 = "0.22"
 urlencoding = "2.1"
@@ -40,3 +41,5 @@ testcontainers = { workspace = true }
 testcontainers-modules = { workspace = true }
 axum-test = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
+redis = { workspace = true, features = ["tokio-comp"] }
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio-rustls", "chrono", "uuid"] }

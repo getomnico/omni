@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Result};
 use base64::Engine;
 use chrono::Utc;
+use omni_connector_sdk::SourceType;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use shared::models::SourceType;
 use tracing::{debug, info};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

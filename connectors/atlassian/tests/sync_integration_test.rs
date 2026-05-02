@@ -13,12 +13,17 @@ use omni_atlassian_connector::models::{
     ConfluenceVersion, JiraFields, JiraIssue, JiraIssueType, JiraProject, JiraSearchResponse,
     JiraStatus, JiraStatusCategory,
 };
+use omni_atlassian_connector::models::{
+    ConfluencePermissionOperation, ConfluencePermissionPrincipal, ConfluenceSpacePermission,
+    JiraActorGroup, JiraActorUser, JiraRoleActor, JiraRoleActorsResponse,
+};
 use omni_atlassian_connector::{
     AtlassianCredentials, ConfluenceProcessor, JiraProcessor, SyncManager,
 };
-use shared::models::SourceType;
+use omni_connector_sdk::{SourceType, SyncContext, SyncType};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use time::OffsetDateTime;
 
 const SOURCE_ID: &str = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
@@ -28,6 +33,22 @@ fn test_credentials() -> AtlassianCredentials {
         TEST_BASE_URL.to_string(),
         TEST_USER_EMAIL.to_string(),
         TEST_API_TOKEN.to_string(),
+    )
+}
+
+fn make_sync_context(
+    fixture: &common::TestFixture,
+    sync_run_id: &str,
+    source_type: SourceType,
+    sync_mode: SyncType,
+) -> SyncContext {
+    SyncContext::new(
+        fixture.sdk_client.clone(),
+        sync_run_id.to_string(),
+        SOURCE_ID.to_string(),
+        source_type,
+        sync_mode,
+        Arc::new(AtomicBool::new(false)),
     )
 }
 
@@ -176,27 +197,27 @@ async fn test_confluence_full_sync_creates_events() -> Result<()> {
         ],
     ];
 
-    let redis_url = fixture.state.config.redis.redis_url.clone();
-    let redis_client = redis::Client::open(redis_url)?;
-    let mut processor = ConfluenceProcessor::new(
-        fixture.mock_api.clone(),
-        fixture.sdk_client.clone(),
-        redis_client,
-    );
+    let processor = ConfluenceProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
 
-    let cancelled = AtomicBool::new(false);
     let sync_run_id = fixture
         .sdk_client
-        .create_sync_run(SOURCE_ID, shared::models::SyncType::Full)
+        .create_sync_run(SOURCE_ID, SyncType::Full)
         .await?;
+    let ctx = make_sync_context(
+        &fixture,
+        &sync_run_id,
+        SourceType::Confluence,
+        SyncType::Full,
+    );
 
     let creds = test_credentials();
     let count = processor
-        .sync_all_spaces(&creds, SOURCE_ID, &sync_run_id, &cancelled, &None)
+        .sync_all_spaces(&creds, SOURCE_ID, &sync_run_id, &ctx, &None)
         .await?;
 
     assert_eq!(count, 4, "Should process 4 pages across 2 spaces");
 
+    fixture.sdk_client.flush_all().await?;
     let events = get_queued_events(&fixture.pool).await?;
     assert_eq!(events.len(), 4, "Should have 4 events in queue");
 
@@ -223,32 +244,24 @@ async fn test_confluence_incremental_sync_uses_cql() -> Result<()> {
     *fixture.mock_api.cql_pages.lock().unwrap() =
         vec![make_cql_page("3001", "Modified Page", 100, "DEV", 5)];
 
-    let redis_url = fixture.state.config.redis.redis_url.clone();
-    let redis_client = redis::Client::open(redis_url)?;
-    let mut processor = ConfluenceProcessor::new(
-        fixture.mock_api.clone(),
-        fixture.sdk_client.clone(),
-        redis_client,
-    );
+    let processor = ConfluenceProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
 
-    let cancelled = AtomicBool::new(false);
     let sync_run_id = fixture
         .sdk_client
-        .create_sync_run(SOURCE_ID, shared::models::SyncType::Incremental)
+        .create_sync_run(SOURCE_ID, SyncType::Incremental)
         .await?;
+    let ctx = make_sync_context(
+        &fixture,
+        &sync_run_id,
+        SourceType::Confluence,
+        SyncType::Incremental,
+    );
 
     let creds = test_credentials();
     let last_sync = chrono::Utc::now() - chrono::Duration::hours(1);
 
     let count = processor
-        .sync_all_spaces_incremental(
-            &creds,
-            SOURCE_ID,
-            &sync_run_id,
-            last_sync,
-            &cancelled,
-            &None,
-        )
+        .sync_all_spaces_incremental(&creds, SOURCE_ID, &sync_run_id, last_sync, &ctx, &None)
         .await?;
 
     assert_eq!(count, 1, "Should process 1 modified page");
@@ -262,6 +275,7 @@ async fn test_confluence_incremental_sync_uses_cql() -> Result<()> {
     let full_page_calls = fixture.mock_api.get_calls_for("get_confluence_pages");
     assert_eq!(full_page_calls.len(), 0, "Should NOT use full page listing");
 
+    fixture.sdk_client.flush_all().await?;
     let events = get_queued_events(&fixture.pool).await?;
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["type"], "document_created");
@@ -282,42 +296,48 @@ async fn test_confluence_version_dedup_skips_unchanged() -> Result<()> {
         make_confluence_page("1002", "Page 2", "100", 1),
     ]];
 
-    let redis_url = fixture.state.config.redis.redis_url.clone();
-    let redis_client = redis::Client::open(redis_url)?;
-    let mut processor = ConfluenceProcessor::new(
-        fixture.mock_api.clone(),
-        fixture.sdk_client.clone(),
-        redis_client,
-    );
-
-    let cancelled = AtomicBool::new(false);
+    let processor = ConfluenceProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
 
     // First sync: should process both pages
     let sync_run_id = fixture
         .sdk_client
-        .create_sync_run(SOURCE_ID, shared::models::SyncType::Full)
+        .create_sync_run(SOURCE_ID, SyncType::Full)
         .await?;
+    let ctx = make_sync_context(
+        &fixture,
+        &sync_run_id,
+        SourceType::Confluence,
+        SyncType::Full,
+    );
 
     let creds = test_credentials();
     let count = processor
-        .sync_all_spaces(&creds, SOURCE_ID, &sync_run_id, &cancelled, &None)
+        .sync_all_spaces(&creds, SOURCE_ID, &sync_run_id, &ctx, &None)
         .await?;
     assert_eq!(count, 2, "First sync should process 2 pages");
 
+    fixture.sdk_client.flush_all().await?;
     let events_after_first = count_queued_events(&fixture.pool).await?;
     assert_eq!(events_after_first, 2);
 
     // Second sync with same versions: should skip both pages
     let sync_run_id2 = fixture
         .sdk_client
-        .create_sync_run(SOURCE_ID, shared::models::SyncType::Full)
+        .create_sync_run(SOURCE_ID, SyncType::Full)
         .await?;
+    let ctx2 = make_sync_context(
+        &fixture,
+        &sync_run_id2,
+        SourceType::Confluence,
+        SyncType::Full,
+    );
 
     let count2 = processor
-        .sync_all_spaces(&creds, SOURCE_ID, &sync_run_id2, &cancelled, &None)
+        .sync_all_spaces(&creds, SOURCE_ID, &sync_run_id2, &ctx2, &None)
         .await?;
     assert_eq!(count2, 0, "Second sync should skip unchanged pages");
 
+    fixture.sdk_client.flush_all().await?;
     let events_after_second = count_queued_events(&fixture.pool).await?;
     assert_eq!(events_after_second, 2, "No new events should be created");
 
@@ -348,21 +368,22 @@ async fn test_jira_full_sync_creates_events() -> Result<()> {
         next_page_token: None,
     });
 
-    let mut processor = JiraProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
+    let processor = JiraProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
 
-    let cancelled = AtomicBool::new(false);
     let sync_run_id = fixture
         .sdk_client
-        .create_sync_run(SOURCE_ID, shared::models::SyncType::Full)
+        .create_sync_run(SOURCE_ID, SyncType::Full)
         .await?;
+    let ctx = make_sync_context(&fixture, &sync_run_id, SourceType::Jira, SyncType::Full);
 
     let creds = test_credentials();
     let count = processor
-        .sync_all_projects(&creds, SOURCE_ID, &sync_run_id, &cancelled, &None)
+        .sync_all_projects(&creds, SOURCE_ID, &sync_run_id, &ctx, &None)
         .await?;
 
     assert_eq!(count, 3, "Should process 3 issues");
 
+    fixture.sdk_client.flush_all().await?;
     let events = get_queued_events(&fixture.pool).await?;
     assert_eq!(events.len(), 3, "Should have 3 events in queue");
 
@@ -393,15 +414,8 @@ async fn test_jira_full_sync_creates_events() -> Result<()> {
 async fn test_webhook_delete_jira_issue() -> Result<()> {
     let fixture = setup_test_fixture(SourceType::Jira).await?;
 
-    let redis_url = fixture.state.config.redis.redis_url.clone();
-    let redis_client = redis::Client::open(redis_url)?;
-
-    let mut sync_manager = SyncManager::with_client(
-        fixture.mock_api.clone(),
-        redis_client,
-        fixture.sdk_client.clone(),
-        None,
-    );
+    let sync_manager =
+        SyncManager::with_client(fixture.mock_api.clone(), fixture.sdk_client.clone(), None);
 
     let event = AtlassianWebhookEvent {
         webhook_event: "jira:issue_deleted".to_string(),
@@ -419,6 +433,7 @@ async fn test_webhook_delete_jira_issue() -> Result<()> {
 
     sync_manager.handle_webhook_event(SOURCE_ID, event).await?;
 
+    fixture.sdk_client.flush_all().await?;
     let delete_events = get_queued_events_by_type(&fixture.pool, "document_deleted").await?;
     assert_eq!(delete_events.len(), 1, "Should create 1 delete event");
     assert_eq!(delete_events[0]["document_id"], "jira_issue_PROJ_PROJ-99");
@@ -430,15 +445,8 @@ async fn test_webhook_delete_jira_issue() -> Result<()> {
 async fn test_webhook_delete_confluence_page() -> Result<()> {
     let fixture = setup_test_fixture(SourceType::Confluence).await?;
 
-    let redis_url = fixture.state.config.redis.redis_url.clone();
-    let redis_client = redis::Client::open(redis_url)?;
-
-    let mut sync_manager = SyncManager::with_client(
-        fixture.mock_api.clone(),
-        redis_client,
-        fixture.sdk_client.clone(),
-        None,
-    );
+    let sync_manager =
+        SyncManager::with_client(fixture.mock_api.clone(), fixture.sdk_client.clone(), None);
 
     let event = AtlassianWebhookEvent {
         webhook_event: "page_trashed".to_string(),
@@ -454,6 +462,7 @@ async fn test_webhook_delete_confluence_page() -> Result<()> {
 
     sync_manager.handle_webhook_event(SOURCE_ID, event).await?;
 
+    fixture.sdk_client.flush_all().await?;
     let delete_events = get_queued_events_by_type(&fixture.pool, "document_deleted").await?;
     assert_eq!(delete_events.len(), 1, "Should create 1 delete event");
     assert_eq!(
@@ -468,15 +477,8 @@ async fn test_webhook_delete_confluence_page() -> Result<()> {
 async fn test_webhook_create_triggers_notify() -> Result<()> {
     let fixture = setup_test_fixture(SourceType::Jira).await?;
 
-    let redis_url = fixture.state.config.redis.redis_url.clone();
-    let redis_client = redis::Client::open(redis_url)?;
-
-    let mut sync_manager = SyncManager::with_client(
-        fixture.mock_api.clone(),
-        redis_client,
-        fixture.sdk_client.clone(),
-        None,
-    );
+    let sync_manager =
+        SyncManager::with_client(fixture.mock_api.clone(), fixture.sdk_client.clone(), None);
 
     let event = AtlassianWebhookEvent {
         webhook_event: "jira:issue_created".to_string(),
@@ -517,12 +519,8 @@ async fn test_webhook_registration_after_sync() -> Result<()> {
 
     *fixture.mock_api.webhook_register_result.lock().unwrap() = Some(42);
 
-    let redis_url = fixture.state.config.redis.redis_url.clone();
-    let redis_client = redis::Client::open(redis_url)?;
-
     let sync_manager = SyncManager::with_client(
         fixture.mock_api.clone(),
-        redis_client,
         fixture.sdk_client.clone(),
         Some("https://example.com/webhook".to_string()),
     );
@@ -562,12 +560,8 @@ async fn test_webhook_reregistration_on_missing() -> Result<()> {
     *fixture.mock_api.webhook_exists.lock().unwrap() = false;
     *fixture.mock_api.webhook_register_result.lock().unwrap() = Some(1000);
 
-    let redis_url = fixture.state.config.redis.redis_url.clone();
-    let redis_client = redis::Client::open(redis_url)?;
-
     let sync_manager = SyncManager::with_client(
         fixture.mock_api.clone(),
-        redis_client,
         fixture.sdk_client.clone(),
         Some("https://example.com/webhook".to_string()),
     );
@@ -593,6 +587,235 @@ async fn test_webhook_reregistration_on_missing() -> Result<()> {
         .await?
         .unwrap();
     assert_eq!(state["webhook_id"], 1000);
+
+    Ok(())
+}
+
+// =============================================================================
+// Permission Tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_confluence_sync_fetches_and_caches_space_permissions() -> Result<()> {
+    let fixture = setup_test_fixture(SourceType::Confluence).await?;
+
+    *fixture.mock_api.spaces.lock().unwrap() =
+        vec![make_confluence_space("100", "DEV", "Development")];
+
+    // Multiple pages in the same space — permissions should be fetched once
+    *fixture.mock_api.pages.lock().unwrap() = vec![vec![
+        make_confluence_page("1001", "Dev Page 1", "100", 1),
+        make_confluence_page("1002", "Dev Page 2", "100", 1),
+        make_confluence_page("1003", "Dev Page 3", "100", 1),
+    ]];
+
+    // Space permissions: 2 read users + 1 write-only (should be ignored)
+    fixture.mock_api.space_permissions.lock().unwrap().insert(
+        "100".to_string(),
+        vec![
+            ConfluenceSpacePermission {
+                id: "perm1".to_string(),
+                principal: ConfluencePermissionPrincipal {
+                    principal_type: "user".to_string(),
+                    id: "user-account-1".to_string(),
+                },
+                operation: ConfluencePermissionOperation {
+                    key: "read".to_string(),
+                    target: "space".to_string(),
+                },
+            },
+            ConfluenceSpacePermission {
+                id: "perm2".to_string(),
+                principal: ConfluencePermissionPrincipal {
+                    principal_type: "user".to_string(),
+                    id: "user-account-2".to_string(),
+                },
+                operation: ConfluencePermissionOperation {
+                    key: "read".to_string(),
+                    target: "space".to_string(),
+                },
+            },
+            ConfluenceSpacePermission {
+                id: "perm3".to_string(),
+                principal: ConfluencePermissionPrincipal {
+                    principal_type: "user".to_string(),
+                    id: "writer-account".to_string(),
+                },
+                operation: ConfluencePermissionOperation {
+                    key: "write".to_string(),
+                    target: "space".to_string(),
+                },
+            },
+        ],
+    );
+
+    *fixture.mock_api.bulk_users.lock().unwrap() = vec![
+        (
+            "user-account-1".to_string(),
+            "alice@example.com".to_string(),
+        ),
+        ("user-account-2".to_string(), "bob@example.com".to_string()),
+    ];
+
+    let processor = ConfluenceProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
+
+    let sync_run_id = fixture
+        .sdk_client
+        .create_sync_run(SOURCE_ID, SyncType::Full)
+        .await?;
+    let ctx = make_sync_context(
+        &fixture,
+        &sync_run_id,
+        SourceType::Confluence,
+        SyncType::Full,
+    );
+
+    let creds = test_credentials();
+    let count = processor
+        .sync_all_spaces(&creds, SOURCE_ID, &sync_run_id, &ctx, &None)
+        .await?;
+
+    assert_eq!(count, 3);
+
+    fixture.sdk_client.flush_all().await?;
+    let events = get_queued_events(&fixture.pool).await?;
+    assert_eq!(events.len(), 3);
+
+    // All 3 pages should have the same permissions
+    for event in &events {
+        let perms = &event["permissions"];
+        assert_eq!(perms["public"], false);
+        let users: Vec<String> = perms["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert!(users.contains(&"alice@example.com".to_string()));
+        assert!(users.contains(&"bob@example.com".to_string()));
+        assert_eq!(users.len(), 2, "write-only user should be excluded");
+    }
+
+    // Permissions fetched once for the space, not per page
+    let perm_calls = fixture
+        .mock_api
+        .get_calls_for("get_confluence_space_permissions");
+    assert_eq!(
+        perm_calls.len(),
+        1,
+        "permissions should be cached per space"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_jira_sync_fetches_and_caches_project_permissions() -> Result<()> {
+    let fixture = setup_test_fixture(SourceType::Jira).await?;
+
+    *fixture.mock_api.jira_projects.lock().unwrap() = vec![serde_json::json!({
+        "key": "PROJ",
+        "name": "Test Project",
+    })];
+
+    // Multiple issues in the same project — permissions should be fetched once
+    *fixture.mock_api.jira_search_response.lock().unwrap() = Some(JiraSearchResponse {
+        issues: vec![
+            make_jira_issue("PROJ-1", "First Issue", "PROJ"),
+            make_jira_issue("PROJ-2", "Second Issue", "PROJ"),
+            make_jira_issue("PROJ-3", "Third Issue", "PROJ"),
+        ],
+        is_last: true,
+        next_page_token: None,
+    });
+
+    let mut roles = std::collections::HashMap::new();
+    roles.insert(
+        "Developers".to_string(),
+        "https://test.atlassian.net/rest/api/3/project/PROJ/role/10002".to_string(),
+    );
+    *fixture.mock_api.project_roles.lock().unwrap() = roles;
+
+    fixture.mock_api.role_actors.lock().unwrap().insert(
+        "10002".to_string(),
+        JiraRoleActorsResponse {
+            name: "Developers".to_string(),
+            actors: vec![
+                JiraRoleActor {
+                    display_name: "Alice".to_string(),
+                    actor_type: "atlassian-user-role-actor".to_string(),
+                    name: None,
+                    actor_user: Some(JiraActorUser {
+                        account_id: "user-alice".to_string(),
+                    }),
+                    actor_group: None,
+                },
+                JiraRoleActor {
+                    display_name: "Engineering".to_string(),
+                    actor_type: "atlassian-group-role-actor".to_string(),
+                    name: None,
+                    actor_user: None,
+                    actor_group: Some(JiraActorGroup {
+                        name: "engineering-team".to_string(),
+                        display_name: "Engineering".to_string(),
+                        group_id: Some("group-1".to_string()),
+                    }),
+                },
+            ],
+        },
+    );
+
+    *fixture.mock_api.bulk_users.lock().unwrap() =
+        vec![("user-alice".to_string(), "alice@example.com".to_string())];
+
+    let processor = JiraProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
+
+    let sync_run_id = fixture
+        .sdk_client
+        .create_sync_run(SOURCE_ID, SyncType::Full)
+        .await?;
+    let ctx = make_sync_context(&fixture, &sync_run_id, SourceType::Jira, SyncType::Full);
+
+    let creds = test_credentials();
+    let count = processor
+        .sync_all_projects(&creds, SOURCE_ID, &sync_run_id, &ctx, &None)
+        .await?;
+
+    assert_eq!(count, 3);
+
+    fixture.sdk_client.flush_all().await?;
+    let events = get_queued_events(&fixture.pool).await?;
+    assert_eq!(events.len(), 3);
+
+    // All 3 issues should have the same permissions
+    for event in &events {
+        let perms = &event["permissions"];
+        assert_eq!(perms["public"], false);
+
+        let users: Vec<String> = perms["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert!(users.contains(&"alice@example.com".to_string()));
+
+        let groups: Vec<String> = perms["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert!(groups.contains(&"engineering-team".to_string()));
+    }
+
+    // Roles fetched once for the project, not per issue
+    let role_calls = fixture.mock_api.get_calls_for("get_jira_project_roles");
+    assert_eq!(
+        role_calls.len(),
+        1,
+        "permissions should be cached per project"
+    );
 
     Ok(())
 }
