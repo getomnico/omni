@@ -12,11 +12,12 @@ use tracing::{debug, error, info, warn};
 use crate::admin::AdminClient;
 use crate::auth::{GoogleAuth, OAuthAuth};
 use crate::cache::LruFolderCache;
+use crate::connector::build_attachment_doc_id;
 use crate::drive::{DriveClient, FileContent};
-use crate::gmail::{BatchThreadResult, GmailClient, MessageFormat};
+use crate::gmail::{BatchThreadResult, ExtractedAttachment, GmailClient, MessageFormat};
 use crate::models::{
-    mime_type_to_content_type, GmailThread, GoogleConnectorState, UserFile, WebhookChannel,
-    WebhookChannelResponse, WebhookNotification,
+    mime_type_to_content_type, AttachmentPointer, GmailThread, GoogleConnectorState, UserFile,
+    WebhookChannel, WebhookChannelResponse, WebhookNotification,
 };
 use serde_json::json;
 use shared::models::{
@@ -1914,6 +1915,99 @@ impl SyncManager {
             return false;
         }
 
+        let thread_url = gmail_thread.message_id.as_ref().map(|mid| {
+            let clean_id = mid.trim_start_matches('<').trim_end_matches('>');
+            let encoded = urlencoding::encode(clean_id);
+            format!(
+                "https://mail.google.com/mail/#search/rfc822msgid%3A{}",
+                encoded
+            )
+        });
+
+        // Extract attachments and store their content first, so the thread
+        // document can carry pointers to its attachments in metadata.extra.
+        //
+        // Within a thread, dedup by (filename, size): the same file forwarded
+        // across multiple replies would otherwise produce one document per
+        // occurrence, flooding the BM25 index with copies of identical content.
+        //
+        // We persist the canonical RFC 822 Message-ID (not Gmail's per-mailbox
+        // messageId) so the attachment can be fetched from any participating
+        // user's mailbox via `messages.list?q=rfc822msgid:<id>`.
+        let mut stored_attachments: Vec<(ExtractedAttachment, String, String)> = Vec::new();
+        let mut seen: HashSet<(String, u64)> = HashSet::new();
+        for message in &gmail_thread.messages {
+            let rfc822_msgid = match self
+                .gmail_client
+                .get_header_value(message, "Message-ID")
+                .map(|raw| {
+                    raw.trim()
+                        .trim_start_matches('<')
+                        .trim_end_matches('>')
+                        .to_string()
+                })
+                .filter(|s| !s.is_empty())
+            {
+                Some(id) => id,
+                None => {
+                    warn!(
+                        "Gmail message {} in thread {} has no Message-ID header; \
+                         skipping its attachments (cannot be fetched without canonical id)",
+                        message.id, thread_id
+                    );
+                    continue;
+                }
+            };
+
+            let attachments = self
+                .gmail_client
+                .extract_attachments(
+                    message,
+                    service_auth,
+                    user_email,
+                    ctx.sdk_client(),
+                    ctx.sync_run_id(),
+                )
+                .await;
+
+            for att in attachments {
+                if att.extracted_text.trim().is_empty() {
+                    continue;
+                }
+
+                if !seen.insert((att.filename.clone(), att.size)) {
+                    debug!(
+                        "Skipping duplicate attachment {} (size {}) in thread {}",
+                        att.filename, att.size, thread_id
+                    );
+                    continue;
+                }
+
+                let att_content_id = match ctx.store_content(&att.extracted_text).await {
+                    Ok(id) => id,
+                    Err(e) => {
+                        error!(
+                            "Failed to store attachment content for {}: {}",
+                            att.filename, e
+                        );
+                        continue;
+                    }
+                };
+
+                stored_attachments.push((att, att_content_id, rfc822_msgid.clone()));
+            }
+        }
+
+        let attachment_pointers: Vec<AttachmentPointer> = stored_attachments
+            .iter()
+            .map(|(att, _, rfc822_msgid)| AttachmentPointer {
+                id: build_attachment_doc_id(rfc822_msgid, &att.filename, att.size),
+                filename: att.filename.clone(),
+                mime_type: att.mime_type.clone(),
+                size: att.size,
+            })
+            .collect();
+
         let emit_result: Result<bool> = async {
             let content = gmail_thread
                 .aggregate_content(&self.gmail_client, ctx.sdk_client(), ctx.sync_run_id())
@@ -1930,6 +2024,7 @@ impl SyncManager {
                     ctx.source_id(),
                     &content_id,
                     known_groups,
+                    &attachment_pointers,
                 )
                 .context("build connector event")?;
             ctx.emit_event(event).await.context("emit event")?;
@@ -1949,15 +2044,6 @@ impl SyncManager {
             }
         };
 
-        let thread_url = gmail_thread.message_id.as_ref().map(|mid| {
-            let clean_id = mid.trim_start_matches('<').trim_end_matches('>');
-            let encoded = urlencoding::encode(clean_id);
-            format!(
-                "https://mail.google.com/mail/#search/rfc822msgid%3A{}",
-                encoded
-            )
-        });
-
         let mut att_users = Vec::new();
         let mut att_groups = Vec::new();
         for participant in &gmail_thread.participants {
@@ -1973,73 +2059,44 @@ impl SyncManager {
             groups: att_groups,
         };
 
-        for message in &gmail_thread.messages {
-            let attachments = self
-                .gmail_client
-                .extract_attachments(
-                    message,
-                    service_auth,
-                    user_email,
-                    ctx.sdk_client(),
-                    ctx.sync_run_id(),
-                )
-                .await;
+        for (att, att_content_id, rfc822_msgid) in stored_attachments {
+            let att_doc_id = build_attachment_doc_id(&rfc822_msgid, &att.filename, att.size);
 
-            for att in attachments {
-                if att.extracted_text.trim().is_empty() {
-                    continue;
-                }
+            let mut att_extra = HashMap::new();
+            att_extra.insert("parent_thread_id".to_string(), json!(thread_id));
 
-                let att_content_id = match ctx.store_content(&att.extracted_text).await {
-                    Ok(id) => id,
-                    Err(e) => {
-                        error!(
-                            "Failed to store attachment content for {}: {}",
-                            att.filename, e
-                        );
-                        continue;
-                    }
-                };
+            let att_metadata = DocumentMetadata {
+                title: Some(att.filename.clone()),
+                author: None,
+                created_at: None,
+                updated_at: None,
+                content_type: mime_type_to_content_type(&att.mime_type),
+                mime_type: Some(att.mime_type.clone()),
+                size: Some(att.size.to_string()),
+                url: thread_url.clone(),
+                path: Some(format!("/Gmail/{}/{}", gmail_thread.subject, att.filename)),
+                extra: Some(att_extra),
+            };
 
-                let att_doc_id =
-                    format!("{}:att:{}:{}", thread_id, att.message_id, att.attachment_id);
+            let att_event = ConnectorEvent::DocumentCreated {
+                sync_run_id: ctx.sync_run_id().to_string(),
+                source_id: ctx.source_id().to_string(),
+                document_id: att_doc_id.clone(),
+                content_id: att_content_id,
+                metadata: att_metadata,
+                permissions: att_permissions.clone(),
+                attributes: Some(HashMap::new()),
+            };
 
-                let mut att_extra = HashMap::new();
-                att_extra.insert("parent_thread_id".to_string(), json!(thread_id));
-
-                let att_metadata = DocumentMetadata {
-                    title: Some(att.filename.clone()),
-                    author: None,
-                    created_at: None,
-                    updated_at: None,
-                    content_type: mime_type_to_content_type(&att.mime_type),
-                    mime_type: Some(att.mime_type.clone()),
-                    size: Some(att.size.to_string()),
-                    url: thread_url.clone(),
-                    path: Some(format!("/Gmail/{}/{}", gmail_thread.subject, att.filename)),
-                    extra: Some(att_extra),
-                };
-
-                let att_event = ConnectorEvent::DocumentCreated {
-                    sync_run_id: ctx.sync_run_id().to_string(),
-                    source_id: ctx.source_id().to_string(),
-                    document_id: att_doc_id.clone(),
-                    content_id: att_content_id,
-                    metadata: att_metadata,
-                    permissions: att_permissions.clone(),
-                    attributes: Some(HashMap::new()),
-                };
-
-                match ctx.emit_event(att_event).await {
-                    Ok(_) => debug!(
-                        "Queued attachment {} for thread {}",
-                        att.filename, thread_id
-                    ),
-                    Err(e) => error!(
-                        "Failed to queue attachment {} for thread {}: {}",
-                        att.filename, thread_id, e
-                    ),
-                }
+            match ctx.emit_event(att_event).await {
+                Ok(_) => debug!(
+                    "Queued attachment {} for thread {}",
+                    att.filename, thread_id
+                ),
+                Err(e) => error!(
+                    "Failed to queue attachment {} for thread {}: {}",
+                    att.filename, thread_id, e
+                ),
             }
         }
 

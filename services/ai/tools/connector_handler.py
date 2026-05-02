@@ -362,10 +362,20 @@ class ConnectorToolHandler:
                     )
 
                 result = response.json()
-        except Exception as e:
-            logger.error(f"Connector action failed: {e.response.text}")
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                f"Connector action HTTP {e.response.status_code}: {e.response.text}"
+            )
             return ToolResult(
                 content=[{"type": "text", "text": f"Action failed: {e.response.text}"}],
+                is_error=True,
+            )
+        except Exception as e:
+            # Transport-level errors (ReadError, ConnectError, TimeoutException, etc.)
+            # don't carry a response. Don't try to access e.response.
+            logger.error(f"Connector action failed: {e}", exc_info=True)
+            return ToolResult(
+                content=[{"type": "text", "text": f"Action failed: {e}"}],
                 is_error=True,
             )
 

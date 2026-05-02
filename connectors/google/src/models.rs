@@ -433,6 +433,21 @@ pub struct GmailThread {
     pub message_id: Option<String>,
 }
 
+/// A back-reference from an email thread to one of its indexed attachments.
+/// Surfaced in the thread document's `metadata.extra.attachments`.
+///
+/// `id` is the attachment's external_id (composite: `{thread}:att:{msg}:{att}`),
+/// not the indexer-assigned ULID — that ULID isn't known when the thread is
+/// emitted. The AI service's `read_document` accepts either form, so the model
+/// can use this id without an extra resolution step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachmentPointer {
+    pub id: String,
+    pub filename: String,
+    pub mime_type: String,
+    pub size: u64,
+}
+
 impl GmailThread {
     pub fn new(thread_id: String) -> Self {
         Self {
@@ -631,6 +646,7 @@ impl GmailThread {
         source_id: &str,
         content_id: &str,
         known_groups: &HashSet<String>,
+        attachments: &[AttachmentPointer],
     ) -> Result<ConnectorEvent, anyhow::Error> {
         let mut extra = HashMap::new();
         extra.insert("thread_id".to_string(), json!(self.thread_id));
@@ -638,6 +654,9 @@ impl GmailThread {
             "participants".to_string(),
             json!(self.participants.iter().collect::<Vec<_>>()),
         );
+        if !attachments.is_empty() {
+            extra.insert("attachments".to_string(), json!(attachments));
+        }
 
         // Parse latest date for metadata
         let updated_at = if !self.latest_date.is_empty() {
@@ -1218,5 +1237,73 @@ mod tests {
     fn test_gmail_thread_new_has_no_message_id() {
         let thread = GmailThread::new("t1".to_string());
         assert!(thread.message_id.is_none());
+    }
+
+    #[test]
+    fn test_gmail_thread_to_connector_event_includes_attachment_pointers() {
+        let mut thread = GmailThread::new("thread123".to_string());
+        thread.subject = "Q3 Report".to_string();
+        thread.total_messages = 1;
+        thread.participants.insert("alice@co.com".to_string());
+
+        let attachments = vec![AttachmentPointer {
+            id: "CABc123%40mail.gmail.com:att:report.pdf:12345".to_string(),
+            filename: "report.pdf".to_string(),
+            mime_type: "application/pdf".to_string(),
+            size: 12345,
+        }];
+
+        let event = thread
+            .to_connector_event(
+                "sync1",
+                "source1",
+                "content1",
+                &HashSet::new(),
+                &attachments,
+            )
+            .unwrap();
+
+        match event {
+            ConnectorEvent::DocumentCreated { metadata, .. } => {
+                let extra = metadata.extra.expect("extra populated");
+                let arr = extra
+                    .get("attachments")
+                    .expect("attachments key present")
+                    .as_array()
+                    .expect("attachments is array");
+                assert_eq!(arr.len(), 1);
+                assert_eq!(
+                    arr[0]["id"],
+                    "CABc123%40mail.gmail.com:att:report.pdf:12345"
+                );
+                assert_eq!(arr[0]["filename"], "report.pdf");
+                assert_eq!(arr[0]["mime_type"], "application/pdf");
+                assert_eq!(arr[0]["size"], 12345);
+            }
+            _ => panic!("Expected DocumentCreated event"),
+        }
+    }
+
+    #[test]
+    fn test_gmail_thread_to_connector_event_omits_attachments_when_empty() {
+        let mut thread = GmailThread::new("thread123".to_string());
+        thread.subject = "No attachments".to_string();
+        thread.total_messages = 1;
+        thread.participants.insert("alice@co.com".to_string());
+
+        let event = thread
+            .to_connector_event("sync1", "source1", "content1", &HashSet::new(), &[])
+            .unwrap();
+
+        match event {
+            ConnectorEvent::DocumentCreated { metadata, .. } => {
+                let extra = metadata.extra.expect("extra populated");
+                assert!(
+                    extra.get("attachments").is_none(),
+                    "attachments key should be absent when no attachments were indexed"
+                );
+            }
+            _ => panic!("Expected DocumentCreated event"),
+        }
     }
 }
