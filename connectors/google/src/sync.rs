@@ -12,6 +12,7 @@ use tracing::{debug, error, info, warn};
 use crate::admin::AdminClient;
 use crate::auth::{GoogleAuth, OAuthAuth};
 use crate::cache::LruFolderCache;
+use crate::connector::build_attachment_doc_id;
 use crate::drive::{DriveClient, FileContent};
 use crate::gmail::{BatchThreadResult, ExtractedAttachment, GmailClient, MessageFormat};
 use crate::models::{
@@ -1961,7 +1962,7 @@ impl SyncManager {
         let attachment_pointers: Vec<AttachmentPointer> = stored_attachments
             .iter()
             .map(|(att, _)| AttachmentPointer {
-                id: format!("{}:att:{}:{}", thread_id, att.message_id, att.attachment_id),
+                id: build_attachment_doc_id(thread_id, &att.message_id, &att.filename, att.size),
                 filename: att.filename.clone(),
                 mime_type: att.mime_type.clone(),
                 size: att.size,
@@ -2020,7 +2021,8 @@ impl SyncManager {
         };
 
         for (att, att_content_id) in stored_attachments {
-            let att_doc_id = format!("{}:att:{}:{}", thread_id, att.message_id, att.attachment_id);
+            let att_doc_id =
+                build_attachment_doc_id(thread_id, &att.message_id, &att.filename, att.size);
 
             let mut att_extra = HashMap::new();
             att_extra.insert("parent_thread_id".to_string(), json!(thread_id));

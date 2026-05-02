@@ -17,42 +17,91 @@ use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
 use tracing::debug;
 
-fn parse_attachment_doc_id(composite: &str) -> Result<(&str, &str)> {
+/// Build the composite external_id we use for a Gmail attachment document.
+///
+/// Format: `{thread_id}:att:{message_id}:{url_encoded_filename}:{size}`.
+/// Last two segments are stable across syncs; Gmail's per-request
+/// `attachmentId` is intentionally NOT in the id because it changes between
+/// `messages.get` calls and would cause the indexer to mint a fresh row on
+/// every sync.
+pub fn build_attachment_doc_id(
+    thread_id: &str,
+    message_id: &str,
+    filename: &str,
+    size: u64,
+) -> String {
+    format!(
+        "{}:att:{}:{}:{}",
+        thread_id,
+        message_id,
+        urlencoding::encode(filename),
+        size,
+    )
+}
+
+pub struct ParsedAttachmentDocId {
+    pub message_id: String,
+    pub filename: String,
+    pub size: u64,
+}
+
+fn parse_attachment_doc_id(composite: &str) -> Result<ParsedAttachmentDocId> {
     let (_, right) = composite
         .split_once(":att:")
         .ok_or_else(|| anyhow!("Invalid attachment id (missing ':att:'): {}", composite))?;
-    let (message_id, attachment_id) = right.split_once(':').ok_or_else(|| {
+
+    // Right side is `{message_id}:{enc_filename}:{size}`. Peel from the right —
+    // the size segment is unambiguous (no colons), the filename is
+    // url-encoded so it has no colons either, and message_id is whatever's left.
+    let (left_of_size, size_str) = right.rsplit_once(':').ok_or_else(|| {
         anyhow!(
-            "Invalid attachment id (expected message_id:attachment_id after ':att:'): {}",
+            "Invalid attachment id (expected message_id:filename:size after ':att:'): {}",
             composite
         )
     })?;
-    if message_id.is_empty() || attachment_id.is_empty() {
+    let (message_id, enc_filename) = left_of_size.rsplit_once(':').ok_or_else(|| {
+        anyhow!(
+            "Invalid attachment id (expected message_id:filename:size after ':att:'): {}",
+            composite
+        )
+    })?;
+    if message_id.is_empty() || enc_filename.is_empty() || size_str.is_empty() {
         return Err(anyhow!(
-            "Invalid attachment id (empty message_id or attachment_id): {}",
+            "Invalid attachment id (empty message_id, filename, or size): {}",
             composite
         ));
     }
-    Ok((message_id, attachment_id))
+    let size = size_str
+        .parse::<u64>()
+        .with_context(|| format!("Invalid attachment id (size not a number): {}", composite))?;
+    let filename = urlencoding::decode(enc_filename)
+        .with_context(|| {
+            format!(
+                "Invalid attachment id (filename not url-decodable): {}",
+                composite
+            )
+        })?
+        .into_owned();
+    Ok(ParsedAttachmentDocId {
+        message_id: message_id.to_string(),
+        filename,
+        size,
+    })
 }
 
-fn find_attachment_part(part: &MessagePart, attachment_id: &str) -> Option<(String, String)> {
+fn find_attachment_part_by_name<'a>(
+    part: &'a MessagePart,
+    filename: &str,
+    size: u64,
+) -> Option<&'a MessagePart> {
     if let Some(body) = &part.body {
-        if body.attachment_id.as_deref() == Some(attachment_id) {
-            let filename = part
-                .filename
-                .clone()
-                .unwrap_or_else(|| "attachment".to_string());
-            let mime_type = part
-                .mime_type
-                .clone()
-                .unwrap_or_else(|| "application/octet-stream".to_string());
-            return Some((filename, mime_type));
+        if part.filename.as_deref() == Some(filename) && body.size == Some(size) {
+            return Some(part);
         }
     }
     if let Some(parts) = &part.parts {
         for child in parts {
-            if let Some(found) = find_attachment_part(child, attachment_id) {
+            if let Some(found) = find_attachment_part_by_name(child, filename, size) {
                 return Some(found);
             }
         }
@@ -170,7 +219,11 @@ impl GoogleConnector {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Missing required parameter: file_id"))?;
 
-        let (message_id, attachment_id) = parse_attachment_doc_id(composite_id)?;
+        let ParsedAttachmentDocId {
+            message_id,
+            filename,
+            size,
+        } = parse_attachment_doc_id(composite_id)?;
 
         let principal_email = creds
             .principal_email
@@ -187,7 +240,7 @@ impl GoogleConnector {
             .get_message(
                 &google_auth,
                 principal_email,
-                message_id,
+                &message_id,
                 MessageFormat::Full,
             )
             .await
@@ -197,17 +250,37 @@ impl GoogleConnector {
             .payload
             .as_ref()
             .ok_or_else(|| anyhow!("Message {} has no payload", message_id))?;
-        let (filename, mime_type) =
-            find_attachment_part(payload, attachment_id).ok_or_else(|| {
+        let part = find_attachment_part_by_name(payload, &filename, size).ok_or_else(|| {
+            anyhow!(
+                "Attachment '{}' (size {}) not found in message {}",
+                filename,
+                size,
+                message_id
+            )
+        })?;
+        let live_attachment_id = part
+            .body
+            .as_ref()
+            .and_then(|b| b.attachment_id.as_deref())
+            .ok_or_else(|| {
                 anyhow!(
-                    "Attachment {} not found in message {}",
-                    attachment_id,
+                    "Attachment '{}' in message {} has no attachmentId",
+                    filename,
                     message_id
                 )
             })?;
+        let mime_type = part
+            .mime_type
+            .clone()
+            .unwrap_or_else(|| "application/octet-stream".to_string());
 
         let bytes = gmail
-            .download_attachment(&google_auth, principal_email, message_id, attachment_id)
+            .download_attachment(
+                &google_auth,
+                principal_email,
+                &message_id,
+                live_attachment_id,
+            )
             .await?;
 
         let resp = Response::builder()
@@ -448,28 +521,54 @@ impl Connector for GoogleConnector {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_attachment_doc_id;
+    use super::{build_attachment_doc_id, parse_attachment_doc_id};
 
     #[test]
-    fn parses_valid_composite_id() {
-        let (msg, att) = parse_attachment_doc_id("thread123:att:msg456:att789").unwrap();
-        assert_eq!(msg, "msg456");
-        assert_eq!(att, "att789");
+    fn round_trips_simple_filename() {
+        let id = build_attachment_doc_id("thread123", "msg456", "report.pdf", 12345);
+        let parsed = parse_attachment_doc_id(&id).unwrap();
+        assert_eq!(parsed.message_id, "msg456");
+        assert_eq!(parsed.filename, "report.pdf");
+        assert_eq!(parsed.size, 12345);
+    }
+
+    #[test]
+    fn round_trips_filename_with_special_chars() {
+        // Colons, slashes, spaces, unicode all need to survive encode/decode.
+        for filename in [
+            "weird:name.pdf",
+            "path/with slashes.docx",
+            "résumé final.pdf",
+            "name with spaces (1).pdf",
+        ] {
+            let id = build_attachment_doc_id("t", "m", filename, 42);
+            let parsed = parse_attachment_doc_id(&id).unwrap();
+            assert_eq!(parsed.message_id, "m");
+            assert_eq!(parsed.filename, filename);
+            assert_eq!(parsed.size, 42);
+        }
     }
 
     #[test]
     fn rejects_missing_att_marker() {
-        assert!(parse_attachment_doc_id("thread123:msg456:att789").is_err());
+        assert!(parse_attachment_doc_id("thread123:msg456:report.pdf:1234").is_err());
     }
 
     #[test]
-    fn rejects_missing_attachment_id() {
+    fn rejects_too_few_segments() {
         assert!(parse_attachment_doc_id("thread123:att:msg456").is_err());
+        assert!(parse_attachment_doc_id("thread123:att:msg456:report.pdf").is_err());
+    }
+
+    #[test]
+    fn rejects_non_numeric_size() {
+        assert!(parse_attachment_doc_id("thread123:att:msg456:report.pdf:notanumber").is_err());
     }
 
     #[test]
     fn rejects_empty_segments() {
-        assert!(parse_attachment_doc_id("thread123:att::att789").is_err());
-        assert!(parse_attachment_doc_id("thread123:att:msg456:").is_err());
+        assert!(parse_attachment_doc_id("thread123:att::report.pdf:1234").is_err());
+        assert!(parse_attachment_doc_id("thread123:att:msg456::1234").is_err());
+        assert!(parse_attachment_doc_id("thread123:att:msg456:report.pdf:").is_err());
     }
 }
