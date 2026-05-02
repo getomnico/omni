@@ -1247,7 +1247,7 @@ mod tests {
         thread.participants.insert("alice@co.com".to_string());
 
         let attachments = vec![AttachmentPointer {
-            id: "thread123:att:msg1:report.pdf:12345".to_string(),
+            id: "CABc123%40mail.gmail.com:att:report.pdf:12345".to_string(),
             filename: "report.pdf".to_string(),
             mime_type: "application/pdf".to_string(),
             size: 12345,
@@ -1272,7 +1272,10 @@ mod tests {
                     .as_array()
                     .expect("attachments is array");
                 assert_eq!(arr.len(), 1);
-                assert_eq!(arr[0]["id"], "thread123:att:msg1:report.pdf:12345");
+                assert_eq!(
+                    arr[0]["id"],
+                    "CABc123%40mail.gmail.com:att:report.pdf:12345"
+                );
                 assert_eq!(arr[0]["filename"], "report.pdf");
                 assert_eq!(arr[0]["mime_type"], "application/pdf");
                 assert_eq!(arr[0]["size"], 12345);

@@ -1929,12 +1929,36 @@ impl SyncManager {
         //
         // Within a thread, dedup by (filename, size): the same file forwarded
         // across multiple replies would otherwise produce one document per
-        // occurrence (different message_id → different composite), flooding
-        // the BM25 index with copies of identical content. First occurrence
-        // wins; the kept message_id is the one fetch_file will use.
-        let mut stored_attachments: Vec<(ExtractedAttachment, String)> = Vec::new();
+        // occurrence, flooding the BM25 index with copies of identical content.
+        //
+        // We persist the canonical RFC 822 Message-ID (not Gmail's per-mailbox
+        // messageId) so the attachment can be fetched from any participating
+        // user's mailbox via `messages.list?q=rfc822msgid:<id>`.
+        let mut stored_attachments: Vec<(ExtractedAttachment, String, String)> = Vec::new();
         let mut seen: HashSet<(String, u64)> = HashSet::new();
         for message in &gmail_thread.messages {
+            let rfc822_msgid = match self
+                .gmail_client
+                .get_header_value(message, "Message-ID")
+                .map(|raw| {
+                    raw.trim()
+                        .trim_start_matches('<')
+                        .trim_end_matches('>')
+                        .to_string()
+                })
+                .filter(|s| !s.is_empty())
+            {
+                Some(id) => id,
+                None => {
+                    warn!(
+                        "Gmail message {} in thread {} has no Message-ID header; \
+                         skipping its attachments (cannot be fetched without canonical id)",
+                        message.id, thread_id
+                    );
+                    continue;
+                }
+            };
+
             let attachments = self
                 .gmail_client
                 .extract_attachments(
@@ -1970,14 +1994,14 @@ impl SyncManager {
                     }
                 };
 
-                stored_attachments.push((att, att_content_id));
+                stored_attachments.push((att, att_content_id, rfc822_msgid.clone()));
             }
         }
 
         let attachment_pointers: Vec<AttachmentPointer> = stored_attachments
             .iter()
-            .map(|(att, _)| AttachmentPointer {
-                id: build_attachment_doc_id(thread_id, &att.message_id, &att.filename, att.size),
+            .map(|(att, _, rfc822_msgid)| AttachmentPointer {
+                id: build_attachment_doc_id(rfc822_msgid, &att.filename, att.size),
                 filename: att.filename.clone(),
                 mime_type: att.mime_type.clone(),
                 size: att.size,
@@ -2035,9 +2059,8 @@ impl SyncManager {
             groups: att_groups,
         };
 
-        for (att, att_content_id) in stored_attachments {
-            let att_doc_id =
-                build_attachment_doc_id(thread_id, &att.message_id, &att.filename, att.size);
+        for (att, att_content_id, rfc822_msgid) in stored_attachments {
+            let att_doc_id = build_attachment_doc_id(&rfc822_msgid, &att.filename, att.size);
 
             let mut att_extra = HashMap::new();
             att_extra.insert("parent_thread_id".to_string(), json!(thread_id));
