@@ -8,13 +8,14 @@ use sqlx::{FromRow, PgPool};
 use std::collections::{HashMap, HashSet};
 use tracing::debug;
 
-/// Extra candidates fetched beyond offset+limit so that recency re-ranking
-/// doesn't miss relevant results.
-const CANDIDATE_PADDING: i64 = 200;
+/// Maximum candidates considered for any BM25 query path. TopN pushes this
+/// limit into the Tantivy index scan, avoiding full result-set materialisation.
+/// Shared by `models::SearchRequest::dedupe_fetch_limit`.
+pub(crate) const CANDIDATE_LIMIT: i64 = 10_000;
 
-/// Maximum candidates considered for facet counts. TopN pushes this limit into
-/// the Tantivy index scan, avoiding full result-set materialisation.
-const FACET_CANDIDATE_LIMIT: i64 = 10_000;
+/// Minimum BM25 score (as a fraction of the top match) that a result must
+/// reach to be considered relevant before candidate results leave SQL.
+pub(crate) const MIN_SCORE_RATIO: f64 = 0.15;
 
 #[derive(FromRow)]
 pub struct SearchHit {
@@ -25,6 +26,21 @@ pub struct SearchHit {
     pub content_snippets: Option<Vec<String>>,
 }
 
+/// Tokenized query and pre-formatted filter clause shared by every BM25 query
+/// path (search, count, facets). Caller binds in order: `$1 = tantivy_query`
+/// (and optionally `$2 = original query` if `starting_param_idx` was 3 to
+/// reserve a slot for ts_headline), then `source_ids`, optional `content_types`,
+/// optional `document_id`, then any caller-specific tail (limit/offset/etc).
+struct Bm25Filters {
+    tantivy_query: String,
+    /// Either empty or a `" AND <expr> AND ..."` fragment to splice into a
+    /// SQL WHERE that already has a leading `id @@@ pdb.parse(...)` predicate.
+    filter_where: String,
+    /// Next placeholder index available for caller-specific binds
+    /// (e.g. `LIMIT $N`).
+    next_param_idx: usize,
+}
+
 pub struct SearchDocumentRepository {
     pool: PgPool,
 }
@@ -32,6 +48,91 @@ pub struct SearchDocumentRepository {
 impl SearchDocumentRepository {
     pub fn new(pool: &PgPool) -> Self {
         Self { pool: pool.clone() }
+    }
+
+    /// Tokenize the query and build the filter clause shared by all BM25
+    /// query paths. `starting_param_idx` is the first placeholder caller
+    /// reserves AFTER `$1 = tantivy_query` (and optional `$2 = original
+    /// query` for ts_headline) — so 2 for count/facets, 3 for search.
+    /// `include_document_id` toggles whether `document_id` is wired in
+    /// (search and count support it; facets do not).
+    async fn build_bm25_filters(
+        &self,
+        query: &str,
+        source_ids: &[String],
+        content_types: Option<&[String]>,
+        attribute_filters: Option<&HashMap<String, AttributeFilter>>,
+        user_email: Option<&str>,
+        user_groups: &[String],
+        document_id: Option<&str>,
+        date_filter: Option<&DateFilter>,
+        person_filters: Option<&[String]>,
+        starting_param_idx: usize,
+    ) -> Result<Bm25Filters, DatabaseError> {
+        // Tokenize via ParadeDB: splits on non-alphanumeric, ASCII-folds.
+        // No stemming or stopwords — dropping stopwords would remove valid
+        // words in non-English languages (e.g. German "die", "in", "was").
+        let raw_terms: Vec<String> =
+            sqlx::query_scalar("SELECT unnest($1::pdb.simple('ascii_folding=true')::text[])")
+                .bind(query)
+                .fetch_all(&self.pool)
+                .await?;
+
+        let mut seen = HashSet::new();
+        // Cap at 12 terms — without stopword removal, longer queries produce
+        // more tokens, and each adds field-boosted clauses to the Tantivy
+        // query string. Bounds query complexity.
+        let terms: Vec<String> = raw_terms
+            .into_iter()
+            .filter(|t| seen.insert(t.clone()))
+            .take(12)
+            .collect();
+
+        let tantivy_query = build_tantivy_query(&terms, query);
+
+        let mut param_idx = starting_param_idx;
+        let mut filters = Vec::new();
+        build_common_filters(
+            &mut filters,
+            &mut param_idx,
+            source_ids,
+            content_types,
+            attribute_filters,
+            user_email,
+            user_groups,
+            date_filter,
+        );
+
+        if document_id.is_some() {
+            filters.push(format!("id = ${param_idx}"));
+            param_idx += 1;
+        }
+
+        // Person filters: strict author filtering via BM25 index on metadata.
+        if let Some(persons) = person_filters {
+            let conditions: Vec<String> = persons
+                .iter()
+                .map(|p| {
+                    let escaped = p.replace('\'', "''");
+                    format!("metadata ||| 'author:{escaped}'")
+                })
+                .collect();
+            if !conditions.is_empty() {
+                filters.push(format!("({})", conditions.join(" OR ")));
+            }
+        }
+
+        let filter_where = if filters.is_empty() {
+            String::new()
+        } else {
+            format!(" AND {}", filters.join(" AND "))
+        };
+
+        Ok(Bm25Filters {
+            tantivy_query,
+            filter_where,
+            next_param_idx: param_idx,
+        })
     }
 
     pub async fn search(
@@ -70,74 +171,32 @@ impl SearchDocumentRepository {
                 .await;
         }
 
-        // Tokenize query via ParadeDB: splits on non-alphanumeric, ASCII-folds.
-        // No stemming or stopwords — dropping stopwords would remove valid words
-        // in non-English languages (e.g. German "die", "in", "was").
-        let raw_terms: Vec<String> =
-            sqlx::query_scalar("SELECT unnest($1::pdb.simple('ascii_folding=true')::text[])")
-                .bind(query)
-                .fetch_all(&self.pool)
-                .await?;
+        // $1 = tantivy_query, $2 = original query (reserved for ts_headline),
+        // $3+ = filter binds, then candidate_limit/limit/offset/recency.
+        let Bm25Filters {
+            tantivy_query,
+            filter_where,
+            next_param_idx,
+        } = self
+            .build_bm25_filters(
+                query,
+                source_ids,
+                content_types,
+                attribute_filters,
+                user_email,
+                user_groups,
+                document_id,
+                date_filter,
+                person_filters,
+                3,
+            )
+            .await?;
 
-        let mut seen = HashSet::new();
-        // Cap at 12 terms. Without stopword removal longer queries produce more
-        // tokens than before. Each term adds field-boosted clauses to the Tantivy
-        // query string, so this keeps query complexity bounded.
-        let terms: Vec<String> = raw_terms
-            .into_iter()
-            .filter(|t| seen.insert(t.clone()))
-            .take(12)
-            .collect();
-
-        let tantivy_query = build_tantivy_query(&terms, query);
-
-        // Bind params: $1 = tantivy query string, $2 = original query (for snippets), then filters
-        let mut param_idx = 3;
-
-        let mut filters = Vec::new();
-        build_common_filters(
-            &mut filters,
-            &mut param_idx,
-            source_ids,
-            content_types,
-            attribute_filters,
-            user_email,
-            user_groups,
-            date_filter,
-        );
-
-        if document_id.is_some() {
-            filters.push(format!("id = ${}", param_idx));
-            param_idx += 1;
-        }
-
-        // Person filters: strict author filtering via BM25 index on metadata
-        if let Some(persons) = person_filters {
-            let conditions: Vec<String> = persons
-                .iter()
-                .map(|p| {
-                    let escaped = p.replace('\'', "''");
-                    format!("metadata ||| 'author:{escaped}'")
-                })
-                .collect();
-            if !conditions.is_empty() {
-                filters.push(format!("({})", conditions.join(" OR ")));
-            }
-        }
-
-        let filter_where = if filters.is_empty() {
-            String::new()
-        } else {
-            format!(" AND {}", filters.join(" AND "))
-        };
-
-        // Bind order: $1=tantivy_query, $2=original_query, filters...,
-        // candidate_limit, limit, offset, recency_weight, recency_half_life
-        let candidate_limit_idx = param_idx;
-        let limit_idx = param_idx + 1;
-        let offset_idx = param_idx + 2;
-        let weight_idx = param_idx + 3;
-        let half_life_idx = param_idx + 4;
+        let candidate_limit_idx = next_param_idx;
+        let limit_idx = next_param_idx + 1;
+        let offset_idx = next_param_idx + 2;
+        let weight_idx = next_param_idx + 3;
+        let half_life_idx = next_param_idx + 4;
 
         let recency_expr = format!(
             "(1.0 + ${w}::double precision * EXP(-EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - COALESCE(\
@@ -149,20 +208,32 @@ impl SearchDocumentRepository {
             h = half_life_idx,
         );
 
+        // `candidates` is MATERIALIZED so Postgres evaluates it once and so
+        // the per-row `max_score` window agrees with the rows we filter on.
+        // Without it, the CTE can be inlined and re-executed, and Tantivy's
+        // TopN may iterate segments in a different order each time — producing
+        // pages that don't agree across requests.
         let full_query = format!(
             r#"
-            WITH candidates AS (
-                SELECT id, pdb.score(id) as bm25_score
+            WITH candidates AS MATERIALIZED (
+                SELECT id,
+                       pdb.score(id) as bm25_score,
+                       MAX(pdb.score(id)) OVER () as max_bm25_score
                 FROM documents
                 WHERE id @@@ pdb.parse($1, lenient => true){filter_where}
-                ORDER BY bm25_score DESC
+                ORDER BY bm25_score DESC, id
                 LIMIT ${candidate_limit_idx}
             ),
+            relevant AS (
+                SELECT id, bm25_score
+                FROM candidates
+                WHERE bm25_score >= {min_score_ratio}::real * COALESCE(max_bm25_score, 0)
+            ),
             ranked AS (
-                SELECT c.id, (c.bm25_score * {recency_expr}) as score
-                FROM candidates c
-                JOIN documents d ON d.id = c.id
-                ORDER BY score DESC
+                SELECT r.id, (r.bm25_score * {recency_expr}) as score
+                FROM relevant r
+                JOIN documents d ON d.id = r.id
+                ORDER BY score DESC, id
                 LIMIT ${limit_idx} OFFSET ${offset_idx}
             )
             SELECT r.id, r.score,
@@ -175,14 +246,28 @@ impl SearchDocumentRepository {
                    )] as content_snippets
             FROM ranked r
             JOIN documents d ON d.id = r.id
-            ORDER BY r.score DESC"#,
+            ORDER BY r.score DESC, r.id"#,
             filter_where = filter_where,
             recency_expr = recency_expr,
             candidate_limit_idx = candidate_limit_idx,
             limit_idx = limit_idx,
             offset_idx = offset_idx,
+            min_score_ratio = MIN_SCORE_RATIO,
         );
-        debug!("Full search query: {}", full_query);
+        debug!(
+            sql = %full_query,
+            tantivy_query = %tantivy_query,
+            original_query = query,
+            source_ids = ?source_ids,
+            content_types = ?content_types,
+            document_id = ?document_id,
+            candidate_limit = CANDIDATE_LIMIT,
+            limit = limit,
+            offset = offset,
+            recency_boost_weight = recency_boost_weight,
+            recency_half_life_days = recency_half_life_days,
+            "fulltext search query"
+        );
 
         let mut query_builder = sqlx::query_as::<_, SearchHit>(&full_query)
             .bind(&tantivy_query)
@@ -200,16 +285,16 @@ impl SearchDocumentRepository {
             query_builder = query_builder.bind(doc_id);
         }
 
-        let candidate_limit = offset + limit + CANDIDATE_PADDING;
+        // The candidate cap is fixed (not page-derived) so that the relevance
+        // threshold sees the same MAX(bm25_score) across pages of one query.
         query_builder = query_builder
-            .bind(candidate_limit)
+            .bind(CANDIDATE_LIMIT)
             .bind(limit)
             .bind(offset)
             .bind(recency_boost_weight as f64)
             .bind(recency_half_life_days as f64);
 
         let results = query_builder.fetch_all(&self.pool).await?;
-
         Ok(results)
     }
 
@@ -355,58 +440,27 @@ impl SearchDocumentRepository {
             return Ok(rows_to_facets(rows));
         }
 
-        // Tokenize query via ParadeDB — same pipeline as search()
-        let raw_terms: Vec<String> =
-            sqlx::query_scalar("SELECT unnest($1::pdb.simple('ascii_folding=true')::text[])")
-                .bind(query)
-                .fetch_all(&self.pool)
-                .await?;
+        // $1 = tantivy_query, $2+ = filter binds, then facet_limit.
+        let Bm25Filters {
+            tantivy_query,
+            filter_where,
+            next_param_idx,
+        } = self
+            .build_bm25_filters(
+                query,
+                source_ids,
+                content_types,
+                attribute_filters,
+                user_email,
+                user_groups,
+                None, // facets do not narrow to a single document
+                date_filter,
+                person_filters,
+                2,
+            )
+            .await?;
 
-        let mut seen = HashSet::new();
-        // Cap at 12 terms — same reasoning as search().
-        let terms: Vec<String> = raw_terms
-            .into_iter()
-            .filter(|t| seen.insert(t.clone()))
-            .take(12)
-            .collect();
-
-        let tantivy_query = build_tantivy_query(&terms, query);
-
-        // Bind params: $1 = tantivy query string, then filters
-        let mut param_idx = 2;
-
-        let mut filters = Vec::new();
-        build_common_filters(
-            &mut filters,
-            &mut param_idx,
-            source_ids,
-            content_types,
-            attribute_filters,
-            user_email,
-            user_groups,
-            date_filter,
-        );
-
-        if let Some(persons) = person_filters {
-            let conditions: Vec<String> = persons
-                .iter()
-                .map(|p| {
-                    let escaped = p.replace('\'', "''");
-                    format!("metadata ||| 'author:{escaped}'")
-                })
-                .collect();
-            if !conditions.is_empty() {
-                filters.push(format!("({})", conditions.join(" OR ")));
-            }
-        }
-
-        let filter_where = if filters.is_empty() {
-            String::new()
-        } else {
-            format!(" AND {}", filters.join(" AND "))
-        };
-
-        let facet_limit_idx = param_idx;
+        let facet_limit_idx = next_param_idx;
 
         let query_str = format!(
             r#"
@@ -439,7 +493,7 @@ impl SearchDocumentRepository {
             }
         }
 
-        query_builder = query_builder.bind(FACET_CANDIDATE_LIMIT);
+        query_builder = query_builder.bind(CANDIDATE_LIMIT);
 
         let facet_rows = query_builder.fetch_all(&self.pool).await?;
         Ok(rows_to_facets(facet_rows))

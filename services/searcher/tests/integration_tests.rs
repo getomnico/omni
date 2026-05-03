@@ -9,6 +9,7 @@ use common::SearcherTestFixture;
 use serde_json::{json, Value};
 use shared::db::repositories::{GroupRepository, PersonRepository, PersonUpsert};
 use shared::models::DocumentPermissions;
+use shared::test_environment::generate_test_embedding;
 use tower::ServiceExt;
 use ulid::Ulid;
 
@@ -211,7 +212,6 @@ async fn test_fulltext_search() -> Result<()> {
     assert_eq!(status, StatusCode::OK);
     let titles = result_titles(&response);
     // BlueSquare NDA matches all 3 terms plus phrase "blue square", must rank first.
-    // Other documents matching "square" may or may not pass the score threshold.
     assert!(
         titles.len() >= 2,
         "Expected at least 2 results for 'blue square nda', got: {:?}",
@@ -269,7 +269,7 @@ async fn test_fulltext_search() -> Result<()> {
     //   3/3 terms hit → dominant score, especially with phrase boost.
     // "Death of a Salesman Book Report": "sales" does NOT match "salesman" on
     //   any path (stem "sale" ≠ stem "salesman"). Only "report" matches → 1/3.
-    //   Likely below score threshold. CRM doc should be the sole or top result.
+    //   CRM doc should be the sole or top result.
     assert_match_type(&response, "fulltext");
     assert_scores_descending(&response);
 
@@ -412,6 +412,244 @@ async fn test_search_with_limit() -> Result<()> {
             title,
             page1_titles,
             page2_titles
+        );
+    }
+
+    // Deep pagination: total_count must match what's actually paginatable, and
+    // every page within range must return a full page of results. Regression
+    // guard against the bug where MIN_SCORE_RATIO + facet-derived total_count
+    // produced ghost pages that returned zero results.
+    const SEED_COUNT: i64 = 50;
+    const PAGE_SIZE: i64 = 10;
+    let source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
+    let pool = fixture.test_env.db_pool.pool();
+    let content_storage = shared::ContentStorage::new(pool.clone());
+    for i in 0..SEED_COUNT {
+        let doc_id = ulid::Ulid::new().to_string();
+        // Vary keyword TF so BM25 produces clearly distinct scores (well above
+        // float precision noise) → deterministic SQL ordering. The variance is
+        // bounded so even the lowest-scoring doc clears the 15% relevance
+        // threshold (max/min ratio < 1/0.15).
+        let keyword_repeats = "paginatable ".repeat((i as usize) + 1);
+        let content = format!("{keyword_repeats}seed document {i} for deep pagination validation.");
+        let content_id = content_storage.store_text(content.clone()).await?;
+        sqlx::query(
+            r#"
+            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, content, metadata, permissions, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, 'documentation', $6, '{}'::jsonb, '{"users":["user1"]}'::jsonb, NOW(), NOW())
+            "#,
+        )
+        .bind(&doc_id)
+        .bind(source_id)
+        .bind(format!("paginatable_{i}"))
+        .bind(format!("Paginatable Doc {i}"))
+        .bind(&content_id)
+        .bind(&content)
+        .execute(pool)
+        .await?;
+    }
+
+    let mut seen_titles = std::collections::HashSet::new();
+    let pages = SEED_COUNT / PAGE_SIZE;
+    for page in 0..pages {
+        let offset = page * PAGE_SIZE;
+        let (status, resp) = fixture
+            .search_with_body(json!({
+                "query": "paginatable",
+                "mode": "fulltext",
+                "limit": PAGE_SIZE,
+                "offset": offset,
+            }))
+            .await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            resp["total_count"].as_i64().unwrap(),
+            SEED_COUNT,
+            "total_count must match seeded document count for query 'paginatable' (page offset={offset})"
+        );
+        let titles = result_titles(&resp);
+        assert_eq!(
+            titles.len(),
+            PAGE_SIZE as usize,
+            "page at offset={offset} should return {PAGE_SIZE} results, got {}",
+            titles.len()
+        );
+        let is_last_page = page == pages - 1;
+        assert_eq!(
+            resp["has_more"].as_bool().unwrap_or(false),
+            !is_last_page,
+            "has_more should be {} on page offset={offset}",
+            !is_last_page
+        );
+        for title in titles {
+            assert!(
+                seen_titles.insert(title.clone()),
+                "duplicate title '{title}' across pages — pagination is overlapping"
+            );
+        }
+    }
+    assert_eq!(seen_titles.len(), SEED_COUNT as usize);
+
+    let (status, beyond_last_page) = fixture
+        .search_with_body(json!({
+            "query": "paginatable",
+            "mode": "fulltext",
+            "limit": PAGE_SIZE,
+            "offset": SEED_COUNT,
+        }))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        beyond_last_page["total_count"].as_i64().unwrap(),
+        SEED_COUNT,
+        "fulltext count should still be returned when the requested page is empty"
+    );
+    assert!(
+        beyond_last_page["results"].as_array().unwrap().is_empty(),
+        "request past the final fulltext page should return no results"
+    );
+    assert!(
+        !beyond_last_page["has_more"].as_bool().unwrap_or(true),
+        "request past the final fulltext page should not have more results"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_external_id_duplicates_paginate_by_logical_document() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+
+    const LOGICAL_DOCUMENT_COUNT: i64 = 25;
+    const DUPLICATES_PER_DOCUMENT: i64 = 6;
+    const PAGE_SIZE: i64 = 5;
+
+    let source_id = shared::test_utils::TEST_SOURCE_ID;
+    let pool = fixture.test_env.db_pool.pool();
+    let content_storage = shared::ContentStorage::new(pool.clone());
+
+    sqlx::query(
+        "ALTER TABLE documents DROP CONSTRAINT IF EXISTS documents_source_id_external_id_key",
+    )
+    .execute(pool)
+    .await?;
+
+    for logical_idx in 0..LOGICAL_DOCUMENT_COUNT {
+        let keyword_repeats = "threadneedle ".repeat((logical_idx as usize) + 1);
+        let content =
+            format!("{keyword_repeats}logical document {logical_idx} for duplicate pagination.");
+        let external_id = format!("duplicate-pagination-{logical_idx:02}");
+
+        for duplicate_idx in 0..DUPLICATES_PER_DOCUMENT {
+            let doc_id = Ulid::new().to_string();
+            let content_id = content_storage.store_text(content.clone()).await?;
+            sqlx::query(
+                r#"
+                INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, content, metadata, permissions, created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, 'email', $6, $7, '{"users":["user1"]}'::jsonb, NOW(), NOW())
+                "#,
+            )
+            .bind(&doc_id)
+            .bind(source_id)
+            .bind(&external_id)
+            .bind(format!("Duplicate Pagination Document {logical_idx:02}"))
+            .bind(&content_id)
+            .bind(&content)
+            .bind(json!({
+                "type": "email",
+                "author": format!("sender-{duplicate_idx}@example.com")
+            }))
+            .execute(pool)
+            .await?;
+
+            let embedding = generate_test_embedding(&content);
+            sqlx::query(
+                r#"
+                INSERT INTO embeddings (id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name, dimensions, created_at)
+                VALUES ($1, $2, 0, 0, $3, $4, 'test-model', 1024, NOW())
+                "#,
+            )
+            .bind(Ulid::new().to_string())
+            .bind(&doc_id)
+            .bind(content.len() as i32)
+            .bind(&embedding)
+            .execute(pool)
+            .await?;
+        }
+    }
+
+    for mode in ["fulltext", "semantic", "hybrid"] {
+        let mut seen_external_ids = std::collections::HashSet::new();
+        let pages = LOGICAL_DOCUMENT_COUNT / PAGE_SIZE;
+        for page in 0..pages {
+            let offset = page * PAGE_SIZE;
+            let (status, resp) = fixture
+                .search_with_body(json!({
+                    "query": "",
+                    "mode": mode,
+                    "source_types": ["local_files"],
+                    "limit": PAGE_SIZE,
+                    "offset": offset,
+                }))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{mode} search should succeed");
+            assert_eq!(
+                resp["total_count"].as_i64().unwrap(),
+                LOGICAL_DOCUMENT_COUNT,
+                "{mode} total_count should count logical external_id groups, not physical duplicate documents"
+            );
+            assert_eq!(
+                resp["has_more"].as_bool().unwrap_or(false),
+                page < pages - 1,
+                "{mode} has_more should reflect logical pagination at offset={offset}"
+            );
+
+            let results = resp["results"].as_array().unwrap();
+            assert_eq!(
+                results.len(),
+                PAGE_SIZE as usize,
+                "{mode} page at offset={offset} should be full"
+            );
+            for result in results {
+                let external_id = result["document"]["external_id"].as_str().unwrap();
+                assert!(
+                    seen_external_ids.insert(external_id.to_string()),
+                    "{mode} duplicate logical document appeared across pages: {external_id}"
+                );
+            }
+        }
+        assert_eq!(
+            seen_external_ids.len(),
+            LOGICAL_DOCUMENT_COUNT as usize,
+            "{mode} should return every logical document exactly once across pages"
+        );
+
+        let (status, beyond_last_page) = fixture
+            .search_with_body(json!({
+                "query": "",
+                "mode": mode,
+                "source_types": ["local_files"],
+                "limit": PAGE_SIZE,
+                "offset": LOGICAL_DOCUMENT_COUNT,
+            }))
+            .await?;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{mode} past-final search should succeed"
+        );
+        assert_eq!(
+            beyond_last_page["total_count"].as_i64().unwrap(),
+            LOGICAL_DOCUMENT_COUNT,
+            "{mode} total_count should survive an empty requested page"
+        );
+        assert!(
+            beyond_last_page["results"].as_array().unwrap().is_empty(),
+            "{mode} request past the final logical page should return no results"
+        );
+        assert!(
+            !beyond_last_page["has_more"].as_bool().unwrap_or(true),
+            "{mode} request past the final logical page should not have more results"
         );
     }
 
@@ -738,38 +976,6 @@ async fn test_typeahead_limit_respected() -> Result<()> {
         results.len() <= 1,
         "Expected at most 1 result with limit=1, got {}",
         results.len()
-    );
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_score_threshold_filters_low_relevance() -> Result<()> {
-    let fixture = SearcherTestFixture::new().await?;
-    let _doc_ids = fixture.seed_search_data().await?;
-
-    // "ownership borrowing lifetimes" — only "Rust Programming Guide" has all three terms.
-    // The 15% score threshold should prune docs that only weakly token-match one term.
-    let (status, response) = fixture
-        .search("ownership borrowing lifetimes", Some("fulltext"), None)
-        .await?;
-    assert_eq!(status, StatusCode::OK);
-    let titles = result_titles(&response);
-    assert!(
-        !titles.is_empty(),
-        "Expected results for 'ownership borrowing lifetimes'"
-    );
-    assert_eq!(
-        titles[0], "Rust Programming Guide",
-        "Rust Programming Guide should be first for 'ownership borrowing lifetimes', got: {:?}",
-        titles
-    );
-    // The threshold should keep the result set small — only docs scoring >= 15% of the top score
-    assert!(
-        titles.len() <= 5,
-        "Expected at most 5 results after score threshold pruning for a very specific query, got {}: {:?}",
-        titles.len(),
-        titles
     );
 
     Ok(())

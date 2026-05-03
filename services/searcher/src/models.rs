@@ -1,3 +1,4 @@
+use crate::search_repository::CANDIDATE_LIMIT;
 use serde::{Deserialize, Serialize};
 use shared::{
     models::{AttributeFilter, DateFilter, Document, Facet},
@@ -52,11 +53,10 @@ impl SearchRequest {
     }
 
     /// Over-fetch limit for cross-source deduplication.
-    /// Fetches from offset 0 with enough headroom so that after collapsing
-    /// duplicates with the same external_id and skipping `offset` results,
-    /// we still return the requested number.
-    pub fn dedup_fetch_limit(&self) -> i64 {
-        ((self.offset() + self.limit()) * 3).min(600)
+    /// Fetches the full bounded candidate stream so collapsing duplicates with
+    /// the same external_id happens before applying the requested offset/limit.
+    pub fn dedupe_fetch_limit(&self) -> i64 {
+        CANDIDATE_LIMIT
     }
 
     pub fn offset(&self) -> i64 {

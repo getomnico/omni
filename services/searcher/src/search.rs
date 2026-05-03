@@ -238,7 +238,6 @@ impl SearchEngine {
 
         let repo = DocumentRepository::new(self.db_pool.pool());
         let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
-        let limit = request.limit();
 
         // Empty query is allowed ONLY if some narrowing filter will scope the
         // result set. Otherwise `filter_only_search` would scan the entire
@@ -316,39 +315,7 @@ impl SearchEngine {
             }
         };
 
-        // Filtered facets: used only for total_count (pagination)
-        let filtered_facets_future = async {
-            if request.include_facets() {
-                let start_ts = Instant::now();
-                let facets = search_repo
-                    .get_facet_counts(
-                        &request.query,
-                        &filtered_source_ids,
-                        request.content_types.as_deref(),
-                        request.attribute_filters.as_ref(),
-                        request.user_email().map(|e| e.as_str()),
-                        &user_groups,
-                        request.date_filter.as_ref(),
-                        request.person_filters.as_deref(),
-                    )
-                    .await
-                    .unwrap_or_else(|e| {
-                        info!("Failed to get filtered facet counts: {}", e);
-                        vec![]
-                    });
-
-                debug!("Filtered facets fetched in {:?}", start_ts.elapsed());
-                facets
-            } else {
-                vec![]
-            }
-        };
-
-        let (search_result, facets, filtered_facets) = tokio::join!(
-            search_future,
-            unfiltered_facets_future,
-            filtered_facets_future
-        );
+        let (search_result, facets) = tokio::join!(search_future, unfiltered_facets_future);
         let mut results = search_result?;
 
         // Apply source boost for implicit source words (e.g. "standup slack")
@@ -393,27 +360,16 @@ impl SearchEngine {
 
         // Re-sort if any boosts were applied
         if !parsed.boosted_source_types.is_empty() || !parsed.person_boosts.is_empty() {
-            results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+            results.sort_by(Self::compare_search_results);
         }
 
-        // Deduplicate cross-source results sharing the same external_id.
-        // IMAP email threads from different accounts but the same mailing list
-        // produce identical external_ids (source_id is not part of the ID).
-        // Keep the highest-scoring result per group; apply offset+limit after
-        // dedup so duplicates are consistent across pages.
-        let (mut results, dedup_removed) = Self::deduplicate_cross_source(
+        let (mut results, total_count) = Self::finalize_search_results(
             results,
             request.offset() as usize,
             request.limit() as usize,
         );
 
-        let total_count: i64 = filtered_facets
-            .iter()
-            .flat_map(|f| f.values.iter().filter_map(|fv| fv.count))
-            .sum::<i64>()
-            .saturating_sub(dedup_removed as i64)
-            .max(0);
-        let has_more = total_count >= limit;
+        let has_more = request.offset() + (results.len() as i64) < total_count;
         let query_time = start_time.elapsed().as_millis() as u64;
 
         self.populate_source_types(&mut results).await?;
@@ -476,7 +432,7 @@ impl SearchEngine {
                 source_ids,
                 content_types,
                 attribute_filters,
-                request.dedup_fetch_limit(),
+                request.dedupe_fetch_limit(),
                 0,
                 request.user_email().map(|e| e.as_str()),
                 user_groups,
@@ -516,14 +472,6 @@ impl SearchEngine {
             });
         }
 
-        const MIN_SCORE_RATIO: f32 = 0.15;
-        if let Some(max_score) = results.first().map(|r| r.score) {
-            if max_score > 0.0 {
-                let threshold = max_score * MIN_SCORE_RATIO;
-                results.retain(|r| r.score >= threshold);
-            }
-        }
-
         info!(
             "Fulltext search completed in {}ms",
             start_time.elapsed().as_millis()
@@ -551,7 +499,7 @@ impl SearchEngine {
                 query_embedding,
                 sources,
                 content_types,
-                request.dedup_fetch_limit(),
+                request.dedupe_fetch_limit(),
                 0,
                 request.user_email().map(|e| e.as_str()),
                 request.document_id.as_deref(),
@@ -633,7 +581,7 @@ impl SearchEngine {
         }
 
         // Sort results by score in descending order
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+        results.sort_by(Self::compare_search_results);
 
         info!(
             "Semantic search completed in {}ms",
@@ -1124,10 +1072,10 @@ impl SearchEngine {
                 result
             })
             .collect();
-        final_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+        final_results.sort_by(Self::compare_search_results);
 
-        if final_results.len() > request.dedup_fetch_limit() as usize {
-            final_results.truncate(request.dedup_fetch_limit() as usize);
+        if final_results.len() > request.dedupe_fetch_limit() as usize {
+            final_results.truncate(request.dedupe_fetch_limit() as usize);
         }
 
         info!(
@@ -1139,10 +1087,8 @@ impl SearchEngine {
 
     /// Deduplicate search results that share the same `external_id`.
     ///
-    /// IMAP email threads from different accounts but the same mailing list
-    /// produce identical `external_id` values (source_id is not baked in).
-    /// Only results whose `external_id` starts with a known dedup-eligible
-    /// prefix participate; all others pass through unchanged.
+    /// Connectors can emit the same `external_id` for the same logical object
+    /// across multiple sources. Those rows are collapsed into one result.
     ///
     /// The highest-scoring result per group is kept (tiebreaker: `updated_at`).
     /// Collapsed duplicates are recorded in `also_in` on the winner.
@@ -1151,28 +1097,23 @@ impl SearchEngine {
     ///
     /// Pagination (`offset` / `limit`) is applied **after** dedup so that
     /// cross-page results are consistent (no duplicates across pages).
-    fn deduplicate_cross_source(
-        results: Vec<SearchResult>,
-        offset: usize,
-        limit: usize,
-    ) -> (Vec<SearchResult>, usize) {
-        // Group indices by external_id for dedup-eligible results only.
+    fn deduplicate_cross_source(results: Vec<SearchResult>) -> (Vec<SearchResult>, usize, usize) {
+        // Group indices by non-empty external_id. Empty external_ids fall back
+        // to document id and therefore pass through unchanged.
         let mut dedup_groups: HashMap<String, Vec<usize>> = HashMap::new();
         for (idx, result) in results.iter().enumerate() {
-            if result.document.external_id.starts_with("imap-thread:") {
-                dedup_groups
-                    .entry(result.document.external_id.clone())
-                    .or_default()
-                    .push(idx);
-            }
+            let dedupe_key = if result.document.external_id.is_empty() {
+                result.document.id.clone()
+            } else {
+                result.document.external_id.clone()
+            };
+            dedup_groups.entry(dedupe_key).or_default().push(idx);
         }
 
         // Fast path: nothing to deduplicate
         if dedup_groups.values().all(|indices| indices.len() <= 1) {
-            let mut results = results;
-            let end = results.len().min(offset + limit);
-            let start = offset.min(end);
-            return (results.drain(start..end).collect(), 0);
+            let total_count = results.len();
+            return (results, 0, total_count);
         }
 
         // Map from best_idx -> list of AlsoIn entries for its collapsed duplicates
@@ -1215,6 +1156,7 @@ impl SearchEngine {
             }
         }
 
+        let deduped_count = results.len().saturating_sub(remove_indices.len());
         let deduped: Vec<SearchResult> = results
             .into_iter()
             .enumerate()
@@ -1225,18 +1167,37 @@ impl SearchEngine {
                 }
                 result
             })
-            .skip(offset)
-            .take(limit)
             .collect();
 
         debug!(
-            "Cross-source dedup removed {} duplicates, returning {} results (offset={})",
+            "Cross-source dedup removed {} duplicates, leaving {} logical results",
             remove_indices.len(),
             deduped.len(),
-            offset,
         );
 
-        (deduped, remove_indices.len())
+        (deduped, remove_indices.len(), deduped_count)
+    }
+
+    fn finalize_search_results(
+        results: Vec<SearchResult>,
+        offset: usize,
+        limit: usize,
+    ) -> (Vec<SearchResult>, i64) {
+        let mut results = results;
+        results.sort_by(Self::compare_search_results);
+        let (mut deduped, _dedup_removed, total_count) = Self::deduplicate_cross_source(results);
+        let end = deduped.len().min(offset + limit);
+        let start = offset.min(end);
+        let paged_results = deduped.drain(start..end).collect();
+        (paged_results, total_count as i64)
+    }
+
+    fn compare_search_results(a: &SearchResult, b: &SearchResult) -> Ordering {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| b.document.updated_at.cmp(&a.document.updated_at))
+            .then_with(|| a.document.id.cmp(&b.document.id))
     }
 
     fn generate_cache_key(&self, request: &SearchRequest) -> String {
