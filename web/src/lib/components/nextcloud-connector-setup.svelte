@@ -65,6 +65,7 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
+                    scope: 'org',
                     name: sourceName.trim() || 'Nextcloud Files',
                     sourceType: SourceType.NEXTCLOUD,
                     config,

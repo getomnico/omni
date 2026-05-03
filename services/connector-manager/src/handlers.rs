@@ -268,8 +268,15 @@ pub async fn execute_action(
     Json(request): Json<ExecuteActionRequest>,
 ) -> Result<axum::response::Response, ApiError> {
     info!(
-        "Executing action {} for source {} (user {:?})",
-        request.action, request.source_id, request.user_id
+        "Executing action '{}' for source {} (user {:?}, params keys: {:?})",
+        request.action,
+        request.source_id,
+        request.user_id,
+        request
+            .params
+            .as_object()
+            .map(|m| m.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default()
     );
 
     let source_repo = SourceRepository::new(state.db_pool.pool());
@@ -292,10 +299,9 @@ pub async fn execute_action(
         ))
     })?;
 
-    let action_mode = manifest
-        .and_then(|m| m.actions.iter().find(|a| a.name == request.action))
-        .map(|a| a.mode)
-        .unwrap_or_default();
+    let action_def = manifest.and_then(|m| m.actions.iter().find(|a| a.name == request.action));
+    let action_mode = action_def.map(|a| a.mode).unwrap_or_default();
+    let action_admin_only = action_def.map(|a| a.admin_only).unwrap_or(false);
 
     // TODO: replace this opaque-blob `read_only` lookup with a strongly-typed
     // SourceConfig. Today every connector pokes its own keys into Source.config
@@ -317,21 +323,25 @@ pub async fn execute_action(
 
     let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let creds =
-        match resolve_credentials(&creds_repo, &request.source_id, request.user_id.as_deref())
-            .await?
-        {
-            CredentialResolution::Resolved(c) => c,
-            CredentialResolution::NeedsUserAuth { provider } => {
-                return Ok(needs_user_auth_response(&request.source_id, provider)?);
-            }
-            CredentialResolution::NoCredentials => {
-                return Err(ApiError::NotFound(format!(
-                    "Credentials not found for source: {}",
-                    request.source_id
-                )));
-            }
-        };
+    let creds = match resolve_credentials(
+        &creds_repo,
+        &request.source_id,
+        request.user_id.as_deref(),
+        action_admin_only,
+    )
+    .await?
+    {
+        CredentialResolution::Resolved(c) => c,
+        CredentialResolution::NeedsUserAuth { provider } => {
+            return Ok(needs_user_auth_response(&request.source_id, provider)?);
+        }
+        CredentialResolution::NoCredentials => {
+            return Err(ApiError::NotFound(format!(
+                "Credentials not found for source: {}",
+                request.source_id
+            )));
+        }
+    };
 
     // Resolve Omni document ID -> source external_id.
     // TODO: replace hard-coded param names with a connector-declared resolve_params list.
@@ -359,6 +369,16 @@ pub async fn execute_action(
         }
         // If not found, assume the ID is already a source-native ID and pass through
     }
+
+    info!(
+        "Dispatching action '{}' to connector {} with credential {} (provider={:?}, auth_type={:?}, principal={:?})",
+        request.action,
+        connector_url,
+        creds.id,
+        creds.provider,
+        creds.auth_type,
+        creds.principal_email,
+    );
 
     let client = ConnectorClient::new();
     let action_request = ActionRequest {
@@ -409,6 +429,9 @@ enum CredentialResolution {
 
 /// Resolve which credential to use for a tool/action invocation.
 ///
+/// * `admin_only` action → org row regardless of user_id. These actions
+///   (e.g. Google Admin directory ops) require the service-account credential
+///   the admin set up org-wide; per-user OAuth scopes don't cover them.
 /// * `Some(user_id)` (chat tool, user-scoped agent) → per-user row required.
 ///   No fallback to org credentials — if the user hasn't connected, return
 ///   `NeedsUserAuth` so the UI can prompt. Personal sources satisfy this
@@ -419,8 +442,29 @@ async fn resolve_credentials(
     creds_repo: &ServiceCredentialsRepo,
     source_id: &str,
     user_id: Option<&str>,
+    admin_only: bool,
 ) -> Result<CredentialResolution, ApiError> {
     let internal = |e: anyhow::Error| ApiError::Internal(e.to_string());
+
+    if admin_only {
+        let resolved = creds_repo
+            .find_org_credential(source_id)
+            .await
+            .map_err(internal)?;
+        match &resolved {
+            Some(c) => info!(
+                "resolve_credentials(source={}, user={:?}): admin_only → org cred {}",
+                source_id, user_id, c.id
+            ),
+            None => warn!(
+                "resolve_credentials(source={}, user={:?}): admin_only → no org cred found",
+                source_id, user_id
+            ),
+        }
+        return Ok(resolved
+            .map(CredentialResolution::Resolved)
+            .unwrap_or(CredentialResolution::NoCredentials));
+    }
 
     match user_id {
         Some(uid) => {
@@ -429,6 +473,10 @@ async fn resolve_credentials(
                 .await
                 .map_err(internal)?
             {
+                info!(
+                    "resolve_credentials(source={}, user={}): per-user cred {}",
+                    source_id, uid, c.id
+                );
                 return Ok(CredentialResolution::Resolved(c));
             }
             // No per-user row — surface a NeedsUserAuth response so the UI
@@ -439,18 +487,43 @@ async fn resolve_credentials(
                 .await
                 .map_err(internal)?
             {
-                Some(org) => Ok(CredentialResolution::NeedsUserAuth {
-                    provider: org.provider,
-                }),
-                None => Ok(CredentialResolution::NoCredentials),
+                Some(org) => {
+                    info!(
+                        "resolve_credentials(source={}, user={}): no per-user cred, org row exists → NeedsUserAuth({:?})",
+                        source_id, uid, org.provider
+                    );
+                    Ok(CredentialResolution::NeedsUserAuth {
+                        provider: org.provider,
+                    })
+                }
+                None => {
+                    warn!(
+                        "resolve_credentials(source={}, user={}): no per-user cred and no org cred",
+                        source_id, uid
+                    );
+                    Ok(CredentialResolution::NoCredentials)
+                }
             }
         }
-        None => Ok(creds_repo
-            .find_org_credential(source_id)
-            .await
-            .map_err(internal)?
-            .map(CredentialResolution::Resolved)
-            .unwrap_or(CredentialResolution::NoCredentials)),
+        None => {
+            let resolved = creds_repo
+                .find_org_credential(source_id)
+                .await
+                .map_err(internal)?;
+            match &resolved {
+                Some(c) => info!(
+                    "resolve_credentials(source={}, no user): org cred {}",
+                    source_id, c.id
+                ),
+                None => warn!(
+                    "resolve_credentials(source={}, no user): no org cred found",
+                    source_id
+                ),
+            }
+            Ok(resolved
+                .map(CredentialResolution::Resolved)
+                .unwrap_or(CredentialResolution::NoCredentials))
+        }
     }
 }
 

@@ -81,6 +81,7 @@ class MicrosoftConnector(Connector):
                     },
                     "required": ["query"],
                 },
+                admin_only=True,
             ),
             ActionDefinition(
                 name="fetch_file",
