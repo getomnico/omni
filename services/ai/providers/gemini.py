@@ -1,7 +1,17 @@
 """
 Gemini Provider — streams responses and normalizes them to Anthropic MessageStreamEvent format.
+
+Gemini 3 returns an opaque ``thought_signature`` on Parts that hold function calls (and
+on the leading text Part of a reasoning turn). The signature must be echoed back on the
+same Part on subsequent turns or the API rejects the request. To carry this through the
+provider-agnostic Anthropic-shaped pipeline, we attach the signature as an extra
+``_gemini_thought_signature`` field on the corresponding ``ToolUseBlock`` / ``TextBlock``
+— Anthropic's SDK types are configured with ``extra="allow"`` so the field round-trips
+through ``model_dump()`` and into the persisted message JSON. On replay,
+``_convert_messages_to_gemini`` reads it back and re-attaches it to the Gemini ``Part``.
 """
 
+import base64
 import json
 import logging
 import time
@@ -31,6 +41,8 @@ from . import LLMProvider, TokenUsage
 
 logger = logging.getLogger(__name__)
 
+THOUGHT_SIGNATURE_KEY = "_gemini_thought_signature"
+
 
 def _convert_tools_to_gemini(tools: list[dict[str, Any]]) -> list[types.Tool]:
     """Convert Anthropic tool schema to Gemini function declarations."""
@@ -44,6 +56,14 @@ def _convert_tools_to_gemini(tools: list[dict[str, Any]]) -> list[types.Tool]:
             )
         )
     return [types.Tool(function_declarations=declarations)]
+
+
+def _extract_thought_signature(block: dict[str, Any]) -> bytes | None:
+    """Read and base64-decode the sidecar ``_gemini_thought_signature`` from a block."""
+    sig_b64 = block.get(THOUGHT_SIGNATURE_KEY)
+    if not sig_b64:
+        return None
+    return base64.b64decode(sig_b64)
 
 
 def _convert_messages_to_gemini(
@@ -70,6 +90,7 @@ def _convert_messages_to_gemini(
             continue
 
         parts: list[types.Part] = []
+
         for block in content:
             if not isinstance(block, dict):
                 continue
@@ -77,12 +98,27 @@ def _convert_messages_to_gemini(
 
             if block_type == "text":
                 text = block.get("text", "")
-                if text:
-                    parts.append(types.Part(text=text))
+                if not text:
+                    continue
+                sig = _extract_thought_signature(block)
+                parts.append(
+                    types.Part(text=text, thought_signature=sig)
+                    if sig
+                    else types.Part(text=text)
+                )
 
             elif block_type == "tool_use":
+                sig = _extract_thought_signature(block)
                 parts.append(
                     types.Part(
+                        function_call=types.FunctionCall(
+                            name=block["name"],
+                            args=block.get("input", {}),
+                        ),
+                        thought_signature=sig,
+                    )
+                    if sig
+                    else types.Part(
                         function_call=types.FunctionCall(
                             name=block["name"],
                             args=block.get("input", {}),
@@ -111,7 +147,6 @@ def _convert_messages_to_gemini(
                     result_content = "\n\n".join(text_parts)
 
                 tool_name = block.get("tool_use_id", "unknown")
-                # Try to find the tool name from a preceding assistant message
                 for prev_msg in reversed(gemini_contents):
                     if prev_msg.role == "model" and prev_msg.parts:
                         for p in prev_msg.parts:
@@ -141,6 +176,8 @@ def _convert_messages_to_gemini(
 
 class GeminiProvider(LLMProvider):
     """Provider for Google Gemini API."""
+
+    PERSISTED_BLOCK_EXTRAS = (THOUGHT_SIGNATURE_KEY,)
 
     def __init__(self, api_key: str, model: str):
         self.client = genai.Client(api_key=api_key)
@@ -217,16 +254,35 @@ class GeminiProvider(LLMProvider):
                     continue
 
                 for part in candidate.content.parts:
+                    # Gemini 3 may attach a thought_signature on text or function_call
+                    # parts. Encode once per Part — sidecar onto whichever primary
+                    # block this Part produces via Pydantic's extra="allow".
+                    sig_b64 = (
+                        base64.b64encode(part.thought_signature).decode("ascii")
+                        if part.thought_signature
+                        else None
+                    )
+
                     # Handle text parts
                     if part.text is not None:
                         if not text_started:
                             current_text_index = next_block_index
                             next_block_index += 1
                             text_started = True
+                            text_kwargs: dict[str, Any] = {"type": "text", "text": ""}
+                            if sig_b64:
+                                text_kwargs[THOUGHT_SIGNATURE_KEY] = sig_b64
                             yield RawContentBlockStartEvent(
                                 type="content_block_start",
                                 index=current_text_index,
-                                content_block=TextBlock(type="text", text=""),
+                                content_block=TextBlock(**text_kwargs),
+                            )
+                        elif sig_b64:
+                            # Subsequent text parts with their own signatures can't
+                            # round-trip cleanly while we merge text into one block.
+                            logger.warning(
+                                "Dropping thought_signature on non-leading text Part "
+                                "(text-merging loses per-Part signatures)"
                             )
 
                         yield RawContentBlockDeltaEvent(
@@ -241,15 +297,19 @@ class GeminiProvider(LLMProvider):
                         next_block_index += 1
                         tool_call_id = f"toolu_{time.time_ns()}"
 
+                        tool_kwargs: dict[str, Any] = {
+                            "type": "tool_use",
+                            "id": tool_call_id,
+                            "name": part.function_call.name or "",
+                            "input": {},
+                        }
+                        if sig_b64:
+                            tool_kwargs[THOUGHT_SIGNATURE_KEY] = sig_b64
+
                         yield RawContentBlockStartEvent(
                             type="content_block_start",
                             index=block_index,
-                            content_block=ToolUseBlock(
-                                type="tool_use",
-                                id=tool_call_id,
-                                name=part.function_call.name or "",
-                                input={},
-                            ),
+                            content_block=ToolUseBlock(**tool_kwargs),
                         )
 
                         args = part.function_call.args or {}
