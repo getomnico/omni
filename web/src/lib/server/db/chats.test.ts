@@ -1,12 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages.js'
+import { eq, sql } from 'drizzle-orm'
+import { ulid } from 'ulid'
 import { startTestDb, stopTestDb, createTestUser, createTestChat } from './test-setup'
-import { ChatMessageRepository } from './chats'
+import { ChatMessageRepository, ChatRepository } from './chats'
 import * as schema from './schema'
 
 let db: PostgresJsDatabase<typeof schema>
 let repo: ChatMessageRepository
+let chatRepo: ChatRepository
 let userId: string
 let chatId: string
 
@@ -21,6 +24,7 @@ function assistantMsg(text: string): MessageParam {
 beforeAll(async () => {
     db = await startTestDb()
     repo = new ChatMessageRepository(db)
+    chatRepo = new ChatRepository(db)
 })
 
 afterAll(async () => {
@@ -102,3 +106,70 @@ describe('ChatMessageRepository branching', () => {
         expect(path.map((m) => m.id)).toEqual([root.id, a.id, bPrime.id])
     })
 })
+
+describe('ChatRepository soft-delete', () => {
+    it('delete() flips is_deleted instead of removing the row', async () => {
+        const ok = await chatRepo.delete(chatId)
+        expect(ok).toBe(true)
+
+        const [row] = await db
+            .select({ id: schema.chats.id, isDeleted: schema.chats.isDeleted })
+            .from(schema.chats)
+            .where(eq(schema.chats.id, chatId))
+
+        expect(row).toBeDefined()
+        expect(row.isDeleted).toBe(true)
+    })
+
+    it('delete() preserves linked model_usage rows', async () => {
+        // Insert a model + model_usage row tied to this chat, then soft-delete.
+        const modelId = await createTestModel(db)
+        await db.execute(sql`
+            INSERT INTO model_usage (id, user_id, model_id, model_name, provider_type, purpose, chat_id, input_tokens, output_tokens)
+            VALUES (${ulid()}, ${userId}, ${modelId}, 'test-model', 'test', 'chat', ${chatId}, 10, 20)
+        `)
+
+        await chatRepo.delete(chatId)
+
+        const result = await db.execute(
+            sql`SELECT count(*)::int AS n FROM model_usage WHERE chat_id = ${chatId}`,
+        )
+        expect((result[0] as { n: number }).n).toBe(1)
+    })
+
+    it('get() returns null for a soft-deleted chat', async () => {
+        await chatRepo.delete(chatId)
+        const chat = await chatRepo.get(chatId)
+        expect(chat).toBeNull()
+    })
+
+    it('getByUserId() excludes soft-deleted chats', async () => {
+        const otherChatId = await createTestChat(db, userId, 'kept')
+        await chatRepo.delete(chatId)
+
+        const chats = await chatRepo.getByUserId(userId)
+        expect(chats.map((c) => c.id)).toEqual([otherChatId])
+    })
+
+    it('delete() returns false for an already-deleted chat', async () => {
+        expect(await chatRepo.delete(chatId)).toBe(true)
+        expect(await chatRepo.delete(chatId)).toBe(false)
+    })
+})
+
+async function createTestModel(database: PostgresJsDatabase<typeof schema>): Promise<string> {
+    const providerId = ulid()
+    const modelId = ulid()
+    await database.insert(schema.modelProviders).values({
+        id: providerId,
+        name: 'test-provider',
+        providerType: 'anthropic',
+    })
+    await database.insert(schema.models).values({
+        id: modelId,
+        modelProviderId: providerId,
+        modelId: 'test-model',
+        displayName: 'test-model',
+    })
+    return modelId
+}
