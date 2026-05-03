@@ -268,8 +268,15 @@ pub async fn execute_action(
     Json(request): Json<ExecuteActionRequest>,
 ) -> Result<axum::response::Response, ApiError> {
     info!(
-        "Executing action {} for source {} (user {:?})",
-        request.action, request.source_id, request.user_id
+        "Executing action '{}' for source {} (user {:?}, params keys: {:?})",
+        request.action,
+        request.source_id,
+        request.user_id,
+        request
+            .params
+            .as_object()
+            .map(|m| m.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default()
     );
 
     let source_repo = SourceRepository::new(state.db_pool.pool());
@@ -363,6 +370,16 @@ pub async fn execute_action(
         // If not found, assume the ID is already a source-native ID and pass through
     }
 
+    info!(
+        "Dispatching action '{}' to connector {} with credential {} (provider={:?}, auth_type={:?}, principal={:?})",
+        request.action,
+        connector_url,
+        creds.id,
+        creds.provider,
+        creds.auth_type,
+        creds.principal_email,
+    );
+
     let client = ConnectorClient::new();
     let action_request = ActionRequest {
         action: request.action,
@@ -430,10 +447,21 @@ async fn resolve_credentials(
     let internal = |e: anyhow::Error| ApiError::Internal(e.to_string());
 
     if admin_only {
-        return Ok(creds_repo
+        let resolved = creds_repo
             .find_org_credential(source_id)
             .await
-            .map_err(internal)?
+            .map_err(internal)?;
+        match &resolved {
+            Some(c) => info!(
+                "resolve_credentials(source={}, user={:?}): admin_only → org cred {}",
+                source_id, user_id, c.id
+            ),
+            None => warn!(
+                "resolve_credentials(source={}, user={:?}): admin_only → no org cred found",
+                source_id, user_id
+            ),
+        }
+        return Ok(resolved
             .map(CredentialResolution::Resolved)
             .unwrap_or(CredentialResolution::NoCredentials));
     }
@@ -445,6 +473,10 @@ async fn resolve_credentials(
                 .await
                 .map_err(internal)?
             {
+                info!(
+                    "resolve_credentials(source={}, user={}): per-user cred {}",
+                    source_id, uid, c.id
+                );
                 return Ok(CredentialResolution::Resolved(c));
             }
             // No per-user row — surface a NeedsUserAuth response so the UI
@@ -455,18 +487,43 @@ async fn resolve_credentials(
                 .await
                 .map_err(internal)?
             {
-                Some(org) => Ok(CredentialResolution::NeedsUserAuth {
-                    provider: org.provider,
-                }),
-                None => Ok(CredentialResolution::NoCredentials),
+                Some(org) => {
+                    info!(
+                        "resolve_credentials(source={}, user={}): no per-user cred, org row exists → NeedsUserAuth({:?})",
+                        source_id, uid, org.provider
+                    );
+                    Ok(CredentialResolution::NeedsUserAuth {
+                        provider: org.provider,
+                    })
+                }
+                None => {
+                    warn!(
+                        "resolve_credentials(source={}, user={}): no per-user cred and no org cred",
+                        source_id, uid
+                    );
+                    Ok(CredentialResolution::NoCredentials)
+                }
             }
         }
-        None => Ok(creds_repo
-            .find_org_credential(source_id)
-            .await
-            .map_err(internal)?
-            .map(CredentialResolution::Resolved)
-            .unwrap_or(CredentialResolution::NoCredentials)),
+        None => {
+            let resolved = creds_repo
+                .find_org_credential(source_id)
+                .await
+                .map_err(internal)?;
+            match &resolved {
+                Some(c) => info!(
+                    "resolve_credentials(source={}, no user): org cred {}",
+                    source_id, c.id
+                ),
+                None => warn!(
+                    "resolve_credentials(source={}, no user): no org cred found",
+                    source_id
+                ),
+            }
+            Ok(resolved
+                .map(CredentialResolution::Resolved)
+                .unwrap_or(CredentialResolution::NoCredentials))
+        }
     }
 }
 
