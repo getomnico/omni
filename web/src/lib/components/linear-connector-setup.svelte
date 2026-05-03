@@ -28,6 +28,7 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
+                    scope: 'org',
                     name: 'Linear',
                     sourceType: 'linear',
                     config: {},

@@ -76,6 +76,7 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
+                    scope: 'org',
                     name: sourceName.trim() || 'IMAP Mail',
                     sourceType: SourceType.IMAP,
                     config,

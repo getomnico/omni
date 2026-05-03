@@ -292,10 +292,9 @@ pub async fn execute_action(
         ))
     })?;
 
-    let action_mode = manifest
-        .and_then(|m| m.actions.iter().find(|a| a.name == request.action))
-        .map(|a| a.mode)
-        .unwrap_or_default();
+    let action_def = manifest.and_then(|m| m.actions.iter().find(|a| a.name == request.action));
+    let action_mode = action_def.map(|a| a.mode).unwrap_or_default();
+    let action_admin_only = action_def.map(|a| a.admin_only).unwrap_or(false);
 
     // TODO: replace this opaque-blob `read_only` lookup with a strongly-typed
     // SourceConfig. Today every connector pokes its own keys into Source.config
@@ -317,21 +316,25 @@ pub async fn execute_action(
 
     let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let creds =
-        match resolve_credentials(&creds_repo, &request.source_id, request.user_id.as_deref())
-            .await?
-        {
-            CredentialResolution::Resolved(c) => c,
-            CredentialResolution::NeedsUserAuth { provider } => {
-                return Ok(needs_user_auth_response(&request.source_id, provider)?);
-            }
-            CredentialResolution::NoCredentials => {
-                return Err(ApiError::NotFound(format!(
-                    "Credentials not found for source: {}",
-                    request.source_id
-                )));
-            }
-        };
+    let creds = match resolve_credentials(
+        &creds_repo,
+        &request.source_id,
+        request.user_id.as_deref(),
+        action_admin_only,
+    )
+    .await?
+    {
+        CredentialResolution::Resolved(c) => c,
+        CredentialResolution::NeedsUserAuth { provider } => {
+            return Ok(needs_user_auth_response(&request.source_id, provider)?);
+        }
+        CredentialResolution::NoCredentials => {
+            return Err(ApiError::NotFound(format!(
+                "Credentials not found for source: {}",
+                request.source_id
+            )));
+        }
+    };
 
     // Resolve Omni document ID -> source external_id.
     // TODO: replace hard-coded param names with a connector-declared resolve_params list.
@@ -409,6 +412,9 @@ enum CredentialResolution {
 
 /// Resolve which credential to use for a tool/action invocation.
 ///
+/// * `admin_only` action → org row regardless of user_id. These actions
+///   (e.g. Google Admin directory ops) require the service-account credential
+///   the admin set up org-wide; per-user OAuth scopes don't cover them.
 /// * `Some(user_id)` (chat tool, user-scoped agent) → per-user row required.
 ///   No fallback to org credentials — if the user hasn't connected, return
 ///   `NeedsUserAuth` so the UI can prompt. Personal sources satisfy this
@@ -419,8 +425,18 @@ async fn resolve_credentials(
     creds_repo: &ServiceCredentialsRepo,
     source_id: &str,
     user_id: Option<&str>,
+    admin_only: bool,
 ) -> Result<CredentialResolution, ApiError> {
     let internal = |e: anyhow::Error| ApiError::Internal(e.to_string());
+
+    if admin_only {
+        return Ok(creds_repo
+            .find_org_credential(source_id)
+            .await
+            .map_err(internal)?
+            .map(CredentialResolution::Resolved)
+            .unwrap_or(CredentialResolution::NoCredentials));
+    }
 
     match user_id {
         Some(uid) => {
