@@ -164,6 +164,19 @@ class RegistryResult:
     search_operators: list[SearchOperator] | None
 
 
+def _copy_provider_extras(src: object, dst: dict, keys: tuple[str, ...]) -> None:
+    """Copy provider-declared sidecar fields off a Pydantic content_block
+    instance onto its persisted TypedDict block.
+
+    The set of keys is owned by each ``LLMProvider`` subclass via
+    ``PERSISTED_BLOCK_EXTRAS`` — chat.py stays provider-agnostic.
+    """
+    for key in keys:
+        value = getattr(src, key, None)
+        if value is not None:
+            dst[key] = value  # type: ignore[typeddict-unknown-key]
+
+
 async def _fetch_sources_from_connector_manager() -> list[Source] | None:
     """Fetch all sources from the connector manager. Returns None on failure."""
     if not CONNECTOR_MANAGER_URL:
@@ -667,6 +680,7 @@ async def stream_chat(
 
                 logger.info(f"Iteration {iteration + 1}/{AGENT_MAX_ITERATIONS}")
                 content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
+                provider_extras = llm_provider.PERSISTED_BLOCK_EXTRAS
 
                 logger.info(f"Sending request to LLM provider")
                 logger.debug(
@@ -765,23 +779,27 @@ async def stream_chat(
                     elif event.type == "content_block_start":
                         if event.content_block.type == "text":
                             logger.info(f"Text block start: {event.content_block.text}")
-                            content_blocks.append(
-                                TextBlockParam(
-                                    type="text", text=event.content_block.text
-                                )
+                            text_block: TextBlockParam = TextBlockParam(
+                                type="text", text=event.content_block.text
                             )
+                            _copy_provider_extras(
+                                event.content_block, text_block, provider_extras
+                            )
+                            content_blocks.append(text_block)
                         elif event.content_block.type == "tool_use":
                             logger.info(
                                 f"Tool use block start: {event.content_block.name} (id: {event.content_block.id})"
                             )
-                            content_blocks.append(
-                                ToolUseBlockParam(
-                                    type="tool_use",
-                                    id=event.content_block.id,
-                                    name=event.content_block.name,
-                                    input="",
-                                )
+                            tool_block: ToolUseBlockParam = ToolUseBlockParam(
+                                type="tool_use",
+                                id=event.content_block.id,
+                                name=event.content_block.name,
+                                input="",
                             )
+                            _copy_provider_extras(
+                                event.content_block, tool_block, provider_extras
+                            )
+                            content_blocks.append(tool_block)
                     elif event.type == "citation":
                         logger.info(f"Citation received: {event.citation}")
                     elif event.type == "message_stop":
