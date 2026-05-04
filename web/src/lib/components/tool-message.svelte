@@ -16,6 +16,7 @@
     } from '@lucide/svelte'
     import type { ToolMessageContent, ToolName } from '$lib/types/message'
     import { ToolApprovalStatus } from '$lib/types/message'
+    import OAuthRequiredCard from '$lib/components/oauth-required-card.svelte'
     import { cn } from '$lib/utils'
     import {
         getIconFromSearchResult,
@@ -26,6 +27,8 @@
 
     type Props = {
         message: ToolMessageContent
+        isAdmin?: boolean
+        onOAuthComplete?: () => void
     }
 
     const ToolIndicators: Record<string, { loading: string; loaded: string }> = {
@@ -100,7 +103,7 @@
         },
     }
 
-    let { message }: Props = $props()
+    let { message, isAdmin = false, onOAuthComplete = () => {} }: Props = $props()
     const toolName = message.toolUse.name as ToolName
 
     // Determine if this is a connector action (contains __)
@@ -170,7 +173,7 @@
 {#if toolName === 'search_people'}
     <div
         class={cn(
-            'flex cursor-pointer items-center justify-between rounded-md border border-border px-3 py-3 text-sm hover:no-underline',
+            'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
         )}>
         <div class="flex w-full items-center justify-between">
             <div class="flex items-center gap-2">
@@ -184,7 +187,7 @@
 {:else if toolName === 'read_document'}
     <div
         class={cn(
-            'flex cursor-pointer items-center justify-between rounded-md border border-border px-3 py-3 text-sm hover:no-underline',
+            'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
         )}>
         <div class="flex w-full items-center justify-between">
             <div class="flex items-center gap-2">
@@ -199,7 +202,7 @@
     {#if toolName === 'present_artifact' && artifactData}
         <div class="mt-2">
             {#if artifactData.content_type.startsWith('image/')}
-                <figure class="rounded-lg border border-border p-2">
+                <figure class="border-border rounded-lg border p-2">
                     <img
                         src={artifactData.url}
                         alt={artifactData.title}
@@ -224,7 +227,7 @@
     {:else}
         <div
             class={cn(
-                'flex cursor-pointer items-center justify-between rounded-md border border-border px-3 py-3 text-sm hover:no-underline',
+                'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
             )}>
             <div class="flex w-full items-center justify-between">
                 <div class="flex items-center gap-2">
@@ -249,7 +252,7 @@
 {:else if toolName === 'load_skill'}
     <div
         class={cn(
-            'flex cursor-pointer items-center justify-between rounded-md border border-border px-3 py-3 text-sm hover:no-underline',
+            'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
         )}>
         <div class="flex w-full items-center justify-between">
             <div class="flex items-center gap-2">
@@ -261,43 +264,54 @@
         </div>
     </div>
 {:else if isConnectorAction}
-    <div
-        class={cn(
-            'flex cursor-pointer items-center justify-between rounded-md border border-border px-3 py-3 text-sm hover:no-underline',
-            message.approval && ToolApprovalColors[message.approval.status]?.borderColor,
-            message.approval && ToolApprovalColors[message.approval.status]?.bgColor,
-        )}>
-        <div class="flex w-full items-center justify-between">
-            <div class="flex items-center gap-2">
-                {#if connectorIconPath}
-                    <img src={connectorIconPath} alt={connectorSourceType} class="!m-0 h-5 w-5" />
-                {:else}
-                    <Play class="h-5 w-5 text-purple-600" />
-                {/if}
-                <div class="max-w-screen-md truncate text-sm font-normal">
-                    {statusIndicator}: {connectorDisplayName}
-                    {#if inputSummary()}
-                        <span class="text-muted-foreground"> ({inputSummary()})</span>
+    {#if message.oauthRequired}
+        <OAuthRequiredCard
+            oauthRequired={message.oauthRequired}
+            {toolName}
+            {isAdmin}
+            onComplete={onOAuthComplete} />
+    {:else}
+        <div
+            class={cn(
+                'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
+                message.approval && ToolApprovalColors[message.approval.status]?.borderColor,
+                message.approval && ToolApprovalColors[message.approval.status]?.bgColor,
+            )}>
+            <div class="flex w-full items-center justify-between">
+                <div class="flex items-center gap-2">
+                    {#if connectorIconPath}
+                        <img
+                            src={connectorIconPath}
+                            alt={connectorSourceType}
+                            class="!m-0 h-5 w-5" />
+                    {:else}
+                        <Play class="h-5 w-5 text-purple-600" />
                     {/if}
+                    <div class="max-w-screen-md truncate text-sm font-normal">
+                        {statusIndicator}: {connectorDisplayName}
+                        {#if inputSummary()}
+                            <span class="text-muted-foreground"> ({inputSummary()})</span>
+                        {/if}
+                    </div>
                 </div>
+                {#if message.approval}
+                    <div
+                        class={cn(
+                            'text-xs font-medium',
+                            ToolApprovalColors[message.approval.status]?.color,
+                        )}>
+                        {message.approval.status}
+                    </div>
+                {/if}
             </div>
-            {#if message.approval}
-                <div
-                    class={cn(
-                        'text-xs font-medium',
-                        ToolApprovalColors[message.approval.status]?.color,
-                    )}>
-                    {message.approval.status}
-                </div>
-            {/if}
         </div>
-    </div>
+    {/if}
 {:else}
     <Accordion.Root type="single" bind:value={selectedItem}>
         <Accordion.Item value={message.toolUse.id}>
             <Accordion.Trigger
                 class={cn(
-                    'flex cursor-pointer items-center justify-between border border-border px-3 py-3 text-sm hover:no-underline',
+                    'border-border flex cursor-pointer items-center justify-between border px-3 py-3 text-sm hover:no-underline',
                     selectedItem === message.toolUse.id && 'bg-card rounded-b-none border-b-0',
                 )}>
                 <div class="flex w-full items-center justify-between">
@@ -339,7 +353,7 @@
             </Accordion.Trigger>
             {#if message.toolResult && message.toolResult.content.length > 0}
                 <Accordion.Content
-                    class="bg-card max-h-48 overflow-y-auto rounded-b-md border border-t-0 border-border">
+                    class="bg-card border-border max-h-48 overflow-y-auto rounded-b-md border border-t-0">
                     <div class="px-4 py-2">
                         <div class="flex flex-col gap-2">
                             {#each message.toolResult.content as result}
@@ -365,7 +379,7 @@
                     </div>
                 </Accordion.Content>
             {:else}
-                <Accordion.Content class="bg-card rounded-b-md border border-t-0 border-border">
+                <Accordion.Content class="bg-card border-border rounded-b-md border border-t-0">
                     <div class="px-4 py-2 text-center text-sm">No results found</div>
                 </Accordion.Content>
             {/if}

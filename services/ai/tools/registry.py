@@ -8,6 +8,8 @@ from typing import Protocol, runtime_checkable
 
 from anthropic.types import ToolParam
 
+from tools.omni_tool_result import OAuthRequiredPayload
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,6 +30,11 @@ class ToolResult:
 
     content: list  # ToolResultBlockParam content blocks
     is_error: bool = False
+    # When set, the tool execution surfaced a structured "needs OAuth" prompt
+    # instead of a normal result. The router uses this to pause the agent loop
+    # and emit an oauth_required SSE frame; `content` carries the encoded
+    # envelope so the persisted message rehydrates the same UI on refresh.
+    oauth_required: OAuthRequiredPayload | None = None
 
 
 @runtime_checkable

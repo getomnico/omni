@@ -9,11 +9,19 @@
         content: MessageContent
         isStreaming: boolean
         stripThinkingContent: (text: string, tag: string) => string
+        isAdmin?: boolean
+        onOAuthComplete?: () => void
     }
 
     const MAX_VISIBLE_TOOLS = 4
 
-    let { content, isStreaming, stripThinkingContent }: Props = $props()
+    let {
+        content,
+        isStreaming,
+        stripThinkingContent,
+        isAdmin = false,
+        onOAuthComplete = () => {},
+    }: Props = $props()
     let expanded = $state(false)
 
     let toolBlocks = $derived(content.filter((b): b is ToolMessageContent => b.type === 'tool'))
@@ -58,7 +66,7 @@
                         citations={block.citations} />
                 {:else if block.type === 'tool'}
                     <div class="mb-1">
-                        <ToolMessage message={block} />
+                        <ToolMessage message={block} {isAdmin} {onOAuthComplete} />
                     </div>
                 {/if}
             {/each}
@@ -74,7 +82,7 @@
             citations={block.citations} />
     {:else if block.type === 'tool'}
         <div in:fly={{ y: 4, duration: 300 }} class="mb-1">
-            <ToolMessage message={block} />
+            <ToolMessage message={block} {isAdmin} {onOAuthComplete} />
         </div>
     {/if}
 {/each}
