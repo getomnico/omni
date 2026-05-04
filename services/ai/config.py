@@ -37,24 +37,22 @@ def validate_port(port_str: str) -> int:
         sys.exit(1)
 
 
-def construct_database_url() -> str:
-    """Construct database URL from individual components"""
-    database_host = get_required_env("DATABASE_HOST")
-    database_username = get_required_env("DATABASE_USERNAME")
-    database_name = get_required_env("DATABASE_NAME")
-    database_password = get_required_env("DATABASE_PASSWORD")
-    database_port = get_optional_env("DATABASE_PORT", "5432")
-
-    port = validate_port(database_port)
-
-    return f"postgresql://{quote_plus(database_username)}:{quote_plus(database_password)}@{database_host}:{port}/{database_name}"
-
-
 # Load and validate configuration
 PORT = validate_port(get_required_env("PORT"))
 MODEL_PATH = get_required_env("MODEL_PATH")
 REDIS_URL = get_required_env("REDIS_URL")
-DATABASE_URL = construct_database_url()
+
+# Database connection settings (exported so consumers like the memory
+# bootstrap don't have to re-read os.environ).
+DATABASE_HOST = get_required_env("DATABASE_HOST")
+DATABASE_USERNAME = get_required_env("DATABASE_USERNAME")
+DATABASE_NAME = get_required_env("DATABASE_NAME")
+DATABASE_PASSWORD = get_required_env("DATABASE_PASSWORD")
+DATABASE_PORT = validate_port(get_optional_env("DATABASE_PORT", "5432"))
+DATABASE_URL = (
+    f"postgresql://{quote_plus(DATABASE_USERNAME)}:{quote_plus(DATABASE_PASSWORD)}"
+    f"@{DATABASE_HOST}:{DATABASE_PORT}/{DATABASE_NAME}"
+)
 
 # Embedding configuration (only batch processing vars remain; provider config is in DB)
 EMBEDDING_MODEL = get_optional_env("EMBEDDING_MODEL", "")
@@ -115,6 +113,11 @@ APPROVAL_TIMEOUT_SECONDS = int(
     get_optional_env("APPROVAL_TIMEOUT_SECONDS", "600")
 )  # 10 minutes
 SANDBOX_URL: str | None = os.getenv("SANDBOX_URL") or None
+MEMORY_ENABLED = get_optional_env("MEMORY_ENABLED", "true").lower() == "true"
+MEMORY_PROVIDER: str = get_optional_env("MEMORY_PROVIDER", "mem0")
+MEM0_HISTORY_DB_PATH: str = get_optional_env(
+    "MEM0_HISTORY_DB_PATH", "/tmp/mem0_history.db"
+)
 
 # Background agent scheduler
 AGENT_SCHEDULER_POLL_INTERVAL = int(
