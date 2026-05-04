@@ -169,15 +169,24 @@ export async function generateAuthUrlForUserWrite(args: {
         throw new Error(`OAuth client not configured for provider=${manifestConfig.provider}`)
     }
 
+    // Per-user OAuth must cover *every* tool call a user makes against this
+    // source — reads as well as writes. If we only granted write scopes, the
+    // resulting token (e.g. Google's `drive.file`) wouldn't have access to
+    // arbitrary files the user wants to read, leading to confusing 404s.
+    // We never fall back to org credentials for user-invoked calls, so the
+    // per-user token has to stand on its own for both modes.
+    const readScopes = manifestConfig.scopes[args.sourceType]?.read ?? []
     const writeScopes = manifestConfig.scopes[args.sourceType]?.write ?? []
-    if (writeScopes.length === 0) {
-        throw new Error(`No write scopes declared for source_type=${args.sourceType}`)
+    const actionScopes = [...new Set([...readScopes, ...writeScopes])]
+    if (actionScopes.length === 0) {
+        throw new Error(`No action scopes declared for source_type=${args.sourceType}`)
     }
 
-    // Send identity + write scopes in the auth request. Strict-validate only
-    // the write scopes — providers (Google) rewrite identity scope aliases
-    // (`email` → `userinfo.email`) so equality on identity scopes is fragile.
-    const sentScopes = [...new Set([...manifestConfig.identity_scopes, ...writeScopes])]
+    // Send identity + read + write scopes in the auth request. Strict-validate
+    // only the action scopes — providers (Google) rewrite identity scope
+    // aliases (`email` → `userinfo.email`) so equality on identity scopes is
+    // fragile.
+    const sentScopes = [...new Set([...manifestConfig.identity_scopes, ...actionScopes])]
 
     const flow: OAuthFlow = {
         type: 'user_write',
@@ -192,7 +201,7 @@ export async function generateAuthUrlForUserWrite(args: {
         {
             flow,
             provider: manifestConfig.provider,
-            requiredScopes: writeScopes,
+            requiredScopes: actionScopes,
             strictScopeCheck: true,
         },
     )

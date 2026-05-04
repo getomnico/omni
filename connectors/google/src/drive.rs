@@ -417,7 +417,10 @@ impl DriveClient {
             async move {
                 let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, &file_id);
 
-                debug!("Downloading file: {}", file_id);
+                debug!(
+                    "Downloading file: {} (user={}, url={})",
+                    file_id, user_email, url
+                );
                 let response = self
                     .client
                     .get(&url)
@@ -431,6 +434,10 @@ impl DriveClient {
                     return Ok(ApiResult::AuthError);
                 } else if !status.is_success() {
                     let error_text = response.text().await?;
+                    warn!(
+                        "Drive download_file_content failed: user={} file_id={} status={} body={}",
+                        user_email, file_id, status, error_text
+                    );
                     return Ok(ApiResult::OtherError(anyhow!(
                         "Failed to download file {}: HTTP {} - {}",
                         file_id,
@@ -467,7 +474,7 @@ impl DriveClient {
                     DRIVE_API_BASE, &file_id
                 );
 
-                debug!("Getting file metadata: {}", file_id);
+                debug!("Getting file metadata: {} (user={}, url={})", file_id, user_email, url);
                 let response = self
                     .client
                     .get(&url)
@@ -481,6 +488,10 @@ impl DriveClient {
                     return Ok(ApiResult::AuthError);
                 } else if !status.is_success() {
                     let error_text = response.text().await?;
+                    warn!(
+                        "Drive get_file_metadata failed: user={} file_id={} status={} body={}",
+                        user_email, file_id, status, error_text
+                    );
                     return Ok(ApiResult::OtherError(anyhow!(
                         "Failed to get file metadata {}: HTTP {} - {}",
                         file_id,
@@ -519,7 +530,10 @@ impl DriveClient {
                     DRIVE_API_BASE, &file_id, &export_mime_type
                 );
 
-                debug!("Exporting file {} as {}", file_id, export_mime_type);
+                debug!(
+                    "Exporting file {} as {} (user={}, url={})",
+                    file_id, export_mime_type, user_email, url
+                );
                 let response = self
                     .client
                     .get(&url)
@@ -533,6 +547,10 @@ impl DriveClient {
                     return Ok(ApiResult::AuthError);
                 } else if !status.is_success() {
                     let error_text = response.text().await?;
+                    warn!(
+                        "Drive export_file failed: user={} file_id={} export_mime={} status={} body={}",
+                        user_email, file_id, export_mime_type, status, error_text
+                    );
                     return Ok(ApiResult::OtherError(anyhow!(
                         "Failed to export file {}: HTTP {} - {}",
                         file_id,
@@ -565,7 +583,10 @@ impl DriveClient {
             async move {
                 let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, &file_id);
 
-                debug!("Downloading binary file: {}", file_id);
+                debug!(
+                    "Downloading binary file: {} (user={}, url={})",
+                    file_id, user_email, url
+                );
                 let response = self
                     .client
                     .get(&url)
@@ -579,6 +600,10 @@ impl DriveClient {
                     return Ok(ApiResult::AuthError);
                 } else if !status.is_success() {
                     let error_text = response.text().await?;
+                    warn!(
+                        "Drive download_binary_file failed: user={} file_id={} status={} body={}",
+                        user_email, file_id, status, error_text
+                    );
                     return Ok(ApiResult::OtherError(anyhow!(
                         "Failed to download file {}: HTTP {} - {}",
                         file_id,

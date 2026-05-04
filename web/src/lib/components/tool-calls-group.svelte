@@ -9,26 +9,58 @@
         content: MessageContent
         isStreaming: boolean
         stripThinkingContent: (text: string, tag: string) => string
+        isAdmin?: boolean
+        onOAuthComplete?: () => void
     }
 
     const MAX_VISIBLE_TOOLS = 4
 
-    let { content, isStreaming, stripThinkingContent }: Props = $props()
+    let {
+        content,
+        isStreaming,
+        stripThinkingContent,
+        isAdmin = false,
+        onOAuthComplete = () => {},
+    }: Props = $props()
     let expanded = $state(false)
 
-    let toolBlocks = $derived(content.filter((b): b is ToolMessageContent => b.type === 'tool'))
+    // When the model fans out parallel tool calls against the same source and
+    // they all surface oauth_required, we only want one Connect card per source.
+    // Hide the duplicates here; on resume the AI service replaces every
+    // placeholder so the hidden blocks become real tool results naturally.
+    let skippedOAuthBlockIds = $derived.by(() => {
+        const seen = new Set<string>()
+        const skip = new Set<string>()
+        for (const block of content) {
+            if (block.type === 'tool' && block.oauthRequired) {
+                const key = block.oauthRequired.sourceId
+                if (seen.has(key)) skip.add(block.id)
+                else seen.add(key)
+            }
+        }
+        return skip
+    })
+
+    let visibleBlocks = $derived(
+        content.filter((b) => !(b.type === 'tool' && skippedOAuthBlockIds.has(b.id))),
+    )
+    let toolBlocks = $derived(
+        visibleBlocks.filter((b): b is ToolMessageContent => b.type === 'tool'),
+    )
     let collapsibleCount = $derived(Math.max(0, toolBlocks.length - MAX_VISIBLE_TOOLS))
 
     // Split content into earlier (collapsible) and recent blocks
     let cutoffIndex = $derived.by(() => {
         if (collapsibleCount <= 0) return 0
         const visibleTools = new Set(toolBlocks.slice(-MAX_VISIBLE_TOOLS).map((b) => b.id))
-        const idx = content.findIndex((b) => visibleTools.has(b.id))
+        const idx = visibleBlocks.findIndex((b) => visibleTools.has(b.id))
         return idx >= 0 ? idx : 0
     })
 
-    let earlierBlocks = $derived(collapsibleCount > 0 ? content.slice(0, cutoffIndex) : [])
-    let recentBlocks = $derived(collapsibleCount > 0 ? content.slice(cutoffIndex) : content)
+    let earlierBlocks = $derived(collapsibleCount > 0 ? visibleBlocks.slice(0, cutoffIndex) : [])
+    let recentBlocks = $derived(
+        collapsibleCount > 0 ? visibleBlocks.slice(cutoffIndex) : visibleBlocks,
+    )
 </script>
 
 {#if collapsibleCount > 0}
@@ -58,7 +90,7 @@
                         citations={block.citations} />
                 {:else if block.type === 'tool'}
                     <div class="mb-1">
-                        <ToolMessage message={block} />
+                        <ToolMessage message={block} {isAdmin} {onOAuthComplete} />
                     </div>
                 {/if}
             {/each}
@@ -74,7 +106,7 @@
             citations={block.citations} />
     {:else if block.type === 'tool'}
         <div in:fly={{ y: 4, duration: 300 }} class="mb-1">
-            <ToolMessage message={block} />
+            <ToolMessage message={block} {isAdmin} {onOAuthComplete} />
         </div>
     {/if}
 {/each}

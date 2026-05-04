@@ -13,6 +13,7 @@ from anthropic.types import ToolParam
 
 from db.documents import DocumentsRepository
 from db.models import Source
+from tools.omni_tool_result import OAuthRequiredPayload, encode_oauth_required
 from tools.registry import ToolContext, ToolResult
 from tools.sandbox import write_binary_to_sandbox
 
@@ -319,22 +320,36 @@ class ConnectorToolHandler:
                 )
 
                 # 412 = needs_user_auth: the user has no per-user credential for an
-                # org-wide source. Surface a structured prompt so the chat UI can
-                # render a "Connect <provider>" CTA instead of a raw error.
+                # org-wide source. Surface a structured envelope so chat.py can
+                # pause the agent loop and the chat UI can render a "Connect
+                # <provider>" card instead of a raw error.
                 if response.status_code == 412:
                     body = response.json()
+                    provider = body.get("provider")
+                    oauth_start_url = body.get("oauth_start_url")
+                    if not provider or not oauth_start_url:
+                        logger.error(
+                            f"connector-manager 412 missing provider/oauth_start_url; body={body}"
+                        )
+                        return ToolResult(
+                            content=[
+                                {
+                                    "type": "text",
+                                    "text": "This action requires authorization, but the OAuth start URL was not provided by connector-manager.",
+                                }
+                            ],
+                            is_error=True,
+                        )
+                    payload = OAuthRequiredPayload(
+                        source_id=action.source_id,
+                        source_type=action.source_type,
+                        provider=provider,
+                        oauth_start_url=oauth_start_url,
+                    )
                     return ToolResult(
-                        content=[
-                            {
-                                "type": "text",
-                                "text": (
-                                    f"This action needs your authorization for "
-                                    f"{body.get('provider', 'the source')}. "
-                                    f"Open this link to connect: {body.get('oauth_start_url', '')}"
-                                ),
-                            }
-                        ],
-                        is_error=True,
+                        content=[encode_oauth_required(payload)],
+                        is_error=False,
+                        oauth_required=payload,
                     )
 
                 response.raise_for_status()
