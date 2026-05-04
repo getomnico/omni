@@ -11,6 +11,7 @@ from .models import (
     ActionDefinition,
     ActionResponse,
     ConnectorManifest,
+    OAuthManifestConfig,
     SearchOperator,
 )
 
@@ -69,6 +70,16 @@ class Connector(ABC):
     def search_operators(self) -> list[SearchOperator]:
         """Search operators this connector supports. Override to declare operators."""
         return []
+
+    def oauth_config(self) -> OAuthManifestConfig | None:
+        """Declare OAuth2 manifest for per-user authorization-code flows.
+
+        Override to enable user-delegated OAuth. The web app's generic OAuth2
+        client uses the returned config (auth/token endpoints, scopes, etc.)
+        to drive the standard authorization-code flow. Connectors that only
+        support service-credential / API-key auth should leave this at None.
+        """
+        return None
 
     @property
     def mcp_server(self) -> McpServer | None:
@@ -186,6 +197,7 @@ class Connector(ABC):
             mcp_enabled=adapter is not None,
             resources=resources,
             prompts=prompts,
+            oauth=self.oauth_config(),
         )
 
     @abstractmethod

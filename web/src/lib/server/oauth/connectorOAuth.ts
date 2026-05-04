@@ -66,6 +66,12 @@ export async function getOAuthManifestForSourceType(
 interface ClientCreds {
     clientId: string
     clientSecret: string
+    /// Optional per-deployment override for the manifest's auth_endpoint.
+    /// Used when the auth URL has to embed deployment-specific data the
+    /// connector can't know at compile time (e.g. Microsoft tenant id).
+    authEndpoint?: string
+    /// Same idea for the token endpoint.
+    tokenEndpoint?: string
 }
 
 async function loadClientCreds(provider: string): Promise<ClientCreds | null> {
@@ -75,7 +81,12 @@ async function loadClientCreds(provider: string): Promise<ClientCreds | null> {
     const clientId = config.oauth_client_id
     const clientSecret = config.oauth_client_secret
     if (!clientId || !clientSecret) return null
-    return { clientId, clientSecret }
+    return {
+        clientId,
+        clientSecret,
+        authEndpoint: config.oauth_auth_endpoint || undefined,
+        tokenEndpoint: config.oauth_token_endpoint || undefined,
+    }
 }
 
 export async function isProviderConfigured(provider: string): Promise<boolean> {
@@ -226,7 +237,8 @@ function buildAuthUrl(
         state: stateToken,
         ...config.extra_auth_params,
     })
-    return `${config.auth_endpoint}?${params.toString()}`
+    const authEndpoint = creds.authEndpoint ?? config.auth_endpoint
+    return `${authEndpoint}?${params.toString()}`
 }
 
 export interface ExchangeResult {
@@ -269,7 +281,8 @@ export async function exchangeCodeAndIdentify(
         redirect_uri: callbackUrl(),
     })
 
-    const tokenResp = await fetch(config.token_endpoint, {
+    const tokenEndpoint = creds.tokenEndpoint ?? config.token_endpoint
+    const tokenResp = await fetch(tokenEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: tokenParams.toString(),

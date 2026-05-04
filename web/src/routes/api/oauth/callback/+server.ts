@@ -7,11 +7,8 @@ import { exchangeCodeAndIdentify } from '$lib/server/oauth/connectorOAuth'
 import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
 import { logger } from '$lib/server/logger'
 import { getSourcesByType } from '$lib/server/db/sources'
-
-const SOURCE_NAMES: Record<string, string> = {
-    google_drive: 'Google Drive (OAuth)',
-    gmail: 'Gmail (OAuth)',
-}
+import { getSourceDisplayName } from '$lib/utils/icons'
+import { SourceType } from '$lib/types'
 
 /// Unified OAuth callback. Provider-agnostic — dispatches based on the flow
 /// stored in the OAuth state.
@@ -130,7 +127,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
             .insert(sources)
             .values({
                 id: ulid(),
-                name: SOURCE_NAMES[sourceType] || sourceType,
+                name: getSourceDisplayName(sourceType as SourceType) ?? sourceType,
                 sourceType,
                 scope: 'user',
                 config: {},
