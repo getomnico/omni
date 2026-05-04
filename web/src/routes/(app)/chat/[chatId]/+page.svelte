@@ -37,8 +37,12 @@
         UploadMessageContent,
         MessageContent,
         ApprovalRequiredEvent,
+        OAuthRequired,
+        OAuthRequiredEvent,
+        ToolResultReplacedEvent,
         OmniUploadBlock,
     } from '$lib/types/message'
+    import { OmniToolResultKind, tryParseOmniEnvelope } from '$lib/types/omni-tool-result'
     import ToolMessage from '$lib/components/tool-message.svelte'
     import ToolCallsGroup from '$lib/components/tool-calls-group.svelte'
     import { cn } from '$lib/utils'
@@ -234,6 +238,11 @@
     let copiedUrl = $state(false)
     let messageFeedback = $state<Record<string, 'upvote' | 'downvote'>>({})
     let pendingApproval = $state<ApprovalRequiredEvent | null>(null)
+    // Live OAuth metadata indexed by tool_call_id. The SSE oauth_required
+    // event is the only place we learn `provider_configured` and a friendly
+    // source display name; the persisted envelope on its own can render the
+    // card in degraded mode (provider treated as "configured" optimistically).
+    let oauthEventByToolCallId = $state<Record<string, OAuthRequiredEvent>>({})
     let editingMessageId = $state<string | null>(null)
     let editingContent = $state('')
     // Tracks user's branch choices: parentId -> chosen childId
@@ -564,6 +573,19 @@
             }
         }
 
+        const updateOAuthRequired = (toolUseId: string, oauthRequired: OAuthRequired) => {
+            for (const message of processedMessages) {
+                if (message.role === 'assistant') {
+                    for (const block of message.content) {
+                        if (block.type === 'tool' && block.toolUse.id === toolUseId) {
+                            block.oauthRequired = oauthRequired
+                            return
+                        }
+                    }
+                }
+            }
+        }
+
         for (let i = 0; i < displayPath.length; i++) {
             const chatMsg = displayPath[i]
             const message = chatMsg.message
@@ -690,7 +712,38 @@
                             const textBlocks = Array.isArray(block.content)
                                 ? block.content.filter((b: any) => b.type === 'text')
                                 : []
+                            // First text block may carry an Omni envelope (OAuth-required
+                            // prompt). Surface it as a typed UI variant; if it doesn't
+                            // parse, fall through to the normal action-result path.
+                            let oauthHandled = false
                             if (textBlocks.length > 0) {
+                                const envelope = tryParseOmniEnvelope(textBlocks[0].text)
+                                if (
+                                    envelope &&
+                                    envelope.omni_kind === OmniToolResultKind.OauthRequired
+                                ) {
+                                    const live = oauthEventByToolCallId[toolUseId]
+                                    updateOAuthRequired(toolUseId, {
+                                        sourceId: envelope.payload.source_id,
+                                        sourceType: envelope.payload.source_type,
+                                        sourceDisplayName:
+                                            live?.source_display_name ??
+                                            getSourceDisplayName(
+                                                envelope.payload.source_type as SourceType,
+                                            ) ??
+                                            envelope.payload.source_type,
+                                        provider: envelope.payload.provider,
+                                        // Optimistic default on refresh; corrected by
+                                        // the live SSE event when present, and the
+                                        // card itself can re-check via /api/oauth/provider-status.
+                                        providerConfigured: live?.provider_configured ?? true,
+                                        oauthStartUrl: envelope.payload.oauth_start_url,
+                                        status: 'pending',
+                                    })
+                                    oauthHandled = true
+                                }
+                            }
+                            if (!oauthHandled && textBlocks.length > 0) {
                                 const text = textBlocks.map((b: any) => b.text).join('\n')
                                 updateActionResult({
                                     toolUseId,
@@ -1004,6 +1057,53 @@
                 requestAnimationFrame(() => recalcBottomPadding())
             } catch (err) {
                 console.error('Failed to parse approval_required event:', err)
+            }
+        })
+
+        eventSource.addEventListener('oauth_required', (event) => {
+            try {
+                const oauthData: OAuthRequiredEvent = JSON.parse(event.data)
+                oauthEventByToolCallId[oauthData.tool_call_id] = oauthData
+                isStreaming = false
+                stopThinkingText()
+                requestAnimationFrame(() => recalcBottomPadding())
+            } catch (err) {
+                console.error('Failed to parse oauth_required event:', err)
+            }
+        })
+
+        eventSource.addEventListener('tool_result_replaced', (event) => {
+            try {
+                const data: ToolResultReplacedEvent = JSON.parse(event.data)
+                // Find the user-role chat message that holds the placeholder
+                // tool_result block and replace it with the real result. The
+                // envelope text is gone, so processMessages will stop
+                // producing the OAuth card on the next derivation tick.
+                for (const cm of chatMessages) {
+                    if (cm.message.role !== 'user') continue
+                    const content = cm.message.content
+                    if (!Array.isArray(content)) continue
+                    let replaced = false
+                    const next = content.map((b) => {
+                        if (b.type === 'tool_result' && b.tool_use_id === data.tool_use_id) {
+                            replaced = true
+                            return {
+                                type: 'tool_result',
+                                tool_use_id: data.tool_use_id,
+                                content: data.content,
+                                is_error: data.is_error,
+                            }
+                        }
+                        return b
+                    })
+                    if (replaced) {
+                        cm.message = { ...cm.message, content: next }
+                        delete oauthEventByToolCallId[data.tool_use_id]
+                        break
+                    }
+                }
+            } catch (err) {
+                console.error('Failed to parse tool_result_replaced event:', err)
             }
         })
 
@@ -1515,7 +1615,9 @@
                                 <ToolCallsGroup
                                     content={message.content}
                                     isStreaming={isStreaming && i === processedMessages.length - 1}
-                                    {stripThinkingContent} />
+                                    {stripThinkingContent}
+                                    isAdmin={data.user.role === 'admin'}
+                                    onOAuthComplete={() => streamResponse(data.chat.id)} />
                             </div>
                             {#if pendingApproval && i === processedMessages.length - 1}
                                 {@const connectorName = pendingApproval.tool_name.split('__')[0]}

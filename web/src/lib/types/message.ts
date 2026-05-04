@@ -25,6 +25,18 @@ export type ToolApproval = {
     approvalId: string
 }
 
+export type OAuthRequiredStatus = 'pending' | 'completed' | 'cancelled'
+
+export type OAuthRequired = {
+    sourceId: string
+    sourceType: string
+    sourceDisplayName: string
+    provider: string
+    providerConfigured: boolean
+    oauthStartUrl: string
+    status: OAuthRequiredStatus
+}
+
 export type ToolMessageContent = {
     id: number
     type: 'tool'
@@ -48,6 +60,8 @@ export type ToolMessageContent = {
     }
     // Approval state for write actions
     approval?: ToolApproval
+    // OAuth-required state when a connector tool surfaces needs_user_auth
+    oauthRequired?: OAuthRequired
 }
 
 export type ApprovalRequiredEvent = {
@@ -55,6 +69,23 @@ export type ApprovalRequiredEvent = {
     tool_name: string
     tool_input: Record<string, unknown>
     tool_call_id: string
+}
+
+export type OAuthRequiredEvent = {
+    tool_call_id: string
+    tool_name: string
+    source_id: string
+    source_type: string
+    source_display_name: string
+    provider: string
+    provider_configured: boolean
+    oauth_start_url: string
+}
+
+export type ToolResultReplacedEvent = {
+    tool_use_id: string
+    content: unknown
+    is_error: boolean
 }
 
 export type ToolName = 'search_documents' | 'read_document' | string

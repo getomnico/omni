@@ -3,6 +3,9 @@ import { env } from '$env/dynamic/private'
 import type { RequestHandler } from './$types.js'
 import { chatRepository, chatMessageRepository } from '$lib/server/db/chats.js'
 import { getAgent } from '$lib/server/db/agents.js'
+import { isProviderConfigured } from '$lib/server/oauth/connectorOAuth.js'
+import { getSourceDisplayName } from '$lib/utils/icons.js'
+import { SourceType } from '$lib/types.js'
 import type {
     ContentBlockParam,
     ToolResultBlockParam,
@@ -212,6 +215,46 @@ export const GET: RequestHandler = async ({ params, locals }) => {
                                 }
                                 const approvalEvent = `event: approval_required\ndata: ${data}\n\n`
                                 controller.enqueue(encoder.encode(approvalEvent))
+                                continue
+                            }
+
+                            // Enrich and forward oauth_required events to client.
+                            // The AI service knows source_id/source_type/provider/url
+                            // but only the web layer can answer "is the OAuth client
+                            // configured for this provider" and resolve a friendly
+                            // source display name — so we attach those fields here.
+                            if (eventType === 'oauth_required' && data) {
+                                try {
+                                    const oauthData = JSON.parse(data) as {
+                                        tool_call_id: string
+                                        tool_name: string
+                                        source_id: string
+                                        source_type: string
+                                        provider: string
+                                        oauth_start_url: string
+                                    }
+                                    const providerConfigured = await isProviderConfigured(
+                                        oauthData.provider,
+                                    )
+                                    const sourceDisplayName =
+                                        getSourceDisplayName(oauthData.source_type as SourceType) ??
+                                        oauthData.source_type
+                                    const enriched = {
+                                        ...oauthData,
+                                        provider_configured: providerConfigured,
+                                        source_display_name: sourceDisplayName,
+                                    }
+                                    const enrichedEvent = `event: oauth_required\ndata: ${JSON.stringify(enriched)}\n\n`
+                                    controller.enqueue(encoder.encode(enrichedEvent))
+                                } catch (err) {
+                                    logger.error('Failed to enrich oauth_required event', err, {
+                                        chatId,
+                                    })
+                                    // Fall back to forwarding the raw event so the
+                                    // client at least sees something actionable.
+                                    const fallback = `event: oauth_required\ndata: ${data}\n\n`
+                                    controller.enqueue(encoder.encode(fallback))
+                                }
                                 continue
                             }
 

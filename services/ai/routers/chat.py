@@ -29,6 +29,7 @@ from tools import (
     PeopleSearchHandler,
 )
 from tools.connector_handler import ConnectorAction, SearchOperator
+from tools.omni_tool_result import OAuthRequiredPayload
 from tools.sandbox_handler import SandboxToolHandler
 from tools.search_handler import fetch_operator_values
 from tools.skill_handler import SkillHandler
@@ -412,6 +413,48 @@ async def _clear_pending_approval(redis_client, chat_id: str) -> None:
     await redis_client.delete(key)
 
 
+async def _save_pending_oauth(
+    redis_client,
+    chat_id: str,
+    tool_call: dict,
+    conversation_messages: list[MessageParam],
+) -> None:
+    """Save pending-OAuth resume state to Redis.
+
+    Mirrors `_save_pending_approval` but for the OAuth-required flow. Keyed
+    separately so a chat can have at most one of each kind pending at once.
+    """
+    state = {
+        "tool_call": {
+            "id": tool_call["id"],
+            "name": tool_call["name"],
+            "input": tool_call["input"],
+        },
+        "conversation_messages": conversation_messages,
+    }
+    key = f"chat:{chat_id}:pending_oauth"
+    await redis_client.set(
+        key, json.dumps(state, default=str), ex=APPROVAL_TIMEOUT_SECONDS
+    )
+    logger.info(f"Saved pending OAuth for chat {chat_id} (tool {tool_call['name']})")
+
+
+async def _get_pending_oauth(redis_client, chat_id: str) -> dict | None:
+    key = f"chat:{chat_id}:pending_oauth"
+    try:
+        data = await redis_client.get(key)
+        if data:
+            return json.loads(data)
+    except Exception as e:
+        logger.warning(f"Failed to get pending OAuth: {e}")
+    return None
+
+
+async def _clear_pending_oauth(redis_client, chat_id: str) -> None:
+    key = f"chat:{chat_id}:pending_oauth"
+    await redis_client.delete(key)
+
+
 @router.get("/chat/{chat_id}/stream")
 async def stream_chat(
     request: Request,
@@ -524,10 +567,12 @@ async def stream_chat(
         registry = build_result.registry
         all_tools = registry.get_all_tools()
 
-        # Check for pending approval resume flow
+        # Check for pending approval / OAuth resume flow
         pending = None
+        pending_oauth = None
         if redis_client:
             pending = await _get_pending_approval(redis_client, chat_id)
+            pending_oauth = await _get_pending_oauth(redis_client, chat_id)
 
         active_sources = [
             s for s in (build_result.sources or []) if s.is_active and not s.is_deleted
@@ -554,9 +599,9 @@ async def stream_chat(
             sandbox_url=SANDBOX_URL,
         )
 
-    # Check if we need to process - only if last message is from user (or resuming from approval)
+    # Check if we need to process - only if last message is from user (or resuming from approval / OAuth)
     last_message_role = messages[-1].get("role") if messages else None
-    if not pending and last_message_role != "user":
+    if not pending and not pending_oauth and last_message_role != "user":
         logger.info(
             f"Last message is not from user, no processing needed. Chat ID: {chat_id}"
         )
@@ -637,6 +682,94 @@ async def stream_chat(
                 tool_result_message = MessageParam(role="user", content=[tool_result])
                 conversation_messages.append(tool_result_message)
                 yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
+
+            # Handle OAuth resume — replace the placeholder tool_result in-place
+            # so the LLM sees the real result on the next iteration, not the
+            # `omni_kind: oauth_required` envelope we wrote at pause time.
+            elif pending_oauth:
+                logger.info(f"Resuming from pending OAuth for chat {chat_id}")
+                await _clear_pending_oauth(redis_client, chat_id)
+
+                tool_call = pending_oauth["tool_call"]
+                tool_use_id = tool_call["id"]
+
+                placeholder_message_id: str | None = None
+                for cm in chat_messages:
+                    msg = cm.message
+                    if not isinstance(msg, dict) or msg.get("role") != "user":
+                        continue
+                    content = msg.get("content")
+                    if not isinstance(content, list):
+                        continue
+                    for block in content:
+                        if (
+                            isinstance(block, dict)
+                            and block.get("type") == "tool_result"
+                            and block.get("tool_use_id") == tool_use_id
+                        ):
+                            placeholder_message_id = cm.id
+                            break
+                    if placeholder_message_id:
+                        break
+
+                if not placeholder_message_id:
+                    logger.error(
+                        f"OAuth resume: no placeholder tool_result for tool_use_id={tool_use_id} in chat {chat_id}"
+                    )
+                    yield f"event: error\ndata: Could not resume from OAuth — placeholder missing.\n\n"
+                    return
+
+                context = ToolContext(
+                    chat_id=chat_id,
+                    user_id=tool_user_id,
+                    user_email=user_email,
+                    skip_permission_check=tool_skip_perm,
+                )
+                result = await registry.execute(
+                    tool_call["name"], tool_call["input"], context
+                )
+                new_block = ToolResultBlockParam(
+                    type="tool_result",
+                    tool_use_id=tool_use_id,
+                    content=result.content,
+                    is_error=result.is_error,
+                )
+
+                # Replace the placeholder block in conversation_messages and
+                # write the updated message JSONB back to chat_messages.
+                for cm_msg in conversation_messages:
+                    if not isinstance(cm_msg, dict) or cm_msg.get("role") != "user":
+                        continue
+                    content = cm_msg.get("content")
+                    if not isinstance(content, list):
+                        continue
+                    new_content = [
+                        (
+                            new_block
+                            if (
+                                isinstance(b, dict)
+                                and b.get("type") == "tool_result"
+                                and b.get("tool_use_id") == tool_use_id
+                            )
+                            else b
+                        )
+                        for b in content
+                    ]
+                    if new_content != content:
+                        cm_msg["content"] = new_content
+                        await messages_repo.update_message_content(
+                            placeholder_message_id, cm_msg
+                        )
+                        break
+
+                # Notify the client so it can swap the OAuth card for the real
+                # tool_result without waiting for a page refresh.
+                replaced_event = {
+                    "tool_use_id": tool_use_id,
+                    "content": result.content,
+                    "is_error": result.is_error,
+                }
+                yield f"event: tool_result_replaced\ndata: {json.dumps(replaced_event)}\n\n"
 
             logger.info(
                 f"Starting conversation with {len(conversation_messages)} initial messages"
@@ -853,6 +986,11 @@ async def stream_chat(
 
                 # Execute each tool call via the registry
                 tool_results: list[ToolResultBlockParam] = []
+                # Track the first tool call that surfaced an oauth_required envelope
+                # so we can pause the agent loop after this iteration's tool_results
+                # are persisted (every tool_use must be paired with a tool_result
+                # before we can pause, per the Anthropic API contract).
+                pending_oauth: tuple[dict, OAuthRequiredPayload] | None = None
                 for tool_call in tool_calls:
                     tool_name = tool_call["name"]
 
@@ -911,6 +1049,9 @@ async def stream_chat(
                     )
                     tool_results.append(tool_result)
 
+                    if result.oauth_required is not None and pending_oauth is None:
+                        pending_oauth = (tool_call, result.oauth_required)
+
                     yield f"event: message\ndata: {json.dumps(tool_result)}\n\n"
 
                 tool_result_message = MessageParam(role="user", content=tool_results)
@@ -918,6 +1059,28 @@ async def stream_chat(
 
                 # Send complete tool result message to omni-web for database persistence
                 yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
+
+                # If any tool surfaced an oauth_required envelope, pause the loop now
+                # that the placeholder tool_result has been persisted. The frontend
+                # will render the Connect card; on completion it re-opens the stream
+                # and the resume branch (top of stream_generator) replaces the
+                # placeholder with the real result.
+                if pending_oauth and redis_client:
+                    pending_tc, payload = pending_oauth
+                    await _save_pending_oauth(
+                        redis_client, chat_id, pending_tc, conversation_messages
+                    )
+                    oauth_event = {
+                        "tool_call_id": pending_tc["id"],
+                        "tool_name": pending_tc["name"],
+                        "source_id": payload.source_id,
+                        "source_type": payload.source_type,
+                        "provider": payload.provider,
+                        "oauth_start_url": payload.oauth_start_url,
+                    }
+                    yield f"event: oauth_required\ndata: {json.dumps(oauth_event)}\n\n"
+                    yield f"event: end_of_stream\ndata: OAuth required\n\n"
+                    return
 
             yield f"event: end_of_stream\ndata: Stream ended\n\n"
 

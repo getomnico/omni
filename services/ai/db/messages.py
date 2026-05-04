@@ -19,6 +19,23 @@ class MessagesRepository:
             return self.pool
         return await get_db_pool()
 
+    async def update_message_content(
+        self, message_id: str, message: Dict[str, Any]
+    ) -> None:
+        """Replace the JSONB `message` for an existing chat_messages row.
+
+        Used by the OAuth-resume path to swap a placeholder tool_result block
+        with the real result in-place — the LLM should never see the
+        placeholder envelope on the iteration that follows resume.
+        """
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE chat_messages SET message = $1 WHERE id = $2",
+                json.dumps(message),
+                message_id,
+            )
+
     async def create(
         self, chat_id: str, message: Dict[str, Any], parent_id: Optional[str] = None
     ) -> ChatMessage:
