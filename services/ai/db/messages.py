@@ -19,6 +19,18 @@ class MessagesRepository:
             return self.pool
         return await get_db_pool()
 
+    async def update_message_content(
+        self, message_id: str, message: Dict[str, Any]
+    ) -> None:
+        """Replace the JSONB `message` payload for a chat_messages row."""
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE chat_messages SET message = $1 WHERE id = $2",
+                json.dumps(message),
+                message_id,
+            )
+
     async def create(
         self, chat_id: str, message: Dict[str, Any], parent_id: Optional[str] = None
     ) -> ChatMessage:

@@ -37,7 +37,9 @@ class ChatsRepository:
         """
 
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(query, chat_id, user_id, title, model_id, agent_id)
+            row = await conn.fetchrow(
+                query, chat_id, user_id, title, model_id, agent_id
+            )
 
         return Chat.from_row(dict(row))
 
@@ -48,7 +50,7 @@ class ChatsRepository:
         query = """
             SELECT id, user_id, title, model_id, agent_id, created_at, updated_at
             FROM chats
-            WHERE id = $1
+            WHERE id = $1 AND is_deleted = FALSE
         """
 
         async with pool.acquire() as conn:
@@ -65,7 +67,7 @@ class ChatsRepository:
         query = """
             UPDATE chats
             SET title = $2, updated_at = NOW()
-            WHERE id = $1
+            WHERE id = $1 AND is_deleted = FALSE
             RETURNING id, user_id, title, model_id, agent_id, created_at, updated_at
         """
 

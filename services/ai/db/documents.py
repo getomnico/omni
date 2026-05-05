@@ -91,6 +91,40 @@ class DocumentsRepository:
             )
         return None
 
+    async def get_by_external_id(
+        self, external_id: str, user_email: str | None = None
+    ) -> Optional[Document]:
+        """Get a document by its connector-native external_id.
+
+        Mirrors get_by_id's permission filter. If multiple documents share the
+        external_id (cross-source duplicates), returns the first match —
+        acceptable for composite ids like Gmail's `{thread}:att:{msg}:{att}`
+        which are practically unique.
+        """
+        pool = await self._get_pool()
+
+        if user_email:
+            perm_filter = _permission_filter(user_email.lower())
+            query = (
+                f"SELECT {_COLUMNS} FROM documents "
+                f"WHERE external_id = $1 {perm_filter} LIMIT 1"
+            )
+        else:
+            query = f"SELECT {_COLUMNS} FROM documents WHERE external_id = $1 LIMIT 1"
+        row = await pool.fetchrow(query, external_id)
+
+        if row:
+            return Document(
+                id=row["id"],
+                content_id=row["content_id"],
+                source_id=row["source_id"],
+                external_id=row["external_id"],
+                title=row["title"],
+                content_type=row["content_type"],
+                embedding_status=row["embedding_status"],
+            )
+        return None
+
     async def find_embedded_duplicate(
         self, external_id: str, exclude_document_id: str
     ) -> Optional[str]:

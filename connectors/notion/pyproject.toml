@@ -12,7 +12,7 @@ authors = [
     { name = "Omni Team" }
 ]
 dependencies = [
-    "omni-connector",
+    "omni-connector[mcp]",
     "notion-client>=2.0.0",
 ]
 

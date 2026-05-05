@@ -37,6 +37,13 @@ class LLMProvider(ABC):
     api_key: str | None = None
     base_url: str | None = None
 
+    # Provider-specific sidecar fields the provider stamps on streamed
+    # content_blocks (via Pydantic ``extra="allow"``) that must be persisted
+    # alongside the standard block fields and read back on replay.
+    # Example: Gemini's ``_gemini_thought_signature``, an opaque reasoning
+    # token Gemini 3 requires to round-trip across turns.
+    PERSISTED_BLOCK_EXTRAS: tuple[str, ...] = ()
+
     @abstractmethod
     async def stream_response(
         self,

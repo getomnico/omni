@@ -91,7 +91,56 @@ fn mime_from_extension(filename: &str) -> Option<String> {
 }
 
 fn html_to_markdown(html: &str) -> String {
-    htmd::convert(html).unwrap_or_default()
+    match htmd::convert(html) {
+        Ok(md) if !md.trim().is_empty() => md,
+        Ok(_) => {
+            warn!("htmd::convert returned empty, falling back to tag-strip");
+            strip_html_tags(html)
+        }
+        Err(e) => {
+            warn!("htmd::convert failed ({}), falling back to tag-strip", e);
+            strip_html_tags(html)
+        }
+    }
+}
+
+/// Best-effort fallback: drop everything between angle brackets, decode the
+/// most common HTML entities, and collapse whitespace. Not pretty, but always
+/// returns indexable text — preferable to silently dropping the whole body.
+fn strip_html_tags(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    let mut in_script_or_style = false;
+    let mut tag_buf = String::new();
+    for ch in html.chars() {
+        if in_tag {
+            if ch == '>' {
+                in_tag = false;
+                let lower = tag_buf.to_ascii_lowercase();
+                if lower.starts_with("script") || lower.starts_with("style") {
+                    in_script_or_style = true;
+                } else if lower.starts_with("/script") || lower.starts_with("/style") {
+                    in_script_or_style = false;
+                }
+                tag_buf.clear();
+            } else {
+                tag_buf.push(ch);
+            }
+        } else if ch == '<' {
+            in_tag = true;
+        } else if !in_script_or_style {
+            out.push(ch);
+        }
+    }
+    let decoded = out
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'");
+    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn extract_pdf_text(data: &[u8]) -> Result<String> {
@@ -299,6 +348,24 @@ mod tests {
         let result = extract_content(data, "text/html", None).unwrap();
         assert!(result.contains("Title"));
         assert!(result.contains("Hello world"));
+    }
+
+    #[test]
+    fn test_strip_html_tags_fallback() {
+        let html = "<div><script>var x=1;</script>Hello <b>world</b>&nbsp;&amp; bye</div>";
+        let stripped = strip_html_tags(html);
+        assert!(stripped.contains("Hello world"));
+        assert!(stripped.contains("&"));
+        assert!(!stripped.contains("var x=1"));
+        assert!(!stripped.contains("<"));
+    }
+
+    #[test]
+    fn test_strip_html_tags_drops_style() {
+        let html = "<style>body{color:red}</style><p>visible</p>";
+        let stripped = strip_html_tags(html);
+        assert!(stripped.contains("visible"));
+        assert!(!stripped.contains("color:red"));
     }
 
     #[test]

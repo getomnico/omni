@@ -74,6 +74,7 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
+                        scope: 'org',
                         name: 'Google Drive',
                         sourceType: 'google_drive',
                         config,
@@ -109,6 +110,7 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
+                        scope: 'org',
                         name: 'Gmail',
                         sourceType: 'gmail',
                         config,

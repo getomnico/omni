@@ -26,7 +26,12 @@ export class ChatRepository {
         this.db = dbInstance
     }
 
-    async create(userId: string, title?: string, modelId?: string, agentId?: string): Promise<Chat> {
+    async create(
+        userId: string,
+        title?: string,
+        modelId?: string,
+        agentId?: string,
+    ): Promise<Chat> {
         const chatId = ulid()
         const [newChat] = await this.db
             .insert(chats)
@@ -43,7 +48,11 @@ export class ChatRepository {
     }
 
     async get(chatId: string): Promise<Chat | null> {
-        const [chat] = await this.db.select().from(chats).where(eq(chats.id, chatId)).limit(1)
+        const [chat] = await this.db
+            .select()
+            .from(chats)
+            .where(and(eq(chats.id, chatId), eq(chats.isDeleted, false)))
+            .limit(1)
 
         return chat || null
     }
@@ -52,7 +61,7 @@ export class ChatRepository {
         userId: string,
         options?: { limit?: number; offset?: number; isStarred?: boolean },
     ): Promise<Chat[]> {
-        const conditions = [eq(chats.userId, userId)]
+        const conditions = [eq(chats.userId, userId), eq(chats.isDeleted, false)]
         if (options?.isStarred !== undefined) {
             conditions.push(eq(chats.isStarred, options.isStarred))
         }
@@ -101,9 +110,13 @@ export class ChatRepository {
     }
 
     async delete(chatId: string): Promise<boolean> {
-        const result = await this.db.delete(chats).where(eq(chats.id, chatId))
+        const updated = await this.db
+            .update(chats)
+            .set({ isDeleted: true, updatedAt: new Date() })
+            .where(and(eq(chats.id, chatId), eq(chats.isDeleted, false)))
+            .returning({ id: chats.id })
 
-        return result.rowCount > 0
+        return updated.length > 0
     }
 
     async search(userId: string, query: string): Promise<Chat[]> {
@@ -114,6 +127,7 @@ export class ChatRepository {
                 FROM chats c
                 WHERE c.title ||| ${query}
                   AND c.user_id = ${userId}
+                  AND c.is_deleted = FALSE
                 ORDER BY score DESC
                 LIMIT 20
             ),
@@ -123,6 +137,7 @@ export class ChatRepository {
                 JOIN chats c ON c.id = cm.chat_id
                 WHERE cm.content_text ||| ${query}
                   AND c.user_id = ${userId}
+                  AND c.is_deleted = FALSE
                 ORDER BY score DESC
                 LIMIT 50
             ),

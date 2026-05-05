@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::admin::AdminClient;
 use crate::auth::{create_service_auth, get_domain_from_credentials, GoogleAuth};
 use crate::drive::DriveClient;
+use crate::gmail::{MessageFormat, MessagePart};
 use crate::models::{GoogleConnectorState, GoogleDirectoryUser, SearchUsersResponse};
 use crate::sync::SyncManager;
 use anyhow::{anyhow, Context, Result};
@@ -15,6 +16,97 @@ use omni_connector_sdk::{
 use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
 use tracing::debug;
+
+/// Build the composite external_id we use for a Gmail attachment document.
+///
+/// Format: `{url_encoded_rfc822_msgid}:att:{url_encoded_filename}:{size}`.
+///
+/// The `rfc822_msgid` is the canonical "Message-ID" header value of the
+/// message that holds the attachment, with surrounding `<>` stripped. It is
+/// stable across mailboxes (set by the sender), unlike Gmail's per-mailbox
+/// `messageId` and `attachmentId`. At fetch time we resolve it to the
+/// requesting user's local Gmail message id via
+/// `messages.list?q=rfc822msgid:<id>`, then walk parts to find the matching
+/// attachment by `(filename, size)` and use that part's live `attachmentId`.
+pub fn build_attachment_doc_id(rfc822_msgid: &str, filename: &str, size: u64) -> String {
+    format!(
+        "{}:att:{}:{}",
+        urlencoding::encode(rfc822_msgid),
+        urlencoding::encode(filename),
+        size,
+    )
+}
+
+pub struct ParsedAttachmentDocId {
+    pub rfc822_msgid: String,
+    pub filename: String,
+    pub size: u64,
+}
+
+fn parse_attachment_doc_id(composite: &str) -> Result<ParsedAttachmentDocId> {
+    let (enc_msgid, right) = composite
+        .split_once(":att:")
+        .ok_or_else(|| anyhow!("Invalid attachment id (missing ':att:'): {}", composite))?;
+
+    // Right side is `{enc_filename}:{size}`. Filename is url-encoded so it
+    // contains no colons; size is a clean integer.
+    let (enc_filename, size_str) = right.rsplit_once(':').ok_or_else(|| {
+        anyhow!(
+            "Invalid attachment id (expected filename:size after ':att:'): {}",
+            composite
+        )
+    })?;
+    if enc_msgid.is_empty() || enc_filename.is_empty() || size_str.is_empty() {
+        return Err(anyhow!(
+            "Invalid attachment id (empty rfc822_msgid, filename, or size): {}",
+            composite
+        ));
+    }
+    let size = size_str
+        .parse::<u64>()
+        .with_context(|| format!("Invalid attachment id (size not a number): {}", composite))?;
+    let rfc822_msgid = urlencoding::decode(enc_msgid)
+        .with_context(|| {
+            format!(
+                "Invalid attachment id (rfc822_msgid not url-decodable): {}",
+                composite
+            )
+        })?
+        .into_owned();
+    let filename = urlencoding::decode(enc_filename)
+        .with_context(|| {
+            format!(
+                "Invalid attachment id (filename not url-decodable): {}",
+                composite
+            )
+        })?
+        .into_owned();
+    Ok(ParsedAttachmentDocId {
+        rfc822_msgid,
+        filename,
+        size,
+    })
+}
+
+fn find_attachment_part_by_name<'a>(
+    part: &'a MessagePart,
+    filename: &str,
+    size: u64,
+) -> Option<&'a MessagePart> {
+    if let Some(body) = &part.body {
+        if part.filename.as_deref() == Some(filename) && body.size == Some(size) {
+            return Some(part);
+        }
+    }
+    if let Some(parts) = &part.parts {
+        for child in parts {
+            if let Some(found) = find_attachment_part_by_name(child, filename, size) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
 
 pub struct GoogleConnector {
     pub sync_manager: Arc<SyncManager>,
@@ -39,6 +131,12 @@ impl GoogleConnector {
             .get("file_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Missing required parameter: file_id"))?;
+
+        // Gmail attachment external_ids carry a `:att:` marker. Drive file IDs
+        // never contain colons, so the substring check is a safe dispatcher.
+        if file_id.contains(":att:") {
+            return self.execute_fetch_attachment(params, creds).await;
+        }
 
         let principal_email = creds
             .principal_email
@@ -104,6 +202,122 @@ impl GoogleConnector {
             .header("Content-Type", content_type)
             .header("Content-Length", bytes.len())
             .header("X-File-Name", file_name);
+        let body = axum::body::Body::from(bytes);
+        resp.body(body)
+            .map_err(|e| anyhow::anyhow!("Failed to build response: {}", e))
+    }
+
+    async fn execute_fetch_attachment(
+        &self,
+        params: JsonValue,
+        creds: &ServiceCredential,
+    ) -> Result<Response> {
+        debug!("Executing fetch_attachment with params: {:?}", params);
+        let composite_id = params
+            .get("file_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("Missing required parameter: file_id"))?;
+
+        let ParsedAttachmentDocId {
+            rfc822_msgid,
+            filename,
+            size,
+        } = parse_attachment_doc_id(composite_id)?;
+
+        let principal_email = creds
+            .principal_email
+            .as_deref()
+            .ok_or_else(|| anyhow!("Missing principal_email in credentials"))?;
+
+        let google_auth = self
+            .sync_manager
+            .create_auth(creds, SourceType::Gmail)
+            .await?;
+        let gmail = self.sync_manager.gmail_client();
+
+        // Hop 1: resolve the requesting user's local Gmail message_id via the
+        // canonical RFC 822 Message-ID. Gmail's own message_ids are per-mailbox,
+        // so we never persist them; only the rfc822 id is stable across users.
+        let query = format!("rfc822msgid:{}", rfc822_msgid);
+        let list = gmail
+            .list_messages(
+                &google_auth,
+                principal_email,
+                Some(&query),
+                Some(1),
+                None,
+                None,
+            )
+            .await
+            .context("Failed to search for message by rfc822msgid")?;
+        let local_msg_id = list
+            .messages
+            .as_ref()
+            .and_then(|m| m.first())
+            .map(|m| m.id.clone())
+            .ok_or_else(|| {
+                anyhow!(
+                    "Attachment '{}' not found in {}'s mailbox (rfc822msgid: {})",
+                    filename,
+                    principal_email,
+                    rfc822_msgid
+                )
+            })?;
+
+        // Hop 2: fetch the resolved message and walk parts to find the
+        // attachment matching (filename, size).
+        let message = gmail
+            .get_message(
+                &google_auth,
+                principal_email,
+                &local_msg_id,
+                MessageFormat::Full,
+            )
+            .await
+            .context("Failed to read message metadata")?;
+        let payload = message
+            .payload
+            .as_ref()
+            .ok_or_else(|| anyhow!("Message {} has no payload", local_msg_id))?;
+        let part = find_attachment_part_by_name(payload, &filename, size).ok_or_else(|| {
+            anyhow!(
+                "Attachment '{}' (size {}) not found in resolved message {}",
+                filename,
+                size,
+                local_msg_id
+            )
+        })?;
+        let live_attachment_id = part
+            .body
+            .as_ref()
+            .and_then(|b| b.attachment_id.as_deref())
+            .ok_or_else(|| {
+                anyhow!(
+                    "Attachment '{}' in message {} has no attachmentId",
+                    filename,
+                    local_msg_id
+                )
+            })?;
+        let mime_type = part
+            .mime_type
+            .clone()
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+
+        // Hop 3: download bytes using the part's live attachmentId.
+        let bytes = gmail
+            .download_attachment(
+                &google_auth,
+                principal_email,
+                &local_msg_id,
+                live_attachment_id,
+            )
+            .await?;
+
+        let resp = Response::builder()
+            .status(200)
+            .header("Content-Type", &mime_type)
+            .header("Content-Length", bytes.len())
+            .header("X-File-Name", &filename);
         let body = axum::body::Body::from(bytes);
         resp.body(body)
             .map_err(|e| anyhow::anyhow!("Failed to build response: {}", e))
@@ -200,7 +414,7 @@ impl Connector for GoogleConnector {
             ActionDefinition {
                 name: "fetch_file".to_string(),
                 description:
-                    "Download a file from Google Drive. Exports Google Workspace files to Office format."
+                    "Download a file from Google Drive (Workspace files exported to Office format) or a Gmail attachment."
                         .to_string(),
                 mode: omni_connector_sdk::ActionMode::Read,
                 input_schema: json!({
@@ -208,12 +422,12 @@ impl Connector for GoogleConnector {
                     "properties": {
                         "file_id": {
                             "type": "string",
-                            "description": "The Google Drive file ID"
+                            "description": "Drive file ID, or a Gmail attachment composite ID (thread_id:att:message_id:attachment_id)"
                         }
                     },
                     "required": ["file_id"]
                 }),
-                source_types: vec![SourceType::GoogleDrive],
+                source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
                 admin_only: false,
             },
             ActionDefinition {
@@ -332,5 +546,78 @@ impl Connector for GoogleConnector {
         // The SDK's own cancellation flag (exposed via SyncContext) is the
         // source of truth; we just acknowledge the request.
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_attachment_doc_id, parse_attachment_doc_id};
+
+    #[test]
+    fn round_trips_simple_msgid() {
+        let id = build_attachment_doc_id("CABc123@mail.gmail.com", "report.pdf", 12345);
+        let parsed = parse_attachment_doc_id(&id).unwrap();
+        assert_eq!(parsed.rfc822_msgid, "CABc123@mail.gmail.com");
+        assert_eq!(parsed.filename, "report.pdf");
+        assert_eq!(parsed.size, 12345);
+    }
+
+    #[test]
+    fn round_trips_msgid_and_filename_with_special_chars() {
+        // Real-world rfc822 Message-IDs contain @, +, =, .;
+        // filenames may contain colons, slashes, unicode, parens.
+        let cases = [
+            (
+                "MA0P287MB3036D91CF4E25D0F29D4941BF3262@MA0P287MB3036.INDP287.PROD.OUTLOOK.COM",
+                "weird:name.pdf",
+            ),
+            (
+                "0108019cd78ca34a-33533383-c422+42e2-9016-0632c1a2f408-000000@ap-southeast-2.amazonses.com",
+                "path/with slashes.docx",
+            ),
+            (
+                "<unique-id+tag=value@example.com>".trim_start_matches('<').trim_end_matches('>'),
+                "résumé final.pdf",
+            ),
+            (
+                "abc.def.ghi@example.com",
+                "name with spaces (1).pdf",
+            ),
+        ];
+        for (msgid, filename) in cases {
+            let id = build_attachment_doc_id(msgid, filename, 42);
+            let parsed = parse_attachment_doc_id(&id).unwrap();
+            assert_eq!(parsed.rfc822_msgid, msgid, "msgid round-trip failed");
+            assert_eq!(parsed.filename, filename, "filename round-trip failed");
+            assert_eq!(parsed.size, 42);
+        }
+    }
+
+    #[test]
+    fn rejects_missing_att_marker() {
+        assert!(parse_attachment_doc_id("CABc123@mail.gmail.com:report.pdf:1234").is_err());
+    }
+
+    #[test]
+    fn rejects_too_few_segments() {
+        // Missing filename:size after :att:
+        assert!(parse_attachment_doc_id("CABc123%40mail.gmail.com:att:report.pdf").is_err());
+    }
+
+    #[test]
+    fn rejects_non_numeric_size() {
+        assert!(
+            parse_attachment_doc_id("CABc123%40mail.gmail.com:att:report.pdf:notanumber").is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_empty_segments() {
+        // Empty rfc822_msgid
+        assert!(parse_attachment_doc_id(":att:report.pdf:1234").is_err());
+        // Empty filename
+        assert!(parse_attachment_doc_id("CABc123%40mail.gmail.com:att::1234").is_err());
+        // Empty size
+        assert!(parse_attachment_doc_id("CABc123%40mail.gmail.com:att:report.pdf:").is_err());
     }
 }

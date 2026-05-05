@@ -20,17 +20,20 @@ logger = logging.getLogger(__name__)
 # Content types considered binary (not extracted text).
 # The documents.content_type column stores the standardized content_type
 # (e.g. "spreadsheet") when set, falling back to MIME type otherwise.
+#
+# PDFs are deliberately omitted: the indexer extracts their text at sync time
+# and stores it in content_blobs, so read_document can return that text directly
+# instead of forcing the model to download the binary and re-extract in the
+# sandbox.
 BINARY_CONTENT_TYPES = {
     # Standardized content types
     "spreadsheet",
     "document",
     "presentation",
-    "pdf",
     # MIME type fallbacks (for documents without a standardized content_type)
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "application/vnd.ms-excel",
     "application/vnd.google-apps.spreadsheet",
-    "application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/vnd.google-apps.document",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -126,11 +129,18 @@ class DocumentToolHandler:
             )
 
         try:
-            # Look up document metadata, applying permission filter when appropriate
+            # Look up document metadata, applying permission filter when appropriate.
+            # Accept either a documents.id (ULID) or a connector-native external_id —
+            # the latter is what attachment pointers in email threads carry, since
+            # the indexer-assigned ULID isn't known at the time the thread is emitted.
             user_email = None if context.skip_permission_check else context.user_email
             doc = await self._documents_repo.get_by_id(
                 document_id, user_email=user_email
             )
+            if doc is None:
+                doc = await self._documents_repo.get_by_external_id(
+                    document_id, user_email=user_email
+                )
             if doc is None:
                 return ToolResult(
                     content=[

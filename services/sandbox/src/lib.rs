@@ -5,6 +5,7 @@ pub mod models;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use axum::routing::{get, post};
@@ -76,7 +77,14 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         .route("/execute/bash", post(handlers::execute_bash))
         .route("/execute/python", post(handlers::execute_python))
         .route("/files/write", post(handlers::write_file))
-        .route("/files/write_binary", post(handlers::write_file_binary))
+        // Override axum's 2 MB default body limit — attachments fetched from
+        // connector sources (Gmail, Drive, etc.) can be tens of MB, and the
+        // payload here is base64-encoded JSON so it's ~33% larger than the
+        // raw bytes. Matches the precedent in services/connector-manager.
+        .route(
+            "/files/write_binary",
+            post(handlers::write_file_binary).layer(DefaultBodyLimit::max(400 * 1024 * 1024)),
+        )
         .route("/files/read", post(handlers::read_file))
         .route("/files/stat", post(handlers::file_stat))
         .route("/files/download", get(handlers::download_file))

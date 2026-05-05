@@ -1,12 +1,23 @@
 use anyhow::{anyhow, Context, Result};
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD};
 use base64::Engine;
+
+/// Decode a Gmail base64url payload, accepting both padded and unpadded forms.
+/// The Gmail API is inconsistent — bodies whose decoded length isn't a multiple
+/// of 3 come back with `=` padding; others don't. The strict `URL_SAFE_NO_PAD`
+/// engine rejects padded input, the strict `URL_SAFE` engine rejects unpadded
+/// input, so we try one and fall back to the other.
+fn decode_gmail_base64(data: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    URL_SAFE_NO_PAD
+        .decode(data)
+        .or_else(|_| URL_SAFE.decode(data))
+}
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::auth::{execute_with_auth_retry, is_auth_error, ApiResult, GoogleAuth};
 use shared::RateLimiter;
@@ -759,8 +770,9 @@ impl GmailClient {
         if let Some(ref body) = part.body {
             if let Some(ref data) = body.data {
                 if let Some(ref mime_type) = part.mime_type {
-                    if let Ok(decoded) = URL_SAFE_NO_PAD.decode(data) {
-                        if let Ok(text) = String::from_utf8(decoded) {
+                    match decode_gmail_base64(data) {
+                        Ok(decoded) => {
+                            let text = String::from_utf8_lossy(&decoded).into_owned();
                             if !text.trim().is_empty() {
                                 if mime_type == "text/plain" {
                                     plain.push(text);
@@ -768,6 +780,14 @@ impl GmailClient {
                                     html.push(text);
                                 }
                             }
+                        }
+                        Err(e) => {
+                            warn!(
+                                mime = %mime_type,
+                                len = data.len(),
+                                "Failed to base64-decode message part: {}",
+                                e
+                            );
                         }
                     }
                 }
@@ -878,7 +898,7 @@ impl GmailClient {
                     }
                 };
 
-                let decoded = match URL_SAFE_NO_PAD.decode(&body.data) {
+                let decoded = match decode_gmail_base64(&body.data) {
                     Ok(d) => d,
                     Err(e) => {
                         return Ok(ApiResult::OtherError(anyhow!(
@@ -1130,5 +1150,39 @@ fn mime_type_from_extension(filename: &str) -> Option<&'static str> {
         "csv" => Some("text/csv"),
         "md" | "markdown" => Some("text/markdown"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_gmail_base64;
+    use base64::engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD};
+    use base64::Engine;
+
+    #[test]
+    fn decodes_unpadded_base64url() {
+        let raw = b"hi"; // 2 bytes -> needs padding
+        let no_pad = URL_SAFE_NO_PAD.encode(raw);
+        assert_eq!(decode_gmail_base64(&no_pad).unwrap(), raw);
+    }
+
+    #[test]
+    fn decodes_padded_base64url() {
+        let raw = b"hi"; // 2 bytes -> "aGk="
+        let padded = URL_SAFE.encode(raw);
+        assert!(padded.ends_with('='));
+        assert_eq!(decode_gmail_base64(&padded).unwrap(), raw);
+    }
+
+    #[test]
+    fn decodes_no_padding_needed() {
+        let raw = b"abc"; // 3 bytes -> no padding either way
+        let s = URL_SAFE_NO_PAD.encode(raw);
+        assert_eq!(decode_gmail_base64(&s).unwrap(), raw);
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        assert!(decode_gmail_base64("not!base64@@@").is_err());
     }
 }

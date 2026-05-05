@@ -99,19 +99,40 @@ async def create_test_document(
     title: str,
     content: str,
     permissions: dict | None = None,
+    content_type: str | None = None,
+    content_id: str | None = None,
+    external_id: str | None = None,
 ) -> str:
-    """Create a test document (for search tests). Returns doc_id."""
+    """Create a test document (for search tests). Returns doc_id.
+
+    Optionally sets content_type and content_id; if content_id is provided,
+    a matching content_blobs row is inserted so the document resolves to
+    text content. external_id defaults to ext-{doc_id} when omitted.
+    """
     doc_id = str(ULID())
     async with db_pool.acquire() as conn:
+        if content_id is not None:
+            content_bytes = content.encode("utf-8")
+            await conn.execute(
+                """INSERT INTO content_blobs (id, content, size_bytes, storage_backend)
+                   VALUES ($1, $2, $3, 'postgres')""",
+                content_id,
+                content_bytes,
+                len(content_bytes),
+            )
         await conn.execute(
-            """INSERT INTO documents (id, source_id, external_id, title, content, permissions)
-               VALUES ($1, $2, $3, $4, $5, $6::jsonb)""",
+            """INSERT INTO documents
+                 (id, source_id, external_id, title, content, permissions,
+                  content_type, content_id)
+               VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)""",
             doc_id,
             source_id,
-            f"ext-{doc_id}",
+            external_id if external_id is not None else f"ext-{doc_id}",
             title,
             content,
             json.dumps(permissions or {}),
+            content_type,
+            content_id,
         )
     return doc_id
 
