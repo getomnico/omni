@@ -15,6 +15,7 @@ intermediate dict shuffling.
 import hashlib
 import logging
 from dataclasses import dataclass
+from urllib.parse import quote_plus
 
 from mem0.configs.base import MemoryConfig
 from mem0.embeddings.configs import EmbedderConfig
@@ -28,6 +29,12 @@ from providers import LLMProvider
 from state import AppState
 
 logger = logging.getLogger(__name__)
+
+# Postgres schema mem0 owns. Created by migration 090. Pinning the
+# psycopg connection's search_path here lands every unqualified
+# CREATE TABLE / CREATE INDEX mem0 emits inside this schema, keeping
+# mem0's tables out of `public` alongside our app tables.
+MEM0_SCHEMA = "mem0"
 
 _MEM0_LLM_MAP = {
     "openai": "openai",
@@ -177,12 +184,26 @@ async def build_mem0_config(
     fp = hashlib.sha256(fp_str.encode()).hexdigest()[:12]
     collection_name = f"mem0_memories_{fp}"
 
+    # mem0's PGVector emits unqualified DDL; pinning search_path via the
+    # libpq `options` parameter routes every CREATE TABLE/INDEX into the
+    # mem0 schema. Passing `connection_string` makes mem0 skip the
+    # individual host/port/user/password kwargs (PGVector init priority:
+    # connection_pool > connection_string > individual params), and its
+    # PGVectorConfig validator skips the host/port/user/password presence
+    # check when connection_string is set.
+    #
+    # Caveat: PGVector.list_cols() hardcodes WHERE table_schema='public',
+    # so it returns empty here and create_col() runs on every boot. All
+    # statements in create_col() are IF NOT EXISTS, so the cost is one
+    # no-op DDL transaction per AI-service start -- acceptable.
+    options = quote_plus(f"-c search_path={MEM0_SCHEMA}")
+    conn_str = (
+        f"postgresql://{quote_plus(db.user)}:{quote_plus(db.password)}"
+        f"@{db.host}:{db.port}/{quote_plus(db.dbname)}"
+        f"?options={options}"
+    )
     pg_inner: dict = {
-        "host": db.host,
-        "port": db.port,
-        "dbname": db.dbname,
-        "user": db.user,
-        "password": db.password,
+        "connection_string": conn_str,
         "collection_name": collection_name,
     }
     if embedding_dims:

@@ -37,6 +37,7 @@ from memory.provider import (
 )
 
 from .bootstrap import (
+    MEM0_SCHEMA,
     DatabaseSettings,
     MemoryConfigError,
     build_mem0_config,
@@ -161,7 +162,7 @@ class Mem0Provider:
             return False
 
     async def _purge_user_across_all_collections(self, key: str) -> int:
-        """Delete `key`'s rows from every mem0_memories* table in public.
+        """Delete `key`'s rows from every mem0_memories* table in the mem0 schema.
 
         Embedder changes create a new fingerprinted collection; this
         scan guarantees "Delete all" is complete across old ones too.
@@ -170,7 +171,8 @@ class Mem0Provider:
             async with self._db_pool.acquire() as conn:
                 tables = await conn.fetch(
                     "SELECT tablename FROM pg_tables "
-                    "WHERE schemaname = 'public' AND tablename LIKE 'mem0_memories%'"
+                    "WHERE schemaname = $1 AND tablename LIKE 'mem0_memories%'",
+                    MEM0_SCHEMA,
                 )
                 total = 0
                 for row in tables:
@@ -178,7 +180,8 @@ class Mem0Provider:
                     # Identifier comes from pg_tables (no user input), but we
                     # still quote to be explicit. The user_id is parameterised.
                     result = await conn.execute(
-                        f"DELETE FROM \"{table}\" WHERE payload->>'user_id' = $1",
+                        f'DELETE FROM "{MEM0_SCHEMA}"."{table}" '
+                        "WHERE payload->>'user_id' = $1",
                         key,
                     )
                     # asyncpg returns "DELETE <n>".

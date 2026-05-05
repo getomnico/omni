@@ -1,6 +1,7 @@
 """Unit tests for memory.providers.mem0.bootstrap.build_mem0_config."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, unquote_plus, urlparse
 
 import pytest
 
@@ -119,11 +120,25 @@ class TestBuildMem0Config:
                 history_db_path=_HISTORY,
             )
         pg = cfg.vector_store.config
-        assert pg.user == "omni"
-        assert pg.password == "omni-secret"
-        assert pg.dbname == "omni"
-        assert pg.host == "db"
-        assert pg.port == 5432
+        parsed = urlparse(pg.connection_string)
+        assert parsed.scheme == "postgresql"
+        assert parsed.hostname == "db"
+        assert parsed.port == 5432
+        assert parsed.username == "omni"
+        assert parsed.password == "omni-secret"
+        assert parsed.path == "/omni"
+
+    async def test_pins_search_path_to_mem0_schema(self, state):
+        """The connection string must route mem0's unqualified DDL into
+        the mem0 schema -- not `public`."""
+        repo_patch, embed_patch = _patch_deps(None, _stub_embed_cfg())
+        with repo_patch, embed_patch:
+            cfg = await build_mem0_config(state, db=_DB, history_db_path=_HISTORY)
+
+        parsed = urlparse(cfg.vector_store.config.connection_string)
+        options = parse_qs(parsed.query).get("options", [])
+        assert options, "connection_string is missing libpq `options` param"
+        assert unquote_plus(options[0]) == "-c search_path=mem0"
 
     async def test_returns_typed_memory_config(self, state):
         from mem0.configs.base import MemoryConfig
@@ -134,6 +149,6 @@ class TestBuildMem0Config:
 
         assert isinstance(cfg, MemoryConfig)
         assert cfg.vector_store.provider == "pgvector"
-        assert cfg.vector_store.config.user == "omni"
+        assert cfg.vector_store.config.connection_string.startswith("postgresql://")
         assert cfg.llm.config["model"] == "gpt-4o-mini"
         assert cfg.embedder.config["model"] == "text-embedding-3-small"

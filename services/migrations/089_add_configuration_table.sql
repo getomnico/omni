@@ -1,4 +1,3 @@
--- 088_add_configuration_table.sql
 -- One key-value table for both org-wide settings and per-user preferences.
 -- The `scope` column distinguishes the two; `user_id` is required for
 -- user-scope rows and forbidden for global ones. Values are JSONB; the

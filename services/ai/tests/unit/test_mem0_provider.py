@@ -210,6 +210,15 @@ class TestDeleteAll:
         assert conn.execute.await_count == 2
         assert total == 6  # 3 rows × 2 tables
 
+        # Lock in the schema isolation: pg_tables scan must target `mem0`.
+        conn.fetch.assert_awaited_once()
+        fetch_args = conn.fetch.await_args.args
+        assert "schemaname = $1" in fetch_args[0]
+        assert fetch_args[1] == "mem0"
+        # And each DELETE must be qualified with the mem0 schema.
+        for call in conn.execute.await_args_list:
+            assert 'FROM "mem0"."mem0_memories_' in call.args[0]
+
     @pytest.mark.asyncio
     async def test_delete_all_returns_zero_on_purge_connect_failure(self):
         # Simulate the pool itself failing to hand out a connection.
