@@ -1,6 +1,5 @@
 import { fail } from '@sveltejs/kit'
 import { requireAdmin } from '$lib/server/authHelpers'
-import { getConfig } from '$lib/server/config'
 import { getGlobal, setGlobal } from '$lib/server/db/configuration'
 import { listAllActiveModels } from '$lib/server/db/model-providers'
 import { getCurrentProvider } from '$lib/server/db/embedding-providers'
@@ -8,92 +7,24 @@ import type { PageServerLoad, Actions } from './$types'
 
 const VALID_MODES = ['off', 'chat', 'full']
 
-type StoredMemory = { id: string; memory: string; created_at?: string }
-
-async function fetchMemories(userId: string): Promise<StoredMemory[]> {
-    const { services } = getConfig()
-    try {
-        const resp = await fetch(`${services.aiServiceUrl}/memories`, {
-            headers: { 'x-user-id': userId },
-        })
-        if (!resp.ok) return []
-        const data = (await resp.json()) as { memories?: StoredMemory[] }
-        return data.memories ?? []
-    } catch (err) {
-        console.error('Failed to fetch memories:', err)
-        return []
-    }
-}
-
 export const load: PageServerLoad = async ({ locals }) => {
     requireAdmin(locals)
 
-    const [orgDefaultConfig, memoryLlmConfig, models, embedder, memories] = await Promise.all([
+    const [orgDefaultConfig, memoryLlmConfig, models, embedder] = await Promise.all([
         getGlobal('memory_mode_default'),
         getGlobal('memory_llm_id'),
         listAllActiveModels(),
         getCurrentProvider(),
-        fetchMemories(locals.user!.id),
     ])
 
     const orgDefault = (orgDefaultConfig?.value as string) ?? 'off'
     const memoryLlmId = (memoryLlmConfig?.value as string) ?? ''
     const embedderAvailable = embedder !== null
 
-    return { orgDefault, memoryLlmId, models, embedderAvailable, memories }
+    return { orgDefault, memoryLlmId, models, embedderAvailable }
 }
 
 export const actions: Actions = {
-    deleteOne: async ({ request, locals }) => {
-        requireAdmin(locals)
-
-        const formData = await request.formData()
-        const memoryId = (formData.get('memoryId') as string | null)?.trim()
-        if (!memoryId) {
-            return fail(400, { deleteError: 'Missing memory id' })
-        }
-
-        const { services } = getConfig()
-        try {
-            const resp = await fetch(
-                `${services.aiServiceUrl}/memories/${encodeURIComponent(memoryId)}`,
-                {
-                    method: 'DELETE',
-                    headers: { 'x-user-id': locals.user!.id },
-                },
-            )
-            if (!resp.ok) {
-                return fail(resp.status === 404 ? 404 : 502, {
-                    deleteError:
-                        resp.status === 404 ? 'Memory not found' : 'Failed to delete memory',
-                })
-            }
-            return { deleted: true }
-        } catch (err) {
-            console.error('Failed to delete memory:', err)
-            return fail(502, { deleteError: 'Failed to delete memory' })
-        }
-    },
-
-    deleteAll: async ({ locals }) => {
-        requireAdmin(locals)
-
-        const { services } = getConfig()
-        try {
-            const resp = await fetch(`${services.aiServiceUrl}/memories`, {
-                method: 'DELETE',
-                headers: { 'x-user-id': locals.user!.id },
-            })
-            if (!resp.ok) {
-                return fail(502, { deleteError: 'Failed to delete memories' })
-            }
-            return { deletedAll: true }
-        } catch (err) {
-            console.error('Failed to delete all memories:', err)
-            return fail(502, { deleteError: 'Failed to delete memories' })
-        }
-    },
-
     save: async ({ request, locals }) => {
         requireAdmin(locals)
 

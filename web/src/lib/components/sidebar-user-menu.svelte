@@ -29,7 +29,8 @@
                         <Avatar.Fallback class="bg-primary/80 text-primary-foreground text-xs"
                             >{email.slice(0, 2).toLocaleUpperCase()}</Avatar.Fallback>
                     </Avatar.Root>
-                    <div class="flex flex-col gap-1 group-data-[collapsible=icon]:hidden">
+                    <div
+                        class="flex flex-col gap-1 overflow-hidden group-data-[collapsible=icon]:hidden">
                         <span class="truncate overflow-hidden text-sm">
                             {email}
                         </span>

@@ -47,7 +47,7 @@
         {
             value: 'off',
             label: 'Off',
-            description: 'Omni AI will not remember anything between sessions.',
+            description: 'Omni will not remember anything between sessions.',
             rank: 0,
         },
         {
@@ -68,9 +68,7 @@
         allOptions
             .filter((o) => o.rank <= ceilingRank)
             .map((o) =>
-                o.value === ''
-                    ? { ...o, label: `Use org default (${orgDefaultLabel})` }
-                    : o,
+                o.value === '' ? { ...o, label: `Use org default (${orgDefaultLabel})` } : o,
             ),
     )
 </script>
@@ -84,7 +82,7 @@
         <div>
             <h1 class="text-3xl font-bold tracking-tight">Memory</h1>
             <p class="text-muted-foreground mt-2">
-                Control what Omni AI remembers about you across sessions.
+                Control what Omni remembers about you across sessions.
             </p>
         </div>
 
@@ -92,7 +90,7 @@
             <Card.Header>
                 <Card.Title>Memory mode</Card.Title>
                 <Card.Description>
-                    Choose how much context Omni AI retains between sessions.
+                    Choose how much context Omni retains between sessions.
                 </Card.Description>
             </Card.Header>
             <Card.Content>
@@ -129,7 +127,8 @@
                         </div>
                     {:else}
                         <p class="text-muted-foreground mb-4 text-sm">
-                            Your admin allows up to <span class="font-medium">{orgDefaultLabel}</span
+                            Your admin allows up to <span class="font-medium"
+                                >{orgDefaultLabel}</span
                             >. You cannot pick a higher level.
                         </p>
                     {/if}
@@ -139,8 +138,7 @@
                         disabled={!data.embedderAvailable || memoryLockedByOrg}
                         onValueChange={(v) => {
                             selectedMode = v
-                        }}
-                    >
+                        }}>
                         {#each options as option}
                             {@const selected = selectedMode === option.value}
                             <Label
@@ -155,7 +153,9 @@
                                     class="mt-0.5 shrink-0" />
                                 <div>
                                     <p class="text-sm font-medium">{option.label}</p>
-                                    <p class="text-muted-foreground text-sm">{option.description}</p>
+                                    <p class="text-muted-foreground text-sm">
+                                        {option.description}
+                                    </p>
                                 </div>
                             </Label>
                         {/each}
@@ -172,9 +172,7 @@
                     <div class="mt-6">
                         <Button
                             type="submit"
-                            disabled={isSubmitting ||
-                                !data.embedderAvailable ||
-                                memoryLockedByOrg}
+                            disabled={isSubmitting || !data.embedderAvailable || memoryLockedByOrg}
                             class="cursor-pointer">
                             {isSubmitting ? 'Saving...' : 'Save preference'}
                         </Button>
@@ -187,8 +185,8 @@
             <Card.Header>
                 <Card.Title>Stored memories</Card.Title>
                 <Card.Description>
-                    Everything Omni AI currently remembers about you. Delete anything you
-                    do not want retained.
+                    Everything Omni currently remembers about you. Delete anything you do not want
+                    retained.
                 </Card.Description>
             </Card.Header>
             <Card.Content>
@@ -197,15 +195,11 @@
                 {/if}
 
                 {#if data.memories.length === 0}
-                    <p class="text-muted-foreground text-sm">
-                        No memories stored yet.
-                    </p>
+                    <p class="text-muted-foreground text-sm">No memories stored yet.</p>
                 {:else}
-                    <div class="flex items-center justify-between mb-4">
+                    <div class="mb-4 flex items-center justify-between">
                         <p class="text-muted-foreground text-sm">
-                            {data.memories.length} memor{data.memories.length === 1
-                                ? 'y'
-                                : 'ies'} stored.
+                            {data.memories.length} memor{data.memories.length === 1 ? 'y' : 'ies'} stored.
                         </p>
                         <form
                             method="POST"
@@ -213,7 +207,7 @@
                             use:enhance={({ cancel }) => {
                                 if (
                                     !confirm(
-                                        'Delete every memory Omni AI has about you? This cannot be undone.',
+                                        'Delete every memory Omni has about you? This cannot be undone.',
                                     )
                                 ) {
                                     cancel()
@@ -237,9 +231,8 @@
 
                     <ul class="divide-y border-t border-b">
                         {#each data.memories as memory (memory.id)}
-                            <li
-                                class="flex items-start justify-between gap-4 py-3 text-sm">
-                                <span class="flex-1 whitespace-pre-wrap break-words">
+                            <li class="flex items-start justify-between gap-4 py-3 text-sm">
+                                <span class="flex-1 break-words whitespace-pre-wrap">
                                     {memory.memory}
                                 </span>
                                 <form
@@ -250,10 +243,7 @@
                                             await update()
                                         }
                                     }}>
-                                    <input
-                                        type="hidden"
-                                        name="memoryId"
-                                        value={memory.id} />
+                                    <input type="hidden" name="memoryId" value={memory.id} />
                                     <Button
                                         type="submit"
                                         variant="ghost"
