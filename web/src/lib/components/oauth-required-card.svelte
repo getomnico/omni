@@ -85,8 +85,8 @@
     }
 </script>
 
-<Card.Root class="gap-0 overflow-hidden py-0">
-    <Card.Header class="flex items-center gap-3 border-b px-5 py-3 [.border-b]:py-3">
+<Card.Root class="not-prose gap-0 overflow-hidden py-0">
+    <Card.Header class="flex items-start gap-3 border-b px-5 py-3 [.border-b]:py-3">
         {#if iconPath}
             <img src={iconPath} alt={displayName} class="h-7 w-7" />
         {/if}
@@ -103,7 +103,7 @@
         </div>
     </Card.Header>
 
-    <Card.Content class="px-5 py-4 text-[13px]">
+    <Card.Content class="px-5 py-4 text-sm">
         {#if effectiveProviderConfigured}
             <p class="text-muted-foreground">
                 This action needs your authorization for {displayName}. Connect your account to

@@ -169,6 +169,28 @@ class McpPromptDefinition(BaseModel):
     arguments: list[McpPromptArgument] = Field(default_factory=list)
 
 
+class OAuthScopeSet(BaseModel):
+    read: list[str] = Field(default_factory=list)
+    write: list[str] = Field(default_factory=list)
+
+
+class OAuthManifestConfig(BaseModel):
+    """Mirrors `shared::models::OAuthManifestConfig` (Rust). Pure data: a connector
+    declares this in its manifest and the web app's generic OAuth2 client uses it
+    to drive the standard authorization-code flow."""
+
+    provider: str
+    auth_endpoint: str
+    token_endpoint: str
+    userinfo_endpoint: str
+    userinfo_email_field: str = "email"
+    identity_scopes: list[str] = Field(default_factory=list)
+    scopes: dict[str, OAuthScopeSet] = Field(default_factory=dict)
+    extra_auth_params: dict[str, str] = Field(default_factory=dict)
+    scope_separator: str = " "
+    enrich_endpoint: str | None = None
+
+
 class ConnectorManifest(BaseModel):
     name: str
     display_name: str
@@ -185,6 +207,7 @@ class ConnectorManifest(BaseModel):
     mcp_enabled: bool = False
     resources: list[McpResourceDefinition] = Field(default_factory=list)
     prompts: list[McpPromptDefinition] = Field(default_factory=list)
+    oauth: OAuthManifestConfig | None = None
 
 
 class SyncRequest(BaseModel):

@@ -78,14 +78,41 @@
                 throw new Error('Client Secret is required')
             }
 
+            const trimmedTenant = tenantId.trim()
+            const trimmedClientId = clientId.trim()
+            const trimmedClientSecret = clientSecret.trim()
+
             const credentials = {
-                tenant_id: tenantId.trim(),
-                client_id: clientId.trim(),
-                client_secret: clientSecret.trim(),
+                tenant_id: trimmedTenant,
+                client_id: trimmedClientId,
+                client_secret: trimmedClientSecret,
             }
 
             for (const { name, sourceType } of microsoftSources) {
                 await createSourceWithCredentials(name, sourceType, credentials)
+            }
+
+            // Same Azure AD app registration powers both flows: the per-source
+            // app-only credentials above, and the per-user OAuth flow that
+            // reads from connector_configs. Materialize tenant-specific
+            // endpoints here so the generic OAuth client doesn't need to do
+            // any string substitution.
+            const oauthConfigResponse = await fetch('/api/connector-configs', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    provider: 'microsoft',
+                    config: {
+                        oauth_client_id: trimmedClientId,
+                        oauth_client_secret: trimmedClientSecret,
+                        oauth_auth_endpoint: `https://login.microsoftonline.com/${trimmedTenant}/oauth2/v2.0/authorize`,
+                        oauth_token_endpoint: `https://login.microsoftonline.com/${trimmedTenant}/oauth2/v2.0/token`,
+                    },
+                }),
+            })
+
+            if (!oauthConfigResponse.ok) {
+                throw new Error('Failed to save Microsoft OAuth configuration')
             }
 
             toast.success('Microsoft 365 connected successfully!')
@@ -124,6 +151,14 @@
                 connect OneDrive, Outlook, Outlook Calendar, SharePoint, and Teams.
             </Dialog.Description>
         </Dialog.Header>
+
+        <div
+            class="bg-muted/50 text-muted-foreground rounded-md border p-3 text-xs leading-relaxed">
+            Grant <span class="font-medium">both</span> Application permissions (used for org-wide sync)
+            and Delegated permissions (used when individual users connect their account for tools) on
+            Microsoft Graph for this app registration. Omni reuses the same client credentials for both
+            flows.
+        </div>
 
         <div class="space-y-4">
             <div class="space-y-2">

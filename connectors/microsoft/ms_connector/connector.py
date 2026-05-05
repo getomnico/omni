@@ -5,9 +5,14 @@ from typing import Any
 from starlette.responses import Response
 
 from omni_connector import Connector, SearchOperator, SyncContext
-from omni_connector.models import ActionDefinition, ActionResponse
+from omni_connector.models import (
+    ActionDefinition,
+    ActionResponse,
+    OAuthManifestConfig,
+    OAuthScopeSet,
+)
 
-from .auth import MSGraphAuth
+from .auth import MSGraphAuth, parse_ms_credentials
 from .graph_client import AuthenticationError, GraphAPIError, GraphClient
 from .syncers.calendar import CalendarSyncer
 from .syncers.mail import MailSyncer
@@ -68,6 +73,54 @@ class MicrosoftConnector(Connector):
             SearchOperator(operator="cc", attribute_key="cc", value_type="person"),
         ]
 
+    def oauth_config(self) -> OAuthManifestConfig | None:
+        # Endpoints below default to the `organizations` tenant; the web layer
+        # overrides them with tenant-specific URLs from connector_configs at
+        # flow time (admin's tenant_id is materialized into the stored
+        # auth/token endpoints during setup).
+        return OAuthManifestConfig(
+            provider="microsoft",
+            auth_endpoint="https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize",
+            token_endpoint="https://login.microsoftonline.com/organizations/oauth2/v2.0/token",
+            userinfo_endpoint="https://graph.microsoft.com/v1.0/me",
+            userinfo_email_field="userPrincipalName",
+            identity_scopes=[
+                "openid",
+                "profile",
+                "email",
+                "offline_access",
+                "User.Read",
+            ],
+            scopes={
+                "one_drive": OAuthScopeSet(
+                    read=["Files.Read.All"],
+                    write=["Files.ReadWrite.All"],
+                ),
+                "share_point": OAuthScopeSet(
+                    read=["Sites.Read.All", "Files.Read.All"],
+                    write=["Sites.ReadWrite.All", "Files.ReadWrite.All"],
+                ),
+                "outlook": OAuthScopeSet(
+                    read=["Mail.Read"],
+                    write=["Mail.ReadWrite", "Mail.Send"],
+                ),
+                "outlook_calendar": OAuthScopeSet(
+                    read=["Calendars.Read"],
+                    write=["Calendars.ReadWrite"],
+                ),
+                "ms_teams": OAuthScopeSet(
+                    read=[
+                        "Channel.ReadBasic.All",
+                        "ChannelMessage.Read.All",
+                        "Team.ReadBasic.All",
+                    ],
+                    write=["ChannelMessage.Send"],
+                ),
+            },
+            scope_separator=" ",
+            extra_auth_params={},
+        )
+
     @property
     def actions(self) -> list[ActionDefinition]:
         return [
@@ -123,7 +176,7 @@ class MicrosoftConnector(Connector):
 
         try:
             raw_creds = credentials.get("credentials", credentials)
-            auth = MSGraphAuth.from_credentials(raw_creds)
+            auth = MSGraphAuth.from_credentials(parse_ms_credentials(raw_creds))
             client = GraphClient(auth)
             try:
                 users = await client.search_users(query, limit=20)
@@ -162,7 +215,7 @@ class MicrosoftConnector(Connector):
 
         try:
             raw_creds = credentials.get("credentials", credentials)
-            auth = MSGraphAuth.from_credentials(raw_creds)
+            auth = MSGraphAuth.from_credentials(parse_ms_credentials(raw_creds))
             client = GraphClient(auth)
             try:
                 metadata = await client.get_drive_item_metadata(drive_id, item_id)
@@ -204,7 +257,7 @@ class MicrosoftConnector(Connector):
         ctx: SyncContext,
     ) -> None:
         try:
-            auth = MSGraphAuth.from_credentials(credentials)
+            auth = MSGraphAuth.from_credentials(parse_ms_credentials(credentials))
         except ValueError as e:
             await ctx.fail(str(e))
             return
