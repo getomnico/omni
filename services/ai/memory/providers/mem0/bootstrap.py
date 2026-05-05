@@ -15,7 +15,7 @@ intermediate dict shuffling.
 import hashlib
 import logging
 from dataclasses import dataclass
-from urllib.parse import quote_plus
+from urllib.parse import quote
 
 from mem0.configs.base import MemoryConfig
 from mem0.embeddings.configs import EmbedderConfig
@@ -192,14 +192,19 @@ async def build_mem0_config(
     # PGVectorConfig validator skips the host/port/user/password presence
     # check when connection_string is set.
     #
+    # We use `quote` (not `quote_plus`) because libpq's URI parser does
+    # not decode `+` to space -- it only decodes `%xx`. quote_plus would
+    # encode the space in `-c search_path=...` as `+`, which Postgres
+    # would then read as a parameter name starting with `+`.
+    #
     # Caveat: PGVector.list_cols() hardcodes WHERE table_schema='public',
     # so it returns empty here and create_col() runs on every boot. All
     # statements in create_col() are IF NOT EXISTS, so the cost is one
     # no-op DDL transaction per AI-service start -- acceptable.
-    options = quote_plus(f"-c search_path={MEM0_SCHEMA}")
+    options = quote(f"-c search_path={MEM0_SCHEMA}", safe="")
     conn_str = (
-        f"postgresql://{quote_plus(db.user)}:{quote_plus(db.password)}"
-        f"@{db.host}:{db.port}/{quote_plus(db.dbname)}"
+        f"postgresql://{quote(db.user, safe='')}:{quote(db.password, safe='')}"
+        f"@{db.host}:{db.port}/{quote(db.dbname, safe='')}"
         f"?options={options}"
     )
     pg_inner: dict = {

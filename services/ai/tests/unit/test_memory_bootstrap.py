@@ -1,7 +1,7 @@
 """Unit tests for memory.providers.mem0.bootstrap.build_mem0_config."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
-from urllib.parse import parse_qs, unquote_plus, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import pytest
 
@@ -138,7 +138,12 @@ class TestBuildMem0Config:
         parsed = urlparse(cfg.vector_store.config.connection_string)
         options = parse_qs(parsed.query).get("options", [])
         assert options, "connection_string is missing libpq `options` param"
-        assert unquote_plus(options[0]) == "-c search_path=mem0"
+        # Use `unquote` (not `unquote_plus`): libpq does not decode `+` to
+        # space, so the encoded value must use `%20`, not `+`.
+        assert unquote(options[0]) == "-c search_path=mem0"
+        assert (
+            "+" not in options[0]
+        ), "options must use %20 for spaces; libpq does not decode `+`"
 
     async def test_returns_typed_memory_config(self, state):
         from mem0.configs.base import MemoryConfig
