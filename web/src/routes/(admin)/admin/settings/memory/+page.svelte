@@ -5,6 +5,8 @@
     import * as RadioGroup from '$lib/components/ui/radio-group'
     import * as Select from '$lib/components/ui/select'
     import { Label } from '$lib/components/ui/label'
+    import { Loader2 } from '@lucide/svelte'
+    import { toast } from 'svelte-sonner'
     import { formatProviderName } from '$lib/utils/providers.js'
     import type { PageProps } from './$types'
 
@@ -13,7 +15,6 @@
     let selectedMode = $state(data.embedderAvailable ? data.orgDefault : 'off')
     let selectedLlmId = $state(data.memoryLlmId)
     let isSubmitting = $state(false)
-    let isDeletingAll = $state(false)
 
     const options = [
         {
@@ -81,9 +82,14 @@
             action="?/save"
             use:enhance={() => {
                 isSubmitting = true
-                return async ({ update }) => {
-                    isSubmitting = false
+                return async ({ result, update }) => {
                     await update()
+                    isSubmitting = false
+                    if (result.type === 'success') {
+                        toast.success('Settings saved')
+                    } else if (result.type === 'failure') {
+                        toast.error(result.data?.error || 'Something went wrong')
+                    }
                 }
             }}>
             <input type="hidden" name="mode" value={selectedMode} />
@@ -104,8 +110,7 @@
                             disabled={!data.embedderAvailable}
                             onValueChange={(v) => {
                                 selectedMode = v
-                            }}
-                        >
+                            }}>
                             {#each options as option}
                                 {@const selected = selectedMode === option.value}
                                 <Label
@@ -176,19 +181,17 @@
                     </Card.Root>
                 {/if}
 
-                {#if form?.error}
-                    <p class="text-sm text-red-500">{form.error}</p>
-                {/if}
-                {#if form?.success}
-                    <p class="text-muted-foreground text-sm">Settings saved.</p>
-                {/if}
-
                 <div class="space-y-3">
                     <Button
                         type="submit"
                         disabled={isSubmitting || !data.embedderAvailable}
                         class="cursor-pointer">
-                        {isSubmitting ? 'Saving...' : 'Save settings'}
+                        {#if isSubmitting}
+                            <Loader2 class="mr-2 h-4 w-4 animate-spin" />
+                            Saving...
+                        {:else}
+                            Save settings
+                        {/if}
                     </Button>
                     <p class="text-muted-foreground text-sm">
                         Users can override the memory mode in their personal preferences.
@@ -196,83 +199,5 @@
                 </div>
             </div>
         </form>
-
-        <Card.Root>
-            <Card.Header>
-                <Card.Title>Your stored memories</Card.Title>
-                <Card.Description>
-                    Everything Omni AI currently remembers about you. Delete anything you
-                    do not want retained.
-                </Card.Description>
-            </Card.Header>
-            <Card.Content>
-                {#if form?.deleteError}
-                    <p class="mb-4 text-sm text-red-500">{form.deleteError}</p>
-                {/if}
-
-                {#if data.memories.length === 0}
-                    <p class="text-muted-foreground text-sm">No memories stored yet.</p>
-                {:else}
-                    <div class="flex items-center justify-between mb-4">
-                        <p class="text-muted-foreground text-sm">
-                            {data.memories.length} memor{data.memories.length === 1 ? 'y' : 'ies'} stored.
-                        </p>
-                        <form
-                            method="POST"
-                            action="?/deleteAll"
-                            use:enhance={({ cancel }) => {
-                                if (
-                                    !confirm(
-                                        'Delete every memory Omni AI has about you? This cannot be undone.',
-                                    )
-                                ) {
-                                    cancel()
-                                    return
-                                }
-                                isDeletingAll = true
-                                return async ({ update }) => {
-                                    isDeletingAll = false
-                                    await update()
-                                }
-                            }}>
-                            <Button
-                                type="submit"
-                                variant="outline"
-                                disabled={isDeletingAll}
-                                class="cursor-pointer">
-                                {isDeletingAll ? 'Deleting...' : 'Delete all'}
-                            </Button>
-                        </form>
-                    </div>
-
-                    <ul class="divide-y border-t border-b">
-                        {#each data.memories as memory (memory.id)}
-                            <li class="flex items-start justify-between gap-4 py-3 text-sm">
-                                <span class="flex-1 whitespace-pre-wrap break-words">
-                                    {memory.memory}
-                                </span>
-                                <form
-                                    method="POST"
-                                    action="?/deleteOne"
-                                    use:enhance={() => {
-                                        return async ({ update }) => {
-                                            await update()
-                                        }
-                                    }}>
-                                    <input type="hidden" name="memoryId" value={memory.id} />
-                                    <Button
-                                        type="submit"
-                                        variant="ghost"
-                                        size="sm"
-                                        class="cursor-pointer">
-                                        Delete
-                                    </Button>
-                                </form>
-                            </li>
-                        {/each}
-                    </ul>
-                {/if}
-            </Card.Content>
-        </Card.Root>
     </div>
 </div>

@@ -13,17 +13,10 @@
         Bot,
         Mail,
         FileText,
-        LogOut,
         Brain,
     } from '@lucide/svelte'
     import Button from '$lib/components/ui/button/button.svelte'
-    import * as Avatar from '$lib/components/ui/avatar'
-    import {
-        Tooltip,
-        TooltipProvider,
-        TooltipContent,
-        TooltipTrigger,
-    } from '$lib/components/ui/tooltip/index.js'
+    import SidebarUserMenu from '$lib/components/sidebar-user-menu.svelte'
     import type { LayoutData } from './$types.js'
 
     interface Props {
@@ -33,12 +26,7 @@
 
     let { data, children }: Props = $props()
 
-    async function logout() {
-        await fetch('/logout', {
-            method: 'POST',
-        })
-        window.location.href = '/login'
-    }
+    // logout is handled inside SidebarUserMenu
 </script>
 
 <Sidebar.Provider>
@@ -190,33 +178,7 @@
             </Sidebar.Group>
         </Sidebar.Content>
         <Sidebar.Footer>
-            <div class="flex items-center justify-between py-2">
-                <div class="flex min-w-0 flex-1 items-center gap-1.5">
-                    <Avatar.Root>
-                        <Avatar.Fallback
-                            >{data.user.email.slice(0, 2).toLocaleUpperCase()}</Avatar.Fallback>
-                    </Avatar.Root>
-                    <span class="text-muted-foreground truncate overflow-hidden text-sm">
-                        {data.user.email}
-                    </span>
-                </div>
-                <TooltipProvider delayDuration={300}>
-                    <Tooltip>
-                        <TooltipTrigger>
-                            <Button
-                                size="icon"
-                                variant="ghost"
-                                class="cursor-pointer"
-                                onclick={logout}>
-                                <LogOut class="h-4 w-4" />
-                            </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                            <p>Logout</p>
-                        </TooltipContent>
-                    </Tooltip>
-                </TooltipProvider>
-            </div>
+            <SidebarUserMenu email={data.user.email} isAdmin={data.user.role === 'admin'} />
         </Sidebar.Footer>
         <Sidebar.Rail />
     </Sidebar.Root>
