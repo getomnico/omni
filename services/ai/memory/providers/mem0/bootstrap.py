@@ -192,6 +192,11 @@ async def build_mem0_config(
     # PGVectorConfig validator skips the host/port/user/password presence
     # check when connection_string is set.
     #
+    # `public` is kept in the search_path so the `vector` extension's
+    # type (installed in `public`) resolves for unqualified column type
+    # references like `vector(1536)`. `mem0` comes first so unqualified
+    # CREATE TABLE/INDEX still lands in the mem0 schema.
+    #
     # We use `quote` (not `quote_plus`) because libpq's URI parser does
     # not decode `+` to space -- it only decodes `%xx`. quote_plus would
     # encode the space in `-c search_path=...` as `+`, which Postgres
@@ -201,7 +206,7 @@ async def build_mem0_config(
     # so it returns empty here and create_col() runs on every boot. All
     # statements in create_col() are IF NOT EXISTS, so the cost is one
     # no-op DDL transaction per AI-service start -- acceptable.
-    options = quote(f"-c search_path={MEM0_SCHEMA}", safe="")
+    options = quote(f"-c search_path={MEM0_SCHEMA},public", safe="")
     conn_str = (
         f"postgresql://{quote(db.user, safe='')}:{quote(db.password, safe='')}"
         f"@{db.host}:{db.port}/{quote(db.dbname, safe='')}"

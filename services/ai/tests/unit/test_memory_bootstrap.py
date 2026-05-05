@@ -140,7 +140,9 @@ class TestBuildMem0Config:
         assert options, "connection_string is missing libpq `options` param"
         # Use `unquote` (not `unquote_plus`): libpq does not decode `+` to
         # space, so the encoded value must use `%20`, not `+`.
-        assert unquote(options[0]) == "-c search_path=mem0"
+        # `public` stays in the search_path so the `vector` extension's
+        # type (installed in public) resolves for unqualified type refs.
+        assert unquote(options[0]) == "-c search_path=mem0,public"
         assert (
             "+" not in options[0]
         ), "options must use %20 for spaces; libpq does not decode `+`"
