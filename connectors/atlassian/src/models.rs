@@ -432,23 +432,16 @@ pub struct AtlassianUserBulkItem {
     pub active: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ConfluenceGroupMembersResponse {
     pub results: Vec<ConfluenceGroupMember>,
-    pub start: i64,
     pub limit: i64,
-    pub size: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfluenceGroupMember {
-    #[serde(rename = "type")]
-    pub user_type: String,
     #[serde(rename = "accountId")]
     pub account_id: String,
-    #[serde(rename = "displayName")]
-    pub display_name: String,
-    pub email: Option<String>,
 }
 
 // ============================================================================

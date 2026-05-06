@@ -117,13 +117,13 @@ impl ConfluenceProcessor {
             });
         }
 
-        let mut user_account_ids = Vec::new();
+        let mut account_ids = Vec::new();
         let mut group_ids = Vec::new();
 
         for perm in &read_perms {
             match perm.principal.principal_type.as_str() {
                 "user" => {
-                    user_account_ids.push(perm.principal.id.clone());
+                    account_ids.push(perm.principal.id.clone());
                 }
                 "group" => {
                     group_ids.push(perm.principal.id.clone());
@@ -132,14 +132,32 @@ impl ConfluenceProcessor {
             }
         }
 
-        // Resolve user accountIds to emails via bulk API
-        let mut user_emails = Vec::new();
-        if !user_account_ids.is_empty() {
+        // Expand groups to member accountIds, then bulk-resolve all accountIds
+        // (users + group members) to emails in a single batch.
+        for group_id in &group_ids {
             match self
                 .client
-                .get_jira_users_bulk(creds, &user_account_ids)
+                .get_confluence_group_members(creds, group_id)
                 .await
             {
+                Ok(member_account_ids) => {
+                    account_ids.extend(member_account_ids);
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to fetch members for group {} in space {}: {}",
+                        group_id, space_id, e
+                    );
+                }
+            }
+        }
+
+        account_ids.sort();
+        account_ids.dedup();
+
+        let mut user_emails = Vec::new();
+        if !account_ids.is_empty() {
+            match self.client.get_jira_users_bulk(creds, &account_ids).await {
                 Ok(id_email_pairs) => {
                     user_emails.extend(id_email_pairs.into_iter().map(|(_, email)| email));
                 }
@@ -147,25 +165,6 @@ impl ConfluenceProcessor {
                     warn!(
                         "Failed to resolve user emails for space {}: {}",
                         space_id, e
-                    );
-                }
-            }
-        }
-
-        // Resolve group IDs to member emails
-        for group_id in &group_ids {
-            match self
-                .client
-                .get_confluence_group_members(creds, group_id)
-                .await
-            {
-                Ok(member_emails) => {
-                    user_emails.extend(member_emails);
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to fetch members for group {} in space {}: {}",
-                        group_id, space_id, e
                     );
                 }
             }

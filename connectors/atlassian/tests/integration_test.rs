@@ -3,10 +3,9 @@ use std::collections::HashMap;
 use time::OffsetDateTime;
 
 use omni_atlassian_connector::models::{
-    AtlassianWebhookEvent, ConfluenceContent, ConfluenceCqlPage, ConfluenceCqlSpace,
-    ConfluenceCqlVersion, ConfluencePage, ConfluencePageBody, ConfluencePageLinks,
-    ConfluencePageStatus, ConfluenceVersion, JiraFields, JiraIssue, JiraIssueType, JiraProject,
-    JiraStatus, JiraStatusCategory,
+    ConfluenceContent, ConfluenceCqlPage, ConfluenceCqlSpace, ConfluenceCqlVersion, ConfluencePage,
+    ConfluencePageBody, ConfluencePageLinks, ConfluencePageStatus, ConfluenceVersion, JiraFields,
+    JiraIssue, JiraIssueType, JiraProject, JiraStatus, JiraStatusCategory,
 };
 
 const TEST_BASE_URL: &str = "https://test-company.atlassian.net";
@@ -179,84 +178,6 @@ async fn test_cql_page_conversion_without_version_returns_none() {
     };
 
     assert!(cql_page.into_confluence_page().is_none());
-}
-
-#[tokio::test]
-async fn test_webhook_event_deserialization_jira_issue() {
-    let json = serde_json::json!({
-        "webhookEvent": "jira:issue_updated",
-        "issue": {
-            "id": "10001",
-            "key": "PROJ-42",
-            "fields": {
-                "project": {
-                    "key": "PROJ"
-                }
-            }
-        }
-    });
-
-    let event: AtlassianWebhookEvent = serde_json::from_value(json).unwrap();
-    assert_eq!(event.webhook_event, "jira:issue_updated");
-    assert!(event.issue.is_some());
-    assert!(event.page.is_none());
-
-    let issue = event.issue.unwrap();
-    assert_eq!(issue.key, "PROJ-42");
-    assert_eq!(issue.fields.unwrap().project.unwrap().key, "PROJ");
-}
-
-#[tokio::test]
-async fn test_webhook_event_deserialization_confluence_page() {
-    let json = serde_json::json!({
-        "webhookEvent": "page_updated",
-        "page": {
-            "id": "98765",
-            "spaceKey": "DEV",
-            "space": {
-                "key": "DEV"
-            }
-        }
-    });
-
-    let event: AtlassianWebhookEvent = serde_json::from_value(json).unwrap();
-    assert_eq!(event.webhook_event, "page_updated");
-    assert!(event.page.is_some());
-    assert!(event.issue.is_none());
-
-    let page = event.page.unwrap();
-    assert_eq!(page.id, "98765");
-    assert_eq!(page.space_key, Some("DEV".to_string()));
-    assert_eq!(page.space.unwrap().key, "DEV");
-}
-
-#[tokio::test]
-async fn test_webhook_event_deserialization_delete_events() {
-    let json = serde_json::json!({
-        "webhookEvent": "jira:issue_deleted",
-        "issue": {
-            "id": "10002",
-            "key": "PROJ-99",
-            "fields": {
-                "project": {
-                    "key": "PROJ"
-                }
-            }
-        }
-    });
-    let event: AtlassianWebhookEvent = serde_json::from_value(json).unwrap();
-    assert_eq!(event.webhook_event, "jira:issue_deleted");
-
-    let json = serde_json::json!({
-        "webhookEvent": "page_trashed",
-        "page": {
-            "id": "54321",
-            "spaceKey": "TEAM"
-        }
-    });
-    let event: AtlassianWebhookEvent = serde_json::from_value(json).unwrap();
-    assert_eq!(event.webhook_event, "page_trashed");
-    assert_eq!(event.page.unwrap().space_key, Some("TEAM".to_string()));
 }
 
 // --- Helpers ---

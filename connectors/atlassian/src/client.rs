@@ -143,11 +143,18 @@ impl AtlassianClient {
 
                 match response.status() {
                     StatusCode::OK => {
-                        let data: T = response
-                            .json()
+                        let body = response
+                            .text()
                             .await
-                            .map_err(|e| RetryableError::Permanent(e.into()))?;
-                        Ok(data)
+                            .map_err(|e| RetryableError::Transient(e.into()))?;
+                        match serde_json::from_str::<T>(&body) {
+                            Ok(data) => Ok(data),
+                            Err(e) => Err(RetryableError::Permanent(anyhow!(
+                                "Failed to decode response body: {} — body: {}",
+                                e,
+                                body
+                            ))),
+                        }
                     }
                     StatusCode::TOO_MANY_REQUESTS => {
                         let retry_after = Self::extract_retry_after(&response);
@@ -695,10 +702,13 @@ impl AtlassianApi for AtlassianClient {
         group_id: &str,
     ) -> Result<Vec<String>> {
         let auth_header = creds.get_basic_auth_header();
-        let url = format!("{}/wiki/rest/api/group/{}/member", creds.base_url, group_id);
+        let url = format!(
+            "{}/wiki/rest/api/group/{}/membersByGroupId",
+            creds.base_url, group_id
+        );
         let page_size: i64 = 200;
         let mut start: i64 = 0;
-        let mut all_emails = Vec::new();
+        let mut all_account_ids = Vec::new();
 
         loop {
             let params = vec![
@@ -723,7 +733,7 @@ impl AtlassianApi for AtlassianClient {
                 .await?;
 
             let result_count = resp.results.len() as i64;
-            all_emails.extend(resp.results.into_iter().filter_map(|m| m.email));
+            all_account_ids.extend(resp.results.into_iter().map(|m| m.account_id));
 
             if result_count < resp.limit {
                 break;
@@ -731,7 +741,7 @@ impl AtlassianApi for AtlassianClient {
             start += result_count;
         }
 
-        Ok(all_emails)
+        Ok(all_account_ids)
     }
 
     async fn get_jira_project_roles(
