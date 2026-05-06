@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
 use omni_connector_sdk::{DocumentPermissions, SdkClient, SyncContext};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
@@ -41,6 +42,10 @@ pub struct JiraProcessor {
     sdk_client: SdkClient,
     cached_custom_fields: RwLock<Option<(Vec<String>, DateTime<Utc>)>>,
     project_permissions_cache: DashMap<String, DocumentPermissions>,
+    /// groupId → display_name for groups encountered in project role actors
+    /// during this sync. Drained at end of sync by SyncManager so it can
+    /// emit one GroupMembershipSync event per encountered group.
+    encountered_groups: DashMap<String, Option<String>>,
 }
 
 const CUSTOM_FIELDS_CACHE_TTL_DAYS: i64 = 1;
@@ -52,7 +57,18 @@ impl JiraProcessor {
             sdk_client,
             cached_custom_fields: RwLock::new(None),
             project_permissions_cache: DashMap::new(),
+            encountered_groups: DashMap::new(),
         }
+    }
+
+    /// Drain the set of groupIds encountered in project permissions during the
+    /// sync so the SyncManager can fetch their members and emit one
+    /// GroupMembershipSync event per group.
+    pub fn drain_encountered_groups(&self) -> HashMap<String, Option<String>> {
+        self.encountered_groups
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect()
     }
 
     async fn get_project_permissions(
@@ -102,7 +118,7 @@ impl JiraProcessor {
             .await?;
 
         let mut user_account_ids = Vec::new();
-        let mut group_names = Vec::new();
+        let mut group_ids: Vec<String> = Vec::new();
 
         // Fetch actors for each role
         for (_role_name, role_url) in &role_response.roles {
@@ -128,7 +144,22 @@ impl JiraProcessor {
                             }
                             "atlassian-group-role-actor" => {
                                 if let Some(group) = &actor.actor_group {
-                                    group_names.push(group.name.clone());
+                                    match &group.group_id {
+                                        Some(gid) => {
+                                            group_ids.push(gid.clone());
+                                            self.encountered_groups
+                                                .entry(gid.clone())
+                                                .or_insert_with(|| {
+                                                    Some(group.display_name.clone())
+                                                });
+                                        }
+                                        None => {
+                                            warn!(
+                                                "Skipping group actor in project {} role {}: missing groupId (group name: {})",
+                                                project_key, role_id, group.name
+                                            );
+                                        }
+                                    }
                                 }
                             }
                             _ => {}
@@ -168,16 +199,17 @@ impl JiraProcessor {
 
         user_emails.sort();
         user_emails.dedup();
-        group_names.sort();
-        group_names.dedup();
+        group_ids.sort();
+        group_ids.dedup();
 
-        // TODO(perms): Jira group names are emitted as-is; the authz service
-        // needs to expand them to members at query time (or we need to expand
-        // pre-emission like Confluence does via get_confluence_group_members).
+        // FIXME(groups-key-rename): we're storing an Atlassian groupId in the
+        // `groups.email` column. Rename that column (and the GroupMembershipSync
+        // `group_email` field) to a generic identifier so non-email-keyed group
+        // systems are supported first-class.
         Ok(DocumentPermissions {
             public: false,
             users: user_emails,
-            groups: group_names,
+            groups: group_ids,
         })
     }
 

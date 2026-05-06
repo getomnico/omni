@@ -13,8 +13,8 @@ use crate::models::{
     AtlassianWebhookRegistration, AtlassianWebhookRegistrationResponse, ConfluenceCqlPage,
     ConfluenceCqlSearchResponse, ConfluenceGetPagesResponse, ConfluenceGetSpacesResponse,
     ConfluenceGroupMembersResponse, ConfluencePage, ConfluenceSpace, ConfluenceSpacePermission,
-    ConfluenceSpacePermissionsResponse, JiraField, JiraIssue, JiraProjectRolesResponse,
-    JiraRoleActorsResponse, JiraSearchResponse,
+    ConfluenceSpacePermissionsResponse, JiraField, JiraGroupMembersResponse, JiraIssue,
+    JiraProjectRolesResponse, JiraRoleActorsResponse, JiraSearchResponse,
 };
 
 #[async_trait]
@@ -84,6 +84,12 @@ pub trait AtlassianApi: Send + Sync {
     ) -> Result<Vec<ConfluenceSpacePermission>>;
 
     async fn get_confluence_group_members(
+        &self,
+        creds: &AtlassianCredentials,
+        group_id: &str,
+    ) -> Result<Vec<String>>;
+
+    async fn get_jira_group_members(
         &self,
         creds: &AtlassianCredentials,
         group_id: &str,
@@ -739,6 +745,52 @@ impl AtlassianApi for AtlassianClient {
                 break;
             }
             start += result_count;
+        }
+
+        Ok(all_account_ids)
+    }
+
+    async fn get_jira_group_members(
+        &self,
+        creds: &AtlassianCredentials,
+        group_id: &str,
+    ) -> Result<Vec<String>> {
+        let auth_header = creds.get_basic_auth_header();
+        let url = format!("{}/rest/api/3/group/member", creds.base_url);
+        let page_size: u32 = 50;
+        let mut start_at: u32 = 0;
+        let mut all_account_ids = Vec::new();
+
+        loop {
+            let params = vec![
+                ("groupId", group_id.to_string()),
+                ("maxResults", page_size.to_string()),
+                ("startAt", start_at.to_string()),
+            ];
+
+            debug!(
+                "Fetching JIRA group {} members (startAt={})",
+                group_id, start_at
+            );
+
+            let client = self.client.clone();
+            let resp: JiraGroupMembersResponse = self
+                .make_request(|| {
+                    client
+                        .get(&url)
+                        .query(&params)
+                        .header("Authorization", &auth_header)
+                        .header("Accept", "application/json")
+                })
+                .await?;
+
+            let result_count = resp.values.len() as u32;
+            all_account_ids.extend(resp.values.into_iter().map(|m| m.account_id));
+
+            if resp.is_last || result_count == 0 {
+                break;
+            }
+            start_at += result_count;
         }
 
         Ok(all_account_ids)

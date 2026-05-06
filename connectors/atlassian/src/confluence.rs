@@ -15,6 +15,10 @@ pub struct ConfluenceProcessor {
     client: Arc<dyn AtlassianApi>,
     sdk_client: SdkClient,
     space_permissions_cache: DashMap<String, DocumentPermissions>,
+    /// groupId → display_name for groups encountered in space permissions
+    /// during this sync. Drained at end of sync by SyncManager so it can
+    /// emit one GroupMembershipSync event per encountered group.
+    encountered_groups: DashMap<String, Option<String>>,
     /// Last-indexed version per page, keyed by `{space_id}:{page_id}`. Seeded
     /// from connector state at sync start; the SyncManager drains this into
     /// the new state after a successful run.
@@ -39,6 +43,7 @@ impl ConfluenceProcessor {
             client,
             sdk_client,
             space_permissions_cache: DashMap::new(),
+            encountered_groups: DashMap::new(),
             page_versions: page_versions.into_iter().collect(),
         }
     }
@@ -49,6 +54,16 @@ impl ConfluenceProcessor {
         self.page_versions
             .iter()
             .map(|entry| (entry.key().clone(), *entry.value()))
+            .collect()
+    }
+
+    /// Drain the set of groupIds encountered in space permissions during the
+    /// sync so the SyncManager can fetch their members and emit one
+    /// GroupMembershipSync event per group.
+    pub fn drain_encountered_groups(&self) -> HashMap<String, Option<String>> {
+        self.encountered_groups
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
             .collect()
     }
 
@@ -132,26 +147,6 @@ impl ConfluenceProcessor {
             }
         }
 
-        // Expand groups to member accountIds, then bulk-resolve all accountIds
-        // (users + group members) to emails in a single batch.
-        for group_id in &group_ids {
-            match self
-                .client
-                .get_confluence_group_members(creds, group_id)
-                .await
-            {
-                Ok(member_account_ids) => {
-                    account_ids.extend(member_account_ids);
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to fetch members for group {} in space {}: {}",
-                        group_id, space_id, e
-                    );
-                }
-            }
-        }
-
         account_ids.sort();
         account_ids.dedup();
 
@@ -173,14 +168,26 @@ impl ConfluenceProcessor {
         user_emails.sort();
         user_emails.dedup();
 
-        // TODO(perms): Groups are expanded to member emails at sync time, so we
-        // emit groups: vec![] for the authz service. This scales poorly for
-        // large groups (N API calls + unbounded member lists). Long-term, emit
-        // group identifiers and resolve membership in the authz layer.
+        group_ids.sort();
+        group_ids.dedup();
+
+        // Confluence's space-permissions endpoint doesn't return a display
+        // name on the group principal, so we record None and let the indexer
+        // store the group keyed only by its id.
+        for group_id in &group_ids {
+            self.encountered_groups
+                .entry(group_id.clone())
+                .or_insert(None);
+        }
+
+        // FIXME(groups-key-rename): we're storing an Atlassian groupId in the
+        // `groups.email` column. Rename that column (and the GroupMembershipSync
+        // `group_email` field) to a generic identifier so non-email-keyed group
+        // systems are supported first-class.
         Ok(DocumentPermissions {
             public: false,
             users: user_emails,
-            groups: vec![],
+            groups: group_ids,
         })
     }
 

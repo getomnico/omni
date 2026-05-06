@@ -806,7 +806,7 @@ async fn test_jira_sync_fetches_and_caches_project_permissions() -> Result<()> {
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
             .collect();
-        assert!(groups.contains(&"engineering-team".to_string()));
+        assert!(groups.contains(&"group-1".to_string()));
     }
 
     // Roles fetched once for the project, not per issue
@@ -816,6 +816,195 @@ async fn test_jira_sync_fetches_and_caches_project_permissions() -> Result<()> {
         1,
         "permissions should be cached per project"
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_jira_sync_skips_group_actors_without_group_id() -> Result<()> {
+    let fixture = setup_test_fixture(SourceType::Jira).await?;
+
+    *fixture.mock_api.jira_projects.lock().unwrap() = vec![serde_json::json!({
+        "key": "PROJ",
+        "name": "Test Project",
+    })];
+
+    *fixture.mock_api.jira_search_response.lock().unwrap() = Some(JiraSearchResponse {
+        issues: vec![make_jira_issue("PROJ-1", "First Issue", "PROJ")],
+        is_last: true,
+        next_page_token: None,
+    });
+
+    let mut roles = std::collections::HashMap::new();
+    roles.insert(
+        "Developers".to_string(),
+        "https://test.atlassian.net/rest/api/3/project/PROJ/role/10002".to_string(),
+    );
+    *fixture.mock_api.project_roles.lock().unwrap() = roles;
+
+    fixture.mock_api.role_actors.lock().unwrap().insert(
+        "10002".to_string(),
+        JiraRoleActorsResponse {
+            name: "Developers".to_string(),
+            actors: vec![
+                JiraRoleActor {
+                    display_name: "Engineering".to_string(),
+                    actor_type: "atlassian-group-role-actor".to_string(),
+                    name: None,
+                    actor_user: None,
+                    actor_group: Some(JiraActorGroup {
+                        name: "engineering-team".to_string(),
+                        display_name: "Engineering".to_string(),
+                        group_id: None,
+                    }),
+                },
+                JiraRoleActor {
+                    display_name: "Ops".to_string(),
+                    actor_type: "atlassian-group-role-actor".to_string(),
+                    name: None,
+                    actor_user: None,
+                    actor_group: Some(JiraActorGroup {
+                        name: "ops-team".to_string(),
+                        display_name: "Ops".to_string(),
+                        group_id: Some("group-with-id".to_string()),
+                    }),
+                },
+            ],
+        },
+    );
+
+    let processor = JiraProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
+
+    let sync_run_id = fixture
+        .sdk_client
+        .create_sync_run(SOURCE_ID, SyncType::Full)
+        .await?;
+    let ctx = make_sync_context(&fixture, &sync_run_id, SourceType::Jira, SyncType::Full);
+
+    let creds = test_credentials();
+    let count = processor
+        .sync_all_projects(&creds, SOURCE_ID, &sync_run_id, &ctx, &None)
+        .await?;
+    assert_eq!(count, 1);
+
+    fixture.sdk_client.flush_all().await?;
+    let events = get_queued_events(&fixture.pool).await?;
+    assert_eq!(events.len(), 1);
+
+    let groups: Vec<String> = events[0]["permissions"]["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+
+    assert_eq!(
+        groups,
+        vec!["group-with-id"],
+        "actor with group_id=None should be skipped, only group with id retained"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_jira_sync_emits_group_membership_events() -> Result<()> {
+    let fixture = setup_test_fixture(SourceType::Jira).await?;
+
+    *fixture.mock_api.jira_projects.lock().unwrap() = vec![serde_json::json!({
+        "key": "PROJ",
+        "name": "Test Project",
+    })];
+
+    *fixture.mock_api.jira_search_response.lock().unwrap() = Some(JiraSearchResponse {
+        issues: vec![make_jira_issue("PROJ-1", "First Issue", "PROJ")],
+        is_last: true,
+        next_page_token: None,
+    });
+
+    let mut roles = std::collections::HashMap::new();
+    roles.insert(
+        "Developers".to_string(),
+        "https://test.atlassian.net/rest/api/3/project/PROJ/role/10002".to_string(),
+    );
+    *fixture.mock_api.project_roles.lock().unwrap() = roles;
+
+    fixture.mock_api.role_actors.lock().unwrap().insert(
+        "10002".to_string(),
+        JiraRoleActorsResponse {
+            name: "Developers".to_string(),
+            actors: vec![JiraRoleActor {
+                display_name: "Engineering".to_string(),
+                actor_type: "atlassian-group-role-actor".to_string(),
+                name: None,
+                actor_user: None,
+                actor_group: Some(JiraActorGroup {
+                    name: "engineering-team".to_string(),
+                    display_name: "Engineering".to_string(),
+                    group_id: Some("group-eng".to_string()),
+                }),
+            }],
+        },
+    );
+
+    fixture.mock_api.jira_group_members.lock().unwrap().insert(
+        "group-eng".to_string(),
+        vec!["acct-alice".to_string(), "acct-bob".to_string()],
+    );
+
+    *fixture.mock_api.bulk_users.lock().unwrap() = vec![
+        ("acct-alice".to_string(), "alice@example.com".to_string()),
+        ("acct-bob".to_string(), "bob@example.com".to_string()),
+    ];
+
+    let sync_manager =
+        SyncManager::with_client(fixture.mock_api.clone(), fixture.sdk_client.clone(), None);
+
+    let processor = JiraProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
+    let sync_run_id = fixture
+        .sdk_client
+        .create_sync_run(SOURCE_ID, SyncType::Full)
+        .await?;
+    let ctx = make_sync_context(&fixture, &sync_run_id, SourceType::Jira, SyncType::Full);
+
+    let creds = test_credentials();
+    processor
+        .sync_all_projects(&creds, SOURCE_ID, &sync_run_id, &ctx, &None)
+        .await?;
+
+    let encountered = processor.drain_encountered_groups();
+    sync_manager
+        .sync_group_memberships(
+            &creds,
+            SOURCE_ID,
+            &sync_run_id,
+            SourceType::Jira,
+            encountered,
+            &fixture.sdk_client,
+        )
+        .await;
+
+    fixture.sdk_client.flush_all().await?;
+
+    let group_events = get_queued_events_by_type(&fixture.pool, "group_membership_sync").await?;
+    assert_eq!(group_events.len(), 1, "one group membership event expected");
+
+    let evt = &group_events[0];
+    assert_eq!(evt["group_email"], "group-eng");
+    assert_eq!(evt["group_name"], "Engineering");
+
+    let members: Vec<String> = evt["member_emails"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect();
+    assert!(members.contains(&"alice@example.com".to_string()));
+    assert!(members.contains(&"bob@example.com".to_string()));
+
+    let member_calls = fixture.mock_api.get_calls_for("get_jira_group_members");
+    assert_eq!(member_calls.len(), 1);
+    assert_eq!(member_calls[0].args[0], "group-eng");
 
     Ok(())
 }

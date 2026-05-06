@@ -35,6 +35,7 @@ pub struct MockAtlassianApi {
     pub role_actors: Mutex<HashMap<String, JiraRoleActorsResponse>>,
     pub bulk_users: Mutex<Vec<(String, String)>>,
     pub group_members: Mutex<HashMap<String, Vec<String>>>,
+    pub jira_group_members: Mutex<HashMap<String, Vec<String>>>,
 }
 
 impl MockAtlassianApi {
@@ -56,6 +57,7 @@ impl MockAtlassianApi {
             role_actors: Mutex::new(HashMap::new()),
             bulk_users: Mutex::new(vec![]),
             group_members: Mutex::new(HashMap::new()),
+            jira_group_members: Mutex::new(HashMap::new()),
         }
     }
 
@@ -220,6 +222,16 @@ impl AtlassianApi for MockAtlassianApi {
     ) -> Result<Vec<String>> {
         self.record_call("get_confluence_group_members", vec![group_id.to_string()]);
         let members = self.group_members.lock().unwrap();
+        Ok(members.get(group_id).cloned().unwrap_or_default())
+    }
+
+    async fn get_jira_group_members(
+        &self,
+        _creds: &AtlassianCredentials,
+        group_id: &str,
+    ) -> Result<Vec<String>> {
+        self.record_call("get_jira_group_members", vec![group_id.to_string()]);
+        let members = self.jira_group_members.lock().unwrap();
         Ok(members.get(group_id).cloned().unwrap_or_default())
     }
 

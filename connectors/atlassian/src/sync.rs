@@ -4,6 +4,7 @@ use omni_connector_sdk::{
     ConnectorEvent, SdkClient, ServiceCredential, Source, SourceType, SyncContext, SyncType,
 };
 use shared::models::{ConfluenceSourceConfig, JiraSourceConfig, ServiceProvider};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
@@ -149,7 +150,7 @@ impl SyncManager {
         // events at end-of-sync.
         let sync_sdk_client = ctx.sdk_client().clone();
 
-        let (total_processed, new_page_versions) = match source_type {
+        let (total_processed, new_page_versions, encountered_groups) = match source_type {
             SourceType::Confluence => {
                 let processor = ConfluenceProcessor::with_page_versions(
                     self.client.clone(),
@@ -181,7 +182,8 @@ impl SyncManager {
                         .await
                 };
                 let count = result?;
-                (count, processor.drain_page_versions())
+                let groups = processor.drain_encountered_groups();
+                (count, processor.drain_page_versions(), groups)
             }
             SourceType::Jira => {
                 let processor = JiraProcessor::new(self.client.clone(), sync_sdk_client.clone());
@@ -213,7 +215,12 @@ impl SyncManager {
                         .await
                 };
                 let count = result?;
-                (count, existing_state.confluence_page_versions.clone())
+                let groups = processor.drain_encountered_groups();
+                (
+                    count,
+                    existing_state.confluence_page_versions.clone(),
+                    groups,
+                )
             }
             _ => unreachable!(),
         };
@@ -221,6 +228,16 @@ impl SyncManager {
         if ctx.is_cancelled() {
             return Ok(None);
         }
+
+        self.sync_group_memberships(
+            &credentials,
+            source_id,
+            sync_run_id,
+            source_type,
+            encountered_groups,
+            &sync_sdk_client,
+        )
+        .await;
 
         info!(
             "Sync completed for source {}: {} documents processed",
@@ -254,6 +271,98 @@ impl SyncManager {
             .await?;
 
         Ok(Some(total_processed))
+    }
+
+    /// For each groupId encountered during the sync, fetch its members,
+    /// resolve them to emails, and emit one GroupMembershipSync event. The
+    /// authz layer at query time joins these against doc permissions that
+    /// reference groupIds in `permissions->'groups'`.
+    ///
+    /// Per-group failures are warned and skipped so a single bad group can't
+    /// abort the membership sync. We do not fail the overall sync run on
+    /// errors here — documents have already been emitted.
+    pub async fn sync_group_memberships(
+        &self,
+        creds: &AtlassianCredentials,
+        source_id: &str,
+        sync_run_id: &str,
+        source_type: SourceType,
+        encountered_groups: HashMap<String, Option<String>>,
+        sdk_client: &SdkClient,
+    ) {
+        if encountered_groups.is_empty() {
+            return;
+        }
+
+        info!(
+            "Emitting group membership events for {} groups (source: {})",
+            encountered_groups.len(),
+            source_id
+        );
+
+        for (group_id, group_name) in encountered_groups {
+            let member_account_ids = match source_type {
+                SourceType::Confluence => {
+                    self.client
+                        .get_confluence_group_members(creds, &group_id)
+                        .await
+                }
+                SourceType::Jira => self.client.get_jira_group_members(creds, &group_id).await,
+                _ => unreachable!(),
+            };
+
+            let member_account_ids = match member_account_ids {
+                Ok(ids) => ids,
+                Err(e) => {
+                    warn!(
+                        "Failed to fetch members for group {} (source: {}): {}",
+                        group_id, source_id, e
+                    );
+                    continue;
+                }
+            };
+
+            let mut member_emails = Vec::new();
+            if !member_account_ids.is_empty() {
+                match self
+                    .client
+                    .get_jira_users_bulk(creds, &member_account_ids)
+                    .await
+                {
+                    Ok(id_email_pairs) => {
+                        member_emails.extend(id_email_pairs.into_iter().map(|(_, email)| email));
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to resolve member emails for group {}: {}",
+                            group_id, e
+                        );
+                        continue;
+                    }
+                }
+            }
+            member_emails.sort();
+            member_emails.dedup();
+
+            // FIXME(groups-key-rename): we're storing an Atlassian groupId in the
+            // `groups.email` column. Rename that column (and the GroupMembershipSync
+            // `group_email` field) to a generic identifier so non-email-keyed group
+            // systems are supported first-class.
+            let event = ConnectorEvent::GroupMembershipSync {
+                sync_run_id: sync_run_id.to_string(),
+                source_id: source_id.to_string(),
+                group_email: group_id.clone(),
+                group_name,
+                member_emails,
+            };
+
+            if let Err(e) = sdk_client.emit_event(sync_run_id, source_id, event).await {
+                warn!(
+                    "Failed to emit GroupMembershipSync event for group {}: {}",
+                    group_id, e
+                );
+            }
+        }
     }
 
     async fn get_service_credentials(&self, source_id: &str) -> Result<ServiceCredential> {

@@ -58,7 +58,7 @@ async fn test_jira_issue_to_connector_event() {
     let permissions = DocumentPermissions {
         public: false,
         users: vec!["dev@example.com".to_string()],
-        groups: vec!["developers".to_string()],
+        groups: vec!["52c93b91-9d3d-4e3e-8b60-7c7da4a76c11".to_string()],
     };
 
     let event = issue.to_connector_event(
@@ -82,7 +82,10 @@ async fn test_jira_issue_to_connector_event() {
             assert!(metadata.url.unwrap().contains("/browse/PROJ-123"));
             assert!(!permissions.public);
             assert_eq!(permissions.users, vec!["dev@example.com"]);
-            assert_eq!(permissions.groups, vec!["developers"]);
+            assert_eq!(
+                permissions.groups,
+                vec!["52c93b91-9d3d-4e3e-8b60-7c7da4a76c11"]
+            );
 
             let attrs = attributes.unwrap();
             assert_eq!(attrs.get("issue_type").unwrap(), "Bug");

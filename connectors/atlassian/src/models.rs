@@ -444,6 +444,19 @@ pub struct ConfluenceGroupMember {
     pub account_id: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct JiraGroupMembersResponse {
+    pub values: Vec<JiraGroupMember>,
+    #[serde(rename = "isLast", default)]
+    pub is_last: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JiraGroupMember {
+    #[serde(rename = "accountId")]
+    pub account_id: String,
+}
+
 // ============================================================================
 // CQL Search Response Types (Confluence v1 REST API)
 // ============================================================================
