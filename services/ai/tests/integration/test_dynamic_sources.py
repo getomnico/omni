@@ -210,6 +210,7 @@ def _make_chat(user_id: str) -> Chat:
         title=None,
         created_at=None,
         updated_at=None,
+        loaded_toolsets=[],
     )
 
 
@@ -373,7 +374,9 @@ async def test_build_registry_search_tool_has_dynamic_sources(
         request = _make_request(app)
         chat = _make_chat(test_user)
 
-        result = await _build_registry(request, chat)
+        result = await _build_registry(
+            request, chat, is_admin=False, loaded_toolsets=set()
+        )
 
         # Verify search tool has query with operator syntax
         search_tools = result.registry.get_all_tools()
@@ -414,7 +417,9 @@ async def test_build_registry_no_sources_generic_description(
     request = _make_request(app)
     chat = _make_chat(test_user)
 
-    result = await _build_registry(request, chat)
+    result = await _build_registry(
+        request, chat, is_admin=False, loaded_toolsets=set()
+    )
 
     search_tools = result.registry.get_all_tools()
     search_tool = next(t for t in search_tools if t["name"] == "search_documents")
@@ -465,7 +470,9 @@ async def test_build_registry_deleted_sources_excluded(
         request = _make_request(app)
         chat = _make_chat(test_user)
 
-        result = await _build_registry(request, chat)
+        result = await _build_registry(
+            request, chat, is_admin=False, loaded_toolsets=set()
+        )
 
         search_tools = result.registry.get_all_tools()
         search_tool = next(t for t in search_tools if t["name"] == "search_documents")

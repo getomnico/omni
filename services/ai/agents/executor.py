@@ -42,11 +42,13 @@ from tools import (
     ToolContext,
     ToolRegistry,
 )
-from tools.connector_handler import ConnectorAction, SourceFilter
+from tools.connector_handler import ConnectorAction, ConnectorToolHandler, SourceFilter
 from tools.email_handler import EmailToolHandler
+from tools.meta_handler import MetaToolHandler
 from tools.sandbox_handler import SandboxToolHandler
 from tools.search_handler import fetch_operator_values
 from tools.skill_handler import SkillHandler
+from tools.turn_builder import build_turn_tools
 
 from .models import Agent, AgentRun
 from .repository import AgentRunRepository
@@ -97,9 +99,17 @@ async def _build_agent_registry(
     app_state: AppState,
     agent: Agent,
     sources: list[Source] | None,
-) -> tuple[ToolRegistry, list[ConnectorAction] | None]:
-    """Build a ToolRegistry configured for the agent's permissions."""
+    loaded_toolsets: set[str],
+) -> tuple[ToolRegistry, list, ConnectorToolHandler | None, list[dict] | None]:
+    """Build a ToolRegistry configured for the agent's permissions.
+
+    Returns: (registry, always_on_handlers, connector_handler, toolsets).
+    Connector tools are dispatched through the registry but exposed lazily via
+    `MetaToolHandler` (issue #203). The agent's `source_filter` and
+    `action_whitelist` already constrain which actions are visible.
+    """
     registry = ToolRegistry()
+    always_on_handlers: list = []
 
     source_filter = _build_source_filter(agent) if agent.agent_type == "user" else None
     action_whitelist = agent.allowed_actions if agent.agent_type == "org" else None
@@ -111,7 +121,8 @@ async def _build_agent_registry(
         owner = await UsersRepository().find_by_id(agent.user_id)
         is_admin = bool(owner and owner.role == "admin")
 
-    connector_actions: list[ConnectorAction] | None = None
+    connector_handler: ConnectorToolHandler | None = None
+    toolsets: list[dict] | None = None
 
     if CONNECTOR_MANAGER_URL:
         connector_handler = ConnectorToolHandler(
@@ -128,12 +139,22 @@ async def _build_agent_registry(
         await connector_handler._ensure_initialized()
         registry.register(connector_handler)
 
-        if connector_handler._actions:
-            connector_actions = list(connector_handler._actions.values())
+        if connector_handler.actions:
+            toolsets = connector_handler.list_toolsets()
+
+    # Meta-tools: register only when there's something for the agent to load.
+    if connector_handler is not None and toolsets:
+        meta_handler = MetaToolHandler(
+            connector_handler=connector_handler,
+            loaded=loaded_toolsets,
+            on_load=_noop_on_load,
+        )
+        registry.register(meta_handler)
+        always_on_handlers.append(meta_handler)
 
     # Search tool — always registered
     search_operators = None
-    if CONNECTOR_MANAGER_URL and connector_actions:
+    if connector_handler is not None and toolsets:
         search_operators = connector_handler.search_operators
 
     active_sources = [s for s in (sources or []) if s.is_active and not s.is_deleted]
@@ -146,39 +167,40 @@ async def _build_agent_registry(
             redis_client=app_state.redis_client,
         )
 
-    registry.register(
-        SearchToolHandler(
-            searcher_tool=app_state.searcher_tool,
-            search_operators=search_operators,
-            connected_source_types=connected_source_types,
-            operator_values=operator_values,
-        )
+    search_handler = SearchToolHandler(
+        searcher_tool=app_state.searcher_tool,
+        search_operators=search_operators,
+        connected_source_types=connected_source_types,
+        operator_values=operator_values,
     )
+    registry.register(search_handler)
+    always_on_handlers.append(search_handler)
 
-    # People search tool — always registered
-    registry.register(PeopleSearchHandler(searcher_tool=app_state.searcher_tool))
+    people_handler = PeopleSearchHandler(searcher_tool=app_state.searcher_tool)
+    registry.register(people_handler)
+    always_on_handlers.append(people_handler)
 
-    # Document handler
     content_storage = app_state.content_storage
     if content_storage or CONNECTOR_MANAGER_URL:
-        registry.register(
-            DocumentToolHandler(
-                content_storage=content_storage,
-                documents_repo=DocumentsRepository(),
-                sandbox_url=SANDBOX_URL,
-                connector_manager_url=CONNECTOR_MANAGER_URL or None,
-            )
+        document_handler = DocumentToolHandler(
+            content_storage=content_storage,
+            documents_repo=DocumentsRepository(),
+            sandbox_url=SANDBOX_URL,
+            connector_manager_url=CONNECTOR_MANAGER_URL or None,
         )
+        registry.register(document_handler)
+        always_on_handlers.append(document_handler)
 
-    # Sandbox tools
     if SANDBOX_URL:
-        registry.register(SandboxToolHandler(sandbox_url=SANDBOX_URL))
+        sandbox_handler = SandboxToolHandler(sandbox_url=SANDBOX_URL)
+        registry.register(sandbox_handler)
+        always_on_handlers.append(sandbox_handler)
 
-    # Skill loader
     skills_dir = Path(__file__).resolve().parent.parent / "skills"
     skill_handler = SkillHandler(skills_dir=skills_dir)
     if skill_handler._available:
         registry.register(skill_handler)
+        always_on_handlers.append(skill_handler)
 
     # Email tool — only for org agents with send_email in allowed_actions
     if (
@@ -186,9 +208,16 @@ async def _build_agent_registry(
         and action_whitelist
         and "send_email" in action_whitelist
     ):
-        registry.register(EmailToolHandler())
+        email_handler = EmailToolHandler()
+        registry.register(email_handler)
+        always_on_handlers.append(email_handler)
 
-    return registry, connector_actions
+    return registry, always_on_handlers, connector_handler, toolsets
+
+
+async def _noop_on_load(_: set[str]) -> None:
+    """Agent runs are one-shot — loaded toolsets are not persisted across runs."""
+    return None
 
 
 async def _run_agent_loop(
@@ -209,8 +238,15 @@ async def _run_agent_loop(
     llm_provider = _resolve_llm_provider(app_state, agent)
     sources = await _fetch_sources()
 
-    registry, connector_actions = await _build_agent_registry(app_state, agent, sources)
-    all_tools = registry.get_all_tools()
+    # Each agent run starts with no toolsets loaded — discovery is per-run.
+    loaded_toolsets: set[str] = set()
+
+    (
+        registry,
+        always_on_handlers,
+        connector_handler,
+        toolsets,
+    ) = await _build_agent_registry(app_state, agent, sources, loaded_toolsets)
 
     # Org agents search all data (no user-scoping); personal agents are scoped to owner
     # Using run ID as chat_id — tool handlers use this to scope sandbox workspaces and cache keys
@@ -254,7 +290,8 @@ async def _run_agent_loop(
     system_prompt = build_agent_system_prompt(
         agent,
         active_sources,
-        connector_actions,
+        toolsets=toolsets,
+        loaded_source_ids=loaded_toolsets,
         user_name=agent_user_name if not is_org_agent else None,
         user_email=agent_user_email if not is_org_agent else None,
         memories=memories if memories else None,
@@ -309,8 +346,14 @@ async def _run_agent_loop(
     for iteration in range(AGENT_MAX_ITERATIONS):
         logger.info(f"Agent {agent.id} run {run.id}: iteration {iteration + 1}")
 
+        # Per-turn tool list — picks up any toolsets the LLM loaded in the
+        # previous iteration via tool_search / load_tool_set.
+        turn_tools = build_turn_tools(
+            always_on_handlers, connector_handler, loaded_toolsets
+        )
+
         # Check if compaction is needed
-        if compactor.needs_compaction(conversation_messages, all_tools):
+        if compactor.needs_compaction(conversation_messages, turn_tools):
             logger.info(f"Compacting conversation for agent run {run.id}")
             # Using run ID as chat_id for compaction cache key
             conversation_messages = await compactor.compact_conversation(
@@ -336,7 +379,7 @@ async def _run_agent_loop(
         raw_stream = llm_provider.stream_response(
             prompt="",
             messages=conversation_messages,
-            tools=all_tools,
+            tools=turn_tools,
             max_tokens=DEFAULT_MAX_TOKENS,
             temperature=DEFAULT_TEMPERATURE,
             top_p=DEFAULT_TOP_P,

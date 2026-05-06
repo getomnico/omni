@@ -272,6 +272,53 @@ class ConnectorToolHandler:
         # Note: caller must await _ensure_initialized() before calling this
         return self._tools
 
+    @property
+    def actions(self) -> dict[str, ConnectorAction]:
+        """All resolved actions, keyed by namespaced tool name."""
+        return self._actions
+
+    def filtered_tools(self, allowed_source_ids: set[str]) -> list[ToolParam]:
+        """Subset of tools whose backing action belongs to an allowed source.
+
+        Used by the chat router / agent executor to expose only the connector
+        tools that have been "loaded" into the current session via the
+        tool_search / load_tool_set meta-tools.
+        """
+        if not allowed_source_ids:
+            return []
+        return [
+            tool
+            for tool in self._tools
+            if (action := self._actions.get(tool["name"])) is not None
+            and action.source_id in allowed_source_ids
+        ]
+
+    def list_toolsets(self) -> list[dict]:
+        """One entry per source for prompt rendering and tool_search.
+
+        Returns dicts with: source_id, source_type, source_name, tool_count,
+        sample_tool_names (up to 3 for the LLM to skim).
+        """
+        by_source: dict[str, list[ConnectorAction]] = {}
+        for tool_name, action in self._actions.items():
+            by_source.setdefault(action.source_id, []).append(action)
+
+        toolsets: list[dict] = []
+        for source_id, actions in by_source.items():
+            sample = sorted({a.action_name for a in actions})[:3]
+            first = actions[0]
+            toolsets.append(
+                {
+                    "source_id": source_id,
+                    "source_type": first.source_type,
+                    "source_name": first.source_name,
+                    "tool_count": len(actions),
+                    "sample_tool_names": sample,
+                }
+            )
+        toolsets.sort(key=lambda t: (t["source_type"], t["source_name"]))
+        return toolsets
+
     def can_handle(self, tool_name: str) -> bool:
         return tool_name in self._actions
 
