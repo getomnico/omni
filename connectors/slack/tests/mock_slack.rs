@@ -19,6 +19,11 @@ pub struct MockSlackState {
     pub messages: HashMap<String, Vec<SlackMessage>>,
     pub users: Vec<SlackUser>,
     pub channel_members: HashMap<String, Vec<String>>,
+    /// Map from `(channel_id, parent_ts)` to thread reply messages. Slack's
+    /// `conversations.replies` response includes the parent as `messages[0]`
+    /// — the mock prepends the parent automatically when responding.
+    #[allow(dead_code)]
+    pub thread_replies: HashMap<(String, String), Vec<SlackMessage>>,
 }
 
 pub struct MockSlackServer {
@@ -35,6 +40,7 @@ impl MockSlackServer {
             .route("/conversations.list", get(conversations_list))
             .route("/conversations.info", get(conversations_info))
             .route("/conversations.history", get(conversations_history))
+            .route("/conversations.replies", get(conversations_replies))
             .route("/users.list", get(users_list))
             .route("/conversations.members", get(conversations_members))
             .route("/conversations.join", post(conversations_join))
@@ -109,6 +115,9 @@ async fn conversations_info(
             is_private: false,
             is_member: false,
             num_members: Some(0),
+            is_im: false,
+            is_mpim: false,
+            user: None,
         });
 
     Json(ConversationInfoResponse {
@@ -213,6 +222,49 @@ async fn conversations_join() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "ok": true }))
 }
 
+#[derive(Deserialize)]
+#[allow(dead_code)]
+struct ConversationsRepliesParams {
+    channel: String,
+    ts: String,
+    cursor: Option<String>,
+    oldest: Option<String>,
+    latest: Option<String>,
+}
+
+async fn conversations_replies(
+    State(state): State<Arc<MockSlackState>>,
+    Query(params): Query<ConversationsRepliesParams>,
+) -> Json<ConversationsHistoryResponse> {
+    // Find the parent message in the channel's history
+    let parent = state
+        .messages
+        .get(&params.channel)
+        .and_then(|msgs| msgs.iter().find(|m| m.ts == params.ts).cloned());
+
+    let replies = state
+        .thread_replies
+        .get(&(params.channel.clone(), params.ts.clone()))
+        .cloned()
+        .unwrap_or_default();
+
+    // Slack returns the parent as the first message in `messages`, then replies
+    // chronologically.
+    let mut all = Vec::new();
+    if let Some(p) = parent {
+        all.push(p);
+    }
+    all.extend(replies);
+
+    Json(ConversationsHistoryResponse {
+        ok: true,
+        messages: all,
+        has_more: false,
+        response_metadata: Some(ResponseMetadata { next_cursor: None }),
+        error: None,
+    })
+}
+
 pub fn make_test_channels() -> Vec<SlackChannel> {
     vec![
         SlackChannel {
@@ -222,6 +274,9 @@ pub fn make_test_channels() -> Vec<SlackChannel> {
             is_private: false,
             is_member: true,
             num_members: Some(10),
+            is_im: false,
+            is_mpim: false,
+            user: None,
         },
         SlackChannel {
             id: "C002".to_string(),
@@ -230,6 +285,9 @@ pub fn make_test_channels() -> Vec<SlackChannel> {
             is_private: false,
             is_member: true,
             num_members: Some(5),
+            is_im: false,
+            is_mpim: false,
+            user: None,
         },
     ]
 }

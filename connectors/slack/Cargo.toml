@@ -15,6 +15,7 @@ path = "src/lib.rs"
 
 [dependencies]
 shared = { path = "../../shared" }
+omni-connector-sdk = { path = "../../sdk/rust" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }

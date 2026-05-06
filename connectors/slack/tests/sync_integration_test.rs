@@ -6,13 +6,55 @@ use mock_slack::{
     make_test_channel_members, make_test_channels, make_test_messages, make_test_users,
     MockSlackServer, MockSlackState,
 };
+use omni_connector_sdk::SyncContext;
 use omni_slack_connector::models::{SlackConnectorState, SlackMessage};
 use omni_slack_connector::sync::SyncManager;
-use shared::models::{SyncRequest, SyncType};
+use shared::models::{SourceType, SyncType};
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 /// Use a fixed base timestamp (2025-01-15 12:00:00 UTC) so all messages
 /// fall on the same calendar day.
 const BASE_TS: i64 = 1736942400;
+
+/// Drive a sync via `SyncManager::run_sync`, mirroring what the SDK's `/sync`
+/// HTTP handler does: fetch source/credentials/state, register the sync, build
+/// a `SyncContext`, and dispatch.
+async fn drive_sync(
+    fixture: &SlackConnectorTestFixture,
+    sync_manager: &SyncManager,
+    source_id: &str,
+    sync_run_id: &str,
+    sync_mode: SyncType,
+) {
+    let source = fixture.sdk_client.get_source(source_id).await.unwrap();
+    let creds = fixture.sdk_client.get_credentials(source_id).await.unwrap();
+    let state: Option<SlackConnectorState> = fixture
+        .sdk_client
+        .get_connector_state(source_id)
+        .await
+        .unwrap()
+        .and_then(|v| serde_json::from_value(v).ok());
+
+    fixture
+        .sdk_client
+        .register_sync(sync_run_id, sync_mode)
+        .await;
+
+    let ctx = SyncContext::new(
+        fixture.sdk_client.clone(),
+        sync_run_id.to_string(),
+        source_id.to_string(),
+        SourceType::Slack,
+        sync_mode,
+        Arc::new(AtomicBool::new(false)),
+    );
+
+    sync_manager
+        .run_sync(source, creds, state, ctx)
+        .await
+        .unwrap();
+}
 
 async fn setup_full_sync(
     fixture: &SlackConnectorTestFixture,
@@ -35,17 +77,14 @@ async fn setup_full_sync(
     let sync_manager =
         SyncManager::with_slack_base_url(fixture.sdk_client.clone(), mock_url.to_string());
 
-    let request = SyncRequest {
-        sync_run_id: sync_run_id.clone(),
-        source_id: source_id.clone(),
-        sync_mode: SyncType::Full,
-        last_sync_at: None,
-    };
-
-    sync_manager
-        .sync_source_from_request(request)
-        .await
-        .unwrap();
+    drive_sync(
+        fixture,
+        &sync_manager,
+        &source_id,
+        &sync_run_id,
+        SyncType::Full,
+    )
+    .await;
 
     (user_id, source_id, sync_run_id)
 }
@@ -59,24 +98,58 @@ async fn test_full_sync_creates_events() {
         messages: make_test_messages(BASE_TS),
         users: make_test_users(),
         channel_members: make_test_channel_members(),
+        thread_replies: std::collections::HashMap::new(),
     };
     let mock_server = MockSlackServer::start(mock_state).await;
 
     let (_user_id, source_id, sync_run_id) = setup_full_sync(&fixture, &mock_server.base_url).await;
 
-    // Verify events were queued
+    // Per channel: 1 group_membership_sync + 1 document_created = 2 events.
+    // Two channels → 4 events.
     let events = fixture.get_queued_events(&source_id).await.unwrap();
+    assert_eq!(events.len(), 4, "Expected 4 events, got {}", events.len());
+
+    let doc_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("document_created"))
+        .collect();
+    let group_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("group_membership_sync"))
+        .collect();
+    assert_eq!(doc_events.len(), 2, "Expected 2 document_created events");
     assert_eq!(
-        events.len(),
+        group_events.len(),
         2,
-        "Expected 2 events (1 per channel), got {}",
-        events.len()
+        "Expected 2 group_membership_sync events"
     );
 
-    for event in &events {
-        let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        assert_eq!(event_type, "document_created");
+    // Group-membership events should carry the channel members.
+    for event in &group_events {
+        let group_email = event
+            .get("group_email")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert!(
+            group_email.starts_with("slack-channel:T_TEST:"),
+            "group_email should be slack-channel:T_TEST:<channel_id>, got {}",
+            group_email
+        );
+        let members: Vec<&str> = event
+            .get("member_emails")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        assert!(
+            members.contains(&"alice@example.com") && members.contains(&"bob@example.com"),
+            "group members should include alice and bob, got {:?}",
+            members
+        );
+    }
 
+    // Document events: permissions should reference the channel group, NOT
+    // inline the user list.
+    for event in &doc_events {
         let ev_source_id = event
             .get("source_id")
             .and_then(|v| v.as_str())
@@ -99,17 +172,11 @@ async fn test_full_sync_creates_events() {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         assert!(
-            title.starts_with('#'),
-            "Title should start with '#', got: {}",
-            title
-        );
-        assert!(
-            title.contains("2025-01-15"),
-            "Title should contain the date, got: {}",
+            title.starts_with('#') && title.contains("2025-01-15"),
+            "Title should be '#<channel> - 2025-01-15', got: {}",
             title
         );
 
-        // Verify permissions contain member emails and no groups
         let permissions = event
             .get("permissions")
             .expect("event should have permissions");
@@ -117,27 +184,26 @@ async fn test_full_sync_creates_events() {
             .get("users")
             .and_then(|v| v.as_array())
             .expect("permissions should have users array");
-        assert!(!users.is_empty(), "permissions.users should not be empty");
-        let user_emails: Vec<&str> = users.iter().filter_map(|v| v.as_str()).collect();
         assert!(
-            user_emails.contains(&"alice@example.com"),
-            "permissions.users should contain alice@example.com, got: {:?}",
-            user_emails
-        );
-        assert!(
-            user_emails.contains(&"bob@example.com"),
-            "permissions.users should contain bob@example.com, got: {:?}",
-            user_emails
+            users.is_empty(),
+            "permissions.users should be empty (membership goes via groups), got: {:?}",
+            users
         );
 
-        let groups = permissions
+        let groups: Vec<&str> = permissions
             .get("groups")
             .and_then(|v| v.as_array())
-            .expect("permissions should have groups array");
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(
+            groups.len(),
+            1,
+            "permissions.groups should reference exactly one channel group"
+        );
         assert!(
-            groups.is_empty(),
-            "permissions.groups should be empty, got: {:?}",
-            groups
+            groups[0].starts_with("slack-channel:T_TEST:"),
+            "permissions.groups[0] should be slack-channel:T_TEST:<channel_id>, got {}",
+            groups[0]
         );
     }
 
@@ -171,6 +237,7 @@ async fn test_sync_persists_state_for_incremental() {
         messages: make_test_messages(BASE_TS),
         users: make_test_users(),
         channel_members: make_test_channel_members(),
+        thread_replies: std::collections::HashMap::new(),
     };
     let mock_server = MockSlackServer::start(mock_state).await;
 
@@ -209,6 +276,7 @@ async fn test_sync_persists_state_for_incremental() {
         messages: later_messages,
         users: make_test_users(),
         channel_members: make_test_channel_members(),
+        thread_replies: std::collections::HashMap::new(),
     };
     let mock_server2 = MockSlackServer::start(mock_state2).await;
 
@@ -216,16 +284,14 @@ async fn test_sync_persists_state_for_incremental() {
     let sync_run_id_2 = fixture.create_sync_run(&source_id).await.unwrap();
     let sync_manager =
         SyncManager::with_slack_base_url(fixture.sdk_client.clone(), mock_server2.base_url.clone());
-    let request = SyncRequest {
-        sync_run_id: sync_run_id_2.clone(),
-        source_id: source_id.clone(),
-        sync_mode: SyncType::Incremental,
-        last_sync_at: None,
-    };
-    sync_manager
-        .sync_source_from_request(request)
-        .await
-        .unwrap();
+    drive_sync(
+        &fixture,
+        &sync_manager,
+        &source_id,
+        &sync_run_id_2,
+        SyncType::Incremental,
+    )
+    .await;
 
     // Verify updated state
     let state_value = fixture
@@ -260,6 +326,7 @@ async fn test_realtime_event_syncs_single_channel() {
         messages: make_test_messages(BASE_TS),
         users: make_test_users(),
         channel_members: make_test_channel_members(),
+        thread_replies: std::collections::HashMap::new(),
     };
     let mock_server = MockSlackServer::start(mock_state).await;
 
@@ -304,6 +371,7 @@ async fn test_realtime_event_syncs_single_channel() {
         messages: later_messages,
         users: make_test_users(),
         channel_members: make_test_channel_members(),
+        thread_replies: std::collections::HashMap::new(),
     };
     let mock_server2 = MockSlackServer::start(mock_state2).await;
 
@@ -316,26 +384,31 @@ async fn test_realtime_event_syncs_single_channel() {
         .await
         .unwrap();
 
-    // Verify: new event emitted only for C001
+    // Verify: 2 new events for C001 — one group_membership_sync, one
+    // document_updated for the message.
     let events_after = fixture.get_queued_events(&source_id).await.unwrap();
     let new_events: Vec<_> = events_after[events_before_count..].to_vec();
 
+    let updated: Vec<_> = new_events
+        .iter()
+        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("document_updated"))
+        .collect();
+    let group_syncs: Vec<_> = new_events
+        .iter()
+        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("group_membership_sync"))
+        .collect();
     assert_eq!(
-        new_events.len(),
+        updated.len(),
         1,
-        "Expected exactly 1 new event for C001, got {}",
-        new_events.len()
+        "Expected 1 document_updated event for C001"
     );
-
-    let new_event = &new_events[0];
-    let event_type = new_event.get("type").and_then(|v| v.as_str()).unwrap_or("");
     assert_eq!(
-        event_type, "document_updated",
-        "Realtime event should be document_updated, got {}",
-        event_type
+        group_syncs.len(),
+        1,
+        "Expected 1 group_membership_sync for C001"
     );
 
-    let doc_id = new_event
+    let doc_id = updated[0]
         .get("document_id")
         .and_then(|v| v.as_str())
         .unwrap_or("");
@@ -373,5 +446,105 @@ async fn test_realtime_event_syncs_single_channel() {
         c002_ts_before, c002_ts_after,
         "C002 timestamp should be unchanged: {} vs {}",
         c002_ts_before, c002_ts_after
+    );
+}
+
+#[tokio::test]
+async fn test_sync_fetches_thread_replies() {
+    let fixture = SlackConnectorTestFixture::new().await.unwrap();
+
+    // Add a thread parent in C001 with reply_count > 0. Replies are not
+    // returned by `conversations.history` — only by `conversations.replies`,
+    // which the sync must call per parent.
+    let mut messages = make_test_messages(BASE_TS);
+    let parent_ts = format!("{}.000500", BASE_TS);
+    messages.get_mut("C001").unwrap().push(SlackMessage {
+        msg_type: "message".to_string(),
+        text: "Thread parent".to_string(),
+        user: "U001".to_string(),
+        ts: parent_ts.clone(),
+        thread_ts: Some(parent_ts.clone()),
+        reply_count: Some(2),
+        attachments: None,
+        files: None,
+    });
+
+    let mut thread_replies = std::collections::HashMap::new();
+    thread_replies.insert(
+        ("C001".to_string(), parent_ts.clone()),
+        vec![
+            SlackMessage {
+                msg_type: "message".to_string(),
+                text: "First reply on thread".to_string(),
+                user: "U002".to_string(),
+                ts: format!("{}.000600", BASE_TS),
+                thread_ts: Some(parent_ts.clone()),
+                reply_count: None,
+                attachments: None,
+                files: None,
+            },
+            SlackMessage {
+                msg_type: "message".to_string(),
+                text: "Second reply on thread".to_string(),
+                user: "U001".to_string(),
+                ts: format!("{}.000700", BASE_TS),
+                thread_ts: Some(parent_ts.clone()),
+                reply_count: None,
+                attachments: None,
+                files: None,
+            },
+        ],
+    );
+
+    let mock_state = MockSlackState {
+        channels: make_test_channels(),
+        messages,
+        users: make_test_users(),
+        channel_members: make_test_channel_members(),
+        thread_replies,
+    };
+    let mock_server = MockSlackServer::start(mock_state).await;
+
+    let (_user_id, source_id, _sync_run_id) =
+        setup_full_sync(&fixture, &mock_server.base_url).await;
+
+    let events = fixture.get_queued_events(&source_id).await.unwrap();
+
+    // Find a slack_thread_* document and verify its content includes both
+    // replies (proving conversations.replies was called and merged).
+    let thread_event = events
+        .iter()
+        .find(|e| {
+            e.get("document_id")
+                .and_then(|v| v.as_str())
+                .map(|d| d.starts_with("slack_thread_"))
+                .unwrap_or(false)
+        })
+        .expect("expected a slack_thread_* document_created event");
+
+    let title = thread_event
+        .get("metadata")
+        .and_then(|m| m.get("title"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert!(
+        title.starts_with("Thread in #"),
+        "thread doc title should start with 'Thread in #', got {}",
+        title
+    );
+
+    // The doc's `slack.message_count` extra should be 3 (parent + 2 replies)
+    // even though `conversations.history` only returned the parent.
+    let message_count = thread_event
+        .get("metadata")
+        .and_then(|m| m.get("extra"))
+        .and_then(|e| e.get("slack"))
+        .and_then(|s| s.get("message_count"))
+        .and_then(|v| v.as_u64())
+        .expect("slack.message_count present");
+    assert_eq!(
+        message_count, 3,
+        "thread should contain parent + 2 replies, got {}",
+        message_count
     );
 }

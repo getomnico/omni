@@ -92,7 +92,7 @@ impl SlackClient {
         cursor: Option<&str>,
     ) -> Result<ConversationsListResponse> {
         let mut url = format!(
-            "{}/conversations.list?types=public_channel,private_channel&limit=200",
+            "{}/conversations.list?types=public_channel,private_channel,mpim,im&limit=200",
             self.base_url
         );
 
@@ -300,61 +300,64 @@ impl SlackClient {
         Ok(response)
     }
 
-    pub async fn download_file(&self, token: &str, file: &SlackFile) -> Result<String> {
-        if let Some(download_url) = &file.url_private_download {
-            debug!("Downloading file: {} ({})", file.name, file.id);
+    /// Download a file's bytes via its `url_private_download`. Returns
+    /// `Some((bytes, content_type))` on success, `None` if the file has no
+    /// download URL or the download returned a non-success HTTP status (e.g.
+    /// the file was deleted, or the bot lost access). The caller decides what
+    /// to do with the bytes — typically `ctx.extract_and_store_content` to
+    /// route through the connector-manager's extractor (Docling for binary,
+    /// utf8 decode for text).
+    pub async fn download_file(
+        &self,
+        token: &str,
+        file: &SlackFile,
+    ) -> Result<Option<(Vec<u8>, String)>> {
+        let Some(download_url) = &file.url_private_download else {
+            return Ok(None);
+        };
 
-            return self
-                .rate_limiter
-                .execute_with_retry(|| async {
-                    let response = self
-                        .client
-                        .get(download_url)
-                        .header("Authorization", format!("Bearer {}", token))
-                        .send()
-                        .await
-                        .map_err(|e| RetryableError::Transient(e.into()))?;
+        debug!("Downloading file: {} ({})", file.name, file.id);
 
-                    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                        return Err(RetryableError::RateLimited {
-                            retry_after: Self::extract_retry_after(&response),
-                            message: format!(
-                                "Slack API rate limited downloading file: {}",
-                                file.name
-                            ),
-                        });
-                    }
+        self.rate_limiter
+            .execute_with_retry(|| async {
+                let response = self
+                    .client
+                    .get(download_url)
+                    .header("Authorization", format!("Bearer {}", token))
+                    .send()
+                    .await
+                    .map_err(|e| RetryableError::Transient(e.into()))?;
 
-                    if !response.status().is_success() {
-                        warn!(
-                            "Failed to download file {}: HTTP {}",
-                            file.name,
-                            response.status()
-                        );
-                        return Ok(String::new());
-                    }
+                if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    return Err(RetryableError::RateLimited {
+                        retry_after: Self::extract_retry_after(&response),
+                        message: format!("Slack API rate limited downloading file: {}", file.name),
+                    });
+                }
 
-                    let content_type = response
-                        .headers()
-                        .get("content-type")
-                        .and_then(|ct| ct.to_str().ok())
-                        .unwrap_or("")
-                        .to_string();
+                if !response.status().is_success() {
+                    warn!(
+                        "Failed to download file {}: HTTP {}",
+                        file.name,
+                        response.status()
+                    );
+                    return Ok(None);
+                }
 
-                    if content_type.starts_with("text/") {
-                        let content = response
-                            .text()
-                            .await
-                            .map_err(|e| RetryableError::Transient(e.into()))?;
-                        Ok(content)
-                    } else {
-                        debug!("Skipping non-text file: {} ({})", file.name, content_type);
-                        Ok(String::new())
-                    }
-                })
-                .await;
-        }
+                let content_type = response
+                    .headers()
+                    .get("content-type")
+                    .and_then(|ct| ct.to_str().ok())
+                    .unwrap_or("application/octet-stream")
+                    .to_string();
 
-        Ok(String::new())
+                let bytes = response
+                    .bytes()
+                    .await
+                    .map_err(|e| RetryableError::Transient(e.into()))?;
+
+                Ok(Some((bytes.to_vec(), content_type)))
+            })
+            .await
     }
 }

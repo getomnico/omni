@@ -1,8 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
-use omni_slack_connector::sync::SyncManager;
 use reqwest::Client;
+
+use crate::sync::SyncManager;
 use serde::{Deserialize, Serialize};
 use shared::SdkClient;
 use std::sync::Arc;

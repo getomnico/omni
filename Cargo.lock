@@ -4694,6 +4694,7 @@ dependencies = [
  "dotenvy",
  "futures-util",
  "omni-connector-manager",
+ "omni-connector-sdk",
  "redis",
  "reqwest 0.12.28",
  "rustls",

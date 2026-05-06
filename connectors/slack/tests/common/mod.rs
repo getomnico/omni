@@ -110,8 +110,10 @@ impl SlackConnectorTestFixture {
     pub async fn create_test_source(&self, name: &str, user_id: &str) -> Result<String> {
         let source_id = shared::utils::generate_ulid();
 
+        // Slack uses workspace-wide bot tokens — org-scoped, so the credential
+        // row matches with `user_id IS NULL`.
         sqlx::query(
-            "INSERT INTO sources (id, name, source_type, is_active, created_by, config) VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO sources (id, name, source_type, is_active, created_by, config, scope) VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(&source_id)
         .bind(name)
@@ -119,6 +121,7 @@ impl SlackConnectorTestFixture {
         .bind(true)
         .bind(user_id)
         .bind(serde_json::json!({}))
+        .bind("org")
         .execute(self.pool())
         .await?;
 

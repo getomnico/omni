@@ -1,74 +1,9 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value as JsonValue};
+use serde_json::json;
 use shared::models::{ConnectorEvent, DocumentAttributes, DocumentMetadata, DocumentPermissions};
 use std::collections::HashMap;
 use time::OffsetDateTime;
-
-// ============================================================================
-// Connector Protocol Models
-// ============================================================================
-
-pub use shared::models::{ActionDefinition, ConnectorManifest};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncResponse {
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-impl SyncResponse {
-    pub fn started() -> Self {
-        Self {
-            status: "started".to_string(),
-            message: None,
-        }
-    }
-
-    pub fn error(msg: impl Into<String>) -> Self {
-        Self {
-            status: "error".to_string(),
-            message: Some(msg.into()),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CancelRequest {
-    pub sync_run_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CancelResponse {
-    pub status: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionRequest {
-    pub action: String,
-    pub params: JsonValue,
-    pub credentials: JsonValue,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionResponse {
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<JsonValue>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-impl ActionResponse {
-    pub fn not_supported(action: &str) -> Self {
-        Self {
-            status: "error".to_string(),
-            result: None,
-            error: Some(format!("Action not supported: {}", action)),
-        }
-    }
-}
 
 // ============================================================================
 // Connector State
@@ -109,12 +44,58 @@ impl SlackUser {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlackChannel {
     pub id: String,
+    /// Public/private channels and group DMs (mpim) have a name. IMs (1:1 DMs)
+    /// don't — for those we synthesize one at sync time using the partner's
+    /// user_id (see `SlackChannel::display_name`).
+    #[serde(default)]
     pub name: String,
-    #[serde(rename = "is_channel")]
+    #[serde(rename = "is_channel", default)]
     pub is_public: bool,
+    #[serde(default)]
     pub is_private: bool,
+    /// 1:1 direct message. Has no `name`; the partner's user_id is in `user`.
+    #[serde(default)]
+    pub is_im: bool,
+    /// Group DM (multi-person direct message). Has a synthetic name set by
+    /// Slack like `mpdm-alice--bob--charlie-1`.
+    #[serde(default)]
+    pub is_mpim: bool,
+    /// True when the bot is a member of the channel. IMs/MPIMs the bot is part
+    /// of don't expose this field; default-false is fine because we treat IMs
+    /// and MPIMs as implicitly joined.
+    #[serde(default)]
     pub is_member: bool,
     pub num_members: Option<i32>,
+    /// For IMs, the user_id of the other party.
+    #[serde(default)]
+    pub user: Option<String>,
+}
+
+impl SlackChannel {
+    /// A name suitable for display/indexing. For IMs (which Slack doesn't name)
+    /// we synthesize one from the partner's user_id. The id is included so the
+    /// name is unique even if user_id resolution fails.
+    pub fn display_name(&self) -> String {
+        if !self.name.is_empty() {
+            return self.name.clone();
+        }
+        if self.is_im {
+            return self
+                .user
+                .as_deref()
+                .map(|u| format!("dm-{}", u))
+                .unwrap_or_else(|| format!("dm-{}", self.id));
+        }
+        // Fall back to the channel id so docs always have a non-empty name.
+        self.id.clone()
+    }
+
+    /// Should we try to auto-join this conversation? Only relevant for public
+    /// channels — the bot is implicitly a member of IMs/MPIMs it's a part of,
+    /// and private channels require an invite.
+    pub fn requires_join(&self) -> bool {
+        !self.is_member && !self.is_private && !self.is_im && !self.is_mpim
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -318,7 +299,7 @@ impl MessageGroup {
         sync_run_id: String,
         source_id: String,
         content_id: String,
-        member_emails: &[String],
+        group_email: &str,
     ) -> ConnectorEvent {
         let title = if self.is_thread {
             format!("Thread in #{} - {}", self.channel_name, self.date)
@@ -422,10 +403,13 @@ impl MessageGroup {
             extra: Some(extra),
         };
 
+        // Permissions reference the channel-as-group; the group's membership
+        // is synced via a separate `GroupMembershipSync` event so it's not
+        // duplicated across every doc in the channel.
         let permissions = DocumentPermissions {
             public: false,
-            users: member_emails.to_vec(),
-            groups: vec![],
+            users: vec![],
+            groups: vec![group_email.to_string()],
         };
 
         let attributes = self.to_attributes().into_attributes();
@@ -446,9 +430,9 @@ impl MessageGroup {
         sync_run_id: String,
         source_id: String,
         content_id: String,
-        member_emails: &[String],
+        group_email: &str,
     ) -> ConnectorEvent {
-        let event = self.to_connector_event(sync_run_id, source_id, content_id, member_emails);
+        let event = self.to_connector_event(sync_run_id, source_id, content_id, group_email);
         if let ConnectorEvent::DocumentCreated {
             sync_run_id,
             source_id,
@@ -489,7 +473,7 @@ impl SlackFile {
         channel_id: String,
         channel_name: String,
         content_id: String,
-        member_emails: &[String],
+        group_email: &str,
     ) -> ConnectorEvent {
         let document_id = format!("slack_file_{}", self.id);
 
@@ -517,8 +501,8 @@ impl SlackFile {
 
         let permissions = DocumentPermissions {
             public: false,
-            users: member_emails.to_vec(),
-            groups: vec![],
+            users: vec![],
+            groups: vec![group_email.to_string()],
         };
 
         let attributes = SlackFileAttributes {
