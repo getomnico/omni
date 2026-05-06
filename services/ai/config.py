@@ -54,40 +54,15 @@ DATABASE_URL = (
     f"@{DATABASE_HOST}:{DATABASE_PORT}/{DATABASE_NAME}"
 )
 
-# Embedding configuration (only batch processing vars remain; provider config is in DB)
-EMBEDDING_MODEL = get_optional_env("EMBEDDING_MODEL", "")
+# Embedding configuration (provider config is in DB; only window size remains here)
 EMBEDDING_MAX_MODEL_LEN = int(get_optional_env("EMBEDDING_MAX_MODEL_LEN", "8192"))
 
 DEFAULT_MAX_TOKENS = int(get_optional_env("DEFAULT_MAX_TOKENS", "8192"))
 DEFAULT_TEMPERATURE = float(get_optional_env("DEFAULT_TEMPERATURE", "0.0"))
 DEFAULT_TOP_P = float(get_optional_env("DEFAULT_TOP_P", "1.0"))
 
-# AWS configuration
+# AWS configuration (used by online Bedrock embedding/LLM providers)
 AWS_REGION = get_optional_env("AWS_REGION", "")  # Optional, auto-detected in ECS
-
-EMBEDDING_BATCH_S3_BUCKET = get_optional_env("EMBEDDING_BATCH_S3_BUCKET", "")
-EMBEDDING_BATCH_BEDROCK_ROLE_ARN = get_optional_env(
-    "EMBEDDING_BATCH_BEDROCK_ROLE_ARN", ""
-)
-
-# Embedding batch accumulation thresholds
-EMBEDDING_BATCH_MIN_DOCUMENTS = int(
-    get_optional_env("EMBEDDING_BATCH_MIN_DOCUMENTS", "100")
-)
-EMBEDDING_BATCH_MAX_DOCUMENTS = int(
-    get_optional_env("EMBEDDING_BATCH_MAX_DOCUMENTS", "50000")
-)
-EMBEDDING_BATCH_ACCUMULATION_TIMEOUT_SECONDS = int(
-    get_optional_env("EMBEDDING_BATCH_ACCUMULATION_TIMEOUT_SECONDS", "300")
-)  # 5 minutes
-
-# Embedding batch processing intervals
-EMBEDDING_BATCH_ACCUMULATION_POLL_INTERVAL = int(
-    get_optional_env("EMBEDDING_BATCH_ACCUMULATION_POLL_INTERVAL", "10")
-)  # 10 seconds
-EMBEDDING_BATCH_MONITOR_POLL_INTERVAL = int(
-    get_optional_env("EMBEDDING_BATCH_MONITOR_POLL_INTERVAL", "30")
-)  # 30 seconds
 
 # Conversation compaction
 MAX_CONVERSATION_INPUT_TOKENS = int(

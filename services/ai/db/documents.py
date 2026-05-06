@@ -1,7 +1,7 @@
 """Repository for document-related database operations."""
 
 import logging
-from typing import Optional, List
+from typing import Optional
 from dataclasses import dataclass
 from asyncpg import Pool
 
@@ -9,9 +9,7 @@ from .connection import get_db_pool
 
 logger = logging.getLogger(__name__)
 
-_COLUMNS = (
-    "id, content_id, source_id, external_id, title, content_type, embedding_status"
-)
+_COLUMNS = "id, content_id, source_id, external_id, title, content_type"
 
 
 def _permission_filter(user_email: str) -> str:
@@ -34,7 +32,6 @@ class Document:
     external_id: Optional[str] = None
     title: Optional[str] = None
     content_type: Optional[str] = None
-    embedding_status: Optional[str] = None
 
 
 @dataclass
@@ -87,7 +84,6 @@ class DocumentsRepository:
                 external_id=row["external_id"],
                 title=row["title"],
                 content_type=row["content_type"],
-                embedding_status=row["embedding_status"],
             )
         return None
 
@@ -121,7 +117,6 @@ class DocumentsRepository:
                 external_id=row["external_id"],
                 title=row["title"],
                 content_type=row["content_type"],
-                embedding_status=row["embedding_status"],
             )
         return None
 
@@ -138,7 +133,14 @@ class DocumentsRepository:
         """
         pool = await self._get_pool()
         row = await pool.fetchrow(
-            "SELECT id FROM documents WHERE external_id = $1 AND id != $2 AND embedding_status = 'completed' LIMIT 1",
+            """
+            SELECT d.id
+            FROM documents d
+            WHERE d.external_id = $1
+              AND d.id != $2
+              AND EXISTS (SELECT 1 FROM embeddings e WHERE e.document_id = d.id)
+            LIMIT 1
+            """,
             external_id,
             exclude_document_id,
         )
@@ -161,25 +163,3 @@ class DocumentsRepository:
                 storage_backend=row["storage_backend"],
             )
         return None
-
-    async def update_embedding_status(
-        self, document_ids: List[str], status: str
-    ) -> None:
-        """Update embedding_status for documents"""
-        if not document_ids:
-            return
-
-        pool = await self._get_pool()
-
-        await pool.execute(
-            """
-            UPDATE documents
-            SET embedding_status = $2
-            WHERE id = ANY($1)
-            """,
-            document_ids,
-            status,
-        )
-        logger.info(
-            f"Updated {len(document_ids)} documents to embedding_status: {status}"
-        )

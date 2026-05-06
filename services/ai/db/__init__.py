@@ -7,7 +7,6 @@ from .embedding_providers import EmbeddingProvidersRepository, EmbeddingProvider
 from .documents import DocumentsRepository, Document, ContentBlob
 from .embedding_queue import EmbeddingQueueRepository, EmbeddingQueueItem, QueueStatus
 from .embeddings import EmbeddingsRepository, Embedding
-from .embedding_batch_jobs import EmbeddingBatchJobsRepository, BatchJob
 from .model_providers import (
     ModelProvidersRepository,
     ModelProviderRecord,
@@ -36,8 +35,6 @@ __all__ = [
     "QueueStatus",
     "EmbeddingsRepository",
     "Embedding",
-    "EmbeddingBatchJobsRepository",
-    "BatchJob",
     "ModelProvidersRepository",
     "ModelProviderRecord",
     "ModelsRepository",

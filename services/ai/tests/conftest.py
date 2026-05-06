@@ -20,12 +20,7 @@ os.environ.setdefault("DATABASE_USERNAME", "test")
 os.environ.setdefault("DATABASE_PASSWORD", "test")
 os.environ.setdefault("DATABASE_NAME", "test")
 os.environ.setdefault("CONNECTOR_MANAGER_URL", "http://localhost:9090")
-# Bedrock batch processing config (for batch processor tests)
-os.environ.setdefault("EMBEDDING_BATCH_S3_BUCKET", "test-embedding-bucket")
 os.environ.setdefault("AWS_REGION", "us-east-1")
-os.environ.setdefault(
-    "EMBEDDING_BATCH_BEDROCK_ROLE_ARN", "arn:aws:iam::123456789012:role/test-role"
-)
 
 import asyncio
 from pathlib import Path
@@ -47,7 +42,6 @@ from db import (
     DocumentsRepository,
     EmbeddingQueueRepository,
     EmbeddingsRepository,
-    EmbeddingBatchJobsRepository,
 )
 from routers import chat_router, embeddings_router, health_router, prompts_router
 from services import EmbeddingQueueService
@@ -188,12 +182,6 @@ def queue_repo(db_pool):
 def embeddings_repo(db_pool):
     """EmbeddingsRepository with real database connection."""
     return EmbeddingsRepository(db_pool)
-
-
-@pytest.fixture
-def batch_jobs_repo(db_pool):
-    """EmbeddingBatchJobsRepository with real database connection."""
-    return EmbeddingBatchJobsRepository(db_pool)
 
 
 # =============================================================================

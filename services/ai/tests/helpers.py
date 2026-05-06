@@ -81,8 +81,8 @@ async def create_test_document_with_content(
             len(content_bytes),
         )
         await conn.execute(
-            """INSERT INTO documents (id, source_id, external_id, title, content_id, content, embedding_status)
-               VALUES ($1, $2, $3, $4, $5, $6, 'pending')""",
+            """INSERT INTO documents (id, source_id, external_id, title, content_id, content)
+               VALUES ($1, $2, $3, $4, $5, $6)""",
             doc_id,
             source_id,
             f"test-{doc_id}",

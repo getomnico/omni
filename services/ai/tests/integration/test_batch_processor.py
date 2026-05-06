@@ -1,7 +1,6 @@
 """Integration tests for the EmbeddingBatchProcessor.
 
-Tests the batch embedding processor with real database and mocked external services
-(S3, Bedrock API, embedding providers).
+Tests the embedding processor with real database and a mocked embedding provider.
 """
 
 import pytest
@@ -9,6 +8,7 @@ import ulid
 from unittest.mock import AsyncMock, MagicMock
 
 from embeddings.batch_processor import EmbeddingBatchProcessor
+from state import AppState
 from tests.helpers import (
     create_test_user as _create_test_user_full,
     create_test_source,
@@ -23,22 +23,10 @@ async def create_test_user(db_pool) -> str:
     return user_id
 
 
-# =============================================================================
-# Processor Fixtures
-# =============================================================================
-
-
-@pytest.fixture
-async def online_processor(
-    db_pool,
-    documents_repo,
-    queue_repo,
-    embeddings_repo,
-    batch_jobs_repo,
-    mock_embedding_provider,
-):
-    """Processor with real DB repos, mocked embedding provider."""
-    # Mock content storage to fetch from DB
+def _build_app_state(
+    db_pool, embedding_provider, provider_type: str = "jina"
+) -> AppState:
+    """Build a minimal AppState wired to a DB-backed content_storage and a mock provider."""
     content_storage = AsyncMock()
 
     async def get_text_from_db(content_id):
@@ -50,40 +38,33 @@ async def online_processor(
 
     content_storage.get_text = get_text_from_db
 
-    return EmbeddingBatchProcessor(
-        documents_repo=documents_repo,
-        queue_repo=queue_repo,
-        embeddings_repo=embeddings_repo,
-        batch_jobs_repo=batch_jobs_repo,
-        content_storage=content_storage,
-        embedding_provider=mock_embedding_provider,
-        provider_type="jina",
-    )
+    state = AppState()
+    state.embedding_provider = embedding_provider
+    state.embedding_provider_type = provider_type
+    state.content_storage = content_storage
+    return state
+
+
+# =============================================================================
+# Processor Fixtures
+# =============================================================================
 
 
 @pytest.fixture
-async def bedrock_processor(
+async def online_processor(
     db_pool,
     documents_repo,
     queue_repo,
     embeddings_repo,
-    batch_jobs_repo,
     mock_embedding_provider,
 ):
-    """Bedrock processor with real DB, mocked S3/Bedrock clients."""
-    processor = EmbeddingBatchProcessor(
+    """Processor with real DB repos, mocked embedding provider."""
+    return EmbeddingBatchProcessor(
         documents_repo=documents_repo,
         queue_repo=queue_repo,
         embeddings_repo=embeddings_repo,
-        batch_jobs_repo=batch_jobs_repo,
-        content_storage=AsyncMock(),
-        embedding_provider=mock_embedding_provider,
-        provider_type="bedrock",
+        app_state=_build_app_state(db_pool, mock_embedding_provider),
     )
-    # Mock S3 and Bedrock clients to avoid real AWS calls
-    processor.storage_client = AsyncMock()
-    processor.batch_provider = AsyncMock()
-    return processor
 
 
 # =============================================================================
@@ -93,7 +74,7 @@ async def bedrock_processor(
 
 @pytest.mark.integration
 async def test_online_processes_document_end_to_end(
-    db_pool, online_processor, queue_repo, embeddings_repo, documents_repo
+    db_pool, online_processor, queue_repo, embeddings_repo
 ):
     """Full flow: queue item -> fetch -> embed -> store in DB -> mark complete."""
     user_id = await create_test_user(db_pool)
@@ -111,9 +92,6 @@ async def test_online_processes_document_end_to_end(
 
     queue_item = await queue_repo.get_by_id(queue_id)
     assert queue_item.status == "completed"
-
-    doc = await documents_repo.get_by_id(doc_id)
-    assert doc.embedding_status == "completed"
 
 
 @pytest.mark.integration
@@ -137,82 +115,6 @@ async def test_online_handles_empty_content(
 
 
 # =============================================================================
-# Bedrock Accumulation Tests (Real DB for queue counts)
-# =============================================================================
-
-
-@pytest.mark.integration
-async def test_accumulation_skips_empty_queue(db_pool, bedrock_processor):
-    """No batch created when queue is empty."""
-    await bedrock_processor._check_and_create_batch()
-
-    async with db_pool.acquire() as conn:
-        jobs = await conn.fetch("SELECT * FROM embedding_batch_jobs")
-        assert len(jobs) == 0
-
-
-# =============================================================================
-# Bedrock Output Parsing Tests (Unit - no DB needed)
-# =============================================================================
-
-
-@pytest.mark.unit
-def test_parse_bedrock_output_groups_by_document():
-    """Verify Bedrock JSONL output is correctly parsed and grouped."""
-    # Create minimal processor for parsing test
-    processor = EmbeddingBatchProcessor(
-        documents_repo=None,
-        queue_repo=None,
-        embeddings_repo=None,
-        batch_jobs_repo=None,
-        content_storage=None,
-        embedding_provider=None,
-        provider_type="jina",  # Avoid Bedrock client init
-    )
-
-    output_lines = [
-        {"recordId": "doc1:0:0:100", "modelOutput": {"embedding": [0.1] * 1024}},
-        {"recordId": "doc1:1:100:200", "modelOutput": {"embedding": [0.2] * 1024}},
-        {"recordId": "doc2:0:0:50", "modelOutput": {"embedding": [0.3] * 1024}},
-    ]
-
-    result = processor._parse_bedrock_output(output_lines)
-
-    assert "doc1" in result
-    assert "doc2" in result
-    assert len(result["doc1"]) == 2
-    assert len(result["doc2"]) == 1
-
-    # Verify sorted by chunk_index
-    assert result["doc1"][0]["chunk_index"] == 0
-    assert result["doc1"][1]["chunk_index"] == 1
-
-
-@pytest.mark.unit
-def test_parse_bedrock_output_skips_errors():
-    """Error records in Bedrock output are skipped gracefully."""
-    processor = EmbeddingBatchProcessor(
-        documents_repo=None,
-        queue_repo=None,
-        embeddings_repo=None,
-        batch_jobs_repo=None,
-        content_storage=None,
-        embedding_provider=None,
-        provider_type="jina",
-    )
-
-    output_lines = [
-        {"recordId": "doc1:0:0:100", "error": {"message": "Rate limit"}},
-        {"recordId": "doc1:1:100:200", "modelOutput": {"embedding": [0.1] * 1024}},
-    ]
-
-    result = processor._parse_bedrock_output(output_lines)
-
-    assert len(result["doc1"]) == 1
-    assert result["doc1"][0]["chunk_index"] == 1
-
-
-# =============================================================================
 # Large Document Handling Tests
 # =============================================================================
 
@@ -223,21 +125,8 @@ async def online_processor_with_sliding_window(
     documents_repo,
     queue_repo,
     embeddings_repo,
-    batch_jobs_repo,
 ):
     """Processor with a mock embedding provider that tracks calls for large doc testing."""
-
-    content_storage = AsyncMock()
-
-    async def get_text_from_db(content_id):
-        async with db_pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT content FROM content_blobs WHERE id = $1", content_id
-            )
-            return row["content"].decode() if row else None
-
-    content_storage.get_text = get_text_from_db
-
     provider = AsyncMock()
     provider.get_model_name = MagicMock(return_value="test-embedding-model")
 
@@ -253,10 +142,7 @@ async def online_processor_with_sliding_window(
         documents_repo=documents_repo,
         queue_repo=queue_repo,
         embeddings_repo=embeddings_repo,
-        batch_jobs_repo=batch_jobs_repo,
-        content_storage=content_storage,
-        embedding_provider=provider,
-        provider_type="jina",
+        app_state=_build_app_state(db_pool, provider),
     )
 
 
@@ -266,7 +152,6 @@ async def test_online_processes_large_document_with_sliding_window(
     online_processor_with_sliding_window,
     queue_repo,
     embeddings_repo,
-    documents_repo,
     monkeypatch,
 ):
     """Large documents are split via sliding window and each window is embedded."""
@@ -308,9 +193,6 @@ async def test_online_processes_large_document_with_sliding_window(
 
     provider = online_processor_with_sliding_window.embedding_provider
     assert provider.generate_embeddings.call_count == 7
-
-    doc = await documents_repo.get_by_id(doc_id)
-    assert doc.embedding_status == "completed"
 
 
 # =============================================================================

@@ -27,7 +27,6 @@ class EmbeddingQueueItem:
     id: str
     document_id: str
     status: str
-    batch_job_id: Optional[str]
     error_message: Optional[str]
     retry_count: int
     created_at: datetime
@@ -51,7 +50,7 @@ class EmbeddingQueueRepository:
 
         row = await pool.fetchrow(
             """
-            SELECT id, document_id, status, batch_job_id, error_message, retry_count, created_at
+            SELECT id, document_id, status, error_message, retry_count, created_at
             FROM embedding_queue
             WHERE id = $1
             """,
@@ -78,8 +77,7 @@ class EmbeddingQueueRepository:
             """
             SELECT COUNT(*)
             FROM embedding_queue
-            WHERE batch_job_id IS NULL
-              AND retry_count < $1
+            WHERE retry_count < $1
               AND status IN ('pending', 'failed')
             """,
             max_retries,
@@ -90,7 +88,7 @@ class EmbeddingQueueRepository:
     async def get_pending_items(
         self, limit: int, max_retries: int
     ) -> List[EmbeddingQueueItem]:
-        """Atomically fetch and claim pending items not assigned to any batch.
+        """Atomically fetch and claim pending items.
 
         Uses FOR UPDATE SKIP LOCKED so each item is only claimed by one worker.
         """
@@ -103,65 +101,18 @@ class EmbeddingQueueRepository:
             WHERE id IN (
                 SELECT id
                 FROM embedding_queue
-                WHERE batch_job_id IS NULL
-                  AND retry_count < $1
+                WHERE retry_count < $1
                   AND status IN ('pending', 'failed')
                 ORDER BY created_at ASC
                 LIMIT $2
                 FOR UPDATE SKIP LOCKED
             )
-            RETURNING id, document_id, status, batch_job_id, error_message, retry_count, created_at
+            RETURNING id, document_id, status, error_message, retry_count, created_at
             """,
             max_retries,
             limit,
         )
         return [EmbeddingQueueItem(**dict(row)) for row in rows]
-
-    async def get_items_for_batch(self, batch_id: str) -> List[EmbeddingQueueItem]:
-        """Get all queue items for a batch"""
-        pool = await self._get_pool()
-
-        rows = await pool.fetch(
-            """
-            SELECT id, document_id, status, batch_job_id, error_message, retry_count, created_at
-            FROM embedding_queue
-            WHERE batch_job_id = $1
-            ORDER BY created_at ASC
-            """,
-            batch_id,
-        )
-        return [EmbeddingQueueItem(**dict(row)) for row in rows]
-
-    async def assign_to_batch(self, batch_id: str, item_ids: List[str]) -> None:
-        """Assign queue items to batch job"""
-        if not item_ids:
-            return
-
-        pool = await self._get_pool()
-
-        await pool.execute(
-            """
-            UPDATE embedding_queue
-            SET batch_job_id = $1
-            WHERE id = ANY($2)
-            """,
-            batch_id,
-            item_ids,
-        )
-        logger.info(f"Assigned {len(item_ids)} items to batch {batch_id}")
-
-    async def mark_processing(self, batch_id: str) -> None:
-        """Mark all items in a batch as processing"""
-        pool = await self._get_pool()
-
-        await pool.execute(
-            """
-            UPDATE embedding_queue
-            SET status = 'processing'
-            WHERE batch_job_id = $1
-            """,
-            batch_id,
-        )
 
     async def mark_completed(self, item_ids: List[str]) -> None:
         """Mark queue items as completed"""
@@ -179,23 +130,6 @@ class EmbeddingQueueRepository:
             item_ids,
         )
         logger.info(f"Marked {len(item_ids)} queue items as completed")
-
-    async def mark_pending(self, item_ids: List[str]) -> None:
-        """Reset queue items back to pending (remove batch assignment)"""
-        if not item_ids:
-            return
-
-        pool = await self._get_pool()
-
-        await pool.execute(
-            """
-            UPDATE embedding_queue
-            SET status = 'pending', batch_job_id = NULL
-            WHERE id = ANY($1)
-            """,
-            item_ids,
-        )
-        logger.info(f"Reset {len(item_ids)} queue items to pending")
 
     async def mark_failed(self, item_ids: List[str], error: str) -> None:
         """Mark queue items as failed"""

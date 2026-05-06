@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::{PgPool, Row};
 use ulid::Ulid;
 
 use crate::db::repositories::EmbeddingProviderRepository;
@@ -338,25 +338,4 @@ pub struct QueueStats {
     pub processing: i64,
     pub completed: i64,
     pub failed: i64,
-}
-
-pub async fn update_document_embedding_status(
-    tx: &mut Transaction<'_, Postgres>,
-    document_id: &str,
-    status: &str,
-) -> Result<()> {
-    sqlx::query(
-        r#"
-        UPDATE documents
-        SET embedding_status = $2,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = $1
-        "#,
-    )
-    .bind(document_id)
-    .bind(status)
-    .execute(&mut **tx)
-    .await?;
-
-    Ok(())
 }
