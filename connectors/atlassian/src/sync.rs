@@ -142,11 +142,18 @@ impl SyncManager {
             .last_successful_sync_at
             .unwrap_or_else(|| sync_start - chrono::Duration::hours(24));
 
+        // The SDK server constructs its own SdkClient for the SyncContext, so
+        // emit/flush must go through `ctx.sdk_client()` — using a different
+        // SdkClient instance would buffer events on a client whose buffer
+        // ctx.complete()/ctx.save_connector_state() never flush, stranding
+        // events at end-of-sync.
+        let sync_sdk_client = ctx.sdk_client().clone();
+
         let (total_processed, new_page_versions) = match source_type {
             SourceType::Confluence => {
                 let processor = ConfluenceProcessor::with_page_versions(
                     self.client.clone(),
-                    self.sdk_client.clone(),
+                    sync_sdk_client.clone(),
                     existing_state.confluence_page_versions.clone(),
                 );
                 let result = if sync_mode == SyncType::Full {
@@ -177,7 +184,7 @@ impl SyncManager {
                 (count, processor.drain_page_versions())
             }
             SourceType::Jira => {
-                let processor = JiraProcessor::new(self.client.clone(), self.sdk_client.clone());
+                let processor = JiraProcessor::new(self.client.clone(), sync_sdk_client.clone());
                 let result = if sync_mode == SyncType::Full {
                     info!("Performing full Jira sync for source: {}", source.name);
                     processor

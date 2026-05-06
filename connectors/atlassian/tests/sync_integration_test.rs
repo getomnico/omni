@@ -621,7 +621,7 @@ async fn test_confluence_sync_fetches_and_caches_space_permissions() -> Result<(
                 },
                 operation: ConfluencePermissionOperation {
                     key: "read".to_string(),
-                    target: "space".to_string(),
+                    target_type: "space".to_string(),
                 },
             },
             ConfluenceSpacePermission {
@@ -632,7 +632,7 @@ async fn test_confluence_sync_fetches_and_caches_space_permissions() -> Result<(
                 },
                 operation: ConfluencePermissionOperation {
                     key: "read".to_string(),
-                    target: "space".to_string(),
+                    target_type: "space".to_string(),
                 },
             },
             ConfluenceSpacePermission {
@@ -643,7 +643,7 @@ async fn test_confluence_sync_fetches_and_caches_space_permissions() -> Result<(
                 },
                 operation: ConfluencePermissionOperation {
                     key: "write".to_string(),
-                    target: "space".to_string(),
+                    target_type: "space".to_string(),
                 },
             },
         ],

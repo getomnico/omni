@@ -366,8 +366,9 @@ pub struct ConfluencePermissionPrincipal {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfluencePermissionOperation {
-    pub key: String,    // "read", "write", "administer", etc.
-    pub target: String, // "space", "page", etc.
+    pub key: String, // "read", "write", "administer", etc.
+    #[serde(rename = "targetType")]
+    pub target_type: String, // "space", "page", etc.
 }
 
 #[derive(Debug, Serialize, Deserialize)]

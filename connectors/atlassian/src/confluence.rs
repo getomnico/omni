@@ -96,7 +96,7 @@ impl ConfluenceProcessor {
         // Filter for read permissions on the space
         let read_perms: Vec<_> = permissions
             .iter()
-            .filter(|p| p.operation.key == "read" && p.operation.target == "space")
+            .filter(|p| p.operation.key == "read" && p.operation.target_type == "space")
             .collect();
 
         // If no explicit read permissions are returned, the space is likely open to all
@@ -393,7 +393,14 @@ impl ConfluenceProcessor {
         &self,
         creds: &AtlassianCredentials,
     ) -> Result<Vec<ConfluenceSpace>> {
-        let spaces = self.client.get_confluence_spaces(creds).await?;
+        let all_spaces = self.client.get_confluence_spaces(creds).await?;
+        // Personal spaces ("~accountId" keyed) are user scratchpads; the
+        // permission model there isn't meaningful for org-wide indexing and
+        // the noise outweighs the value.
+        let spaces: Vec<ConfluenceSpace> = all_spaces
+            .into_iter()
+            .filter(|s| s.r#type != "personal")
+            .collect();
         if spaces.is_empty() {
             debug!("No spaces found for Confluence instance {}", creds.base_url);
         }
