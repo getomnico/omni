@@ -6,9 +6,10 @@
     interface Props {
         email: string
         isAdmin?: boolean
+        memoryEnabled?: boolean
     }
 
-    let { email, isAdmin = false }: Props = $props()
+    let { email, isAdmin = false, memoryEnabled = false }: Props = $props()
 
     async function logout() {
         await fetch('/logout', {
@@ -60,14 +61,16 @@
                 </a>
             {/snippet}
         </DropdownMenu.Item>
-        <DropdownMenu.Item class="cursor-pointer">
-            {#snippet child({ props })}
-                <a href="/settings/memory" {...props}>
-                    <Brain class="h-4 w-4" />
-                    <span>Memories</span>
-                </a>
-            {/snippet}
-        </DropdownMenu.Item>
+        {#if memoryEnabled}
+            <DropdownMenu.Item class="cursor-pointer">
+                {#snippet child({ props })}
+                    <a href="/settings/memory" {...props}>
+                        <Brain class="h-4 w-4" />
+                        <span>Memories</span>
+                    </a>
+                {/snippet}
+            </DropdownMenu.Item>
+        {/if}
         <DropdownMenu.Separator />
         <DropdownMenu.Item onclick={logout} class="cursor-pointer">
             <LogOut class="h-4 w-4" />

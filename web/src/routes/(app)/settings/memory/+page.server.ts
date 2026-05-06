@@ -1,8 +1,13 @@
-import { redirect, fail } from '@sveltejs/kit'
+import { error, redirect, fail } from '@sveltejs/kit'
+import { env } from '$env/dynamic/private'
 import { getConfig } from '$lib/server/config'
 import { deleteUser, getGlobal, setUser } from '$lib/server/db/configuration'
 import { getCurrentProvider } from '$lib/server/db/embedding-providers'
 import type { PageServerLoad, Actions } from './$types'
+
+function requireMemoryEnabled() {
+    if (env.MEMORY_ENABLED !== 'true') throw error(404)
+}
 
 const MODE_RANK: Record<string, number> = { off: 0, chat: 1, full: 2 }
 const VALID_MODES = ['off', 'chat', 'full', '']
@@ -35,6 +40,7 @@ export const load: PageServerLoad = async ({ locals }) => {
     if (!locals.user) {
         throw redirect(302, '/login')
     }
+    requireMemoryEnabled()
 
     const [orgDefaultConfig, embedder, memories] = await Promise.all([
         getGlobal('memory_mode_default'),
@@ -56,6 +62,7 @@ export const actions: Actions = {
         if (!locals.user) {
             throw redirect(302, '/login')
         }
+        requireMemoryEnabled()
 
         const formData = await request.formData()
         const mode = formData.get('mode') as string
@@ -99,6 +106,7 @@ export const actions: Actions = {
         if (!locals.user) {
             throw redirect(302, '/login')
         }
+        requireMemoryEnabled()
 
         const formData = await request.formData()
         const memoryId = (formData.get('memoryId') as string | null)?.trim()
@@ -132,6 +140,7 @@ export const actions: Actions = {
         if (!locals.user) {
             throw redirect(302, '/login')
         }
+        requireMemoryEnabled()
 
         const { services } = getConfig()
         try {

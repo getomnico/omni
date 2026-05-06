@@ -113,7 +113,7 @@ APPROVAL_TIMEOUT_SECONDS = int(
     get_optional_env("APPROVAL_TIMEOUT_SECONDS", "600")
 )  # 10 minutes
 SANDBOX_URL: str | None = os.getenv("SANDBOX_URL") or None
-MEMORY_ENABLED = get_optional_env("MEMORY_ENABLED", "true").lower() == "true"
+MEMORY_ENABLED = get_optional_env("MEMORY_ENABLED", "false").lower() == "true"
 MEMORY_PROVIDER: str = get_optional_env("MEMORY_PROVIDER", "mem0")
 MEM0_HISTORY_DB_PATH: str = get_optional_env(
     "MEM0_HISTORY_DB_PATH", "/tmp/mem0_history.db"

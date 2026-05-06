@@ -143,20 +143,22 @@
                                 {/snippet}
                             </Sidebar.MenuButton>
                         </Sidebar.MenuItem>
-                        <Sidebar.MenuItem>
-                            <Sidebar.MenuButton
-                                class={cn(
-                                    page.url.pathname === '/admin/settings/memory' &&
-                                        'bg-sidebar-accent text-sidebar-accent-foreground',
-                                )}>
-                                {#snippet child({ props })}
-                                    <a href="/admin/settings/memory" {...props}>
-                                        <Brain class="h-4 w-4" />
-                                        <span>Memory</span>
-                                    </a>
-                                {/snippet}
-                            </Sidebar.MenuButton>
-                        </Sidebar.MenuItem>
+                        {#if data.memoryEnabled}
+                            <Sidebar.MenuItem>
+                                <Sidebar.MenuButton
+                                    class={cn(
+                                        page.url.pathname === '/admin/settings/memory' &&
+                                            'bg-sidebar-accent text-sidebar-accent-foreground',
+                                    )}>
+                                    {#snippet child({ props })}
+                                        <a href="/admin/settings/memory" {...props}>
+                                            <Brain class="h-4 w-4" />
+                                            <span>Memory</span>
+                                        </a>
+                                    {/snippet}
+                                </Sidebar.MenuButton>
+                            </Sidebar.MenuItem>
+                        {/if}
                         {#if data.agentsEnabled}
                             <Sidebar.MenuItem>
                                 <Sidebar.MenuButton
@@ -178,7 +180,10 @@
             </Sidebar.Group>
         </Sidebar.Content>
         <Sidebar.Footer>
-            <SidebarUserMenu email={data.user.email} isAdmin={data.user.role === 'admin'} />
+            <SidebarUserMenu
+                email={data.user.email}
+                isAdmin={data.user.role === 'admin'}
+                memoryEnabled={data.memoryEnabled} />
         </Sidebar.Footer>
         <Sidebar.Rail />
     </Sidebar.Root>

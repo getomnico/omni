@@ -1,4 +1,5 @@
-import { fail } from '@sveltejs/kit'
+import { error, fail } from '@sveltejs/kit'
+import { env } from '$env/dynamic/private'
 import { requireAdmin } from '$lib/server/authHelpers'
 import { getGlobal, setGlobal } from '$lib/server/db/configuration'
 import { listAllActiveModels } from '$lib/server/db/model-providers'
@@ -9,6 +10,7 @@ const VALID_MODES = ['off', 'chat', 'full']
 
 export const load: PageServerLoad = async ({ locals }) => {
     requireAdmin(locals)
+    if (env.MEMORY_ENABLED !== 'true') throw error(404)
 
     const [orgDefaultConfig, memoryLlmConfig, models, embedder] = await Promise.all([
         getGlobal('memory_mode_default'),
@@ -27,6 +29,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 export const actions: Actions = {
     save: async ({ request, locals }) => {
         requireAdmin(locals)
+        if (env.MEMORY_ENABLED !== 'true') throw error(404)
 
         const formData = await request.formData()
         const mode = formData.get('mode') as string

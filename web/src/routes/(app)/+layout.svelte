@@ -368,7 +368,10 @@
                 </SidebarGroupContent>
             </SidebarGroup>
             <SidebarGroup>
-                <SidebarUserMenu email={data.user.email} isAdmin={data.user.role === 'admin'} />
+                <SidebarUserMenu
+                    email={data.user.email}
+                    isAdmin={data.user.role === 'admin'}
+                    memoryEnabled={data.memoryEnabled} />
             </SidebarGroup>
         </SidebarContent>
         <SidebarRail />
