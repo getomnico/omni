@@ -106,6 +106,28 @@
                     and paste the token here.
                 </p>
             </div>
+
+            <div
+                class="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm dark:border-amber-900/50 dark:bg-amber-950/30">
+                <p class="font-medium">Before you connect</p>
+                <ul class="text-muted-foreground mt-1 list-disc space-y-1 pl-5">
+                    <li>
+                        Notion integrations only see pages you explicitly share with them. After
+                        creating the integration, open each top-level page or teamspace you want
+                        indexed and add the integration via
+                        <span class="font-medium">… → Add connections</span>. Sharing inherits to
+                        child pages.
+                    </li>
+                    <li>
+                        On the integration's capabilities page, enable
+                        <span class="font-medium">Read content</span>, and under
+                        <span class="font-medium">User capabilities</span> select
+                        <span class="font-medium">User information with email addresses</span>.
+                        Without it, listing workspace members returns 403 and group membership stays
+                        empty.
+                    </li>
+                </ul>
+            </div>
         </div>
 
         <Dialog.Footer>

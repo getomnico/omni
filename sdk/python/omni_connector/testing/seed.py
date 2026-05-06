@@ -47,6 +47,7 @@ class SeedHelper:
         user_filter_mode: str = "all",
         user_whitelist: list[str] | None = None,
         user_blacklist: list[str] | None = None,
+        scope: str = "org",
     ) -> str:
         source_id = source_id or _new_ulid()
         name = name or f"Test {source_type} source"
@@ -60,12 +61,12 @@ class SeedHelper:
             INSERT INTO sources (
                 id, name, source_type, config, created_by,
                 user_filter_mode, user_whitelist, user_blacklist,
-                created_at, updated_at
+                scope, created_at, updated_at
             )
             VALUES (
                 $1::char(26), $2, $3, $4::jsonb, $5::char(26),
                 $6, $7::jsonb, $8::jsonb,
-                NOW(), NOW()
+                $9, NOW(), NOW()
             )
             ON CONFLICT (id) DO NOTHING
             """,
@@ -77,6 +78,7 @@ class SeedHelper:
             user_filter_mode,
             whitelist_json,
             blacklist_json,
+            scope,
         )
         return source_id
 
@@ -123,6 +125,14 @@ class SeedHelper:
         if row and row["connector_state"]:
             return json.loads(row["connector_state"])
         return None
+
+    async def set_connector_state(self, source_id: str, state: dict[str, Any]) -> None:
+        """Seed a source's connector_state, e.g. to simulate a prior sync run."""
+        await self._pool.execute(
+            "UPDATE sources SET connector_state = $1::jsonb WHERE id = $2::char(26)",
+            json.dumps(state),
+            source_id,
+        )
 
     async def get_sync_run(self, sync_run_id: str) -> asyncpg.Record | None:
         return await self._pool.fetchrow(

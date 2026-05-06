@@ -1,20 +1,19 @@
-"""Integration tests: full sync indexes pages and databases."""
+"""Integration tests: full sync indexes pages and data sources."""
 
-import pytest
 import httpx
-
+import pytest
 from omni_connector.testing import count_events, get_events, wait_for_sync
 
 from .conftest import _block_payload
 
 pytestmark = pytest.mark.integration
 
-DB_ID = "db-00000000-0000-0000-0000-000000000001"
+DS_ID = "ds-00000000-0000-0000-0000-000000000001"
 ENTRY_PAGE_ID = "pg-00000000-0000-0000-0000-000000000001"
 STANDALONE_PAGE_ID = "pg-00000000-0000-0000-0000-000000000002"
 
 
-async def test_full_sync_indexes_pages_and_databases(
+async def test_full_sync_indexes_pages_and_data_sources(
     harness, seed, source_id, mock_notion_api, cm_client: httpx.AsyncClient
 ):
     properties_schema = {
@@ -44,8 +43,8 @@ async def test_full_sync_indexes_pages_and_databases(
             },
         },
     }
-    mock_notion_api.add_database(
-        DB_ID, "Project Tasks", properties_schema, description="Team task tracker"
+    mock_notion_api.add_data_source(
+        DS_ID, "Project Tasks", properties_schema, description="Team task tracker"
     )
 
     entry_properties = {
@@ -77,8 +76,8 @@ async def test_full_sync_indexes_pages_and_databases(
         ),
         _block_payload("blk-002", "heading_2", "Steps to Reproduce"),
     ]
-    mock_notion_api.add_database_entry(
-        DB_ID, ENTRY_PAGE_ID, "Fix login bug", entry_properties, entry_blocks
+    mock_notion_api.add_data_source_entry(
+        DS_ID, ENTRY_PAGE_ID, "Fix login bug", entry_properties, entry_blocks
     )
 
     standalone_blocks = [
@@ -108,14 +107,21 @@ async def test_full_sync_indexes_pages_and_databases(
     assert n_events == 3, f"Expected 3 document_created events, got {n_events}"
 
     events = await get_events(harness.db_pool, source_id)
-    doc_ids = {
-        e["payload"]["document_id"]
-        for e in events
-        if e["event_type"] == "document_created"
-    }
-    assert f"notion:database:{DB_ID}" in doc_ids
+    doc_events = [e for e in events if e["event_type"] == "document_created"]
+    doc_ids = {e["payload"]["document_id"] for e in doc_events}
+    assert f"notion:data_source:{DS_ID}" in doc_ids
     assert f"notion:page:{ENTRY_PAGE_ID}" in doc_ids
     assert f"notion:page:{STANDALONE_PAGE_ID}" in doc_ids
+
+    # Every emitted doc must carry the workspace permission group, with
+    # public=False (these test fixtures don't set public_url).
+    expected_group = f"notion:workspace:{source_id}"
+    for event in doc_events:
+        perms = event["payload"]["permissions"]
+        assert (
+            expected_group in perms["groups"]
+        ), f"document {event['payload']['document_id']} missing workspace group"
+        assert perms["public"] is False
 
     state = await seed.get_connector_state(source_id)
     assert state is not None, "connector_state should be saved after sync"

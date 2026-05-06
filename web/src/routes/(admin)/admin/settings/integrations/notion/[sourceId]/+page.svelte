@@ -113,11 +113,27 @@
                     </div>
                 </Card.Header>
 
-                <Card.Content>
+                <Card.Content class="space-y-3">
                     <p class="text-muted-foreground text-sm">
-                        Share pages and databases with your Notion integration to make them
-                        searchable in Omni.
+                        Only pages and databases that have been explicitly shared with your Notion
+                        integration are indexed.
                     </p>
+                    <ul class="text-muted-foreground list-disc space-y-1 pl-5 text-sm">
+                        <li>
+                            Open each Notion page or teamspace to index, click
+                            <span class="font-medium">… → Add connections</span>, and add this
+                            integration. Sharing inherits to child pages.
+                        </li>
+                        <li>
+                            On the integration's capabilities page, enable
+                            <span class="font-medium">Read content</span>, and under
+                            <span class="font-medium">User capabilities</span> select
+                            <span class="font-medium">
+                                User information with email addresses
+                            </span>. Without it, listing workspace members returns 403 and group
+                            membership stays empty.
+                        </li>
+                    </ul>
                 </Card.Content>
                 <Card.Footer class="flex justify-end">
                     <Button

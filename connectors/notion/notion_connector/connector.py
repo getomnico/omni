@@ -1,17 +1,17 @@
 """Main NotionConnector class."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from omni_connector import Connector, SyncContext
 
-from .client import AuthenticationError, NotionClient, NotionError
+from .client import AuthenticationError, ForbiddenError, NotionClient, NotionError
 from .config import CHECKPOINT_INTERVAL, RATE_LIMIT_DELAY
 from .mappers import (
-    generate_database_content,
+    generate_data_source_content,
     generate_page_content,
-    map_database_to_document,
+    map_data_source_to_document,
     map_page_to_document,
 )
 
@@ -26,6 +26,10 @@ class NotionConnector(Connector):
         return "notion"
 
     @property
+    def display_name(self) -> str:
+        return "Notion"
+
+    @property
     def version(self) -> str:
         return "1.0.0"
 
@@ -35,7 +39,7 @@ class NotionConnector(Connector):
 
     @property
     def description(self) -> str:
-        return "Connect to Notion pages and databases"
+        return "Index pages and databases from a Notion workspace"
 
     @property
     def sync_modes(self) -> list[str]:
@@ -69,11 +73,13 @@ class NotionConnector(Connector):
             await ctx.fail(f"Connection test failed: {e}")
             return
 
-        bot_name = bot_user.get("name", "Unknown")
+        bot_name = bot_user.get("name") or "Unknown"
         logger.info("Starting Notion sync as bot '%s'", bot_name)
 
-        workspace_name = bot_user.get("bot", {}).get(
-            "workspace_name", "Notion Workspace"
+        # Notion can return workspace_name as an explicit null, so dict.get's
+        # default doesn't fire — normalize via `or`.
+        workspace_name = (
+            bot_user.get("bot", {}).get("workspace_name") or "Notion Workspace"
         )
         permission_group = f"notion:workspace:{ctx.source_id}"
 
@@ -103,46 +109,45 @@ class NotionConnector(Connector):
         permission_group: str,
         ctx: SyncContext,
     ) -> None:
-        """Full sync: index all accessible databases and pages."""
+        """Full sync: index all accessible data sources and pages."""
         docs_emitted = 0
-        database_page_ids: set[str] = set()
+        data_source_entry_ids: set[str] = set()
 
-        # Phase 1: discover and index all databases + their entries
+        # Phase 1: discover and index all data sources + their entries
         cursor: str | None = None
         while True:
             if ctx.is_cancelled():
                 await ctx.fail("Cancelled by user")
                 return
 
-            response = await client.search_databases(start_cursor=cursor)
-            databases = response.get("results", [])
+            response = await client.search_data_sources(start_cursor=cursor)
+            data_sources = response.get("results", [])
 
-            for db in databases:
+            for ds in data_sources:
                 if ctx.is_cancelled():
                     await ctx.fail("Cancelled by user")
                     return
 
                 await ctx.increment_scanned()
-                db_id = db["id"]
+                ds_id = ds["id"]
 
                 try:
-                    docs_emitted = await self._sync_database(
-                        client, db, permission_group, ctx, docs_emitted
+                    docs_emitted = await self._sync_data_source(
+                        client, ds, permission_group, ctx, docs_emitted
                     )
-                    entry_ids = await self._sync_database_entries(
-                        client, db_id, permission_group, ctx, docs_emitted
+                    entries, docs_emitted = await self._sync_data_source_entries(
+                        client, ds_id, permission_group, ctx, docs_emitted
                     )
-                    database_page_ids.update(entry_ids[0])
-                    docs_emitted = entry_ids[1]
+                    data_source_entry_ids.update(entries)
                 except NotionError as e:
-                    logger.error("Error syncing database %s: %s", db_id, e)
-                    await ctx.emit_error(f"notion:database:{db_id}", str(e))
+                    logger.error("Error syncing data source %s: %s", ds_id, e)
+                    await ctx.emit_error(f"notion:data_source:{ds_id}", str(e))
 
             if not response.get("has_more"):
                 break
             cursor = response.get("next_cursor")
 
-        # Phase 2: index standalone pages (not in any database)
+        # Phase 2: index standalone pages (not part of any data source)
         cursor = None
         while True:
             if ctx.is_cancelled():
@@ -158,7 +163,7 @@ class NotionConnector(Connector):
                     return
 
                 page_id = page["id"]
-                if page_id in database_page_ids:
+                if page_id in data_source_entry_ids:
                     continue
 
                 await ctx.increment_scanned()
@@ -169,7 +174,7 @@ class NotionConnector(Connector):
                         permission_group,
                         ctx,
                         docs_emitted,
-                        is_database_entry=False,
+                        is_data_source_entry=False,
                     )
                 except Exception as e:
                     eid = f"notion:page:{page_id}"
@@ -184,8 +189,10 @@ class NotionConnector(Connector):
                 break
             cursor = response.get("next_cursor")
 
-        now = datetime.now(timezone.utc).isoformat()
-        await ctx.complete(new_state={"last_sync_at": now})
+        now = datetime.now(UTC).isoformat()
+        # save_state actually persists; complete()'s new_state is dropped by CM.
+        await ctx.save_state({"last_sync_at": now})
+        await ctx.complete()
         logger.info(
             "Full sync completed: %d scanned, %d emitted",
             ctx.documents_scanned,
@@ -199,11 +206,12 @@ class NotionConnector(Connector):
         permission_group: str,
         ctx: SyncContext,
     ) -> None:
-        """Incremental sync: re-index pages/databases modified since last sync."""
+        """Incremental sync: re-index pages/data sources modified since last sync."""
         last_sync_at = state["last_sync_at"]
         docs_emitted = 0
 
-        # Search pages sorted by last_edited_time (most recent first)
+        # Pages: search returns most-recently-edited first; stop once we cross
+        # the cutoff. Database entries are also pages and surface here too.
         cursor: str | None = None
         while True:
             if ctx.is_cancelled():
@@ -226,7 +234,8 @@ class NotionConnector(Connector):
 
                 await ctx.increment_scanned()
                 page_id = page["id"]
-                is_db_entry = page.get("parent", {}).get("type") == "database_id"
+                parent_type = page.get("parent", {}).get("type")
+                is_ds_entry = parent_type in ("data_source_id", "database_id")
 
                 try:
                     docs_emitted = await self._sync_page(
@@ -235,7 +244,7 @@ class NotionConnector(Connector):
                         permission_group,
                         ctx,
                         docs_emitted,
-                        is_database_entry=is_db_entry,
+                        is_data_source_entry=is_ds_entry,
                     )
                 except Exception as e:
                     eid = f"notion:page:{page_id}"
@@ -250,39 +259,40 @@ class NotionConnector(Connector):
                 break
             cursor = response.get("next_cursor")
 
-        # Also check for modified databases
+        # Data sources: same early-break logic, sorted desc.
         cursor = None
         while True:
             if ctx.is_cancelled():
                 await ctx.fail("Cancelled by user")
                 return
 
-            response = await client.search_databases(start_cursor=cursor)
-            databases = response.get("results", [])
+            response = await client.search_data_sources(start_cursor=cursor)
+            data_sources = response.get("results", [])
 
             found_old = False
-            for db in databases:
-                edited_time = db.get("last_edited_time", "")
+            for ds in data_sources:
+                edited_time = ds.get("last_edited_time", "")
                 if edited_time and edited_time < last_sync_at:
                     found_old = True
                     break
 
                 await ctx.increment_scanned()
                 try:
-                    docs_emitted = await self._sync_database(
-                        client, db, permission_group, ctx, docs_emitted
+                    docs_emitted = await self._sync_data_source(
+                        client, ds, permission_group, ctx, docs_emitted
                     )
                 except Exception as e:
-                    db_id = db["id"]
-                    logger.warning("Error processing database %s: %s", db_id, e)
-                    await ctx.emit_error(f"notion:database:{db_id}", str(e))
+                    ds_id = ds["id"]
+                    logger.warning("Error processing data source %s: %s", ds_id, e)
+                    await ctx.emit_error(f"notion:data_source:{ds_id}", str(e))
 
             if found_old or not response.get("has_more"):
                 break
             cursor = response.get("next_cursor")
 
-        now = datetime.now(timezone.utc).isoformat()
-        await ctx.complete(new_state={"last_sync_at": now})
+        now = datetime.now(UTC).isoformat()
+        await ctx.save_state({"last_sync_at": now})
+        await ctx.complete()
         logger.info(
             "Incremental sync completed: %d scanned, %d emitted",
             ctx.documents_scanned,
@@ -296,8 +306,26 @@ class NotionConnector(Connector):
         workspace_name: str,
         ctx: SyncContext,
     ) -> None:
-        """Emit a workspace-level group membership event with all workspace members."""
-        users = await client.list_users()
+        """Emit a workspace-level group membership event with all workspace members.
+
+        If the integration is missing the "Read user information" capability,
+        Notion returns 403 from /v1/users. We log a warning and skip emitting
+        memberships rather than failing the entire sync — documents can still
+        be indexed without group resolution, and the admin can grant the
+        capability and re-sync later.
+        """
+        try:
+            users = await client.list_users()
+        except ForbiddenError as e:
+            logger.warning(
+                "Skipping workspace membership sync: %s. "
+                "Under the integration's User capabilities, select "
+                "'User information with email addresses' and re-sync to "
+                "populate the workspace group.",
+                e,
+            )
+            return
+
         member_emails: list[str] = []
 
         for user in users:
@@ -323,31 +351,31 @@ class NotionConnector(Connector):
 
         logger.info("Emitted workspace group with %d members", len(member_emails))
 
-    async def _sync_database(
+    async def _sync_data_source(
         self,
         client: NotionClient,
-        database: dict[str, Any],
+        data_source: dict[str, Any],
         permission_group: str,
         ctx: SyncContext,
         docs_emitted: int,
     ) -> int:
-        """Emit a document for the database itself. Returns updated docs_emitted."""
-        content = generate_database_content(database)
+        """Emit a document for the data source itself. Returns updated docs_emitted."""
+        content = generate_data_source_content(data_source)
         content_id = await ctx.content_storage.save(content, "text/plain")
-        doc = map_database_to_document(database, content_id, permission_group)
+        doc = map_data_source_to_document(data_source, content_id, permission_group)
         await ctx.emit(doc)
         docs_emitted += 1
         return docs_emitted
 
-    async def _sync_database_entries(
+    async def _sync_data_source_entries(
         self,
         client: NotionClient,
-        database_id: str,
+        data_source_id: str,
         permission_group: str,
         ctx: SyncContext,
         docs_emitted: int,
     ) -> tuple[set[str], int]:
-        """Sync all pages within a database. Returns (page_ids, docs_emitted)."""
+        """Sync all pages within a data source. Returns (page_ids, docs_emitted)."""
         page_ids: set[str] = set()
         cursor: str | None = None
 
@@ -355,7 +383,9 @@ class NotionConnector(Connector):
             if ctx.is_cancelled():
                 break
 
-            response = await client.query_database(database_id, start_cursor=cursor)
+            response = await client.query_data_source(
+                data_source_id, start_cursor=cursor
+            )
             pages = response.get("results", [])
 
             for page in pages:
@@ -373,7 +403,7 @@ class NotionConnector(Connector):
                         permission_group,
                         ctx,
                         docs_emitted,
-                        is_database_entry=True,
+                        is_data_source_entry=True,
                     )
                 except Exception as e:
                     eid = f"notion:page:{page_id}"
@@ -397,19 +427,19 @@ class NotionConnector(Connector):
         permission_group: str,
         ctx: SyncContext,
         docs_emitted: int,
-        is_database_entry: bool,
+        is_data_source_entry: bool,
     ) -> int:
         """Fetch blocks for a page, generate content, and emit document."""
         page_id = page["id"]
         blocks = await client.get_all_blocks(page_id)
-        properties = page.get("properties") if is_database_entry else None
+        properties = page.get("properties") if is_data_source_entry else None
         content = generate_page_content(page, blocks, properties)
         content_id = await ctx.content_storage.save(content, "text/plain")
         doc = map_page_to_document(
             page,
             content_id,
             permission_group,
-            is_database_entry=is_database_entry,
+            is_data_source_entry=is_data_source_entry,
         )
         await ctx.emit(doc)
         docs_emitted += 1

@@ -809,7 +809,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "notion-client", specifier = ">=2.0.0" },
+    { name = "notion-client", specifier = ">=3.0.0" },
     { name = "omni-connector", extras = ["mcp"], directory = "../../sdk/python" },
 ]
 

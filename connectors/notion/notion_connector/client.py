@@ -7,7 +7,7 @@ from typing import Any
 from notion_client import AsyncClient
 from notion_client.errors import APIResponseError
 
-from .config import ITEMS_PER_PAGE, RATE_LIMIT_DELAY
+from .config import ITEMS_PER_PAGE, NOTION_API_VERSION, RATE_LIMIT_DELAY
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,12 @@ class NotionError(Exception):
 
 class AuthenticationError(NotionError):
     """Invalid or expired token (401)."""
+
+    pass
+
+
+class ForbiddenError(NotionError):
+    """Integration is missing the capability required to call this endpoint (403)."""
 
     pass
 
@@ -41,7 +47,10 @@ class NotionClient:
         base_url: str | None = None,
         rate_limit_delay: float = RATE_LIMIT_DELAY,
     ):
-        kwargs: dict[str, Any] = {"auth": token}
+        kwargs: dict[str, Any] = {
+            "auth": token,
+            "notion_version": NOTION_API_VERSION,
+        }
         if base_url:
             kwargs["base_url"] = base_url
         self._client = AsyncClient(**kwargs)
@@ -62,37 +71,48 @@ class NotionClient:
         start_cursor: str | None = None,
         page_size: int = ITEMS_PER_PAGE,
     ) -> dict[str, Any]:
-        """Search for all pages in the workspace."""
+        """Search for all pages in the workspace, newest-edited first."""
         kwargs: dict[str, Any] = {
             "filter": {"value": "page", "property": "object"},
+            "sort": {"timestamp": "last_edited_time", "direction": "descending"},
             "page_size": page_size,
         }
         if start_cursor:
             kwargs["start_cursor"] = start_cursor
         return await self._api_call(self._client.search, **kwargs)
 
-    async def search_databases(
+    async def search_data_sources(
         self,
         start_cursor: str | None = None,
         page_size: int = ITEMS_PER_PAGE,
     ) -> dict[str, Any]:
-        """Search for all databases in the workspace."""
+        """Search for all data sources in the workspace, newest-edited first.
+
+        Under Notion-Version 2025-09-03+, the search endpoint returns data
+        sources (not databases). A database can contain multiple data sources;
+        each data source is what holds rows and a property schema.
+        """
         kwargs: dict[str, Any] = {
             "filter": {"value": "data_source", "property": "object"},
+            "sort": {"timestamp": "last_edited_time", "direction": "descending"},
             "page_size": page_size,
         }
         if start_cursor:
             kwargs["start_cursor"] = start_cursor
         return await self._api_call(self._client.search, **kwargs)
 
-    async def query_database(
+    async def query_data_source(
         self,
-        database_id: str,
+        data_source_id: str,
         start_cursor: str | None = None,
         filter: dict[str, Any] | None = None,
         page_size: int = ITEMS_PER_PAGE,
     ) -> dict[str, Any]:
-        """Query pages within a database."""
+        """Query pages within a data source.
+
+        Under Notion-Version 2025-09-03+, the legacy databases/{id}/query
+        endpoint is deprecated in favor of data_sources/{id}/query.
+        """
         body: dict[str, Any] = {"page_size": page_size}
         if start_cursor:
             body["start_cursor"] = start_cursor
@@ -101,16 +121,12 @@ class NotionClient:
 
         async def _do_query() -> Any:
             return await self._client.request(
-                path=f"databases/{database_id}/query",
+                path=f"data_sources/{data_source_id}/query",
                 method="POST",
                 body=body,
             )
 
         return await self._api_call(_do_query)
-
-    async def get_page(self, page_id: str) -> dict[str, Any]:
-        """Retrieve a page's metadata and properties."""
-        return await self._api_call(self._client.pages.retrieve, page_id=page_id)
 
     async def get_block_children(
         self,
@@ -144,12 +160,6 @@ class NotionClient:
 
         return blocks
 
-    async def get_database(self, database_id: str) -> dict[str, Any]:
-        """Get database metadata."""
-        return await self._api_call(
-            self._client.databases.retrieve, database_id=database_id
-        )
-
     async def list_users(self) -> list[dict[str, Any]]:
         """List all users in the workspace."""
         users: list[dict[str, Any]] = []
@@ -167,16 +177,21 @@ class NotionClient:
 
         return users
 
-    async def _api_call(self, method: Any, **kwargs: Any) -> Any:
+    async def _api_call(self, method: Any, **kwargs: Any) -> dict[str, Any]:
         """Execute an API call with retry logic for rate limits."""
         max_retries = 3
         for attempt in range(max_retries + 1):
             try:
                 await asyncio.sleep(self._rate_limit_delay)
-                return await method(**kwargs)
+                result: dict[str, Any] = await method(**kwargs)
+                return result
             except APIResponseError as e:
                 if e.status == 401:
                     raise AuthenticationError("Invalid or expired token") from e
+                if e.status == 403:
+                    raise ForbiddenError(
+                        f"Integration lacks required capability ({e})"
+                    ) from e
                 if e.status == 429:
                     retry_after = (
                         float(e.headers.get("Retry-After", "1.0"))
@@ -196,6 +211,8 @@ class NotionClient:
                         f"Rate limited after {max_retries} retries", retry_after
                     ) from e
                 raise NotionError(f"Notion API error ({e.status}): {e}") from e
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 raise NotionError(f"Notion API call failed: {e}") from e
         raise NotionError("Unexpected retry loop exit")

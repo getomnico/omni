@@ -13,7 +13,7 @@ authors = [
 ]
 dependencies = [
     "omni-connector[mcp]",
-    "notion-client>=2.0.0",
+    "notion-client>=3.0.0",
 ]
 
 [tool.uv.sources]
