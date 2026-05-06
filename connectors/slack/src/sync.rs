@@ -16,6 +16,13 @@ use crate::models::{SlackChannel, SlackConnectorState};
 
 /// Group identifier for a Slack channel — emitted via `GroupMembershipSync`
 /// and referenced by every document's `permissions.groups`.
+///
+/// TODO: the `groups.email` column is named for email-shaped values (Google's
+/// connector emits real Workspace group addresses); Slack channels don't have
+/// emails so we use a colon-delimited synthetic. Works mechanically because
+/// the column has no format constraint and the searcher's permission filter
+/// does exact-string match. The right long-term fix is renaming the column to
+/// `external_id`.
 fn channel_group_email(team_id: &str, channel_id: &str) -> String {
     format!("slack-channel:{}:{}", team_id, channel_id)
 }
