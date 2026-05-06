@@ -12,6 +12,7 @@ RUN cargo chef cook --release --recipe-path recipe.json
 
 COPY Cargo.toml Cargo.lock ./
 COPY shared/ shared/
+COPY sdk/rust/ sdk/rust/
 COPY connectors/slack/ connectors/slack/
 RUN cargo build --release --bin omni-slack-connector
 
