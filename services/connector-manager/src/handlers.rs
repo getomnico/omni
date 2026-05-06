@@ -323,25 +323,29 @@ pub async fn execute_action(
 
     let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let creds =
-        match resolve_credentials(&creds_repo, &request.source_id, request.user_id.as_deref(), action_admin_only)
-            .await?
-        {
-            CredentialResolution::Resolved(c) => c,
-            CredentialResolution::NeedsUserAuth { provider } => {
-                return Ok(needs_user_auth_response(
-                    &request.source_id,
-                    source.source_type,
-                    provider,
-                )?);
-            }
-            CredentialResolution::NoCredentials => {
-                return Err(ApiError::NotFound(format!(
-                    "Credentials not found for source: {}",
-                    request.source_id
-                )));
-            }
-        };
+    let creds = match resolve_credentials(
+        &creds_repo,
+        &request.source_id,
+        request.user_id.as_deref(),
+        action_admin_only,
+    )
+    .await?
+    {
+        CredentialResolution::Resolved(c) => c,
+        CredentialResolution::NeedsUserAuth { provider } => {
+            return Ok(needs_user_auth_response(
+                &request.source_id,
+                source.source_type,
+                provider,
+            )?);
+        }
+        CredentialResolution::NoCredentials => {
+            return Err(ApiError::NotFound(format!(
+                "Credentials not found for source: {}",
+                request.source_id
+            )));
+        }
+    };
 
     // Resolve Omni document ID -> source external_id.
     // TODO: replace hard-coded param names with a connector-declared resolve_params list.

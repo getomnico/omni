@@ -1,5 +1,5 @@
 import type { RequestEvent } from '@sveltejs/kit'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { sha256 } from '@oslojs/crypto/sha2'
 import { encodeBase64url, encodeHexLowerCase } from '@oslojs/encoding'
 import { db } from '$lib/server/db'
@@ -14,6 +14,15 @@ const DAY_IN_MS = 1000 * 60 * 60 * 24
 const SESSION_DURATION_MS = DAY_IN_MS * config.session.durationDays
 
 export const sessionCookieName = config.session.cookieName
+
+function extractMemoryMode(raw: unknown): string | null {
+    if (typeof raw === 'string') return raw
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        const v = (raw as Record<string, unknown>).value ?? (raw as Record<string, unknown>).mode
+        if (typeof v === 'string') return v
+    }
+    return null
+}
 
 export function generateSessionToken() {
     const bytes = crypto.getRandomValues(new Uint8Array(18))
@@ -66,8 +75,17 @@ export async function validateSessionToken(token: string) {
             role: table.user.role,
             isActive: table.user.isActive,
             mustChangePassword: table.user.mustChangePassword,
+            memoryMode: table.configuration.value,
         })
         .from(table.user)
+        .leftJoin(
+            table.configuration,
+            and(
+                eq(table.configuration.scope, 'user'),
+                eq(table.configuration.userId, table.user.id),
+                eq(table.configuration.key, 'memory_mode'),
+            ),
+        )
         .where(eq(table.user.id, session.userId))
 
     if (!userResult) {
@@ -86,7 +104,11 @@ export async function validateSessionToken(token: string) {
         )
     }
 
-    return { session, user: userResult }
+    const user = {
+        ...userResult,
+        memoryMode: extractMemoryMode(userResult.memoryMode),
+    }
+    return { session, user }
 }
 
 export type SessionValidationResult = Awaited<ReturnType<typeof validateSessionToken>>

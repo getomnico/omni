@@ -199,6 +199,7 @@ class OpenAICompatibleProvider(LLMProvider):
         self, base_url: str, api_key: str | None = None, model: str = "default"
     ):
         self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
         self.model = model
         # Some keyless local endpoints (vLLM without --api-key, Ollama, etc.)
         # still require the SDK to send *something* — fall back to a placeholder.

@@ -4,5 +4,6 @@ import type { LayoutServerLoad } from './$types.js'
 export const load: LayoutServerLoad = async () => {
     return {
         agentsEnabled: env.AGENTS_ENABLED === 'true',
+        memoryEnabled: env.MEMORY_ENABLED === 'true',
     }
 }

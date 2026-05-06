@@ -41,7 +41,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
         }
 
         // Generate OAuth authorization URL with user ID for account linking
-        const authUrl = await GoogleOAuthService.generateAuthUrl(redirectUri, userSession.userId)
+        const authUrl = await GoogleOAuthService.generateAuthUrl(redirectUri, userSession.user.id)
 
         // Redirect to Google OAuth
         throw redirect(302, authUrl)

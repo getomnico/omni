@@ -27,6 +27,36 @@ export async function requireAgentAccess(
     return agent
 }
 
+async function seedAgentMemory(agent: Agent) {
+    if (!agent.instructions) return
+    try {
+        const { getConfig } = await import('../config.js')
+        const { services } = getConfig()
+        const resp = await fetch(
+            `${services.aiServiceUrl}/memories/agent/${encodeURIComponent(agent.id)}/seed`,
+            {
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    'x-user-id': 'system',
+                    'x-user-role': 'admin',
+                },
+                body: JSON.stringify({
+                    name: agent.name,
+                    instructions: agent.instructions,
+                    schedule_type: agent.scheduleType,
+                    schedule_value: agent.scheduleValue,
+                }),
+            },
+        )
+        if (!resp.ok && resp.status !== 503) {
+            console.warn(`Agent memory seed returned ${resp.status} for ${agent.id}`)
+        }
+    } catch (err) {
+        console.warn(`Agent memory seed failed for ${agent.id}:`, err)
+    }
+}
+
 export async function createAgent(data: {
     userId: string
     name: string
@@ -54,6 +84,7 @@ export async function createAgent(data: {
             allowedActions: data.allowedActions || [],
         })
         .returning()
+    await seedAgentMemory(agent)
     return agent
 }
 
@@ -75,15 +106,46 @@ export async function updateAgent(
         .set({ ...data, updatedAt: new Date() })
         .where(and(eq(agents.id, agentId), eq(agents.isDeleted, false)))
         .returning()
+    if (
+        agent &&
+        (data.name !== undefined ||
+            data.instructions !== undefined ||
+            data.scheduleType !== undefined ||
+            data.scheduleValue !== undefined)
+    ) {
+        await seedAgentMemory(agent)
+    }
     return agent
 }
 
 export async function deleteAgent(agentId: string) {
+    const existing = await getAgent(agentId)
     const [agent] = await db
         .update(agents)
         .set({ isDeleted: true, isEnabled: false, updatedAt: new Date() })
         .where(eq(agents.id, agentId))
         .returning()
+
+    // Purge the agent memory namespace. Best-effort — never block delete.
+    if (existing) {
+        try {
+            const { getConfig } = await import('../config.js')
+            const { services } = getConfig()
+            const resp = await fetch(
+                `${services.aiServiceUrl}/memories/agent/${encodeURIComponent(agentId)}`,
+                {
+                    method: 'DELETE',
+                    headers: { 'x-user-id': 'system', 'x-user-role': 'admin' },
+                },
+            )
+            if (!resp.ok && resp.status !== 503) {
+                console.warn(`Agent memory purge returned ${resp.status} for ${agentId}`)
+            }
+        } catch (err) {
+            console.warn(`Agent memory purge failed for ${agentId}:`, err)
+        }
+    }
+
     return agent
 }
 

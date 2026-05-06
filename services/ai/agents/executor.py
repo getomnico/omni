@@ -3,7 +3,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -11,34 +11,36 @@ import httpx
 from anthropic.types import (
     MessageParam,
     TextBlockParam,
-    ToolUseBlockParam,
     ToolResultBlockParam,
+    ToolUseBlockParam,
 )
 
 from config import (
     AGENT_MAX_ITERATIONS,
+    CONNECTOR_MANAGER_URL,
     DEFAULT_MAX_TOKENS,
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
-    CONNECTOR_MANAGER_URL,
     SANDBOX_URL,
 )
 from db.documents import DocumentsRepository
 from db.models import Source
+from db.configuration import ConfigurationRepository
 from db.usage import UsageRepository
 from db.users import UsersRepository
-from providers import LLMProvider
+from memory import MemoryMode, agent_key, parse_org_default, resolve_memory_mode
 from prompts import build_agent_system_prompt
+from providers import LLMProvider
 from services.compaction import ConversationCompactor
-from services.usage import UsageTracker, UsageContext, UsagePurpose, track_usage
+from services.usage import UsageContext, UsagePurpose, UsageTracker, track_usage
 from state import AppState
 from tools import (
-    ToolRegistry,
-    ToolContext,
-    SearchToolHandler,
     ConnectorToolHandler,
     DocumentToolHandler,
     PeopleSearchHandler,
+    SearchToolHandler,
+    ToolContext,
+    ToolRegistry,
 )
 from tools.connector_handler import ConnectorAction, SourceFilter
 from tools.email_handler import EmailToolHandler
@@ -215,12 +217,38 @@ async def _run_agent_loop(
     is_org_agent = agent.agent_type == "org"
     agent_user_email: str | None = None
     agent_user_name: str | None = None
+    agent_user = None
     if not is_org_agent and agent.user_id:
         users_repo = UsersRepository()
         agent_user = await users_repo.find_by_id(agent.user_id)
         if agent_user:
             agent_user_email = agent_user.email
             agent_user_name = agent_user.full_name
+
+    # Memory: resolve effective mode and fetch prior-run memories. Both
+    # personal and org agents share the `agent:<id>` namespace; the
+    # difference is only in how the effective mode is computed.
+    memory_provider = app_state.memory_provider
+    memory_namespace: str | None = None
+    effective_mode = MemoryMode.OFF
+    memories: list[str] = []
+    if memory_provider is not None:
+        config_repo = ConfigurationRepository()
+        org_default = parse_org_default(
+            await config_repo.get_global("memory_mode_default")
+        )
+        if is_org_agent:
+            effective_mode = org_default
+        elif agent_user is not None:
+            user_memory_mode = await config_repo.get_user_memory_mode(agent_user.id)
+            effective_mode = resolve_memory_mode(user_memory_mode, org_default)
+        memory_namespace = agent_key(agent.id)
+
+        if effective_mode == MemoryMode.FULL and agent.instructions:
+            hits = await memory_provider.search(
+                query=agent.instructions, key=memory_namespace, limit=5
+            )
+            memories = [h.record.text for h in hits if h.record.text]
 
     # Build system prompt
     active_sources = [s for s in (sources or []) if s.is_active and not s.is_deleted]
@@ -230,6 +258,7 @@ async def _run_agent_loop(
         connector_actions,
         user_name=agent_user_name if not is_org_agent else None,
         user_email=agent_user_email if not is_org_agent else None,
+        memories=memories if memories else None,
     )
 
     # Initialize conversation with a single trigger message
@@ -451,7 +480,31 @@ async def _run_agent_loop(
 
     summary = "".join(summary_blocks).strip()
 
-    completed_at = datetime.now(timezone.utc)
+    # Memory write (fire-and-forget) — only in 'full' mode
+    if (
+        memory_provider is not None
+        and memory_namespace is not None
+        and effective_mode == MemoryMode.FULL
+        and summary
+    ):
+        try:
+            turn = [
+                MessageParam(
+                    role="user",
+                    content=f"Agent task: {agent.instructions}",
+                ),
+                MessageParam(
+                    role="assistant",
+                    content=f"Agent run summary: {summary}",
+                ),
+            ]
+            asyncio.create_task(
+                memory_provider.add(messages=turn, key=memory_namespace)
+            )
+        except Exception as e:
+            logger.warning(f"Memory write setup failed for agent {agent.id}: {e}")
+
+    completed_at = datetime.now(UTC)
     run = await run_repo.update_run(
         run.id,
         status="completed",
@@ -483,7 +536,7 @@ async def execute_agent(
     if run is None:
         run = await run_repo.create_run(agent.id)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     run = await run_repo.update_run(run.id, status="running", started_at=now)
 
     last_error: Exception | None = None
@@ -505,7 +558,7 @@ async def execute_agent(
                 await asyncio.sleep(2**attempt)
 
     # All retries exhausted
-    completed_at = datetime.now(timezone.utc)
+    completed_at = datetime.now(UTC)
     run = await run_repo.update_run(
         run.id,
         status="failed",

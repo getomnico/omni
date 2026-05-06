@@ -14,6 +14,15 @@ export const user = pgTable('users', {
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
 
+export const configuration = pgTable('configuration', {
+    scope: text('scope').notNull(),
+    userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    value: jsonb('value').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+})
+
 export const sources = pgTable('sources', {
     id: text('id').primaryKey(),
     name: text('name').notNull(),

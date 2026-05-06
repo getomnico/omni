@@ -50,6 +50,7 @@ class OpenAIProvider(LLMProvider):
     """Provider for OpenAI API (GPT-4, etc.) using the Responses API."""
 
     def __init__(self, api_key: str, model: str):
+        self.api_key = api_key
         self.client = AsyncOpenAI(api_key=api_key)
         self.model = model
 

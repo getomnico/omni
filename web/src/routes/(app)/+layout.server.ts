@@ -23,5 +23,6 @@ export const load: LayoutServerLoad = async ({ locals, depends }) => {
         starredChats,
         recentChats,
         agentsEnabled: env.AGENTS_ENABLED === 'true',
+        memoryEnabled: env.MEMORY_ENABLED === 'true',
     }
 }

@@ -28,10 +28,7 @@
     import * as Dialog from '$lib/components/ui/dialog/index.js'
     import type { LayoutData } from './$types.js'
     import {
-        LogOut,
         MessageCirclePlus,
-        Settings,
-        Plug,
         EllipsisVertical,
         Star,
         StarOff,
@@ -45,7 +42,7 @@
     import { cn } from '$lib/utils'
     import { page } from '$app/state'
     import { invalidate, invalidateAll, goto, afterNavigate } from '$app/navigation'
-    import * as Avatar from '$lib/components/ui/avatar'
+    import SidebarUserMenu from '$lib/components/sidebar-user-menu.svelte'
     import type { Chat } from '$lib/server/db/schema'
 
     import { themeStore } from '$lib/themes/store.svelte'
@@ -101,12 +98,7 @@
         optimisticTitle = null
     }
 
-    async function logout() {
-        await fetch('/logout', {
-            method: 'POST',
-        })
-        window.location.href = '/login'
-    }
+    // logout is handled inside SidebarUserMenu
 
     function handleSearchInput(value: string) {
         searchQuery = value
@@ -376,60 +368,10 @@
                 </SidebarGroupContent>
             </SidebarGroup>
             <SidebarGroup>
-                <div class="flex flex-col gap-1">
-                    {#if data.user.role === 'admin'}
-                        <div class="flex justify-start">
-                            <Button
-                                variant="ghost"
-                                href="/admin/settings"
-                                class="flex w-full justify-start has-[>svg]:px-2">
-                                <Settings />
-                                <span class="group-data-[collapsible=icon]:hidden">Settings</span>
-                            </Button>
-                        </div>
-                    {:else}
-                        <div class="flex justify-start">
-                            <Button
-                                variant="ghost"
-                                href="/settings/integrations"
-                                class="flex w-full justify-start has-[>svg]:px-2">
-                                <Plug />
-                                <span class="group-data-[collapsible=icon]:hidden"
-                                    >Integrations</span>
-                            </Button>
-                        </div>
-                    {/if}
-                    <div class="flex justify-between py-2">
-                        <div class="flex min-w-0 flex-1 items-center gap-1.5">
-                            <Avatar.Root>
-                                <Avatar.Fallback
-                                    >{data.user.email
-                                        .slice(0, 2)
-                                        .toLocaleUpperCase()}</Avatar.Fallback>
-                            </Avatar.Root>
-                            <span
-                                class="text-muted-foreground truncate overflow-hidden text-sm group-data-[collapsible=icon]:hidden">
-                                {data.user.email}
-                            </span>
-                        </div>
-                        <TooltipProvider delayDuration={300}>
-                            <Tooltip>
-                                <TooltipTrigger>
-                                    <Button
-                                        size="icon"
-                                        variant="ghost"
-                                        class="cursor-pointer group-data-[collapsible=icon]:hidden"
-                                        onclick={logout}>
-                                        <LogOut class="h-4 w-4" />
-                                    </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>
-                                    <p>Logout</p>
-                                </TooltipContent>
-                            </Tooltip>
-                        </TooltipProvider>
-                    </div>
-                </div>
+                <SidebarUserMenu
+                    email={data.user.email}
+                    isAdmin={data.user.role === 'admin'}
+                    memoryEnabled={data.memoryEnabled} />
             </SidebarGroup>
         </SidebarContent>
         <SidebarRail />
