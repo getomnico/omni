@@ -265,6 +265,13 @@ variable "google_max_age_days" {
   default     = "730"
 }
 
+# Slack Connector Configuration
+variable "slack_max_age_days" {
+  description = "Maximum age in days for Slack messages on first sync"
+  type        = string
+  default     = "730"
+}
+
 variable "webhook_renewal_check_interval_seconds" {
   description = "Interval in seconds for webhook renewal checks"
   type        = string

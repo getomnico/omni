@@ -341,6 +341,7 @@ services:
       PORT: ${SLACK_CONNECTOR_PORT}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
       CONNECTOR_HOST_NAME: slack-connector
+      SLACK_MAX_AGE_DAYS: ${SLACK_MAX_AGE_DAYS:-730}
     networks:
       - omni-network
     depends_on:

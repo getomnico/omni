@@ -45,20 +45,21 @@ locals {
     SERVICE_VERSION             = var.service_version
   }
 
-  # Connectors with only basic env vars (CONNECTOR_MANAGER_URL, PORT, RUST_LOG)
+  # Connectors with only basic env vars (CONNECTOR_MANAGER_URL, PORT, RUST_LOG).
+  # Per-connector extras go in `extra_env` and are merged into the env block.
   all_simple_connectors = {
-    slack      = { port = 4002, image = "omni-slack-connector" }
-    github     = { port = 4005, image = "omni-github-connector" }
-    hubspot    = { port = 4006, image = "omni-hubspot-connector" }
-    microsoft  = { port = 4007, image = "omni-microsoft-connector" }
-    notion     = { port = 4008, image = "omni-notion-connector" }
-    fireflies  = { port = 4009, image = "omni-fireflies-connector" }
-    imap       = { port = 4010, image = "omni-imap-connector" }
-    clickup    = { port = 4011, image = "omni-clickup-connector" }
-    linear     = { port = 4012, image = "omni-linear-connector" }
-    filesystem = { port = 4013, image = "omni-filesystem-connector" }
-    nextcloud  = { port = 4014, image = "omni-nextcloud-connector" }
-    paperless  = { port = 4015, image = "omni-paperless-connector" }
+    slack      = { port = 4002, image = "omni-slack-connector", extra_env = { SLACK_MAX_AGE_DAYS = var.slack_max_age_days } }
+    github     = { port = 4005, image = "omni-github-connector", extra_env = {} }
+    hubspot    = { port = 4006, image = "omni-hubspot-connector", extra_env = {} }
+    microsoft  = { port = 4007, image = "omni-microsoft-connector", extra_env = {} }
+    notion     = { port = 4008, image = "omni-notion-connector", extra_env = {} }
+    fireflies  = { port = 4009, image = "omni-fireflies-connector", extra_env = {} }
+    imap       = { port = 4010, image = "omni-imap-connector", extra_env = {} }
+    clickup    = { port = 4011, image = "omni-clickup-connector", extra_env = {} }
+    linear     = { port = 4012, image = "omni-linear-connector", extra_env = {} }
+    filesystem = { port = 4013, image = "omni-filesystem-connector", extra_env = {} }
+    nextcloud  = { port = 4014, image = "omni-nextcloud-connector", extra_env = {} }
+    paperless  = { port = 4015, image = "omni-paperless-connector", extra_env = {} }
   }
 
   simple_connectors = { for k, v in local.all_simple_connectors : k => v if contains(var.enabled_connectors, k) }
@@ -784,7 +785,7 @@ resource "google_cloud_run_v2_service" "connectors" {
       }
 
       dynamic "env" {
-        for_each = merge(local.otel_env, {
+        for_each = merge(local.otel_env, each.value.extra_env, {
           PORT                  = tostring(each.value.port)
           CONNECTOR_HOST_NAME   = "${each.key}-connector"
           CONNECTOR_MANAGER_URL = local.service_url["connector-mgr"]

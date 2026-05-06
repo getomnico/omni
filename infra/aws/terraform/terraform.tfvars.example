@@ -51,6 +51,9 @@ log_retention_days = 30
 # google_max_age_days                    = "730"
 # webhook_renewal_check_interval_seconds = "3600"
 
+# Optional: Slack Connector Configuration
+# slack_max_age_days                     = "730"
+
 # Optional: Common Service Configuration
 # rust_log                   = "info"
 # db_max_connections         = "10"

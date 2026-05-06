@@ -187,6 +187,9 @@ module "compute" {
   google_max_age_days                    = var.google_max_age_days
   webhook_renewal_check_interval_seconds = var.webhook_renewal_check_interval_seconds
 
+  # Slack connector configuration
+  slack_max_age_days = var.slack_max_age_days
+
   # Common service configuration
   rust_log                   = var.rust_log
   db_max_connections         = var.db_max_connections

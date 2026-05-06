@@ -512,7 +512,8 @@ resource "aws_ecs_task_definition" "slack_connector" {
 
     environment = concat(local.connector_base_environment, [
       { name = "PORT", value = "4002" },
-      { name = "CONNECTOR_HOST_NAME", value = "slack-connector" }
+      { name = "CONNECTOR_HOST_NAME", value = "slack-connector" },
+      { name = "SLACK_MAX_AGE_DAYS", value = var.slack_max_age_days }
     ])
 
     secrets = []

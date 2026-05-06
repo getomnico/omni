@@ -20,6 +20,44 @@ fn channel_group_email(team_id: &str, channel_id: &str) -> String {
     format!("slack-channel:{}:{}", team_id, channel_id)
 }
 
+/// Default initial-sync history horizon. Tweakable at runtime via the
+/// `SLACK_MAX_AGE_DAYS` env var.
+const DEFAULT_MAX_AGE_DAYS: i64 = 730;
+
+/// Compute the `oldest` timestamp passed to `conversations.history`.
+///
+/// - Incremental: round `last_ts` down to start-of-day so the upserted daily
+///   document captures every message for that day on re-fetch.
+/// - First sync (no `last_ts`), or stale state older than the configured
+///   ceiling: cap at `now - SLACK_MAX_AGE_DAYS` (default 2 years). Without
+///   this, a fresh sync of a paid Slack workspace would pull years of history
+///   at the tier-3 rate limit.
+fn channel_oldest_for_sync(last_ts: Option<&str>) -> Option<String> {
+    let max_age_days = std::env::var("SLACK_MAX_AGE_DAYS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(DEFAULT_MAX_AGE_DAYS);
+    let cutoff_secs = chrono::Utc::now().timestamp() - max_age_days * 86400;
+
+    let rounded_last_ts = last_ts
+        .and_then(|ts| ts.split('.').next())
+        .and_then(|s| s.parse::<i64>().ok())
+        .and_then(|secs| {
+            let dt = DateTime::from_timestamp(secs, 0)?;
+            let start_of_day = dt.date_naive().and_hms_opt(0, 0, 0)?;
+            Some(start_of_day.and_utc().timestamp() - 1)
+        });
+
+    // max(last_ts_floored, cutoff): never re-fetch past our configured horizon
+    // even if state has a much older timestamp.
+    let effective_secs = match rounded_last_ts {
+        Some(rounded) => rounded.max(cutoff_secs),
+        None => cutoff_secs,
+    };
+
+    Some(format!("{}.000000", effective_secs))
+}
+
 pub struct SyncManager {
     auth_manager: AuthManager,
     slack_client: SlackClient,
@@ -403,14 +441,7 @@ impl SyncManager {
             channel.id
         );
 
-        // Round down to start-of-day so we always re-fetch complete days,
-        // ensuring the upserted document contains all messages for that day.
-        let oldest = last_ts.and_then(|ts| {
-            let secs = ts.split('.').next()?.parse::<i64>().ok()?;
-            let dt = DateTime::from_timestamp(secs, 0)?;
-            let start_of_day = dt.date_naive().and_hms_opt(0, 0, 0)?;
-            Some(format!("{}.000000", start_of_day.and_utc().timestamp() - 1))
-        });
+        let oldest = channel_oldest_for_sync(last_ts);
 
         let mut all_messages = Vec::new();
         let mut cursor = None;
