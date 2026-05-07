@@ -5,7 +5,7 @@ use crate::models::{SyncRequest, TriggerType};
 use dashmap::DashMap;
 use redis::Client as RedisClient;
 use shared::db::repositories::SyncRunRepository;
-use shared::models::{SourceType, SyncStatus, SyncType};
+use shared::models::{SourceType, SyncSlotClass, SyncStatus, SyncType};
 use shared::{DatabasePool, Repository, SourceRepository};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -50,7 +50,10 @@ impl SyncManager {
         sync_type: SyncType,
         trigger_type: TriggerType,
     ) -> Result<String, SyncError> {
-        if self.is_sync_running(source_id).await? {
+        if self
+            .is_sync_class_running(source_id, sync_type.slot_class())
+            .await?
+        {
             return Err(SyncError::SyncAlreadyRunning(source_id.to_string()));
         }
 
@@ -179,9 +182,32 @@ impl SyncManager {
         Ok(())
     }
 
+    /// Whether *any* sync (Realtime or Scheduled) is running for the source.
+    /// For class-specific checks (e.g., "is a scheduled sync running, ignoring
+    /// any concurrent realtime watcher?") use [`is_sync_class_running`].
     pub async fn is_sync_running(&self, source_id: &str) -> Result<bool, SyncError> {
         self.sync_run_repo
             .get_running_for_source(source_id)
+            .await
+            .map(|r| r.is_some())
+            .map_err(|e| SyncError::DatabaseError(e.to_string()))
+    }
+
+    /// Whether a sync of the given class (Realtime vs Scheduled) is currently
+    /// running for the source. One sync of each class can run concurrently
+    /// per source, so the scheduler uses this to decide whether to trigger a
+    /// scheduled sync without disturbing an in-flight realtime watcher.
+    pub async fn is_sync_class_running(
+        &self,
+        source_id: &str,
+        slot_class: SyncSlotClass,
+    ) -> Result<bool, SyncError> {
+        let types_in_class: &[SyncType] = match slot_class {
+            SyncSlotClass::Realtime => &[SyncType::Realtime],
+            SyncSlotClass::Scheduled => &[SyncType::Full, SyncType::Incremental],
+        };
+        self.sync_run_repo
+            .get_running_for_source_in_types(source_id, types_in_class)
             .await
             .map(|r| r.is_some())
             .map_err(|e| SyncError::DatabaseError(e.to_string()))

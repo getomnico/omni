@@ -601,6 +601,35 @@ impl std::fmt::Display for SyncType {
     }
 }
 
+impl SyncType {
+    /// Concurrency slot a sync of this type occupies on a source. Realtime
+    /// watchers run in a separate slot from batch (Full/Incremental) syncs,
+    /// so a long-running realtime sync does not block scheduled scans.
+    pub fn slot_class(&self) -> SyncSlotClass {
+        match self {
+            SyncType::Realtime => SyncSlotClass::Realtime,
+            SyncType::Full | SyncType::Incremental => SyncSlotClass::Scheduled,
+        }
+    }
+}
+
+/// Per-source concurrency slot. One Realtime and one Scheduled sync may run
+/// concurrently for the same source; two of the same class cannot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SyncSlotClass {
+    Scheduled,
+    Realtime,
+}
+
+impl std::fmt::Display for SyncSlotClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SyncSlotClass::Scheduled => write!(f, "scheduled"),
+            SyncSlotClass::Realtime => write!(f, "realtime"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
 #[sqlx(type_name = "varchar", rename_all = "lowercase")]
 pub enum SyncStatus {

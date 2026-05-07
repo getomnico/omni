@@ -17,6 +17,7 @@ use axum::{
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use serde::de::DeserializeOwned;
+use shared::models::SyncSlotClass;
 use shared::telemetry;
 use shared::{SdkClient, SdkError};
 use std::collections::HashMap;
@@ -52,27 +53,33 @@ struct ActiveSync {
     cancelled: Arc<AtomicBool>,
 }
 
-type ActiveSyncs = Arc<DashMap<String, ActiveSync>>;
+/// Slot key: (source_id, sync_class). Realtime watchers and scheduled (Full /
+/// Incremental) syncs occupy independent slots, so a long-running realtime
+/// watcher does not block scheduled scans for the same source.
+type SlotKey = (String, SyncSlotClass);
+type ActiveSyncs = Arc<DashMap<SlotKey, ActiveSync>>;
 
-/// Reserves a slot in `active_syncs` for a source. The slot is released when
-/// this guard is dropped, including on panic inside the spawned sync task.
-/// This is the only mechanism that removes from `active_syncs` — so the entry
-/// cannot leak even if the connector's `sync()` implementation panics.
+/// Reserves a slot in `active_syncs` for a (source, sync_class) pair. The slot
+/// is released when this guard is dropped, including on panic inside the
+/// spawned sync task — so the entry cannot leak even if the connector's
+/// `sync()` implementation panics.
 struct ActiveSyncGuard {
     active_syncs: ActiveSyncs,
-    source_id: String,
+    slot_key: SlotKey,
 }
 
 impl ActiveSyncGuard {
-    /// Atomically reserve a slot. Returns `None` if a sync is already active
-    /// for this source.
+    /// Atomically reserve a slot. Returns `None` if a sync of the same class
+    /// is already active for this source.
     fn reserve(
         active_syncs: ActiveSyncs,
         source_id: String,
+        slot_class: SyncSlotClass,
         sync_run_id: String,
         cancelled: Arc<AtomicBool>,
     ) -> Option<Self> {
-        let inserted = match active_syncs.entry(source_id.clone()) {
+        let slot_key = (source_id, slot_class);
+        let inserted = match active_syncs.entry(slot_key.clone()) {
             Entry::Occupied(_) => false,
             Entry::Vacant(vacant) => {
                 vacant.insert(ActiveSync {
@@ -85,7 +92,7 @@ impl ActiveSyncGuard {
         if inserted {
             Some(Self {
                 active_syncs,
-                source_id,
+                slot_key,
             })
         } else {
             None
@@ -95,7 +102,7 @@ impl ActiveSyncGuard {
 
 impl Drop for ActiveSyncGuard {
     fn drop(&mut self) {
-        self.active_syncs.remove(&self.source_id);
+        self.active_syncs.remove(&self.slot_key);
     }
 }
 
@@ -333,17 +340,20 @@ where
     );
 
     let cancelled = Arc::new(AtomicBool::new(false));
+    let slot_class = request.sync_mode.slot_class();
     let Some(guard) = ActiveSyncGuard::reserve(
         Arc::clone(&state.active_syncs),
         source_id.clone(),
+        slot_class,
         sync_run_id.clone(),
         Arc::clone(&cancelled),
     ) else {
         return Err((
             StatusCode::CONFLICT,
-            Json(SyncResponse::error(
-                "Sync already in progress for this source",
-            )),
+            Json(SyncResponse::error(format!(
+                "{} sync already in progress for this source",
+                slot_class
+            ))),
         ));
     };
 

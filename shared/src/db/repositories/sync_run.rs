@@ -223,6 +223,39 @@ impl SyncRunRepository {
         Ok(sync_run)
     }
 
+    /// Most recent running sync for a source whose `sync_type` is in the
+    /// supplied set. Used to ask "is a scheduled (Full/Incremental) sync
+    /// running?" or "is realtime running?" independently, since one of each
+    /// can run concurrently for the same source.
+    pub async fn get_running_for_source_in_types(
+        &self,
+        source_id: &str,
+        sync_types: &[SyncType],
+    ) -> Result<Option<SyncRun>, DatabaseError> {
+        if sync_types.is_empty() {
+            return Ok(None);
+        }
+        let type_strs: Vec<String> = sync_types.iter().map(|t| t.to_string()).collect();
+        let sync_run = sqlx::query_as::<_, SyncRun>(
+            r#"
+            SELECT id, source_id, sync_type, started_at, completed_at, status,
+                   documents_scanned, documents_processed, documents_updated, error_message,
+                   created_at, updated_at
+            FROM sync_runs
+            WHERE source_id = $1 AND status = $2 AND sync_type::text = ANY($3)
+            ORDER BY created_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(source_id)
+        .bind(SyncStatus::Running)
+        .bind(&type_strs)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(sync_run)
+    }
+
     pub async fn find_all_running(&self) -> Result<Vec<SyncRun>, DatabaseError> {
         let sync_runs = sqlx::query_as::<_, SyncRun>(
             r#"
