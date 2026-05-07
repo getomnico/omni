@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use reqwest::Client;
+use serde::Deserialize;
 use shared::rate_limiter::{RateLimiter, RetryableError};
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -10,6 +11,30 @@ use crate::models::{
 };
 
 const DEFAULT_SLACK_API_BASE: &str = "https://slack.com/api";
+
+/// Subset of every Slack response we use to detect API-level errors before
+/// attempting to deserialize into the typed success shape (which would fail
+/// with a misleading `missing field` for the absent success-only fields).
+#[derive(Deserialize)]
+struct SlackErrorEnvelope {
+    ok: bool,
+    error: Option<String>,
+    needed: Option<String>,
+    provided: Option<String>,
+}
+
+impl SlackErrorEnvelope {
+    fn format_error(&self) -> String {
+        let base = self.error.as_deref().unwrap_or("unknown");
+        match (self.needed.as_deref(), self.provided.as_deref()) {
+            (Some(needed), Some(provided)) => {
+                format!("{base} (needed: {needed}; provided: {provided})")
+            }
+            (Some(needed), None) => format!("{base} (needed: {needed})"),
+            _ => base.to_string(),
+        }
+    }
+}
 
 pub struct SlackClient {
     client: Client,
@@ -78,6 +103,20 @@ impl SlackClient {
                     .await
                     .map_err(|e| RetryableError::Transient(e.into()))?;
                 debug!("Response: {}", response_text);
+
+                // Slack API errors come back as 200s with `{ok:false, error:"..."}`
+                // and omit the success-shape fields the typed responses require.
+                // Surface the `error` cleanly here so callers see e.g.
+                // "Slack API error: missing_scope (needed: mpim:read)" instead
+                // of a confusing `missing field 'channels'` from serde.
+                if let Ok(envelope) = serde_json::from_str::<SlackErrorEnvelope>(&response_text) {
+                    if !envelope.ok {
+                        return Err(RetryableError::Permanent(anyhow!(
+                            "Slack API error: {}",
+                            envelope.format_error()
+                        )));
+                    }
+                }
 
                 serde_json::from_str(&response_text).map_err(|e| {
                     RetryableError::Permanent(anyhow!("Failed to parse response: {}", e))
