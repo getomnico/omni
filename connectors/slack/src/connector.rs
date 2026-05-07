@@ -4,13 +4,18 @@ use omni_connector_sdk::{
     Connector, SearchOperator, ServiceCredential, Source, SourceType, SyncContext, SyncType,
 };
 use serde_json::Value as JsonValue;
-use shared::SdkClient;
 use std::sync::Arc;
-use tracing::{debug, info};
+use std::time::Duration;
+use tracing::{info, warn};
 
-use crate::models::SlackConnectorState;
+use crate::models::{SlackConnectorState, SlackCredentials};
 use crate::socket::SocketModeManager;
 use crate::sync::SyncManager;
+
+/// Cadence for `ctx.heartbeat()` calls inside the realtime watcher. Must be
+/// well below the connector-manager's `stale_sync_timeout_minutes` so a quiet
+/// Socket Mode connection isn't swept as a dead sync.
+const REALTIME_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 
 pub struct SlackConnector {
     sync_manager: Arc<SyncManager>,
@@ -24,12 +29,53 @@ impl SlackConnector {
             socket_manager,
         }
     }
+
+    /// Long-running watcher invoked when the connector-manager triggers a
+    /// `Realtime` sync. Maintains a Socket Mode connection for the source
+    /// until the sync is cancelled; per-channel work is driven from the
+    /// Socket Mode handler (see `socket::handle_event`).
+    async fn run_realtime(&self, creds: ServiceCredential, ctx: SyncContext) -> Result<()> {
+        let source_id = ctx.source_id().to_string();
+        let creds: SlackCredentials = serde_json::from_value(creds.credentials)
+            .map_err(|e| anyhow!("Failed to decode Slack credentials: {}", e))?;
+        let app_token = creds.app_token.ok_or_else(|| {
+            anyhow!("Slack realtime sync requires `app_token` in service credentials")
+        })?;
+
+        info!(source_id, "Starting Slack realtime watcher");
+        self.socket_manager
+            .start_connection(
+                source_id.clone(),
+                app_token,
+                self.sync_manager.sdk_client().clone(),
+                Some(self.sync_manager.clone()),
+            )
+            .await;
+
+        let mut heartbeat_ticker = tokio::time::interval(REALTIME_HEARTBEAT_INTERVAL);
+        heartbeat_ticker.tick().await;
+        while !ctx.is_cancelled() {
+            tokio::select! {
+                _ = heartbeat_ticker.tick() => {
+                    if let Err(e) = ctx.heartbeat().await {
+                        warn!(source_id, error = %e, "Realtime heartbeat failed");
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+            }
+        }
+
+        self.socket_manager.stop_connection(&source_id).await;
+        info!(source_id, "Slack realtime watcher stopped");
+        ctx.cancel().await?;
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl Connector for SlackConnector {
     type Config = JsonValue;
-    type Credentials = JsonValue;
+    type Credentials = SlackCredentials;
     type State = SlackConnectorState;
 
     fn name(&self) -> &'static str {
@@ -53,7 +99,7 @@ impl Connector for SlackConnector {
     }
 
     fn sync_modes(&self) -> Vec<SyncType> {
-        vec![SyncType::Full, SyncType::Incremental]
+        vec![SyncType::Full, SyncType::Incremental, SyncType::Realtime]
     }
 
     fn search_operators(&self) -> Vec<SearchOperator> {
@@ -72,68 +118,17 @@ impl Connector for SlackConnector {
         ctx: SyncContext,
     ) -> Result<()> {
         let creds = credentials.ok_or_else(|| anyhow!("Slack sync requires credentials"))?;
-        let source_id = ctx.source_id().to_string();
-        self.sync_manager
-            .run_sync(source, creds, state, ctx)
-            .await?;
 
-        // After a successful sync, kick off Socket Mode for live updates if not
-        // already connected. Failures here only log — the sync itself succeeded.
-        if !self.socket_manager.is_connected(&source_id).await {
-            start_socket_for_source(
-                &source_id,
-                self.sync_manager.sdk_client(),
-                &self.socket_manager,
-                Some(self.sync_manager.clone()),
-            )
-            .await;
+        match ctx.sync_mode() {
+            SyncType::Full | SyncType::Incremental => {
+                self.sync_manager.run_sync(source, creds, state, ctx).await
+            }
+            SyncType::Realtime => self.run_realtime(creds, ctx).await,
         }
-        Ok(())
     }
 
     async fn cancel(&self, _sync_run_id: &str) -> bool {
         // SDK owns the cancellation flag (exposed via SyncContext); just ack.
         true
     }
-}
-
-/// Start a Socket Mode connection for a source, if it has an `app_token`
-/// configured. Used both on connector startup (to reconnect existing sources)
-/// and after a successful sync.
-pub async fn start_socket_for_source(
-    source_id: &str,
-    sdk_client: &SdkClient,
-    socket_manager: &SocketModeManager,
-    sync_manager: Option<Arc<SyncManager>>,
-) {
-    let app_token = match get_app_token(source_id, sdk_client).await {
-        Some(token) => token,
-        None => return,
-    };
-
-    info!(source_id, "Starting Socket Mode connection");
-    socket_manager
-        .start_connection(
-            source_id.to_string(),
-            app_token,
-            sdk_client.clone(),
-            sync_manager,
-        )
-        .await;
-}
-
-async fn get_app_token(source_id: &str, sdk_client: &SdkClient) -> Option<String> {
-    let creds = match sdk_client.get_credentials(source_id).await {
-        Ok(c) => c,
-        Err(e) => {
-            debug!("Could not fetch credentials for {}: {}", source_id, e);
-            return None;
-        }
-    };
-
-    creds
-        .credentials
-        .get("app_token")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
 }

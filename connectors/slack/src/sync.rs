@@ -12,7 +12,7 @@ use tracing::{debug, error, info, warn};
 use crate::auth::AuthManager;
 use crate::client::SlackClient;
 use crate::content::ContentProcessor;
-use crate::models::{SlackChannel, SlackConnectorState};
+use crate::models::{SlackChannel, SlackConnectorState, SlackCredentials};
 
 /// Group identifier for a Slack channel — emitted via `GroupMembershipSync`
 /// and referenced by every document's `permissions.groups`.
@@ -116,24 +116,18 @@ impl SyncManager {
                 creds.provider
             ));
         }
-        let bot_token = creds
-            .credentials
-            .get("bot_token")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow!("Missing bot_token in Slack credentials"))?
-            .to_string();
+        let slack_creds: SlackCredentials = serde_json::from_value(creds.credentials)
+            .map_err(|e| anyhow!("Failed to decode Slack credentials: {}", e))?;
 
-        let mut bot_creds = self.auth_manager.validate_bot_token(&bot_token).await?;
+        let mut bot_creds = self
+            .auth_manager
+            .validate_bot_token(&slack_creds.bot_token)
+            .await?;
         self.auth_manager
             .ensure_valid_credentials(&mut bot_creds)
             .await?;
 
-        // Initialize state with team_id so Socket Mode reconnect-on-startup can
-        // use it to find sources whose first sync has completed.
         let mut connector_state = state.unwrap_or_default();
-        connector_state.team_id = Some(bot_creds.team_id.clone());
-        ctx.save_connector_state(serde_json::to_value(&connector_state)?)
-            .await?;
 
         let mut content_processor = ContentProcessor::new();
         self.fetch_all_users(&bot_creds.bot_token, &mut content_processor)
@@ -298,14 +292,13 @@ impl SyncManager {
                     creds.provider
                 ));
             }
-            let bot_token = creds
-                .credentials
-                .get("bot_token")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow!("Missing bot_token in Slack credentials"))?
-                .to_string();
+            let slack_creds: SlackCredentials = serde_json::from_value(creds.credentials)
+                .map_err(|e| anyhow!("Failed to decode Slack credentials: {}", e))?;
 
-            let mut bot_creds = self.auth_manager.validate_bot_token(&bot_token).await?;
+            let mut bot_creds = self
+                .auth_manager
+                .validate_bot_token(&slack_creds.bot_token)
+                .await?;
             self.auth_manager
                 .ensure_valid_credentials(&mut bot_creds)
                 .await?;

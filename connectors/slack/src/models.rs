@@ -13,7 +13,21 @@ use time::OffsetDateTime;
 pub struct SlackConnectorState {
     #[serde(default)]
     pub channel_timestamps: HashMap<String, String>,
-    pub team_id: Option<String>,
+}
+
+// ============================================================================
+// Credentials
+// ============================================================================
+
+/// Decoded shape of `service_credentials.credentials` for Slack sources.
+/// `bot_token` is required for any sync; `app_token` is required for the
+/// realtime (Socket Mode) path and may be absent on sources configured for
+/// scheduled-only sync.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlackCredentials {
+    pub bot_token: String,
+    #[serde(default)]
+    pub app_token: Option<String>,
 }
 
 // ============================================================================

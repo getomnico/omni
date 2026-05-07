@@ -223,7 +223,6 @@ async fn test_full_sync_creates_events() {
         .unwrap()
         .unwrap();
     let state: SlackConnectorState = serde_json::from_value(state_value).unwrap();
-    assert_eq!(state.team_id, Some("T_TEST".to_string()));
     assert!(state.channel_timestamps.contains_key("C001"));
     assert!(state.channel_timestamps.contains_key("C002"));
 }
