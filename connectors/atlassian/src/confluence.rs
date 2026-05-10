@@ -8,12 +8,14 @@ use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 use crate::auth::AtlassianCredentials;
-use crate::client::AtlassianApi;
+use crate::client::{AtlassianApi, PageReadRestrictions};
 use crate::models::{ConfluencePage, ConfluencePageStatus, ConfluenceSpace};
+use crate::user_resolver::UserResolver;
 
 pub struct ConfluenceProcessor {
     client: Arc<dyn AtlassianApi>,
     sdk_client: SdkClient,
+    user_resolver: Arc<UserResolver>,
     space_permissions_cache: DashMap<String, DocumentPermissions>,
     /// groupId → display_name for groups encountered in space permissions
     /// during this sync. Drained at end of sync by SyncManager so it can
@@ -31,7 +33,8 @@ fn page_version_key(space_id: &str, page_id: &str) -> String {
 
 impl ConfluenceProcessor {
     pub fn new(client: Arc<dyn AtlassianApi>, sdk_client: SdkClient) -> Self {
-        Self::with_page_versions(client, sdk_client, HashMap::new())
+        let resolver = Arc::new(UserResolver::new(client.clone(), Arc::new(HashMap::new())));
+        Self::with_page_versions_and_resolver(client, sdk_client, HashMap::new(), resolver)
     }
 
     pub fn with_page_versions(
@@ -39,9 +42,20 @@ impl ConfluenceProcessor {
         sdk_client: SdkClient,
         page_versions: HashMap<String, i32>,
     ) -> Self {
+        let resolver = Arc::new(UserResolver::new(client.clone(), Arc::new(HashMap::new())));
+        Self::with_page_versions_and_resolver(client, sdk_client, page_versions, resolver)
+    }
+
+    pub fn with_page_versions_and_resolver(
+        client: Arc<dyn AtlassianApi>,
+        sdk_client: SdkClient,
+        page_versions: HashMap<String, i32>,
+        user_resolver: Arc<UserResolver>,
+    ) -> Self {
         Self {
             client,
             sdk_client,
+            user_resolver,
             space_permissions_cache: DashMap::new(),
             encountered_groups: DashMap::new(),
             page_versions: page_versions.into_iter().collect(),
@@ -65,6 +79,72 @@ impl ConfluenceProcessor {
             .iter()
             .map(|entry| (entry.key().clone(), entry.value().clone()))
             .collect()
+    }
+
+    /// Resolve a page's effective `DocumentPermissions`. If the page has read
+    /// restrictions configured, those restrictions REPLACE the space-level
+    /// perms (Atlassian semantics: page restrictions narrow access to
+    /// specifically listed users/groups, regardless of broader space perms).
+    async fn resolve_page_permissions(
+        &self,
+        creds: &AtlassianCredentials,
+        page_id: &str,
+        space_perms: DocumentPermissions,
+    ) -> DocumentPermissions {
+        let restrictions = match self
+            .client
+            .get_confluence_page_read_restrictions(creds, page_id)
+            .await
+        {
+            Ok(Some(r)) => r,
+            Ok(None) => return space_perms,
+            Err(e) => {
+                warn!(
+                    "Failed to fetch read restrictions for page {}; falling back to space perms: {}",
+                    page_id, e
+                );
+                return space_perms;
+            }
+        };
+
+        let PageReadRestrictions {
+            user_account_ids,
+            group_ids,
+        } = restrictions;
+
+        let mut user_emails = Vec::new();
+        if !user_account_ids.is_empty() {
+            match self
+                .user_resolver
+                .resolve_emails(creds, &user_account_ids)
+                .await
+            {
+                Ok(pairs) => user_emails.extend(pairs.into_iter().map(|(_, e)| e)),
+                Err(e) => warn!(
+                    "Failed to resolve restriction user emails for page {}: {}",
+                    page_id, e
+                ),
+            }
+        }
+
+        for group_id in &group_ids {
+            self.encountered_groups
+                .entry(group_id.clone())
+                .or_insert(None);
+        }
+
+        user_emails.sort();
+        user_emails.dedup();
+
+        // FIXME(groups-key-rename): we're storing an Atlassian groupId in the
+        // `groups.email` column. Rename that column (and the GroupMembershipSync
+        // `group_email` field) to a generic identifier so non-email-keyed group
+        // systems are supported first-class.
+        DocumentPermissions {
+            public: false,
+            users: user_emails,
+            groups: group_ids,
+        }
     }
 
     async fn get_space_permissions(
@@ -134,6 +214,7 @@ impl ConfluenceProcessor {
 
         let mut account_ids = Vec::new();
         let mut group_ids = Vec::new();
+        let mut anonymous_allowed = false;
 
         for perm in &read_perms {
             match perm.principal.principal_type.as_str() {
@@ -142,6 +223,12 @@ impl ConfluenceProcessor {
                 }
                 "group" => {
                     group_ids.push(perm.principal.id.clone());
+                }
+                "anonymous" | "unknown_user" => {
+                    // The v2 space-permissions API returns "anonymous" as a
+                    // principal type when the space is configured to allow
+                    // anonymous read access.
+                    anonymous_allowed = true;
                 }
                 _ => {}
             }
@@ -152,7 +239,7 @@ impl ConfluenceProcessor {
 
         let mut user_emails = Vec::new();
         if !account_ids.is_empty() {
-            match self.client.get_jira_users_bulk(creds, &account_ids).await {
+            match self.user_resolver.resolve_emails(creds, &account_ids).await {
                 Ok(id_email_pairs) => {
                     user_emails.extend(id_email_pairs.into_iter().map(|(_, email)| email));
                 }
@@ -185,7 +272,7 @@ impl ConfluenceProcessor {
         // `group_email` field) to a generic identifier so non-email-keyed group
         // systems are supported first-class.
         Ok(DocumentPermissions {
-            public: false,
+            public: anonymous_allowed,
             users: user_emails,
             groups: group_ids,
         })
@@ -253,7 +340,7 @@ impl ConfluenceProcessor {
                     batch.to_vec(),
                     source_id,
                     sync_run_id,
-                    &creds.base_url,
+                    &creds.site_base(),
                     creds,
                 )
                 .await?;
@@ -381,7 +468,7 @@ impl ConfluenceProcessor {
                     batch.to_vec(),
                     source_id,
                     sync_run_id,
-                    &creds.base_url,
+                    &creds.site_base(),
                     creds,
                 )
                 .await?;
@@ -408,7 +495,7 @@ impl ConfluenceProcessor {
             .filter(|s| s.r#type != "personal")
             .collect();
         if spaces.is_empty() {
-            debug!("No spaces found for Confluence instance {}", creds.base_url);
+            debug!("No spaces found for Confluence instance {}", creds.domain);
         }
         debug!("Found {} accessible Confluence spaces", spaces.len());
         Ok(spaces)
@@ -488,7 +575,10 @@ impl ConfluenceProcessor {
                 }
             };
 
-            let permissions = self.get_space_permissions(creds, &page.space_id).await;
+            let space_perms = self.get_space_permissions(creds, &page.space_id).await;
+            let permissions = self
+                .resolve_page_permissions(creds, &page.id, space_perms)
+                .await;
 
             let event = page.to_connector_event(
                 sync_run_id.to_string(),

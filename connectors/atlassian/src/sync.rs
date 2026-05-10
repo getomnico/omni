@@ -9,10 +9,11 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::auth::{AtlassianCredentials, AuthManager};
-use crate::client::AtlassianApi;
+use crate::client::{AtlassianApi, OrgGroupInfo};
 use crate::confluence::ConfluenceProcessor;
 use crate::jira::JiraProcessor;
 use crate::models::{AtlassianConnectorState, AtlassianWebhookEvent};
+use crate::user_resolver::UserResolver;
 
 pub struct SyncManager {
     pub sdk_client: SdkClient,
@@ -124,17 +125,52 @@ impl SyncManager {
         };
 
         let service_creds = self.get_service_credentials(source_id).await?;
-        let (base_url, user_email, api_token) =
+        let (domain, sa_token, org_id, org_admin_api_key) =
             self.extract_atlassian_credentials(&service_creds)?;
 
         debug!("Validating Atlassian credentials...");
         let mut credentials = self
-            .get_or_validate_credentials(&base_url, &user_email, &api_token, Some(&source_type))
+            .get_or_validate_credentials(&domain, &sa_token, Some(&source_type))
             .await?;
+        if let (Some(org), Some(key)) = (org_id, org_admin_api_key) {
+            credentials = credentials.with_org_admin(org, key);
+        }
         self.auth_manager
             .ensure_valid_credentials(&mut credentials, Some(&source_type))
             .await?;
-        debug!("Successfully validated Atlassian credentials.");
+        debug!(
+            "Successfully validated Atlassian credentials (org_admin configured: {}).",
+            credentials.has_org_admin()
+        );
+
+        // Pre-fetch the org-admin user + group directories once per sync. Both
+        // are empty when org-admin creds are not configured (resolver falls
+        // back to per-site bulk-user API).
+        let user_directory: Arc<HashMap<String, String>> = Arc::new(
+            self.client
+                .get_org_user_directory(&credentials)
+                .await
+                .unwrap_or_else(|e| {
+                    warn!("Failed to fetch org user directory: {}", e);
+                    HashMap::new()
+                }),
+        );
+        let group_directory: HashMap<String, OrgGroupInfo> = self
+            .client
+            .get_org_group_directory(&credentials)
+            .await
+            .unwrap_or_else(|e| {
+                warn!("Failed to fetch org group directory: {}", e);
+                HashMap::new()
+            });
+        if credentials.has_org_admin() {
+            info!(
+                "Loaded org directory: {} users, {} groups",
+                user_directory.len(),
+                group_directory.len()
+            );
+        }
+        let user_resolver = Arc::new(UserResolver::new(self.client.clone(), user_directory));
 
         let existing_state = state.unwrap_or_default();
         let sync_mode = ctx.sync_mode();
@@ -152,10 +188,11 @@ impl SyncManager {
 
         let (total_processed, new_page_versions, encountered_groups) = match source_type {
             SourceType::Confluence => {
-                let processor = ConfluenceProcessor::with_page_versions(
+                let processor = ConfluenceProcessor::with_page_versions_and_resolver(
                     self.client.clone(),
                     sync_sdk_client.clone(),
                     existing_state.confluence_page_versions.clone(),
+                    user_resolver.clone(),
                 );
                 let result = if sync_mode == SyncType::Full {
                     info!(
@@ -186,7 +223,11 @@ impl SyncManager {
                 (count, processor.drain_page_versions(), groups)
             }
             SourceType::Jira => {
-                let processor = JiraProcessor::new(self.client.clone(), sync_sdk_client.clone());
+                let processor = JiraProcessor::with_resolver(
+                    self.client.clone(),
+                    sync_sdk_client.clone(),
+                    user_resolver.clone(),
+                );
                 let result = if sync_mode == SyncType::Full {
                     info!("Performing full Jira sync for source: {}", source.name);
                     processor
@@ -235,6 +276,8 @@ impl SyncManager {
             sync_run_id,
             source_type,
             encountered_groups,
+            &group_directory,
+            &user_resolver,
             &sync_sdk_client,
         )
         .await;
@@ -288,6 +331,8 @@ impl SyncManager {
         sync_run_id: &str,
         source_type: SourceType,
         encountered_groups: HashMap<String, Option<String>>,
+        group_directory: &HashMap<String, OrgGroupInfo>,
+        user_resolver: &UserResolver,
         sdk_client: &SdkClient,
     ) {
         if encountered_groups.is_empty() {
@@ -300,33 +345,46 @@ impl SyncManager {
             source_id
         );
 
-        for (group_id, group_name) in encountered_groups {
-            let member_account_ids = match source_type {
-                SourceType::Confluence => {
-                    self.client
-                        .get_confluence_group_members(creds, &group_id)
-                        .await
-                }
-                SourceType::Jira => self.client.get_jira_group_members(creds, &group_id).await,
-                _ => unreachable!(),
-            };
-
-            let member_account_ids = match member_account_ids {
-                Ok(ids) => ids,
-                Err(e) => {
-                    warn!(
-                        "Failed to fetch members for group {} (source: {}): {}",
-                        group_id, source_id, e
-                    );
-                    continue;
+        for (group_id, encountered_name) in encountered_groups {
+            // Prefer the org-admin group directory when available — it
+            // exposes members for every directory user, including those
+            // with private email visibility. Falls back to the per-site
+            // group-member API when the org directory is empty (org-admin
+            // not configured) or the specific group isn't in it.
+            let (member_account_ids, group_name) = match group_directory.get(&group_id) {
+                Some(info) => (
+                    info.member_account_ids.clone(),
+                    info.name.clone().or(encountered_name),
+                ),
+                None => {
+                    let fetched = match source_type {
+                        SourceType::Confluence => {
+                            self.client
+                                .get_confluence_group_members(creds, &group_id)
+                                .await
+                        }
+                        SourceType::Jira => {
+                            self.client.get_jira_group_members(creds, &group_id).await
+                        }
+                        _ => unreachable!(),
+                    };
+                    match fetched {
+                        Ok(ids) => (ids, encountered_name),
+                        Err(e) => {
+                            warn!(
+                                "Failed to fetch members for group {} (source: {}): {}",
+                                group_id, source_id, e
+                            );
+                            continue;
+                        }
+                    }
                 }
             };
 
             let mut member_emails = Vec::new();
             if !member_account_ids.is_empty() {
-                match self
-                    .client
-                    .get_jira_users_bulk(creds, &member_account_ids)
+                match user_resolver
+                    .resolve_emails(creds, &member_account_ids)
                     .await
                 {
                     Ok(id_email_pairs) => {
@@ -386,39 +444,46 @@ impl SyncManager {
     fn extract_atlassian_credentials(
         &self,
         creds: &ServiceCredential,
-    ) -> Result<(String, String, String)> {
-        let base_url = creds
+    ) -> Result<(String, String, Option<String>, Option<String>)> {
+        let domain = creds
             .config
-            .get("base_url")
+            .get("domain")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing base_url in service credentials config"))?
+            .ok_or_else(|| anyhow::anyhow!("Missing domain in service credentials config"))?
             .to_string();
 
-        let user_email = creds
-            .principal_email
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Missing principal_email in service credentials"))?
-            .to_string();
-
-        let api_token = creds
+        let sa_token = creds
             .credentials
-            .get("api_token")
+            .get("sa_token")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing api_token in service credentials"))?
+            .ok_or_else(|| anyhow::anyhow!("Missing sa_token in service credentials"))?
             .to_string();
 
-        Ok((base_url, user_email, api_token))
+        // Optional: organization-admin credentials enable the org-admin
+        // identity-resolution path. When absent the connector falls back to
+        // the per-site bulk-user API for accountId → email resolution.
+        let org_id = creds
+            .config
+            .get("org_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let org_admin_api_key = creds
+            .credentials
+            .get("org_admin_api_key")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        Ok((domain, sa_token, org_id, org_admin_api_key))
     }
 
     async fn get_or_validate_credentials(
         &self,
-        base_url: &str,
-        user_email: &str,
-        api_token: &str,
+        domain: &str,
+        sa_token: &str,
         source_type: Option<&SourceType>,
     ) -> Result<AtlassianCredentials> {
         self.auth_manager
-            .validate_credentials(base_url, user_email, api_token, source_type)
+            .validate_credentials(domain, sa_token, source_type)
             .await
     }
 
@@ -603,7 +668,7 @@ impl SyncManager {
                     }
                 };
 
-                let (base_url, user_email, api_token) =
+                let (domain, sa_token, _org_id, _org_admin_api_key) =
                     match self.extract_atlassian_credentials(&service_creds) {
                         Ok(c) => c,
                         Err(e) => {
@@ -613,7 +678,7 @@ impl SyncManager {
                     };
 
                 let creds = match self
-                    .get_or_validate_credentials(&base_url, &user_email, &api_token, None)
+                    .get_or_validate_credentials(&domain, &sa_token, None)
                     .await
                 {
                     Ok(c) => c,

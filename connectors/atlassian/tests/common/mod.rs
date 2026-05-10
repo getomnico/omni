@@ -17,9 +17,9 @@ use time::OffsetDateTime;
 use tokio::net::TcpListener;
 
 const TEST_CRED_ID: &str = "01JTEST0ATLASSIAN0CRED0001";
-pub const TEST_BASE_URL: &str = "https://test-company.atlassian.net";
-pub const TEST_USER_EMAIL: &str = "test@example.com";
-pub const TEST_API_TOKEN: &str = "test-api-token";
+pub const TEST_DOMAIN: &str = "test-company.atlassian.net";
+pub const TEST_CLOUD_ID: &str = "00000000-0000-0000-0000-000000000001";
+pub const TEST_SA_TOKEN: &str = "ATSTT-test-sa-token";
 
 pub struct TestFixture {
     pub mock_api: Arc<MockAtlassianApi>,
@@ -154,9 +154,9 @@ async fn seed_atlassian_source(pool: &PgPool, source_type: SourceType) -> Result
         user_id: None,
         provider: ServiceProvider::Atlassian,
         auth_type: AuthType::ApiKey,
-        principal_email: Some(TEST_USER_EMAIL.to_string()),
-        credentials: serde_json::json!({"api_token": TEST_API_TOKEN}),
-        config: serde_json::json!({"base_url": TEST_BASE_URL}),
+        principal_email: None,
+        credentials: serde_json::json!({"sa_token": TEST_SA_TOKEN}),
+        config: serde_json::json!({"domain": TEST_DOMAIN}),
         expires_at: None,
         last_validated_at: None,
         created_at: OffsetDateTime::now_utc(),

@@ -58,12 +58,10 @@ export interface WebSourceConfig {
 }
 
 export interface ConfluenceSourceConfig {
-    base_url: string
     space_filters?: string[]
 }
 
 export interface JiraSourceConfig {
-    base_url: string
     project_filters?: string[]
 }
 

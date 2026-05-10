@@ -19,7 +19,6 @@
     const config = (data.source.config as JiraSourceConfig) || {}
 
     let enabled = $state(data.source.isActive)
-    let siteUrl = $state(config.base_url || '')
     let projectFilters = $state<string[]>(
         config.project_filters && Array.isArray(config.project_filters)
             ? config.project_filters
@@ -41,7 +40,6 @@
     let beforeUnloadHandler: ((e: BeforeUnloadEvent) => void) | null = null
 
     let originalEnabled = data.source.isActive
-    let originalSiteUrl = siteUrl
     let originalProjectFilters: string[] = [...projectFilters]
 
     function addProject() {
@@ -141,8 +139,7 @@
         const projectsChanged =
             JSON.stringify(projectFilters.sort()) !== JSON.stringify(originalProjectFilters.sort())
 
-        hasUnsavedChanges =
-            enabled !== originalEnabled || siteUrl !== originalSiteUrl || projectsChanged
+        hasUnsavedChanges = enabled !== originalEnabled || projectsChanged
     })
 </script>
 
@@ -221,18 +218,6 @@
                 <Card.Content class="space-y-4">
                     <div class="space-y-4">
                         <div class="space-y-2">
-                            <Label for="siteUrl" class="text-sm font-medium">Site URL</Label>
-                            <Input
-                                id="siteUrl"
-                                name="siteUrl"
-                                type="url"
-                                bind:value={siteUrl}
-                                placeholder="https://your-domain.atlassian.net"
-                                disabled={!enabled}
-                                class="w-full" />
-                        </div>
-
-                        <div class="space-y-2 border-t pt-4">
                             <Label class="text-sm font-medium">Project Filters</Label>
                             <p class="text-muted-foreground text-xs">
                                 Filter specific projects (leave empty for all projects)

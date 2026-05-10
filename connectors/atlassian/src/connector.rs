@@ -11,7 +11,7 @@ use omni_connector_sdk::{
 use serde_json::{json, Value as JsonValue};
 use tracing::info;
 
-use crate::auth::AtlassianCredentials;
+use crate::auth::{AtlassianCredentials, AuthManager};
 use crate::client::{AtlassianApi, AtlassianClient};
 use crate::models::AtlassianConnectorState;
 use crate::sync::SyncManager;
@@ -158,20 +158,21 @@ pub async fn handle_search_spaces(
         None => return ActionResponse::failure("Atlassian action requires credentials"),
     };
 
-    let base_url = match creds.config.get("base_url").and_then(|v| v.as_str()) {
+    let domain = match creds.config.get("domain").and_then(|v| v.as_str()) {
         Some(u) => u.to_string(),
-        None => return ActionResponse::failure("Missing base_url in credentials config"),
+        None => return ActionResponse::failure("Missing domain in credentials config"),
     };
-    let user_email = match creds.principal_email.as_deref() {
-        Some(e) => e.to_string(),
-        None => return ActionResponse::failure("Missing principal_email in credentials"),
-    };
-    let api_token = match creds.credentials.get("api_token").and_then(|v| v.as_str()) {
+    let sa_token = match creds.credentials.get("sa_token").and_then(|v| v.as_str()) {
         Some(t) => t.to_string(),
-        None => return ActionResponse::failure("Missing api_token in credentials"),
+        None => return ActionResponse::failure("Missing sa_token in credentials"),
     };
 
-    let creds = AtlassianCredentials::new(base_url, user_email, api_token);
+    let cloud_id = match AuthManager::new().fetch_cloud_id(&domain).await {
+        Ok(id) => id,
+        Err(e) => return ActionResponse::failure(format!("Failed to resolve cloud_id: {}", e)),
+    };
+
+    let creds = AtlassianCredentials::new(domain, cloud_id, sa_token);
     let client = AtlassianClient::new();
 
     match search_type.as_str() {

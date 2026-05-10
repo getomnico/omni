@@ -7,8 +7,11 @@ use std::sync::Mutex;
 
 use omni_atlassian_connector::models::{
     ConfluenceCqlPage, ConfluencePage, ConfluenceSpace, ConfluenceSpacePermission, JiraField,
-    JiraIssue, JiraProjectRolesResponse, JiraRoleActorsResponse, JiraSearchResponse,
+    JiraIssue, JiraIssueSecuritySchemeResponse, JiraPermissionSchemeResponse,
+    JiraProjectIssueSecuritySchemeResponse, JiraProjectRolesResponse, JiraRoleActorsResponse,
+    JiraSearchResponse, JiraSecurityLevelMember,
 };
+use omni_atlassian_connector::client::{OrgGroupInfo, PageReadRestrictions};
 use omni_atlassian_connector::AtlassianApi;
 use omni_atlassian_connector::AtlassianCredentials;
 
@@ -36,6 +39,17 @@ pub struct MockAtlassianApi {
     pub bulk_users: Mutex<Vec<(String, String)>>,
     pub group_members: Mutex<HashMap<String, Vec<String>>>,
     pub jira_group_members: Mutex<HashMap<String, Vec<String>>>,
+    pub page_restrictions: Mutex<HashMap<String, PageReadRestrictions>>,
+    /// project_key → scheme id (None = no scheme)
+    pub project_security_schemes: Mutex<HashMap<String, Option<String>>>,
+    /// scheme id → full scheme detail (with levels)
+    pub security_schemes: Mutex<HashMap<String, JiraIssueSecuritySchemeResponse>>,
+    /// (scheme_id, level_id) → members
+    pub security_level_members: Mutex<HashMap<(String, String), Vec<JiraSecurityLevelMember>>>,
+    /// project_key → full permission scheme response
+    pub permission_schemes: Mutex<HashMap<String, JiraPermissionSchemeResponse>>,
+    pub org_user_directory: Mutex<HashMap<String, String>>,
+    pub org_group_directory: Mutex<HashMap<String, OrgGroupInfo>>,
 }
 
 impl MockAtlassianApi {
@@ -58,6 +72,13 @@ impl MockAtlassianApi {
             bulk_users: Mutex::new(vec![]),
             group_members: Mutex::new(HashMap::new()),
             jira_group_members: Mutex::new(HashMap::new()),
+            page_restrictions: Mutex::new(HashMap::new()),
+            project_security_schemes: Mutex::new(HashMap::new()),
+            security_schemes: Mutex::new(HashMap::new()),
+            security_level_members: Mutex::new(HashMap::new()),
+            permission_schemes: Mutex::new(HashMap::new()),
+            org_user_directory: Mutex::new(HashMap::new()),
+            org_group_directory: Mutex::new(HashMap::new()),
         }
     }
 
@@ -276,5 +297,104 @@ impl AtlassianApi for MockAtlassianApi {
             .cloned()
             .collect();
         Ok(result)
+    }
+
+    async fn get_confluence_page_read_restrictions(
+        &self,
+        _creds: &AtlassianCredentials,
+        page_id: &str,
+    ) -> Result<Option<PageReadRestrictions>> {
+        self.record_call(
+            "get_confluence_page_read_restrictions",
+            vec![page_id.to_string()],
+        );
+        Ok(self.page_restrictions.lock().unwrap().get(page_id).cloned())
+    }
+
+    async fn get_project_issue_security_scheme(
+        &self,
+        _creds: &AtlassianCredentials,
+        project_key: &str,
+    ) -> Result<Option<JiraProjectIssueSecuritySchemeResponse>> {
+        self.record_call(
+            "get_project_issue_security_scheme",
+            vec![project_key.to_string()],
+        );
+        let map = self.project_security_schemes.lock().unwrap();
+        match map.get(project_key) {
+            Some(Some(scheme_id)) => Ok(Some(JiraProjectIssueSecuritySchemeResponse {
+                id: scheme_id.clone(),
+                name: None,
+            })),
+            Some(None) | None => Ok(None),
+        }
+    }
+
+    async fn get_issue_security_scheme(
+        &self,
+        _creds: &AtlassianCredentials,
+        scheme_id: &str,
+    ) -> Result<JiraIssueSecuritySchemeResponse> {
+        self.record_call("get_issue_security_scheme", vec![scheme_id.to_string()]);
+        self.security_schemes
+            .lock()
+            .unwrap()
+            .get(scheme_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("scheme {} not configured in mock", scheme_id))
+    }
+
+    async fn get_issue_security_level_members(
+        &self,
+        _creds: &AtlassianCredentials,
+        scheme_id: &str,
+        level_id: &str,
+    ) -> Result<Vec<JiraSecurityLevelMember>> {
+        self.record_call(
+            "get_issue_security_level_members",
+            vec![scheme_id.to_string(), level_id.to_string()],
+        );
+        Ok(self
+            .security_level_members
+            .lock()
+            .unwrap()
+            .get(&(scheme_id.to_string(), level_id.to_string()))
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn get_project_permission_scheme(
+        &self,
+        _creds: &AtlassianCredentials,
+        project_key: &str,
+    ) -> Result<JiraPermissionSchemeResponse> {
+        self.record_call("get_project_permission_scheme", vec![project_key.to_string()]);
+        Ok(self
+            .permission_schemes
+            .lock()
+            .unwrap()
+            .get(project_key)
+            .cloned()
+            .unwrap_or(JiraPermissionSchemeResponse {
+                id: 0,
+                name: None,
+                permissions: vec![],
+            }))
+    }
+
+    async fn get_org_user_directory(
+        &self,
+        _creds: &AtlassianCredentials,
+    ) -> Result<HashMap<String, String>> {
+        self.record_call("get_org_user_directory", vec![]);
+        Ok(self.org_user_directory.lock().unwrap().clone())
+    }
+
+    async fn get_org_group_directory(
+        &self,
+        _creds: &AtlassianCredentials,
+    ) -> Result<HashMap<String, OrgGroupInfo>> {
+        self.record_call("get_org_group_directory", vec![]);
+        Ok(self.org_group_directory.lock().unwrap().clone())
     }
 }

@@ -42,17 +42,10 @@ export const actions: Actions = {
         const formData = await request.formData()
 
         const isActive = formData.has('enabled')
-        const siteUrl = formData.get('siteUrl') as string | null
         const spaceFilters = formData.getAll('spaceFilters') as string[]
 
         try {
-            const existingConfig = (source.config as ConfluenceSourceConfig) || {}
             const config: ConfluenceSourceConfig = {
-                base_url: siteUrl
-                    ? siteUrl.startsWith('http')
-                        ? siteUrl
-                        : `https://${siteUrl}`
-                    : existingConfig.base_url,
                 space_filters: spaceFilters.length > 0 ? spaceFilters : undefined,
             }
 

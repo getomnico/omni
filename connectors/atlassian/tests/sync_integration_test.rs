@@ -3,7 +3,7 @@ mod common;
 use anyhow::Result;
 use common::{
     count_queued_events, get_queued_events, get_queued_events_by_type, setup_test_fixture,
-    TEST_API_TOKEN, TEST_BASE_URL, TEST_USER_EMAIL,
+    TEST_CLOUD_ID, TEST_DOMAIN, TEST_SA_TOKEN,
 };
 use omni_atlassian_connector::models::{
     AtlassianWebhookEvent, AtlassianWebhookIssue, AtlassianWebhookIssueFields,
@@ -30,9 +30,9 @@ const SOURCE_ID: &str = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
 
 fn test_credentials() -> AtlassianCredentials {
     AtlassianCredentials::new(
-        TEST_BASE_URL.to_string(),
-        TEST_USER_EMAIL.to_string(),
-        TEST_API_TOKEN.to_string(),
+        TEST_DOMAIN.to_string(),
+        TEST_CLOUD_ID.to_string(),
+        TEST_SA_TOKEN.to_string(),
     )
 }
 
@@ -133,7 +133,7 @@ fn make_jira_issue(key: &str, summary: &str, project_key: &str) -> JiraIssue {
     JiraIssue {
         id: "10001".to_string(),
         key: key.to_string(),
-        self_url: format!("{}/rest/api/3/issue/10001", TEST_BASE_URL),
+        self_url: format!("https://{}/rest/api/3/issue/10001", TEST_DOMAIN),
         fields: JiraFields {
             summary: summary.to_string(),
             description: None,
@@ -167,6 +167,7 @@ fn make_jira_issue(key: &str, summary: &str, project_key: &str) -> JiraIssue {
             labels: None,
             comment: None,
             components: None,
+            security: None,
             extra_fields: HashMap::new(),
         },
     }
@@ -973,6 +974,12 @@ async fn test_jira_sync_emits_group_membership_events() -> Result<()> {
         .await?;
 
     let encountered = processor.drain_encountered_groups();
+    let empty_group_dir: std::collections::HashMap<String, omni_atlassian_connector::client::OrgGroupInfo> =
+        std::collections::HashMap::new();
+    let resolver = std::sync::Arc::new(omni_atlassian_connector::user_resolver::UserResolver::new(
+        fixture.mock_api.clone(),
+        std::sync::Arc::new(std::collections::HashMap::new()),
+    ));
     sync_manager
         .sync_group_memberships(
             &creds,
@@ -980,6 +987,8 @@ async fn test_jira_sync_emits_group_membership_events() -> Result<()> {
             &sync_run_id,
             SourceType::Jira,
             encountered,
+            &empty_group_dir,
+            &resolver,
             &fixture.sdk_client,
         )
         .await;

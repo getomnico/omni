@@ -10,6 +10,7 @@ use tracing::{debug, error, info, warn};
 use crate::auth::AtlassianCredentials;
 use crate::client::AtlassianApi;
 use crate::models::JiraIssue;
+use crate::user_resolver::UserResolver;
 
 const DEFAULT_JIRA_FIELDS: &[&str] = &[
     "summary",
@@ -26,6 +27,7 @@ const DEFAULT_JIRA_FIELDS: &[&str] = &[
     "labels",
     "comment",
     "components",
+    "security",
 ];
 
 fn build_fields(custom_fields: Option<&[String]>) -> Vec<String> {
@@ -40,24 +42,46 @@ fn build_fields(custom_fields: Option<&[String]>) -> Vec<String> {
 pub struct JiraProcessor {
     client: Arc<dyn AtlassianApi>,
     sdk_client: SdkClient,
+    user_resolver: Arc<UserResolver>,
     cached_custom_fields: RwLock<Option<(Vec<String>, DateTime<Utc>)>>,
     project_permissions_cache: DashMap<String, DocumentPermissions>,
     /// groupId → display_name for groups encountered in project role actors
     /// during this sync. Drained at end of sync by SyncManager so it can
     /// emit one GroupMembershipSync event per encountered group.
     encountered_groups: DashMap<String, Option<String>>,
+    /// Per-sync cache of `securityLevelId → DocumentPermissions` populated as
+    /// projects are encountered. When an issue has `fields.security` set, its
+    /// effective permissions become the level's perms (which are narrower than
+    /// the project's). One entry per security level the connector ever sees.
+    security_level_perms: DashMap<String, DocumentPermissions>,
+    /// Tracks which projects have already had their security scheme resolved
+    /// and folded into `security_level_perms`, so we don't re-fetch on every
+    /// issue.
+    security_resolved_projects: DashMap<String, ()>,
 }
 
 const CUSTOM_FIELDS_CACHE_TTL_DAYS: i64 = 1;
 
 impl JiraProcessor {
     pub fn new(client: Arc<dyn AtlassianApi>, sdk_client: SdkClient) -> Self {
+        let resolver = Arc::new(UserResolver::new(client.clone(), Arc::new(HashMap::new())));
+        Self::with_resolver(client, sdk_client, resolver)
+    }
+
+    pub fn with_resolver(
+        client: Arc<dyn AtlassianApi>,
+        sdk_client: SdkClient,
+        user_resolver: Arc<UserResolver>,
+    ) -> Self {
         Self {
             client,
             sdk_client,
+            user_resolver,
             cached_custom_fields: RwLock::new(None),
             project_permissions_cache: DashMap::new(),
             encountered_groups: DashMap::new(),
+            security_level_perms: DashMap::new(),
+            security_resolved_projects: DashMap::new(),
         }
     }
 
@@ -69,6 +93,139 @@ impl JiraProcessor {
             .iter()
             .map(|entry| (entry.key().clone(), entry.value().clone()))
             .collect()
+    }
+
+    /// Resolve a project's issue security scheme (if any) and populate the
+    /// per-sync `security_level_perms` cache for every level in the scheme.
+    /// Idempotent and short-circuits per project.
+    async fn ensure_security_levels_for_project(
+        &self,
+        creds: &AtlassianCredentials,
+        project_key: &str,
+    ) {
+        if self
+            .security_resolved_projects
+            .contains_key(project_key)
+        {
+            return;
+        }
+        // Mark resolved up-front so concurrent issues for the same project
+        // don't race; if the fetch fails we still avoid retrying per-issue.
+        self.security_resolved_projects
+            .insert(project_key.to_string(), ());
+
+        let scheme = match self
+            .client
+            .get_project_issue_security_scheme(creds, project_key)
+            .await
+        {
+            Ok(Some(s)) => s,
+            Ok(None) => return,
+            Err(e) => {
+                warn!(
+                    "Failed to fetch issue security scheme for project {}: {}",
+                    project_key, e
+                );
+                return;
+            }
+        };
+
+        let scheme_detail = match self
+            .client
+            .get_issue_security_scheme(creds, &scheme.id)
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(
+                    "Failed to fetch security scheme {} detail for project {}: {}",
+                    scheme.id, project_key, e
+                );
+                return;
+            }
+        };
+
+        for level in &scheme_detail.levels {
+            // Skip if some other project already populated this level.
+            if self.security_level_perms.contains_key(&level.id) {
+                continue;
+            }
+            let members = match self
+                .client
+                .get_issue_security_level_members(creds, &scheme.id, &level.id)
+                .await
+            {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!(
+                        "Failed to fetch members for security scheme {} level {}: {}",
+                        scheme.id, level.id, e
+                    );
+                    continue;
+                }
+            };
+
+            let mut user_account_ids = Vec::new();
+            let mut group_ids = Vec::new();
+            for member in members {
+                match member.holder.holder_type.as_str() {
+                    "user" => {
+                        if let Some(account_id) = member.holder.parameter {
+                            user_account_ids.push(account_id);
+                        }
+                    }
+                    "group" | "groupCustomField" => {
+                        if let Some(group_id) = member.holder.parameter {
+                            group_ids.push(group_id.clone());
+                            self.encountered_groups
+                                .entry(group_id)
+                                .or_insert(None);
+                        }
+                    }
+                    other => {
+                        warn!(
+                            "Unhandled security level holder type '{}' on scheme {} level {}",
+                            other, scheme.id, level.id
+                        );
+                    }
+                }
+            }
+
+            user_account_ids.sort();
+            user_account_ids.dedup();
+            group_ids.sort();
+            group_ids.dedup();
+
+            let mut user_emails = Vec::new();
+            if !user_account_ids.is_empty() {
+                match self
+                    .user_resolver
+                    .resolve_emails(creds, &user_account_ids)
+                    .await
+                {
+                    Ok(pairs) => user_emails.extend(pairs.into_iter().map(|(_, e)| e)),
+                    Err(e) => warn!(
+                        "Failed to resolve emails for security scheme {} level {}: {}",
+                        scheme.id, level.id, e
+                    ),
+                }
+            }
+            user_emails.sort();
+            user_emails.dedup();
+
+            // FIXME(groups-key-rename): we're storing an Atlassian groupId in the
+            // `groups.email` column. Rename that column (and the GroupMembershipSync
+            // `group_email` field) to a generic identifier so non-email-keyed group
+            // systems are supported first-class.
+            self.security_level_perms.insert(
+                level.id.clone(),
+                DocumentPermissions {
+                    public: false,
+                    users: user_emails,
+                    groups: group_ids,
+                },
+            );
+        }
     }
 
     async fn get_project_permissions(
@@ -105,13 +262,6 @@ impl JiraProcessor {
         creds: &AtlassianCredentials,
         project_key: &str,
     ) -> Result<DocumentPermissions> {
-        // TODO(perms): Role-actor aggregation is an approximation. Proper
-        // resolution requires fetching the project's permission scheme
-        // (GET /rest/api/3/project/{key}/permissionscheme), reading the
-        // BROWSE_PROJECTS grant, and expanding its holders. Roles that don't
-        // grant BROWSE are over-permissive here; permission-scheme grants to
-        // anonymous or applicationRole principals are missed entirely. We also
-        // don't enforce Atlassian org domain restrictions.
         let role_response = self
             .client
             .get_jira_project_roles(creds, project_key)
@@ -119,6 +269,7 @@ impl JiraProcessor {
 
         let mut user_account_ids = Vec::new();
         let mut group_ids: Vec<String> = Vec::new();
+        let mut public = false;
 
         // Fetch actors for each role
         for (_role_name, role_url) in &role_response.roles {
@@ -175,14 +326,92 @@ impl JiraProcessor {
             }
         }
 
+        // Walk the project's permission scheme for BROWSE_PROJECTS grants
+        // whose holder is NOT a projectRole — those (user/group/anyone/
+        // applicationRole/projectLead) are missed by the role-actor traversal
+        // above. Failure here downgrades to "role-actor-only" perms rather
+        // than aborting the project sync.
+        match self
+            .client
+            .get_project_permission_scheme(creds, project_key)
+            .await
+        {
+            Ok(scheme) => {
+                for grant in scheme.permissions {
+                    if grant.permission != "BROWSE_PROJECTS" {
+                        continue;
+                    }
+                    match grant.holder.holder_type.as_str() {
+                        // projectRole grants are covered by the role-actor
+                        // walker above; skip to avoid double-counting.
+                        "projectRole" => {}
+                        "user" => match grant.holder.identifier() {
+                            Some(account_id) => user_account_ids.push(account_id.to_string()),
+                            None => warn!(
+                                "BROWSE_PROJECTS user grant in project {} has no identifier",
+                                project_key
+                            ),
+                        },
+                        "group" | "groupCustomField" => match grant.holder.identifier() {
+                            Some(group_id) => {
+                                group_ids.push(group_id.to_string());
+                                self.encountered_groups
+                                    .entry(group_id.to_string())
+                                    .or_insert(None);
+                            }
+                            None => warn!(
+                                "BROWSE_PROJECTS group grant in project {} has no identifier",
+                                project_key
+                            ),
+                        },
+                        "anyone" => {
+                            public = true;
+                        }
+                        "applicationRole" => {
+                            // An applicationRole grant means "any user with
+                            // access to this Atlassian application." For
+                            // BROWSE_PROJECTS this effectively grants
+                            // company-wide read. Treat as public.
+                            public = true;
+                        }
+                        "projectLead" => {
+                            // The lead's accountId is on the project metadata,
+                            // not in the grant. Skip with a warn — we'd need
+                            // to plumb the project response in to resolve it
+                            // and the lead is typically already covered by a
+                            // role grant anyway.
+                            warn!(
+                                "BROWSE_PROJECTS projectLead grant in project {} not yet resolved",
+                                project_key
+                            );
+                        }
+                        other => {
+                            // assignee / reporter / currentUser / userCustomField:
+                            // dynamic, can't statically resolve.
+                            warn!(
+                                "Unsupported BROWSE_PROJECTS holder type '{}' in project {}",
+                                other, project_key
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to fetch permission scheme for project {} (continuing with role actors only): {}",
+                    project_key, e
+                );
+            }
+        }
+
         // Resolve accountIds to emails
         let mut user_emails = Vec::new();
         if !user_account_ids.is_empty() {
             user_account_ids.sort();
             user_account_ids.dedup();
             match self
-                .client
-                .get_jira_users_bulk(creds, &user_account_ids)
+                .user_resolver
+                .resolve_emails(creds, &user_account_ids)
                 .await
             {
                 Ok(id_email_pairs) => {
@@ -207,7 +436,7 @@ impl JiraProcessor {
         // `group_email` field) to a generic identifier so non-email-keyed group
         // systems are supported first-class.
         Ok(DocumentPermissions {
-            public: false,
+            public,
             users: user_emails,
             groups: group_ids,
         })
@@ -394,7 +623,7 @@ impl JiraProcessor {
                 .process_issues(
                     response.issues,
                     source_id,
-                    &creds.base_url,
+                    &creds.site_base(),
                     sync_run_id,
                     creds,
                 )
@@ -459,7 +688,7 @@ impl JiraProcessor {
                 .process_issues(
                     response.issues,
                     source_id,
-                    &creds.base_url,
+                    &creds.site_base(),
                     sync_run_id,
                     creds,
                 )
@@ -528,9 +757,31 @@ impl JiraProcessor {
                 }
             };
 
-            let permissions = self
-                .get_project_permissions(creds, &issue.fields.project.key)
+            let project_key = issue.fields.project.key.clone();
+            let project_perms = self.get_project_permissions(creds, &project_key).await;
+            self.ensure_security_levels_for_project(creds, &project_key)
                 .await;
+            let permissions = match &issue.fields.security {
+                Some(level) => match self.security_level_perms.get(&level.id) {
+                    Some(level_perms) => level_perms.clone(),
+                    None => {
+                        // Scheme/level fetch failed earlier; we know the issue
+                        // is restricted but can't enumerate the holders. Be
+                        // safe: emit empty perms so nobody sees it rather than
+                        // falling back to project perms (which would over-grant).
+                        warn!(
+                            "Issue {} has security level {} but its members could not be resolved; emitting empty perms",
+                            issue.key, level.id
+                        );
+                        DocumentPermissions {
+                            public: false,
+                            users: vec![],
+                            groups: vec![],
+                        }
+                    }
+                },
+                None => project_perms,
+            };
 
             let event = issue.to_connector_event(
                 sync_run_id.to_string(),

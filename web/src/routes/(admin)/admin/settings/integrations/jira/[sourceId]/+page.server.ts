@@ -42,17 +42,10 @@ export const actions: Actions = {
         const formData = await request.formData()
 
         const isActive = formData.has('enabled')
-        const siteUrl = formData.get('siteUrl') as string | null
         const projectFilters = formData.getAll('projectFilters') as string[]
 
         try {
-            const existingConfig = (source.config as JiraSourceConfig) || {}
             const config: JiraSourceConfig = {
-                base_url: siteUrl
-                    ? siteUrl.startsWith('http')
-                        ? siteUrl
-                        : `https://${siteUrl}`
-                    : existingConfig.base_url,
                 project_filters: projectFilters.length > 0 ? projectFilters : undefined,
             }
 

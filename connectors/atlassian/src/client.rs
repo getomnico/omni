@@ -10,12 +10,17 @@ use tracing::debug;
 
 use crate::auth::AtlassianCredentials;
 use crate::models::{
-    AtlassianWebhookRegistration, AtlassianWebhookRegistrationResponse, ConfluenceCqlPage,
-    ConfluenceCqlSearchResponse, ConfluenceGetPagesResponse, ConfluenceGetSpacesResponse,
-    ConfluenceGroupMembersResponse, ConfluencePage, ConfluenceSpace, ConfluenceSpacePermission,
+    AtlassianWebhookRegistration, AtlassianWebhookRegistrationResponse,
+    ConfluenceContentRestriction, ConfluenceCqlPage, ConfluenceCqlSearchResponse,
+    ConfluenceGetPagesResponse, ConfluenceGetSpacesResponse, ConfluenceGroupMembersResponse,
+    ConfluencePage, ConfluenceSpace, ConfluenceSpacePermission,
     ConfluenceSpacePermissionsResponse, JiraField, JiraGroupMembersResponse, JiraIssue,
-    JiraProjectRolesResponse, JiraRoleActorsResponse, JiraSearchResponse,
+    JiraIssueSecuritySchemeResponse, JiraPermissionSchemeResponse,
+    JiraProjectIssueSecuritySchemeResponse, JiraProjectRolesResponse, JiraRoleActorsResponse,
+    JiraSearchResponse, JiraSecurityLevelMember, JiraSecurityLevelMembersResponse,
+    OrgAdminGroupMembersResponse, OrgAdminGroupsResponse, OrgAdminUsersResponse,
 };
+use std::collections::HashMap;
 
 #[async_trait]
 pub trait AtlassianApi: Send + Sync {
@@ -113,6 +118,82 @@ pub trait AtlassianApi: Send + Sync {
         creds: &AtlassianCredentials,
         account_ids: &[String],
     ) -> Result<Vec<(String, String)>>;
+
+    /// Returns the read-restriction principals for a Confluence page if any
+    /// are set; returns Ok(None) when the page has no read restriction (the
+    /// space-level perms apply unchanged).
+    async fn get_confluence_page_read_restrictions(
+        &self,
+        creds: &AtlassianCredentials,
+        page_id: &str,
+    ) -> Result<Option<PageReadRestrictions>>;
+
+    /// Returns the issue security scheme attached to a project, or Ok(None)
+    /// if the project has no security scheme configured (any issue is
+    /// readable to anyone with project access).
+    async fn get_project_issue_security_scheme(
+        &self,
+        creds: &AtlassianCredentials,
+        project_key: &str,
+    ) -> Result<Option<JiraProjectIssueSecuritySchemeResponse>>;
+
+    /// Returns the full issue security scheme (including all levels) by id.
+    async fn get_issue_security_scheme(
+        &self,
+        creds: &AtlassianCredentials,
+        scheme_id: &str,
+    ) -> Result<JiraIssueSecuritySchemeResponse>;
+
+    /// Paginates the holders of a single issue security level.
+    async fn get_issue_security_level_members(
+        &self,
+        creds: &AtlassianCredentials,
+        scheme_id: &str,
+        level_id: &str,
+    ) -> Result<Vec<JiraSecurityLevelMember>>;
+
+    /// Returns the project's full permission scheme with all grants expanded.
+    /// Use this to walk holders for `BROWSE_PROJECTS` beyond projectRole
+    /// actors (i.e., direct user/group/anyone/applicationRole grants).
+    async fn get_project_permission_scheme(
+        &self,
+        creds: &AtlassianCredentials,
+        project_key: &str,
+    ) -> Result<JiraPermissionSchemeResponse>;
+
+    /// Returns `accountId → email` for every active user in the organization
+    /// directory. Bypasses Atlassian Cloud's per-user email-privacy setting.
+    /// Returns an empty map when org-admin credentials are not configured on
+    /// `creds`. Requires Atlassian Guard / org-admin API key.
+    async fn get_org_user_directory(
+        &self,
+        creds: &AtlassianCredentials,
+    ) -> Result<HashMap<String, String>>;
+
+    /// Returns `groupId → (name, member_account_ids)` for every group in the
+    /// organization directory. Empty map when org-admin not configured.
+    async fn get_org_group_directory(
+        &self,
+        creds: &AtlassianCredentials,
+    ) -> Result<HashMap<String, OrgGroupInfo>>;
+}
+
+/// Group entry as returned by the Atlassian organization-admin API: the
+/// canonical name plus the full member list (by accountId). Used to skip the
+/// per-group member API calls when org-admin is configured.
+#[derive(Debug, Clone)]
+pub struct OrgGroupInfo {
+    pub name: Option<String>,
+    pub member_account_ids: Vec<String>,
+}
+
+/// Restriction principals applied to a Confluence page's read operation.
+/// At least one of `user_account_ids` or `group_ids` is non-empty when this
+/// struct is returned.
+#[derive(Debug, Clone)]
+pub struct PageReadRestrictions {
+    pub user_account_ids: Vec<String>,
+    pub group_ids: Vec<String>,
 }
 
 pub struct AtlassianClient {
@@ -236,8 +317,8 @@ impl AtlassianApi for AtlassianClient {
         space_id: &'a str,
     ) -> Pin<Box<dyn Stream<Item = Result<ConfluencePage>> + Send + 'a>> {
         Box::pin(async_stream::stream! {
-            let auth_header = creds.get_basic_auth_header();
-            let mut url = format!("{}/wiki/api/v2/spaces/{}/pages", creds.base_url, space_id);
+            let auth_header = creds.get_bearer_auth_header();
+            let mut url = format!("{}/api/v2/spaces/{}/pages", creds.confluence_base(), space_id);
             let page_size = 250;
             let params = vec![
                 ("limit", page_size.to_string()),
@@ -296,8 +377,8 @@ impl AtlassianApi for AtlassianClient {
         page_id: &str,
         expand: &[&str],
     ) -> Result<ConfluencePage> {
-        let auth_header = creds.get_basic_auth_header();
-        let mut url = format!("{}/wiki/rest/api/content/{}", creds.base_url, page_id);
+        let auth_header = creds.get_bearer_auth_header();
+        let mut url = format!("{}/rest/api/content/{}", creds.confluence_base(), page_id);
 
         if !expand.is_empty() {
             url.push_str(&format!("?expand={}", expand.join(",")));
@@ -321,8 +402,8 @@ impl AtlassianApi for AtlassianClient {
         cql: &'a str,
     ) -> Pin<Box<dyn Stream<Item = Result<ConfluenceCqlPage>> + Send + 'a>> {
         Box::pin(async_stream::stream! {
-            let auth_header = creds.get_basic_auth_header();
-            let url = format!("{}/wiki/rest/api/content/search", creds.base_url);
+            let auth_header = creds.get_bearer_auth_header();
+            let url = format!("{}/rest/api/content/search", creds.confluence_base());
             let page_size = 50;
             let mut start = 0;
 
@@ -378,8 +459,8 @@ impl AtlassianApi for AtlassianClient {
         next_page_token: Option<&str>,
         fields: &[String],
     ) -> Result<JiraSearchResponse> {
-        let auth_header = creds.get_basic_auth_header();
-        let url = format!("{}/rest/api/3/search/jql", creds.base_url);
+        let auth_header = creds.get_bearer_auth_header();
+        let url = format!("{}/rest/api/3/search/jql", creds.jira_base());
 
         let fields_str = fields.join(",");
         let max_results_str = max_results.to_string();
@@ -413,7 +494,7 @@ impl AtlassianApi for AtlassianClient {
         issue_key: &str,
         fields: &[String],
     ) -> Result<JiraIssue> {
-        let auth_header = creds.get_basic_auth_header();
+        let auth_header = creds.get_bearer_auth_header();
         let fields_param = if fields.is_empty() {
             "*all".to_string()
         } else {
@@ -422,7 +503,7 @@ impl AtlassianApi for AtlassianClient {
 
         let url = format!(
             "{}/rest/api/3/issue/{}?fields={}&expand=renderedFields",
-            creds.base_url,
+            creds.jira_base(),
             issue_key,
             urlencoding::encode(&fields_param)
         );
@@ -440,8 +521,8 @@ impl AtlassianApi for AtlassianClient {
     }
 
     async fn get_jira_fields(&self, creds: &AtlassianCredentials) -> Result<Vec<JiraField>> {
-        let auth_header = creds.get_basic_auth_header();
-        let url = format!("{}/rest/api/3/field", creds.base_url);
+        let auth_header = creds.get_bearer_auth_header();
+        let url = format!("{}/rest/api/3/field", creds.jira_base());
 
         debug!("Fetching JIRA fields: {}", url);
 
@@ -459,8 +540,8 @@ impl AtlassianApi for AtlassianClient {
         &self,
         creds: &AtlassianCredentials,
     ) -> Result<Vec<ConfluenceSpace>> {
-        let auth_header = creds.get_basic_auth_header();
-        let mut url = format!("{}/wiki/api/v2/spaces", creds.base_url);
+        let auth_header = creds.get_bearer_auth_header();
+        let mut url = format!("{}/api/v2/spaces", creds.confluence_base());
         let page_size = 250;
         let params = vec![("limit", page_size.to_string())];
 
@@ -509,8 +590,8 @@ impl AtlassianApi for AtlassianClient {
         creds: &AtlassianCredentials,
         expand: &[&str],
     ) -> Result<Vec<serde_json::Value>> {
-        let auth_header = creds.get_basic_auth_header();
-        let mut url = format!("{}/rest/api/3/project", creds.base_url);
+        let auth_header = creds.get_bearer_auth_header();
+        let mut url = format!("{}/rest/api/3/project", creds.jira_base());
 
         if !expand.is_empty() {
             url.push_str(&format!("?expand={}", expand.join(",")));
@@ -533,8 +614,8 @@ impl AtlassianApi for AtlassianClient {
         creds: &AtlassianCredentials,
         webhook_url: &str,
     ) -> Result<u64> {
-        let auth_header = creds.get_basic_auth_header();
-        let url = format!("{}/rest/webhooks/1.0/webhook", creds.base_url);
+        let auth_header = creds.get_bearer_auth_header();
+        let url = format!("{}/rest/webhooks/1.0/webhook", creds.site_base());
 
         let registration = AtlassianWebhookRegistration {
             name: "Omni Atlassian Connector".to_string(),
@@ -582,10 +663,11 @@ impl AtlassianApi for AtlassianClient {
     }
 
     async fn delete_webhook(&self, creds: &AtlassianCredentials, webhook_id: u64) -> Result<()> {
-        let auth_header = creds.get_basic_auth_header();
+        let auth_header = creds.get_bearer_auth_header();
         let url = format!(
             "{}/rest/webhooks/1.0/webhook/{}",
-            creds.base_url, webhook_id
+            creds.site_base(),
+            webhook_id
         );
 
         debug!("Deleting Atlassian webhook {}: {}", webhook_id, url);
@@ -625,10 +707,11 @@ impl AtlassianApi for AtlassianClient {
     }
 
     async fn get_webhook(&self, creds: &AtlassianCredentials, webhook_id: u64) -> Result<bool> {
-        let auth_header = creds.get_basic_auth_header();
+        let auth_header = creds.get_bearer_auth_header();
         let url = format!(
             "{}/rest/webhooks/1.0/webhook/{}",
-            creds.base_url, webhook_id
+            creds.site_base(),
+            webhook_id
         );
 
         debug!("Checking Atlassian webhook {}: {}", webhook_id, url);
@@ -661,11 +744,12 @@ impl AtlassianApi for AtlassianClient {
         creds: &AtlassianCredentials,
         space_id: &str,
     ) -> Result<Vec<ConfluenceSpacePermission>> {
-        let auth_header = creds.get_basic_auth_header();
+        let auth_header = creds.get_bearer_auth_header();
         let mut all_permissions = Vec::new();
         let mut url = format!(
-            "{}/wiki/api/v2/spaces/{}/permissions",
-            creds.base_url, space_id
+            "{}/api/v2/spaces/{}/permissions",
+            creds.confluence_base(),
+            space_id
         );
         let params = vec![("limit", "100".to_string())];
 
@@ -707,10 +791,11 @@ impl AtlassianApi for AtlassianClient {
         creds: &AtlassianCredentials,
         group_id: &str,
     ) -> Result<Vec<String>> {
-        let auth_header = creds.get_basic_auth_header();
+        let auth_header = creds.get_bearer_auth_header();
         let url = format!(
-            "{}/wiki/rest/api/group/{}/membersByGroupId",
-            creds.base_url, group_id
+            "{}/rest/api/group/{}/membersByGroupId",
+            creds.confluence_base(),
+            group_id
         );
         let page_size: i64 = 200;
         let mut start: i64 = 0;
@@ -755,8 +840,8 @@ impl AtlassianApi for AtlassianClient {
         creds: &AtlassianCredentials,
         group_id: &str,
     ) -> Result<Vec<String>> {
-        let auth_header = creds.get_basic_auth_header();
-        let url = format!("{}/rest/api/3/group/member", creds.base_url);
+        let auth_header = creds.get_bearer_auth_header();
+        let url = format!("{}/rest/api/3/group/member", creds.jira_base());
         let page_size: u32 = 50;
         let mut start_at: u32 = 0;
         let mut all_account_ids = Vec::new();
@@ -801,8 +886,12 @@ impl AtlassianApi for AtlassianClient {
         creds: &AtlassianCredentials,
         project_key: &str,
     ) -> Result<JiraProjectRolesResponse> {
-        let auth_header = creds.get_basic_auth_header();
-        let url = format!("{}/rest/api/3/project/{}/role", creds.base_url, project_key);
+        let auth_header = creds.get_bearer_auth_header();
+        let url = format!(
+            "{}/rest/api/3/project/{}/role",
+            creds.jira_base(),
+            project_key
+        );
 
         debug!("Fetching JIRA project {} roles", project_key);
 
@@ -822,10 +911,12 @@ impl AtlassianApi for AtlassianClient {
         project_key: &str,
         role_id: &str,
     ) -> Result<JiraRoleActorsResponse> {
-        let auth_header = creds.get_basic_auth_header();
+        let auth_header = creds.get_bearer_auth_header();
         let url = format!(
             "{}/rest/api/3/project/{}/role/{}",
-            creds.base_url, project_key, role_id
+            creds.jira_base(),
+            project_key,
+            role_id
         );
 
         debug!(
@@ -852,12 +943,12 @@ impl AtlassianApi for AtlassianClient {
             return Ok(vec![]);
         }
 
-        let auth_header = creds.get_basic_auth_header();
+        let auth_header = creds.get_bearer_auth_header();
         let mut results = Vec::new();
 
         // Jira bulk user API accepts up to 10 accountIds per request
         for chunk in account_ids.chunks(10) {
-            let url = format!("{}/rest/api/3/user/bulk", creds.base_url);
+            let url = format!("{}/rest/api/3/user/bulk", creds.jira_base());
             let params: Vec<(&str, String)> =
                 chunk.iter().map(|id| ("accountId", id.clone())).collect();
 
@@ -882,5 +973,314 @@ impl AtlassianApi for AtlassianClient {
         }
 
         Ok(results)
+    }
+
+    async fn get_confluence_page_read_restrictions(
+        &self,
+        creds: &AtlassianCredentials,
+        page_id: &str,
+    ) -> Result<Option<PageReadRestrictions>> {
+        let auth_header = creds.get_bearer_auth_header();
+        let url = format!(
+            "{}/rest/api/content/{}/restriction/byOperation/read",
+            creds.confluence_base(),
+            page_id
+        );
+
+        debug!("Fetching Confluence page {} read restrictions", page_id);
+
+        let client = self.client.clone();
+        let resp: ConfluenceContentRestriction = self
+            .make_request(move || {
+                client
+                    .get(&url)
+                    .query(&[("expand", "restrictions.user,restrictions.group")])
+                    .header("Authorization", &auth_header)
+                    .header("Accept", "application/json")
+            })
+            .await?;
+
+        let user_account_ids: Vec<String> = resp
+            .restrictions
+            .user
+            .results
+            .into_iter()
+            .map(|u| u.account_id)
+            .collect();
+        let group_ids: Vec<String> = resp
+            .restrictions
+            .group
+            .results
+            .into_iter()
+            .map(|g| g.id)
+            .collect();
+
+        if user_account_ids.is_empty() && group_ids.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(PageReadRestrictions {
+            user_account_ids,
+            group_ids,
+        }))
+    }
+
+    async fn get_project_issue_security_scheme(
+        &self,
+        creds: &AtlassianCredentials,
+        project_key: &str,
+    ) -> Result<Option<JiraProjectIssueSecuritySchemeResponse>> {
+        let auth_header = creds.get_bearer_auth_header();
+        let url = format!(
+            "{}/rest/api/3/project/{}/issuesecuritylevelscheme",
+            creds.jira_base(),
+            project_key
+        );
+
+        debug!("Fetching issue security scheme for project {}", project_key);
+
+        let client = self.client.clone();
+        let response = client
+            .get(&url)
+            .header("Authorization", &auth_header)
+            .header("Accept", "application/json")
+            .send()
+            .await?;
+
+        // Atlassian returns 404 when the project has no security scheme
+        // attached — that's expected; treat as None.
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "Failed to fetch issue security scheme for project {}: HTTP {} — {}",
+                project_key,
+                status,
+                body
+            ));
+        }
+
+        let scheme: JiraProjectIssueSecuritySchemeResponse = response.json().await?;
+        Ok(Some(scheme))
+    }
+
+    async fn get_issue_security_scheme(
+        &self,
+        creds: &AtlassianCredentials,
+        scheme_id: &str,
+    ) -> Result<JiraIssueSecuritySchemeResponse> {
+        let auth_header = creds.get_bearer_auth_header();
+        let url = format!(
+            "{}/rest/api/3/issuesecurityschemes/{}",
+            creds.jira_base(),
+            scheme_id
+        );
+
+        debug!("Fetching issue security scheme {} detail", scheme_id);
+
+        let client = self.client.clone();
+        self.make_request(move || {
+            client
+                .get(&url)
+                .header("Authorization", &auth_header)
+                .header("Accept", "application/json")
+        })
+        .await
+    }
+
+    async fn get_issue_security_level_members(
+        &self,
+        creds: &AtlassianCredentials,
+        scheme_id: &str,
+        level_id: &str,
+    ) -> Result<Vec<JiraSecurityLevelMember>> {
+        let auth_header = creds.get_bearer_auth_header();
+        let url = format!(
+            "{}/rest/api/3/issuesecurityschemes/{}/members",
+            creds.jira_base(),
+            scheme_id
+        );
+        let page_size: i64 = 50;
+        let mut start_at: i64 = 0;
+        let mut all = Vec::new();
+
+        loop {
+            debug!(
+                "Fetching members for security scheme {} level {} (startAt={})",
+                scheme_id, level_id, start_at
+            );
+
+            let client = self.client.clone();
+            let resp: JiraSecurityLevelMembersResponse = self
+                .make_request(|| {
+                    client
+                        .get(&url)
+                        .query(&[
+                            ("issueSecurityLevelId", level_id.to_string()),
+                            ("maxResults", page_size.to_string()),
+                            ("startAt", start_at.to_string()),
+                            ("expand", "all".to_string()),
+                        ])
+                        .header("Authorization", &auth_header)
+                        .header("Accept", "application/json")
+                })
+                .await?;
+
+            let count = resp.values.len() as i64;
+            let is_last = resp.is_last;
+            all.extend(resp.values);
+
+            if is_last || count == 0 {
+                break;
+            }
+            start_at += count;
+        }
+
+        Ok(all)
+    }
+
+    async fn get_project_permission_scheme(
+        &self,
+        creds: &AtlassianCredentials,
+        project_key: &str,
+    ) -> Result<JiraPermissionSchemeResponse> {
+        let auth_header = creds.get_bearer_auth_header();
+        let url = format!(
+            "{}/rest/api/3/project/{}/permissionscheme",
+            creds.jira_base(),
+            project_key
+        );
+
+        debug!("Fetching permission scheme for project {}", project_key);
+
+        let client = self.client.clone();
+        self.make_request(move || {
+            client
+                .get(&url)
+                .query(&[("expand", "permissions,user,group")])
+                .header("Authorization", &auth_header)
+                .header("Accept", "application/json")
+        })
+        .await
+    }
+
+    async fn get_org_user_directory(
+        &self,
+        creds: &AtlassianCredentials,
+    ) -> Result<HashMap<String, String>> {
+        let (Some(org_id), Some(bearer)) = (&creds.org_id, creds.get_org_admin_bearer_header())
+        else {
+            return Ok(HashMap::new());
+        };
+
+        let mut directory = HashMap::new();
+        let mut next_url = Some(format!(
+            "https://api.atlassian.com/admin/v1/orgs/{}/users",
+            org_id
+        ));
+
+        while let Some(url) = next_url.take() {
+            debug!("Fetching org user directory page: {}", url);
+            let client = self.client.clone();
+            let bearer_clone = bearer.clone();
+            let resp: OrgAdminUsersResponse = self
+                .make_request(move || {
+                    client
+                        .get(&url)
+                        .header("Authorization", &bearer_clone)
+                        .header("Accept", "application/json")
+                })
+                .await?;
+
+            for user in resp.data {
+                let active = user
+                    .account_status
+                    .as_deref()
+                    .map(|s| s.eq_ignore_ascii_case("active"))
+                    .unwrap_or(true);
+                if !active {
+                    continue;
+                }
+                if let Some(email) = user.email {
+                    directory.insert(user.account_id, email);
+                }
+            }
+
+            next_url = resp.links.and_then(|l| l.next);
+        }
+
+        Ok(directory)
+    }
+
+    async fn get_org_group_directory(
+        &self,
+        creds: &AtlassianCredentials,
+    ) -> Result<HashMap<String, OrgGroupInfo>> {
+        let (Some(org_id), Some(bearer)) = (&creds.org_id, creds.get_org_admin_bearer_header())
+        else {
+            return Ok(HashMap::new());
+        };
+
+        let mut directory: HashMap<String, OrgGroupInfo> = HashMap::new();
+        let mut next_url = Some(format!(
+            "https://api.atlassian.com/admin/v1/orgs/{}/groups",
+            org_id
+        ));
+
+        while let Some(url) = next_url.take() {
+            debug!("Fetching org group directory page: {}", url);
+            let client = self.client.clone();
+            let bearer_clone = bearer.clone();
+            let resp: OrgAdminGroupsResponse = self
+                .make_request(move || {
+                    client
+                        .get(&url)
+                        .header("Authorization", &bearer_clone)
+                        .header("Accept", "application/json")
+                })
+                .await?;
+
+            for group in resp.data {
+                directory.insert(
+                    group.id,
+                    OrgGroupInfo {
+                        name: group.name,
+                        member_account_ids: vec![],
+                    },
+                );
+            }
+
+            next_url = resp.links.and_then(|l| l.next);
+        }
+
+        // Fetch members for each group. Cursor-paginated like the others.
+        for (group_id, info) in directory.iter_mut() {
+            let mut next = Some(format!(
+                "https://api.atlassian.com/admin/v1/orgs/{}/groups/{}/members",
+                org_id, group_id
+            ));
+            while let Some(url) = next.take() {
+                debug!("Fetching members for org group {} ({})", group_id, url);
+                let client = self.client.clone();
+                let bearer_clone = bearer.clone();
+                let resp: OrgAdminGroupMembersResponse = self
+                    .make_request(move || {
+                        client
+                            .get(&url)
+                            .header("Authorization", &bearer_clone)
+                            .header("Accept", "application/json")
+                    })
+                    .await?;
+                for member in resp.data {
+                    info.member_account_ids.push(member.account_id);
+                }
+                next = resp.links.and_then(|l| l.next);
+            }
+        }
+
+        Ok(directory)
     }
 }

@@ -253,6 +253,7 @@ fn make_test_jira_issue() -> JiraIssue {
             labels: None,
             comment: None,
             components: None,
+            security: None,
             extra_fields: HashMap::new(),
         },
     }

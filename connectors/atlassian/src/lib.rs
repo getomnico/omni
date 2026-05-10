@@ -7,6 +7,7 @@ pub mod jira;
 pub mod models;
 pub mod routes;
 pub mod sync;
+pub mod user_resolver;
 
 pub use auth::{AtlassianCredentials, AuthManager};
 pub use client::{AtlassianApi, AtlassianClient};

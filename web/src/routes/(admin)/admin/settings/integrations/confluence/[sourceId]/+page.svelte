@@ -19,7 +19,6 @@
     const config = (data.source.config as ConfluenceSourceConfig) || {}
 
     let enabled = $state(data.source.isActive)
-    let siteUrl = $state(config.base_url || '')
     let spaceFilters = $state<string[]>(
         config.space_filters && Array.isArray(config.space_filters) ? config.space_filters : [],
     )
@@ -39,7 +38,6 @@
     let beforeUnloadHandler: ((e: BeforeUnloadEvent) => void) | null = null
 
     let originalEnabled = data.source.isActive
-    let originalSiteUrl = siteUrl
     let originalSpaceFilters: string[] = [...spaceFilters]
 
     function addSpace() {
@@ -139,8 +137,7 @@
         const spacesChanged =
             JSON.stringify(spaceFilters.sort()) !== JSON.stringify(originalSpaceFilters.sort())
 
-        hasUnsavedChanges =
-            enabled !== originalEnabled || siteUrl !== originalSiteUrl || spacesChanged
+        hasUnsavedChanges = enabled !== originalEnabled || spacesChanged
     })
 </script>
 
@@ -219,18 +216,6 @@
                 <Card.Content class="space-y-4">
                     <div class="space-y-4">
                         <div class="space-y-2">
-                            <Label for="siteUrl" class="text-sm font-medium">Site URL</Label>
-                            <Input
-                                id="siteUrl"
-                                name="siteUrl"
-                                type="url"
-                                bind:value={siteUrl}
-                                placeholder="https://your-domain.atlassian.net"
-                                disabled={!enabled}
-                                class="w-full" />
-                        </div>
-
-                        <div class="space-y-2 border-t pt-4">
                             <Label class="text-sm font-medium">Space Filters</Label>
                             <p class="text-muted-foreground text-xs">
                                 Filter specific spaces (leave empty for all spaces)

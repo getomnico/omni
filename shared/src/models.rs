@@ -253,16 +253,14 @@ pub struct ConnectorConfigRow {
     pub updated_by: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConfluenceSourceConfig {
-    pub base_url: String,
     #[serde(default)]
     pub space_filters: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct JiraSourceConfig {
-    pub base_url: String,
     #[serde(default)]
     pub project_filters: Option<Vec<String>>,
 }
