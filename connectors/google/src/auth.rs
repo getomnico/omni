@@ -465,10 +465,26 @@ pub fn is_auth_error(status: reqwest::StatusCode) -> bool {
     status == reqwest::StatusCode::UNAUTHORIZED
 }
 
+/// Consume a failed HTTP response and produce an `ApiResult::AuthError`
+/// carrying the response body so the actual Google error message is
+/// preserved in the causal chain.
+pub async fn api_auth_error<T>(response: reqwest::Response) -> Result<ApiResult<T>> {
+    let status = response.status();
+    let error_text = match response.text().await {
+        Ok(text) => text,
+        Err(e) => format!("(failed to read error body: {})", e),
+    };
+    Ok(ApiResult::AuthError(anyhow!(
+        "Google API auth error (HTTP {}): {}",
+        status,
+        error_text
+    )))
+}
+
 #[derive(Debug)]
 pub enum ApiResult<T> {
     Success(T),
-    AuthError,
+    AuthError(anyhow::Error),
     OtherError(anyhow::Error),
 }
 
@@ -491,19 +507,20 @@ where
 
         match api_result {
             ApiResult::Success(response) => return Ok(response),
-            ApiResult::AuthError if attempt == 0 => {
+            ApiResult::AuthError(e) if attempt == 0 => {
                 warn!(
-                    "Got 401 error for user {}, refreshing token and retrying",
-                    user_email
+                    error = %e,
+                    user = %user_email,
+                    "Got 401 error, refreshing token and retrying"
                 );
                 token = auth.refresh_access_token(user_email).await?;
                 continue;
             }
-            ApiResult::AuthError => {
-                return Err(anyhow!(
+            ApiResult::AuthError(e) => {
+                return Err(e.context(format!(
                     "Authentication failed for user {} after token refresh",
                     user_email
-                ));
+                )));
             }
             ApiResult::OtherError(e) => return Err(e),
         }
@@ -755,9 +772,9 @@ mod tests {
 
     #[test]
     fn test_api_result_auth_error() {
-        let result: ApiResult<String> = ApiResult::AuthError;
+        let result: ApiResult<String> = ApiResult::AuthError(anyhow!("auth error"));
         match result {
-            ApiResult::AuthError => {}
+            ApiResult::AuthError(_) => {}
             _ => panic!("Expected AuthError variant"),
         }
     }

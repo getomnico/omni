@@ -19,7 +19,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tracing::{debug, warn};
 
-use crate::auth::{execute_with_auth_retry, is_auth_error, ApiResult, GoogleAuth};
+use crate::auth::{api_auth_error, execute_with_auth_retry, is_auth_error, ApiResult, GoogleAuth};
 use shared::RateLimiter;
 
 const GMAIL_API_BASE: &str = "https://gmail.googleapis.com/gmail/v1";
@@ -153,7 +153,7 @@ impl GmailClient {
 
                 let status = response.status();
                 if is_auth_error(status) {
-                    return Ok(ApiResult::AuthError);
+                    return api_auth_error(response).await;
                 } else if !status.is_success() {
                     let error_text = response.text().await?;
                     return Ok(ApiResult::OtherError(anyhow!(
@@ -232,7 +232,7 @@ impl GmailClient {
 
                 let status = response.status();
                 if is_auth_error(status) {
-                    return Ok(ApiResult::AuthError);
+                    return api_auth_error(response).await;
                 } else if !status.is_success() {
                     let error_text = response.text().await?;
                     return Ok(ApiResult::OtherError(anyhow!(
@@ -303,7 +303,7 @@ impl GmailClient {
 
                 let status = response.status();
                 if is_auth_error(status) {
-                    return Ok(ApiResult::AuthError);
+                    return api_auth_error(response).await;
                 } else if !status.is_success() {
                     let error_text = response.text().await?;
                     return Ok(ApiResult::OtherError(anyhow!(
@@ -377,7 +377,7 @@ impl GmailClient {
 
                 let status = response.status();
                 if is_auth_error(status) {
-                    return Ok(ApiResult::AuthError);
+                    return api_auth_error(response).await;
                 } else if !status.is_success() {
                     let error_text = response.text().await?;
                     return Ok(ApiResult::OtherError(anyhow!(
@@ -470,7 +470,7 @@ impl GmailClient {
 
                 let status = response.status();
                 if is_auth_error(status) {
-                    return Ok(ApiResult::AuthError);
+                    return api_auth_error(response).await;
                 } else if !status.is_success() {
                     let error_text = response.text().await?;
                     return Ok(ApiResult::OtherError(anyhow!(
@@ -631,7 +631,7 @@ impl GmailClient {
 
                 let status = response.status();
                 if is_auth_error(status) {
-                    return Ok(ApiResult::AuthError);
+                    return api_auth_error(response).await;
                 } else if !status.is_success() {
                     let error_text = response.text().await?;
                     return Ok(ApiResult::OtherError(anyhow!(
@@ -667,7 +667,7 @@ impl GmailClient {
 
             let status = response.status();
             if is_auth_error(status) {
-                return Ok(ApiResult::AuthError);
+                return api_auth_error(response).await;
             } else if !status.is_success() {
                 let error_text = response.text().await?;
                 return Ok(ApiResult::OtherError(anyhow!(
@@ -876,7 +876,7 @@ impl GmailClient {
 
                 let status = response.status();
                 if is_auth_error(status) {
-                    return Ok(ApiResult::AuthError);
+                    return api_auth_error(response).await;
                 } else if !status.is_success() {
                     let error_text = response.text().await?;
                     return Ok(ApiResult::OtherError(anyhow!(

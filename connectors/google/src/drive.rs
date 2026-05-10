@@ -7,7 +7,7 @@ use tracing::{debug, warn};
 
 use std::collections::HashMap;
 
-use crate::auth::{execute_with_auth_retry, is_auth_error, ApiResult, GoogleAuth};
+use crate::auth::{api_auth_error, execute_with_auth_retry, is_auth_error, ApiResult, GoogleAuth};
 use crate::models::{
     DriveChangesResponse, GoogleDriveFile, GooglePresentation, WebhookChannel,
     WebhookChannelResponse,
@@ -121,17 +121,26 @@ impl DriveClient {
                 .bearer_auth(&token)
                 .query(&params)
                 .send()
-                .await?;
+                .await
+                .with_context(|| format!("Failed to send list_files request for user {}", user_email))?;
 
             let status = response.status();
+            debug!("Drive list_files response status: {}", status);
+
             if is_auth_error(status) {
-                return Ok(ApiResult::AuthError);
+                return api_auth_error(response).await;
             } else if !status.is_success() {
-                let error_text = response.text().await?;
+                let error_text = match response.text().await {
+                    Ok(text) => text,
+                    Err(e) => format!("(failed to read error body: {})", e),
+                };
+                warn!(
+                    "Drive list_files failed: user={} status={} body={}",
+                    user_email, status, error_text
+                );
                 return Ok(ApiResult::OtherError(anyhow!("Failed to list files: HTTP {} - {}", status, error_text)));
             }
 
-            debug!("Drive API response status: {}", status);
             let response_text = response.text().await?;
             debug!("Drive API raw response: {}", response_text);
 
@@ -261,7 +270,7 @@ impl DriveClient {
 
                 let status = response.status();
                 if is_auth_error(status) {
-                    return Ok(ApiResult::AuthError);
+                    return api_auth_error(response).await;
                 } else if !status.is_success() {
                     let error_text = response.text().await?;
                     return Ok(ApiResult::OtherError(anyhow!(
@@ -310,7 +319,7 @@ impl DriveClient {
 
                 let status = response.status();
                 if is_auth_error(status) {
-                    return Ok(ApiResult::AuthError);
+                    return api_auth_error(response).await;
                 } else if !status.is_success() {
                     let error_text = response.text().await?;
                     return Ok(ApiResult::OtherError(anyhow!(
@@ -374,7 +383,7 @@ impl DriveClient {
 
                 let status = response.status();
                 if is_auth_error(status) {
-                    return Ok(ApiResult::AuthError);
+                    return api_auth_error(response).await;
                 } else if !status.is_success() {
                     let error_text = response.text().await?;
                     return Ok(ApiResult::OtherError(anyhow!(
@@ -431,7 +440,7 @@ impl DriveClient {
 
                 let status = response.status();
                 if is_auth_error(status) {
-                    return Ok(ApiResult::AuthError);
+                    return api_auth_error(response).await;
                 } else if !status.is_success() {
                     let error_text = response.text().await?;
                     warn!(
@@ -485,7 +494,7 @@ impl DriveClient {
 
                 let status = response.status();
                 if is_auth_error(status) {
-                    return Ok(ApiResult::AuthError);
+                    return api_auth_error(response).await;
                 } else if !status.is_success() {
                     let error_text = response.text().await?;
                     warn!(
@@ -544,7 +553,7 @@ impl DriveClient {
 
                 let status = response.status();
                 if is_auth_error(status) {
-                    return Ok(ApiResult::AuthError);
+                    return api_auth_error(response).await;
                 } else if !status.is_success() {
                     let error_text = response.text().await?;
                     warn!(
@@ -597,7 +606,7 @@ impl DriveClient {
 
                 let status = response.status();
                 if is_auth_error(status) {
-                    return Ok(ApiResult::AuthError);
+                    return api_auth_error(response).await;
                 } else if !status.is_success() {
                     let error_text = response.text().await?;
                     warn!(
@@ -772,7 +781,7 @@ impl DriveClient {
 
                 let status = response.status();
                 if is_auth_error(status) {
-                    return Ok(ApiResult::AuthError);
+                    return api_auth_error(response).await;
                 } else if !status.is_success() {
                     let error_text = response.text().await?;
                     return Ok(ApiResult::OtherError(anyhow!(
