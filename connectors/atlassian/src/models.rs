@@ -488,9 +488,7 @@ impl JiraPermissionHolder {
     /// Best-effort canonical identifier — prefer `value` (groupId / accountId
     /// / role-key) over `parameter` (legacy human-readable).
     pub fn identifier(&self) -> Option<&str> {
-        self.value
-            .as_deref()
-            .or(self.parameter.as_deref())
+        self.value.as_deref().or(self.parameter.as_deref())
     }
 }
 

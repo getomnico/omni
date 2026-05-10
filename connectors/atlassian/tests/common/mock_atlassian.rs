@@ -5,13 +5,13 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Mutex;
 
+use omni_atlassian_connector::client::{OrgGroupInfo, PageReadRestrictions};
 use omni_atlassian_connector::models::{
     ConfluenceCqlPage, ConfluencePage, ConfluenceSpace, ConfluenceSpacePermission, JiraField,
     JiraIssue, JiraIssueSecuritySchemeResponse, JiraPermissionSchemeResponse,
     JiraProjectIssueSecuritySchemeResponse, JiraProjectRolesResponse, JiraRoleActorsResponse,
     JiraSearchResponse, JiraSecurityLevelMember,
 };
-use omni_atlassian_connector::client::{OrgGroupInfo, PageReadRestrictions};
 use omni_atlassian_connector::AtlassianApi;
 use omni_atlassian_connector::AtlassianCredentials;
 
@@ -368,7 +368,10 @@ impl AtlassianApi for MockAtlassianApi {
         _creds: &AtlassianCredentials,
         project_key: &str,
     ) -> Result<JiraPermissionSchemeResponse> {
-        self.record_call("get_project_permission_scheme", vec![project_key.to_string()]);
+        self.record_call(
+            "get_project_permission_scheme",
+            vec![project_key.to_string()],
+        );
         Ok(self
             .permission_schemes
             .lock()

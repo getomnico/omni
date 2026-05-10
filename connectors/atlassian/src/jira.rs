@@ -103,10 +103,7 @@ impl JiraProcessor {
         creds: &AtlassianCredentials,
         project_key: &str,
     ) {
-        if self
-            .security_resolved_projects
-            .contains_key(project_key)
-        {
+        if self.security_resolved_projects.contains_key(project_key) {
             return;
         }
         // Mark resolved up-front so concurrent issues for the same project
@@ -177,9 +174,7 @@ impl JiraProcessor {
                     "group" | "groupCustomField" => {
                         if let Some(group_id) = member.holder.parameter {
                             group_ids.push(group_id.clone());
-                            self.encountered_groups
-                                .entry(group_id)
-                                .or_insert(None);
+                            self.encountered_groups.entry(group_id).or_insert(None);
                         }
                     }
                     other => {

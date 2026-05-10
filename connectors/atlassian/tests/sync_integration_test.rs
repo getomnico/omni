@@ -974,8 +974,10 @@ async fn test_jira_sync_emits_group_membership_events() -> Result<()> {
         .await?;
 
     let encountered = processor.drain_encountered_groups();
-    let empty_group_dir: std::collections::HashMap<String, omni_atlassian_connector::client::OrgGroupInfo> =
-        std::collections::HashMap::new();
+    let empty_group_dir: std::collections::HashMap<
+        String,
+        omni_atlassian_connector::client::OrgGroupInfo,
+    > = std::collections::HashMap::new();
     let resolver = std::sync::Arc::new(omni_atlassian_connector::user_resolver::UserResolver::new(
         fixture.mock_api.clone(),
         std::sync::Arc::new(std::collections::HashMap::new()),
