@@ -1,4 +1,5 @@
 ARG DEVICE=cpu
+ARG CUDA_VERSION=cu124
 
 FROM python:3.12-slim AS base
 
@@ -23,13 +24,16 @@ RUN pip install --no-cache-dir torch torchvision --index-url https://download.py
  && pip uninstall -y opencv-python \
  && pip install --no-cache-dir --force-reinstall opencv-python-headless
 
-# --- CUDA variant: install normally (includes CUDA runtime libs) ---
+# --- CUDA variant: pre-install CUDA-enabled PyTorch, then docling ---
 FROM base AS deps-cuda
+ARG CUDA_VERSION
 # rapidocr (a docling dependency) pulls in opencv-python (non-headless).
 # Replace it with the headless variant to avoid a missing libGL.so.1 error.
-RUN pip install --no-cache-dir -r requirements.txt \
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/${CUDA_VERSION} \
+ && pip install --no-cache-dir -r requirements.txt \
  && pip uninstall -y opencv-python \
- && pip install --no-cache-dir --force-reinstall opencv-python-headless
+ && pip install --no-cache-dir --force-reinstall opencv-python-headless \
+ && python -c "import torch; assert torch.version.cuda is not None, 'torch was not built with CUDA'"
 
 # --- Final stage: pick the variant based on DEVICE arg ---
 FROM deps-${DEVICE}
