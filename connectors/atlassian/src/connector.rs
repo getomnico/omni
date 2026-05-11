@@ -76,7 +76,7 @@ impl Connector for AtlassianConnector {
             }),
             mode: ActionMode::Read,
             source_types: Vec::new(),
-            admin_only: false,
+            admin_only: true,
         }]
     }
 
