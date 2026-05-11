@@ -186,6 +186,11 @@ impl JiraProcessor {
                 }
             }
 
+            // Strip the service account from restriction lists — it is not
+            // a meaningful permission grant for end-user authz.
+            let sa_account_id = creds.sa_account_id.as_deref();
+            user_account_ids.retain(|id| Some(id.as_str()) != sa_account_id);
+
             user_account_ids.sort();
             user_account_ids.dedup();
             group_ids.sort();
@@ -205,6 +210,16 @@ impl JiraProcessor {
                     ),
                 }
             }
+
+            if !user_account_ids.is_empty() && user_emails.is_empty() {
+                warn!(
+                    "Security scheme {} level {} has individual user restrictions \
+                     but none could be resolved to emails. The level will be treated as private. \
+                     Configure an org-admin API key to resolve user emails.",
+                    scheme.id, level.id
+                );
+            }
+
             user_emails.sort();
             user_emails.dedup();
 
@@ -399,6 +414,11 @@ impl JiraProcessor {
             }
         }
 
+        // Strip the service account from permission lists — it is not
+        // a meaningful permission grant for end-user authz.
+        let sa_account_id = creds.sa_account_id.as_deref();
+        user_account_ids.retain(|id| Some(id.as_str()) != sa_account_id);
+
         // Resolve accountIds to emails
         let mut user_emails = Vec::new();
         if !user_account_ids.is_empty() {
@@ -419,6 +439,15 @@ impl JiraProcessor {
                     );
                 }
             }
+        }
+
+        if !user_account_ids.is_empty() && user_emails.is_empty() {
+            warn!(
+                "Project {} has individual user permissions but none could be resolved to emails. \
+                 The project will be treated as private in Omni. \
+                 Configure an org-admin API key to resolve user emails.",
+                project_key
+            );
         }
 
         user_emails.sort();

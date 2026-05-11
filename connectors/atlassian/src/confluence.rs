@@ -112,6 +112,16 @@ impl ConfluenceProcessor {
             group_ids,
         } = restrictions;
 
+        // The Atlassian API silently includes the service account in every
+        // restriction because the API caller must retain read access. The SA
+        // is not a meaningful permission grant for end-user authz, so we strip
+        // it before storing.
+        let sa_account_id = creds.sa_account_id.as_deref();
+        let user_account_ids: Vec<String> = user_account_ids
+            .into_iter()
+            .filter(|id| Some(id.as_str()) != sa_account_id)
+            .collect();
+
         let mut user_emails = Vec::new();
         if !user_account_ids.is_empty() {
             match self
@@ -125,6 +135,15 @@ impl ConfluenceProcessor {
                     page_id, e
                 ),
             }
+        }
+
+        if !user_account_ids.is_empty() && user_emails.is_empty() {
+            warn!(
+                "Page {} has individual user restrictions but none could be resolved to emails. \
+                 The page will be treated as private in Omni. \
+                 Configure an org-admin API key to resolve user emails.",
+                page_id
+            );
         }
 
         for group_id in &group_ids {

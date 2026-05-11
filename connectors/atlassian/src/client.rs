@@ -966,6 +966,11 @@ impl AtlassianApi for AtlassianClient {
                 .await?;
 
             for user in resp.values {
+                // Skip the service account — its email is not a meaningful
+                // permission grant for end-user authz.
+                if creds.sa_account_id.as_ref() == Some(&user.account_id) {
+                    continue;
+                }
                 if let Some(email) = user.email_address {
                     results.push((user.account_id, email));
                 }

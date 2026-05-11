@@ -21,6 +21,12 @@ pub struct AtlassianCredentials {
     /// Service accounts. Tokens conventionally start with `ATSTT`.
     pub sa_token: String,
     pub validated_at: i64,
+    /// Account ID of the service account itself (populated during validation).
+    /// Used to filter the SA out of page/issue restriction lists — the SA is
+    /// always present because Atlassian requires the API caller to have access,
+    /// but it is not a meaningful permission grant for end-user authz.
+    #[serde(default)]
+    pub sa_account_id: Option<String>,
     /// Atlassian Organization ID (UUID) — required for the org-admin
     /// directory path. Set when the source has Atlassian Guard provisioned.
     #[serde(default)]
@@ -39,9 +45,15 @@ impl AtlassianCredentials {
             cloud_id,
             sa_token,
             validated_at: Utc::now().timestamp_millis(),
+            sa_account_id: None,
             org_id: None,
             org_admin_api_key: None,
         }
+    }
+
+    pub fn with_sa_account_id(mut self, account_id: String) -> Self {
+        self.sa_account_id = Some(account_id);
+        self
     }
 
     pub fn with_org_admin(mut self, org_id: String, org_admin_api_key: String) -> Self {
@@ -195,13 +207,13 @@ impl AuthManager {
         let cloud_id = self.fetch_cloud_id(domain).await?;
         debug!("Resolved cloud_id {} for site {}", cloud_id, domain);
 
-        let creds = AtlassianCredentials::new(domain.to_string(), cloud_id, sa_token.to_string());
+        let mut creds = AtlassianCredentials::new(domain.to_string(), cloud_id, sa_token.to_string());
         let auth_header = creds.get_bearer_auth_header();
 
         let validate_jira = source_type != Some(&SourceType::Confluence);
         let validate_confluence = source_type != Some(&SourceType::Jira);
 
-        let mut jira_account_id = None;
+        let mut sa_account_id = None;
         if validate_jira {
             let jira_url = format!("{}/rest/api/3/myself", creds.jira_base());
             let jira_response = self
@@ -234,7 +246,7 @@ impl AuthManager {
                 "Validated Jira access as {} (accountId {}, type {:?})",
                 jira_user.display_name, jira_user.account_id, jira_user.account_type
             );
-            jira_account_id = Some(jira_user.account_id);
+            sa_account_id = Some(jira_user.account_id);
         }
 
         if validate_confluence {
@@ -263,7 +275,7 @@ impl AuthManager {
                 confluence_user.display_name, confluence_user.account_id
             );
 
-            if let Some(jira_id) = &jira_account_id {
+            if let Some(ref jira_id) = sa_account_id {
                 if confluence_user.account_id != *jira_id {
                     return Err(anyhow!(
                         "Account ID mismatch between Jira and Confluence \
@@ -274,6 +286,15 @@ impl AuthManager {
                     ));
                 }
             }
+
+            // For Confluence-only sources we capture the accountId here.
+            if sa_account_id.is_none() {
+                sa_account_id = Some(confluence_user.account_id);
+            }
+        }
+
+        if let Some(account_id) = sa_account_id {
+            creds = creds.with_sa_account_id(account_id);
         }
 
         Ok(creds)
@@ -289,11 +310,16 @@ impl AuthManager {
             let new_creds = self
                 .validate_credentials(&creds.domain, &creds.sa_token, source_type)
                 .await?;
-            // Preserve any org-admin creds that were attached after validation.
+            // Preserve any org-admin creds and sa_account_id that were
+            // attached after validation.
+            let sa_account_id = creds.sa_account_id.clone();
             *creds = match (creds.org_id.clone(), creds.org_admin_api_key.clone()) {
                 (Some(org), Some(key)) => new_creds.with_org_admin(org, key),
                 _ => new_creds,
             };
+            if let Some(id) = sa_account_id {
+                creds.sa_account_id = Some(id);
+            }
         }
         Ok(())
     }
