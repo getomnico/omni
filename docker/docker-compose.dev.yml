@@ -1,5 +1,10 @@
 # Development-specific overrides
 # Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# This file provides worktree isolation via OMNI_WORKTREE.
+# When OMNI_WORKTREE is set (e.g. omni-feature-x), all containers,
+# volumes, networks, and dev images are prefixed accordingly.
+# Default behaviour (unset) preserves the legacy omni-* names.
 
 x-dev-db-config: &dev-db-config
   POSTGRES_DB: omni_dev
@@ -16,6 +21,7 @@ x-dev-database-url: &dev-database-url
 services:
   # Infrastructure only for development
   postgres:
+    container_name: ${OMNI_WORKTREE:-omni}-postgres
     ports:
       - "5432:5432"
     environment:
@@ -24,12 +30,14 @@ services:
       test: ["CMD-SHELL", "pg_isready -U omni_dev -d omni_dev"]
 
   redis:
+    container_name: ${OMNI_WORKTREE:-omni}-redis
     ports:
       - "6379:6379"
 
   # Override for development with hot reload
   web:
-    image: omni-web:dev
+    container_name: ${OMNI_WORKTREE:-omni}-web
+    image: ${OMNI_WORKTREE:-omni}-web:dev
     build:
       context: ../web
       dockerfile: Dockerfile.dev
@@ -46,7 +54,8 @@ services:
   # Update database URLs for all services in dev
 
   migrator:
-    image: omni-migrator:dev
+    container_name: ${OMNI_WORKTREE:-omni}-migrator
+    image: ${OMNI_WORKTREE:-omni}-migrator:dev
     build:
       context: ..
       dockerfile: services/migrations/Dockerfile
@@ -54,7 +63,8 @@ services:
       <<: *dev-database-url
 
   searcher:
-    image: omni-searcher:dev
+    container_name: ${OMNI_WORKTREE:-omni}-searcher
+    image: ${OMNI_WORKTREE:-omni}-searcher:dev
     build:
       context: ..
       dockerfile: services/searcher/Dockerfile
@@ -65,7 +75,8 @@ services:
       RUST_BACKTRACE: full
 
   indexer:
-    image: omni-indexer:dev
+    container_name: ${OMNI_WORKTREE:-omni}-indexer
+    image: ${OMNI_WORKTREE:-omni}-indexer:dev
     build:
       context: ..
       dockerfile: services/indexer/Dockerfile
@@ -76,7 +87,8 @@ services:
       RUST_BACKTRACE: full
 
   ai:
-    image: omni-ai:dev
+    container_name: ${OMNI_WORKTREE:-omni}-ai
+    image: ${OMNI_WORKTREE:-omni}-ai:dev
     build:
       context: ../services/ai
       dockerfile: Dockerfile
@@ -91,7 +103,8 @@ services:
     command: python -m uvicorn main:app --host 0.0.0.0 --port ${AI_SERVICE_PORT} --reload
 
   sandbox:
-    image: omni-sandbox:dev
+    container_name: ${OMNI_WORKTREE:-omni}-sandbox
+    image: ${OMNI_WORKTREE:-omni}-sandbox:dev
     build:
       context: ..
       dockerfile: services/sandbox/Dockerfile
@@ -99,7 +112,8 @@ services:
       - "${SANDBOX_PORT}:${SANDBOX_PORT}"
 
   connector-manager:
-    image: omni-connector-manager:dev
+    container_name: ${OMNI_WORKTREE:-omni}-connector-manager
+    image: ${OMNI_WORKTREE:-omni}-connector-manager:dev
     build:
       context: ..
       dockerfile: services/connector-manager/Dockerfile
@@ -110,7 +124,8 @@ services:
       RUST_BACKTRACE: full
 
   google-connector:
-    image: omni-google-connector:dev
+    container_name: ${OMNI_WORKTREE:-omni}-google-connector
+    image: ${OMNI_WORKTREE:-omni}-google-connector:dev
     build:
       context: ..
       dockerfile: connectors/google/Dockerfile
@@ -120,7 +135,8 @@ services:
       RUST_BACKTRACE: full
 
   slack-connector:
-    image: omni-slack-connector:dev
+    container_name: ${OMNI_WORKTREE:-omni}-slack-connector
+    image: ${OMNI_WORKTREE:-omni}-slack-connector:dev
     build:
       context: ..
       dockerfile: connectors/slack/Dockerfile
@@ -128,7 +144,8 @@ services:
       RUST_BACKTRACE: full
 
   atlassian-connector:
-    image: omni-atlassian-connector:dev
+    container_name: ${OMNI_WORKTREE:-omni}-atlassian-connector
+    image: ${OMNI_WORKTREE:-omni}-atlassian-connector:dev
     build:
       context: ..
       dockerfile: connectors/atlassian/Dockerfile
@@ -136,7 +153,8 @@ services:
       RUST_BACKTRACE: full
 
   web-connector:
-    image: omni-web-connector:dev
+    container_name: ${OMNI_WORKTREE:-omni}-web-connector
+    image: ${OMNI_WORKTREE:-omni}-web-connector:dev
     build:
       context: ..
       dockerfile: connectors/web/Dockerfile
@@ -146,25 +164,29 @@ services:
       RUST_BACKTRACE: full
 
   github-connector:
-    image: omni-github-connector:dev
+    container_name: ${OMNI_WORKTREE:-omni}-github-connector
+    image: ${OMNI_WORKTREE:-omni}-github-connector:dev
     build:
       context: ..
       dockerfile: connectors/github/Dockerfile
 
   notion-connector:
-    image: omni-notion-connector:dev
+    container_name: ${OMNI_WORKTREE:-omni}-notion-connector
+    image: ${OMNI_WORKTREE:-omni}-notion-connector:dev
     build:
       context: ..
       dockerfile: connectors/notion/Dockerfile
 
   hubspot-connector:
-    image: omni-hubspot-connector:dev
+    container_name: ${OMNI_WORKTREE:-omni}-hubspot-connector
+    image: ${OMNI_WORKTREE:-omni}-hubspot-connector:dev
     build:
       context: ..
       dockerfile: connectors/hubspot/Dockerfile
 
   fireflies-connector:
-    image: omni-fireflies-connector:dev
+    container_name: ${OMNI_WORKTREE:-omni}-fireflies-connector
+    image: ${OMNI_WORKTREE:-omni}-fireflies-connector:dev
     build:
       context: ..
       dockerfile: connectors/fireflies/Dockerfile
@@ -172,7 +194,8 @@ services:
       RUST_LOG: debug
 
   imap-connector:
-    image: omni-imap-connector:dev
+    container_name: ${OMNI_WORKTREE:-omni}-imap-connector
+    image: ${OMNI_WORKTREE:-omni}-imap-connector:dev
     build:
       context: ..
       dockerfile: connectors/imap/Dockerfile
@@ -180,7 +203,8 @@ services:
       RUST_LOG: debug
 
   nextcloud-connector:
-    image: omni-nextcloud-connector:dev
+    container_name: ${OMNI_WORKTREE:-omni}-nextcloud-connector
+    image: ${OMNI_WORKTREE:-omni}-nextcloud-connector:dev
     build:
       context: ..
       dockerfile: connectors/nextcloud/Dockerfile
@@ -188,25 +212,29 @@ services:
       RUST_LOG: debug
 
   clickup-connector:
-    image: omni-clickup-connector:dev
+    container_name: ${OMNI_WORKTREE:-omni}-clickup-connector
+    image: ${OMNI_WORKTREE:-omni}-clickup-connector:dev
     build:
       context: ..
       dockerfile: connectors/clickup/Dockerfile
 
   linear-connector:
-    image: omni-linear-connector:dev
+    container_name: ${OMNI_WORKTREE:-omni}-linear-connector
+    image: ${OMNI_WORKTREE:-omni}-linear-connector:dev
     build:
       context: ..
       dockerfile: connectors/linear/Dockerfile
 
   microsoft-connector:
-    image: omni-microsoft-connector:dev
+    container_name: ${OMNI_WORKTREE:-omni}-microsoft-connector
+    image: ${OMNI_WORKTREE:-omni}-microsoft-connector:dev
     build:
       context: ..
       dockerfile: connectors/microsoft/Dockerfile
 
   filesystem-connector:
-    image: omni-filesystem-connector:dev
+    container_name: ${OMNI_WORKTREE:-omni}-filesystem-connector
+    image: ${OMNI_WORKTREE:-omni}-filesystem-connector:dev
     build:
       context: ..
       dockerfile: connectors/filesystem/Dockerfile
@@ -215,13 +243,15 @@ services:
       RUST_BACKTRACE: full
 
   paperless-connector:
-    image: omni-paperless-connector:dev
+    container_name: ${OMNI_WORKTREE:-omni}-paperless-connector
+    image: ${OMNI_WORKTREE:-omni}-paperless-connector:dev
     build:
       context: ..
       dockerfile: connectors/paperless/Dockerfile
 
   docling:
-    image: omni-docling:dev
+    container_name: ${OMNI_WORKTREE:-omni}-docling
+    image: ${OMNI_WORKTREE:-omni}-docling:dev
     build:
       context: ../services/docling
       dockerfile: Dockerfile
@@ -229,10 +259,35 @@ services:
         DEVICE: ${DOCLING_DEVICE:-cpu}
 
   embeddings:
+    container_name: ${OMNI_WORKTREE:-omni}-embeddings
     ports:
       - "${LOCAL_EMBEDDINGS_PORT}:${LOCAL_EMBEDDINGS_PORT}"
 
   caddy:
+    container_name: ${OMNI_WORKTREE:-omni}-caddy
     profiles:
       - production
 
+volumes:
+  postgres_data:
+    name: ${OMNI_WORKTREE:-omni}-postgres-data
+  redis_data:
+    name: ${OMNI_WORKTREE:-omni}-redis-data
+  ai_models:
+    name: ${OMNI_WORKTREE:-omni}-ai-models
+  tei_models:
+    name: ${OMNI_WORKTREE:-omni}-tei-models
+  docling_models:
+    name: ${OMNI_WORKTREE:-omni}-docling-models
+  caddy_data:
+    name: ${OMNI_WORKTREE:-omni}-caddy-data
+  caddy_config:
+    name: ${OMNI_WORKTREE:-omni}-caddy-config
+  sandbox_data:
+    name: ${OMNI_WORKTREE:-omni}-sandbox-data
+
+networks:
+  omni-network:
+    name: ${OMNI_WORKTREE:-omni}-network
+  sandbox-net:
+    name: ${OMNI_WORKTREE:-omni}-sandbox-net

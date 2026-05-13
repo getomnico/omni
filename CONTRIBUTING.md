@@ -29,9 +29,15 @@
    cp .env.example .env
    ```
 
-2. Start the development environment:
+2. Start the development environment (standard shared stack):
    ```bash
    docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml --env-file .env up -d --build
+   ```
+
+   **Or** use the isolated worktree stack manager (recommended when working across multiple branches):
+   ```bash
+   ./scripts/dev-stack.sh init   # creates .env.<branch>
+   ./scripts/dev-stack.sh start  # starts your isolated stack
    ```
 
 3. Access the web UI at http://localhost:3000
@@ -43,6 +49,7 @@
   ```bash
   docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml --env-file .env up -d --build searcher
   ```
+  (Or `./scripts/dev-stack.sh logs searcher` when using the isolated stack.)
 
 ### Local Development (Optional)
 
