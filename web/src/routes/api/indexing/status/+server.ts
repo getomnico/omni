@@ -1,6 +1,7 @@
 import { db } from '$lib/server/db/index.js'
 import { syncRuns, sources, documents } from '$lib/server/db/schema.js'
 import { eq, desc, count, sql } from 'drizzle-orm'
+import { error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
 import postgres from 'postgres'
 import { constructDatabaseUrl } from '$lib/server/config.js'
@@ -42,7 +43,13 @@ async function getDocumentCounts(): Promise<Record<SourceId, number>> {
     }
 }
 
-export const GET: RequestHandler = async ({ url }) => {
+export const GET: RequestHandler = async ({ url, locals }) => {
+    if (!locals.user) {
+        throw error(401, 'Unauthorized')
+    }
+
+    const isAdmin = locals.user.role === 'admin'
+    const userId = locals.user.id
     const encoder = new TextEncoder()
     let isClosed = false
     let listenSql: postgres.Sql | null = null
@@ -104,6 +111,7 @@ export const GET: RequestHandler = async ({ url }) => {
                         FROM sources s
                         LEFT JOIN sync_runs sr ON sr.source_id = s.id
                         WHERE s.is_deleted = false
+                        ${isAdmin ? sql`` : sql`AND s.created_by = ${userId}`}
                         ORDER BY s.id, sr.started_at DESC NULLS LAST
                     `)
                     const latestSyncRuns = [...result]

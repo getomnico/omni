@@ -320,6 +320,15 @@
                         </Button>
                     </div>
                 {/if}
+            {:else if data.error}
+                <div class="py-12 text-center">
+                    <Search class="mx-auto mb-4 h-12 w-12 text-red-400" />
+                    <h3 class="text-foreground mb-2 text-lg font-medium">Search failed</h3>
+                    <p class="mb-4 text-gray-600">{data.error}</p>
+                    <Button variant="outline" onclick={() => window.location.reload()}>
+                        Retry
+                    </Button>
+                </div>
             {:else if $page.url.searchParams.get('q')}
                 <div class="py-12 text-center">
                     <div

@@ -16,8 +16,12 @@
     import { Globe, HardDrive, Mail, Trash2 } from '@lucide/svelte'
     import GoogleOAuthSetup from '$lib/components/google-oauth-setup.svelte'
     import { getSourceIconPath } from '$lib/utils/icons'
+    import { formatDate, getSourceNoun, getStatusColor } from '$lib/utils/sources'
+    import { SourceType } from '$lib/types'
     import { invalidateAll } from '$app/navigation'
     import { toast } from 'svelte-sonner'
+    import { onMount, onDestroy } from 'svelte'
+    import type { SyncRun } from '$lib/server/db/schema'
 
     let { data }: PageProps = $props()
 
@@ -25,6 +29,56 @@
 
     let sourceToDisconnect = $state<UserSource | null>(null)
     let togglingSourceId = $state<string | null>(null)
+
+    type SourceId = string
+    let latestSyncRuns = $state<Map<SourceId, SyncRun>>(data.latestSyncRuns)
+    let documentCounts = $state<Record<SourceId, number>>(data.documentCounts)
+    let eventSource = $state<EventSource | null>(null)
+
+    $effect(() => {
+        latestSyncRuns = data.latestSyncRuns
+    })
+
+    onMount(() => {
+        eventSource = new EventSource('/api/indexing/status')
+        eventSource.onmessage = (event) => {
+            try {
+                const statusData = JSON.parse(event.data)
+                if (statusData.overall?.latestSyncRuns) {
+                    const updated = new Map(latestSyncRuns)
+                    const userSourceIds = new Set(data.userSources.map((s) => s.id))
+                    statusData.overall.latestSyncRuns.forEach((sync: any) => {
+                        if (sync.sourceId && userSourceIds.has(sync.sourceId)) {
+                            updated.set(sync.sourceId, sync)
+                        }
+                    })
+                    latestSyncRuns = updated
+                }
+                if (statusData.overall?.documentCounts) {
+                    const userSourceIds = new Set(data.userSources.map((s) => s.id))
+                    const filtered: Record<string, number> = {}
+                    for (const [id, count] of Object.entries(statusData.overall.documentCounts)) {
+                        if (userSourceIds.has(id)) {
+                            filtered[id] = count as number
+                        }
+                    }
+                    documentCounts = filtered
+                }
+            } catch {
+                // Silently ignore — SSE is best-effort and user already has initial load data
+            }
+        }
+
+        eventSource.onerror = () => {
+            // Silently ignore — SSE is best-effort
+        }
+    })
+
+    onDestroy(() => {
+        if (eventSource) {
+            eventSource.close()
+        }
+    })
 
     async function toggleSource(source: UserSource, nextActive: boolean) {
         togglingSourceId = source.id
@@ -125,6 +179,8 @@
                 <h2 class="text-xl font-semibold">Your Connections</h2>
                 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                     {#each data.userSources as source}
+                        {@const noun = getSourceNoun(source.sourceType as SourceType)}
+                        {@const sync = latestSyncRuns.get(source.id)}
                         <Card
                             class="group hover:border-foreground/20 flex flex-col gap-0 py-0 transition-colors">
                             <CardHeader class="flex items-center gap-3 px-4 py-4">
@@ -143,12 +199,51 @@
                                         <Mail class="h-6 w-6 text-slate-700" />
                                     {/if}
                                 </div>
-                                <span class="truncate font-medium">{source.name}</span>
-                                <Badge
-                                    variant={source.isActive ? 'default' : 'secondary'}
-                                    class="ml-auto">
-                                    {source.isActive ? 'Enabled' : 'Paused'}
-                                </Badge>
+                                <div class="flex min-w-0 flex-col gap-0.5">
+                                    <div class="flex items-center gap-2">
+                                        <span class="truncate font-medium">{source.name}</span>
+                                        <Badge
+                                            variant={source.isActive ? 'default' : 'secondary'}
+                                            class="ml-auto shrink-0">
+                                            {source.isActive ? 'Enabled' : 'Paused'}
+                                        </Badge>
+                                    </div>
+                                    <div
+                                        class="text-muted-foreground flex items-center gap-1 text-xs">
+                                        {#if sync?.status === 'running'}
+                                            {#if sync.documentsScanned && sync.documentsScanned > 0}
+                                                <span>
+                                                    Syncing... {sync.documentsScanned.toLocaleString()}
+                                                    {noun} scanned
+                                                    {#if sync.documentsUpdated && sync.documentsUpdated > 0}
+                                                        , {sync.documentsUpdated.toLocaleString()} updated
+                                                    {/if}
+                                                    {#if documentCounts[source.id]}
+                                                        ({documentCounts[
+                                                            source.id
+                                                        ].toLocaleString()} indexed, scanned includes
+                                                        duplicates across users)
+                                                    {/if}
+                                                </span>
+                                            {:else}
+                                                <span>Syncing...</span>
+                                            {/if}
+                                        {:else}
+                                            <span
+                                                >Last sync: {formatDate(
+                                                    sync?.completedAt ?? null,
+                                                )}</span>
+                                        {/if}
+                                        {#if !sync || sync.status !== 'running'}
+                                            {#if documentCounts[source.id]}
+                                                <span class="text-muted-foreground">·</span>
+                                                <span
+                                                    >{documentCounts[source.id].toLocaleString()}
+                                                    {noun} indexed</span>
+                                            {/if}
+                                        {/if}
+                                    </div>
+                                </div>
                             </CardHeader>
                             <CardFooter class="flex items-center justify-between px-4 py-2">
                                 <label class="flex cursor-pointer items-center gap-2 text-sm">
