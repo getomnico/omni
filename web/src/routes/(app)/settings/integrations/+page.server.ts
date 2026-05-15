@@ -17,11 +17,8 @@ export const load: PageServerLoad = async ({ locals }) => {
     const userSources = await sourcesRepository.getByUserId(locals.user.id)
 
     // Load sync status and document counts for personal sources owned by this user
-    const allLatestSyncRuns = await sourcesRepository.getLatestSyncRuns()
     const userSourceIds = userSources.map((s) => s.id)
-    const latestSyncRuns = new Map(
-        [...allLatestSyncRuns].filter(([id]) => userSourceIds.includes(id)),
-    )
+    const latestSyncRuns = await sourcesRepository.getLatestSyncRunsForSourceIds(userSourceIds)
 
     let documentCounts: Record<string, number> = {}
     if (userSourceIds.length > 0) {

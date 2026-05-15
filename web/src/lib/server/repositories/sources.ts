@@ -71,6 +71,26 @@ export class SourcesRepository {
 
         return new Map(rows.map((sync) => [sync.sourceId, sync]))
     }
+
+    async getLatestSyncRunsForSourceIds(sourceIds: string[]): Promise<Map<string, SyncRun>> {
+        if (sourceIds.length === 0) {
+            return new Map()
+        }
+
+        const rows = await db
+            .select()
+            .from(syncRuns)
+            .where(
+                sql`${syncRuns.id} IN (
+                    SELECT DISTINCT ON (source_id) id
+                    FROM sync_runs
+                    WHERE source_id IN ${sourceIds}
+                    ORDER BY source_id, started_at DESC
+                )`,
+            )
+
+        return new Map(rows.map((sync) => [sync.sourceId, sync]))
+    }
 }
 
 export const sourcesRepository = new SourcesRepository()
