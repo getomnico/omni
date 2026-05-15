@@ -8,7 +8,6 @@
         CardFooter,
     } from '$lib/components/ui/card'
     import { Button } from '$lib/components/ui/button'
-    import { Badge } from '$lib/components/ui/badge'
     import { Switch } from '$lib/components/ui/switch'
     import * as AlertDialog from '$lib/components/ui/alert-dialog'
     import type { PageProps } from './$types'
@@ -148,92 +147,106 @@
                     <h2 class="text-xl font-semibold">Personal Connections</h2>
                     <p class="text-muted-foreground text-sm">Accounts connected only for you.</p>
                 </div>
-                <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                <div class="space-y-3">
                     {#each data.userSources as source}
                         {@const noun = getSourceNoun(source.sourceType as SourceType)}
                         {@const sync = latestSyncRuns.get(source.id)}
+                        {@const indexedCount = documentCounts[source.id] ?? 0}
+                        {@const isRunning = source.isActive && sync?.status === 'running'}
+                        {@const isFailed = source.isActive && sync?.status === 'failed'}
                         <Card
-                            class="group hover:border-foreground/20 flex flex-col gap-0 py-0 transition-colors">
-                            <CardHeader class="flex items-center gap-3 px-4 py-4">
-                                <div
-                                    class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm dark:border-white/10 dark:shadow-none">
-                                    {#if getSourceIconPath(source.sourceType)}
-                                        <img
-                                            src={getSourceIconPath(source.sourceType)}
-                                            alt={source.name}
-                                            class="h-6 w-6 object-contain" />
-                                    {:else if source.sourceType === 'web'}
-                                        <Globe class="h-6 w-6 text-slate-700" />
-                                    {:else if source.sourceType === 'local_files'}
-                                        <HardDrive class="h-6 w-6 text-slate-700" />
-                                    {:else if source.sourceType === 'imap'}
-                                        <Mail class="h-6 w-6 text-slate-700" />
-                                    {/if}
-                                </div>
-                                <div class="flex min-w-0 flex-col gap-0.5">
-                                    <div class="flex items-center gap-2">
-                                        <span class="truncate font-medium">{source.name}</span>
-                                        <Badge
-                                            variant={source.isActive ? 'default' : 'secondary'}
-                                            class="ml-auto shrink-0">
-                                            {source.isActive ? 'Enabled' : 'Paused'}
-                                        </Badge>
-                                    </div>
+                            class="group hover:border-foreground/20 gap-0 overflow-hidden py-0 transition-colors">
+                            <CardHeader
+                                class="flex flex-row items-start justify-between gap-4 px-4 py-4">
+                                <div class="flex min-w-0 items-start gap-3">
                                     <div
-                                        class="text-muted-foreground flex items-center gap-1 text-xs">
-                                        {#if sync?.status === 'running'}
-                                            {#if sync.documentsScanned && sync.documentsScanned > 0}
-                                                <span>
-                                                    Syncing... {sync.documentsScanned.toLocaleString()}
-                                                    {noun} scanned
-                                                    {#if sync.documentsUpdated && sync.documentsUpdated > 0}
-                                                        , {sync.documentsUpdated.toLocaleString()} updated
-                                                    {/if}
-                                                    {#if documentCounts[source.id]}
-                                                        ({documentCounts[
-                                                            source.id
-                                                        ].toLocaleString()} indexed, scanned includes
-                                                        duplicates across users)
-                                                    {/if}
-                                                </span>
-                                            {:else}
-                                                <span>Syncing...</span>
-                                            {/if}
-                                        {:else}
-                                            <span
-                                                >Last sync: {formatDate(
-                                                    sync?.completedAt ?? null,
-                                                )}</span>
-                                        {/if}
-                                        {#if !sync || sync.status !== 'running'}
-                                            {#if documentCounts[source.id]}
-                                                <span class="text-muted-foreground">·</span>
-                                                <span
-                                                    >{documentCounts[source.id].toLocaleString()}
-                                                    {noun} indexed</span>
-                                            {/if}
+                                        class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm dark:border-white/10 dark:shadow-none">
+                                        {#if getSourceIconPath(source.sourceType)}
+                                            <img
+                                                src={getSourceIconPath(source.sourceType)}
+                                                alt={source.name}
+                                                class="h-6 w-6 object-contain" />
+                                        {:else if source.sourceType === 'web'}
+                                            <Globe class="h-6 w-6 text-slate-700" />
+                                        {:else if source.sourceType === 'local_files'}
+                                            <HardDrive class="h-6 w-6 text-slate-700" />
+                                        {:else if source.sourceType === 'imap'}
+                                            <Mail class="h-6 w-6 text-slate-700" />
                                         {/if}
                                     </div>
+                                    <div class="min-w-0">
+                                        <div class="truncate font-medium">{source.name}</div>
+                                        <div class="text-muted-foreground text-xs">
+                                            {#if !source.isActive}
+                                                Sync is paused
+                                            {:else if isRunning}
+                                                Indexing now
+                                            {:else if isFailed}
+                                                Last sync failed
+                                            {:else}
+                                                Last sync: {formatDate(sync?.completedAt ?? null)}
+                                            {/if}
+                                        </div>
+                                    </div>
                                 </div>
-                            </CardHeader>
-                            <CardFooter class="flex items-center justify-between px-4 py-2">
-                                <label class="flex cursor-pointer items-center gap-2 text-sm">
+                                <div class="flex shrink-0 items-center gap-2">
                                     <Switch
                                         checked={source.isActive}
                                         disabled={togglingSourceId === source.id}
                                         onCheckedChange={(next) => toggleSource(source, next)}
+                                        aria-label="Toggle sync for {source.name}"
                                         class="cursor-pointer" />
-                                    <span class="text-muted-foreground">Sync</span>
-                                </label>
-                                <Button
-                                    size="icon"
-                                    variant="ghost"
-                                    class="text-muted-foreground hover:text-destructive cursor-pointer"
-                                    aria-label="Disconnect {source.name}"
-                                    onclick={() => (sourceToDisconnect = source)}>
-                                    <Trash2 class="h-4 w-4" />
-                                </Button>
-                            </CardFooter>
+                                    <Button
+                                        size="icon"
+                                        variant="ghost"
+                                        class="text-muted-foreground hover:text-destructive cursor-pointer"
+                                        aria-label="Disconnect {source.name}"
+                                        onclick={() => (sourceToDisconnect = source)}>
+                                        <Trash2 class="h-4 w-4" />
+                                    </Button>
+                                </div>
+                            </CardHeader>
+
+                            <CardContent class="space-y-3 px-4 pt-0 pb-4">
+                                {#if isFailed && sync?.errorMessage}
+                                    <p class="text-destructive line-clamp-2 text-xs">
+                                        {sync.errorMessage}
+                                    </p>
+                                {/if}
+
+                                <div
+                                    class="text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                                    {#if isRunning && (!sync?.documentsScanned || sync.documentsScanned === 0) && indexedCount === 0}
+                                        <span>Preparing indexing…</span>
+                                    {/if}
+                                    {#if isRunning && sync?.documentsScanned && sync.documentsScanned > 0}
+                                        <span
+                                            ><span class="text-foreground font-medium"
+                                                >{sync.documentsScanned.toLocaleString()}</span>
+                                            scanned</span>
+                                    {/if}
+                                    {#if isRunning && sync?.documentsUpdated && sync.documentsUpdated > 0}
+                                        {#if sync?.documentsScanned && sync.documentsScanned > 0}
+                                            <span aria-hidden="true">·</span>
+                                        {/if}
+                                        <span
+                                            ><span class="text-foreground font-medium"
+                                                >{sync.documentsUpdated.toLocaleString()}</span>
+                                            updated</span>
+                                    {/if}
+                                    {#if indexedCount > 0}
+                                        {#if (isRunning && sync?.documentsScanned && sync.documentsScanned > 0) || (isRunning && sync?.documentsUpdated && sync.documentsUpdated > 0)}
+                                            <span aria-hidden="true">·</span>
+                                        {/if}
+                                        <span
+                                            ><span class="text-foreground font-medium"
+                                                >{indexedCount.toLocaleString()}</span>
+                                            {noun} indexed</span>
+                                    {:else if !isRunning}
+                                        <span>No {noun} indexed yet.</span>
+                                    {/if}
+                                </div>
+                            </CardContent>
                         </Card>
                     {/each}
                 </div>
