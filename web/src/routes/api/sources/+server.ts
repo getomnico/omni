@@ -1,8 +1,8 @@
 import { json, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
 import { db } from '$lib/server/db'
-import { sources, serviceCredentials, syncRuns, user } from '$lib/server/db/schema'
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { sources, serviceCredentials, syncRuns } from '$lib/server/db/schema'
+import { inArray, sql } from 'drizzle-orm'
 import { ulid } from 'ulid'
 import { logger } from '$lib/server/logger'
 import { SourceType, DEFAULT_SYNC_INTERVAL_SECONDS } from '$lib/types'
@@ -90,48 +90,15 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
     const sourcesOfType = await getSourcesByType(sourceType)
 
-    if (scope === 'org') {
-        // Admin is setting up an org-wide source for this source_type. Reject if any
-        // personal sources of the same type already exist — they must be removed first
-        const personalSources = sourcesOfType.filter((s) => s.scope === 'user')
-
-        if (personalSources.length > 0) {
-            const userIds = personalSources.map((s) => s.createdBy)
-            const owners = await db
-                .select({ email: user.email })
-                .from(user)
-                .where(inArray(user.id, userIds))
-            return json(
-                {
-                    error: 'personal_sources_exist',
-                    user_count: personalSources.length,
-                    user_emails: owners.map((o) => o.email),
-                },
-                { status: 409 },
-            )
-        }
-    } else {
-        // User is creating a personal source. Reject if an org-wide source for this type
-        // already exists; redirect them to the user-auth flow against that source.
-        const existingOrg = sourcesOfType.find((s) => s.scope === 'org')
-
-        if (existingOrg) {
-            return json(
-                {
-                    error: 'org_source_exists',
-                    source_id: existingOrg.id,
-                    user_auth_start_url: `/api/oauth/start?source_id=${existingOrg.id}`,
-                },
-                { status: 409 },
-            )
-        }
-
+    if (scope === 'user') {
         // OAuth-based connectors should only have one personal source per user. Other
         // connectors (e.g. web) can have multiple instances.
         // TODO: Consider adding other OAuth connectors (e.g. Outlook, Slack) as they support user-level OAuth.
         const uniqueSourceTypes: string[] = [SourceType.GOOGLE_DRIVE, SourceType.GMAIL]
         if (uniqueSourceTypes.includes(sourceType)) {
-            const existingForUser = sourcesOfType.find((s) => s.createdBy === locals.user.id)
+            const existingForUser = sourcesOfType.find(
+                (s) => s.scope === 'user' && s.createdBy === locals.user.id,
+            )
             if (existingForUser) {
                 throw error(409, `A ${sourceType} source already exists`)
             }

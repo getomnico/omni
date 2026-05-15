@@ -41,6 +41,7 @@
     import PaperlessConnectorSetup from '$lib/components/paperless-connector-setup.svelte'
     import NextcloudConnectorSetup from '$lib/components/nextcloud-connector-setup.svelte'
     import { SourceType } from '$lib/types'
+    import { formatDate, getSourceNoun, getStatusColor } from '$lib/utils/sources'
     import { invalidateAll } from '$app/navigation'
     import { onMount, onDestroy } from 'svelte'
     import type { SyncRun } from '$lib/server/db/schema'
@@ -48,6 +49,13 @@
     let { data }: PageProps = $props()
 
     type SourceId = string
+    type SyncStatusPayload = {
+        overall?: {
+            latestSyncRuns?: SyncRun[]
+            documentCounts?: Record<SourceId, number>
+        }
+    }
+
     let latestSyncRuns = $state<Map<SourceId, SyncRun>>(data.latestSyncRuns)
     let documentCounts = $state<Record<SourceId, number>>({})
     let eventSource = $state<EventSource | null>(null)
@@ -58,17 +66,15 @@
 
     onMount(() => {
         // Set up Server-Sent Events for real-time sync status updates
-        eventSource = new EventSource('/api/indexing/status')
+        eventSource = new EventSource('/api/indexing/status?scope=org')
         eventSource.onmessage = (event) => {
             try {
-                const statusData = JSON.parse(event.data)
+                const statusData = JSON.parse(event.data) as SyncStatusPayload
                 if (statusData.overall?.latestSyncRuns) {
                     const updated = new Map(latestSyncRuns)
-                    statusData.overall.latestSyncRuns.forEach((sync: any) => {
-                        if (sync.sourceId) {
-                            updated.set(sync.sourceId, sync)
-                        }
-                    })
+                    for (const sync of statusData.overall.latestSyncRuns) {
+                        updated.set(sync.sourceId, sync)
+                    }
                     latestSyncRuns = updated
                 }
                 if (statusData.overall?.documentCounts) {
@@ -142,44 +148,6 @@
         return integrationIcons[integrationId] ?? null
     }
 
-    function formatDate(date: Date | null) {
-        if (!date) return 'Never'
-        return new Date(date).toLocaleString()
-    }
-
-    function getStatusColor(isActive: boolean) {
-        return isActive
-            ? 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-400'
-            : 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-300'
-    }
-
-    const sourceNouns: Record<string, string> = {
-        [SourceType.GOOGLE_DRIVE]: 'documents',
-        [SourceType.GMAIL]: 'threads',
-        [SourceType.SLACK]: 'messages',
-        [SourceType.CONFLUENCE]: 'pages',
-        [SourceType.JIRA]: 'issues',
-        [SourceType.HUBSPOT]: 'records',
-        [SourceType.FIREFLIES]: 'transcripts',
-        [SourceType.IMAP]: 'emails',
-        [SourceType.ONE_DRIVE]: 'files',
-        [SourceType.OUTLOOK]: 'emails',
-        [SourceType.OUTLOOK_CALENDAR]: 'events',
-        [SourceType.SHARE_POINT]: 'documents',
-        [SourceType.WEB]: 'pages',
-        [SourceType.LINEAR]: 'items',
-        [SourceType.LOCAL_FILES]: 'files',
-        [SourceType.CLICKUP]: 'tasks',
-        [SourceType.NOTION]: 'pages',
-        [SourceType.GITHUB]: 'documents',
-        [SourceType.PAPERLESS_NGX]: 'documents',
-        [SourceType.NEXTCLOUD]: 'files',
-    }
-
-    function getSourceNoun(sourceType: SourceType): string {
-        return sourceNouns[sourceType] ?? 'documents'
-    }
-
     const sourceTypeSlug: Record<string, string> = {
         [SourceType.GOOGLE_DRIVE]: 'drive',
         [SourceType.GMAIL]: 'gmail',
@@ -206,14 +174,18 @@
         <!-- Page Header -->
         <div>
             <h1 class="text-3xl font-bold tracking-tight">Integrations</h1>
-            <p class="text-muted-foreground mt-2">Manage your data source connections</p>
+            <p class="text-muted-foreground mt-2">
+                Manage organization-level data source connections
+            </p>
         </div>
 
         <!-- Connected Sources Section -->
         <div class="space-y-4">
             <div>
-                <h2 class="text-xl font-semibold">Connected Sources</h2>
-                <p class="text-muted-foreground text-sm">Active data sources syncing with Omni</p>
+                <h2 class="text-xl font-semibold">Organization Integrations</h2>
+                <p class="text-muted-foreground text-sm">
+                    Org-level data sources syncing with Omni
+                </p>
             </div>
 
             {#if data.connectedSources.length > 0}
@@ -312,7 +284,8 @@
             {:else}
                 <div class="py-12 text-center">
                     <p class="text-muted-foreground text-sm">
-                        No connected sources yet. Connect an integration below to get started.
+                        No org-level integrations configured yet. Connect an integration below to
+                        get started.
                     </p>
                 </div>
             {/if}
@@ -323,7 +296,7 @@
             <div>
                 <h2 class="text-xl font-semibold">Available Integrations</h2>
                 <p class="text-muted-foreground text-sm">
-                    Connect your apps to sync their data and take action with Omni
+                    Connect apps at the organization level to sync shared data with Omni
                 </p>
             </div>
 

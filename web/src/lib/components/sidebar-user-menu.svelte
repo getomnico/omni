@@ -57,7 +57,7 @@
             {#snippet child({ props })}
                 <a href="/settings/integrations" {...props}>
                     <Plug class="h-4 w-4" />
-                    <span>Integrations</span>
+                    <span>My Integrations</span>
                 </a>
             {/snippet}
         </DropdownMenu.Item>

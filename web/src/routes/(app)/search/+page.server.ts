@@ -88,8 +88,8 @@ export const load = async ({ url, fetch, locals }) => {
             currentPage: page,
             pageSize: PAGE_SIZE,
         }
-    } catch (error) {
-        console.error('Error performing search:', error)
+    } catch (err) {
+        logger.error('Error performing search:', err)
         return {
             searchResults: null,
             sources: null,

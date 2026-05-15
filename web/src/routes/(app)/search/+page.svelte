@@ -6,7 +6,7 @@
     import { Input } from '$lib/components/ui/input/index.js'
     import * as Pagination from '$lib/components/ui/pagination/index.js'
     import { getSourceIconPath } from '$lib/utils/icons'
-    import { FileText, Funnel, Search } from '@lucide/svelte'
+    import { AlertCircle, FileText, Funnel, Search } from '@lucide/svelte'
     import type { PageData } from './$types.js'
 
     let { data }: { data: PageData } = $props()
@@ -320,6 +320,23 @@
                         </Button>
                     </div>
                 {/if}
+            {:else if data.error}
+                <div class="py-12 text-center">
+                    <AlertCircle class="text-destructive mx-auto mb-4 h-12 w-12" />
+                    <h3 class="text-foreground mb-2 text-lg font-medium">
+                        Search is temporarily unavailable
+                    </h3>
+                    <p class="mb-2 text-gray-600">
+                        We couldn't complete your search. Please try again in a moment.
+                    </p>
+                    <p class="text-muted-foreground mb-4 text-sm">{data.error}</p>
+                    <Button
+                        variant="outline"
+                        onclick={() => window.location.reload()}
+                        class="cursor-pointer">
+                        Retry
+                    </Button>
+                </div>
             {:else if $page.url.searchParams.get('q')}
                 <div class="py-12 text-center">
                     <div

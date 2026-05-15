@@ -1,6 +1,6 @@
 import { db } from '$lib/server/db'
-import { sources, syncRuns, user } from '$lib/server/db/schema'
-import { eq, desc, sql, and, inArray } from 'drizzle-orm'
+import { sources, syncRuns } from '$lib/server/db/schema'
+import { eq, desc, sql, and } from 'drizzle-orm'
 import type { Source, SyncRun } from '$lib/server/db/schema'
 
 export class SourcesRepository {
@@ -39,17 +39,21 @@ export class SourcesRepository {
         return await db
             .select()
             .from(sources)
-            .where(and(eq(sources.createdBy, userId), eq(sources.isDeleted, false)))
+            .where(
+                and(
+                    eq(sources.createdBy, userId),
+                    eq(sources.scope, 'user'),
+                    eq(sources.isDeleted, false),
+                ),
+            )
             .orderBy(desc(sources.createdAt))
     }
 
     async getOrgWide(): Promise<Source[]> {
-        const adminUserIds = db.select({ id: user.id }).from(user).where(eq(user.role, 'admin'))
-
         return await db
             .select()
             .from(sources)
-            .where(and(inArray(sources.createdBy, adminUserIds), eq(sources.isDeleted, false)))
+            .where(and(eq(sources.scope, 'org'), eq(sources.isDeleted, false)))
             .orderBy(desc(sources.createdAt))
     }
 
@@ -61,6 +65,26 @@ export class SourcesRepository {
                 sql`${syncRuns.id} IN (
                     SELECT DISTINCT ON (source_id) id
                     FROM sync_runs
+                    ORDER BY source_id, started_at DESC
+                )`,
+            )
+
+        return new Map(rows.map((sync) => [sync.sourceId, sync]))
+    }
+
+    async getLatestSyncRunsForSourceIds(sourceIds: string[]): Promise<Map<string, SyncRun>> {
+        if (sourceIds.length === 0) {
+            return new Map()
+        }
+
+        const rows = await db
+            .select()
+            .from(syncRuns)
+            .where(
+                sql`${syncRuns.id} IN (
+                    SELECT DISTINCT ON (source_id) id
+                    FROM sync_runs
+                    WHERE source_id IN ${sourceIds}
                     ORDER BY source_id, started_at DESC
                 )`,
             )

@@ -83,30 +83,14 @@ export const GET: RequestHandler = async ({ url, locals }) => {
         throw redirect(302, `/oauth/done?${params}`)
     }
 
-    // connect_source flow: for each requested source_type, attach to existing
-    // org source if there is one; otherwise create a personal source.
+    // connect_source flow: for each requested source_type, create or refresh this
+    // user's personal source. Org-level sources are managed separately under
+    // /admin/settings/integrations.
     for (const sourceType of flow.sourceTypes) {
         const sourcesOfType = await getSourcesByType(sourceType)
-        const orgSource = sourcesOfType.find((s) => s.scope === 'org')
-
-        if (orgSource) {
-            await serviceCredentialsRepository.createForUser({
-                sourceId: orgSource.id,
-                userId: locals.user.id,
-                provider: config.provider,
-                authType: 'oauth',
-                principalEmail,
-                credentials,
-                config: { granted_scopes: grantedScopes },
-                expiresAt,
-            })
-            logger.info(
-                `Attached per-user OAuth creds to org source ${orgSource.id} (${sourceType}) for user ${locals.user.id}`,
-            )
-            continue
-        }
-
-        const existing = sourcesOfType.find((s) => s.createdBy === locals.user.id)
+        const existing = sourcesOfType.find(
+            (s) => s.scope === 'user' && s.createdBy === locals.user.id,
+        )
 
         if (existing) {
             // Source already exists for this user — refresh its creds in place.

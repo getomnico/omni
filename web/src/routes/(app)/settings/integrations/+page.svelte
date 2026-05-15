@@ -8,7 +8,6 @@
         CardFooter,
     } from '$lib/components/ui/card'
     import { Button } from '$lib/components/ui/button'
-    import { Badge } from '$lib/components/ui/badge'
     import { Switch } from '$lib/components/ui/switch'
     import * as AlertDialog from '$lib/components/ui/alert-dialog'
     import type { PageProps } from './$types'
@@ -16,8 +15,12 @@
     import { Globe, HardDrive, Mail, Trash2 } from '@lucide/svelte'
     import GoogleOAuthSetup from '$lib/components/google-oauth-setup.svelte'
     import { getSourceIconPath } from '$lib/utils/icons'
+    import { formatDate, getSourceNoun } from '$lib/utils/sources'
+    import { SourceType } from '$lib/types'
     import { invalidateAll } from '$app/navigation'
     import { toast } from 'svelte-sonner'
+    import { onMount, onDestroy } from 'svelte'
+    import type { SyncRun } from '$lib/server/db/schema'
 
     let { data }: PageProps = $props()
 
@@ -25,6 +28,53 @@
 
     let sourceToDisconnect = $state<UserSource | null>(null)
     let togglingSourceId = $state<string | null>(null)
+
+    type SourceId = string
+    type SyncStatusPayload = {
+        overall?: {
+            latestSyncRuns?: SyncRun[]
+            documentCounts?: Record<SourceId, number>
+        }
+    }
+
+    let latestSyncRuns = $state<Map<SourceId, SyncRun>>(data.latestSyncRuns)
+    let documentCounts = $state<Record<SourceId, number>>(data.documentCounts)
+    let eventSource = $state<EventSource | null>(null)
+
+    $effect(() => {
+        latestSyncRuns = data.latestSyncRuns
+    })
+
+    onMount(() => {
+        eventSource = new EventSource('/api/indexing/status?scope=user')
+        eventSource.onmessage = (event) => {
+            try {
+                const statusData = JSON.parse(event.data) as SyncStatusPayload
+                if (statusData.overall?.latestSyncRuns) {
+                    const updated = new Map(latestSyncRuns)
+                    for (const sync of statusData.overall.latestSyncRuns) {
+                        updated.set(sync.sourceId, sync)
+                    }
+                    latestSyncRuns = updated
+                }
+                if (statusData.overall?.documentCounts) {
+                    documentCounts = statusData.overall.documentCounts
+                }
+            } catch {
+                // Silently ignore — SSE is best-effort and user already has initial load data
+            }
+        }
+
+        eventSource.onerror = () => {
+            // Silently ignore — SSE is best-effort
+        }
+    })
+
+    onDestroy(() => {
+        if (eventSource) {
+            eventSource.close()
+        }
+    })
 
     async function toggleSource(source: UserSource, nextActive: boolean) {
         togglingSourceId = source.id
@@ -79,95 +129,124 @@
 </script>
 
 <svelte:head>
-    <title>Integrations - Settings</title>
+    <title>My Integrations - Settings</title>
 </svelte:head>
 
 <div class="h-full overflow-y-auto p-6 py-8 pb-24">
     <div class="mx-auto max-w-screen-lg space-y-8">
         <!-- Page Header -->
         <div>
-            <h1 class="text-3xl font-bold tracking-tight">Integrations</h1>
-            <p class="text-muted-foreground mt-2">Apps that are currently connected with Omni</p>
+            <h1 class="text-3xl font-bold tracking-tight">My Integrations</h1>
+            <p class="text-muted-foreground mt-2">Your personal account connections.</p>
         </div>
-
-        <!-- Org-wide Sources -->
-        {#if data.orgWideSources.length > 0}
-            <div class="space-y-4">
-                <h2 class="text-xl font-semibold">Organization</h2>
-                <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                    {#each data.orgWideSources as source}
-                        <div class="bg-card flex items-center gap-3 rounded-lg border p-4">
-                            <div
-                                class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm dark:border-white/10 dark:shadow-none">
-                                {#if getSourceIconPath(source.sourceType)}
-                                    <img
-                                        src={getSourceIconPath(source.sourceType)}
-                                        alt={source.name}
-                                        class="h-6 w-6 object-contain" />
-                                {:else if source.sourceType === 'web'}
-                                    <Globe class="h-6 w-6 text-slate-700" />
-                                {:else if source.sourceType === 'local_files'}
-                                    <HardDrive class="h-6 w-6 text-slate-700" />
-                                {:else if source.sourceType === 'imap'}
-                                    <Mail class="h-6 w-6 text-slate-700" />
-                                {/if}
-                            </div>
-                            <span class="truncate font-medium">{source.name}</span>
-                        </div>
-                    {/each}
-                </div>
-            </div>
-        {/if}
 
         <!-- User's Own Sources -->
         {#if data.userSources.length > 0}
             <div class="space-y-4">
-                <h2 class="text-xl font-semibold">Your Connections</h2>
-                <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                <div>
+                    <h2 class="text-xl font-semibold">Personal Connections</h2>
+                    <p class="text-muted-foreground text-sm">Accounts connected only for you.</p>
+                </div>
+                <div class="space-y-3">
                     {#each data.userSources as source}
+                        {@const noun = getSourceNoun(source.sourceType as SourceType)}
+                        {@const sync = latestSyncRuns.get(source.id)}
+                        {@const indexedCount = documentCounts[source.id] ?? 0}
+                        {@const isRunning = source.isActive && sync?.status === 'running'}
+                        {@const isFailed = source.isActive && sync?.status === 'failed'}
                         <Card
-                            class="group hover:border-foreground/20 flex flex-col gap-0 py-0 transition-colors">
-                            <CardHeader class="flex items-center gap-3 px-4 py-4">
-                                <div
-                                    class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm dark:border-white/10 dark:shadow-none">
-                                    {#if getSourceIconPath(source.sourceType)}
-                                        <img
-                                            src={getSourceIconPath(source.sourceType)}
-                                            alt={source.name}
-                                            class="h-6 w-6 object-contain" />
-                                    {:else if source.sourceType === 'web'}
-                                        <Globe class="h-6 w-6 text-slate-700" />
-                                    {:else if source.sourceType === 'local_files'}
-                                        <HardDrive class="h-6 w-6 text-slate-700" />
-                                    {:else if source.sourceType === 'imap'}
-                                        <Mail class="h-6 w-6 text-slate-700" />
-                                    {/if}
+                            class="group hover:border-foreground/20 gap-0 overflow-hidden py-0 transition-colors">
+                            <CardHeader
+                                class="flex flex-row items-start justify-between gap-4 px-4 py-4">
+                                <div class="flex min-w-0 items-start gap-3">
+                                    <div
+                                        class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm dark:border-white/10 dark:shadow-none">
+                                        {#if getSourceIconPath(source.sourceType)}
+                                            <img
+                                                src={getSourceIconPath(source.sourceType)}
+                                                alt={source.name}
+                                                class="h-6 w-6 object-contain" />
+                                        {:else if source.sourceType === 'web'}
+                                            <Globe class="h-6 w-6 text-slate-700" />
+                                        {:else if source.sourceType === 'local_files'}
+                                            <HardDrive class="h-6 w-6 text-slate-700" />
+                                        {:else if source.sourceType === 'imap'}
+                                            <Mail class="h-6 w-6 text-slate-700" />
+                                        {/if}
+                                    </div>
+                                    <div class="min-w-0">
+                                        <div class="truncate font-medium">{source.name}</div>
+                                        <div class="text-muted-foreground text-xs">
+                                            {#if !source.isActive}
+                                                Sync is paused
+                                            {:else if isRunning}
+                                                Indexing now
+                                            {:else if isFailed}
+                                                Last sync failed
+                                            {:else}
+                                                Last sync: {formatDate(sync?.completedAt ?? null)}
+                                            {/if}
+                                        </div>
+                                    </div>
                                 </div>
-                                <span class="truncate font-medium">{source.name}</span>
-                                <Badge
-                                    variant={source.isActive ? 'default' : 'secondary'}
-                                    class="ml-auto">
-                                    {source.isActive ? 'Enabled' : 'Paused'}
-                                </Badge>
-                            </CardHeader>
-                            <CardFooter class="flex items-center justify-between px-4 py-2">
-                                <label class="flex cursor-pointer items-center gap-2 text-sm">
+                                <div class="flex shrink-0 items-center gap-2">
                                     <Switch
                                         checked={source.isActive}
                                         disabled={togglingSourceId === source.id}
                                         onCheckedChange={(next) => toggleSource(source, next)}
+                                        aria-label="Toggle sync for {source.name}"
                                         class="cursor-pointer" />
-                                    <span class="text-muted-foreground">Sync</span>
-                                </label>
-                                <Button
-                                    size="icon"
-                                    variant="ghost"
-                                    class="text-muted-foreground hover:text-destructive cursor-pointer"
-                                    aria-label="Disconnect {source.name}"
-                                    onclick={() => (sourceToDisconnect = source)}>
-                                    <Trash2 class="h-4 w-4" />
-                                </Button>
-                            </CardFooter>
+                                    <Button
+                                        size="icon"
+                                        variant="ghost"
+                                        class="text-muted-foreground hover:text-destructive cursor-pointer"
+                                        aria-label="Disconnect {source.name}"
+                                        onclick={() => (sourceToDisconnect = source)}>
+                                        <Trash2 class="h-4 w-4" />
+                                    </Button>
+                                </div>
+                            </CardHeader>
+
+                            <CardContent class="space-y-3 px-4 pt-0 pb-4">
+                                {#if isFailed && sync?.errorMessage}
+                                    <p class="text-destructive line-clamp-2 text-xs">
+                                        {sync.errorMessage}
+                                    </p>
+                                {/if}
+
+                                <div
+                                    class="text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                                    {#if isRunning && (!sync?.documentsScanned || sync.documentsScanned === 0) && indexedCount === 0}
+                                        <span>Preparing indexing…</span>
+                                    {/if}
+                                    {#if isRunning && sync?.documentsScanned && sync.documentsScanned > 0}
+                                        <span
+                                            ><span class="text-foreground font-medium"
+                                                >{sync.documentsScanned.toLocaleString()}</span>
+                                            scanned</span>
+                                    {/if}
+                                    {#if isRunning && sync?.documentsUpdated && sync.documentsUpdated > 0}
+                                        {#if sync?.documentsScanned && sync.documentsScanned > 0}
+                                            <span aria-hidden="true">·</span>
+                                        {/if}
+                                        <span
+                                            ><span class="text-foreground font-medium"
+                                                >{sync.documentsUpdated.toLocaleString()}</span>
+                                            updated</span>
+                                    {/if}
+                                    {#if indexedCount > 0}
+                                        {#if (isRunning && sync?.documentsScanned && sync.documentsScanned > 0) || (isRunning && sync?.documentsUpdated && sync.documentsUpdated > 0)}
+                                            <span aria-hidden="true">·</span>
+                                        {/if}
+                                        <span
+                                            ><span class="text-foreground font-medium"
+                                                >{indexedCount.toLocaleString()}</span>
+                                            {noun} indexed</span>
+                                    {:else if !isRunning}
+                                        <span>No {noun} indexed yet.</span>
+                                    {/if}
+                                </div>
+                            </CardContent>
                         </Card>
                     {/each}
                 </div>
@@ -179,10 +258,8 @@
         {#if data.googleOAuthConfigured}
             <div class="space-y-4">
                 <div>
-                    <h2 class="text-xl font-semibold">Available Connections</h2>
-                    <p class="text-muted-foreground text-sm">
-                        Connect your own accounts to sync data with Omni
-                    </p>
+                    <h2 class="text-xl font-semibold">Available Integrations</h2>
+                    <p class="text-muted-foreground text-sm">Connect your own accounts.</p>
                 </div>
 
                 <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
@@ -207,8 +284,7 @@
                         </CardHeader>
                         <CardContent class="flex-1">
                             <p class="text-muted-foreground text-sm">
-                                Connect your Google Drive and Gmail with read-only access. Your data
-                                stays private to you.
+                                Connect your own Google Drive and Gmail with read-only access.
                             </p>
                         </CardContent>
                         {#if !hasAllGoogleSources}
@@ -217,18 +293,17 @@
                                     size="sm"
                                     class="cursor-pointer"
                                     onclick={() => (showGoogleOAuthSetup = true)}>
-                                    Connect with Google
+                                    Connect your Google account
                                 </Button>
                             </CardFooter>
                         {/if}
                     </Card>
                 </div>
             </div>
-        {:else if data.orgWideSources.length === 0 && data.userSources.length === 0}
+        {:else if data.userSources.length === 0}
             <div class="py-12 text-center">
                 <p class="text-muted-foreground text-sm">
-                    No integrations are available yet. Contact your administrator to set up
-                    connections.
+                    Personal integrations are not available yet. Contact your administrator.
                 </p>
             </div>
         {/if}
@@ -250,7 +325,7 @@
         <AlertDialog.Header>
             <AlertDialog.Title>Disconnect {sourceToDisconnect?.name}?</AlertDialog.Title>
             <AlertDialog.Description>
-                This will stop syncing data from this source. You can reconnect at any time.
+                This will stop syncing this personal source. You can reconnect at any time.
             </AlertDialog.Description>
         </AlertDialog.Header>
         <AlertDialog.Footer>
