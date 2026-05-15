@@ -1,10 +1,10 @@
 use anyhow::{anyhow, Context, Result};
-use chrono::DateTime;
-use omni_connector_sdk::SdkClient;
+use chrono::{DateTime, NaiveDate};
 use omni_connector_sdk::SyncContext;
 use omni_connector_sdk::{
-    ConnectorEvent, ServiceCredential, ServiceProvider, Source, SourceType, SyncType,
+    ConnectorEvent, SdkClient, ServiceCredential, ServiceProvider, Source, SourceType, SyncType,
 };
+use std::collections::BTreeSet;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -12,7 +12,9 @@ use tracing::{debug, error, info, warn};
 use crate::auth::AuthManager;
 use crate::client::SlackClient;
 use crate::content::ContentProcessor;
-use crate::models::{SlackChannel, SlackConnectorState, SlackCredentials};
+use crate::models::{
+    MessageGroup, SlackChannel, SlackConnectorState, SlackCredentials, SlackMessage,
+};
 
 /// Group identifier for a Slack channel — emitted via `GroupMembershipSync`
 /// and referenced by every document's `permissions.groups`.
@@ -63,6 +65,49 @@ fn channel_oldest_for_sync(last_ts: Option<&str>) -> Option<String> {
     };
 
     Some(format!("{}.000000", effective_secs))
+}
+
+fn slack_ts_seconds(ts: &str) -> Result<i64> {
+    ts.split('.')
+        .next()
+        .ok_or_else(|| anyhow!("Invalid Slack timestamp: {}", ts))?
+        .parse::<i64>()
+        .map_err(|e| anyhow!("Invalid Slack timestamp {}: {}", ts, e))
+}
+
+fn slack_ts_date(ts: &str) -> Result<NaiveDate> {
+    let secs = slack_ts_seconds(ts)?;
+    DateTime::from_timestamp(secs, 0)
+        .map(|dt| dt.date_naive())
+        .ok_or_else(|| anyhow!("Invalid Slack timestamp seconds: {}", secs))
+}
+
+fn day_bounds(date: NaiveDate) -> Result<(String, String)> {
+    let start = date
+        .and_hms_opt(0, 0, 0)
+        .ok_or_else(|| anyhow!("Invalid day start for {}", date))?
+        .and_utc()
+        .timestamp();
+    let next = date
+        .succ_opt()
+        .ok_or_else(|| anyhow!("Invalid next day for {}", date))?
+        .and_hms_opt(0, 0, 0)
+        .ok_or_else(|| anyhow!("Invalid next day start for {}", date))?
+        .and_utc()
+        .timestamp();
+
+    Ok((format!("{}.999999", start - 1), format!("{}.000000", next)))
+}
+
+fn top_level_message(message: &SlackMessage) -> bool {
+    match message.thread_ts.as_deref() {
+        Some(thread_ts) => thread_ts == message.ts,
+        None => true,
+    }
+}
+
+fn sort_messages_chronological(messages: &mut [SlackMessage]) {
+    messages.sort_by(|a, b| a.ts.cmp(&b.ts));
 }
 
 pub struct SyncManager {
@@ -371,6 +416,125 @@ impl SyncManager {
         result
     }
 
+    pub async fn sync_realtime_message_event(
+        &self,
+        source_id: &str,
+        channel_id: &str,
+        message_ts: &str,
+        thread_ts: Option<&str>,
+    ) -> Result<()> {
+        info!(
+            source_id,
+            channel_id, message_ts, thread_ts, "Starting realtime Slack message repair"
+        );
+
+        let sync_run_id = self
+            .sdk_client
+            .create_sync_run(source_id, SyncType::Realtime)
+            .await
+            .context("Failed to create sync run for realtime message event")?;
+
+        let ctx = SyncContext::new(
+            self.sdk_client.clone(),
+            sync_run_id.clone(),
+            source_id.to_string(),
+            SourceType::Slack,
+            SyncType::Realtime,
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        let result: Result<()> = async {
+            let creds = self
+                .sdk_client
+                .get_credentials(source_id)
+                .await
+                .context("Failed to fetch credentials for realtime sync")?;
+            if creds.provider != ServiceProvider::Slack {
+                return Err(anyhow!(
+                    "Expected Slack credentials for source {}, found {:?}",
+                    source_id,
+                    creds.provider
+                ));
+            }
+            let slack_creds: SlackCredentials = serde_json::from_value(creds.credentials)
+                .map_err(|e| anyhow!("Failed to decode Slack credentials: {}", e))?;
+
+            let mut bot_creds = self
+                .auth_manager
+                .validate_bot_token(&slack_creds.bot_token)
+                .await?;
+            self.auth_manager
+                .ensure_valid_credentials(&mut bot_creds)
+                .await?;
+
+            let channel = self
+                .slack_client
+                .get_conversation_info(&bot_creds.bot_token, channel_id)
+                .await?;
+
+            let mut content_processor = ContentProcessor::new();
+            self.fetch_all_users(&bot_creds.bot_token, &mut content_processor)
+                .await?;
+
+            let group_email = channel_group_email(&bot_creds.team_id, &channel.id);
+            self.emit_channel_group_membership(
+                &ctx,
+                &sync_run_id,
+                source_id,
+                &channel,
+                &group_email,
+                &bot_creds.bot_token,
+                &content_processor,
+            )
+            .await?;
+
+            match thread_ts {
+                Some(parent_ts) if parent_ts != message_ts => {
+                    self.repair_thread_document(
+                        &ctx,
+                        &sync_run_id,
+                        source_id,
+                        &channel,
+                        &group_email,
+                        &bot_creds.bot_token,
+                        &content_processor,
+                        parent_ts,
+                        true,
+                    )
+                    .await?;
+                }
+                _ => {
+                    let date = slack_ts_date(message_ts)?;
+                    self.repair_day_documents(
+                        &ctx,
+                        &sync_run_id,
+                        source_id,
+                        &channel,
+                        &group_email,
+                        &bot_creds.bot_token,
+                        &content_processor,
+                        date,
+                        true,
+                    )
+                    .await?;
+                }
+            }
+
+            ctx.flush().await?;
+            ctx.increment_scanned(1).await?;
+            ctx.complete().await?;
+            Ok(())
+        }
+        .await;
+
+        if let Err(e) = &result {
+            error!(source_id, channel_id, message_ts, error = %e, "Realtime message repair failed");
+            let _ = ctx.fail(&e.to_string()).await;
+        }
+
+        result
+    }
+
     async fn fetch_all_users(
         &self,
         token: &str,
@@ -424,6 +588,241 @@ impl SyncManager {
         Ok(all_channels)
     }
 
+    async fn fetch_history_window_all(
+        &self,
+        token: &str,
+        channel_id: &str,
+        oldest: Option<&str>,
+        latest: Option<&str>,
+    ) -> Result<Vec<SlackMessage>> {
+        let mut messages = Vec::new();
+        let mut cursor = None;
+
+        loop {
+            let response = self
+                .slack_client
+                .get_conversation_history(token, channel_id, cursor.as_deref(), oldest, latest)
+                .await?;
+
+            messages.extend(response.messages);
+
+            if !response.has_more {
+                break;
+            }
+
+            cursor = response
+                .response_metadata
+                .and_then(|meta| meta.next_cursor)
+                .filter(|c| !c.is_empty());
+
+            if cursor.is_none() {
+                return Err(anyhow!(
+                    "conversations.history for channel {} returned has_more without next_cursor",
+                    channel_id
+                ));
+            }
+        }
+
+        sort_messages_chronological(&mut messages);
+        Ok(messages)
+    }
+
+    async fn fetch_thread_replies_all(
+        &self,
+        token: &str,
+        channel_id: &str,
+        thread_ts: &str,
+    ) -> Result<Vec<SlackMessage>> {
+        let mut messages = Vec::new();
+        let mut cursor = None;
+
+        loop {
+            let response = self
+                .slack_client
+                .get_thread_replies(token, channel_id, thread_ts, cursor.as_deref())
+                .await?;
+            messages.extend(response.messages);
+
+            if !response.has_more {
+                break;
+            }
+
+            cursor = response
+                .response_metadata
+                .and_then(|meta| meta.next_cursor)
+                .filter(|c| !c.is_empty());
+
+            if cursor.is_none() {
+                return Err(anyhow!(
+                    "conversations.replies for channel {} thread {} returned has_more without next_cursor",
+                    channel_id,
+                    thread_ts
+                ));
+            }
+        }
+
+        sort_messages_chronological(&mut messages);
+        Ok(messages)
+    }
+
+    async fn emit_message_group(
+        &self,
+        ctx: &SyncContext,
+        group: crate::models::MessageGroup,
+        sync_run_id: &str,
+        source_id: &str,
+        group_email: &str,
+        is_update: bool,
+    ) -> Result<()> {
+        let content_id = ctx.store_content(&group.to_document_content()).await?;
+        let event = if is_update {
+            group.to_update_event(
+                sync_run_id.to_string(),
+                source_id.to_string(),
+                content_id,
+                group_email,
+            )
+        } else {
+            group.to_connector_event(
+                sync_run_id.to_string(),
+                source_id.to_string(),
+                content_id,
+                group_email,
+            )
+        };
+        ctx.emit_event(event).await?;
+        Ok(())
+    }
+
+    async fn emit_channel_group_membership(
+        &self,
+        ctx: &SyncContext,
+        sync_run_id: &str,
+        source_id: &str,
+        channel: &SlackChannel,
+        group_email: &str,
+        token: &str,
+        content_processor: &ContentProcessor,
+    ) -> Result<()> {
+        let member_ids = self.fetch_channel_members(token, &channel.id).await?;
+        let member_emails = content_processor.resolve_member_emails(&member_ids);
+
+        let group_event = ConnectorEvent::GroupMembershipSync {
+            sync_run_id: sync_run_id.to_string(),
+            source_id: source_id.to_string(),
+            group_email: group_email.to_string(),
+            group_name: Some(format!("#{}", channel.display_name())),
+            member_emails,
+        };
+        ctx.emit_event(group_event).await?;
+        Ok(())
+    }
+
+    async fn repair_thread_document(
+        &self,
+        ctx: &SyncContext,
+        sync_run_id: &str,
+        source_id: &str,
+        channel: &SlackChannel,
+        group_email: &str,
+        token: &str,
+        content_processor: &ContentProcessor,
+        thread_ts: &str,
+        is_update: bool,
+    ) -> Result<()> {
+        let thread_messages = self
+            .fetch_thread_replies_all(token, &channel.id, thread_ts)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to fully fetch Slack thread {} for channel {}",
+                    thread_ts, channel.id
+                )
+            })?;
+        let thread_date = slack_ts_date(thread_ts)?;
+        let mut thread_group = MessageGroup::new(
+            channel.id.clone(),
+            channel.display_name(),
+            thread_date,
+            true,
+            Some(thread_ts.to_string()),
+        );
+        for message in thread_messages {
+            let author_name = content_processor.get_author_name(&message.user);
+            thread_group.add_message(message, author_name);
+        }
+        self.emit_message_group(
+            ctx,
+            thread_group,
+            sync_run_id,
+            source_id,
+            group_email,
+            is_update,
+        )
+        .await
+    }
+
+    async fn repair_day_documents(
+        &self,
+        ctx: &SyncContext,
+        sync_run_id: &str,
+        source_id: &str,
+        channel: &SlackChannel,
+        group_email: &str,
+        token: &str,
+        content_processor: &ContentProcessor,
+        date: NaiveDate,
+        is_update: bool,
+    ) -> Result<Vec<SlackMessage>> {
+        let (day_oldest, day_latest) = day_bounds(date)?;
+        let day_messages = self
+            .fetch_history_window_all(token, &channel.id, Some(&day_oldest), Some(&day_latest))
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to fully fetch Slack day {} for channel {}",
+                    date, channel.id
+                )
+            })?;
+
+        let mut top_level_messages: Vec<SlackMessage> = day_messages
+            .iter()
+            .filter(|message| top_level_message(message))
+            .cloned()
+            .collect();
+        sort_messages_chronological(&mut top_level_messages);
+
+        let message_groups = content_processor.group_messages_by_date(
+            channel.id.clone(),
+            channel.display_name(),
+            top_level_messages.clone(),
+        )?;
+        for group in message_groups {
+            self.emit_message_group(ctx, group, sync_run_id, source_id, group_email, is_update)
+                .await?;
+        }
+
+        for parent in top_level_messages
+            .iter()
+            .filter(|message| message.reply_count.unwrap_or(0) > 0)
+        {
+            self.repair_thread_document(
+                ctx,
+                sync_run_id,
+                source_id,
+                channel,
+                group_email,
+                token,
+                content_processor,
+                &parent.ts,
+                is_update,
+            )
+            .await?;
+        }
+
+        Ok(top_level_messages)
+    }
+
     /// Sync a single channel, emitting documents through the SDK's
     /// `SyncContext`. When `is_update` is true the events are emitted as
     /// `DocumentUpdated` (used by the realtime path); otherwise as
@@ -447,147 +846,103 @@ impl SyncManager {
         );
 
         let oldest = channel_oldest_for_sync(last_ts);
+        let discovery_messages = self
+            .fetch_history_window_all(token, &channel.id, oldest.as_deref(), None)
+            .await?;
 
-        let mut all_messages = Vec::new();
-        let mut cursor = None;
-        let mut latest_ts: Option<String> = last_ts.map(|s| s.to_string());
-
-        loop {
-            let response = self
-                .slack_client
-                .get_conversation_history(
-                    token,
-                    &channel.id,
-                    cursor.as_deref(),
-                    oldest.as_deref(),
-                    None,
-                )
-                .await?;
-
-            if let Some(first_message) = response.messages.first() {
-                latest_ts = Some(first_message.ts.clone());
-            }
-
-            all_messages.extend(response.messages);
-
-            if !response.has_more {
-                break;
-            }
-
-            cursor = response
-                .response_metadata
-                .and_then(|meta| meta.next_cursor)
-                .filter(|c| !c.is_empty());
-
-            if cursor.is_none() {
-                break;
-            }
-        }
-
-        // Slack's `conversations.history` returns top-level messages only —
-        // thread replies must be fetched per parent via `conversations.replies`.
-        // For each parent with reply_count > 0, fetch its replies (skipping
-        // index 0, which is the parent itself, already in `all_messages`).
-        let parents_with_replies: Vec<String> = all_messages
+        let latest_ts = discovery_messages
             .iter()
-            .filter(|m| m.reply_count.unwrap_or(0) > 0)
-            .map(|m| m.ts.clone())
-            .collect();
+            .map(|message| message.ts.as_str())
+            .max()
+            .map(|ts| ts.to_string())
+            .or_else(|| last_ts.map(|s| s.to_string()));
 
-        for parent_ts in parents_with_replies {
-            let mut cursor = None;
-            loop {
-                let response = match self
-                    .slack_client
-                    .get_thread_replies(token, &channel.id, &parent_ts, cursor.as_deref())
+        let mut affected_dates = BTreeSet::new();
+        for message in discovery_messages
+            .iter()
+            .filter(|message| top_level_message(message))
+        {
+            affected_dates.insert(slack_ts_date(&message.ts)?);
+        }
+
+        let mut message_groups = Vec::new();
+        let mut all_messages = Vec::new();
+
+        for date in affected_dates {
+            let (day_oldest, day_latest) = day_bounds(date)?;
+            let day_messages = self
+                .fetch_history_window_all(token, &channel.id, Some(&day_oldest), Some(&day_latest))
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to fully fetch Slack day {} for channel {}",
+                        date, channel.id
+                    )
+                })?;
+
+            let mut top_level_messages: Vec<SlackMessage> = day_messages
+                .iter()
+                .filter(|message| top_level_message(message))
+                .cloned()
+                .collect();
+            sort_messages_chronological(&mut top_level_messages);
+            all_messages.extend(top_level_messages.clone());
+
+            message_groups.extend(content_processor.group_messages_by_date(
+                channel.id.clone(),
+                channel.display_name(),
+                top_level_messages.clone(),
+            )?);
+
+            for parent in top_level_messages
+                .iter()
+                .filter(|message| message.reply_count.unwrap_or(0) > 0)
+            {
+                let thread_messages = self
+                    .fetch_thread_replies_all(token, &channel.id, &parent.ts)
                     .await
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        warn!(
-                            "Failed to fetch thread replies for {} in {}: {}",
-                            parent_ts,
-                            channel.display_name(),
-                            e
-                        );
-                        break;
-                    }
-                };
-                all_messages.extend(response.messages.into_iter().skip(1));
-                if !response.has_more {
-                    break;
+                    .with_context(|| {
+                        format!(
+                            "Failed to fully fetch Slack thread {} for channel {}",
+                            parent.ts, channel.id
+                        )
+                    })?;
+
+                all_messages.extend(thread_messages.clone());
+                let thread_date = slack_ts_date(&parent.ts)?;
+                let mut thread_group = MessageGroup::new(
+                    channel.id.clone(),
+                    channel.display_name(),
+                    thread_date,
+                    true,
+                    Some(parent.ts.clone()),
+                );
+                for message in thread_messages {
+                    let author_name = content_processor.get_author_name(&message.user);
+                    thread_group.add_message(message, author_name);
                 }
-                cursor = response
-                    .response_metadata
-                    .and_then(|meta| meta.next_cursor)
-                    .filter(|c| !c.is_empty());
-                if cursor.is_none() {
-                    break;
-                }
+                message_groups.push(thread_group);
             }
         }
 
-        let message_groups = content_processor.group_messages_by_date(
-            channel.id.clone(),
-            channel.display_name(),
-            all_messages.clone(),
-        )?;
-
-        let member_ids = self.fetch_channel_members(token, &channel.id).await?;
-        let member_emails = content_processor.resolve_member_emails(&member_ids);
-
-        // Emit channel membership as a single group sync event. Documents in
-        // this channel reference `group_email` via `permissions.groups`, so the
-        // member list never needs to be inlined into individual doc events.
-        let group_event = ConnectorEvent::GroupMembershipSync {
-            sync_run_id: sync_run_id.clone(),
-            source_id: source_id.clone(),
-            group_email: group_email.to_string(),
-            group_name: Some(format!("#{}", channel.display_name())),
-            member_emails: member_emails.clone(),
-        };
-        if let Err(e) = ctx.emit_event(group_event).await {
-            warn!(
-                "Failed to emit group membership sync for {}: {}",
-                channel.display_name(),
-                e
-            );
-        }
+        self.emit_channel_group_membership(
+            ctx,
+            &sync_run_id,
+            &source_id,
+            channel,
+            group_email,
+            token,
+            content_processor,
+        )
+        .await?;
 
         let mut published_groups = 0;
         let mut published_files = 0;
 
         for group in message_groups {
-            let content_id = match ctx.store_content(&group.to_document_content()).await {
-                Ok(id) => id,
-                Err(e) => {
-                    error!(
-                        "Failed to store content via SDK for Slack message group: {}",
-                        e
-                    );
-                    continue;
-                }
-            };
-
-            let event = if is_update {
-                group.to_update_event(
-                    sync_run_id.clone(),
-                    source_id.clone(),
-                    content_id,
-                    group_email,
-                )
-            } else {
-                group.to_connector_event(
-                    sync_run_id.clone(),
-                    source_id.clone(),
-                    content_id,
-                    group_email,
-                )
-            };
-            if let Err(e) = ctx.emit_event(event).await {
-                error!("Failed to emit message group event: {}", e);
-                continue;
-            }
+            self.emit_message_group(ctx, group, &sync_run_id, &source_id, group_email, is_update)
+                .await
+                .context("Failed to emit Slack message group")?;
             published_groups += 1;
         }
 

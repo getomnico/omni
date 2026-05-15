@@ -10,6 +10,7 @@ use omni_connector_sdk::SyncContext;
 use omni_slack_connector::models::{SlackConnectorState, SlackMessage};
 use omni_slack_connector::sync::SyncManager;
 use shared::models::{SourceType, SyncType};
+use sqlx::Row;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -87,6 +88,23 @@ async fn setup_full_sync(
     .await;
 
     (user_id, source_id, sync_run_id)
+}
+
+async fn content_for_event(
+    fixture: &SlackConnectorTestFixture,
+    event: &serde_json::Value,
+) -> String {
+    let content_id = event
+        .get("content_id")
+        .and_then(|v| v.as_str())
+        .expect("event should include content_id");
+    let row = sqlx::query("SELECT content FROM content_blobs WHERE id = $1")
+        .bind(content_id)
+        .fetch_one(fixture.pool())
+        .await
+        .unwrap();
+    let bytes: Vec<u8> = row.get("content");
+    String::from_utf8(bytes).unwrap()
 }
 
 #[tokio::test]
@@ -420,6 +438,26 @@ async fn test_sync_persists_state_for_incremental() {
     // Verify second sync also completed
     let sync_run = fixture.get_sync_run(&sync_run_id_2).await.unwrap().unwrap();
     assert_eq!(sync_run.status, shared::models::SyncStatus::Completed);
+
+    let events_after = fixture.get_queued_events(&source_id).await.unwrap();
+    let c001_day_update = events_after[events_before_count..]
+        .iter()
+        .find(|event| {
+            event.get("document_id").and_then(|v| v.as_str())
+                == Some("slack_channel_C001_2025-01-15")
+        })
+        .expect("second sync should emit a full C001 day replacement");
+    let content = content_for_event(&fixture, c001_day_update).await;
+    assert!(
+        content.contains("Hello from general!"),
+        "full-day replacement should preserve earlier same-day messages: {}",
+        content
+    );
+    assert!(
+        content.contains("A new later message"),
+        "full-day replacement should include the new same-day message: {}",
+        content
+    );
 }
 
 #[tokio::test]

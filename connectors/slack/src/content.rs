@@ -75,9 +75,24 @@ impl ContentProcessor {
             let date = datetime.date_naive();
             let author_name = self.get_author_name(&message.user);
 
-            // Check if this is a thread message
+            // Slack thread parents can carry thread_ts == ts; keep those in
+            // the channel-day doc and only route true replies to thread docs.
             if let Some(thread_ts) = &message.thread_ts {
-                // This is a thread reply
+                if thread_ts == &message.ts {
+                    let group = groups.entry(date).or_insert_with(|| {
+                        MessageGroup::new(
+                            channel_id.clone(),
+                            channel_name.clone(),
+                            date,
+                            false,
+                            None,
+                        )
+                    });
+
+                    group.add_message(message, author_name);
+                    continue;
+                }
+
                 let thread_key = format!("{}_{}", channel_id, thread_ts);
 
                 let group = thread_groups.entry(thread_key).or_insert_with(|| {
@@ -142,15 +157,12 @@ impl ContentProcessor {
             current_group.add_message(message, author);
 
             if current_group.should_split() {
-                // Remove the last message that caused the split
                 let last_message = current_group.messages.pop().unwrap();
 
-                // Add the completed group
                 if !current_group.messages.is_empty() {
                     groups.push(current_group);
                 }
 
-                // Start a new group with the message that caused the split
                 current_group = MessageGroup::new(
                     group.channel_id.clone(),
                     group.channel_name.clone(),
@@ -162,7 +174,6 @@ impl ContentProcessor {
             }
         }
 
-        // Add the final group if it has messages
         if !current_group.messages.is_empty() {
             groups.push(current_group);
         }
