@@ -15,9 +15,8 @@ export const load: PageServerLoad = async ({ locals }) => {
     const googleConnectorConfig = await getConnectorConfigPublic('google')
 
     const userSources = await sourcesRepository.getByUserId(locals.user.id)
-    const orgWideSources = (await sourcesRepository.getOrgWide()).filter((s) => s.isActive)
 
-    // Load sync status and document counts for user-owned sources
+    // Load sync status and document counts for personal sources owned by this user
     const allLatestSyncRuns = await sourcesRepository.getLatestSyncRuns()
     const userSourceIds = userSources.map((s) => s.id)
     const latestSyncRuns = new Map(
@@ -43,7 +42,6 @@ export const load: PageServerLoad = async ({ locals }) => {
         googleOAuthConfigured: !!(
             googleConnectorConfig && googleConnectorConfig.config.oauth_client_id
         ),
-        orgWideSources,
         userSources,
         latestSyncRuns,
         documentCounts,

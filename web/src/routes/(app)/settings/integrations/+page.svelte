@@ -16,7 +16,7 @@
     import { Globe, HardDrive, Mail, Trash2 } from '@lucide/svelte'
     import GoogleOAuthSetup from '$lib/components/google-oauth-setup.svelte'
     import { getSourceIconPath } from '$lib/utils/icons'
-    import { formatDate, getSourceNoun, getStatusColor } from '$lib/utils/sources'
+    import { formatDate, getSourceNoun } from '$lib/utils/sources'
     import { SourceType } from '$lib/types'
     import { invalidateAll } from '$app/navigation'
     import { toast } from 'svelte-sonner'
@@ -31,6 +31,13 @@
     let togglingSourceId = $state<string | null>(null)
 
     type SourceId = string
+    type SyncStatusPayload = {
+        overall?: {
+            latestSyncRuns?: SyncRun[]
+            documentCounts?: Record<SourceId, number>
+        }
+    }
+
     let latestSyncRuns = $state<Map<SourceId, SyncRun>>(data.latestSyncRuns)
     let documentCounts = $state<Record<SourceId, number>>(data.documentCounts)
     let eventSource = $state<EventSource | null>(null)
@@ -40,29 +47,19 @@
     })
 
     onMount(() => {
-        eventSource = new EventSource('/api/indexing/status')
+        eventSource = new EventSource('/api/indexing/status?scope=user')
         eventSource.onmessage = (event) => {
             try {
-                const statusData = JSON.parse(event.data)
+                const statusData = JSON.parse(event.data) as SyncStatusPayload
                 if (statusData.overall?.latestSyncRuns) {
                     const updated = new Map(latestSyncRuns)
-                    const userSourceIds = new Set(data.userSources.map((s) => s.id))
-                    statusData.overall.latestSyncRuns.forEach((sync: any) => {
-                        if (sync.sourceId && userSourceIds.has(sync.sourceId)) {
-                            updated.set(sync.sourceId, sync)
-                        }
-                    })
+                    for (const sync of statusData.overall.latestSyncRuns) {
+                        updated.set(sync.sourceId, sync)
+                    }
                     latestSyncRuns = updated
                 }
                 if (statusData.overall?.documentCounts) {
-                    const userSourceIds = new Set(data.userSources.map((s) => s.id))
-                    const filtered: Record<string, number> = {}
-                    for (const [id, count] of Object.entries(statusData.overall.documentCounts)) {
-                        if (userSourceIds.has(id)) {
-                            filtered[id] = count as number
-                        }
-                    }
-                    documentCounts = filtered
+                    documentCounts = statusData.overall.documentCounts
                 }
             } catch {
                 // Silently ignore — SSE is best-effort and user already has initial load data
@@ -133,50 +130,24 @@
 </script>
 
 <svelte:head>
-    <title>Integrations - Settings</title>
+    <title>My Integrations - Settings</title>
 </svelte:head>
 
 <div class="h-full overflow-y-auto p-6 py-8 pb-24">
     <div class="mx-auto max-w-screen-lg space-y-8">
         <!-- Page Header -->
         <div>
-            <h1 class="text-3xl font-bold tracking-tight">Integrations</h1>
-            <p class="text-muted-foreground mt-2">Apps that are currently connected with Omni</p>
+            <h1 class="text-3xl font-bold tracking-tight">My Integrations</h1>
+            <p class="text-muted-foreground mt-2">Your personal account connections.</p>
         </div>
-
-        <!-- Org-wide Sources -->
-        {#if data.orgWideSources.length > 0}
-            <div class="space-y-4">
-                <h2 class="text-xl font-semibold">Organization</h2>
-                <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                    {#each data.orgWideSources as source}
-                        <div class="bg-card flex items-center gap-3 rounded-lg border p-4">
-                            <div
-                                class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm dark:border-white/10 dark:shadow-none">
-                                {#if getSourceIconPath(source.sourceType)}
-                                    <img
-                                        src={getSourceIconPath(source.sourceType)}
-                                        alt={source.name}
-                                        class="h-6 w-6 object-contain" />
-                                {:else if source.sourceType === 'web'}
-                                    <Globe class="h-6 w-6 text-slate-700" />
-                                {:else if source.sourceType === 'local_files'}
-                                    <HardDrive class="h-6 w-6 text-slate-700" />
-                                {:else if source.sourceType === 'imap'}
-                                    <Mail class="h-6 w-6 text-slate-700" />
-                                {/if}
-                            </div>
-                            <span class="truncate font-medium">{source.name}</span>
-                        </div>
-                    {/each}
-                </div>
-            </div>
-        {/if}
 
         <!-- User's Own Sources -->
         {#if data.userSources.length > 0}
             <div class="space-y-4">
-                <h2 class="text-xl font-semibold">Your Connections</h2>
+                <div>
+                    <h2 class="text-xl font-semibold">Personal Connections</h2>
+                    <p class="text-muted-foreground text-sm">Accounts connected only for you.</p>
+                </div>
                 <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                     {#each data.userSources as source}
                         {@const noun = getSourceNoun(source.sourceType as SourceType)}
@@ -274,10 +245,8 @@
         {#if data.googleOAuthConfigured}
             <div class="space-y-4">
                 <div>
-                    <h2 class="text-xl font-semibold">Available Connections</h2>
-                    <p class="text-muted-foreground text-sm">
-                        Connect your own accounts to sync data with Omni
-                    </p>
+                    <h2 class="text-xl font-semibold">Available Integrations</h2>
+                    <p class="text-muted-foreground text-sm">Connect your own accounts.</p>
                 </div>
 
                 <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
@@ -302,8 +271,7 @@
                         </CardHeader>
                         <CardContent class="flex-1">
                             <p class="text-muted-foreground text-sm">
-                                Connect your Google Drive and Gmail with read-only access. Your data
-                                stays private to you.
+                                Connect your own Google Drive and Gmail with read-only access.
                             </p>
                         </CardContent>
                         {#if !hasAllGoogleSources}
@@ -312,18 +280,17 @@
                                     size="sm"
                                     class="cursor-pointer"
                                     onclick={() => (showGoogleOAuthSetup = true)}>
-                                    Connect with Google
+                                    Connect your Google account
                                 </Button>
                             </CardFooter>
                         {/if}
                     </Card>
                 </div>
             </div>
-        {:else if data.orgWideSources.length === 0 && data.userSources.length === 0}
+        {:else if data.userSources.length === 0}
             <div class="py-12 text-center">
                 <p class="text-muted-foreground text-sm">
-                    No integrations are available yet. Contact your administrator to set up
-                    connections.
+                    Personal integrations are not available yet. Contact your administrator.
                 </p>
             </div>
         {/if}
@@ -345,7 +312,7 @@
         <AlertDialog.Header>
             <AlertDialog.Title>Disconnect {sourceToDisconnect?.name}?</AlertDialog.Title>
             <AlertDialog.Description>
-                This will stop syncing data from this source. You can reconnect at any time.
+                This will stop syncing this personal source. You can reconnect at any time.
             </AlertDialog.Description>
         </AlertDialog.Header>
         <AlertDialog.Footer>

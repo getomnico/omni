@@ -1,6 +1,6 @@
 import { db } from '$lib/server/db/index.js'
-import { syncRuns, sources, documents } from '$lib/server/db/schema.js'
-import { eq, desc, count, sql } from 'drizzle-orm'
+import { documents } from '$lib/server/db/schema.js'
+import { sql, type SQL } from 'drizzle-orm'
 import { error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
 import postgres from 'postgres'
@@ -10,36 +10,44 @@ import { logger } from '$lib/server/logger.js'
 type SourceId = string
 
 // Cache for document counts per source (refreshed every 30 seconds)
-let documentCountCache: Record<SourceId, number> = {}
-let documentCountCacheTime = 0
+const documentCountCache = new Map<
+    string,
+    { counts: Record<SourceId, number>; timestamp: number }
+>()
 const DOCUMENT_COUNT_CACHE_TTL = 30000 // 30 seconds
 
-async function getDocumentCounts(): Promise<Record<SourceId, number>> {
+async function getDocumentCounts(
+    sourceFilter: SQL,
+    cacheKey: string,
+): Promise<Record<SourceId, number>> {
     const now = Date.now()
-    if (now - documentCountCacheTime < DOCUMENT_COUNT_CACHE_TTL) {
-        return documentCountCache
+    const cached = documentCountCache.get(cacheKey)
+    if (cached && now - cached.timestamp < DOCUMENT_COUNT_CACHE_TTL) {
+        return cached.counts
     }
 
     try {
-        const counts = await db
-            .select({
-                sourceId: documents.sourceId,
-                count: count(),
-            })
-            .from(documents)
-            .groupBy(documents.sourceId)
+        const counts = await db.execute(sql`
+            SELECT
+                d.source_id AS "sourceId",
+                COUNT(*)::int AS count
+            FROM ${documents} d
+            JOIN sources s ON s.id = d.source_id
+            WHERE s.is_deleted = false
+            ${sourceFilter}
+            GROUP BY d.source_id
+        `)
 
         const countMap: Record<SourceId, number> = {}
         for (const row of counts) {
-            countMap[row.sourceId] = row.count
+            countMap[row.sourceId as SourceId] = Number(row.count)
         }
 
-        documentCountCache = countMap
-        documentCountCacheTime = now
+        documentCountCache.set(cacheKey, { counts: countMap, timestamp: now })
         return countMap
-    } catch (error) {
-        logger.error('Error fetching document counts:', error)
-        return documentCountCache // Return stale cache on error
+    } catch (err) {
+        logger.error('Error fetching document counts:', err)
+        return cached?.counts ?? {}
     }
 }
 
@@ -50,6 +58,24 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
     const isAdmin = locals.user.role === 'admin'
     const userId = locals.user.id
+    const requestedScope = url.searchParams.get('scope')
+    if (requestedScope && !['org', 'user', 'all'].includes(requestedScope)) {
+        throw error(400, 'scope must be "org", "user", or "all"')
+    }
+
+    const statusScope = requestedScope ?? (isAdmin ? 'all' : 'user')
+    if ((statusScope === 'org' || statusScope === 'all') && !isAdmin) {
+        throw error(403, 'Forbidden')
+    }
+
+    const sourceFilter =
+        statusScope === 'org'
+            ? sql`AND s.scope = 'org'`
+            : statusScope === 'user'
+              ? sql`AND s.scope = 'user' AND s.created_by = ${userId}`
+              : sql``
+    const documentCountCacheKey = statusScope === 'user' ? `user:${userId}` : statusScope
+
     const encoder = new TextEncoder()
     let isClosed = false
     let listenSql: postgres.Sql | null = null
@@ -74,7 +100,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     const stream = new ReadableStream({
         async start(controller) {
             // Function to send data to client
-            const sendData = (data: any) => {
+            const sendData = (data: unknown) => {
                 if (isClosed) return
 
                 try {
@@ -111,13 +137,16 @@ export const GET: RequestHandler = async ({ url, locals }) => {
                         FROM sources s
                         LEFT JOIN sync_runs sr ON sr.source_id = s.id
                         WHERE s.is_deleted = false
-                        ${isAdmin ? sql`` : sql`AND s.created_by = ${userId}`}
+                        ${sourceFilter}
                         ORDER BY s.id, sr.started_at DESC NULLS LAST
                     `)
                     const latestSyncRuns = [...result]
 
                     // Get cached document counts per source
-                    const documentCounts = await getDocumentCounts()
+                    const documentCounts = await getDocumentCounts(
+                        sourceFilter,
+                        documentCountCacheKey,
+                    )
 
                     const statusData = {
                         timestamp: Date.now(),

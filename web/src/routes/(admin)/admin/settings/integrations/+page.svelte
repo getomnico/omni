@@ -49,6 +49,13 @@
     let { data }: PageProps = $props()
 
     type SourceId = string
+    type SyncStatusPayload = {
+        overall?: {
+            latestSyncRuns?: SyncRun[]
+            documentCounts?: Record<SourceId, number>
+        }
+    }
+
     let latestSyncRuns = $state<Map<SourceId, SyncRun>>(data.latestSyncRuns)
     let documentCounts = $state<Record<SourceId, number>>({})
     let eventSource = $state<EventSource | null>(null)
@@ -59,17 +66,15 @@
 
     onMount(() => {
         // Set up Server-Sent Events for real-time sync status updates
-        eventSource = new EventSource('/api/indexing/status')
+        eventSource = new EventSource('/api/indexing/status?scope=org')
         eventSource.onmessage = (event) => {
             try {
-                const statusData = JSON.parse(event.data)
+                const statusData = JSON.parse(event.data) as SyncStatusPayload
                 if (statusData.overall?.latestSyncRuns) {
                     const updated = new Map(latestSyncRuns)
-                    statusData.overall.latestSyncRuns.forEach((sync: any) => {
-                        if (sync.sourceId) {
-                            updated.set(sync.sourceId, sync)
-                        }
-                    })
+                    for (const sync of statusData.overall.latestSyncRuns) {
+                        updated.set(sync.sourceId, sync)
+                    }
                     latestSyncRuns = updated
                 }
                 if (statusData.overall?.documentCounts) {
@@ -169,14 +174,18 @@
         <!-- Page Header -->
         <div>
             <h1 class="text-3xl font-bold tracking-tight">Integrations</h1>
-            <p class="text-muted-foreground mt-2">Manage your data source connections</p>
+            <p class="text-muted-foreground mt-2">
+                Manage organization-level data source connections
+            </p>
         </div>
 
         <!-- Connected Sources Section -->
         <div class="space-y-4">
             <div>
-                <h2 class="text-xl font-semibold">Connected Sources</h2>
-                <p class="text-muted-foreground text-sm">Active data sources syncing with Omni</p>
+                <h2 class="text-xl font-semibold">Organization Integrations</h2>
+                <p class="text-muted-foreground text-sm">
+                    Org-level data sources syncing with Omni
+                </p>
             </div>
 
             {#if data.connectedSources.length > 0}
@@ -275,7 +284,8 @@
             {:else}
                 <div class="py-12 text-center">
                     <p class="text-muted-foreground text-sm">
-                        No connected sources yet. Connect an integration below to get started.
+                        No org-level integrations configured yet. Connect an integration below to
+                        get started.
                     </p>
                 </div>
             {/if}
@@ -286,7 +296,7 @@
             <div>
                 <h2 class="text-xl font-semibold">Available Integrations</h2>
                 <p class="text-muted-foreground text-sm">
-                    Connect your apps to sync their data and take action with Omni
+                    Connect apps at the organization level to sync shared data with Omni
                 </p>
             </div>
 
