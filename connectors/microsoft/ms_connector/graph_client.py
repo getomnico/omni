@@ -219,6 +219,37 @@ class GraphClient:
             else:
                 next_url = None
 
+    async def get_delta_pages(
+        self,
+        url: str,
+        delta_token: str | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> AsyncIterator[tuple[list[dict[str, Any]], str | None, str | None]]:
+        """Execute a delta query, yielding one page at a time.
+
+        Yields (items, next_link, delta_link) tuples. For intermediate pages,
+        next_link is set and delta_link is None. For the final page, next_link
+        is None and delta_link is the @odata.deltaLink to resume from next run.
+
+        Either next_link or delta_link can be stored as the resume token —
+        both are absolute URLs accepted by `delta_token` on subsequent calls.
+        """
+        if delta_token:
+            next_url: str | None = delta_token
+            next_params = None
+        else:
+            next_url = url
+            next_params = params
+
+        while next_url:
+            data = await self.get(next_url, params=next_params)
+            items: list[dict[str, Any]] = data.get("value", [])
+            next_link = data.get("@odata.nextLink")
+            delta_link = data.get("@odata.deltaLink") if not next_link else None
+            yield items, next_link, delta_link
+            next_url = next_link
+            next_params = None
+
     async def get_delta(
         self,
         url: str,
@@ -231,30 +262,15 @@ class GraphClient:
         for a full snapshot. On subsequent calls, pass the previously returned
         delta_token for incremental changes.
         """
-        if delta_token:
-            # Delta link is an absolute URL — use it directly
-            next_url: str | None = delta_token
-            next_params = None
-        else:
-            next_url = url
-            next_params = params
-
-        items: list[dict[str, Any]] = []
+        all_items: list[dict[str, Any]] = []
         new_delta_token: str | None = None
-
-        while next_url:
-            data = await self.get(next_url, params=next_params)
-            items.extend(data.get("value", []))
-
-            next_link = data.get("@odata.nextLink")
-            if next_link:
-                next_url = next_link
-                next_params = None
-            else:
-                new_delta_token = data.get("@odata.deltaLink")
-                next_url = None
-
-        return items, new_delta_token
+        async for items, _next_link, delta_link in self.get_delta_pages(
+            url, delta_token=delta_token, params=params
+        ):
+            all_items.extend(items)
+            if delta_link:
+                new_delta_token = delta_link
+        return all_items, new_delta_token
 
     async def list_users(self) -> list[dict[str, Any]]:
         """Enumerate all users in the tenant."""

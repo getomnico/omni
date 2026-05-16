@@ -328,9 +328,9 @@ class TeamsSyncer:
         delta_tokens: dict[str, str] = state.get("delta_tokens", {})
         last_sync_ts: dict[str, str] = state.get("last_sync_ts", {})
         chat_last_sync_ts: dict[str, str] = state.get("chat_last_sync_ts", {})
-        new_tokens: dict[str, str] = {}
-        new_sync_ts: dict[str, str] = {}
-        new_chat_sync_ts: dict[str, str] = {}
+        new_tokens: dict[str, str] = dict(delta_tokens)
+        new_sync_ts: dict[str, str] = dict(last_sync_ts)
+        new_chat_sync_ts: dict[str, str] = dict(chat_last_sync_ts)
 
         cutoff = datetime.now(timezone.utc) - timedelta(days=DEFAULT_MAX_AGE_DAYS)
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -343,7 +343,11 @@ class TeamsSyncer:
 
         for team in teams:
             if ctx.is_cancelled():
-                return state
+                return {
+                    "delta_tokens": new_tokens,
+                    "last_sync_ts": new_sync_ts,
+                    "chat_last_sync_ts": new_chat_sync_ts,
+                }
 
             team_id = team["id"]
             team_name = team.get("displayName", team_id)
@@ -360,7 +364,11 @@ class TeamsSyncer:
 
             for channel in channels:
                 if ctx.is_cancelled():
-                    return state
+                    return {
+                        "delta_tokens": new_tokens,
+                        "last_sync_ts": new_sync_ts,
+                        "chat_last_sync_ts": new_chat_sync_ts,
+                    }
 
                 channel_id = channel["id"]
                 channel_name = channel.get("displayName", channel_id)
@@ -842,7 +850,7 @@ class TeamsSyncer:
         channel_state: dict[str, Any] | None = None,
     ) -> dict[str, str]:
         """Iterate users, collect their chats, and sync messages."""
-        new_chat_sync_ts: dict[str, str] = {}
+        new_chat_sync_ts: dict[str, str] = dict(chat_last_sync_ts)
 
         try:
             users = await client.list_users()

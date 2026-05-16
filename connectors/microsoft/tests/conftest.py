@@ -47,6 +47,8 @@ class MockGraphAPI:
         # site_id -> {"status": int, "body": dict} for forcing failures
         self.site_drives_errors: dict[str, dict[str, Any]] = {}
         self.drive_delta_errors: dict[str, list[dict[str, Any]]] = {}
+        self.user_drive_delta_errors: dict[str, list[dict[str, Any]]] = {}
+        self.user_drive_delta_pages: dict[str, list[list[dict[str, Any]]]] = {}
         self.site_diagnostics: dict[str, dict[str, Any]] = {}
         self.file_contents: dict[str, bytes] = {}
         self.groups: list[dict[str, Any]] = []
@@ -72,6 +74,8 @@ class MockGraphAPI:
         self.drive_items_by_drive.clear()
         self.site_drives_errors.clear()
         self.drive_delta_errors.clear()
+        self.user_drive_delta_errors.clear()
+        self.user_drive_delta_pages.clear()
         self.site_diagnostics.clear()
         self.file_contents.clear()
         self.groups.clear()
@@ -88,7 +92,7 @@ class MockGraphAPI:
     def add_user(self, user: dict[str, Any]) -> None:
         self.users.append(user)
 
-    def add_drive_item(self, user_id: str, item: dict[str, Any]) -> None:
+    def add_user_drive_item(self, user_id: str, item: dict[str, Any]) -> None:
         self.drive_items.setdefault(user_id, []).append(item)
 
     def add_mail_message(self, user_id: str, message: dict[str, Any]) -> None:
@@ -136,6 +140,18 @@ class MockGraphAPI:
         self.drive_delta_errors.setdefault(drive_id, []).append(
             {"status": status, "body": body or {}}
         )
+
+    def queue_user_drive_delta_error(
+        self, user_id: str, status: int, body: dict[str, Any] | None = None
+    ) -> None:
+        self.user_drive_delta_errors.setdefault(user_id, []).append(
+            {"status": status, "body": body or {}}
+        )
+
+    def set_user_drive_delta_pages(
+        self, user_id: str, pages: list[list[dict[str, Any]]]
+    ) -> None:
+        self.user_drive_delta_pages[user_id] = pages
 
     def set_site_diagnostic(self, site_id: str, payload: dict[str, Any]) -> None:
         self.site_diagnostics[site_id] = payload
@@ -202,6 +218,29 @@ class MockGraphAPI:
 
         async def user_drive_delta(request: Request) -> JSONResponse:
             uid = request.path_params["uid"]
+            queued = mock.user_drive_delta_errors.get(uid)
+            if queued:
+                err = queued.pop(0)
+                return JSONResponse(err["body"], status_code=err["status"])
+            paged = mock.user_drive_delta_pages.get(uid)
+            if paged:
+                page_idx = int(request.query_params.get("page", "0"))
+                page_items = paged[page_idx] if page_idx < len(paged) else []
+                if page_idx + 1 < len(paged):
+                    next_link = (
+                        f"{base_url}/v1.0/users/{uid}/drive/root/delta"
+                        f"?page={page_idx + 1}"
+                    )
+                    return JSONResponse(
+                        {"value": page_items, "@odata.nextLink": next_link}
+                    )
+                delta_link = (
+                    f"{base_url}/v1.0/users/{uid}/drive/root/delta"
+                    f"?deltatoken=latest"
+                )
+                return JSONResponse(
+                    {"value": page_items, "@odata.deltaLink": delta_link}
+                )
             items = mock.drive_items.get(uid, [])
             delta_link = f"{base_url}/users/{uid}/drive/root/delta?deltatoken=latest"
             return JSONResponse({"value": items, "@odata.deltaLink": delta_link})
@@ -215,6 +254,7 @@ class MockGraphAPI:
 
         async def mail_delta(request: Request) -> JSONResponse:
             uid = request.path_params["uid"]
+            folder = request.path_params.get("folder", "inbox")
             messages = mock.mail_messages.get(uid, [])
             # Respect $filter on receivedDateTime for max-age testing
             filter_param = request.query_params.get("$filter", "")
@@ -224,7 +264,7 @@ class MockGraphAPI:
                     m for m in messages if m.get("receivedDateTime", "") >= cutoff_str
                 ]
             delta_link = (
-                f"{base_url}/users/{uid}/mailFolders/inbox/messages/delta"
+                f"{base_url}/users/{uid}/mailFolders/{folder}/messages/delta"
                 f"?deltatoken=latest"
             )
             return JSONResponse({"value": messages, "@odata.deltaLink": delta_link})
@@ -326,6 +366,16 @@ class MockGraphAPI:
             attachments = mock.message_attachments.get(key, [])
             return JSONResponse({"value": attachments})
 
+        async def mail_attachment_detail(request: Request) -> JSONResponse:
+            uid = request.path_params["uid"]
+            mid = request.path_params["mid"]
+            att_id = request.path_params["att_id"]
+            key = f"{uid}:{mid}"
+            for attachment in mock.message_attachments.get(key, []):
+                if attachment.get("id") == att_id:
+                    return JSONResponse(attachment)
+            return JSONResponse({"error": {"code": "itemNotFound"}}, status_code=404)
+
         async def resolve_share(request: Request) -> JSONResponse:
             token = request.path_params["token"]
             drive_item = mock.share_drive_items.get(token)
@@ -341,13 +391,14 @@ class MockGraphAPI:
             Route("/v1.0/users/{uid}/drive/root/delta", user_drive_delta),
             Route("/v1.0/drives/{did}/items/{iid}/content", drive_item_content),
             Route("/v1.0/drives/{did}/items/{iid}/permissions", item_permissions),
-            Route(
-                "/v1.0/users/{uid}/mailFolders/inbox/messages/delta",
-                mail_delta,
-            ),
+            Route("/v1.0/users/{uid}/mailFolders/{folder}/messages/delta", mail_delta),
             Route(
                 "/v1.0/users/{uid}/messages/{mid}/attachments",
                 mail_attachments,
+            ),
+            Route(
+                "/v1.0/users/{uid}/messages/{mid}/attachments/{att_id}",
+                mail_attachment_detail,
             ),
             Route("/v1.0/users/{uid}/calendarView/delta", calendar_delta),
             Route("/v1.0/groups", list_groups),

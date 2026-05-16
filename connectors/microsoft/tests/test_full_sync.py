@@ -7,6 +7,7 @@ import pytest
 import httpx
 
 from omni_connector.testing import count_events, get_events, wait_for_sync
+from tests.conftest import _create_ms_source
 
 GROUP_ID = "grp-eng-001"
 
@@ -35,7 +36,7 @@ async def test_onedrive_sync(
     harness, seed, onedrive_source_id, mock_graph_api, cm_client: httpx.AsyncClient
 ):
     mock_graph_api.add_user(_make_user())
-    mock_graph_api.add_drive_item(
+    mock_graph_api.add_user_drive_item(
         USER_ID,
         {
             "id": ITEM_ID,
@@ -82,6 +83,60 @@ async def test_onedrive_sync(
 
     state = await seed.get_connector_state(onedrive_source_id)
     assert state is not None, "connector_state should be saved after sync"
+
+
+async def test_onedrive_paged_delta_sync(
+    harness, seed, mock_graph_server, mock_graph_api, cm_client: httpx.AsyncClient
+):
+    source_id = await _create_ms_source(
+        seed, mock_graph_server, mock_graph_api, "one_drive"
+    )
+    mock_graph_api.add_user(_make_user())
+    mock_graph_api.set_user_drive_delta_pages(
+        USER_ID,
+        [
+            [
+                {
+                    "id": "folder-page-1",
+                    "name": "Folder",
+                    "folder": {"childCount": 1},
+                    "parentReference": {"driveId": DRIVE_ID},
+                }
+            ],
+            [
+                {
+                    "id": "paged-file",
+                    "name": "paged.txt",
+                    "file": {"mimeType": "text/plain"},
+                    "size": 100,
+                    "webUrl": "https://contoso.com/paged.txt",
+                    "createdDateTime": "2026-03-01T08:00:00Z",
+                    "lastModifiedDateTime": "2026-03-01T12:00:00Z",
+                    "parentReference": {"driveId": DRIVE_ID, "path": "/drive/root:/"},
+                }
+            ],
+        ],
+    )
+    mock_graph_api.set_file_content(DRIVE_ID, "paged-file", b"paged content")
+
+    resp = await cm_client.post(
+        "/sync", json={"source_id": source_id, "sync_type": "full"}
+    )
+    assert resp.status_code == 200, resp.text
+    row = await wait_for_sync(harness.db_pool, resp.json()["sync_run_id"], timeout=60)
+    assert row["status"] == "completed", row.get("error_message")
+
+    events = await get_events(harness.db_pool, source_id)
+    doc_ids = {
+        e["payload"]["document_id"]
+        for e in events
+        if e["event_type"] == "document_created"
+    }
+    assert f"onedrive:{DRIVE_ID}:paged-file" in doc_ids
+
+    state = await seed.get_connector_state(source_id)
+    token = state.get("delta_tokens", {}).get(USER_ID, "")
+    assert "deltatoken=latest" in token
 
 
 async def test_outlook_sync(
@@ -145,6 +200,59 @@ async def test_outlook_sync(
 
     state = await seed.get_connector_state(outlook_source_id)
     assert state is not None, "connector_state should be saved after sync"
+
+
+async def test_outlook_deleted_delta_emits_document_deleted(
+    harness, seed, mock_graph_server, mock_graph_api, cm_client: httpx.AsyncClient
+):
+    source_id = await _create_ms_source(
+        seed, mock_graph_server, mock_graph_api, "outlook"
+    )
+    mock_graph_api.add_user(_make_user())
+    mock_graph_api.add_mail_message(
+        USER_ID,
+        {
+            "id": "msg-delete",
+            "internetMessageId": "<delete-me@contoso.com>",
+            "subject": "Delete Me",
+            "bodyPreview": "temporary",
+            "body": {"contentType": "text", "content": "temporary"},
+            "from": {"emailAddress": {"address": "bob@contoso.com"}},
+            "toRecipients": [{"emailAddress": {"address": "alice@contoso.com"}}],
+            "ccRecipients": [],
+            "receivedDateTime": "2026-03-15T09:00:00Z",
+            "sentDateTime": "2026-03-15T08:55:00Z",
+            "hasAttachments": False,
+        },
+    )
+
+    resp = await cm_client.post(
+        "/sync", json={"source_id": source_id, "sync_type": "full"}
+    )
+    row = await wait_for_sync(harness.db_pool, resp.json()["sync_run_id"], timeout=60)
+    assert row["status"] == "completed", row.get("error_message")
+
+    mock_graph_api.mail_messages[USER_ID] = [
+        {
+            "id": "msg-delete",
+            "internetMessageId": "<delete-me@contoso.com>",
+            "@removed": {"reason": "deleted"},
+        }
+    ]
+
+    resp = await cm_client.post(
+        "/sync", json={"source_id": source_id, "sync_type": "incremental"}
+    )
+    row = await wait_for_sync(harness.db_pool, resp.json()["sync_run_id"], timeout=60)
+    assert row["status"] == "completed", row.get("error_message")
+
+    events = await get_events(harness.db_pool, source_id)
+    deleted_ids = {
+        e["payload"]["document_id"]
+        for e in events
+        if e["event_type"] == "document_deleted"
+    }
+    assert "mail:<delete-me@contoso.com>" in deleted_ids
 
 
 async def test_outlook_calendar_sync(
@@ -454,7 +562,7 @@ async def test_group_membership_sync(
     )
 
     # Add a drive item so the sync has something to process
-    mock_graph_api.add_drive_item(
+    mock_graph_api.add_user_drive_item(
         USER_ID,
         {
             "id": ITEM_ID,
@@ -1090,7 +1198,7 @@ async def test_onedrive_max_age_filters_old_files(
     )
     mock_graph_api.add_user(_make_user())
     # Recent file — should be indexed
-    mock_graph_api.add_drive_item(
+    mock_graph_api.add_user_drive_item(
         USER_ID,
         {
             "id": "item-recent",
@@ -1105,7 +1213,7 @@ async def test_onedrive_max_age_filters_old_files(
     )
     mock_graph_api.set_file_content(DRIVE_ID, "item-recent", b"recent content")
     # Old file — should be filtered out
-    mock_graph_api.add_drive_item(
+    mock_graph_api.add_user_drive_item(
         USER_ID,
         {
             "id": "item-old",

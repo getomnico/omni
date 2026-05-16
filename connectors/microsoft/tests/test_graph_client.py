@@ -7,10 +7,10 @@ import pytest
 import respx
 
 from ms_connector.graph_client import (
+    GRAPH_BASE_URL,
     AuthenticationError,
     GraphAPIError,
     GraphClient,
-    GRAPH_BASE_URL,
 )
 
 
@@ -177,6 +177,40 @@ async def test_delta_query_with_pagination(graph_client, mock_router):
     assert token is not None
 
 
+async def test_delta_pages_yields_resume_links(graph_client, mock_router):
+    page2_url = f"{GRAPH_BASE_URL}/delta?page=2"
+    delta_url = f"{GRAPH_BASE_URL}/delta?token=xyz"
+
+    mock_router.get(url__eq=f"{GRAPH_BASE_URL}/users/u1/drive/root/delta").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "value": [{"id": "item-1"}],
+                "@odata.nextLink": page2_url,
+            },
+        )
+    )
+    mock_router.get(url__eq=page2_url).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "value": [{"id": "item-2"}],
+                "@odata.deltaLink": delta_url,
+            },
+        )
+    )
+
+    pages = [
+        page
+        async for page in graph_client.get_delta_pages("/users/u1/drive/root/delta")
+    ]
+
+    assert pages == [
+        ([{"id": "item-1"}], page2_url, None),
+        ([{"id": "item-2"}], None, delta_url),
+    ]
+
+
 async def test_list_teams(graph_client, mock_router):
     mock_router.get(url__regex=r".*/groups(\?.*)?$").mock(
         return_value=httpx.Response(
@@ -235,7 +269,9 @@ async def test_channel_messages_delta(graph_client, mock_router):
                         "body": {"contentType": "text", "content": "Hello"},
                     }
                 ],
-                "@odata.deltaLink": f"{GRAPH_BASE_URL}/teams/t1/channels/c1/messages/delta?token=abc",
+                "@odata.deltaLink": (
+                    f"{GRAPH_BASE_URL}/teams/t1/channels/c1/messages/delta?token=abc"
+                ),
             },
         )
     )

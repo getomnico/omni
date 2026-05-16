@@ -52,25 +52,12 @@ class OneDriveSyncer(BaseSyncer):
         delta_token: str | None,
         user_cache: dict[str, str] | None = None,
         group_cache: dict[str, str] | None = None,
+        delta_tokens: dict[str, str] | None = None,
+        token_key: str | None = None,
     ) -> str | None:
         user_id = user["id"]
         display_name = user.get("displayName", user_id)
         logger.info("[onedrive] Syncing drive for user %s", display_name)
-
-        try:
-            items, new_token = await client.get_delta(
-                f"/users/{user_id}/drive/root/delta",
-                delta_token=delta_token,
-                params={
-                    "$select": "id,name,file,folder,size,webUrl,lastModifiedDateTime,"
-                    "createdDateTime,parentReference,content.downloadUrl"
-                },
-            )
-        except GraphAPIError as e:
-            logger.warning(
-                "[onedrive] Failed to fetch delta for user %s: %s", display_name, e
-            )
-            return delta_token
 
         cutoff = (
             datetime.now(timezone.utc) - timedelta(days=DEFAULT_MAX_AGE_DAYS)
@@ -78,44 +65,102 @@ class OneDriveSyncer(BaseSyncer):
             else None
         )
 
+        total = 0
         skipped_folders = 0
         skipped_cutoff = 0
         skipped_deleted = 0
+        last_resume_token: str | None = delta_token
+        final_token: str | None = None
 
-        for item in items:
-            if ctx.is_cancelled():
-                return delta_token
+        try:
+            pages = client.get_delta_pages(
+                f"/users/{user_id}/drive/root/delta",
+                delta_token=delta_token,
+                params={
+                    "$select": "id,name,file,folder,size,webUrl,lastModifiedDateTime,"
+                    "createdDateTime,parentReference,content.downloadUrl"
+                },
+            )
+            async for items, next_link, delta_link in pages:
+                total += len(items)
+                cancelled = False
 
-            if item.get("deleted"):
-                skipped_deleted += 1
-                drive_id = item.get("parentReference", {}).get("driveId", "unknown")
-                external_id = f"onedrive:{drive_id}:{item['id']}"
-                await ctx.emit_deleted(external_id)
-                continue
+                for item in items:
+                    if ctx.is_cancelled():
+                        cancelled = True
+                        break
 
-            if "folder" in item:
-                skipped_folders += 1
-                continue
+                    if item.get("deleted"):
+                        skipped_deleted += 1
+                        drive_id = item.get("parentReference", {}).get(
+                            "driveId", "unknown"
+                        )
+                        external_id = f"onedrive:{drive_id}:{item['id']}"
+                        await ctx.emit_deleted(external_id)
+                        continue
 
-            if cutoff:
-                modified = _parse_iso(item.get("lastModifiedDateTime"))
-                if modified and modified < cutoff:
-                    skipped_cutoff += 1
-                    continue
+                    if "folder" in item:
+                        skipped_folders += 1
+                        continue
 
-            await ctx.increment_scanned()
+                    if cutoff:
+                        modified = _parse_iso(item.get("lastModifiedDateTime"))
+                        if modified and modified < cutoff:
+                            skipped_cutoff += 1
+                            continue
 
-            try:
-                await self._process_item(
-                    client, user, item, ctx, user_cache, group_cache
+                    await ctx.increment_scanned()
+
+                    try:
+                        await self._process_item(
+                            client, user, item, ctx, user_cache, group_cache
+                        )
+                    except Exception as e:
+                        drive_id = item.get("parentReference", {}).get(
+                            "driveId", "unknown"
+                        )
+                        external_id = f"onedrive:{drive_id}:{item['id']}"
+                        logger.warning(
+                            "[onedrive] Error processing %s: %s", external_id, e
+                        )
+                        await ctx.emit_error(external_id, str(e))
+
+                if cancelled:
+                    return last_resume_token
+
+                # Checkpoint: store nextLink mid-stream, or deltaLink on final page.
+                resume = next_link or delta_link
+                if resume:
+                    last_resume_token = resume
+                    if delta_tokens is not None and token_key is not None:
+                        await self.save_delta_token(
+                            ctx, delta_tokens, token_key, resume
+                        )
+                if delta_link:
+                    final_token = delta_link
+        except GraphAPIError as e:
+            if delta_token is not None and _is_resync_required(e):
+                logger.warning(
+                    "[onedrive] Delta token for user %s requires resync (%s), "
+                    "restarting from scratch",
+                    display_name,
+                    e.diagnostic(),
                 )
-            except Exception as e:
-                drive_id = item.get("parentReference", {}).get("driveId", "unknown")
-                external_id = f"onedrive:{drive_id}:{item['id']}"
-                logger.warning("[onedrive] Error processing %s: %s", external_id, e)
-                await ctx.emit_error(external_id, str(e))
+                return await self.sync_for_user(
+                    client,
+                    user,
+                    ctx,
+                    None,
+                    user_cache=user_cache,
+                    group_cache=group_cache,
+                    delta_tokens=delta_tokens,
+                    token_key=token_key,
+                )
+            logger.warning(
+                "[onedrive] Failed to fetch delta for user %s: %s", display_name, e
+            )
+            return last_resume_token
 
-        total = len(items)
         skipped = skipped_folders + skipped_cutoff + skipped_deleted
         if skipped:
             logger.info(
@@ -129,7 +174,7 @@ class OneDriveSyncer(BaseSyncer):
                 skipped_deleted,
             )
 
-        return new_token
+        return final_token or last_resume_token
 
     async def _process_item(
         self,
@@ -216,3 +261,11 @@ def _is_indexable(mime_type: str, extension: str) -> bool:
     if any(mime_type.startswith(p) for p in INDEXABLE_MIME_PREFIXES):
         return True
     return extension in INDEXABLE_EXTENSIONS
+
+
+def _is_resync_required(err: GraphAPIError) -> bool:
+    if err.status_code == 410:
+        return True
+    code = (err.error_code or "").lower()
+    inner = (err.inner_error_code or "").lower()
+    return "resync" in code or "resync" in inner

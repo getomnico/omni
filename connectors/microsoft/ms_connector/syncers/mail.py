@@ -40,7 +40,7 @@ class MailSyncer(BaseSyncer):
         """Run mail sync across all users and mail folders."""
         source_config = source_config or {}
         delta_tokens: dict[str, str] = state.get("delta_tokens", {})
-        new_tokens: dict[str, str] = {}
+        new_tokens: dict[str, str] = dict(delta_tokens)
 
         users = await client.list_users()
         logger.info("[mail] Syncing across %d users", len(users))
@@ -55,7 +55,7 @@ class MailSyncer(BaseSyncer):
         for user in users:
             if ctx.is_cancelled():
                 logger.info("[mail] Cancelled")
-                return state
+                return {"delta_tokens": new_tokens}
 
             user_id = user["id"]
 
@@ -71,6 +71,7 @@ class MailSyncer(BaseSyncer):
                 )
                 if new_token:
                     new_tokens[token_key] = new_token
+                    await ctx.save_state({"delta_tokens": new_tokens})
 
         return {"delta_tokens": new_tokens}
 
@@ -82,6 +83,8 @@ class MailSyncer(BaseSyncer):
         delta_token: str | None,
         user_cache: dict[str, str] | None = None,
         group_cache: dict[str, str] | None = None,
+        delta_tokens: dict[str, str] | None = None,
+        token_key: str | None = None,
     ) -> str | None:
         # Not used — sync() is overridden to handle multi-folder logic.
         # Kept to satisfy the abstract base class.
@@ -132,6 +135,9 @@ class MailSyncer(BaseSyncer):
 
             if item.get("deleted") or item.get("@removed"):
                 skipped_deleted += 1
+                message_id = item.get("internetMessageId") or item.get("id")
+                if message_id:
+                    await ctx.emit_deleted(f"mail:{message_id}")
                 continue
 
             await ctx.increment_scanned()
