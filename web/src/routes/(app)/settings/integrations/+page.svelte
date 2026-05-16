@@ -180,7 +180,7 @@
                                             {#if !source.isActive}
                                                 Sync is paused
                                             {:else if isRunning}
-                                                Indexing now
+                                                Syncing now...
                                             {:else if isFailed}
                                                 Last sync failed
                                             {:else}
