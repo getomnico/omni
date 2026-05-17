@@ -1,6 +1,6 @@
 use anyhow::Result;
 use omni_connector_manager::{config::ConnectorManagerConfig, create_app, AppState};
-use omni_connector_sdk::Connector;
+use omni_connector_sdk::{Connector, SdkClient};
 use omni_google_connector::connector::GoogleConnector;
 use omni_google_connector::routes;
 use omni_google_connector::sync::SyncManager;
@@ -8,7 +8,7 @@ use shared::db::repositories::SyncRunRepository;
 use shared::models::SyncType;
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
-use shared::{ObjectStorage, SdkClient};
+use shared::ObjectStorage;
 use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::net::TcpListener;

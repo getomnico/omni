@@ -1,22 +1,22 @@
 use anyhow::Result;
 use dotenvy::dotenv;
+use omni_connector_sdk::telemetry::{self, TelemetryConfig};
+use omni_connector_sdk::SdkClient;
+use omni_connector_sdk::SourceType;
 use omni_connector_sdk::{serve_with_extra_routes, ServerConfig};
-use shared::models::SourceType;
-use shared::telemetry::{self, TelemetryConfig};
-use shared::SdkClient;
 use std::sync::Arc;
 use std::time::Duration;
 use time::OffsetDateTime;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
+use omni_connector_sdk::RateLimiter;
 use omni_google_connector::admin::AdminClient;
 use omni_google_connector::config::GoogleConnectorConfig;
 use omni_google_connector::connector::GoogleConnector;
 use omni_google_connector::models;
 use omni_google_connector::routes;
 use omni_google_connector::sync::SyncManager;
-use shared::RateLimiter;
 
 #[tokio::main]
 async fn main() -> Result<()> {

@@ -6,9 +6,9 @@
 //! in a real sync.
 
 use omni_imap_connector::models::{
-    build_thread_connector_event, generate_thread_content,
-    make_thread_document_id, parse_raw_email, resolve_new_email_thread_root, resolve_thread_root,
-    FolderSyncState, ImapConnectorState,
+    build_thread_connector_event, generate_thread_content, make_thread_document_id,
+    parse_raw_email, resolve_new_email_thread_root, resolve_thread_root, FolderSyncState,
+    ImapConnectorState,
 };
 use shared::models::ConnectorEvent;
 use std::collections::HashMap;
@@ -83,9 +83,8 @@ fn test_incremental_sync_flow_builds_thread_correctly() {
         skipped_uids: Default::default(),
     };
 
-    let mut by_message_id: HashMap<String, u32> = HashMap::from([
-        ("<root@example.com>".to_string(), 1),
-    ]);
+    let mut by_message_id: HashMap<String, u32> =
+        HashMap::from([("<root@example.com>".to_string(), 1)]);
 
     // Build initial thread event (single message)
     let event1 = build_thread_connector_event(
@@ -119,12 +118,12 @@ fn test_incremental_sync_flow_builds_thread_correctly() {
     let email_reply = parse_raw_email(&raw_reply, 2, "INBOX").unwrap().0;
 
     // Resolve thread root for the new email (simulates sync_folder logic)
-    let thread_root = resolve_new_email_thread_root(
-        &email_reply,
-        &folder_state.messages,
-        &by_message_id,
+    let thread_root =
+        resolve_new_email_thread_root(&email_reply, &folder_state.messages, &by_message_id);
+    assert_eq!(
+        thread_root, "<root@example.com>",
+        "Reply should resolve to root"
     );
-    assert_eq!(thread_root, "<root@example.com>", "Reply should resolve to root");
 
     // Update state (simulates successful indexing)
     folder_state.indexed_uids.push(2);
@@ -145,9 +144,14 @@ fn test_incremental_sync_flow_builds_thread_correctly() {
     );
 
     let doc_id_2 = match &event2 {
-        ConnectorEvent::DocumentUpdated { document_id, attributes, .. } => {
+        ConnectorEvent::DocumentUpdated {
+            document_id,
+            attributes,
+            ..
+        } => {
             // Verify message count updated
-            let msg_count = attributes.as_ref()
+            let msg_count = attributes
+                .as_ref()
                 .and_then(|a| a.get("message_count"))
                 .and_then(|v| v.as_u64());
             assert_eq!(msg_count, Some(2), "Thread should have 2 messages");
@@ -175,11 +179,8 @@ fn test_incremental_sync_flow_builds_thread_correctly() {
     let email_grandchild = parse_raw_email(&raw_grandchild, 3, "INBOX").unwrap().0;
 
     // Thread resolution must walk the In-Reply-To chain
-    let thread_root_gc = resolve_new_email_thread_root(
-        &email_grandchild,
-        &folder_state.messages,
-        &by_message_id,
-    );
+    let thread_root_gc =
+        resolve_new_email_thread_root(&email_grandchild, &folder_state.messages, &by_message_id);
     assert_eq!(
         thread_root_gc, "<root@example.com>",
         "Grandchild must resolve to original root via chain-walking"
@@ -218,7 +219,10 @@ fn test_incremental_sync_flow_builds_thread_correctly() {
         _ => panic!("Expected DocumentUpdated"),
     };
 
-    assert_eq!(doc_id_1, doc_id_3, "Document ID must remain stable after 3 messages");
+    assert_eq!(
+        doc_id_1, doc_id_3,
+        "Document ID must remain stable after 3 messages"
+    );
 }
 
 /// Integration test: State persistence and restoration simulates connector restart.
@@ -318,8 +322,14 @@ fn test_deletion_detection_with_partial_failures() {
     indexed_uids.retain(|uid| server_uids.contains(uid) || failed_deletion_uids.contains(uid));
 
     // Verify: UID 2 removed (success), UID 4 retained (for retry)
-    assert!(!indexed_uids.contains(&2), "UID 2 should be removed after successful deletion");
-    assert!(indexed_uids.contains(&4), "UID 4 should be retained for retry after failure");
+    assert!(
+        !indexed_uids.contains(&2),
+        "UID 2 should be removed after successful deletion"
+    );
+    assert!(
+        indexed_uids.contains(&4),
+        "UID 4 should be retained for retry after failure"
+    );
     assert_eq!(indexed_uids, vec![1, 3, 4, 5]);
 }
 
@@ -364,9 +374,15 @@ fn test_uidvalidity_change_clears_state() {
     }
 
     assert_eq!(folder_state.uid_validity, 99999);
-    assert!(folder_state.indexed_uids.is_empty(), "indexed_uids must be cleared");
+    assert!(
+        folder_state.indexed_uids.is_empty(),
+        "indexed_uids must be cleared"
+    );
     assert!(folder_state.messages.is_empty(), "messages must be cleared");
-    assert!(folder_state.skipped_uids.is_empty(), "skipped_uids must be cleared");
+    assert!(
+        folder_state.skipped_uids.is_empty(),
+        "skipped_uids must be cleared"
+    );
 }
 
 /// Integration test: Email with attachment flows through the full pipeline.
@@ -411,8 +427,10 @@ fn test_email_with_attachment_end_to_end() {
 
     // Verify inline body is present but attachment text is NOT (extracted separately)
     assert!(email.body_text.contains("Please find attached"));
-    assert!(!email.body_text.contains("Q4 Revenue Report"),
-        "attachment text should not be in body_text after parse_raw_email");
+    assert!(
+        !email.body_text.contains("Q4 Revenue Report"),
+        "attachment text should not be in body_text after parse_raw_email"
+    );
 
     // Attachments are already collected from the same parse pass
     assert_eq!(raw_attachments.len(), 1);
@@ -426,10 +444,15 @@ fn test_email_with_attachment_end_to_end() {
     // Here we call the built-in extractor directly to complete the pipeline test.
     for att in &raw_attachments {
         let text = shared::content_extractor::extract_content(
-            &att.data, &att.mime_type, Some(att.filename.as_str()),
-        ).unwrap_or_default();
+            &att.data,
+            &att.mime_type,
+            Some(att.filename.as_str()),
+        )
+        .unwrap_or_default();
         if !text.is_empty() {
-            email.body_text.push_str(&format!("\n\n[Attachment: {}]\n{}", att.filename, text));
+            email
+                .body_text
+                .push_str(&format!("\n\n[Attachment: {}]\n{}", att.filename, text));
         }
     }
 
@@ -493,6 +516,12 @@ fn test_thread_document_id_stability_edge_cases() {
     // Case 4: Same thread across different sources produces the same ID
     let id6 = make_thread_document_id("INBOX", "<list-msg@mailing-list.org>");
     let id7 = make_thread_document_id("INBOX", "<list-msg@mailing-list.org>");
-    assert_eq!(id6, id7, "Same folder+thread across sources must produce same ID");
-    assert!(!id6.contains("source"), "source_id must not appear in thread document ID");
+    assert_eq!(
+        id6, id7,
+        "Same folder+thread across sources must produce same ID"
+    );
+    assert!(
+        !id6.contains("source"),
+        "source_id must not appear in thread document ID"
+    );
 }

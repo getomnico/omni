@@ -14,7 +14,6 @@ name = "omni_imap_connector"
 path = "src/lib.rs"
 
 [dependencies]
-shared = { path = "../../shared" }
 omni-connector-sdk = { path = "../../sdk/rust" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -39,4 +38,5 @@ mailparse = "0.15"
 urlencoding = "2.1"
 
 [dev-dependencies]
+shared = { path = "../../shared" }
 base64 = "0.21"

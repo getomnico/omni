@@ -14,7 +14,6 @@ name = "omni_nextcloud_connector"
 path = "src/lib.rs"
 
 [dependencies]
-shared = { path = "../../shared" }
 omni-connector-sdk = { path = "../../sdk/rust" }
 async-trait = { workspace = true }
 axum = { workspace = true }

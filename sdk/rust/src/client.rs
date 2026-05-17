@@ -5,9 +5,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
-use crate::models::{ConnectorEvent, ConnectorManifest, ServiceCredential, Source, SyncType};
+use shared::models::{ConnectorEvent, ConnectorManifest, ServiceCredential, Source, SyncType};
 
 /// Errors produced by [`SdkClient`]. Callers that use `anyhow::Result` can
 /// still bubble these up via `?` because `anyhow::Error: From<E>` for any
@@ -738,28 +738,4 @@ pub fn build_connector_url() -> String {
     let port =
         std::env::var("PORT").unwrap_or_else(|_| panic!("PORT environment variable is required."));
     format!("http://{}:{}", hostname, port)
-}
-
-/// Spawn a background registration loop that re-registers with the connector
-/// manager every 30 seconds. The manifest should already have `connector_url` set.
-/// Panics if CONNECTOR_MANAGER_URL is not set.
-pub fn start_registration_loop(manifest: ConnectorManifest) -> tokio::task::JoinHandle<()> {
-    let sdk_client = SdkClient::from_env().unwrap_or_else(|_| {
-        panic!("CONNECTOR_MANAGER_URL environment variable is required for connector registration.")
-    });
-
-    let handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(30));
-
-        loop {
-            interval.tick().await;
-            match sdk_client.register(&manifest).await {
-                Ok(()) => info!("Registered with connector manager"),
-                Err(e) => warn!("Registration failed: {}", e),
-            }
-        }
-    });
-
-    info!("Registration loop started");
-    handle
 }

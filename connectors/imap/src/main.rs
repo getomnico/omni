@@ -1,7 +1,7 @@
 use anyhow::Result;
 use dotenvy::dotenv;
 use omni_connector_sdk::serve;
-use shared::telemetry::{self, TelemetryConfig};
+use omni_connector_sdk::telemetry::{self, TelemetryConfig};
 use std::sync::Arc;
 use tracing::info;
 

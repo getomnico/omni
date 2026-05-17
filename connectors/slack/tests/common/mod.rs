@@ -3,10 +3,11 @@ use omni_connector_manager::{
     config::ConnectorManagerConfig, create_app as create_cm_app,
     sync_manager::SyncManager as CMSyncManager, AppState as CMAppState,
 };
+use omni_connector_sdk::SdkClient;
 use shared::db::repositories::SyncRunRepository;
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
-use shared::{DatabaseConfig, RedisConfig, SdkClient};
+use shared::{DatabaseConfig, RedisConfig};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::net::TcpListener;

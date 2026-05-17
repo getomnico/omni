@@ -20,7 +20,7 @@ use std::time::Duration;
 use tracing::{debug, warn};
 
 use crate::auth::{api_auth_error, execute_with_auth_retry, is_auth_error, ApiResult, GoogleAuth};
-use shared::RateLimiter;
+use omni_connector_sdk::RateLimiter;
 
 const GMAIL_API_BASE: &str = "https://gmail.googleapis.com/gmail/v1";
 
@@ -714,7 +714,7 @@ impl GmailClient {
         message: &GmailMessage,
         auth: &GoogleAuth,
         user_email: &str,
-        sdk_client: &shared::SdkClient,
+        sdk_client: &omni_connector_sdk::SdkClient,
         sync_run_id: &str,
     ) -> Vec<ExtractedAttachment> {
         let mut results = Vec::new();

@@ -1,10 +1,10 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::DateTime;
+use omni_connector_sdk::SdkClient;
 use omni_connector_sdk::SyncContext;
-use shared::models::{
+use omni_connector_sdk::{
     ConnectorEvent, ServiceCredential, ServiceProvider, Source, SourceType, SyncType,
 };
-use shared::SdkClient;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};

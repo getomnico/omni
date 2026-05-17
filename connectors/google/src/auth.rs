@@ -1,10 +1,10 @@
 use anyhow::{anyhow, Result};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use omni_connector_sdk::RateLimiter;
+use omni_connector_sdk::{SdkClient, ServiceCredential, SourceType};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use shared::models::{ServiceCredential, SourceType};
-use shared::RateLimiter;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -531,32 +531,26 @@ where
 
 /// Service for managing Google service credentials and authentication
 pub struct GoogleCredentialsService {
-    service_credentials_repo: shared::db::repositories::ServiceCredentialsRepo,
+    sdk_client: SdkClient,
 }
 
 impl GoogleCredentialsService {
-    pub fn new(pool: sqlx::PgPool) -> Result<Self> {
-        let service_credentials_repo = shared::db::repositories::ServiceCredentialsRepo::new(pool)?;
-        Ok(Self {
-            service_credentials_repo,
-        })
+    pub fn new(sdk_client: SdkClient) -> Self {
+        Self { sdk_client }
     }
 
     /// Get service credentials by source ID
     pub async fn get_credentials_for_source(
         &self,
         source_id: &str,
-    ) -> Result<shared::models::ServiceCredential> {
-        self.service_credentials_repo
-            .find_org_credential(source_id)
-            .await?
-            .ok_or_else(|| anyhow!("Service credentials not found for source: {}", source_id))
+    ) -> Result<omni_connector_sdk::ServiceCredential> {
+        Ok(self.sdk_client.get_credentials(source_id).await?)
     }
 
     /// Create ServiceAccountAuth from service credentials with appropriate scopes for the source type
     pub fn create_service_auth(
         &self,
-        creds: &shared::models::ServiceCredential,
+        creds: &omni_connector_sdk::ServiceCredential,
         source_type: SourceType,
     ) -> Result<ServiceAccountAuth> {
         let service_account_json = creds
@@ -583,7 +577,7 @@ impl GoogleCredentialsService {
     /// Get domain from service credentials
     pub fn get_domain_from_credentials(
         &self,
-        creds: &shared::models::ServiceCredential,
+        creds: &omni_connector_sdk::ServiceCredential,
     ) -> Result<String> {
         creds
             .config
@@ -596,7 +590,7 @@ impl GoogleCredentialsService {
     /// Get principal email from service credentials
     pub fn get_principal_email_from_credentials(
         &self,
-        creds: &shared::models::ServiceCredential,
+        creds: &omni_connector_sdk::ServiceCredential,
     ) -> Result<String> {
         creds
             .principal_email

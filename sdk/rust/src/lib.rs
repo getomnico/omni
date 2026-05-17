@@ -1,9 +1,11 @@
+pub mod client;
 pub mod connector;
 pub mod context;
 pub mod mcp_adapter;
 pub mod models;
 pub mod server;
 
+pub use client::{build_connector_url, SdkClient, SdkError, SdkResult};
 pub use connector::Connector;
 pub use context::SyncContext;
 pub use mcp_adapter::{HttpMcpServer, McpAdapter, McpCredentials, McpServer, StdioMcpServer};
@@ -14,9 +16,14 @@ pub use models::{
 pub use server::{create_router, serve, serve_with_config, serve_with_extra_routes, ServerConfig};
 
 pub use shared::models::{
-    ActionDefinition, ActionMode, ConnectorEvent, ConnectorManifest, DocumentMetadata,
+    ActionDefinition, ActionMode, AuthType, ConnectorEvent, ConnectorManifest, DocumentMetadata,
     DocumentPermissions, McpPromptDefinition, McpResourceDefinition, SearchOperator,
-    ServiceCredential, Source, SourceType, SyncRun, SyncStatus, SyncType,
+    ServiceCredential, ServiceProvider, Source, SourceType, SyncRun, SyncStatus, SyncType,
 };
+pub use shared::models::{ConfluenceSourceConfig, DocumentAttributes, JiraSourceConfig};
+pub use shared::rate_limiter::{RateLimiter, RetryableError};
 pub use shared::telemetry;
-pub use shared::{build_connector_url, SdkClient, SdkError, SdkResult};
+
+pub mod content_extractor {
+    pub use shared::content_extractor::extract_content;
+}

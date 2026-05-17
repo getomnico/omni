@@ -4,8 +4,8 @@ use futures_util::{SinkExt, StreamExt};
 use reqwest::Client;
 
 use crate::sync::SyncManager;
+use omni_connector_sdk::SdkClient;
 use serde::{Deserialize, Serialize};
-use shared::SdkClient;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;

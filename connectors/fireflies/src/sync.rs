@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use omni_connector_sdk::SyncContext;
+use omni_connector_sdk::SyncType;
 use serde_json::json;
-use shared::models::SyncType;
 use tracing::info;
 
 use crate::client::FirefliesClient;

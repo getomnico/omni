@@ -15,7 +15,6 @@ path = "src/lib.rs"
 
 [dependencies]
 tokio = { workspace = true }
-shared = { path = "../../shared" }
 omni-connector-sdk = { path = "../../sdk/rust" }
 async-trait = { workspace = true }
 axum = { workspace = true }
@@ -44,5 +43,6 @@ tower = { workspace = true }
 tower-http = { workspace = true }
 
 [dev-dependencies]
+shared = { path = "../../shared" }
 omni-connector-manager = { path = "../../services/connector-manager" }
 redis = { workspace = true }

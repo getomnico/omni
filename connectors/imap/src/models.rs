@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use mailparse::{MailAddr, MailHeaderMap, ParsedMail};
+use omni_connector_sdk::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use std::collections::{HashMap, HashSet};
 use time::OffsetDateTime;
 use urlencoding::encode;

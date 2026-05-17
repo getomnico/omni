@@ -1,8 +1,8 @@
 use chrono::DateTime;
+use omni_connector_sdk::DocumentAttributes;
 use omni_connector_sdk::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use shared::models::DocumentAttributes;
 use std::collections::HashMap;
 use time::OffsetDateTime;
 

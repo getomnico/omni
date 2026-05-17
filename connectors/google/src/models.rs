@@ -1,7 +1,9 @@
 use chrono::{DateTime, Utc};
+use omni_connector_sdk::{
+    ConnectorEvent, DocumentAttributes, DocumentMetadata, DocumentPermissions,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use shared::models::{ConnectorEvent, DocumentAttributes, DocumentMetadata, DocumentPermissions};
 use sqlx::types::time::OffsetDateTime;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -527,7 +529,7 @@ impl GmailThread {
     pub async fn aggregate_content(
         &self,
         gmail_client: &crate::gmail::GmailClient,
-        sdk_client: &shared::SdkClient,
+        sdk_client: &omni_connector_sdk::SdkClient,
         sync_run_id: &str,
     ) -> Result<String, anyhow::Error> {
         let mut content_parts = Vec::new();

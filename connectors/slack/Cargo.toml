@@ -14,7 +14,6 @@ name = "omni_slack_connector"
 path = "src/lib.rs"
 
 [dependencies]
-shared = { path = "../../shared" }
 omni-connector-sdk = { path = "../../sdk/rust" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -38,6 +37,7 @@ tokio-util = { workspace = true }
 futures-util = { workspace = true }
 
 [dev-dependencies]
+shared = { path = "../../shared" }
 testcontainers = { workspace = true }
 testcontainers-modules = { workspace = true, features = ["postgres", "redis"] }
 omni-connector-manager = { path = "../../services/connector-manager" }

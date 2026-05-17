@@ -1,7 +1,9 @@
 use chrono::{DateTime, NaiveDate, Utc};
+use omni_connector_sdk::{
+    ConnectorEvent, DocumentAttributes, DocumentMetadata, DocumentPermissions,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use shared::models::{ConnectorEvent, DocumentAttributes, DocumentMetadata, DocumentPermissions};
 use std::collections::HashMap;
 use time::OffsetDateTime;
 

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info};
 
-use shared::RateLimiter;
+use omni_connector_sdk::RateLimiter;
 
 const ADMIN_API_BASE: &str = "https://admin.googleapis.com/admin/directory/v1";
 

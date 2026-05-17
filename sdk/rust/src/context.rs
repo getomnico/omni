@@ -1,6 +1,6 @@
+use crate::client::SdkClient;
 use anyhow::Result;
 use shared::models::{ConnectorEvent, SourceType, SyncType};
-use shared::SdkClient;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::warn;

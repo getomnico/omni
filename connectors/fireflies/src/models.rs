@@ -1,6 +1,6 @@
+use omni_connector_sdk::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use serde::Deserialize;
 use serde_json::json;
-use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
 use std::collections::HashMap;
 use time::OffsetDateTime;
 

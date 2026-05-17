@@ -36,12 +36,6 @@ pub struct IndexerConfig {
     pub ai_service_url: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct ConnectorConfig {
-    pub redis: RedisConfig,
-    pub port: u16,
-}
-
 fn get_required_env(key: &str) -> String {
     env::var(key).unwrap_or_else(|_| {
         eprintln!("ERROR: Required environment variable '{}' is not set", key);
@@ -238,16 +232,5 @@ impl IndexerConfig {
             port,
             ai_service_url,
         }
-    }
-}
-
-impl ConnectorConfig {
-    pub fn from_env() -> Self {
-        let redis = RedisConfig::from_env();
-
-        let port_str = get_required_env("PORT");
-        let port = parse_port(&port_str, "PORT");
-
-        Self { redis, port }
     }
 }

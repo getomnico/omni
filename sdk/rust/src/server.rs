@@ -1,3 +1,4 @@
+use crate::client::{build_connector_url, SdkClient, SdkError};
 use crate::connector::Connector;
 use crate::context::SyncContext;
 use crate::mcp_adapter::{McpAdapter, McpCredentials, McpServer};
@@ -19,7 +20,6 @@ use dashmap::DashMap;
 use serde::de::DeserializeOwned;
 use shared::models::SyncSlotClass;
 use shared::telemetry;
-use shared::{SdkClient, SdkError};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
@@ -43,7 +43,7 @@ impl ServerConfig {
 
         Ok(Self {
             port,
-            connector_url: shared::build_connector_url(),
+            connector_url: build_connector_url(),
         })
     }
 }

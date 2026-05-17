@@ -7,7 +7,7 @@ use omni_connector_manager::{
     config::ConnectorManagerConfig, create_app as create_cm_app,
     sync_manager::SyncManager as CMSyncManager, AppState as CMAppState,
 };
-use omni_connector_sdk::SyncContext;
+use omni_connector_sdk::{SdkClient, SyncContext};
 use omni_web_connector::config::WebSourceConfig;
 use omni_web_connector::models::WebConnectorState;
 use omni_web_connector::sync::{PageSource, SyncManager};
@@ -15,7 +15,7 @@ use shared::db::repositories::SyncRunRepository;
 use shared::models::SyncType;
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
-use shared::{DatabaseConfig, RedisConfig, SdkClient};
+use shared::{DatabaseConfig, RedisConfig};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::net::TcpListener;

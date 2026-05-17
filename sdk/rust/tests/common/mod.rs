@@ -26,12 +26,12 @@ use axum::{
     routing::{get, post, put},
     Router,
 };
+use omni_connector_sdk::SdkClient;
 use omni_connector_sdk::{
     models::ActionResponse, Connector, ServiceCredential, Source, SourceType, SyncContext,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-use shared::SdkClient;
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 

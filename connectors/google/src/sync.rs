@@ -19,13 +19,13 @@ use crate::models::{
     mime_type_to_content_type, AttachmentPointer, GmailThread, GoogleConnectorState, UserFile,
     WebhookChannel, WebhookChannelResponse, WebhookNotification,
 };
-use serde_json::json;
-use shared::models::{
+use omni_connector_sdk::RateLimiter;
+use omni_connector_sdk::SdkClient;
+use omni_connector_sdk::{
     AuthType, ConnectorEvent, DocumentMetadata, DocumentPermissions, ServiceCredential,
     ServiceProvider, Source, SourceType, SyncType,
 };
-use shared::RateLimiter;
-use shared::SdkClient;
+use serde_json::json;
 
 pub struct WebhookDebounce {
     pub last_received: Instant,

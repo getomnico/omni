@@ -12,7 +12,7 @@ use crate::models::{
     DriveChangesResponse, GoogleDriveFile, GooglePresentation, WebhookChannel,
     WebhookChannelResponse,
 };
-use shared::RateLimiter;
+use omni_connector_sdk::RateLimiter;
 
 /// Content returned by `get_file_content`. Text formats are already extracted;
 /// binary formats carry raw bytes for extraction via the SDK.

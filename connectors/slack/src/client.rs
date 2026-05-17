@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
+use omni_connector_sdk::{RateLimiter, RetryableError};
 use reqwest::Client;
 use serde::Deserialize;
-use shared::rate_limiter::{RateLimiter, RetryableError};
 use std::time::Duration;
 use tracing::{debug, info, warn};
 

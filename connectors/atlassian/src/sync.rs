@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
+use omni_connector_sdk::{ConfluenceSourceConfig, JiraSourceConfig, ServiceProvider};
 use omni_connector_sdk::{
     ConnectorEvent, SdkClient, ServiceCredential, Source, SourceType, SyncContext, SyncType,
 };
-use shared::models::{ConfluenceSourceConfig, JiraSourceConfig, ServiceProvider};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info, warn};

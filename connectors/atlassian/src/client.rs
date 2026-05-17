@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::stream::Stream;
+use omni_connector_sdk::{RateLimiter, RetryableError};
 use reqwest::{Client, Response, StatusCode};
 use serde::de::DeserializeOwned;
-use shared::rate_limiter::{RateLimiter, RetryableError};
 use std::pin::Pin;
 use std::time::Duration;
 use tracing::debug;
@@ -680,14 +680,14 @@ impl AtlassianApi for AtlassianClient {
                     .header("Authorization", &auth_header)
                     .send()
                     .await
-                    .map_err(|e| shared::rate_limiter::RetryableError::Transient(e.into()))?;
+                    .map_err(|e| RetryableError::Transient(e.into()))?;
 
                 match response.status() {
                     StatusCode::OK | StatusCode::NO_CONTENT => Ok(()),
                     StatusCode::NOT_FOUND => Ok(()),
                     StatusCode::TOO_MANY_REQUESTS => {
                         let retry_after = Self::extract_retry_after(&response);
-                        Err(shared::rate_limiter::RetryableError::RateLimited {
+                        Err(RetryableError::RateLimited {
                             retry_after,
                             message: "Rate limited".to_string(),
                         })
@@ -695,7 +695,7 @@ impl AtlassianApi for AtlassianClient {
                     _ => {
                         let status = response.status();
                         let text = response.text().await.unwrap_or_default();
-                        Err(shared::rate_limiter::RetryableError::Permanent(anyhow!(
+                        Err(RetryableError::Permanent(anyhow!(
                             "Failed to delete webhook: HTTP {} - {}",
                             status,
                             text

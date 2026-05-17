@@ -5,6 +5,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use omni_connector_sdk::mcp_adapter::{HttpMcpServer, McpAdapter, McpServer, StdioMcpServer};
+use omni_connector_sdk::ActionMode;
 
 fn fixture_path() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -91,9 +92,9 @@ async fn stdio_lists_tools() {
     assert!(names.contains(&"greet".to_string()));
     assert!(names.contains(&"add".to_string()));
     let greet = actions.iter().find(|a| a.name == "greet").unwrap();
-    assert_eq!(greet.mode, "read");
+    assert_eq!(greet.mode, ActionMode::Read);
     let add = actions.iter().find(|a| a.name == "add").unwrap();
-    assert_eq!(add.mode, "write");
+    assert_eq!(add.mode, ActionMode::Write);
 }
 
 #[tokio::test]

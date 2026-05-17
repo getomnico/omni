@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use omni_connector_sdk::SyncContext;
-use shared::models::{ConnectorEvent, SyncType};
+use omni_connector_sdk::{ConnectorEvent, SyncType};
 use std::collections::{HashMap, HashSet};
 use tracing::{error, info, warn};
 
@@ -355,12 +355,13 @@ impl SyncManager {
                                 raw.uid, e
                             );
                             let html_bytes = email.body_text.as_bytes();
-                            email.body_text = shared::content_extractor::extract_content(
-                                html_bytes,
-                                "text/html",
-                                None,
-                            )
-                            .unwrap_or_default();
+                            email.body_text =
+                                omni_connector_sdk::content_extractor::extract_content(
+                                    html_bytes,
+                                    "text/html",
+                                    None,
+                                )
+                                .unwrap_or_default();
                             email.body_is_html = false;
                         }
                     }

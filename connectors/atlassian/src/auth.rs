@@ -207,7 +207,8 @@ impl AuthManager {
         let cloud_id = self.fetch_cloud_id(domain).await?;
         debug!("Resolved cloud_id {} for site {}", cloud_id, domain);
 
-        let mut creds = AtlassianCredentials::new(domain.to_string(), cloud_id, sa_token.to_string());
+        let mut creds =
+            AtlassianCredentials::new(domain.to_string(), cloud_id, sa_token.to_string());
         let auth_header = creds.get_bearer_auth_header();
 
         let validate_jira = source_type != Some(&SourceType::Confluence);
