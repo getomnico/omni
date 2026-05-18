@@ -1,5 +1,6 @@
 """Notion API responses to Omni Document mapping and content rendering."""
 
+import re
 from datetime import datetime
 from typing import Any
 
@@ -24,13 +25,29 @@ def map_page_to_document(
 
     attributes: dict[str, Any] = {
         "source_type": "notion",
+        "notion_object_type": content_type_value,
+        "notion_page_id": page_id,
+        "notion_external_id": f"notion:page:{page_id}",
     }
+    if page.get("url"):
+        attributes["notion_url"] = page["url"]
+    if page.get("created_time"):
+        attributes["notion_created_time"] = page["created_time"]
+    if page.get("last_edited_time"):
+        attributes["notion_last_edited_time"] = page["last_edited_time"]
+    if title:
+        attributes["notion_title"] = title
+
     if is_data_source_entry:
         parent_type = parent.get("type")
         if parent_type == "data_source_id":
             attributes["parent_data_source"] = parent["data_source_id"]
+            attributes["notion_data_source_id"] = parent["data_source_id"]
         elif parent_type == "database_id":
             attributes["parent_database"] = parent["database_id"]
+            attributes["notion_database_id"] = parent["database_id"]
+
+    attributes.update(extract_page_property_attributes(page.get("properties", {})))
 
     is_public = bool(page.get("public_url"))
 
@@ -44,7 +61,7 @@ def map_page_to_document(
             updated_at=_parse_iso(page.get("last_edited_time")),
             url=page.get("url"),
             content_type=content_type_value,
-            mime_type="text/plain",
+            mime_type="text/markdown",
         ),
         permissions=DocumentPermissions(
             public=is_public,
@@ -76,7 +93,7 @@ def map_data_source_to_document(
             updated_at=_parse_iso(data_source.get("last_edited_time")),
             url=data_source.get("url"),
             content_type="data_source",
-            mime_type="text/plain",
+            mime_type="text/markdown",
         ),
         permissions=DocumentPermissions(
             public=is_public,
@@ -84,6 +101,11 @@ def map_data_source_to_document(
         ),
         attributes={
             "source_type": "notion",
+            "notion_object_type": "data_source",
+            "notion_data_source_id": ds_id,
+            "notion_property_schema": extract_data_source_property_schema(
+                data_source.get("properties", {})
+            ),
         },
     )
 
@@ -231,13 +253,141 @@ def render_page_properties(properties: dict[str, Any]) -> str:
     """Convert data source entry properties to text."""
     lines: list[str] = []
     for name, prop in properties.items():
-        value = _extract_property_value(prop)
+        value = extract_property_display_value(prop)
         if value:
             lines.append(f"{name}: {value}")
     return "\n".join(lines)
 
 
-def _extract_property_value(prop: dict[str, Any]) -> str | None:
+def extract_data_source_property_schema(
+    properties: dict[str, Any],
+) -> dict[str, dict[str, str]]:
+    """Return a compact schema map keyed by normalized Notion property name."""
+    used: dict[str, int] = {}
+    schema: dict[str, dict[str, str]] = {}
+    for name, prop in properties.items():
+        key = _unique_slug(name, used)
+        schema[key] = {
+            "name": name,
+            "type": prop.get("type", "unknown"),
+        }
+    return schema
+
+
+def extract_page_property_attributes(properties: dict[str, Any]) -> dict[str, Any]:
+    """Extract flat, filter-friendly Notion page properties."""
+    used: dict[str, int] = {}
+    attrs: dict[str, Any] = {}
+    property_names: dict[str, str] = {}
+    property_types: dict[str, str] = {}
+
+    for name, prop in properties.items():
+        slug = _unique_slug(name, used)
+        value = _extract_property_attribute_value(prop)
+        if value in (None, "", []):
+            continue
+
+        key = f"notion_prop_{slug}"
+        attrs[key] = value
+        property_names[slug] = name
+        property_types[slug] = prop.get("type", "unknown")
+
+        if prop.get("type") == "date":
+            date = prop.get("date") or {}
+            if date.get("end"):
+                attrs[f"{key}_end"] = date["end"]
+
+    if property_names:
+        attrs["notion_property_names"] = property_names
+        attrs["notion_property_types"] = property_types
+    return attrs
+
+
+def _unique_slug(name: str, used: dict[str, int]) -> str:
+    base = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "property"
+    count = used.get(base, 0) + 1
+    used[base] = count
+    return base if count == 1 else f"{base}_{count}"
+
+
+def _extract_property_attribute_value(prop: dict[str, Any]) -> Any:
+    """Extract a JSON-serializable typed value from a Notion property."""
+    prop_type = prop.get("type")
+
+    if prop_type in ("title", "rich_text"):
+        return _extract_rich_text(prop.get(prop_type, [])) or None
+    if prop_type == "number":
+        return prop.get("number")
+    if prop_type in ("select", "status"):
+        selected = prop.get(prop_type)
+        return selected.get("name") if selected else None
+    if prop_type == "multi_select":
+        return [
+            item["name"] for item in prop.get("multi_select", []) if item.get("name")
+        ]
+    if prop_type == "date":
+        date = prop.get("date")
+        return date.get("start") if date else None
+    if prop_type == "checkbox":
+        return prop.get("checkbox")
+    if prop_type in (
+        "url",
+        "email",
+        "phone_number",
+        "created_time",
+        "last_edited_time",
+    ):
+        return prop.get(prop_type)
+    if prop_type == "people":
+        values = []
+        for person in prop.get("people", []):
+            email = person.get("person", {}).get("email")
+            value = email or person.get("name") or person.get("id")
+            if value:
+                values.append(value)
+        return values
+    if prop_type == "relation":
+        return [item["id"] for item in prop.get("relation", []) if item.get("id")]
+    if prop_type == "formula":
+        formula = prop.get("formula", {})
+        f_type = formula.get("type")
+        if f_type == "date":
+            date = formula.get("date")
+            return date.get("start") if date else None
+        if f_type:
+            return formula.get(f_type)
+        return None
+    if prop_type == "rollup":
+        return _extract_rollup_attribute_value(prop.get("rollup", {}))
+    if prop_type in ("created_by", "last_edited_by"):
+        user = prop.get(prop_type, {})
+        return user.get("person", {}).get("email") or user.get("name") or user.get("id")
+
+    return extract_property_display_value(prop)
+
+
+def _extract_rollup_attribute_value(rollup: dict[str, Any]) -> Any:
+    rollup_type = rollup.get("type")
+    if rollup_type in ("number", "date"):
+        value = rollup.get(rollup_type)
+        if rollup_type == "date" and isinstance(value, dict):
+            return value.get("start")
+        return value
+    if rollup_type == "array":
+        values = []
+        for item in rollup.get("array", []):
+            value = _extract_property_attribute_value(item)
+            if value in (None, "", []):
+                continue
+            if isinstance(value, list):
+                values.extend(value)
+            else:
+                values.append(value)
+        return values
+    return None
+
+
+def extract_property_display_value(prop: dict[str, Any]) -> str | None:
     """Extract a displayable string from a Notion property value, or None if empty."""
     prop_type = prop.get("type")
 
@@ -298,7 +448,7 @@ def _extract_property_value(prop: dict[str, Any]) -> str | None:
         elif r_type == "array":
             items = rollup.get("array", [])
             rendered = [
-                v for v in (_extract_property_value(item) for item in items) if v
+                v for v in (extract_property_display_value(item) for item in items) if v
             ]
             return ", ".join(rendered) or None
         return None

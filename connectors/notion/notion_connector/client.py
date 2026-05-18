@@ -128,6 +128,17 @@ class NotionClient:
 
         return await self._api_call(_do_query)
 
+    async def retrieve_data_source(self, data_source_id: str) -> dict[str, Any]:
+        """Retrieve one data source by ID."""
+
+        async def _do_retrieve() -> Any:
+            return await self._client.request(
+                path=f"data_sources/{data_source_id}",
+                method="GET",
+            )
+
+        return await self._api_call(_do_retrieve)
+
     async def get_block_children(
         self,
         block_id: str,
