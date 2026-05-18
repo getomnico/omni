@@ -25,6 +25,18 @@ from starlette.routing import Route
 logger = logging.getLogger(__name__)
 
 
+def _disable_docker_auth_helpers_for_tests() -> None:
+    """Prevent local Docker credential helpers from breaking testcontainers."""
+    try:
+        from docker.auth import AuthConfig
+    except ImportError:
+        return
+    AuthConfig.get_all_credentials = lambda self: {}
+
+
+_disable_docker_auth_helpers_for_tests()
+
+
 # ---------------------------------------------------------------------------
 # Mock data payload helpers
 # ---------------------------------------------------------------------------
@@ -324,6 +336,23 @@ class MockNotionAPI:
                 }
             )
 
+        async def retrieve_data_source(request: Request) -> JSONResponse:
+            if mock.should_fail_auth:
+                return _unauth()
+            ds_id = request.path_params["data_source_id"]
+            data_source = mock.data_sources.get(ds_id)
+            if not data_source:
+                return JSONResponse(
+                    {
+                        "object": "error",
+                        "status": 404,
+                        "code": "object_not_found",
+                        "message": f"Data source not found: {ds_id}",
+                    },
+                    status_code=404,
+                )
+            return JSONResponse(data_source)
+
         async def get_block_children(request: Request) -> JSONResponse:
             if mock.should_fail_auth:
                 return _unauth()
@@ -347,6 +376,11 @@ class MockNotionAPI:
                 "/v1/data_sources/{data_source_id}/query",
                 query_data_source,
                 methods=["POST"],
+            ),
+            Route(
+                "/v1/data_sources/{data_source_id}",
+                retrieve_data_source,
+                methods=["GET"],
             ),
             Route("/v1/blocks/{block_id}/children", get_block_children),
         ]

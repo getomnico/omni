@@ -113,6 +113,26 @@ async def test_full_sync_indexes_pages_and_data_sources(
     assert f"notion:page:{ENTRY_PAGE_ID}" in doc_ids
     assert f"notion:page:{STANDALONE_PAGE_ID}" in doc_ids
 
+    doc_events_by_id = {e["payload"]["document_id"]: e for e in doc_events}
+    data_source_attrs = doc_events_by_id[f"notion:data_source:{DS_ID}"]["payload"][
+        "attributes"
+    ]
+    assert data_source_attrs["notion_object_type"] == "data_source"
+    assert data_source_attrs["notion_data_source_id"] == DS_ID
+    assert data_source_attrs["notion_property_schema"]["status"] == {
+        "name": "Status",
+        "type": "select",
+    }
+
+    entry_attrs = doc_events_by_id[f"notion:page:{ENTRY_PAGE_ID}"]["payload"][
+        "attributes"
+    ]
+    assert entry_attrs["notion_object_type"] == "data_source_entry"
+    assert entry_attrs["notion_data_source_id"] == DS_ID
+    assert entry_attrs["notion_external_id"] == f"notion:page:{ENTRY_PAGE_ID}"
+    assert entry_attrs["notion_prop_status"] == "In Progress"
+    assert entry_attrs["notion_prop_priority"] == "High"
+
     # Every emitted doc must carry the workspace permission group, with
     # public=False (these test fixtures don't set public_url).
     expected_group = f"notion:workspace:{source_id}"
