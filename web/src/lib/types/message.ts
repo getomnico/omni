@@ -50,6 +50,7 @@ export type ToolMessageContent = {
         content: {
             title: string
             source: string
+            source_type?: string | null
         }[]
     }
     // For connector action tools

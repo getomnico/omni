@@ -278,6 +278,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
                                                     type: 'search_result',
                                                     title: searchResult.title,
                                                     source: searchResult.source,
+                                                    source_type: searchResult.source_type ?? null,
                                                     content: [], // Redact the highlights
                                                 }))
                                         } else {

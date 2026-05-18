@@ -75,6 +75,7 @@ export interface SearchResult {
     score: number
     highlights: string[]
     match_type: string
+    source_type: string
     content?: string
 }
 

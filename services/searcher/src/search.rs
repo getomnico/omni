@@ -59,7 +59,7 @@ impl SearchEngine {
         })
     }
 
-    async fn populate_source_types(&self, results: &mut [SearchResult]) {
+    async fn populate_source_types(&self, results: &mut [SearchResult]) -> Result<()> {
         let source_ids: Vec<String> = results
             .iter()
             .map(|r| r.document.source_id.clone())
@@ -68,16 +68,21 @@ impl SearchEngine {
             .collect();
 
         let source_repo = SourceRepository::new(self.db_pool.pool());
-        match source_repo.fetch_source_type_map(&source_ids).await {
-            Ok(type_map) => {
-                for result in results.iter_mut() {
-                    result.source_type = type_map.get(&result.document.source_id).cloned();
-                }
-            }
-            Err(e) => {
-                info!("Failed to fetch source types: {}", e);
-            }
+        let type_map = source_repo.fetch_source_type_map(&source_ids).await?;
+        for result in results.iter_mut() {
+            let source_type = type_map
+                .get(&result.document.source_id)
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Source type not found for source_id {}",
+                        result.document.source_id
+                    )
+                })?;
+            result.source_type = Some(source_type);
         }
+
+        Ok(())
     }
 
     fn prepare_document_for_response(&self, mut doc: Document) -> Document {
@@ -411,7 +416,7 @@ impl SearchEngine {
         let has_more = total_count >= limit;
         let query_time = start_time.elapsed().as_millis() as u64;
 
-        self.populate_source_types(&mut results).await;
+        self.populate_source_types(&mut results).await?;
 
         // Build active_filters from merged request state
         let active_filters = build_active_filters(&request);
@@ -778,7 +783,7 @@ impl SearchEngine {
             vec![]
         };
 
-        self.populate_source_types(&mut results).await;
+        self.populate_source_types(&mut results).await?;
 
         let total_count = results.len() as i64;
         let query_time = start_time.elapsed().as_millis() as u64;

@@ -43,6 +43,7 @@ MOCK_SEARCH_RESPONSE = SearchResponse(
                 source_type="jira",
             ),
             highlights=["Users cannot login when priority is High"],
+            source_type="jira",
         ),
         SearchResult(
             document=Document(
@@ -53,6 +54,7 @@ MOCK_SEARCH_RESPONSE = SearchResponse(
                 source_type="jira",
             ),
             highlights=["Application crashes on startup for critical bugs"],
+            source_type="jira",
         ),
     ],
     total_count=2,
@@ -241,6 +243,12 @@ async def test_stream_completes_with_tool_results(
     tool_result_data = json.loads(tool_result_events[0][1])
     assert tool_result_data["type"] == "tool_result"
     assert tool_result_data["is_error"] is False
+    search_results = [
+        block
+        for block in tool_result_data["content"]
+        if block["type"] == "search_result"
+    ]
+    assert search_results[0]["source_type"] == "jira"
 
     text_deltas = [d for t, d in events if t == "message" and response_text in d]
     assert len(text_deltas) >= 1

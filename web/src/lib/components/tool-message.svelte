@@ -104,13 +104,17 @@
     }
 
     let { message, isAdmin = false, onOAuthComplete = () => {} }: Props = $props()
-    const toolName = message.toolUse.name as ToolName
+    let toolName = $derived(message.toolUse.name as ToolName)
 
     // Determine if this is a connector action (contains __)
-    const isConnectorAction = toolName.includes('__')
-    const connectorSourceType = isConnectorAction ? toolName.split('__')[0] : null
-    const connectorIconPath = connectorSourceType ? getSourceIconPath(connectorSourceType) : null
-    const connectorDisplayName = isConnectorAction ? toolName.replace('__', ' > ') : toolName
+    let isConnectorAction = $derived(toolName.includes('__'))
+    let connectorSourceType = $derived(isConnectorAction ? toolName.split('__')[0] : null)
+    let connectorIconPath = $derived(
+        connectorSourceType ? getSourceIconPath(connectorSourceType) : null,
+    )
+    let connectorDisplayName = $derived(
+        isConnectorAction ? toolName.replace('__', ' > ') : toolName,
+    )
 
     let statusIndicator = $derived(
         message.oauthRequired
@@ -120,7 +124,7 @@
               : ToolIndicators[toolName]?.loading || 'running',
     )
 
-    const toolInputKey = ToolInputKey[toolName] || (isConnectorAction ? '' : 'query')
+    let toolInputKey = $derived(ToolInputKey[toolName] || (isConnectorAction ? '' : 'query'))
 
     let sources = $derived<string[]>(message.toolUse.input?.sources || [])
 
@@ -147,14 +151,19 @@
 
     let selectedItem = $state<string>()
 
+    const getSearchResultIconPath = (result: { source: string; source_type?: string | null }) => {
+        if (result.source_type) {
+            return getSourceIconPath(result.source_type) ?? getIconFromSearchResult(result.source)
+        }
+        return getIconFromSearchResult(result.source)
+    }
+
     // Determine if this is a sandbox tool
-    const isSandboxTool = [
-        'write_file',
-        'read_file',
-        'run_bash',
-        'run_python',
-        'present_artifact',
-    ].includes(toolName)
+    let isSandboxTool = $derived(
+        ['write_file', 'read_file', 'run_bash', 'run_python', 'present_artifact'].includes(
+            toolName,
+        ),
+    )
 
     // Parse artifact data for present_artifact tool
     let artifactData = $derived.by(() => {
@@ -358,9 +367,9 @@
                         <div class="flex flex-col gap-2">
                             {#each message.toolResult.content as result}
                                 <div class="flex items-center gap-2">
-                                    {#if getIconFromSearchResult(result.source)}
+                                    {#if getSearchResultIconPath(result)}
                                         <img
-                                            src={getIconFromSearchResult(result.source)}
+                                            src={getSearchResultIconPath(result)}
                                             alt=""
                                             class="!m-0 h-4 w-4 flex-shrink-0" />
                                     {:else}

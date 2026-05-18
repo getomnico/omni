@@ -282,6 +282,7 @@ class SearchToolHandler:
         content_blocks: list = []
         for result in search_results:
             doc = result.document
+            source_type = result.source_type or doc.source_type
             doc_content_text_blocks = [
                 TextBlockParam(type="text", text=h) for h in result.highlights
             ]
@@ -291,7 +292,7 @@ class SearchToolHandler:
                 TextBlockParam(type="text", text=f"[Document Name: {doc.title}]"),
                 TextBlockParam(
                     type="text",
-                    text=f"[Source: {result.source_type or 'unknown'}]",
+                    text=f"[Source: {source_type or 'unknown'}]",
                 ),
                 TextBlockParam(type="text", text=f"[URL: {doc.url or '<unknown>'}]"),
             ]
@@ -345,6 +346,7 @@ class SearchToolHandler:
                     type="search_result",
                     title=doc.title,
                     source=doc.url or "<unknown>",
+                    source_type=source_type,
                     content=[*metadata_blocks, *doc_content_text_blocks],
                     citations=CitationsConfigParam(enabled=True),
                 )

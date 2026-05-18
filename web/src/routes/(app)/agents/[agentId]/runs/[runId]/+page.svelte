@@ -78,6 +78,7 @@
                                 content: searchResults.map((r: any) => ({
                                     title: r.title,
                                     source: r.source,
+                                    source_type: r.source_type ?? null,
                                 })),
                             }
                         }

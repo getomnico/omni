@@ -542,7 +542,7 @@
             }
         }
 
-        // `toolResult` here is the search-shape variant (a list of {title, source}
+        // `toolResult` here is the search-shape variant ({title, source, source_type}
         // pulled from `search_result` content blocks). Only our built-in search
         // tools should render that shape; everything else surfaces output via
         // actionResult / oauthRequired and would otherwise show a misleading
@@ -714,6 +714,7 @@
                                 content: searchResults.map((r) => ({
                                     title: r.title,
                                     source: r.source,
+                                    source_type: (r as any).source_type ?? null,
                                 })),
                             })
 
