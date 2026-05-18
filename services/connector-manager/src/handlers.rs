@@ -858,6 +858,102 @@ impl IntoResponse for ApiError {
 // ============================================================================
 
 const REGISTRATION_TTL_SECONDS: u64 = 90;
+const UNSUPPORTED_TOP_LEVEL_ACTION_SCHEMA_KEYWORDS: &[&str] = &["anyOf", "oneOf", "allOf"];
+const UNSUPPORTED_ACTION_SCHEMA_KEYWORDS: &[&str] = &[
+    "$ref",
+    "$defs",
+    "definitions",
+    "dependentRequired",
+    "dependentSchemas",
+    "if",
+    "then",
+    "else",
+    "not",
+];
+
+fn validate_action_input_schema(
+    connector_name: &str,
+    action_name: &str,
+    schema: &serde_json::Value,
+) -> Result<(), String> {
+    let Some(obj) = schema.as_object() else {
+        return Err(format!(
+            "{}.{} input_schema must be a JSON object",
+            connector_name, action_name
+        ));
+    };
+
+    for keyword in UNSUPPORTED_TOP_LEVEL_ACTION_SCHEMA_KEYWORDS {
+        if obj.contains_key(*keyword) {
+            return Err(format!(
+                "{}.{} input_schema.{} is not supported at the top level",
+                connector_name, action_name, keyword
+            ));
+        }
+    }
+
+    if let Some(schema_type) = obj.get("type") {
+        let is_object_schema = schema_type.as_str().map(|t| t == "object").unwrap_or(false);
+        if !is_object_schema {
+            return Err(format!(
+                "{}.{} input_schema.type must be \"object\"",
+                connector_name, action_name
+            ));
+        }
+    }
+
+    validate_action_schema_keywords(connector_name, action_name, "$", schema)
+}
+
+fn validate_action_schema_keywords(
+    connector_name: &str,
+    action_name: &str,
+    path: &str,
+    value: &serde_json::Value,
+) -> Result<(), String> {
+    match value {
+        serde_json::Value::Object(obj) => {
+            for keyword in UNSUPPORTED_ACTION_SCHEMA_KEYWORDS {
+                if obj.contains_key(*keyword) {
+                    let schema_path = if path == "$" {
+                        format!(".{}", keyword)
+                    } else {
+                        format!("{}.{}", path, keyword)
+                    };
+                    return Err(format!(
+                        "{}.{} input_schema{} is not supported",
+                        connector_name, action_name, schema_path
+                    ));
+                }
+            }
+
+            for (key, child) in obj {
+                let child_path = if path == "$" {
+                    format!(".{}", key)
+                } else {
+                    format!("{}.{}", path, key)
+                };
+                validate_action_schema_keywords(connector_name, action_name, &child_path, child)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Array(items) => {
+            for (idx, child) in items.iter().enumerate() {
+                let child_path = format!("{}[{}]", path, idx);
+                validate_action_schema_keywords(connector_name, action_name, &child_path, child)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_connector_manifest_action_schemas(manifest: &ConnectorManifest) -> Result<(), String> {
+    for action in &manifest.actions {
+        validate_action_input_schema(&manifest.name, &action.name, &action.input_schema)?;
+    }
+    Ok(())
+}
 
 pub async fn sdk_register(
     State(state): State<AppState>,
@@ -873,6 +969,7 @@ pub async fn sdk_register(
             "connector_url is required for registration".to_string(),
         ));
     }
+    validate_connector_manifest_action_schemas(&manifest).map_err(ApiError::BadRequest)?;
 
     // Validate the connector is reachable before accepting registration
     let client = ConnectorClient::new();
@@ -1771,6 +1868,99 @@ pub async fn sdk_get_connector_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn manifest_with_action_schema(input_schema: serde_json::Value) -> ConnectorManifest {
+        ConnectorManifest {
+            name: "test_connector".to_string(),
+            display_name: "Test Connector".to_string(),
+            version: "1.0.0".to_string(),
+            sync_modes: vec![SyncType::Full],
+            connector_id: "test-connector".to_string(),
+            connector_url: "http://test-connector:4000".to_string(),
+            source_types: vec![SourceType::Notion],
+            description: None,
+            actions: vec![shared::models::ActionDefinition {
+                name: "export_data_source_csv".to_string(),
+                description: "Export a database".to_string(),
+                input_schema,
+                mode: ActionMode::Read,
+                source_types: Vec::new(),
+                admin_only: false,
+            }],
+            search_operators: Vec::new(),
+            read_only: false,
+            extra_schema: None,
+            attributes_schema: None,
+            mcp_enabled: false,
+            resources: Vec::new(),
+            prompts: Vec::new(),
+            oauth: None,
+        }
+    }
+
+    #[test]
+    fn test_validate_action_schema_accepts_provider_safe_object_schema() {
+        let manifest = manifest_with_action_schema(json!({
+            "type": "object",
+            "properties": {
+                "data_source_id": {
+                    "type": "string",
+                    "description": "The Notion data source ID to export."
+                },
+                "include_content": {
+                    "type": "boolean",
+                    "default": false
+                }
+            },
+            "required": ["data_source_id"]
+        }));
+
+        assert!(validate_connector_manifest_action_schemas(&manifest).is_ok());
+    }
+
+    #[test]
+    fn test_validate_action_schema_rejects_top_level_any_of() {
+        let manifest = manifest_with_action_schema(json!({
+            "type": "object",
+            "properties": {
+                "data_source_id": { "type": "string" },
+                "database_id": { "type": "string" }
+            },
+            "anyOf": [
+                { "required": ["data_source_id"] },
+                { "required": ["database_id"] }
+            ]
+        }));
+
+        let err = validate_connector_manifest_action_schemas(&manifest).unwrap_err();
+        assert_eq!(
+            err,
+            "test_connector.export_data_source_csv input_schema.anyOf is not supported at the top level"
+        );
+    }
+
+    #[test]
+    fn test_validate_action_schema_rejects_ref_in_nested_property() {
+        let manifest = manifest_with_action_schema(json!({
+            "type": "object",
+            "properties": {
+                "target": { "$ref": "#/$defs/Target" }
+            }
+        }));
+
+        let err = validate_connector_manifest_action_schemas(&manifest).unwrap_err();
+        assert_eq!(
+            err,
+            "test_connector.export_data_source_csv input_schema.properties.target.$ref is not supported"
+        );
+    }
+
+    #[test]
+    fn test_validate_action_schema_allows_legacy_empty_object_schema() {
+        let manifest = manifest_with_action_schema(json!({}));
+
+        assert!(validate_connector_manifest_action_schemas(&manifest).is_ok());
+    }
 
     #[test]
     fn test_is_docling_supported_mime() {

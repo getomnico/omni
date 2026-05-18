@@ -14,6 +14,13 @@ ROW_ONE_ID = "pg-00000000-0000-0000-0000-000000000101"
 ROW_TWO_ID = "pg-00000000-0000-0000-0000-000000000102"
 
 
+def test_export_data_source_csv_schema_avoids_top_level_composition_keywords():
+    action = NotionConnector().actions[0]
+
+    assert action.name == "export_data_source_csv"
+    assert not {"anyOf", "oneOf", "allOf"} & set(action.input_schema)
+
+
 @pytest.mark.asyncio
 async def test_export_data_source_csv_includes_omni_external_id(
     mock_notion_api,

@@ -98,10 +98,6 @@ class NotionConnector(Connector):
                             "default": False,
                         },
                     },
-                    "anyOf": [
-                        {"required": ["data_source_id"]},
-                        {"required": ["database_id"]},
-                    ],
                 },
                 mode="read",
                 source_types=["notion"],
