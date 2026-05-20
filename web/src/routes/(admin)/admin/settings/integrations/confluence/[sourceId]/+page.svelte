@@ -7,7 +7,6 @@
     import * as Alert from '$lib/components/ui/alert'
     import { Input } from '$lib/components/ui/input'
     import { X, AlertCircle, Loader2 } from '@lucide/svelte'
-    import RemoveSourceDialog from '../../remove-source-dialog.svelte'
     import { onMount } from 'svelte'
     import { beforeNavigate } from '$app/navigation'
     import type { PageProps } from './$types'
@@ -28,7 +27,6 @@
     let formErrors = $state<string[]>([])
     let hasUnsavedChanges = $state(false)
     let skipUnsavedCheck = $state(false)
-    let showRemoveDialog = $state(false)
 
     let allSpaces: { key: string; name: string }[] | null = null
     let suggestions = $state<{ key: string; name: string }[]>([])
@@ -307,26 +305,3 @@
         </Card.Footer>
     </Card.Root>
 </form>
-
-<Card.Root>
-    <Card.Content class="flex items-center justify-between">
-        <div>
-            <Card.Title>Delete Source</Card.Title>
-            <Card.Description>
-                Permanently delete this source and all its synced documents, credentials, and sync
-                history.
-            </Card.Description>
-        </div>
-        <Button
-            variant="destructive"
-            class="cursor-pointer"
-            onclick={() => (showRemoveDialog = true)}>
-            Delete Permanently
-        </Button>
-    </Card.Content>
-</Card.Root>
-
-<RemoveSourceDialog
-    bind:open={showRemoveDialog}
-    sourceId={data.source.id}
-    sourceName={data.source.name} />

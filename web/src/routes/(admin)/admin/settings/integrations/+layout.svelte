@@ -1,7 +1,10 @@
 <script lang="ts">
     import SourceSyncHealth from '$lib/components/sources/source-sync-health.svelte'
     import SyncRunHistory from '$lib/components/sources/sync-run-history.svelte'
+    import { Button } from '$lib/components/ui/button'
+    import * as Card from '$lib/components/ui/card'
     import { ArrowLeft } from '@lucide/svelte'
+    import RemoveSourceDialog from './remove-source-dialog.svelte'
     import type { Snippet } from 'svelte'
     import type { LayoutData } from './$types.js'
 
@@ -11,6 +14,7 @@
     }
 
     let { data, children }: Props = $props()
+    let showRemoveDialog = $state(false)
 </script>
 
 {#if data.source}
@@ -24,11 +28,35 @@
             </a>
 
             <SourceSyncHealth health={data.health} syncRuns={data.syncRuns} />
-            <SyncRunHistory runs={data.syncRuns} />
 
             {@render children()}
+
+            <Card.Root>
+                <Card.Content class="flex items-center justify-between">
+                    <div>
+                        <Card.Title>Delete Source</Card.Title>
+                        <Card.Description>
+                            Permanently delete this source and all its synced data, credentials, and
+                            sync history.
+                        </Card.Description>
+                    </div>
+                    <Button
+                        variant="destructive"
+                        class="cursor-pointer"
+                        onclick={() => (showRemoveDialog = true)}>
+                        Delete Permanently
+                    </Button>
+                </Card.Content>
+            </Card.Root>
+
+            <SyncRunHistory runs={data.syncRuns} />
         </div>
     </div>
+
+    <RemoveSourceDialog
+        bind:open={showRemoveDialog}
+        sourceId={data.source.id}
+        sourceName={data.source.name} />
 {:else}
     {@render children()}
 {/if}

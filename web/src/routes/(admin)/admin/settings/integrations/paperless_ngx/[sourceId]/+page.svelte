@@ -7,7 +7,6 @@
     import * as Card from '$lib/components/ui/card'
     import * as Alert from '$lib/components/ui/alert'
     import { AlertCircle, Loader2 } from '@lucide/svelte'
-    import RemoveSourceDialog from '../../remove-source-dialog.svelte'
     import { onMount } from 'svelte'
     import { beforeNavigate } from '$app/navigation'
     import type { PageProps } from './$types'
@@ -25,7 +24,6 @@
     let formErrors = $state<string[]>([])
     let hasUnsavedChanges = $state(false)
     let skipUnsavedCheck = $state(false)
-    let showRemoveDialog = $state(false)
 
     let beforeUnloadHandler: ((e: BeforeUnloadEvent) => void) | null = null
 
@@ -169,16 +167,7 @@
             </div>
         </Card.Content>
 
-        <Card.Footer class="flex justify-between">
-            <Button
-                type="button"
-                variant="destructive"
-                size="sm"
-                class="cursor-pointer"
-                onclick={() => (showRemoveDialog = true)}>
-                Remove source
-            </Button>
-
+        <Card.Footer class="flex justify-end">
             <Button
                 type="submit"
                 disabled={isSubmitting || !hasUnsavedChanges}
@@ -193,8 +182,3 @@
         </Card.Footer>
     </Card.Root>
 </form>
-
-<RemoveSourceDialog
-    bind:open={showRemoveDialog}
-    sourceId={data.source.id}
-    sourceName={data.source.name} />
