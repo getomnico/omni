@@ -115,6 +115,32 @@ class TestNeedsCompaction:
         ]
         assert compactor.needs_compaction(messages)
 
+    @patch("services.compaction.MAX_CONVERSATION_INPUT_TOKENS", 100)
+    def test_provider_usage_below_threshold_skips_estimation(self, compactor):
+        """Actual provider usage is authoritative when available."""
+        long_content = "A" * 400  # estimated above threshold
+        messages = [
+            MessageParam(role="user", content=long_content),
+        ]
+        assert not compactor.needs_compaction(messages, last_input_tokens=79)
+
+    @patch("services.compaction.MAX_CONVERSATION_INPUT_TOKENS", 100)
+    def test_provider_usage_above_threshold_triggers_compaction(self, compactor):
+        """Provider-reported input tokens trigger compaction near context limit."""
+        messages = [
+            MessageParam(role="user", content="short"),
+        ]
+        assert compactor.needs_compaction(messages, last_input_tokens=81)
+
+    @patch("services.compaction.MAX_CONVERSATION_INPUT_TOKENS", 100)
+    def test_zero_provider_usage_falls_back_to_estimation(self, compactor):
+        """Zero input tokens means usage was unavailable, so use estimation."""
+        long_content = "A" * 400
+        messages = [
+            MessageParam(role="user", content=long_content),
+        ]
+        assert compactor.needs_compaction(messages, last_input_tokens=0)
+
     @patch("services.compaction.ENABLE_CONVERSATION_COMPACTION", False)
     def test_needs_compaction_disabled(self, compactor):
         """Test that compaction can be disabled via feature flag."""

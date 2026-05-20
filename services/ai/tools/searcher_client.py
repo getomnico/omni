@@ -43,6 +43,7 @@ class Document(BaseModel):
 
 class SearchResult(BaseModel):
     document: Document
+    score: float
     highlights: list[str]
     source_type: str | None = None
 

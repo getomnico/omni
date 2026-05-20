@@ -305,11 +305,17 @@ async def _run_agent_loop(
         on_usage=_on_compaction_usage,
     )
 
+    last_request_input_tokens: int | None = None
+
     for iteration in range(AGENT_MAX_ITERATIONS):
         logger.info(f"Agent {agent.id} run {run.id}: iteration {iteration + 1}")
 
         # Check if compaction is needed
-        if compactor.needs_compaction(conversation_messages, all_tools):
+        if compactor.needs_compaction(
+            conversation_messages,
+            all_tools,
+            last_input_tokens=last_request_input_tokens,
+        ):
             logger.info(f"Compacting conversation for agent run {run.id}")
             # Using run ID as chat_id for compaction cache key
             conversation_messages = await compactor.compact_conversation(
@@ -374,6 +380,7 @@ async def _run_agent_loop(
                 break
 
         tracker.save()
+        last_request_input_tokens = tracker.input_tokens or None
 
         # Parse tool call inputs — on failure, send error back to LLM
         tool_calls = [b for b in content_blocks if b["type"] == "tool_use"]

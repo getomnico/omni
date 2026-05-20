@@ -8,6 +8,7 @@ from .connector_handler import ConnectorToolHandler
 from .sandbox_handler import SandboxToolHandler
 from .document_handler import DocumentToolHandler
 from .people_handler import PeopleSearchHandler
+from .submit_answer_handler import SubmitAnswerHandler
 
 __all__ = [
     "SearcherTool",
@@ -23,4 +24,5 @@ __all__ = [
     "SandboxToolHandler",
     "DocumentToolHandler",
     "PeopleSearchHandler",
+    "SubmitAnswerHandler",
 ]

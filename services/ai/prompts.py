@@ -1,5 +1,21 @@
 from datetime import UTC, datetime
 
+from config import BENCHMARK_MODE
+
+BENCHMARK_INSTRUCTION_SUFFIX = """
+
+## Benchmark mode — MANDATORY RULES
+
+1. You MUST call `submit_answer` on EVERY single response. This is not optional. Even if you have not found any relevant documents, you MUST still call `submit_answer`.
+2. Do NOT output plain text without calling `submit_answer`. A response that contains only text and no `submit_answer` tool call is INVALID.
+3. Use `search_documents` and `read_document` to gather information. Perform multiple targeted searches if needed. Read multiple relevant documents to build a comprehensive answer. Once you are ready to answer — or once you have determined you cannot find the answer — call `submit_answer` with your final natural-language answer.
+4. When calling `submit_answer`, include `document_ids`: only external `dsid_*` IDs for documents that directly support the final answer, ordered by importance. A document should be included only if you would cite it as evidence for at least one answer fact. Do not include documents merely because they were searched, read, top-ranked, tangentially related, or useful background. Do not fill to 10; fewer is better when fewer documents contain direct evidence. If you cannot find evidence, use an empty `document_ids` list. Do not use internal ULID document IDs.
+5. Start with targeted searches in the most likely specific source app(s) using `in:` filters. If those searches do not produce exact evidence for the value, formula, date, or named entity asked for, then broaden across all connected apps. Customer, company, account, or CRM-style questions may be in HubSpot; include HubSpot early for those.
+6. If a close document does not contain the exact value, formula, date, or named entity asked for, keep searching with alternate terminology from the question and from promising results before answering.
+7. If the question cannot be answered from the corpus, state that in the answer field — but still call `submit_answer`.
+8. After calling `submit_answer`, stop. Do not produce any further text or call any other tools.
+"""
+
 SOURCE_DISPLAY_NAMES = {
     "google_drive": "Google Drive",
     "gmail": "Gmail",
@@ -23,10 +39,13 @@ SYSTEM_PROMPT_TEMPLATE = """You are Omni AI, a workplace agent that helps employ
 Current date and time: {current_datetime} (UTC)
 {user_line}
 Connected apps: {connected_apps}
+Valid `in:` filters for connected apps: {in_filters}
 {actions_section}
 # Searching
 - The `search_documents` tool is the primary tool to query the Omni unified index that syncs data from all of the above connected apps.
-- Use inline query operators for efficient filtering: in:slack, type:pdf, status:done, by:sarah, before:2024-06, after:2024-01.
+- Before searching, infer which connected app(s) are most likely to contain the answer from the user's question. Use `in:<source>` filters to narrow targeted searches to those app(s) whenever the likely source is clear.
+- Use inline query operators for efficient filtering: in:slack, in:gmail, type:pdf, status:done, by:sarah, before:2024-06, after:2024-01.
+- Use only the valid `in:` filter values listed above. Do not invent app names. If multiple apps are plausible, search each plausible app with separate targeted queries or OR them with multiple `in:` filters.
 - To make an OR query, simply put both: "budget report in:slack in:gmail" - this will return results from both Slack and Gmail. multiple filters for the same operator are OR'd.
 - To make an AND query, use multiple operators: "budget report in:slack type:pdf" - this will return results that are both in Slack and are PDFs. Multiple filters for different operators are AND'd.
 - For time-scoped queries, use date operators or natural language: "after:2024-06 report", "budget last week", "standup yesterday".
@@ -78,9 +97,12 @@ When done, provide a brief summary of what you did and the outcomes.
 Current date and time: {current_datetime} (UTC)
 {user_line}
 Connected apps: {connected_apps}
+Valid `in:` filters for connected apps: {in_filters}
 {actions_section}
 # Searching
-- Use inline query operators for efficient filtering: in:slack, type:pdf, status:done, by:sarah, before:2024-06, after:2024-01.
+- Before searching, infer which connected app(s) are most likely to contain the answer from the task. Use `in:<source>` filters to narrow targeted searches to those app(s) whenever the likely source is clear.
+- Use inline query operators for efficient filtering: in:slack, in:gmail, type:pdf, status:done, by:sarah, before:2024-06, after:2024-01.
+- Use only the valid `in:` filter values listed above. Do not invent app names.
 - Use multiple targeted searches rather than one broad search.
 
 # Taking actions
@@ -103,6 +125,7 @@ Your schedule: {agent_schedule_type} — {agent_schedule_value}
 Current date and time: {current_datetime} (UTC)
 {user_line}
 Connected apps: {connected_apps}
+Valid `in:` filters for connected apps: {in_filters}
 
 # Your role
 - Answer questions about your previous runs, outcomes, and patterns.
@@ -111,7 +134,9 @@ Connected apps: {connected_apps}
 - This is a read-only session. No write actions are available.
 
 # Searching
-- Use inline query operators for efficient filtering: in:slack, type:pdf, status:done, by:sarah, before:2024-06, after:2024-01.
+- Before searching, infer which connected app(s) are most likely to contain the answer. Use `in:<source>` filters to narrow targeted searches to those app(s) whenever the likely source is clear.
+- Use inline query operators for efficient filtering: in:slack, in:gmail, type:pdf, status:done, by:sarah, before:2024-06, after:2024-01.
+- Use only the valid `in:` filter values listed above. Do not invent app names.
 - Use multiple targeted searches rather than one broad search.
 
 # Response style
@@ -168,15 +193,29 @@ def _format_datetime(dt: datetime | None = None) -> str:
     return dt.strftime("%A, %B %d, %Y %H:%M UTC")
 
 
+def _connected_app_context(sources: list) -> tuple[str, str]:
+    seen = set()
+    display_names = []
+    source_types = []
+    for source in sources:
+        source_type = source.source_type
+        if source_type not in seen:
+            seen.add(source_type)
+            name = SOURCE_DISPLAY_NAMES.get(source_type, source_type)
+            display_names.append(name)
+            source_types.append(source_type)
+
+    connected_apps = ", ".join(display_names) if display_names else "None"
+    in_filters = ", ".join(sorted(source_types)) if source_types else "None"
+    return connected_apps, in_filters
+
+
 def _format_user_line(
     user_name: str | None,
     user_email: str,
     prefix: str = "User",
 ) -> str:
-    if user_name:
-        identity = f"{user_name} ({user_email})"
-    else:
-        identity = user_email
+    identity = f"{user_name} ({user_email})" if user_name else user_email
     # Escape braces so .format() doesn't choke on user-supplied strings
     identity = identity.replace("{", "{{").replace("}", "}}")
     return f"{prefix}: {identity}"
@@ -195,16 +234,7 @@ def build_agent_system_prompt(
     Args:
         memories: list of memory strings from previous runs to inject as agent memory
     """
-    seen = set()
-    display_names = []
-    for source in sources:
-        source_type = source.source_type
-        if source_type not in seen:
-            seen.add(source_type)
-            name = SOURCE_DISPLAY_NAMES.get(source_type, source_type)
-            display_names.append(name)
-
-    connected_apps = ", ".join(display_names) if display_names else "None"
+    connected_apps, in_filters = _connected_app_context(sources)
 
     actions_section = ""
     if connector_actions:
@@ -230,6 +260,7 @@ def build_agent_system_prompt(
         current_datetime=_format_datetime(),
         user_line=user_line,
         connected_apps=connected_apps,
+        in_filters=in_filters,
         actions_section=actions_section,
     )
 
@@ -256,16 +287,7 @@ def build_chat_system_prompt(
         user_email: email of the current user
         memories: list of memory strings to inject as remembered context
     """
-    seen = set()
-    display_names = []
-    for source in sources:
-        source_type = source.source_type
-        if source_type not in seen:
-            seen.add(source_type)
-            name = SOURCE_DISPLAY_NAMES.get(source_type, source_type)
-            display_names.append(name)
-
-    connected_apps = ", ".join(display_names) if display_names else "None"
+    connected_apps, in_filters = _connected_app_context(sources)
 
     actions_section = ""
     if connector_actions:
@@ -295,13 +317,16 @@ def build_chat_system_prompt(
         current_datetime=_format_datetime(),
         user_line=user_line,
         connected_apps=connected_apps,
+        in_filters=in_filters,
         actions_section=actions_section,
     )
 
     if memories:
-        return base_prompt + _format_memory_block(
+        base_prompt = base_prompt + _format_memory_block(
             memories, heading="Remembered context about this user"
         )
+    if BENCHMARK_MODE:
+        base_prompt = base_prompt + BENCHMARK_INSTRUCTION_SUFFIX
     return base_prompt
 
 
@@ -362,7 +387,7 @@ def _format_execution_log(execution_log: list[dict], max_chars: int = 5000) -> s
                     elif isinstance(result_content, str):
                         lines.append(f"{prefix} {result_content[:300]}")
 
-        total_chars += sum(len(l) for l in lines) - total_chars
+        total_chars += sum(len(line) for line in lines) - total_chars
         if total_chars > max_chars:
             lines.append("  ... (log truncated)")
             break
@@ -431,16 +456,7 @@ def build_agent_chat_system_prompt(
     memories: list[str] | None = None,
 ) -> str:
     """Build system prompt for an interactive chat session with an agent."""
-    seen = set()
-    display_names = []
-    for source in sources:
-        source_type = source.source_type
-        if source_type not in seen:
-            seen.add(source_type)
-            name = SOURCE_DISPLAY_NAMES.get(source_type, source_type)
-            display_names.append(name)
-
-    connected_apps = ", ".join(display_names) if display_names else "None"
+    connected_apps, in_filters = _connected_app_context(sources)
     user_line = _format_user_line(user_name, user_email)
     run_history_section = format_run_history(runs)
 
@@ -453,9 +469,13 @@ def build_agent_chat_system_prompt(
         current_datetime=_format_datetime(),
         user_line=user_line,
         connected_apps=connected_apps,
+        in_filters=in_filters,
     )
 
     if memories:
         prompt += _format_trusted_memory_block(memories, "What I remember")
+
+    if BENCHMARK_MODE:
+        prompt += BENCHMARK_INSTRUCTION_SUFFIX
 
     return prompt

@@ -30,13 +30,15 @@ from attachments import expand_uploads
 from config import (
     AGENT_MAX_ITERATIONS,
     APPROVAL_TIMEOUT_SECONDS,
+    BENCHMARK_MODE,
     CONNECTOR_MANAGER_URL,
+    DATABASE_NAME,
     DEFAULT_MAX_TOKENS,
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
     SANDBOX_URL,
 )
-from db import ChatsRepository, MessagesRepository
+from db import ChatsRepository, MessagesRepository, get_db_pool
 from db.documents import DocumentsRepository
 from db.models import Chat, Source
 from db.configuration import ConfigurationRepository
@@ -60,6 +62,7 @@ from tools import (
     DocumentToolHandler,
     PeopleSearchHandler,
     SearchToolHandler,
+    SubmitAnswerHandler,
     ToolContext,
     ToolRegistry,
 )
@@ -71,6 +74,31 @@ from tools.skill_handler import SkillHandler
 
 router = APIRouter(tags=["chat"])
 logger = logging.getLogger(__name__)
+
+
+def _benchmark_sources_enabled() -> bool:
+    return BENCHMARK_MODE or DATABASE_NAME == "omni_benchmark"
+
+
+async def _fetch_sources_from_database() -> list[Source] | None:
+    """Fetch active source rows directly for benchmark/minimal deployments."""
+    try:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, name, source_type, is_active, is_deleted
+                  FROM sources
+                 WHERE is_active = TRUE
+                   AND is_deleted = FALSE
+                 ORDER BY source_type, name
+                """
+            )
+        return [Source.from_row(row) for row in rows]
+    except Exception as e:
+        logger.warning(f"Failed to fetch sources from database: {e}")
+        return None
+
 
 TITLE_GENERATION_SYSTEM_PROMPT = """You are a helpful assistant that generates concise, descriptive titles for chat conversations.
 Based on the first message(s) of a conversation, generate a title that is:
@@ -184,6 +212,8 @@ def _copy_provider_extras(src: object, dst: dict, keys: tuple[str, ...]) -> None
 async def _fetch_sources_from_connector_manager() -> list[Source] | None:
     """Fetch all sources from the connector manager. Returns None on failure."""
     if not CONNECTOR_MANAGER_URL:
+        if _benchmark_sources_enabled():
+            return await _fetch_sources_from_database()
         return None
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -192,6 +222,8 @@ async def _fetch_sources_from_connector_manager() -> list[Source] | None:
             return [Source.from_row(s) for s in resp.json()]
     except Exception as e:
         logger.warning(f"Failed to fetch sources from connector manager: {e}")
+        if _benchmark_sources_enabled():
+            return await _fetch_sources_from_database()
         return None
 
 
@@ -277,6 +309,9 @@ async def _build_registry(
     if skill_handler._available:
         registry.register(skill_handler)
 
+    if BENCHMARK_MODE:
+        registry.register(SubmitAnswerHandler())
+
     return RegistryResult(
         registry=registry,
         connector_actions=connector_actions,
@@ -357,6 +392,9 @@ async def _build_agent_chat_registry(
     skill_handler = SkillHandler(skills_dir=skills_dir)
     if skill_handler._available:
         registry.register(skill_handler)
+
+    if BENCHMARK_MODE:
+        registry.register(SubmitAnswerHandler())
 
     return RegistryResult(
         registry=registry,
@@ -735,6 +773,7 @@ async def stream_chat(
     async def stream_generator():
         try:
             conversation_messages = messages.copy()
+            last_request_input_tokens: int | None = None
 
             # Handle approval resume
             if pending:
@@ -933,6 +972,42 @@ async def stream_chat(
                 content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
                 provider_extras = llm_provider.PERSISTED_BLOCK_EXTRAS
 
+                if compactor.needs_compaction(
+                    conversation_messages,
+                    all_tools,
+                    last_input_tokens=last_request_input_tokens,
+                ):
+                    before_tokens = compactor.estimate_tokens(
+                        conversation_messages
+                    ) + compactor.estimate_tools_tokens(all_tools)
+                    before_messages = len(conversation_messages)
+                    logger.info(
+                        f"Compacting conversation for chat {chat_id} before iteration "
+                        f"{iteration + 1}: {before_tokens} estimated tokens across "
+                        f"{before_messages} messages"
+                    )
+                    try:
+                        conversation_messages = await compactor.compact_conversation(
+                            chat_id, conversation_messages
+                        )
+                    except Exception:
+                        logger.exception(
+                            f"Failed to compact conversation for chat {chat_id}"
+                        )
+                        yield (
+                            "event: error\n"
+                            "data: Failed to compact conversation before the next model request.\n\n"
+                        )
+                        break
+                    after_tokens = compactor.estimate_tokens(
+                        conversation_messages
+                    ) + compactor.estimate_tools_tokens(all_tools)
+                    logger.info(
+                        f"Compacted conversation for chat {chat_id}: "
+                        f"{before_messages}->{len(conversation_messages)} messages, "
+                        f"{before_tokens}->{after_tokens} estimated tokens"
+                    )
+
                 logger.info("Sending request to LLM provider")
                 logger.debug(
                     f"Messages being sent: {json.dumps(conversation_messages, indent=2)}"
@@ -951,6 +1026,7 @@ async def stream_chat(
                     ),
                 )
 
+                reasoning_accumulator: dict = {}
                 raw_stream: AsyncStream[MessageStreamEvent] = (
                     llm_provider.stream_response(
                         prompt="",  # Not used when messages provided
@@ -960,6 +1036,7 @@ async def stream_chat(
                         temperature=DEFAULT_TEMPERATURE,
                         top_p=DEFAULT_TOP_P,
                         system_prompt=system_prompt,
+                        reasoning_accumulator=reasoning_accumulator,
                     )
                 )
 
@@ -1066,6 +1143,7 @@ async def stream_chat(
                         break
 
                 tracker.save()
+                last_request_input_tokens = tracker.input_tokens or None
 
                 # Parse tool call inputs. Convert to JSON.
                 tool_calls = [b for b in content_blocks if b["type"] == "tool_use"]
@@ -1081,6 +1159,10 @@ async def stream_chat(
                 assistant_message = MessageParam(
                     role="assistant", content=content_blocks
                 )
+                # DeepSeek thinking mode: preserve reasoning_content for subsequent turns
+                reasoning_content = reasoning_accumulator.get("content")
+                if reasoning_content:
+                    assistant_message["reasoning_content"] = reasoning_content
                 conversation_messages.append(assistant_message)
 
                 # Send complete message to omni-web for database persistence

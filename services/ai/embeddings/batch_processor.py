@@ -12,7 +12,7 @@ from typing import Optional
 
 import ulid
 
-from config import EMBEDDING_MAX_MODEL_LEN
+from config import EMBEDDING_CONCURRENCY, EMBEDDING_MAX_MODEL_LEN
 
 from . import Chunk
 from db import (
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 # Configuration for online processing
-ONLINE_BATCH_SIZE = 10
+ONLINE_BATCH_SIZE = max(10, EMBEDDING_CONCURRENCY)
 ONLINE_POLL_INTERVAL = 5  # Seconds to wait when queue is empty
 ONLINE_BATCH_DELAY = 0.1  # Seconds to yield between batches when queue has items
 PROGRESS_LOG_INTERVAL = 30  # Seconds between progress log lines
@@ -52,7 +52,7 @@ class EmbeddingBatchProcessor:
         self.embeddings_repo = embeddings_repo
         self.app_state = app_state
 
-        self._embedding_semaphore = asyncio.Semaphore(1)
+        self._embedding_semaphore = asyncio.Semaphore(EMBEDDING_CONCURRENCY)
 
         # Progress tracking (populated at online loop start)
         self._progress_start_time: Optional[float] = None
@@ -121,7 +121,7 @@ class EmbeddingBatchProcessor:
 
         logger.info(f"Processing {len(items)} documents via online embedding API")
 
-        for item in items:
+        async def _run(item: EmbeddingQueueItem) -> None:
             try:
                 await self._process_single_document(item)
             except Exception as e:
@@ -130,11 +130,11 @@ class EmbeddingBatchProcessor:
                 )
                 await self.queue_repo.mark_failed([item.id], str(e))
                 self._docs_failed += 1
-            finally:
-                # Yield to allow higher-priority tasks (stream requests) to run
-                await asyncio.sleep(0)
-                await self._maybe_log_progress()
 
+        # Run up to EMBEDDING_CONCURRENCY docs in parallel; the semaphore inside
+        # _process_single_document caps actual in-flight embedding work.
+        await asyncio.gather(*(_run(item) for item in items))
+        await self._maybe_log_progress()
         return True
 
     async def _process_single_document(self, item: EmbeddingQueueItem):

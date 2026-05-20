@@ -63,6 +63,7 @@ def _create_provider_from_model_record(record: ModelRecord) -> LLMProvider:
             "openai",
             api_key=config.get("apiKey"),
             model=model_id,
+            reasoning_effort=config.get("reasoningEffort"),
         )
 
     elif provider_type == "gemini":

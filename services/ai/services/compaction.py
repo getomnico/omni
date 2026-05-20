@@ -50,6 +50,10 @@ class ConversationCompactor:
         """
         total_chars = 0
         for msg in messages:
+            reasoning_content = msg.get("reasoning_content")
+            if isinstance(reasoning_content, str):
+                total_chars += len(reasoning_content)
+
             content = msg.get("content", "")
             if isinstance(content, str):
                 total_chars += len(content)
@@ -91,20 +95,36 @@ class ConversationCompactor:
         self,
         messages: list[MessageParam],
         tools: list[dict[str, Any]] | None = None,
+        last_input_tokens: int | None = None,
     ) -> bool:
-        """Check if conversation needs compaction (above 80% of threshold)."""
+        """Check if conversation needs compaction.
+
+        Prefer provider-reported request input tokens from the previous model call.
+        The character/token estimator is only a fallback for providers or first
+        turns where no usage signal is available yet.
+        """
         if not ENABLE_CONVERSATION_COMPACTION:
             return False
+
+        threshold = int(MAX_CONVERSATION_INPUT_TOKENS * 0.8)
+
+        if last_input_tokens and last_input_tokens > 0:
+            needs_compact = last_input_tokens > threshold
+            if needs_compact:
+                logger.info(
+                    f"Conversation needs compaction: {last_input_tokens} input tokens "
+                    f"from provider usage (threshold: {threshold}, max: "
+                    f"{MAX_CONVERSATION_INPUT_TOKENS})"
+                )
+            return needs_compact
 
         message_tokens = self.estimate_tokens(messages)
         tool_tokens = self.estimate_tools_tokens(tools) if tools else 0
         total_tokens = message_tokens + tool_tokens
-        threshold = int(MAX_CONVERSATION_INPUT_TOKENS * 0.8)
-
         needs_compact = total_tokens > threshold
         if needs_compact:
             logger.info(
-                f"Conversation needs compaction: {total_tokens} tokens "
+                f"Conversation needs compaction: {total_tokens} estimated tokens "
                 f"(threshold: {threshold}, max: {MAX_CONVERSATION_INPUT_TOKENS})"
             )
 

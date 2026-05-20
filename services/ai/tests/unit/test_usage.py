@@ -16,9 +16,9 @@ from anthropic.types import (
 from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic.types.raw_message_delta_event import Delta
 
-from providers import TokenUsage
 from providers.azure_foundry import AzureFoundryProvider
 from providers.openai import OpenAIProvider
+from providers.openai_compatible import _extract_token_usage
 from services.usage import UsageContext, UsagePurpose, UsageTracker
 
 
@@ -116,3 +116,38 @@ async def test_azure_foundry_streams_propagate_input_tokens():
 
     assert tracker.input_tokens == 500
     assert tracker.output_tokens == 50
+
+
+@pytest.mark.unit
+def test_openai_compatible_extracts_deepseek_cache_usage_from_extra_fields():
+    class Usage:
+        prompt_tokens = 1000
+        completion_tokens = 50
+        model_extra = {
+            "prompt_cache_hit_tokens": 700,
+            "prompt_cache_miss_tokens": 300,
+        }
+
+    usage = _extract_token_usage(Usage())
+
+    assert usage.input_tokens == 1000
+    assert usage.cache_read_tokens == 700
+    assert usage.cache_creation_tokens == 0
+    assert usage.output_tokens == 50
+
+
+@pytest.mark.unit
+def test_openai_compatible_extracts_openai_chat_cached_tokens_detail():
+    class Details:
+        cached_tokens = 512
+
+    class Usage:
+        prompt_tokens = 1024
+        completion_tokens = 64
+        prompt_tokens_details = Details()
+
+    usage = _extract_token_usage(Usage())
+
+    assert usage.input_tokens == 1024
+    assert usage.cache_read_tokens == 512
+    assert usage.output_tokens == 64

@@ -6,6 +6,7 @@ Uses the OpenAI Responses API (client.responses.create).
 
 import json
 import logging
+import os
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -49,10 +50,17 @@ def _convert_tools_to_openai(tools: list[dict[str, Any]]) -> list[dict[str, Any]
 class OpenAIProvider(LLMProvider):
     """Provider for OpenAI API (GPT-4, etc.) using the Responses API."""
 
-    def __init__(self, api_key: str, model: str):
+    def __init__(self, api_key: str, model: str, reasoning_effort: str | None = None):
         self.api_key = api_key
         self.client = AsyncOpenAI(api_key=api_key)
         self.model = model
+        self.reasoning_effort = (
+            reasoning_effort or os.environ.get("OPENAI_REASONING_EFFORT") or None
+        )
+
+    def _apply_reasoning_config(self, params: dict[str, Any]) -> None:
+        if self.reasoning_effort:
+            params["reasoning"] = {"effort": self.reasoning_effort}
 
     async def stream_response(
         self,
@@ -63,6 +71,7 @@ class OpenAIProvider(LLMProvider):
         tools: list[dict[str, Any]] | None = None,
         messages: list[dict[str, Any]] | None = None,
         system_prompt: str | None = None,
+        reasoning_accumulator: dict | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response from OpenAI Responses API, yielding Anthropic-compatible MessageStreamEvents."""
         try:
@@ -76,6 +85,7 @@ class OpenAIProvider(LLMProvider):
                 "max_output_tokens": max_tokens or 4096,
                 "stream": True,
             }
+            self._apply_reasoning_config(request_params)
 
             if system_prompt:
                 request_params["instructions"] = system_prompt
@@ -316,6 +326,7 @@ class OpenAIProvider(LLMProvider):
                 "max_output_tokens": max_tokens or 4096,
                 "stream": False,
             }
+            self._apply_reasoning_config(params)
             response = await self.client.responses.create(**params)
 
             usage = TokenUsage()
@@ -347,7 +358,7 @@ class OpenAIProvider(LLMProvider):
             await self.client.responses.create(
                 model=self.model,
                 input="Hello",
-                max_output_tokens=1,
+                max_output_tokens=16,
                 stream=False,
             )
             return True

@@ -288,6 +288,9 @@ class SearchToolHandler:
 
             metadata_blocks = [
                 TextBlockParam(type="text", text=f"[Document ID: {doc.id}]"),
+                TextBlockParam(
+                    type="text", text=f"[Relevance Score: {result.score:.6f}]"
+                ),
                 TextBlockParam(type="text", text=f"[Document Name: {doc.title}]"),
                 TextBlockParam(
                     type="text",
@@ -361,12 +364,15 @@ async def _execute_search_tool(
     original_user_query: str | None = None,
 ) -> list[SearchResult]:
     """Execute search_documents tool by calling omni-searcher."""
+    import os
+
+    search_mode = os.getenv("SEARCH_MODE", "hybrid")
     search_request = SearchRequest(
         query=tool_input.query,
         document_id=tool_input.document_id,
         limit=tool_input.limit or 10,
         offset=0,
-        mode="hybrid",
+        mode=search_mode,
         user_id=user_id,
         user_email=user_email,
         is_generated_query=True,

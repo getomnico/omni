@@ -4,6 +4,7 @@ import httpx
 import asyncio
 
 from . import EmbeddingProvider, Chunk
+from config import EMBEDDING_CONCURRENCY
 from processing import Chunker
 
 logger = logging.getLogger(__name__)
@@ -12,6 +13,13 @@ OPENAI_MAX_BATCH_SIZE = 2048
 OPENAI_MAX_RETRIES = 3
 OPENAI_RETRY_DELAY = 1.0
 CHARS_PER_TOKEN = 3
+
+# httpx defaults (max_connections=10) cap concurrent in-flight embedding
+# requests below EMBEDDING_CONCURRENCY, so the batch_processor's parallel
+# docs serialize at the HTTP pool. Scale the pool with concurrency, with
+# 2x headroom for short-lived overlap during connection turnover.
+HTTP_MAX_CONNECTIONS = max(20, EMBEDDING_CONCURRENCY * 2)
+HTTP_MAX_KEEPALIVE = max(10, EMBEDDING_CONCURRENCY)
 
 
 class OpenAIEmbeddingProvider(EmbeddingProvider):
@@ -158,7 +166,10 @@ class OpenAIEmbeddingClient:
 
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(60.0, connect=10.0),
-            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+            limits=httpx.Limits(
+                max_keepalive_connections=HTTP_MAX_KEEPALIVE,
+                max_connections=HTTP_MAX_CONNECTIONS,
+            ),
         )
 
     async def close(self):

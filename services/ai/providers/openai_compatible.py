@@ -12,6 +12,28 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
+from anthropic.types import (
+    InputJSONDelta,
+    Message,
+    MessageDeltaUsage,
+    MessageParam,
+    RawContentBlockDeltaEvent,
+    RawContentBlockStartEvent,
+    RawContentBlockStopEvent,
+    RawMessageDeltaEvent,
+    RawMessageStartEvent,
+    RawMessageStopEvent,
+    TextBlock,
+    TextBlockParam,
+    TextDelta,
+    ToolParam,
+    ToolResultBlockParam,
+    ToolUseBlock,
+    ToolUseBlockParam,
+    Usage,
+)
+from anthropic.types.message_stream_event import MessageStreamEvent
+from anthropic.types.raw_message_delta_event import Delta
 from openai import AsyncOpenAI
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
@@ -24,32 +46,69 @@ from openai.types.chat import (
     ChatCompletionUserMessageParam,
 )
 from openai.types.chat.chat_completion_message_tool_call_param import Function
-from anthropic.types import (
-    Message,
-    MessageDeltaUsage,
-    MessageParam,
-    TextBlockParam,
-    ToolParam,
-    ToolResultBlockParam,
-    ToolUseBlockParam,
-    Usage,
-    RawMessageStartEvent,
-    RawMessageDeltaEvent,
-    RawContentBlockStartEvent,
-    RawContentBlockDeltaEvent,
-    RawContentBlockStopEvent,
-    RawMessageStopEvent,
-    ToolUseBlock,
-    TextBlock,
-    TextDelta,
-    InputJSONDelta,
-)
-from anthropic.types.message_stream_event import MessageStreamEvent
-from anthropic.types.raw_message_delta_event import Delta
 
 from . import LLMProvider, TokenUsage
 
 logger = logging.getLogger(__name__)
+
+
+def _usage_value(usage: Any, field: str) -> int:
+    """Read a usage integer from SDK fields or provider-specific extras."""
+    value = getattr(usage, field, None)
+    if value is None and isinstance(usage, dict):
+        value = usage.get(field)
+    if value is None:
+        model_extra = getattr(usage, "model_extra", None)
+        if isinstance(model_extra, dict):
+            value = model_extra.get(field)
+    return int(value or 0)
+
+
+def _nested_usage_value(usage: Any, parent: str, field: str) -> int:
+    parent_value = getattr(usage, parent, None)
+    if parent_value is None and isinstance(usage, dict):
+        parent_value = usage.get(parent)
+    if parent_value is None:
+        model_extra = getattr(usage, "model_extra", None)
+        if isinstance(model_extra, dict):
+            parent_value = model_extra.get(parent)
+
+    if parent_value is None:
+        return 0
+    return _usage_value(parent_value, field)
+
+
+def _extract_token_usage(usage: Any) -> TokenUsage:
+    """Normalize OpenAI-compatible Chat Completions usage payloads.
+
+    DeepSeek returns provider-specific cache counters alongside the OpenAI
+    fields:
+      - prompt_tokens
+      - completion_tokens
+      - prompt_cache_hit_tokens
+      - prompt_cache_miss_tokens
+
+    Keep input_tokens as total prompt tokens so context-size accounting remains
+    correct. Store cache hits separately; cache misses can be derived as
+    input_tokens - cache_read_tokens.
+    """
+    if not usage:
+        return TokenUsage()
+
+    input_tokens = _usage_value(usage, "prompt_tokens")
+    output_tokens = _usage_value(usage, "completion_tokens")
+
+    cache_read_tokens = _usage_value(usage, "prompt_cache_hit_tokens")
+    if not cache_read_tokens:
+        cache_read_tokens = _nested_usage_value(
+            usage, "prompt_tokens_details", "cached_tokens"
+        )
+
+    return TokenUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+    )
 
 
 def _convert_tools_to_openai(tools: list[ToolParam]) -> list[ChatCompletionToolParam]:
@@ -107,6 +166,7 @@ def _convert_messages_to_openai(
 
         # Handle block-based content (Anthropic format)
         text_parts: list[str] = []
+        reasoning_parts: list[str] = []
         tool_calls: list[ChatCompletionMessageToolCallParam] = []
         tool_results: list[ChatCompletionToolMessageParam] = []
 
@@ -121,6 +181,8 @@ def _convert_messages_to_openai(
             if block["type"] == "text":
                 block = cast(TextBlockParam, block)
                 text_parts.append(block["text"])
+            elif block["type"] == "reasoning":
+                reasoning_parts.append(block.get("text", ""))
             elif block["type"] == "tool_use":
                 block = cast(ToolUseBlockParam, block)
                 raw_input = block["input"]
@@ -174,6 +236,13 @@ def _convert_messages_to_openai(
                 assistant_msg["content"] = "\n".join(text_parts)
             if tool_calls:
                 assistant_msg["tool_calls"] = tool_calls
+            rc = None
+            if reasoning_parts:
+                rc = "\n".join(reasoning_parts)
+            elif msg.get("reasoning_content"):
+                rc = msg["reasoning_content"]
+            if rc:
+                assistant_msg["reasoning_content"] = rc
             result.append(assistant_msg)
         elif role == "user" and tool_results:
             result.extend(tool_results)
@@ -217,6 +286,7 @@ class OpenAICompatibleProvider(LLMProvider):
         tools: list[ToolParam] | None = None,
         messages: list[MessageParam] | None = None,
         system_prompt: str | None = None,
+        reasoning_accumulator: dict | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response, yielding Anthropic-compatible MessageStreamEvents."""
         try:
@@ -272,20 +342,30 @@ class OpenAICompatibleProvider(LLMProvider):
             tool_call_names: dict[int, str] = {}
             next_block_index = 0
 
-            stream_input_tokens = 0
-            stream_output_tokens = 0
+            stream_usage = TokenUsage()
 
             chunk: ChatCompletionChunk
             async for chunk in stream:
                 # Usage-only chunk (no choices) arrives at end of stream
                 if chunk.usage:
-                    stream_input_tokens = chunk.usage.prompt_tokens or 0
-                    stream_output_tokens = chunk.usage.completion_tokens or 0
+                    stream_usage = _extract_token_usage(chunk.usage)
 
                 if not chunk.choices:
                     continue
 
                 delta = chunk.choices[0].delta
+
+                # Handle reasoning_content (e.g. DeepSeek thinking mode)
+                reasoning_text = None
+                if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                    reasoning_text = delta.reasoning_content
+                elif hasattr(delta, "model_extra") and delta.model_extra:
+                    reasoning_text = delta.model_extra.get("reasoning_content")
+
+                if reasoning_text and reasoning_accumulator is not None:
+                    reasoning_accumulator["content"] = (
+                        reasoning_accumulator.get("content", "") + reasoning_text
+                    )
 
                 # Handle text content
                 if delta.content:
@@ -364,19 +444,20 @@ class OpenAICompatibleProvider(LLMProvider):
                     type="content_block_stop",
                     index=current_text_index,
                 )
-            for tc_index, block_index in tool_block_indices.items():
+            for _tc_index, block_index in tool_block_indices.items():
                 yield RawContentBlockStopEvent(
                     type="content_block_stop",
                     index=block_index,
                 )
 
-            if stream_input_tokens or stream_output_tokens:
+            if stream_usage.input_tokens or stream_usage.output_tokens:
                 yield RawMessageDeltaEvent(
                     type="message_delta",
                     delta=Delta(stop_reason="end_turn"),
                     usage=MessageDeltaUsage(
-                        input_tokens=stream_input_tokens,
-                        output_tokens=stream_output_tokens,
+                        input_tokens=stream_usage.input_tokens,
+                        output_tokens=stream_usage.output_tokens,
+                        cache_read_input_tokens=stream_usage.cache_read_tokens,
                     ),
                 )
 
@@ -412,10 +493,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
             usage = TokenUsage()
             if response.usage:
-                usage = TokenUsage(
-                    input_tokens=response.usage.prompt_tokens or 0,
-                    output_tokens=response.usage.completion_tokens or 0,
-                )
+                usage = _extract_token_usage(response.usage)
 
             content = response.choices[0].message.content
             if not content:
@@ -426,7 +504,7 @@ class OpenAICompatibleProvider(LLMProvider):
         except Exception as e:
             raise Exception(
                 f"Failed to generate response from OpenAI-compatible endpoint: {e}"
-            )
+            ) from e
 
     async def health_check(self) -> bool:
         """Liveness is determined by inference calls themselves; no separate probe

@@ -57,6 +57,17 @@ DATABASE_URL = (
 # Embedding configuration (provider config is in DB; only window size remains here)
 EMBEDDING_MAX_MODEL_LEN = int(get_optional_env("EMBEDDING_MAX_MODEL_LEN", "8192"))
 
+# Number of documents the embedding loop processes concurrently. Default is
+# conservative (1 = serial) to keep production behavior unchanged; bump for
+# bulk-ingest workloads (e.g. benchmarks) where the upstream embedding API
+# can absorb parallel calls.
+EMBEDDING_CONCURRENCY = int(get_optional_env("EMBEDDING_CONCURRENCY", "1"))
+
+# Benchmark mode exposes the `submit_answer` tool to the agent and instructs
+# it to emit its final answer + cited document_ids in a single structured
+# tool call. Off in production.
+BENCHMARK_MODE = get_optional_env("BENCHMARK_MODE", "false").lower() == "true"
+
 DEFAULT_MAX_TOKENS = int(get_optional_env("DEFAULT_MAX_TOKENS", "8192"))
 DEFAULT_TEMPERATURE = float(get_optional_env("DEFAULT_TEMPERATURE", "0.0"))
 DEFAULT_TOP_P = float(get_optional_env("DEFAULT_TOP_P", "1.0"))

@@ -116,7 +116,8 @@ def create_llm_provider(provider_type: str, **kwargs) -> LLMProvider:
         if not api_key:
             raise ValueError("api_key is required for OpenAI provider")
         model = kwargs.get("model", "gpt-4o")
-        return OpenAIProvider(api_key, model)
+        reasoning_effort = kwargs.get("reasoning_effort")
+        return OpenAIProvider(api_key, model, reasoning_effort=reasoning_effort)
 
     elif provider_type.lower() == "gemini":
         api_key = kwargs.get("api_key")
