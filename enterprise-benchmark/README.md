@@ -119,9 +119,9 @@ Default local service URLs used by the scripts:
 Clone the benchmark branch:
 
 ```bash
-git clone https://github.com/getomnico/omni.git "$OMNI_REPO"
+git clone --branch enterprise-benchmark --single-branch \
+  https://github.com/getomnico/omni.git "$OMNI_REPO"
 cd "$OMNI_REPO"
-git checkout feat/omni-enterprise-benchmark
 ```
 
 Clone EnterpriseRAG-Bench:
@@ -424,4 +424,3 @@ cat "$OMNI_REPO/enterprise-benchmark/runs/<run>/results_<system>.json" \
   assume all OpenAI-compatible endpoints use identical token field names.
 - The evaluator compares submitted docs using EnterpriseRAG-Bench `dsid_*`
   document IDs. Internal Omni document IDs are not valid benchmark citations.
-
