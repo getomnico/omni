@@ -25,6 +25,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
     if (!MICROSOFT_SOURCE_TYPES.has(source.sourceType as SourceType)) {
         throw error(400, 'Invalid source type for this page')
     }
+
     return {
         source,
     }

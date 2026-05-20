@@ -17,6 +17,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
     if (source.sourceType !== SourceType.SLACK) {
         throw error(400, 'Invalid source type for this page')
     }
+
     return {
         source,
     }

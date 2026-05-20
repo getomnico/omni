@@ -244,10 +244,20 @@ fn sources_due_for_sync(
             .push(run);
     }
 
+    let source_count = sources.len();
     let mut due_sources: Vec<(Source, Option<OffsetDateTime>)> = sources
         .into_iter()
         .filter_map(|source| {
-            let sync_interval_seconds = source.sync_interval_seconds?;
+            let sync_interval_seconds = match source.sync_interval_seconds {
+                Some(interval) => interval,
+                None => {
+                    info!(
+                        "Skipping scheduled sync for source {} ({:?}): no sync interval configured",
+                        source.id, source.source_type
+                    );
+                    return None;
+                }
+            };
             let sync_runs = runs_by_source.remove(&source.id).unwrap_or_default();
             let latest_success_at = sync_runs
                 .iter()
@@ -261,6 +271,13 @@ fn sources_due_for_sync(
             // Circuit breaker: stop scheduled retries once the visible
             // consecutive failure streak reaches the configured threshold.
             if max_consecutive_failures <= failed_runs.len() as i32 {
+                info!(
+                    "Skipping scheduled sync for source {} ({:?}): circuit breaker open after {} consecutive failures (threshold {})",
+                    source.id,
+                    source.source_type,
+                    failed_runs.len(),
+                    max_consecutive_failures
+                );
                 return None;
             }
 
@@ -269,6 +286,14 @@ fn sources_due_for_sync(
                 let backoff =
                     backoff_seconds(failed_runs.len(), backoff_base_seconds, backoff_max_seconds);
                 if last_failed_at + TimeDuration::seconds(backoff) > now {
+                    info!(
+                        "Skipping scheduled sync for source {} ({:?}): failure backoff still active after {} consecutive failures; last failure at {}, backoff {}s",
+                        source.id,
+                        source.source_type,
+                        failed_runs.len(),
+                        last_failed_at,
+                        backoff
+                    );
                     return None;
                 }
             }
@@ -278,20 +303,48 @@ fn sources_due_for_sync(
             // the fetched failure window. In both cases the interval is not
             // the blocking condition; failure threshold/backoff above decides.
             let Some(latest_success_at) = latest_success_at else {
+                info!(
+                    "Source {} ({:?}) is due for scheduled sync: no recent successful sync found, {} consecutive failures below threshold",
+                    source.id,
+                    source.source_type,
+                    failed_runs.len()
+                );
                 return Some((source, last_failed_at));
             };
 
             let next_sync_at =
                 latest_success_at + TimeDuration::seconds(sync_interval_seconds as i64);
             if next_sync_at > now {
+                info!(
+                    "Skipping scheduled sync for source {} ({:?}): next sync due at {}, latest success at {}, interval {}s",
+                    source.id,
+                    source.source_type,
+                    next_sync_at,
+                    latest_success_at,
+                    sync_interval_seconds
+                );
                 return None;
             }
 
+            info!(
+                "Source {} ({:?}) is due for scheduled sync: latest success at {}, interval {}s, {} consecutive failures",
+                source.id,
+                source.source_type,
+                latest_success_at,
+                sync_interval_seconds,
+                failed_runs.len()
+            );
             Some((source, last_failed_at.or(Some(latest_success_at))))
         })
         .collect();
 
     due_sources.sort_by_key(|(_, last_sync_at)| *last_sync_at);
+    let due_count = due_sources.len();
+    info!(
+        "Scheduled sync due-source evaluation complete: {} of {} sources due",
+        due_count, source_count
+    );
+
     due_sources
         .into_iter()
         .take(10)

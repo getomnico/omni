@@ -26,6 +26,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
     const creds = await db.query.serviceCredentials.findFirst({
         where: eq(serviceCredentials.sourceId, params.sourceId),
     })
+
     return {
         source,
         principalEmail: creds?.principalEmail ?? null,
