@@ -5,11 +5,14 @@ export function formatDate(date: Date | null) {
     return new Date(date).toLocaleString()
 }
 
-export function formatSyncRunDate(value: string | null) {
+export function formatSyncRunDate(value: Date | string | null) {
     return value ? new Date(value).toLocaleString() : '-'
 }
 
-export function formatSyncRunDuration(startedAt: string | null, completedAt: string | null) {
+export function formatSyncRunDuration(
+    startedAt: Date | string | null,
+    completedAt: Date | string | null,
+) {
     if (!startedAt || !completedAt) return '-'
     const ms = new Date(completedAt).getTime() - new Date(startedAt).getTime()
     if (!Number.isFinite(ms) || ms < 0) return '-'

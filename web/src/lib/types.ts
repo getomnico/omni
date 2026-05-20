@@ -145,6 +145,21 @@ export interface ConnectorManagerSyncRun {
     updated_at: string
 }
 
+export interface SourceSyncRun {
+    id: string
+    sourceId: string
+    syncType: string
+    startedAt: Date | string | null
+    completedAt: Date | string | null
+    status: string
+    documentsScanned: number | null
+    documentsProcessed: number | null
+    documentsUpdated: number | null
+    errorMessage: string | null
+    createdAt: Date | string
+    updatedAt: Date | string
+}
+
 export interface SourceSyncOverview {
     source: {
         id: string

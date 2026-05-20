@@ -5,9 +5,9 @@
         formatSyncRunDuration,
         getSyncRunStatusColor,
     } from '$lib/utils/sources'
-    import type { ConnectorManagerSyncRun } from '$lib/types'
+    import type { SourceSyncRun } from '$lib/types'
 
-    let { runs = [] }: { runs?: ConnectorManagerSyncRun[] } = $props()
+    let { runs = [] }: { runs?: SourceSyncRun[] } = $props()
 </script>
 
 <Card.Root>
@@ -42,26 +42,26 @@
                                         {run.status}
                                     </span>
                                 </td>
-                                <td class="py-2 pr-4">{run.sync_type}</td>
+                                <td class="py-2 pr-4">{run.syncType}</td>
                                 <td class="py-2 pr-4 whitespace-nowrap">
-                                    {formatSyncRunDate(run.started_at)}
+                                    {formatSyncRunDate(run.startedAt)}
                                 </td>
                                 <td class="py-2 pr-4 whitespace-nowrap">
-                                    {formatSyncRunDuration(run.started_at, run.completed_at)}
+                                    {formatSyncRunDuration(run.startedAt, run.completedAt)}
                                 </td>
                                 <td class="py-2 pr-4 text-right">
-                                    {run.documents_scanned.toLocaleString()}
+                                    {(run.documentsScanned ?? 0).toLocaleString()}
                                 </td>
                                 <td class="py-2 pr-4 text-right">
-                                    {run.documents_processed.toLocaleString()}
+                                    {(run.documentsProcessed ?? 0).toLocaleString()}
                                 </td>
                                 <td class="py-2 pr-4 text-right">
-                                    {run.documents_updated.toLocaleString()}
+                                    {(run.documentsUpdated ?? 0).toLocaleString()}
                                 </td>
                                 <td class="max-w-xs py-2">
-                                    {#if run.error_message}
+                                    {#if run.errorMessage}
                                         <span class="line-clamp-2 break-words text-red-600">
-                                            {run.error_message}
+                                            {run.errorMessage}
                                         </span>
                                     {:else}
                                         <span class="text-muted-foreground">-</span>

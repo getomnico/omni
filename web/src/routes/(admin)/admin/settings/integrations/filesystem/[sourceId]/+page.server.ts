@@ -1,7 +1,6 @@
 import { error, redirect } from '@sveltejs/kit'
 import type { PageServerLoad, Actions } from './$types'
 import { requireAdmin } from '$lib/server/authHelpers'
-import { sourcesRepository } from '$lib/server/repositories/sources'
 import { getSourceById, updateSourceById } from '$lib/server/db/sources'
 import { getConfig } from '$lib/server/config'
 import { SourceType, type FilesystemSourceConfig } from '$lib/types'
@@ -18,12 +17,8 @@ export const load: PageServerLoad = async ({ params, locals }) => {
     if (source.sourceType !== SourceType.LOCAL_FILES) {
         throw error(400, 'Invalid source type for this page')
     }
-
-    const syncOverview = await sourcesRepository.getSourceSyncOverview(source.id, locals.logger)
-
     return {
         source,
-        syncOverview,
     }
 }
 

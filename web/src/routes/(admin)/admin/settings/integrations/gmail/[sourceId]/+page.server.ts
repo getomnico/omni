@@ -35,12 +35,8 @@ export const load: PageServerLoad = async ({ params, locals }) => {
         SourceType.GOOGLE_DRIVE,
         source.createdBy,
     )
-
-    const syncOverview = await sourcesRepository.getSourceSyncOverview(source.id, locals.logger)
-
     return {
         source,
-        syncOverview,
         authType: (creds?.authType as AuthType | undefined) ?? null,
         hasStoredKey: Boolean(creds),
         principalEmail: creds?.principalEmail ?? '',

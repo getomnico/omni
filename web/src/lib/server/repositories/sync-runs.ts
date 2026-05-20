@@ -23,6 +23,15 @@ export class SyncRunsRepository {
             .orderBy(desc(syncRuns.startedAt))
             .limit(limit)
     }
+
+    async getLatestForSourceId(sourceId: string, limit: number = 10) {
+        return await db
+            .select()
+            .from(syncRuns)
+            .where(eq(syncRuns.sourceId, sourceId))
+            .orderBy(desc(syncRuns.startedAt), desc(syncRuns.createdAt))
+            .limit(limit)
+    }
 }
 
 export const syncRunsRepository = new SyncRunsRepository()

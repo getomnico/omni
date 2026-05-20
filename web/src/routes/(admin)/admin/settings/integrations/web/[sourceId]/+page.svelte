@@ -143,8 +143,8 @@
             Back to Integrations
         </a>
 
-        <SourceSyncHealth overview={data.syncOverview} />
-        <SyncRunHistory runs={data.syncOverview?.sync_runs ?? []} />
+        <SourceSyncHealth health={data.health} syncRuns={data.syncRuns} />
+        <SyncRunHistory runs={data.syncRuns} />
 
         {#if formErrors.length > 0}
             <Alert.Root variant="destructive" class="mb-6">

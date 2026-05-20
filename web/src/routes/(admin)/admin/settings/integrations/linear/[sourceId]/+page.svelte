@@ -72,8 +72,8 @@
             Back to Integrations
         </a>
 
-        <SourceSyncHealth overview={data.syncOverview} />
-        <SyncRunHistory runs={data.syncOverview?.sync_runs ?? []} />
+        <SourceSyncHealth health={data.health} syncRuns={data.syncRuns} />
+        <SyncRunHistory runs={data.syncRuns} />
 
         <form
             method="POST"
