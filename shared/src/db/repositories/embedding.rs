@@ -217,7 +217,7 @@ impl EmbeddingRepository {
             WITH candidates AS (
                 SELECT
                     e.document_id,
-                    e.embedding <=> $1 as distance,
+                    (e.embedding)::vector({dims}) <=> $1 as distance,
                     e.chunk_start_offset,
                     e.chunk_end_offset,
                     e.chunk_index,
@@ -226,7 +226,7 @@ impl EmbeddingRepository {
                 FROM embeddings e
                 JOIN documents d ON e.document_id = d.id
                 {where_clause}
-                ORDER BY e.embedding <=> $1
+                ORDER BY (e.embedding)::vector({dims}) <=> $1
                 LIMIT ($2 + $3) * 3
             )
             SELECT
@@ -241,6 +241,7 @@ impl EmbeddingRepository {
             "#,
             where_clause = where_clause,
             recency_expr = recency_expr,
+            dims = dims,
         );
 
         let mut query = sqlx::query(&query_str)
@@ -340,27 +341,30 @@ impl EmbeddingRepository {
         let dims = embedding.len() as i16;
         let vector = Vector::from(embedding);
 
-        let results = sqlx::query(
+        let query_str = format!(
             r#"
             SELECT
                 d.id, d.source_id, d.external_id, d.title, d.content_id,
                 d.content_type, d.file_size, d.file_extension, d.url,
                 d.metadata, d.permissions, d.attributes, d.created_at, d.updated_at, d.last_indexed_at,
-                e.embedding <=> $1 as distance,
+                (e.embedding)::vector({dims}) <=> $1 as distance,
                 e.chunk_start_offset,
                 e.chunk_end_offset
             FROM embeddings e
             JOIN documents d ON e.document_id = d.id
             WHERE e.dimensions = $3
-            ORDER BY e.embedding <=> $1
+            ORDER BY (e.embedding)::vector({dims}) <=> $1
             LIMIT $2
             "#,
-        )
-        .bind(&vector)
-        .bind(limit)
-        .bind(dims)
-        .fetch_all(&self.pool)
-        .await?;
+            dims = dims,
+        );
+
+        let results = sqlx::query(&query_str)
+            .bind(&vector)
+            .bind(limit)
+            .bind(dims)
+            .fetch_all(&self.pool)
+            .await?;
 
         let chunks_with_scores = results
             .into_iter()
