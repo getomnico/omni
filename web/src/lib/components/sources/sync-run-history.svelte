@@ -10,7 +10,7 @@
     let { runs = [] }: { runs?: SourceSyncRun[] } = $props()
 </script>
 
-<Accordion.Root type="single" class="rounded-md border">
+<Accordion.Root type="single" class="bg-card text-card-foreground rounded-md border shadow-sm">
     <Accordion.Item value="sync-history" class="border-b-0">
         <Accordion.Trigger class="px-4 py-3 hover:no-underline">
             <div class="flex flex-col items-start gap-1">

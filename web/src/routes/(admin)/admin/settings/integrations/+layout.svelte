@@ -31,6 +31,8 @@
 
             {@render children()}
 
+            <SyncRunHistory runs={data.syncRuns} />
+
             <Card.Root>
                 <Card.Content class="flex items-center justify-between">
                     <div>
@@ -48,8 +50,6 @@
                     </Button>
                 </Card.Content>
             </Card.Root>
-
-            <SyncRunHistory runs={data.syncRuns} />
         </div>
     </div>
 
