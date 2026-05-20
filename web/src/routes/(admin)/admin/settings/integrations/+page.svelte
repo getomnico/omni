@@ -23,7 +23,7 @@
     import paperlessLogo from '$lib/images/icons/paperless.svg'
     import imapLogo from '$lib/images/icons/imap.svg'
     import { getSourceIconPath } from '$lib/utils/icons'
-    import { Cloud, Globe, HardDrive, Mail } from '@lucide/svelte'
+    import { AlertTriangle, Cloud, Globe, HardDrive, Mail } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import GoogleWorkspaceSetup from '$lib/components/google-workspace-setup.svelte'
     import AtlassianConnectorSetup from '$lib/components/atlassian-connector-setup.svelte'
@@ -57,11 +57,13 @@
     }
 
     let latestSyncRuns = $state<Map<SourceId, SyncRun>>(data.latestSyncRuns)
+    let sourceHealth = $state<Map<SourceId, 'healthy' | 'unhealthy'>>(data.sourceHealth)
     let documentCounts = $state<Record<SourceId, number>>({})
     let eventSource = $state<EventSource | null>(null)
 
     $effect(() => {
         latestSyncRuns = data.latestSyncRuns
+        sourceHealth = data.sourceHealth
     })
 
     onMount(() => {
@@ -148,6 +150,9 @@
         return integrationIcons[integrationId] ?? null
     }
 
+    function normalizeStatus(status: string | null | undefined) {
+        return status?.toLowerCase()
+    }
     const sourceTypeSlug: Record<string, string> = {
         [SourceType.GOOGLE_DRIVE]: 'drive',
         [SourceType.GMAIL]: 'gmail',
@@ -193,6 +198,7 @@
                     {#each data.connectedSources as source}
                         {@const noun = getSourceNoun(source.sourceType as SourceType)}
                         {@const sync = latestSyncRuns.get(source.id)}
+                        {@const health = sourceHealth.get(source.id)}
                         <div
                             class="bg-card flex items-center justify-between gap-4 rounded-lg border px-4 py-3">
                             <div class="flex flex-1 items-start gap-3">
@@ -220,10 +226,17 @@
                                             class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(source.isActive)}`}>
                                             {source.isActive ? 'Enabled' : 'Disabled'}
                                         </span>
+                                        {#if health === 'unhealthy'}
+                                            <span
+                                                class="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/20 dark:text-red-400">
+                                                <AlertTriangle class="h-3 w-3" />
+                                                Unhealthy
+                                            </span>
+                                        {/if}
                                     </div>
                                     <div
                                         class="text-muted-foreground flex items-center gap-1 text-xs">
-                                        {#if sync?.status === 'running'}
+                                        {#if sync && normalizeStatus(sync.status) === 'running'}
                                             {#if sync.documentsScanned && sync.documentsScanned > 0}
                                                 <span
                                                     >Syncing... {sync.documentsScanned.toLocaleString()}
@@ -243,8 +256,14 @@
                                                 >Last sync: {formatDate(
                                                     sync?.completedAt ?? null,
                                                 )}</span>
+                                            {#if health === 'unhealthy' && sync?.errorMessage}
+                                                <span class="text-muted-foreground">·</span>
+                                                <span class="max-w-md truncate text-red-600">
+                                                    {sync.errorMessage}
+                                                </span>
+                                            {/if}
                                         {/if}
-                                        {#if !sync || sync.status !== 'running'}
+                                        {#if !sync || normalizeStatus(sync.status) !== 'running'}
                                             {#if documentCounts[source.id]}
                                                 <span class="text-muted-foreground">·</span>
                                                 <span
@@ -261,8 +280,9 @@
                                         variant="default"
                                         size="sm"
                                         class="cursor-pointer"
-                                        disabled={latestSyncRuns.get(source.id)?.status ===
-                                            'running'}
+                                        disabled={normalizeStatus(
+                                            latestSyncRuns.get(source.id)?.status,
+                                        ) === 'running'}
                                         onclick={() => handleSync(source.id)}>
                                         Sync
                                     </Button>

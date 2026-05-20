@@ -1,8 +1,8 @@
 import { error, redirect } from '@sveltejs/kit'
 import type { PageServerLoad, Actions } from './$types'
 import { requireAdmin } from '$lib/server/authHelpers'
-import { updateSourceById, type UserFilterMode } from '$lib/server/db/sources'
 import { sourcesRepository } from '$lib/server/repositories/sources'
+import { updateSourceById, type UserFilterMode } from '$lib/server/db/sources'
 import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
 import { userRepository } from '$lib/server/db/users'
 import { getConfig } from '$lib/server/config'
@@ -36,8 +36,11 @@ export const load: PageServerLoad = async ({ params, locals }) => {
         source.createdBy,
     )
 
+    const syncOverview = await sourcesRepository.getSourceSyncOverview(source.id, locals.logger)
+
     return {
         source,
+        syncOverview,
         authType: (creds?.authType as AuthType | undefined) ?? null,
         hasStoredKey: Boolean(creds),
         principalEmail: creds?.principalEmail ?? '',

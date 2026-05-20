@@ -10,6 +10,8 @@
     import { Badge } from '$lib/components/ui/badge'
     import { ArrowLeft, Search, X, AlertCircle, Info, Loader2 } from '@lucide/svelte'
     import RemoveSourceDialog from '../../remove-source-dialog.svelte'
+    import SourceSyncHealth from '$lib/components/sources/source-sync-health.svelte'
+    import SyncRunHistory from '$lib/components/sources/sync-run-history.svelte'
     import GoogleServiceAccountForm from '$lib/components/google-service-account-form.svelte'
     import { onMount } from 'svelte'
     import { beforeNavigate } from '$app/navigation'
@@ -220,6 +222,9 @@
             <ArrowLeft class="h-4 w-4" />
             Back to Integrations
         </a>
+
+        <SourceSyncHealth overview={data.syncOverview} />
+        <SyncRunHistory runs={data.syncOverview?.sync_runs ?? []} />
 
         {#if formErrors.length > 0}
             <Alert.Root variant="destructive" class="mb-6">

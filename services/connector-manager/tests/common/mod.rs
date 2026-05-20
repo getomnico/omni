@@ -40,6 +40,9 @@ pub async fn setup_test_fixture() -> Result<TestFixture> {
         max_concurrent_syncs_per_type: 3,
         scheduler_interval_seconds: 600,
         stale_sync_timeout_minutes: 1,
+        sync_backoff_base_seconds: 30,
+        sync_backoff_max_seconds: 3600,
+        sync_max_consecutive_failures: 10,
     };
 
     let redis_client = RedisClient::open(config.redis.redis_url.clone())?;

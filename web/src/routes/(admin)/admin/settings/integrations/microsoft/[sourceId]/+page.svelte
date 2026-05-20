@@ -10,6 +10,8 @@
     import * as Popover from '$lib/components/ui/popover'
     import { ArrowLeft, Search, X, AlertCircle, Loader2 } from '@lucide/svelte'
     import RemoveSourceDialog from '../../remove-source-dialog.svelte'
+    import SourceSyncHealth from '$lib/components/sources/source-sync-health.svelte'
+    import SyncRunHistory from '$lib/components/sources/sync-run-history.svelte'
     import { onMount } from 'svelte'
     import { beforeNavigate } from '$app/navigation'
     import type { PageProps } from './$types'
@@ -230,6 +232,9 @@
             <ArrowLeft class="h-4 w-4" />
             Back to Integrations
         </a>
+
+        <SourceSyncHealth overview={data.syncOverview} />
+        <SyncRunHistory runs={data.syncOverview?.sync_runs ?? []} />
 
         {#if formErrors.length > 0}
             <Alert.Root variant="destructive" class="mb-6">

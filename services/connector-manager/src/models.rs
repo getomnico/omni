@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use shared::models::{ServiceCredential, SourceType, SyncType};
+use shared::models::{ServiceCredential, Source, SourceType, SyncRun, SyncType};
 
 pub use shared::models::{
     ActionDefinition, ConnectorManifest, McpPromptDefinition, McpResourceDefinition,
@@ -82,6 +82,20 @@ pub struct ConnectorInfo {
     pub healthy: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manifest: Option<ConnectorManifest>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SourceHealth {
+    Healthy,
+    Unhealthy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceSyncOverview {
+    pub source: Source,
+    pub health: SourceHealth,
+    pub sync_runs: Vec<SyncRun>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

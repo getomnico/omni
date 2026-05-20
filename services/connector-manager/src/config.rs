@@ -11,6 +11,9 @@ pub struct ConnectorManagerConfig {
     pub max_concurrent_syncs_per_type: usize,
     pub scheduler_interval_seconds: u64,
     pub stale_sync_timeout_minutes: u64,
+    pub sync_backoff_base_seconds: i64,
+    pub sync_backoff_max_seconds: i64,
+    pub sync_max_consecutive_failures: i32,
 }
 
 impl ConnectorManagerConfig {
@@ -44,6 +47,21 @@ impl ConnectorManagerConfig {
             .parse::<u64>()
             .unwrap_or(10);
 
+        let sync_backoff_base_seconds = env::var("SYNC_BACKOFF_BASE_SECONDS")
+            .unwrap_or_else(|_| "30".to_string())
+            .parse::<i64>()
+            .unwrap_or(30);
+
+        let sync_backoff_max_seconds = env::var("SYNC_BACKOFF_MAX_SECONDS")
+            .unwrap_or_else(|_| "3600".to_string())
+            .parse::<i64>()
+            .unwrap_or(3600);
+
+        let sync_max_consecutive_failures = env::var("SYNC_MAX_CONSECUTIVE_FAILURES")
+            .unwrap_or_else(|_| "10".to_string())
+            .parse::<i32>()
+            .unwrap_or(10);
+
         Self {
             database,
             redis,
@@ -52,6 +70,9 @@ impl ConnectorManagerConfig {
             max_concurrent_syncs_per_type,
             scheduler_interval_seconds,
             stale_sync_timeout_minutes,
+            sync_backoff_base_seconds,
+            sync_backoff_max_seconds,
+            sync_max_consecutive_failures,
         }
     }
 }

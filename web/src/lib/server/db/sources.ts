@@ -4,7 +4,10 @@ import { sources, type Source } from './schema'
 import type {
     ConfluenceSourceConfig,
     FilesystemSourceConfig,
+    ImapSourceConfig,
     JiraSourceConfig,
+    NextcloudSourceConfig,
+    PaperlessNgxSourceConfig,
     WebSourceConfig,
 } from '$lib/types'
 
@@ -30,6 +33,9 @@ export async function updateSourceById(
             | ConfluenceSourceConfig
             | JiraSourceConfig
             | FilesystemSourceConfig
+            | ImapSourceConfig
+            | NextcloudSourceConfig
+            | PaperlessNgxSourceConfig
             | Record<string, unknown>
         userFilterMode?: UserFilterMode
         userWhitelist?: string[] | null

@@ -4,11 +4,12 @@ use crate::models::TriggerType;
 use crate::source_cleanup::SourceCleanup;
 use crate::sync_manager::{SyncError, SyncManager};
 use redis::Client as RedisClient;
-use shared::db::repositories::SourceRepository;
-use shared::models::{SyncSlotClass, SyncType};
+use shared::db::repositories::{SourceRepository, SyncRunRepository};
+use shared::models::{Source, SyncRun, SyncSlotClass, SyncStatus, SyncType};
 use sqlx::PgPool;
+use std::collections::HashMap;
 use std::sync::Arc;
-use time::OffsetDateTime;
+use time::{Duration as TimeDuration, OffsetDateTime};
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
 
@@ -151,11 +152,28 @@ impl Scheduler {
     async fn process_due_sources(&self) -> Result<(), SchedulerError> {
         let now = OffsetDateTime::now_utc();
         let source_repo = SourceRepository::new(&self.pool);
+        let sync_run_repo = SyncRunRepository::new(&self.pool);
 
-        let due_sources = source_repo
-            .find_due_for_sync(now)
+        let sources = source_repo
+            .find_active_sources()
             .await
             .map_err(|e| SchedulerError::DatabaseError(e.to_string()))?;
+        let source_ids: Vec<String> = sources.iter().map(|source| source.id.clone()).collect();
+        let sync_runs = sync_run_repo
+            .list_runs(
+                &source_ids,
+                i64::from(self.config.sync_max_consecutive_failures.max(1)),
+            )
+            .await
+            .map_err(|e| SchedulerError::DatabaseError(e.to_string()))?;
+        let due_sources = sources_due_for_sync(
+            sources,
+            sync_runs,
+            now,
+            self.config.sync_max_consecutive_failures,
+            self.config.sync_backoff_base_seconds,
+            self.config.sync_backoff_max_seconds,
+        );
 
         if due_sources.is_empty() {
             debug!("No sources due for sync");
@@ -210,6 +228,90 @@ impl Scheduler {
     }
 }
 
+fn sources_due_for_sync(
+    sources: Vec<Source>,
+    sync_runs: Vec<SyncRun>,
+    now: OffsetDateTime,
+    max_consecutive_failures: i32,
+    backoff_base_seconds: i64,
+    backoff_max_seconds: i64,
+) -> Vec<Source> {
+    let mut runs_by_source = HashMap::<String, Vec<SyncRun>>::new();
+    for run in sync_runs {
+        runs_by_source
+            .entry(run.source_id.clone())
+            .or_default()
+            .push(run);
+    }
+
+    let mut due_sources: Vec<(Source, Option<OffsetDateTime>)> = sources
+        .into_iter()
+        .filter_map(|source| {
+            let sync_interval_seconds = source.sync_interval_seconds?;
+            let sync_runs = runs_by_source.remove(&source.id).unwrap_or_default();
+            let latest_success_at = sync_runs
+                .iter()
+                .find(|run| run.status == SyncStatus::Completed)
+                .and_then(|run| run.completed_at);
+            let failed_runs: Vec<&SyncRun> = sync_runs
+                .iter()
+                .take_while(|run| run.status == SyncStatus::Failed)
+                .collect();
+
+            // Circuit breaker: stop scheduled retries once the visible
+            // consecutive failure streak reaches the configured threshold.
+            if max_consecutive_failures <= failed_runs.len() as i32 {
+                return None;
+            }
+
+            let last_failed_at = failed_runs.first().and_then(|run| run.completed_at);
+            if let Some(last_failed_at) = last_failed_at {
+                let backoff =
+                    backoff_seconds(failed_runs.len(), backoff_base_seconds, backoff_max_seconds);
+                if last_failed_at + TimeDuration::seconds(backoff) > now {
+                    return None;
+                }
+            }
+
+            // With a bounded recent-run window, missing success means either
+            // the source never succeeded or the latest success is older than
+            // the fetched failure window. In both cases the interval is not
+            // the blocking condition; failure threshold/backoff above decides.
+            let Some(latest_success_at) = latest_success_at else {
+                return Some((source, last_failed_at));
+            };
+
+            let next_sync_at =
+                latest_success_at + TimeDuration::seconds(sync_interval_seconds as i64);
+            if next_sync_at > now {
+                return None;
+            }
+
+            Some((source, last_failed_at.or(Some(latest_success_at))))
+        })
+        .collect();
+
+    due_sources.sort_by_key(|(_, last_sync_at)| *last_sync_at);
+    due_sources
+        .into_iter()
+        .take(10)
+        .map(|(source, _)| source)
+        .collect()
+}
+
+fn backoff_seconds(
+    failure_count: usize,
+    backoff_base_seconds: i64,
+    backoff_max_seconds: i64,
+) -> i64 {
+    if failure_count == 0 {
+        return 0;
+    }
+
+    let multiplier = 1_i64 << failure_count.saturating_sub(1).min(20);
+    backoff_max_seconds.min(backoff_base_seconds.saturating_mul(multiplier))
+}
+
 /// Pick the sync type a scheduled tick should request for a source. Realtime
 /// is intentionally excluded — realtime watchers occupy a separate slot and are
 /// supervised by [`Scheduler::ensure_realtime_running`]. Prefer Incremental
@@ -231,6 +333,52 @@ pub enum SchedulerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use shared::models::{SourceScope, SourceType, UserFilterMode};
+
+    fn source(id: &str, interval_seconds: Option<i32>) -> Source {
+        let now = OffsetDateTime::now_utc();
+        Source {
+            id: id.to_string(),
+            name: format!("source-{id}"),
+            source_type: SourceType::LocalFiles,
+            config: json!({}),
+            is_active: true,
+            is_deleted: false,
+            scope: SourceScope::Org,
+            user_filter_mode: UserFilterMode::All,
+            user_whitelist: None,
+            user_blacklist: None,
+            connector_state: None,
+            sync_interval_seconds: interval_seconds,
+            created_at: now,
+            updated_at: now,
+            created_by: "01JGF7V3E0Y2R1X8P5Q7W9T4N6".to_string(),
+        }
+    }
+
+    fn sync_run(
+        id: &str,
+        source_id: &str,
+        status: SyncStatus,
+        completed_at: Option<OffsetDateTime>,
+    ) -> SyncRun {
+        let now = OffsetDateTime::now_utc();
+        SyncRun {
+            id: id.to_string(),
+            source_id: source_id.to_string(),
+            sync_type: SyncType::Incremental,
+            started_at: completed_at,
+            completed_at,
+            status,
+            documents_scanned: 0,
+            documents_processed: 0,
+            documents_updated: 0,
+            error_message: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
 
     #[test]
     fn skips_realtime_when_declared() {
@@ -263,5 +411,138 @@ mod tests {
     #[test]
     fn falls_back_to_full_when_empty() {
         assert_eq!(pick_scheduled_sync_type(&[]), SyncType::Full);
+    }
+
+    #[test]
+    fn due_sources_include_elapsed_successes() {
+        let now = OffsetDateTime::now_utc();
+        let due = sources_due_for_sync(
+            vec![source("source-1", Some(60))],
+            vec![sync_run(
+                "run-1",
+                "source-1",
+                SyncStatus::Completed,
+                Some(now - TimeDuration::seconds(120)),
+            )],
+            now,
+            10,
+            30,
+            3600,
+        );
+
+        assert_eq!(due[0].id, "source-1");
+    }
+
+    #[test]
+    fn due_sources_skip_recent_successes() {
+        let now = OffsetDateTime::now_utc();
+        let due = sources_due_for_sync(
+            vec![source("source-1", Some(60))],
+            vec![sync_run(
+                "run-1",
+                "source-1",
+                SyncStatus::Completed,
+                Some(now - TimeDuration::seconds(10)),
+            )],
+            now,
+            10,
+            30,
+            3600,
+        );
+
+        assert!(due.is_empty());
+    }
+
+    #[test]
+    fn due_sources_apply_failure_backoff_and_threshold() {
+        let now = OffsetDateTime::now_utc();
+        let due = sources_due_for_sync(
+            vec![
+                source("inside-backoff", Some(60)),
+                source("after-backoff", Some(60)),
+                source("threshold-hit", Some(60)),
+            ],
+            vec![
+                sync_run(
+                    "run-1",
+                    "inside-backoff",
+                    SyncStatus::Failed,
+                    Some(now - TimeDuration::seconds(10)),
+                ),
+                sync_run(
+                    "run-2",
+                    "after-backoff",
+                    SyncStatus::Failed,
+                    Some(now - TimeDuration::seconds(120)),
+                ),
+                sync_run(
+                    "run-3",
+                    "threshold-hit",
+                    SyncStatus::Failed,
+                    Some(now - TimeDuration::seconds(120)),
+                ),
+                sync_run(
+                    "run-4",
+                    "threshold-hit",
+                    SyncStatus::Failed,
+                    Some(now - TimeDuration::seconds(180)),
+                ),
+            ],
+            now,
+            2,
+            30,
+            3600,
+        );
+
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].id, "after-backoff");
+    }
+
+    #[test]
+    fn completed_run_resets_failure_streak() {
+        let now = OffsetDateTime::now_utc();
+        let due = sources_due_for_sync(
+            vec![source("source-1", Some(60))],
+            vec![
+                sync_run(
+                    "run-1",
+                    "source-1",
+                    SyncStatus::Completed,
+                    Some(now - TimeDuration::seconds(120)),
+                ),
+                sync_run(
+                    "run-2",
+                    "source-1",
+                    SyncStatus::Failed,
+                    Some(now - TimeDuration::seconds(600)),
+                ),
+            ],
+            now,
+            1,
+            30,
+            3600,
+        );
+
+        assert_eq!(due[0].id, "source-1");
+    }
+
+    #[test]
+    fn source_with_old_success_outside_recent_window_is_due_after_failure_backoff() {
+        let now = OffsetDateTime::now_utc();
+        let due = sources_due_for_sync(
+            vec![source("source-1", Some(60))],
+            vec![sync_run(
+                "run-1",
+                "source-1",
+                SyncStatus::Failed,
+                Some(now - TimeDuration::seconds(120)),
+            )],
+            now,
+            10,
+            30,
+            3600,
+        );
+
+        assert_eq!(due[0].id, "source-1");
     }
 }

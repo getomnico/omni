@@ -2,7 +2,6 @@ use crate::{db::error::DatabaseError, models::Source, traits::Repository};
 use async_trait::async_trait;
 use sqlx::PgPool;
 use std::collections::HashMap;
-use time::OffsetDateTime;
 
 #[derive(Clone)]
 pub struct SourceRepository {
@@ -169,36 +168,6 @@ impl SourceRepository {
                 .await?;
 
         Ok(rows.into_iter().collect())
-    }
-
-    pub async fn find_due_for_sync(
-        &self,
-        now: OffsetDateTime,
-    ) -> Result<Vec<Source>, DatabaseError> {
-        let sources = sqlx::query_as::<_, Source>(
-            r#"
-            SELECT s.id, s.name, s.source_type, s.config, s.is_active, s.is_deleted, s.scope,
-                   s.user_filter_mode, s.user_whitelist, s.user_blacklist,
-                   s.connector_state, s.sync_interval_seconds, s.created_at, s.updated_at, s.created_by
-            FROM sources s
-            LEFT JOIN LATERAL (
-                SELECT completed_at FROM sync_runs
-                WHERE source_id = s.id AND status = 'completed'
-                ORDER BY completed_at DESC LIMIT 1
-            ) lr ON true
-            WHERE s.is_active = true AND s.is_deleted = false
-              AND s.sync_interval_seconds IS NOT NULL
-              AND (lr.completed_at IS NULL
-                   OR lr.completed_at + (s.sync_interval_seconds || ' seconds')::interval <= $1)
-            ORDER BY lr.completed_at ASC NULLS FIRST
-            LIMIT 10
-            "#,
-        )
-        .bind(now)
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(sources)
     }
 }
 

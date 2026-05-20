@@ -1,8 +1,8 @@
 use crate::connector_client::ConnectorClient;
 use crate::models::{
     ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
-    ExecuteResourceRequest, PromptRequest, ResourceRequest, ScheduleInfo, SyncProgress,
-    TriggerSyncRequest, TriggerSyncResponse, TriggerType,
+    ExecuteResourceRequest, PromptRequest, ResourceRequest, ScheduleInfo, SourceHealth,
+    SourceSyncOverview, SyncProgress, TriggerSyncRequest, TriggerSyncResponse, TriggerType,
 };
 use crate::sync_manager::SyncError;
 use crate::AppState;
@@ -22,7 +22,8 @@ use shared::clients::docling::{DoclingClient, DoclingError};
 use shared::constants::REDIS_SYSTEM_SETTINGS_KEY;
 use shared::db::repositories::SyncRunRepository;
 use shared::models::{
-    ActionMode, ConnectorManifest, SearchOperator, ServiceProvider, SourceType, SyncType,
+    ActionMode, ConnectorManifest, SearchOperator, ServiceProvider, SourceType, SyncRun,
+    SyncStatus, SyncType,
 };
 use shared::queue::EventQueue;
 use shared::utils;
@@ -226,13 +227,62 @@ pub async fn list_schedules(
 
 pub async fn list_sources(
     State(state): State<AppState>,
-) -> Result<Json<Vec<shared::models::Source>>, ApiError> {
+) -> Result<Json<Vec<SourceSyncOverview>>, ApiError> {
     let source_repo = SourceRepository::new(state.db_pool.pool());
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+
     let sources = source_repo
         .find_all_sources()
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    Ok(Json(sources))
+
+    let source_ids: Vec<String> = sources.iter().map(|s| s.id.clone()).collect();
+    let sync_runs = sync_run_repo
+        .list_runs(&source_ids, 10)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    let mut runs_by_source: HashMap<String, Vec<SyncRun>> = HashMap::new();
+    for run in sync_runs {
+        runs_by_source
+            .entry(run.source_id.clone())
+            .or_default()
+            .push(run);
+    }
+
+    let overviews = sources
+        .into_iter()
+        .map(|source| {
+            let sync_runs = runs_by_source.remove(&source.id).unwrap_or_default();
+            let health =
+                if has_failure_streak(&sync_runs, state.config.sync_max_consecutive_failures) {
+                    SourceHealth::Unhealthy
+                } else {
+                    SourceHealth::Healthy
+                };
+
+            SourceSyncOverview {
+                sync_runs,
+                source,
+                health,
+            }
+        })
+        .collect();
+
+    Ok(Json(overviews))
+}
+
+fn has_failure_streak(sync_runs: &[SyncRun], max_consecutive_failures: i32) -> bool {
+    if max_consecutive_failures <= 0 {
+        return true;
+    }
+
+    let max_consecutive_failures = max_consecutive_failures as usize;
+    sync_runs.len() >= max_consecutive_failures
+        && sync_runs
+            .iter()
+            .take(max_consecutive_failures)
+            .all(|run| run.status == SyncStatus::Failed)
 }
 
 pub async fn list_connectors(

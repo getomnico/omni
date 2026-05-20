@@ -324,6 +324,41 @@ impl SyncRunRepository {
         Ok(sync_runs)
     }
 
+    pub async fn list_runs(
+        &self,
+        source_ids: &[String],
+        limit_per_source: i64,
+    ) -> Result<Vec<SyncRun>, DatabaseError> {
+        if source_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let sync_runs = sqlx::query_as::<_, SyncRun>(
+            r#"
+            SELECT id, source_id, sync_type, started_at, completed_at, status,
+                   documents_scanned, documents_processed, documents_updated, error_message,
+                   created_at, updated_at
+            FROM (
+                SELECT sr.*,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY source_id
+                           ORDER BY started_at DESC, created_at DESC
+                       ) AS rn
+                FROM sync_runs sr
+                WHERE source_id = ANY($1)
+            ) ranked
+            WHERE rn <= $2
+            ORDER BY source_id, started_at DESC, created_at DESC
+            "#,
+        )
+        .bind(source_ids)
+        .bind(limit_per_source)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(sync_runs)
+    }
+
     pub async fn increment_scanned_with_activity(&self, id: &str) -> Result<(), DatabaseError> {
         sqlx::query(
             "UPDATE sync_runs

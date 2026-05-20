@@ -1,7 +1,9 @@
 import { db } from '$lib/server/db'
+import { getConfig } from '$lib/server/config'
 import { sources, syncRuns } from '$lib/server/db/schema'
 import { eq, desc, sql, and } from 'drizzle-orm'
 import type { Source, SyncRun } from '$lib/server/db/schema'
+import type { SourceSyncOverview } from '$lib/types'
 
 export class SourcesRepository {
     async getAll(): Promise<Source[]> {
@@ -90,6 +92,25 @@ export class SourcesRepository {
             )
 
         return new Map(rows.map((sync) => [sync.sourceId, sync]))
+    }
+
+    async getSourceSyncOverview(
+        sourceId: string,
+        logger?: { error: (message: string, error?: unknown) => void },
+    ): Promise<SourceSyncOverview | null> {
+        try {
+            const response = await fetch(`${getConfig().services.connectorManagerUrl}/sources`)
+            if (!response.ok) {
+                logger?.error('Failed to fetch source sync overview', { status: response.status })
+                return null
+            }
+
+            const overviews: SourceSyncOverview[] = await response.json()
+            return overviews.find((overview) => overview.source.id === sourceId) ?? null
+        } catch (error) {
+            logger?.error('Failed to fetch source sync overview', error)
+            return null
+        }
     }
 }
 
