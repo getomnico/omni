@@ -6,10 +6,8 @@
     import * as Card from '$lib/components/ui/card'
     import * as Alert from '$lib/components/ui/alert'
     import { Input } from '$lib/components/ui/input'
-    import { ArrowLeft, X, AlertCircle, Loader2 } from '@lucide/svelte'
+    import { X, AlertCircle, Loader2 } from '@lucide/svelte'
     import RemoveSourceDialog from '../../remove-source-dialog.svelte'
-    import SourceSyncHealth from '$lib/components/sources/source-sync-health.svelte'
-    import SyncRunHistory from '$lib/components/sources/sync-run-history.svelte'
     import { onMount } from 'svelte'
     import { beforeNavigate } from '$app/navigation'
     import type { PageProps } from './$types'
@@ -148,206 +146,189 @@
 <svelte:head>
     <title>Configure Jira - {data.source.name}</title>
 </svelte:head>
+{#if formErrors.length > 0}
+    <Alert.Root variant="destructive" class="mb-6">
+        <AlertCircle class="h-4 w-4" />
+        <Alert.Title>Configuration Error</Alert.Title>
+        <Alert.Description>
+            <ul class="list-inside list-disc">
+                {#each formErrors as error}
+                    <li>{error}</li>
+                {/each}
+            </ul>
+        </Alert.Description>
+    </Alert.Root>
+{/if}
 
-<div class="h-full overflow-y-auto p-6 py-8 pb-24">
-    <div class="mx-auto max-w-screen-lg space-y-4">
-        <a
-            href="/admin/settings/integrations"
-            class="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-sm transition-colors">
-            <ArrowLeft class="h-4 w-4" />
-            Back to Integrations
-        </a>
+<form
+    method="POST"
+    use:enhance={() => {
+        if (!validateForm()) {
+            return async () => {}
+        }
+        isSubmitting = true
+        return async ({ result, update }) => {
+            if (result.type === 'redirect') {
+                skipUnsavedCheck = true
+                hasUnsavedChanges = false
 
-        <SourceSyncHealth health={data.health} syncRuns={data.syncRuns} />
-        <SyncRunHistory runs={data.syncRuns} />
-
-        {#if formErrors.length > 0}
-            <Alert.Root variant="destructive" class="mb-6">
-                <AlertCircle class="h-4 w-4" />
-                <Alert.Title>Configuration Error</Alert.Title>
-                <Alert.Description>
-                    <ul class="list-inside list-disc">
-                        {#each formErrors as error}
-                            <li>{error}</li>
-                        {/each}
-                    </ul>
-                </Alert.Description>
-            </Alert.Root>
-        {/if}
-
-        <form
-            method="POST"
-            use:enhance={() => {
-                if (!validateForm()) {
-                    return async () => {}
+                if (beforeUnloadHandler) {
+                    window.removeEventListener('beforeunload', beforeUnloadHandler)
+                    beforeUnloadHandler = null
                 }
-                isSubmitting = true
-                return async ({ result, update }) => {
-                    if (result.type === 'redirect') {
-                        skipUnsavedCheck = true
-                        hasUnsavedChanges = false
+            }
 
-                        if (beforeUnloadHandler) {
-                            window.removeEventListener('beforeunload', beforeUnloadHandler)
-                            beforeUnloadHandler = null
-                        }
-                    }
-
-                    await update()
-                    isSubmitting = false
-                }
-            }}>
-            <Card.Root class="relative">
-                <Card.Header>
-                    <div class="flex items-start justify-between">
-                        <div>
-                            <Card.Title class="flex items-center gap-2">
-                                <img src={jiraLogo} alt="Jira" class="h-5 w-5" />
-                                {data.source.name}
-                            </Card.Title>
-                            <Card.Description class="mt-1">
-                                Index issues, tickets, and project data
-                            </Card.Description>
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <Label for="enabled" class="text-sm">Enabled</Label>
-                            <Switch
-                                id="enabled"
-                                bind:checked={enabled}
-                                name="enabled"
-                                class="cursor-pointer" />
-                        </div>
-                    </div>
-                </Card.Header>
-
-                <Card.Content class="space-y-4">
-                    <div class="space-y-4">
-                        <div class="space-y-2">
-                            <Label class="text-sm font-medium">Project Filters</Label>
-                            <p class="text-muted-foreground text-xs">
-                                Filter specific projects (leave empty for all projects)
-                            </p>
-
-                            <div class="relative">
-                                <div class="flex gap-2">
-                                    <Input
-                                        bind:value={projectInput}
-                                        placeholder="Search projects or enter key..."
-                                        disabled={!enabled}
-                                        class="flex-1"
-                                        oninput={(e) => filterProjects(e.currentTarget.value)}
-                                        onfocusout={() => {
-                                            setTimeout(() => (showSuggestions = false), 200)
-                                        }}
-                                        onfocus={() => {
-                                            fetchProjects()
-                                            if (suggestions.length > 0) showSuggestions = true
-                                        }}
-                                        onkeydown={(e) => {
-                                            if (e.key === 'Enter') {
-                                                e.preventDefault()
-                                                addProject()
-                                            }
-                                            if (e.key === 'Escape') {
-                                                showSuggestions = false
-                                            }
-                                        }} />
-                                    <Button
-                                        type="button"
-                                        variant="secondary"
-                                        onclick={addProject}
-                                        disabled={!enabled || !projectInput.trim()}>
-                                        Add
-                                    </Button>
-                                </div>
-                                {#if showSuggestions}
-                                    <div
-                                        class="border-border bg-popover text-popover-foreground absolute z-10 mt-1 w-full rounded-md border shadow-md">
-                                        <ul class="max-h-48 overflow-y-auto py-1">
-                                            {#each suggestions as suggestion}
-                                                <li>
-                                                    <button
-                                                        type="button"
-                                                        class="hover:bg-accent w-full px-3 py-2 text-left text-sm"
-                                                        onmousedown={() =>
-                                                            selectSuggestion(suggestion.key)}>
-                                                        <span class="font-medium"
-                                                            >{suggestion.key}</span>
-                                                        <span class="text-muted-foreground ml-2"
-                                                            >{suggestion.name}</span>
-                                                    </button>
-                                                </li>
-                                            {/each}
-                                        </ul>
-                                    </div>
-                                {/if}
-                                {#if isLoadingProjects}
-                                    <div
-                                        class="text-muted-foreground absolute top-2.5 right-16 text-xs">
-                                        <Loader2 class="h-3 w-3 animate-spin" />
-                                    </div>
-                                {/if}
-                            </div>
-
-                            {#if projectFilters.length > 0}
-                                <div class="flex flex-wrap gap-2">
-                                    {#each projectFilters as project}
-                                        <div
-                                            class="bg-secondary text-secondary-foreground hover:bg-secondary/80 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors">
-                                            <span>{project}</span>
-                                            <button
-                                                type="button"
-                                                onclick={() => removeProject(project)}
-                                                class="hover:bg-secondary-foreground/20 ml-1 rounded-full p-0.5 transition-colors"
-                                                aria-label="Remove {project}">
-                                                <X class="h-3 w-3" />
-                                            </button>
-                                        </div>
-                                    {/each}
-                                </div>
-                            {/if}
-                        </div>
-                    </div>
-
-                    {#each projectFilters as project}
-                        <input type="hidden" name="projectFilters" value={project} />
-                    {/each}
-                </Card.Content>
-                <Card.Footer class="flex justify-end">
-                    <Button
-                        type="submit"
-                        disabled={isSubmitting || !hasUnsavedChanges}
-                        class="cursor-pointer">
-                        {#if isSubmitting}
-                            <Loader2 class="mr-2 h-4 w-4 animate-spin" />
-                        {/if}
-                        Save Configuration
-                    </Button>
-                </Card.Footer>
-            </Card.Root>
-        </form>
-
-        <Card.Root>
-            <Card.Content class="flex items-center justify-between">
+            await update()
+            isSubmitting = false
+        }
+    }}>
+    <Card.Root class="relative">
+        <Card.Header>
+            <div class="flex items-start justify-between">
                 <div>
-                    <Card.Title>Delete Source</Card.Title>
-                    <Card.Description>
-                        Permanently delete this source and all its synced documents, credentials,
-                        and sync history.
+                    <Card.Title class="flex items-center gap-2">
+                        <img src={jiraLogo} alt="Jira" class="h-5 w-5" />
+                        {data.source.name}
+                    </Card.Title>
+                    <Card.Description class="mt-1">
+                        Index issues, tickets, and project data
                     </Card.Description>
                 </div>
-                <Button
-                    variant="destructive"
-                    class="cursor-pointer"
-                    onclick={() => (showRemoveDialog = true)}>
-                    Delete Permanently
-                </Button>
-            </Card.Content>
-        </Card.Root>
+                <div class="flex items-center gap-2">
+                    <Label for="enabled" class="text-sm">Enabled</Label>
+                    <Switch
+                        id="enabled"
+                        bind:checked={enabled}
+                        name="enabled"
+                        class="cursor-pointer" />
+                </div>
+            </div>
+        </Card.Header>
 
-        <RemoveSourceDialog
-            bind:open={showRemoveDialog}
-            sourceId={data.source.id}
-            sourceName={data.source.name} />
-    </div>
-</div>
+        <Card.Content class="space-y-4">
+            <div class="space-y-4">
+                <div class="space-y-2">
+                    <Label class="text-sm font-medium">Project Filters</Label>
+                    <p class="text-muted-foreground text-xs">
+                        Filter specific projects (leave empty for all projects)
+                    </p>
+
+                    <div class="relative">
+                        <div class="flex gap-2">
+                            <Input
+                                bind:value={projectInput}
+                                placeholder="Search projects or enter key..."
+                                disabled={!enabled}
+                                class="flex-1"
+                                oninput={(e) => filterProjects(e.currentTarget.value)}
+                                onfocusout={() => {
+                                    setTimeout(() => (showSuggestions = false), 200)
+                                }}
+                                onfocus={() => {
+                                    fetchProjects()
+                                    if (suggestions.length > 0) showSuggestions = true
+                                }}
+                                onkeydown={(e) => {
+                                    if (e.key === 'Enter') {
+                                        e.preventDefault()
+                                        addProject()
+                                    }
+                                    if (e.key === 'Escape') {
+                                        showSuggestions = false
+                                    }
+                                }} />
+                            <Button
+                                type="button"
+                                variant="secondary"
+                                onclick={addProject}
+                                disabled={!enabled || !projectInput.trim()}>
+                                Add
+                            </Button>
+                        </div>
+                        {#if showSuggestions}
+                            <div
+                                class="border-border bg-popover text-popover-foreground absolute z-10 mt-1 w-full rounded-md border shadow-md">
+                                <ul class="max-h-48 overflow-y-auto py-1">
+                                    {#each suggestions as suggestion}
+                                        <li>
+                                            <button
+                                                type="button"
+                                                class="hover:bg-accent w-full px-3 py-2 text-left text-sm"
+                                                onmousedown={() =>
+                                                    selectSuggestion(suggestion.key)}>
+                                                <span class="font-medium">{suggestion.key}</span>
+                                                <span class="text-muted-foreground ml-2"
+                                                    >{suggestion.name}</span>
+                                            </button>
+                                        </li>
+                                    {/each}
+                                </ul>
+                            </div>
+                        {/if}
+                        {#if isLoadingProjects}
+                            <div class="text-muted-foreground absolute top-2.5 right-16 text-xs">
+                                <Loader2 class="h-3 w-3 animate-spin" />
+                            </div>
+                        {/if}
+                    </div>
+
+                    {#if projectFilters.length > 0}
+                        <div class="flex flex-wrap gap-2">
+                            {#each projectFilters as project}
+                                <div
+                                    class="bg-secondary text-secondary-foreground hover:bg-secondary/80 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors">
+                                    <span>{project}</span>
+                                    <button
+                                        type="button"
+                                        onclick={() => removeProject(project)}
+                                        class="hover:bg-secondary-foreground/20 ml-1 rounded-full p-0.5 transition-colors"
+                                        aria-label="Remove {project}">
+                                        <X class="h-3 w-3" />
+                                    </button>
+                                </div>
+                            {/each}
+                        </div>
+                    {/if}
+                </div>
+            </div>
+
+            {#each projectFilters as project}
+                <input type="hidden" name="projectFilters" value={project} />
+            {/each}
+        </Card.Content>
+        <Card.Footer class="flex justify-end">
+            <Button
+                type="submit"
+                disabled={isSubmitting || !hasUnsavedChanges}
+                class="cursor-pointer">
+                {#if isSubmitting}
+                    <Loader2 class="mr-2 h-4 w-4 animate-spin" />
+                {/if}
+                Save Configuration
+            </Button>
+        </Card.Footer>
+    </Card.Root>
+</form>
+
+<Card.Root>
+    <Card.Content class="flex items-center justify-between">
+        <div>
+            <Card.Title>Delete Source</Card.Title>
+            <Card.Description>
+                Permanently delete this source and all its synced documents, credentials, and sync
+                history.
+            </Card.Description>
+        </div>
+        <Button
+            variant="destructive"
+            class="cursor-pointer"
+            onclick={() => (showRemoveDialog = true)}>
+            Delete Permanently
+        </Button>
+    </Card.Content>
+</Card.Root>
+
+<RemoveSourceDialog
+    bind:open={showRemoveDialog}
+    sourceId={data.source.id}
+    sourceName={data.source.name} />
