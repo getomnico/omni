@@ -4,8 +4,8 @@ For each benchmark question:
   1. POST /search to Omni searcher (mode=hybrid by default, limit=10)
   2. Read the full text of each retrieved document from the local .txt files
      (matches how Onyx's published BM25 + GPT-5.4 baseline assembles context)
-  3. Build a context-stuffed prompt and call Kimi via Moonshot's OpenAI-compat
-     API (kimi-k2.6, temperature=1.0, top_p=0.95, thinking enabled)
+  3. Build a context-stuffed prompt and call an OpenAI-compatible chat
+     completions endpoint.
   4. Write {question_id, answer, document_ids} as a JSONL line
 
 Output schema matches EnterpriseRAG-Bench's `answers_<system>.jsonl`.
@@ -31,21 +31,37 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("run_rag")
 
 
-# Kimi inference settings (per project convention)
-KIMI_MODEL = os.environ.get("KIMI_MODEL", "kimi-k2.6")
-KIMI_API_URL = os.environ.get("KIMI_API_URL", "https://api.moonshot.ai/v1")
-KIMI_TEMPERATURE = 1.0
-KIMI_TOP_P = 0.95
+# OpenAI-compatible inference settings. KIMI_* env vars are still accepted for
+# backwards compatibility with earlier exploratory runs.
+LLM_MODEL = os.environ.get(
+    "OPENAI_COMPAT_MODEL",
+    os.environ.get("DEEPSEEK_MODEL", os.environ.get("KIMI_MODEL", "deepseek-v4-pro")),
+)
+LLM_API_URL = os.environ.get(
+    "OPENAI_COMPAT_API_URL",
+    os.environ.get(
+        "DEEPSEEK_API_URL",
+        os.environ.get("KIMI_API_URL", "https://api.deepseek.com/v1"),
+    ),
+)
+LLM_TEMPERATURE = 1.0
+LLM_TOP_P = 0.95
 # Big enough that thinking tokens + answer don't squeeze each other out.
 # Empty-content responses on small max_tokens were the dominant failure mode
 # in the dipstick run when this was 1024.
-KIMI_MAX_TOKENS = int(os.environ.get("KIMI_MAX_TOKENS", "8192"))
-# Per Kimi K2.6 API docs: thinking is configured via {"type": "enabled"|"disabled"}.
-# K2.6 has no effort/budget knob — only binary on/off. Reasoning lands in a
-# separate `reasoning_content` field and does NOT count against the response's
-# main `content`, but DOES count against `max_tokens`.
-KIMI_THINKING_ENABLED = (
-    os.environ.get("KIMI_THINKING_ENABLED", "true").lower() == "true"
+LLM_MAX_TOKENS = int(
+    os.environ.get(
+        "OPENAI_COMPAT_MAX_TOKENS", os.environ.get("KIMI_MAX_TOKENS", "8192")
+    )
+)
+# Some OpenAI-compatible endpoints support a provider-specific thinking field.
+# Leave disabled unless the target provider explicitly accepts it.
+LLM_THINKING_ENABLED = (
+    os.environ.get(
+        "OPENAI_COMPAT_THINKING_ENABLED",
+        os.environ.get("KIMI_THINKING_ENABLED", "false"),
+    ).lower()
+    == "true"
 )
 
 # Soft cap on stuffed context, to stay below the model's effective budget once
@@ -159,9 +175,8 @@ def _build_context(
 LLM_MAX_ATTEMPTS = int(os.environ.get("LLM_MAX_ATTEMPTS", "6"))
 LLM_RETRY_BASE_DELAY = float(os.environ.get("LLM_RETRY_BASE_DELAY", "2.0"))
 # Hard cap on any single retry sleep, regardless of what Retry-After or the
-# exponential backoff says. Moonshot was returning Retry-After=1500+ seconds
-# (~25 min) on 429s where the actual wait is ~1s, which effectively stalled
-# the job. Cap defensively.
+# exponential backoff says. Some providers return very large Retry-After values,
+# which turns one transient 429 into a stalled benchmark. Cap defensively.
 LLM_RETRY_MAX_DELAY = float(os.environ.get("LLM_RETRY_MAX_DELAY", "30.0"))
 
 
@@ -171,16 +186,16 @@ async def _generate_answer(
     prompt: str,
 ) -> str:
     body: dict[str, Any] = {
-        "model": KIMI_MODEL,
+        "model": LLM_MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": KIMI_TEMPERATURE,
-        "top_p": KIMI_TOP_P,
-        "max_tokens": KIMI_MAX_TOKENS,
+        "temperature": LLM_TEMPERATURE,
+        "top_p": LLM_TOP_P,
+        "max_tokens": LLM_MAX_TOKENS,
     }
-    if KIMI_THINKING_ENABLED:
+    if LLM_THINKING_ENABLED:
         body["thinking"] = {"type": "enabled"}
 
-    url = f"{KIMI_API_URL.rstrip('/')}/chat/completions"
+    url = f"{LLM_API_URL.rstrip('/')}/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}"}
     last_status: int | None = None
     last_text: str | None = None
@@ -289,9 +304,13 @@ def _load_existing_ids(out_path: Path) -> set[str]:
 
 
 async def main_async(args: argparse.Namespace) -> int:
-    api_key = os.environ.get("KIMI_API_KEY")
+    api_key = (
+        os.environ.get("OPENAI_COMPAT_API_KEY")
+        or os.environ.get("DEEPSEEK_API_KEY")
+        or os.environ.get("KIMI_API_KEY")
+    )
     if not api_key:
-        log.error("KIMI_API_KEY env var is required")
+        log.error("OPENAI_COMPAT_API_KEY or DEEPSEEK_API_KEY env var is required")
         return 2
 
     questions: list[Question] = []
@@ -406,10 +425,7 @@ def main() -> int:
         "--concurrency",
         type=int,
         default=10,
-        help="Parallel in-flight LLM calls. Tuned for Moonshot tier-1 caps "
-        "(200 RPM, 2M TPM, concurrency=50): ~25K tokens/request median + "
-        "~10s latency means ~10 in-flight stays under the 2M TPM ceiling. "
-        "Drop to 4 for free-tier (concurrency=3 hard cap).",
+        help="Parallel in-flight LLM calls. Tune this to provider rate limits.",
     )
     parser.add_argument(
         "--sample",
@@ -419,7 +435,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--system-name",
-        default="omni_hybrid_kimi",
+        default="omni_hybrid_deepseek_v4_pro",
         help="suffix for the answers file: answers_<system_name>.jsonl",
     )
     parser.add_argument(

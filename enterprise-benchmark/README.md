@@ -32,6 +32,7 @@ enterprise-benchmark/
 ├── run_rag.py                  # One-shot retrieval + LLM answer driver
 ├── run_agentic.py              # Agentic chat-loop benchmark driver
 ├── run_full_pipeline.py        # Answer generation + eval orchestration
+├── merge_gpt54_adjusted.py     # Deterministic GPT-5.4 adjustment merge
 ├── seed_deepseek_provider.py   # Seed DeepSeek model provider rows
 ├── eval_fork/                  # EnterpriseRAG-Bench eval patch
 ├── pyproject.toml
@@ -186,6 +187,7 @@ Seed DeepSeek as Omni's default LLM provider:
 ```bash
 cd "$OMNI_REPO/enterprise-benchmark"
 set -a && . "$ERAG_REPO/.env" && set +a
+export DEEPSEEK_MODEL=deepseek-v4-pro
 $UV run python seed_deepseek_provider.py
 ```
 
@@ -320,6 +322,7 @@ cd "$OMNI_REPO/enterprise-benchmark"
 set -a && . "$ERAG_REPO/.env" && set +a
 nohup $UV run python run_full_pipeline.py \
   --questions data/questions.jsonl \
+  --eval-dir "$ERAG_REPO" \
   --samples 500 \
   --suffix omni_agentic_deepseek_v4_pro_full500 \
   --run-name omni_agentic_deepseek_v4_pro_full500 \
@@ -366,6 +369,7 @@ Evaluation only:
 ```bash
 $UV run python run_full_pipeline.py \
   --questions data/questions.jsonl \
+  --eval-dir "$ERAG_REPO" \
   --samples 500 \
   --suffix eval_only \
   --run-dir runs/<existing_run_dir> \
@@ -411,6 +415,25 @@ Category metrics:
 cat "$OMNI_REPO/enterprise-benchmark/runs/<run>/results_<system>.json" \
   | jq '.question_type_stats'
 ```
+
+## 10. Reproduce the Published GPT-5.4 Adjustment
+
+The public HuggingFace artifact contains `base/`, `patches/`, and `final/`
+directories. To recompute the final adjusted files without any LLM calls, run:
+
+```bash
+cd /path/to/downloaded/hf-artifact
+$UV run python "$OMNI_REPO/enterprise-benchmark/merge_gpt54_adjusted.py"
+```
+
+The script selects GPT-5.4 remediation rows only when they improve:
+
+```text
+completeness_pct if answer_correct else 0
+```
+
+It preserves the base DeepSeek `document_ids`, `document_recall_pct`, and
+`invalid_extra_docs`, so the adjustment changes answer quality judgements only.
 
 ## Operational Notes
 

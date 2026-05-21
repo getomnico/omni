@@ -37,7 +37,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("run_full_pipeline")
 
 BENCH_DIR = Path(__file__).parent.resolve()
-EVAL_DIR = Path("/root/EnterpriseRAG-Bench")
 ANSWER_EVAL_DIR = BENCH_DIR / "answer_evaluation"
 RUNS_DIR = BENCH_DIR / "runs"
 
@@ -243,6 +242,7 @@ def count_answers(answers_file: Path) -> int:
 
 
 def start_eval(
+    eval_dir: Path,
     answers_file: Path,
     results_file: Path,
     parallelism: int,
@@ -251,7 +251,7 @@ def start_eval(
 ) -> subprocess.Popen:
     """Start eval with --resume in background. Returns the process handle."""
     cmd = [
-        str(EVAL_DIR / ".venv/bin/python"),
+        str(eval_dir / ".venv/bin/python"),
         "-m",
         "src.scripts.answer_evaluation.metrics_based_eval",
         "--answers-file",
@@ -267,7 +267,7 @@ def start_eval(
 
     return subprocess.Popen(
         cmd,
-        cwd=EVAL_DIR,
+        cwd=eval_dir,
         env={**os.environ, **env},
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -324,6 +324,19 @@ def main() -> int:
         type=Path,
         default=BENCH_DIR / "data" / "questions.jsonl",
         help="Questions JSONL file to pass to run_agentic.py",
+    )
+    parser.add_argument(
+        "--eval-dir",
+        type=Path,
+        default=Path(
+            os.environ.get("ERAG_REPO")
+            or os.environ.get("BENCH_EVAL_DIR")
+            or "../EnterpriseRAG-Bench"
+        ),
+        help=(
+            "EnterpriseRAG-Bench checkout containing .venv and questions.jsonl. "
+            "Defaults to $ERAG_REPO, then $BENCH_EVAL_DIR, then ../EnterpriseRAG-Bench."
+        ),
     )
     parser.add_argument(
         "--system-name",
@@ -438,6 +451,7 @@ def main() -> int:
                 "concurrency": args.concurrency,
                 "timeout": args.timeout,
                 "judge_model": args.judge_model,
+                "eval_dir": str(args.eval_dir),
                 "ai_url": args.ai_url,
                 "searcher_url": args.searcher_url,
                 "llama_url": args.llama_url,
@@ -461,7 +475,7 @@ def main() -> int:
         "LLM_BASE_URL": args.judge_base_url,
         "LLM_MODEL_NAME": args.judge_model,
     }
-    env_file = Path("/root/EnterpriseRAG-Bench/.env")
+    env_file = args.eval_dir / ".env"
     if not env["LLM_API_KEY"] and env_file.exists():
         with env_file.open() as f:
             for line in f:
@@ -616,6 +630,7 @@ def main() -> int:
                 new_answers,
             )
             eval_proc = start_eval(
+                args.eval_dir,
                 answers_file,
                 results_file,
                 args.eval_parallelism,
@@ -632,6 +647,7 @@ def main() -> int:
         if gen_done and current_answers >= args.samples:
             # One final eval to catch any remaining
             eval_proc = start_eval(
+                args.eval_dir,
                 answers_file,
                 results_file,
                 args.eval_parallelism,

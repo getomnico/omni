@@ -19,7 +19,7 @@ Activated by `LLM_PROVIDER=openai_compat`.
 Required env:
     LLM_API_KEY     — provider API key
     LLM_BASE_URL    — provider base URL (e.g. https://api.deepseek.com/v1)
-    LLM_MODEL_NAME  — model to use (e.g. deepseek-chat, kimi-k2.6)
+    LLM_MODEL_NAME  — model to use (e.g. deepseek-v4-pro)
 """
 
 import os

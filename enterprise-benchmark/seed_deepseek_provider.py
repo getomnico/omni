@@ -1,12 +1,12 @@
-"""Seed model_providers + models with the DeepSeek V4 Flash entry the agentic
+"""Seed model_providers + models with the DeepSeek V4 Pro entry the agentic
 benchmark loop needs.
 
 Idempotent: tags rows by name, drops + reinserts on each run.
 
 Reads:
-  - DEEPSEEK_API_KEY from env (set via /root/EnterpriseRAG-Bench/.env)
+  - DEEPSEEK_API_KEY from env, typically loaded from $ERAG_REPO/.env
   - DEEPSEEK_API_URL (defaults to https://api.deepseek.com/v1)
-  - DEEPSEEK_MODEL (defaults to deepseek-v4-flash)
+  - DEEPSEEK_MODEL (defaults to deepseek-v4-pro)
 
 Writes:
   - model_providers row, provider_type='openai_compatible',
@@ -29,7 +29,7 @@ log = logging.getLogger("seed_deepseek_provider")
 
 PROVIDER_NAME = "deepseek"
 DEFAULT_DEEPSEEK_API_URL = "https://api.deepseek.com/v1"
-DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
+DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro"
 
 
 def main() -> int:
@@ -92,7 +92,7 @@ def main() -> int:
                 )
                 VALUES (%s, %s, %s, %s, TRUE, TRUE)
                 """,
-                (model_row_id, provider_id, model_id, "DeepSeek V4 Flash"),
+                (model_row_id, provider_id, model_id, "DeepSeek V4 Pro"),
             )
         conn.commit()
         log.info(

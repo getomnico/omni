@@ -833,9 +833,11 @@ def main() -> int:
         "--concurrency",
         type=int,
         default=4,
-        help="Parallel agentic loops in flight. Each loop makes multiple Kimi "
-        "calls (search → read → submit), so concurrency*~5 LLM calls in flight. "
-        "Default 4 keeps us well under Moonshot tier-1 caps.",
+        help=(
+            "Parallel agentic loops in flight. Each loop can make multiple LLM "
+            "calls through omni-ai (search → read → submit), so keep this "
+            "aligned with your searcher and provider rate limits."
+        ),
     )
     parser.add_argument(
         "--timeout",
@@ -851,7 +853,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--system-name",
-        default="omni_agentic_kimi",
+        default="omni_agentic_deepseek_v4_pro",
         help="Suffix for the answers file: answers_<system_name>.jsonl",
     )
     parser.add_argument(
