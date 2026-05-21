@@ -237,12 +237,14 @@ pub async fn list_sources(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     let source_ids: Vec<String> = sources.iter().map(|s| s.id.clone()).collect();
+    // Fetch more than the 10 runs we return to the UI so health evaluation can
+    // ignore manual failures while still finding enough scheduled failures to
+    // make a circuit-breaker decision.
     let sync_run_limit = state
         .config
         .sync_max_consecutive_failures
-        .max(1)
-        .saturating_mul(3)
-        .max(10);
+        .max(10)
+        .saturating_mul(3);
     let sync_runs = sync_run_repo
         .list_runs_for_sync_types(
             &source_ids,
