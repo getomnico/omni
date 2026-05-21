@@ -130,44 +130,6 @@ export interface NextcloudSourceConfig {
     sync_enabled: boolean
 }
 
-export interface ConnectorManagerSyncRun {
-    id: string
-    source_id: string
-    sync_type: string
-    started_at: string | null
-    completed_at: string | null
-    status: string
-    documents_scanned: number
-    documents_processed: number
-    documents_updated: number
-    error_message: string | null
-    created_at: string
-    updated_at: string
-}
-
-export interface SourceSyncRun {
-    id: string
-    sourceId: string
-    syncType: string
-    startedAt: Date | string | null
-    completedAt: Date | string | null
-    status: string
-    documentsScanned: number | null
-    documentsProcessed: number | null
-    documentsUpdated: number | null
-    errorMessage: string | null
-    createdAt: Date | string
-    updatedAt: Date | string
-}
-
-export interface SourceSyncOverview {
-    source: {
-        id: string
-    }
-    health: 'healthy' | 'unhealthy'
-    sync_runs: ConnectorManagerSyncRun[]
-}
-
 export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.GOOGLE_DRIVE]: 1800,
     [SourceType.GMAIL]: 1800,

@@ -2,7 +2,7 @@ import { requireAdmin } from '$lib/server/authHelpers'
 import { getConfig } from '$lib/server/config'
 import { sourcesRepository } from '$lib/server/repositories/sources'
 import { getConnectorConfigPublic } from '$lib/server/db/connector-configs'
-import type { ConnectorManagerSyncRun, SourceSyncOverview } from '$lib/types'
+import type { SyncRun } from '$lib/server/db/schema'
 import type { PageServerLoad } from './$types'
 
 const CONNECTOR_DISPLAY_ORDER: string[] = [
@@ -46,20 +46,28 @@ interface ConnectorInfo {
     }
 }
 
-function mapSyncRun(run: ConnectorManagerSyncRun) {
+interface ConnectorManagerSourceOverview {
+    source: {
+        id: string
+    }
+    health: 'healthy' | 'unhealthy'
+    sync_runs: Record<string, string | number | null>[]
+}
+
+function mapSyncRun(run: Record<string, string | number | null>): SyncRun {
     return {
-        id: run.id,
-        sourceId: run.source_id,
-        syncType: run.sync_type,
-        startedAt: run.started_at ? new Date(run.started_at) : null,
-        completedAt: run.completed_at ? new Date(run.completed_at) : null,
-        status: run.status,
-        documentsScanned: run.documents_scanned,
-        documentsProcessed: run.documents_processed,
-        documentsUpdated: run.documents_updated,
-        errorMessage: run.error_message,
-        createdAt: new Date(run.created_at),
-        updatedAt: new Date(run.updated_at),
+        id: run.id as string,
+        sourceId: run.source_id as string,
+        syncType: run.sync_type as string,
+        startedAt: new Date(run.started_at as string),
+        completedAt: run.completed_at ? new Date(run.completed_at as string) : null,
+        status: run.status as string,
+        documentsScanned: run.documents_scanned as number | null,
+        documentsProcessed: run.documents_processed as number | null,
+        documentsUpdated: run.documents_updated as number | null,
+        errorMessage: run.error_message as string | null,
+        createdAt: new Date(run.created_at as string),
+        updatedAt: new Date(run.updated_at as string),
     }
 }
 
@@ -87,11 +95,11 @@ export const load: PageServerLoad = async ({ locals }) => {
         ])
 
         if (sourcesResponse.ok) {
-            const overviews: SourceSyncOverview[] = await sourcesResponse.json()
+            const overviews = (await sourcesResponse.json()) as ConnectorManagerSourceOverview[]
             for (const overview of overviews) {
                 sourceHealth.set(overview.source.id, overview.health)
                 if (overview.sync_runs[0]) {
-                    latestSyncRuns.set(overview.source.id, mapSyncRun(overview.sync_runs[0]) as any)
+                    latestSyncRuns.set(overview.source.id, mapSyncRun(overview.sync_runs[0]))
                 }
             }
         }

@@ -7,9 +7,9 @@
         formatSyncRunDuration,
         getSyncRunStatusColor,
     } from '$lib/utils/sources'
-    import type { SourceSyncRun } from '$lib/types'
+    import type { SyncRun } from '$lib/server/db/schema'
 
-    let { runs = [] }: { runs?: SourceSyncRun[] } = $props()
+    let { runs = [] }: { runs?: SyncRun[] } = $props()
 </script>
 
 <Card.Root class="Root">

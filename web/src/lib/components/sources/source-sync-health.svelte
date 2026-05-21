@@ -1,9 +1,9 @@
 <script lang="ts">
     import * as Alert from '$lib/components/ui/alert'
     import { AlertCircle } from '@lucide/svelte'
-    import type { SourceSyncRun } from '$lib/types'
+    import type { SyncRun } from '$lib/server/db/schema'
 
-    let { health, syncRuns = [] }: { health: 'healthy' | 'unhealthy'; syncRuns?: SourceSyncRun[] } =
+    let { health, syncRuns = [] }: { health: 'healthy' | 'unhealthy'; syncRuns?: SyncRun[] } =
         $props()
 
     const latestFailedRun = $derived(syncRuns.find((run) => run.status.toLowerCase() === 'failed'))
