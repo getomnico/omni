@@ -237,20 +237,17 @@ pub async fn list_sources(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     let source_ids: Vec<String> = sources.iter().map(|s| s.id.clone()).collect();
-    let sync_runs = sync_run_repo
-        .list_runs(&source_ids, 10)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let health_run_limit = state
+    let sync_run_limit = state
         .config
         .sync_max_consecutive_failures
         .max(1)
-        .saturating_mul(3);
-    let health_sync_runs = sync_run_repo
+        .saturating_mul(3)
+        .max(10);
+    let sync_runs = sync_run_repo
         .list_runs_for_sync_types(
             &source_ids,
             &[SyncType::Full, SyncType::Incremental],
-            i64::from(health_run_limit),
+            i64::from(sync_run_limit),
         )
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -263,27 +260,17 @@ pub async fn list_sources(
             .push(run);
     }
 
-    let mut health_runs_by_source: HashMap<String, Vec<SyncRun>> = HashMap::new();
-    for run in health_sync_runs {
-        health_runs_by_source
-            .entry(run.source_id.clone())
-            .or_default()
-            .push(run);
-    }
-
     let overviews = sources
         .into_iter()
         .map(|source| {
             let sync_runs = runs_by_source.remove(&source.id).unwrap_or_default();
-            let health_sync_runs = health_runs_by_source.remove(&source.id).unwrap_or_default();
-            let health = if has_failure_streak(
-                &health_sync_runs,
-                state.config.sync_max_consecutive_failures,
-            ) {
-                SourceHealth::Unhealthy
-            } else {
-                SourceHealth::Healthy
-            };
+            let health =
+                if has_failure_streak(&sync_runs, state.config.sync_max_consecutive_failures) {
+                    SourceHealth::Unhealthy
+                } else {
+                    SourceHealth::Healthy
+                };
+            let sync_runs = sync_runs.into_iter().take(10).collect();
 
             SourceSyncOverview {
                 sync_runs,
