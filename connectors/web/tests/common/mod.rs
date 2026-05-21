@@ -57,6 +57,9 @@ impl WebConnectorTestFixture {
             max_concurrent_syncs_per_type: 3,
             scheduler_interval_seconds: 30,
             stale_sync_timeout_minutes: 10,
+            sync_backoff_base_seconds: 30,
+            sync_backoff_max_seconds: 3600,
+            sync_max_consecutive_failures: 10,
         };
 
         // Create connector-manager sync manager

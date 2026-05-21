@@ -285,7 +285,7 @@ async fn test_confluence_incremental_sync_uses_cql() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_confluence_version_dedup_skips_unchanged() -> Result<()> {
+async fn test_confluence_full_sync_ignores_saved_page_versions() -> Result<()> {
     let fixture = setup_test_fixture(SourceType::Confluence).await?;
 
     // Set up mock: 1 space with 2 pages
@@ -297,9 +297,11 @@ async fn test_confluence_version_dedup_skips_unchanged() -> Result<()> {
         make_confluence_page("1002", "Page 2", "100", 1),
     ]];
 
-    let processor = ConfluenceProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
+    let creds = test_credentials();
+    let first_processor =
+        ConfluenceProcessor::new(fixture.mock_api.clone(), fixture.sdk_client.clone());
 
-    // First sync: should process both pages
+    // First full sync builds the saved page-version map.
     let sync_run_id = fixture
         .sdk_client
         .create_sync_run(SOURCE_ID, SyncType::Full)
@@ -311,17 +313,23 @@ async fn test_confluence_version_dedup_skips_unchanged() -> Result<()> {
         SyncType::Full,
     );
 
-    let creds = test_credentials();
-    let count = processor
+    let count = first_processor
         .sync_all_spaces(&creds, SOURCE_ID, &sync_run_id, &ctx, &None)
         .await?;
-    assert_eq!(count, 2, "First sync should process 2 pages");
+    assert_eq!(count, 2, "First full sync should process 2 pages");
+    let saved_page_versions = first_processor.drain_page_versions();
+    assert_eq!(saved_page_versions.len(), 2);
 
     fixture.sdk_client.flush_all().await?;
     let events_after_first = count_queued_events(&fixture.pool).await?;
     assert_eq!(events_after_first, 2);
 
-    // Second sync with same versions: should skip both pages
+    // A later full sync must ignore saved page versions and process all pages again.
+    let second_processor = ConfluenceProcessor::with_page_versions(
+        fixture.mock_api.clone(),
+        fixture.sdk_client.clone(),
+        HashMap::new(),
+    );
     let sync_run_id2 = fixture
         .sdk_client
         .create_sync_run(SOURCE_ID, SyncType::Full)
@@ -333,14 +341,64 @@ async fn test_confluence_version_dedup_skips_unchanged() -> Result<()> {
         SyncType::Full,
     );
 
-    let count2 = processor
+    let count2 = second_processor
         .sync_all_spaces(&creds, SOURCE_ID, &sync_run_id2, &ctx2, &None)
         .await?;
-    assert_eq!(count2, 0, "Second sync should skip unchanged pages");
+    assert_eq!(count2, 2, "Second full sync should process unchanged pages");
 
     fixture.sdk_client.flush_all().await?;
     let events_after_second = count_queued_events(&fixture.pool).await?;
-    assert_eq!(events_after_second, 2, "No new events should be created");
+    assert_eq!(
+        events_after_second, 4,
+        "Second full sync should emit pages again"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_confluence_incremental_version_dedup_skips_unchanged() -> Result<()> {
+    let fixture = setup_test_fixture(SourceType::Confluence).await?;
+
+    let mut saved_page_versions = HashMap::new();
+    saved_page_versions.insert("100:1001".to_string(), 1);
+    saved_page_versions.insert("100:1002".to_string(), 1);
+
+    *fixture.mock_api.cql_pages.lock().unwrap() = vec![
+        make_cql_page("1001", "Page 1", 100, "DEV", 1),
+        make_cql_page("1002", "Page 2", 100, "DEV", 1),
+    ];
+
+    let processor = ConfluenceProcessor::with_page_versions(
+        fixture.mock_api.clone(),
+        fixture.sdk_client.clone(),
+        saved_page_versions,
+    );
+
+    let sync_run_id = fixture
+        .sdk_client
+        .create_sync_run(SOURCE_ID, SyncType::Incremental)
+        .await?;
+    let ctx = make_sync_context(
+        &fixture,
+        &sync_run_id,
+        SourceType::Confluence,
+        SyncType::Incremental,
+    );
+
+    let creds = test_credentials();
+    let last_sync = chrono::Utc::now() - chrono::Duration::hours(1);
+    let count = processor
+        .sync_all_spaces_incremental(&creds, SOURCE_ID, &sync_run_id, last_sync, &ctx, &None)
+        .await?;
+    assert_eq!(count, 0, "Incremental sync should skip unchanged pages");
+
+    fixture.sdk_client.flush_all().await?;
+    let events = count_queued_events(&fixture.pool).await?;
+    assert_eq!(
+        events, 0,
+        "Incremental dedup should not emit unchanged pages"
+    );
 
     Ok(())
 }

@@ -228,6 +228,79 @@ async fn test_full_sync_creates_events() {
 }
 
 #[tokio::test]
+async fn test_full_sync_ignores_saved_channel_timestamps() {
+    let fixture = SlackConnectorTestFixture::new().await.unwrap();
+
+    let mock_state = MockSlackState {
+        channels: make_test_channels(),
+        messages: make_test_messages(BASE_TS),
+        users: make_test_users(),
+        channel_members: make_test_channel_members(),
+        thread_replies: std::collections::HashMap::new(),
+    };
+    let mock_server = MockSlackServer::start(mock_state).await;
+
+    let (_user_id, source_id, _first_sync_run_id) =
+        setup_full_sync(&fixture, &mock_server.base_url).await;
+
+    let events_before = fixture.get_queued_events(&source_id).await.unwrap();
+    let events_before_count = events_before.len();
+
+    let older_ts = BASE_TS - 86400;
+    let mut messages = make_test_messages(BASE_TS);
+    messages.get_mut("C001").unwrap().push(SlackMessage {
+        msg_type: "message".to_string(),
+        text: "A previous-day message that full sync must fetch".to_string(),
+        user: "U001".to_string(),
+        ts: format!("{}.000100", older_ts),
+        thread_ts: None,
+        reply_count: None,
+        attachments: None,
+        files: None,
+    });
+
+    let mock_state2 = MockSlackState {
+        channels: make_test_channels(),
+        messages,
+        users: make_test_users(),
+        channel_members: make_test_channel_members(),
+        thread_replies: std::collections::HashMap::new(),
+    };
+    let mock_server2 = MockSlackServer::start(mock_state2).await;
+
+    let sync_run_id_2 = fixture.create_sync_run(&source_id).await.unwrap();
+    let sync_manager =
+        SyncManager::with_slack_base_url(fixture.sdk_client.clone(), mock_server2.base_url.clone());
+    drive_sync(
+        &fixture,
+        &sync_manager,
+        &source_id,
+        &sync_run_id_2,
+        SyncType::Full,
+    )
+    .await;
+
+    let events_after = fixture.get_queued_events(&source_id).await.unwrap();
+    let new_events = &events_after[events_before_count..];
+    let previous_day_docs: Vec<_> = new_events
+        .iter()
+        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("document_created"))
+        .filter(|e| {
+            e.get("metadata")
+                .and_then(|m| m.get("title"))
+                .and_then(|v| v.as_str())
+                .map(|title| title.contains("2025-01-14"))
+                .unwrap_or(false)
+        })
+        .collect();
+    assert_eq!(
+        previous_day_docs.len(),
+        1,
+        "Full sync should ignore saved timestamps and fetch previous-day messages"
+    );
+}
+
+#[tokio::test]
 async fn test_sync_persists_state_for_incremental() {
     let fixture = SlackConnectorTestFixture::new().await.unwrap();
 
@@ -252,9 +325,14 @@ async fn test_sync_persists_state_for_incremental() {
     let state: SlackConnectorState = serde_json::from_value(state_value).unwrap();
     let c001_ts = state.channel_timestamps.get("C001").cloned().unwrap();
     let _c002_ts = state.channel_timestamps.get("C002").cloned().unwrap();
+    let events_before = fixture.get_queued_events(&source_id).await.unwrap();
+    let events_before_count = events_before.len();
 
-    // Start a new mock with additional later messages
+    // Start a new mock with additional later messages. It also includes a
+    // previous-day message that incremental sync should skip because it uses
+    // the saved channel timestamp from the first sync.
     let later_ts = BASE_TS + 3600; // 1 hour later, same day
+    let older_ts = BASE_TS - 86400;
     let mut later_messages = make_test_messages(BASE_TS);
     later_messages
         .get_mut("C001")
@@ -269,6 +347,16 @@ async fn test_sync_persists_state_for_incremental() {
             attachments: None,
             files: None,
         });
+    later_messages.get_mut("C001").unwrap().push(SlackMessage {
+        msg_type: "message".to_string(),
+        text: "An older message incremental should skip".to_string(),
+        user: "U001".to_string(),
+        ts: format!("{}.000100", older_ts),
+        thread_ts: None,
+        reply_count: None,
+        attachments: None,
+        files: None,
+    });
 
     let mock_state2 = MockSlackState {
         channels: make_test_channels(),
@@ -310,6 +398,24 @@ async fn test_sync_persists_state_for_incremental() {
 
     // C002 should have same or updated timestamp (messages unchanged but re-fetched)
     assert!(state.channel_timestamps.contains_key("C002"));
+
+    let events_after = fixture.get_queued_events(&source_id).await.unwrap();
+    let new_events = &events_after[events_before_count..];
+    let previous_day_docs: Vec<_> = new_events
+        .iter()
+        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("document_created"))
+        .filter(|e| {
+            e.get("metadata")
+                .and_then(|m| m.get("title"))
+                .and_then(|v| v.as_str())
+                .map(|title| title.contains("2025-01-14"))
+                .unwrap_or(false)
+        })
+        .collect();
+    assert!(
+        previous_day_docs.is_empty(),
+        "Incremental sync should use saved timestamps and skip previous-day messages"
+    );
 
     // Verify second sync also completed
     let sync_run = fixture.get_sync_run(&sync_run_id_2).await.unwrap().unwrap();

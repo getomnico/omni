@@ -188,10 +188,15 @@ impl SyncManager {
 
         let (total_processed, new_page_versions, encountered_groups) = match source_type {
             SourceType::Confluence => {
+                let page_versions = if sync_mode == SyncType::Full {
+                    HashMap::new()
+                } else {
+                    existing_state.confluence_page_versions.clone()
+                };
                 let processor = ConfluenceProcessor::with_page_versions_and_resolver(
                     self.client.clone(),
                     sync_sdk_client.clone(),
-                    existing_state.confluence_page_versions.clone(),
+                    page_versions,
                     user_resolver.clone(),
                 );
                 let result = if sync_mode == SyncType::Full {

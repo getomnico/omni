@@ -128,6 +128,7 @@ impl SyncManager {
             .await?;
 
         let mut connector_state = state.unwrap_or_default();
+        let is_full_sync = ctx.sync_mode() == SyncType::Full;
 
         let mut content_processor = ContentProcessor::new();
         self.fetch_all_users(&bot_creds.bot_token, &mut content_processor)
@@ -177,7 +178,11 @@ impl SyncManager {
                 }
             }
 
-            let last_ts = connector_state.channel_timestamps.get(&channel.id).cloned();
+            let last_ts = if is_full_sync {
+                None
+            } else {
+                connector_state.channel_timestamps.get(&channel.id).cloned()
+            };
 
             let group_email = channel_group_email(&bot_creds.team_id, &channel.id);
 

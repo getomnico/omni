@@ -53,6 +53,9 @@ pub async fn setup_test_fixture(source_type: SourceType) -> Result<TestFixture> 
         max_concurrent_syncs_per_type: 3,
         scheduler_interval_seconds: 600,
         stale_sync_timeout_minutes: 1,
+        sync_backoff_base_seconds: 30,
+        sync_backoff_max_seconds: 3600,
+        sync_max_consecutive_failures: 10,
     };
 
     let content_storage: Arc<dyn ObjectStorage> =
