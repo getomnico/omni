@@ -310,7 +310,71 @@ async fn t8_cancel_matches_by_sync_run_id() -> Result<()> {
 }
 
 #[tokio::test]
-async fn t9_cancel_returns_not_found_for_unknown_sync() -> Result<()> {
+async fn t9_cancel_releases_slot_even_when_task_does_not_exit() -> Result<()> {
+    let mock = MockConnectorManager::spawn().await;
+    mock.set_source(json!({}));
+
+    let release_old_task = Arc::new(Notify::new());
+    let connector = Arc::new(TestConnector::new(SyncBehavior::BlockIgnoringCancel(
+        Arc::clone(&release_old_task),
+    )));
+    let server = build_server(Arc::clone(&connector), &mock);
+
+    let resp = server
+        .post("/sync")
+        .json(&json!({
+            "sync_run_id": "stuck-run",
+            "source_id": "src-1",
+            "sync_mode": "full",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+
+    for _ in 0..40 {
+        if connector.sync_call_count() >= 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let resp = server
+        .post("/sync")
+        .json(&json!({
+            "sync_run_id": "conflicting-run",
+            "source_id": "src-1",
+            "sync_mode": "full",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 409);
+
+    let resp = server
+        .post("/cancel")
+        .json(&json!({ "sync_run_id": "stuck-run" }))
+        .await;
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["status"], "cancelled");
+
+    let resp = server.get("/sync/stuck-run").await;
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["running"], false);
+
+    connector.set_behavior(SyncBehavior::Ok);
+    let resp = server
+        .post("/sync")
+        .json(&json!({
+            "sync_run_id": "run-after-cancel",
+            "source_id": "src-1",
+            "sync_mode": "full",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+
+    release_old_task.notify_one();
+    Ok(())
+}
+
+#[tokio::test]
+async fn t10_cancel_returns_not_found_for_unknown_sync() -> Result<()> {
     let mock = MockConnectorManager::spawn().await;
     let connector = Arc::new(TestConnector::new(SyncBehavior::Ok));
     let server = build_server(connector, &mock);
@@ -319,6 +383,7 @@ async fn t9_cancel_returns_not_found_for_unknown_sync() -> Result<()> {
         .post("/cancel")
         .json(&json!({ "sync_run_id": "does-not-exist" }))
         .await;
+    assert_eq!(resp.status_code(), StatusCode::NOT_FOUND);
     let body: serde_json::Value = resp.json();
     assert_eq!(body["status"], "not_found");
     Ok(())

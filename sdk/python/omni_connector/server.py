@@ -191,12 +191,14 @@ def create_app(connector: "Connector") -> FastAPI:
                 await connector.sync(source_config, credentials, state, ctx)
             except Exception as e:
                 logger.error("Sync %s failed: %s", sync_run_id, e)
-                try:
-                    await ctx.fail(str(e))
-                except Exception as fail_error:
-                    logger.error("Failed to report sync failure: %s", fail_error)
+                if not ctx.is_cancelled():
+                    try:
+                        await ctx.fail(str(e))
+                    except Exception as fail_error:
+                        logger.error("Failed to report sync failure: %s", fail_error)
             finally:
-                server.active_syncs.pop(source_id, None)
+                if server.active_syncs.get(source_id) is ctx:
+                    server.active_syncs.pop(source_id, None)
 
         asyncio.create_task(run_sync())
 
@@ -210,13 +212,24 @@ def create_app(connector: "Connector") -> FastAPI:
         sync_run_id = request.sync_run_id
         logger.info("Cancel requested for sync %s", sync_run_id)
 
+        matching_source_id = None
+        matching_ctx = None
         for source_id, ctx in server.active_syncs.items():
             if ctx.sync_run_id == sync_run_id:
-                ctx._set_cancelled()
-                connector.cancel(sync_run_id)
-                return CancelResponse(status="cancelled").model_dump()
+                matching_source_id = source_id
+                matching_ctx = ctx
+                break
 
-        return CancelResponse(status="not_found").model_dump()
+        if matching_source_id is None or matching_ctx is None:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content=CancelResponse(status="not_found").model_dump(),
+            )
+
+        matching_ctx._set_cancelled()
+        server.active_syncs.pop(matching_source_id, None)
+        connector.cancel(sync_run_id)
+        return CancelResponse(status="cancelled").model_dump()
 
     @app.post("/action")
     async def execute_action(request: ActionRequest) -> Response:

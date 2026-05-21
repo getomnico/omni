@@ -164,13 +164,17 @@ export function createServer(connector: Connector): Express {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         logger.error({ err: error }, `Sync ${syncRunId} failed`);
-        try {
-          await ctx.fail(message);
-        } catch (failError) {
-          logger.error({ err: failError }, 'Failed to report sync failure');
+        if (!ctx.isCancelled()) {
+          try {
+            await ctx.fail(message);
+          } catch (failError) {
+            logger.error({ err: failError }, 'Failed to report sync failure');
+          }
         }
       } finally {
-        activeSyncs.delete(sourceId);
+        if (activeSyncs.get(sourceId) === ctx) {
+          activeSyncs.delete(sourceId);
+        }
       }
     };
 
@@ -189,16 +193,25 @@ export function createServer(connector: Connector): Express {
     const { sync_run_id: syncRunId } = parseResult.data;
     logger.info(`Cancel requested for sync ${syncRunId}`);
 
+    let matchingSourceId: string | null = null;
+    let matchingCtx: SyncContext | null = null;
     for (const [sourceId, ctx] of activeSyncs.entries()) {
       if (ctx.syncRunId === syncRunId) {
-        ctx._setCancelled();
-        connector.cancel(syncRunId);
-        res.json({ status: 'cancelled' });
-        return;
+        matchingSourceId = sourceId;
+        matchingCtx = ctx;
+        break;
       }
     }
 
-    res.json({ status: 'not_found' });
+    if (matchingSourceId === null || matchingCtx === null) {
+      res.status(404).json({ status: 'not_found' });
+      return;
+    }
+
+    matchingCtx._setCancelled();
+    activeSyncs.delete(matchingSourceId);
+    connector.cancel(syncRunId);
+    res.json({ status: 'cancelled' });
   });
 
   app.post('/action', async (req: Request, res: Response) => {

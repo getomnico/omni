@@ -149,6 +149,100 @@ class TestManifestEndpoint:
 
 
 class TestCancelEndpoint:
+    @patch("omni_connector.client.SdkClient.fetch_source_sync_data")
+    def test_cancel_releases_slot_even_when_task_does_not_exit(
+        self, mock_fetch, monkeypatch
+    ):
+        """Cancel frees the source slot even if the old sync ignores cancellation."""
+        import asyncio
+        import threading
+        import time
+
+        monkeypatch.setenv("CONNECTOR_MANAGER_URL", "http://localhost:9000")
+        monkeypatch.setenv("CONNECTOR_HOST_NAME", "localhost")
+        monkeypatch.setenv("PORT", "8000")
+
+        sync_started = threading.Event()
+        release_old_sync = threading.Event()
+
+        class StuckConnector(Connector):
+            def __init__(self):
+                super().__init__()
+                self.sync_calls = 0
+
+            @property
+            def name(self) -> str:
+                return "stuck"
+
+            @property
+            def version(self) -> str:
+                return "1.0.0"
+
+            @property
+            def source_types(self) -> list[str]:
+                return ["stuck"]
+
+            async def sync(self, source_config, credentials, state, ctx):
+                self.sync_calls += 1
+                if self.sync_calls == 1:
+                    sync_started.set()
+                    while not release_old_sync.is_set():
+                        await asyncio.sleep(0.01)
+                return None
+
+        mock_fetch.return_value = SdkSourceSyncData(
+            config={},
+            credentials={},
+            connector_state=None,
+        )
+
+        connector = StuckConnector()
+        app = create_app(connector)
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/sync",
+                json={
+                    "sync_run_id": "stuck-sync",
+                    "source_id": "src-stuck",
+                    "sync_mode": "full",
+                },
+            )
+            assert response.status_code == 200
+            assert sync_started.wait(timeout=2.0)
+
+            response = client.post(
+                "/sync",
+                json={
+                    "sync_run_id": "conflicting-sync",
+                    "source_id": "src-stuck",
+                    "sync_mode": "full",
+                },
+            )
+            assert response.status_code == 409
+
+            response = client.post("/cancel", json={"sync_run_id": "stuck-sync"})
+            assert response.status_code == 200
+            assert response.json()["status"] == "cancelled"
+            assert client.get("/sync/stuck-sync").json() == {"running": False}
+
+            response = client.post(
+                "/sync",
+                json={
+                    "sync_run_id": "after-cancel",
+                    "source_id": "src-stuck",
+                    "sync_mode": "full",
+                },
+            )
+            assert response.status_code == 200
+
+            for _ in range(200):
+                if connector.sync_calls >= 2:
+                    break
+                time.sleep(0.01)
+            assert connector.sync_calls >= 2
+            release_old_sync.set()
+
     def test_cancel_not_found(self, client):
         """Cancel returns not_found when no matching sync is running."""
         response = client.post(
@@ -156,7 +250,7 @@ class TestCancelEndpoint:
             json={"sync_run_id": "nonexistent-sync"},
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 404
         data = response.json()
         assert data["status"] == "not_found"
 

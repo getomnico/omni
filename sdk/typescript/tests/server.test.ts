@@ -194,6 +194,63 @@ describe('Connector Server', () => {
   });
 
   describe('POST /cancel', () => {
+    it('releases the source slot even when the old task does not exit', async () => {
+      const connector = new MockConnector();
+      const app = createServer(connector);
+      let syncCalls = 0;
+      let firstSyncStarted!: () => void;
+      const firstSyncStartedPromise = new Promise<void>((resolve) => {
+        firstSyncStarted = resolve;
+      });
+      const releaseOldSync = new Promise<void>(() => undefined);
+
+      connector.syncFn = async () => {
+        syncCalls += 1;
+        if (syncCalls === 1) {
+          firstSyncStarted();
+          await releaseOldSync;
+        }
+      };
+
+      const first = await request(app)
+        .post('/sync')
+        .send({
+          sync_run_id: 'stuck-sync',
+          source_id: 'src-stuck',
+          sync_mode: 'full',
+        });
+      expect(first.status).toBe(200);
+      await firstSyncStartedPromise;
+
+      const conflict = await request(app)
+        .post('/sync')
+        .send({
+          sync_run_id: 'conflicting-sync',
+          source_id: 'src-stuck',
+          sync_mode: 'full',
+        });
+      expect(conflict.status).toBe(409);
+
+      const cancel = await request(app)
+        .post('/cancel')
+        .send({ sync_run_id: 'stuck-sync' });
+      expect(cancel.status).toBe(200);
+      expect(cancel.body).toEqual({ status: 'cancelled' });
+
+      const status = await request(app).get('/sync/stuck-sync');
+      expect(status.body).toEqual({ running: false });
+
+      const afterCancel = await request(app)
+        .post('/sync')
+        .send({
+          sync_run_id: 'after-cancel',
+          source_id: 'src-stuck',
+          sync_mode: 'full',
+        });
+      expect(afterCancel.status).toBe(200);
+      expect(syncCalls).toBe(2);
+    });
+
     it('returns not_found for unknown sync', async () => {
       const connector = new MockConnector();
       const app = createServer(connector);
@@ -202,7 +259,7 @@ describe('Connector Server', () => {
         .post('/cancel')
         .send({ sync_run_id: 'unknown-sync' });
 
-      expect(response.status).toBe(200);
+      expect(response.status).toBe(404);
       expect(response.body).toEqual({ status: 'not_found' });
     });
 

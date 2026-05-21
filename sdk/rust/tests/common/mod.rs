@@ -218,6 +218,8 @@ pub enum SyncBehavior {
     Panic,
     /// Block until the given Notify is signalled, then exit.
     BlockUntil(Arc<Notify>),
+    /// Block until the given Notify is signalled without observing cancellation.
+    BlockIgnoringCancel(Arc<Notify>),
 }
 
 pub struct TestConnector {
@@ -287,6 +289,10 @@ impl Connector for TestConnector {
                         _ = tokio::time::sleep(Duration::from_millis(25)) => {}
                     }
                 }
+            }
+            SyncBehavior::BlockIgnoringCancel(notify) => {
+                notify.notified().await;
+                Ok(())
             }
         }
     }
