@@ -4,12 +4,17 @@ use crate::models::{
 };
 use reqwest::Client;
 use shared::models::SyncType;
+use shared::{RateLimiter, RetryableError};
 use std::time::Duration;
 use tracing::{debug, error, warn};
+
+const SYNC_TRIGGER_RETRY_LIMIT: u32 = 3;
+const SYNC_TRIGGER_RETRY_RPS: u32 = 1_000;
 
 #[derive(Clone)]
 pub struct ConnectorClient {
     client: Client,
+    sync_trigger_retry: RateLimiter,
 }
 
 impl ConnectorClient {
@@ -19,7 +24,10 @@ impl ConnectorClient {
             .build()
             .expect("Failed to create HTTP client");
 
-        Self { client }
+        Self {
+            client,
+            sync_trigger_retry: RateLimiter::new(SYNC_TRIGGER_RETRY_RPS, SYNC_TRIGGER_RETRY_LIMIT),
+        }
     }
 
     pub async fn get_manifest(
@@ -63,13 +71,7 @@ impl ConnectorClient {
             url, request.source_id
         );
 
-        let response = self
-            .client
-            .post(&url)
-            .json(request)
-            .send()
-            .await
-            .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
+        let response = self.trigger_sync_with_retry(&url, request).await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -89,6 +91,24 @@ impl ConnectorClient {
             .json()
             .await
             .map_err(|e| ClientError::InvalidResponse(e.to_string()))
+    }
+
+    async fn trigger_sync_with_retry(
+        &self,
+        url: &str,
+        request: &SyncRequest,
+    ) -> Result<reqwest::Response, ClientError> {
+        self.sync_trigger_retry
+            .execute_with_retry(|| async {
+                self.client
+                    .post(url)
+                    .json(request)
+                    .send()
+                    .await
+                    .map_err(|e| RetryableError::Transient(e.into()))
+            })
+            .await
+            .map_err(|e| ClientError::RequestFailed(e.to_string()))
     }
 
     pub async fn get_sync_status(
