@@ -217,6 +217,97 @@ async fn test_event_driven_document_lifecycle() {
 }
 
 #[tokio::test]
+async fn test_url_inferred_file_extension_is_capped() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let event_queue = EventQueue::new(fixture.state.db_pool.pool().clone());
+    let repo = DocumentRepository::new(fixture.state.db_pool.pool());
+
+    let processor =
+        QueueProcessor::new(fixture.state.clone()).with_poll_interval(Duration::from_millis(200));
+    let processor_handle = tokio::spawn(async move {
+        let _ = processor.start().await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let long_suffix = "a".repeat(64);
+    let gmail_like_url = format!(
+        "https://mail.google.com/mail/u/0/#inbox/rfc822msgid%3A1577287121.{}",
+        long_suffix
+    );
+
+    for (document_id, url) in [
+        ("gmail_long_extension_doc", gmail_like_url.clone()),
+        (
+            "normal_pdf_doc",
+            "https://example.com/docs/report.pdf".to_string(),
+        ),
+    ] {
+        let content_id = fixture
+            .state
+            .content_storage
+            .store_content(format!("content for {document_id}").as_bytes(), None)
+            .await
+            .unwrap();
+
+        let event = ConnectorEvent::DocumentCreated {
+            sync_run_id: "sync_file_extension_cap".to_string(),
+            source_id: TEST_SOURCE_ID.to_string(),
+            document_id: document_id.to_string(),
+            content_id,
+            metadata: DocumentMetadata {
+                title: Some(document_id.to_string()),
+                author: None,
+                created_at: None,
+                updated_at: None,
+                content_type: None,
+                mime_type: Some("message/rfc822".to_string()),
+                size: Some("100".to_string()),
+                url: Some(url),
+                path: None,
+                extra: None,
+            },
+            permissions: DocumentPermissions {
+                public: false,
+                users: vec!["user1".to_string()],
+                groups: vec![],
+            },
+            attributes: None,
+        };
+
+        event_queue.enqueue(TEST_SOURCE_ID, &event).await.unwrap();
+    }
+
+    let completed =
+        common::wait_for_completed(fixture.state.db_pool.pool(), 2, Duration::from_secs(5)).await;
+    assert_eq!(completed, 2);
+
+    let gmail_doc = common::wait_for_document_exists(
+        &repo,
+        TEST_SOURCE_ID,
+        "gmail_long_extension_doc",
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("Gmail-like document should be indexed");
+    let gmail_extension = gmail_doc.file_extension.unwrap();
+    assert_eq!(gmail_extension.chars().count(), 50);
+    assert_eq!(gmail_extension, "a".repeat(50));
+    assert_eq!(gmail_doc.url, Some(gmail_like_url));
+
+    let pdf_doc = common::wait_for_document_exists(
+        &repo,
+        TEST_SOURCE_ID,
+        "normal_pdf_doc",
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("Normal PDF document should be indexed");
+    assert_eq!(pdf_doc.file_extension, Some("pdf".to_string()));
+
+    processor_handle.abort();
+}
+
+#[tokio::test]
 async fn test_batch_processing_and_deduplication() {
     let fixture = common::setup_test_fixture().await.unwrap();
     let event_queue = EventQueue::new(fixture.state.db_pool.pool().clone());

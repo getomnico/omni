@@ -36,6 +36,7 @@ const DEFAULT_INCREMENTAL_BATCH_MAX_AGE_SECS: i64 = 60;
 const DEFAULT_REALTIME_BATCH_SIZE: i64 = 1;
 const DEFAULT_REALTIME_BATCH_MAX_AGE_SECS: i64 = 0;
 const DEFAULT_GLOBAL_BATCH_MAX_AGE_SECS: i64 = 300;
+const MAX_FILE_EXTENSION_CHARS: usize = 50;
 
 #[derive(Clone)]
 struct BatchingConfig {
@@ -180,6 +181,18 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
+}
+
+fn infer_file_extension(url: &str) -> Option<String> {
+    url.split('.')
+        .last()
+        .filter(|ext| !ext.contains('/') && !ext.contains('?'))
+        .map(|ext| {
+            ext.to_lowercase()
+                .chars()
+                .take(MAX_FILE_EXTENSION_CHARS)
+                .collect()
+        })
 }
 
 // Batch processing types
@@ -1002,13 +1015,7 @@ impl QueueProcessor {
             .transpose()?
             .unwrap_or(serde_json::json!({}));
 
-        // Extract file extension from URL or mime type
-        let file_extension = metadata.url.as_ref().and_then(|url| {
-            url.split('.')
-                .last()
-                .filter(|ext| !ext.contains('/') && !ext.contains('?'))
-                .map(|ext| ext.to_lowercase())
-        });
+        let file_extension = metadata.url.as_deref().and_then(infer_file_extension);
 
         // Parse file size from string to i64
         let file_size = metadata

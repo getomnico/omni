@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use anyhow::Result;
 use sqlx::{PgPool, Row};
 use ulid::Ulid;
@@ -555,7 +553,7 @@ impl EventQueue {
             r#"
             UPDATE connector_events_queue
             SET status = CASE 
-                    WHEN retry_count >= max_retries THEN 'dead_letter'
+                    WHEN retry_count + 1 >= max_retries THEN 'dead_letter'
                     ELSE 'failed'
                 END,
                 retry_count = retry_count + 1,
