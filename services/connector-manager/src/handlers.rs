@@ -280,13 +280,16 @@ fn has_failure_streak(sync_runs: &[SyncRun], max_consecutive_failures: i32) -> b
     let max_consecutive_failures = max_consecutive_failures as usize;
     let scheduled_runs: Vec<&SyncRun> = sync_runs
         .iter()
-        .filter(|run| run.sync_type.slot_class() == SyncSlotClass::Scheduled)
+        .filter(|run| {
+            run.sync_type.slot_class() == SyncSlotClass::Scheduled
+                && run.trigger_type != TriggerType::Manual.to_string()
+        })
         .collect();
     scheduled_runs.len() >= max_consecutive_failures
         && scheduled_runs
             .iter()
             .take(max_consecutive_failures)
-            .all(|run| run.status == SyncStatus::Failed)
+            .all(|run| matches!(run.status, SyncStatus::Failed | SyncStatus::Cancelled))
 }
 
 pub async fn list_connectors(

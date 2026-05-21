@@ -43,6 +43,7 @@ impl SyncRunRepository {
             source_id: source_id.to_string(),
             sync_type,
             status: SyncStatus::Running,
+            trigger_type: trigger_type.to_string(),
             created_at: now,
             updated_at: now,
             started_at: Some(now),
@@ -57,7 +58,7 @@ impl SyncRunRepository {
     pub async fn find_by_id(&self, id: &str) -> Result<Option<SyncRun>, DatabaseError> {
         let sync_run = sqlx::query_as::<_, SyncRun>(
             r#"
-            SELECT id, source_id, sync_type, started_at, completed_at, status,
+            SELECT id, source_id, sync_type, started_at, completed_at, status, trigger_type,
                    documents_scanned, documents_processed, documents_updated, error_message,
                    created_at, updated_at
             FROM sync_runs
@@ -163,7 +164,7 @@ impl SyncRunRepository {
             Some(st) => {
                 sqlx::query_as::<_, SyncRun>(
                     r#"
-                    SELECT id, source_id, sync_type, started_at, completed_at, status,
+                    SELECT id, source_id, sync_type, started_at, completed_at, status, trigger_type,
                            documents_scanned, documents_processed, documents_updated, error_message,
                            created_at, updated_at
                     FROM sync_runs
@@ -181,7 +182,7 @@ impl SyncRunRepository {
             None => {
                 sqlx::query_as::<_, SyncRun>(
                     r#"
-                    SELECT id, source_id, sync_type, started_at, completed_at, status,
+                    SELECT id, source_id, sync_type, started_at, completed_at, status, trigger_type,
                            documents_scanned, documents_processed, documents_updated, error_message,
                            created_at, updated_at
                     FROM sync_runs
@@ -206,7 +207,7 @@ impl SyncRunRepository {
     ) -> Result<Option<SyncRun>, DatabaseError> {
         let sync_run = sqlx::query_as::<_, SyncRun>(
             r#"
-            SELECT id, source_id, sync_type, started_at, completed_at, status,
+            SELECT id, source_id, sync_type, started_at, completed_at, status, trigger_type,
                    documents_scanned, documents_processed, documents_updated, error_message,
                    created_at, updated_at
             FROM sync_runs
@@ -238,7 +239,7 @@ impl SyncRunRepository {
         let type_strs: Vec<String> = sync_types.iter().map(|t| t.to_string()).collect();
         let sync_run = sqlx::query_as::<_, SyncRun>(
             r#"
-            SELECT id, source_id, sync_type, started_at, completed_at, status,
+            SELECT id, source_id, sync_type, started_at, completed_at, status, trigger_type,
                    documents_scanned, documents_processed, documents_updated, error_message,
                    created_at, updated_at
             FROM sync_runs
@@ -259,7 +260,7 @@ impl SyncRunRepository {
     pub async fn find_all_running(&self) -> Result<Vec<SyncRun>, DatabaseError> {
         let sync_runs = sqlx::query_as::<_, SyncRun>(
             r#"
-            SELECT id, source_id, sync_type, started_at, completed_at, status,
+            SELECT id, source_id, sync_type, started_at, completed_at, status, trigger_type,
                    documents_scanned, documents_processed, documents_updated, error_message,
                    created_at, updated_at
             FROM sync_runs
@@ -319,7 +320,7 @@ impl SyncRunRepository {
         let sync_runs = sqlx::query_as::<_, SyncRun>(
             r#"
             SELECT DISTINCT ON (source_id)
-                   id, source_id, sync_type, started_at, completed_at, status,
+                   id, source_id, sync_type, started_at, completed_at, status, trigger_type,
                    documents_scanned, documents_processed, documents_updated, error_message,
                    created_at, updated_at
             FROM sync_runs
@@ -356,7 +357,7 @@ impl SyncRunRepository {
         let type_strs: Vec<String> = sync_types.iter().map(|t| t.to_string()).collect();
         let sync_runs = sqlx::query_as::<_, SyncRun>(
             r#"
-            SELECT id, source_id, sync_type, started_at, completed_at, status,
+            SELECT id, source_id, sync_type, started_at, completed_at, status, trigger_type,
                    documents_scanned, documents_processed, documents_updated, error_message,
                    created_at, updated_at
             FROM (

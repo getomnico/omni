@@ -231,11 +231,16 @@ impl Scheduler {
             .await
             .map_err(|e| SchedulerError::DatabaseError(e.to_string()))?;
         let source_ids: Vec<String> = sources.iter().map(|source| source.id.clone()).collect();
+        let recent_run_limit = self
+            .config
+            .sync_max_consecutive_failures
+            .max(1)
+            .saturating_mul(3);
         let sync_runs = sync_run_repo
             .list_runs_for_sync_types(
                 &source_ids,
                 &[SyncType::Full, SyncType::Incremental],
-                i64::from(self.config.sync_max_consecutive_failures.max(1)),
+                i64::from(recent_run_limit),
             )
             .await
             .map_err(|e| SchedulerError::DatabaseError(e.to_string()))?;
@@ -321,7 +326,9 @@ fn sources_due_for_sync(
 ) -> Vec<Source> {
     let mut runs_by_source = HashMap::<String, Vec<SyncRun>>::new();
     for run in sync_runs {
-        if run.sync_type.slot_class() != SyncSlotClass::Scheduled {
+        if run.sync_type.slot_class() != SyncSlotClass::Scheduled
+            || run.trigger_type == TriggerType::Manual.to_string()
+        {
             continue;
         }
         runs_by_source
@@ -349,34 +356,34 @@ fn sources_due_for_sync(
                 .iter()
                 .find(|run| run.status == SyncStatus::Completed)
                 .and_then(|run| run.completed_at);
-            let failed_runs: Vec<&SyncRun> = sync_runs
-                .iter()
-                .take_while(|run| run.status == SyncStatus::Failed)
-                .collect();
+            let unsuccessful_runs = current_unsuccessful_streak(&sync_runs);
 
-            // Circuit breaker: stop scheduled retries once the visible
-            // consecutive failure streak reaches the configured threshold.
-            if max_consecutive_failures <= failed_runs.len() as i32 {
+            // Circuit breaker: stop scheduled retries once the visible streak
+            // of terminal failed/cancelled runs reaches the configured threshold.
+            if max_consecutive_failures <= unsuccessful_runs.len() as i32 {
                 info!(
-                    "Skipping scheduled sync for source {} ({:?}): circuit breaker open after {} consecutive failures (threshold {})",
+                    "Skipping scheduled sync for source {} ({:?}): circuit breaker open after {} consecutive failed/cancelled runs (threshold {})",
                     source.id,
                     source.source_type,
-                    failed_runs.len(),
+                    unsuccessful_runs.len(),
                     max_consecutive_failures
                 );
                 return None;
             }
 
-            let last_failed_at = failed_runs.first().and_then(|run| run.completed_at);
+            let last_failed_at = unsuccessful_runs.first().and_then(|run| run.completed_at);
             if let Some(last_failed_at) = last_failed_at {
-                let backoff =
-                    backoff_seconds(failed_runs.len(), backoff_base_seconds, backoff_max_seconds);
+                let backoff = backoff_seconds(
+                    unsuccessful_runs.len(),
+                    backoff_base_seconds,
+                    backoff_max_seconds,
+                );
                 if last_failed_at + TimeDuration::seconds(backoff) > now {
                     info!(
-                        "Skipping scheduled sync for source {} ({:?}): failure backoff still active after {} consecutive failures; last failure at {}, backoff {}s",
+                        "Skipping scheduled sync for source {} ({:?}): failure backoff still active after {} consecutive failed/cancelled runs; last failure at {}, backoff {}s",
                         source.id,
                         source.source_type,
-                        failed_runs.len(),
+                        unsuccessful_runs.len(),
                         last_failed_at,
                         backoff
                     );
@@ -390,10 +397,10 @@ fn sources_due_for_sync(
             // the blocking condition; failure threshold/backoff above decides.
             let Some(latest_success_at) = latest_success_at else {
                 info!(
-                    "Source {} ({:?}) is due for scheduled sync: no recent successful sync found, {} consecutive failures below threshold",
+                    "Source {} ({:?}) is due for scheduled sync: no recent successful sync found, {} consecutive failed/cancelled runs below threshold",
                     source.id,
                     source.source_type,
-                    failed_runs.len()
+                    unsuccessful_runs.len()
                 );
                 return Some((source, last_failed_at));
             };
@@ -413,12 +420,12 @@ fn sources_due_for_sync(
             }
 
             info!(
-                "Source {} ({:?}) is due for scheduled sync: latest success at {}, interval {}s, {} consecutive failures",
+                "Source {} ({:?}) is due for scheduled sync: latest success at {}, interval {}s, {} consecutive unsuccessful runs",
                 source.id,
                 source.source_type,
                 latest_success_at,
                 sync_interval_seconds,
-                failed_runs.len()
+                unsuccessful_runs.len()
             );
             Some((source, last_failed_at.or(Some(latest_success_at))))
         })
@@ -436,6 +443,17 @@ fn sources_due_for_sync(
         .take(10)
         .map(|(source, _)| source)
         .collect()
+}
+
+fn current_unsuccessful_streak(sync_runs: &[SyncRun]) -> Vec<&SyncRun> {
+    sync_runs
+        .iter()
+        .take_while(|run| is_unsuccessful_terminal_status(run.status))
+        .collect()
+}
+
+fn is_unsuccessful_terminal_status(status: SyncStatus) -> bool {
+    matches!(status, SyncStatus::Failed | SyncStatus::Cancelled)
 }
 
 fn backoff_seconds(
@@ -562,6 +580,7 @@ mod tests {
             started_at: completed_at,
             completed_at,
             status,
+            trigger_type: TriggerType::Scheduled.to_string(),
             documents_scanned: 0,
             documents_processed: 0,
             documents_updated: 0,
@@ -712,6 +731,88 @@ mod tests {
 
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].id, "after-backoff");
+    }
+
+    #[test]
+    fn manual_runs_do_not_count_toward_failure_streak() {
+        let now = OffsetDateTime::now_utc();
+        let mut manual_run = sync_run(
+            "run-1",
+            "source-1",
+            SyncStatus::Failed,
+            Some(now - TimeDuration::seconds(120)),
+        );
+        manual_run.trigger_type = TriggerType::Manual.to_string();
+
+        let due = sources_due_for_sync(
+            vec![source("source-1", Some(60))],
+            vec![
+                manual_run,
+                sync_run(
+                    "run-2",
+                    "source-1",
+                    SyncStatus::Failed,
+                    Some(now - TimeDuration::seconds(180)),
+                ),
+            ],
+            now,
+            2,
+            30,
+            3600,
+        );
+
+        assert_eq!(due[0].id, "source-1");
+    }
+
+    #[test]
+    fn running_run_does_not_count_toward_failure_streak() {
+        let now = OffsetDateTime::now_utc();
+        let due = sources_due_for_sync(
+            vec![source("source-1", Some(60))],
+            vec![
+                sync_run("run-1", "source-1", SyncStatus::Running, None),
+                sync_run(
+                    "run-2",
+                    "source-1",
+                    SyncStatus::Failed,
+                    Some(now - TimeDuration::seconds(180)),
+                ),
+            ],
+            now,
+            1,
+            30,
+            3600,
+        );
+
+        assert_eq!(due[0].id, "source-1");
+    }
+
+    #[test]
+    fn cancelled_run_counts_toward_failure_streak() {
+        let now = OffsetDateTime::now_utc();
+        let due = sources_due_for_sync(
+            vec![source("source-1", Some(60))],
+            vec![
+                sync_run(
+                    "run-1",
+                    "source-1",
+                    SyncStatus::Cancelled,
+                    Some(now - TimeDuration::seconds(120)),
+                ),
+                sync_run(
+                    "run-2",
+                    "source-1",
+                    SyncStatus::Failed,
+                    Some(now - TimeDuration::seconds(180)),
+                ),
+            ],
+            now,
+            2,
+            30,
+            3600,
+        );
+
+        assert!(due.is_empty());
     }
 
     #[test]
