@@ -2,6 +2,7 @@ use crate::config::ConnectorManagerConfig;
 use crate::handlers::get_sync_modes_for_source;
 use crate::models::TriggerType;
 use crate::source_cleanup::SourceCleanup;
+use crate::sync_circuit_breaker::current_unsuccessful_streak;
 use crate::sync_manager::{SyncError, SyncManager};
 use redis::Client as RedisClient;
 use shared::db::repositories::{SourceRepository, SyncRunRepository};
@@ -326,11 +327,6 @@ fn sources_due_for_sync(
 ) -> Vec<Source> {
     let mut runs_by_source = HashMap::<String, Vec<SyncRun>>::new();
     for run in sync_runs {
-        if run.sync_type.slot_class() != SyncSlotClass::Scheduled
-            || run.trigger_type == TriggerType::Manual.to_string()
-        {
-            continue;
-        }
         runs_by_source
             .entry(run.source_id.clone())
             .or_default()
@@ -443,17 +439,6 @@ fn sources_due_for_sync(
         .take(10)
         .map(|(source, _)| source)
         .collect()
-}
-
-fn current_unsuccessful_streak(sync_runs: &[SyncRun]) -> Vec<&SyncRun> {
-    sync_runs
-        .iter()
-        .take_while(|run| is_unsuccessful_terminal_status(run.status))
-        .collect()
-}
-
-fn is_unsuccessful_terminal_status(status: SyncStatus) -> bool {
-    matches!(status, SyncStatus::Failed | SyncStatus::Cancelled)
 }
 
 fn backoff_seconds(
@@ -734,7 +719,7 @@ mod tests {
     }
 
     #[test]
-    fn manual_runs_do_not_count_toward_failure_streak() {
+    fn manual_failure_does_not_count_toward_failure_streak() {
         let now = OffsetDateTime::now_utc();
         let mut manual_run = sync_run(
             "run-1",
@@ -757,6 +742,37 @@ mod tests {
             ],
             now,
             2,
+            30,
+            3600,
+        );
+
+        assert_eq!(due[0].id, "source-1");
+    }
+
+    #[test]
+    fn manual_success_breaks_failure_streak() {
+        let now = OffsetDateTime::now_utc();
+        let mut manual_run = sync_run(
+            "run-1",
+            "source-1",
+            SyncStatus::Completed,
+            Some(now - TimeDuration::seconds(120)),
+        );
+        manual_run.trigger_type = TriggerType::Manual.to_string();
+
+        let due = sources_due_for_sync(
+            vec![source("source-1", Some(60))],
+            vec![
+                manual_run,
+                sync_run(
+                    "run-2",
+                    "source-1",
+                    SyncStatus::Failed,
+                    Some(now - TimeDuration::seconds(180)),
+                ),
+            ],
+            now,
+            1,
             30,
             3600,
         );

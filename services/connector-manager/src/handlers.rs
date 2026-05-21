@@ -4,6 +4,7 @@ use crate::models::{
     ExecuteResourceRequest, PromptRequest, ResourceRequest, ScheduleInfo, SourceHealth,
     SourceSyncOverview, SyncProgress, TriggerSyncRequest, TriggerSyncResponse, TriggerType,
 };
+use crate::sync_circuit_breaker::has_failure_streak;
 use crate::sync_manager::SyncError;
 use crate::AppState;
 use axum::{
@@ -22,8 +23,7 @@ use shared::clients::docling::{DoclingClient, DoclingError};
 use shared::constants::REDIS_SYSTEM_SETTINGS_KEY;
 use shared::db::repositories::SyncRunRepository;
 use shared::models::{
-    ActionMode, ConnectorManifest, SearchOperator, ServiceProvider, SourceType, SyncRun,
-    SyncSlotClass, SyncStatus, SyncType,
+    ActionMode, ConnectorManifest, SearchOperator, ServiceProvider, SourceType, SyncRun, SyncType,
 };
 use shared::queue::EventQueue;
 use shared::utils;
@@ -294,26 +294,6 @@ pub async fn list_sources(
         .collect();
 
     Ok(Json(overviews))
-}
-
-fn has_failure_streak(sync_runs: &[SyncRun], max_consecutive_failures: i32) -> bool {
-    if max_consecutive_failures <= 0 {
-        return true;
-    }
-
-    let max_consecutive_failures = max_consecutive_failures as usize;
-    let scheduled_runs: Vec<&SyncRun> = sync_runs
-        .iter()
-        .filter(|run| {
-            run.sync_type.slot_class() == SyncSlotClass::Scheduled
-                && run.trigger_type != TriggerType::Manual.to_string()
-        })
-        .collect();
-    scheduled_runs.len() >= max_consecutive_failures
-        && scheduled_runs
-            .iter()
-            .take(max_consecutive_failures)
-            .all(|run| matches!(run.status, SyncStatus::Failed | SyncStatus::Cancelled))
 }
 
 pub async fn list_connectors(

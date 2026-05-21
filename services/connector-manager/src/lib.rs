@@ -4,6 +4,7 @@ pub mod handlers;
 pub mod models;
 pub mod scheduler;
 pub mod source_cleanup;
+pub mod sync_circuit_breaker;
 pub mod sync_manager;
 
 use anyhow::Result as AnyhowResult;
