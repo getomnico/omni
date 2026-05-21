@@ -23,7 +23,7 @@ use shared::constants::REDIS_SYSTEM_SETTINGS_KEY;
 use shared::db::repositories::SyncRunRepository;
 use shared::models::{
     ActionMode, ConnectorManifest, SearchOperator, ServiceProvider, SourceType, SyncRun,
-    SyncStatus, SyncType,
+    SyncSlotClass, SyncStatus, SyncType,
 };
 use shared::queue::EventQueue;
 use shared::utils;
@@ -278,8 +278,12 @@ fn has_failure_streak(sync_runs: &[SyncRun], max_consecutive_failures: i32) -> b
     }
 
     let max_consecutive_failures = max_consecutive_failures as usize;
-    sync_runs.len() >= max_consecutive_failures
-        && sync_runs
+    let scheduled_runs: Vec<&SyncRun> = sync_runs
+        .iter()
+        .filter(|run| run.sync_type.slot_class() == SyncSlotClass::Scheduled)
+        .collect();
+    scheduled_runs.len() >= max_consecutive_failures
+        && scheduled_runs
             .iter()
             .take(max_consecutive_failures)
             .all(|run| run.status == SyncStatus::Failed)
@@ -869,6 +873,13 @@ impl From<SyncError> for ApiError {
             SyncError::ConcurrencyLimitReached => {
                 ApiError::Conflict("Concurrency limit reached, try again later".to_string())
             }
+            SyncError::SyncModeUnavailable {
+                source_id,
+                sync_type,
+            } => ApiError::BadRequest(format!(
+                "{} sync is not available for source: {}",
+                sync_type, source_id
+            )),
             SyncError::DatabaseError(e) => ApiError::Internal(e),
             SyncError::ConnectorError(e) => ApiError::Internal(e.to_string()),
         }

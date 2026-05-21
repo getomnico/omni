@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::result::Result as StdResult;
 
 use crate::context::SyncContext;
 use crate::mcp_adapter::{McpCredentials, McpServer};
@@ -15,6 +16,12 @@ use shared::models::{
     ActionDefinition, ConnectorManifest, SearchOperator, ServiceCredential, Source, SourceType,
     SyncType,
 };
+
+#[derive(Debug, Clone)]
+pub enum SyncRequestValidationError {
+    Unavailable(String),
+    BadRequest(String),
+}
 
 #[async_trait]
 pub trait Connector: Send + Sync + 'static {
@@ -97,6 +104,19 @@ pub trait Connector: Send + Sync + 'static {
     /// API keys, or other auth schemes.
     fn oauth_config(&self) -> Option<OAuthManifestConfig> {
         None
+    }
+
+    /// Connector-specific gate run before the SDK reserves a sync slot or
+    /// starts `sync()`. Use this for request-level availability checks, such as
+    /// optional realtime prerequisites that should return 404 instead of
+    /// starting and recording a failed sync run.
+    async fn validate_sync_request(
+        &self,
+        _source: &Source,
+        _credentials: Option<&ServiceCredential>,
+        _sync_type: SyncType,
+    ) -> StdResult<(), SyncRequestValidationError> {
+        Ok(())
     }
 
     async fn sync(

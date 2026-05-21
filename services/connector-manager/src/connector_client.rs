@@ -3,6 +3,7 @@ use crate::models::{
     SyncResponse, SyncStatusResponse,
 };
 use reqwest::Client;
+use shared::models::SyncType;
 use std::time::Duration;
 use tracing::{debug, error, warn};
 
@@ -73,7 +74,11 @@ impl ConnectorClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            error!("Failed to trigger sync: {} - {}", status, body);
+            if status.as_u16() == 404 && request.sync_mode == SyncType::Realtime {
+                debug!("Realtime sync unavailable: {} - {}", status, body);
+            } else {
+                error!("Failed to trigger sync: {} - {}", status, body);
+            }
             return Err(ClientError::ConnectorError {
                 status: status.as_u16(),
                 message: body,

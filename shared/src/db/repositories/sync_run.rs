@@ -275,13 +275,23 @@ impl SyncRunRepository {
     }
 
     pub async fn mark_cancelled(&self, id: &str) -> Result<(), DatabaseError> {
+        self.mark_cancelled_with_message(id, "Cancelled by user")
+            .await
+    }
+
+    pub async fn mark_cancelled_with_message(
+        &self,
+        id: &str,
+        message: &str,
+    ) -> Result<(), DatabaseError> {
         sqlx::query(
             "UPDATE sync_runs
              SET status = $1, completed_at = CURRENT_TIMESTAMP,
-                 error_message = 'Cancelled by user', updated_at = CURRENT_TIMESTAMP
-             WHERE id = $2",
+                 error_message = $2, updated_at = CURRENT_TIMESTAMP
+             WHERE id = $3",
         )
         .bind(SyncStatus::Cancelled)
+        .bind(message)
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -329,10 +339,21 @@ impl SyncRunRepository {
         source_ids: &[String],
         limit_per_source: i64,
     ) -> Result<Vec<SyncRun>, DatabaseError> {
+        self.list_runs_for_sync_types(source_ids, &[], limit_per_source)
+            .await
+    }
+
+    pub async fn list_runs_for_sync_types(
+        &self,
+        source_ids: &[String],
+        sync_types: &[SyncType],
+        limit_per_source: i64,
+    ) -> Result<Vec<SyncRun>, DatabaseError> {
         if source_ids.is_empty() {
             return Ok(Vec::new());
         }
 
+        let type_strs: Vec<String> = sync_types.iter().map(|t| t.to_string()).collect();
         let sync_runs = sqlx::query_as::<_, SyncRun>(
             r#"
             SELECT id, source_id, sync_type, started_at, completed_at, status,
@@ -346,12 +367,14 @@ impl SyncRunRepository {
                        ) AS rn
                 FROM sync_runs sr
                 WHERE source_id = ANY($1)
+                  AND (cardinality($2::text[]) = 0 OR sync_type::text = ANY($2))
             ) ranked
-            WHERE rn <= $2
+            WHERE rn <= $3
             ORDER BY source_id, started_at DESC, created_at DESC
             "#,
         )
         .bind(source_ids)
+        .bind(&type_strs)
         .bind(limit_per_source)
         .fetch_all(&self.pool)
         .await?;

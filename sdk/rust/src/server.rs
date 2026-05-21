@@ -1,5 +1,5 @@
 use crate::client::{build_connector_url, SdkClient, SdkError};
-use crate::connector::Connector;
+use crate::connector::{Connector, SyncRequestValidationError};
 use crate::context::SyncContext;
 use crate::mcp_adapter::{McpAdapter, McpCredentials, McpServer};
 use crate::models::{
@@ -339,24 +339,6 @@ where
         source_id, sync_run_id
     );
 
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let slot_class = request.sync_mode.slot_class();
-    let Some(guard) = ActiveSyncGuard::reserve(
-        Arc::clone(&state.active_syncs),
-        source_id.clone(),
-        slot_class,
-        sync_run_id.clone(),
-        Arc::clone(&cancelled),
-    ) else {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(SyncResponse::error(format!(
-                "{} sync already in progress for this source",
-                slot_class
-            ))),
-        ));
-    };
-
     let source = state
         .sdk_client
         .get_source(&source_id)
@@ -404,6 +386,37 @@ where
                 )
             },
         )?;
+
+    state
+        .connector
+        .validate_sync_request(&source, credentials.as_ref(), request.sync_mode)
+        .await
+        .map_err(|error| match error {
+            SyncRequestValidationError::Unavailable(message) => {
+                (StatusCode::NOT_FOUND, Json(SyncResponse::error(message)))
+            }
+            SyncRequestValidationError::BadRequest(message) => {
+                (StatusCode::BAD_REQUEST, Json(SyncResponse::error(message)))
+            }
+        })?;
+
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let slot_class = request.sync_mode.slot_class();
+    let Some(guard) = ActiveSyncGuard::reserve(
+        Arc::clone(&state.active_syncs),
+        source_id.clone(),
+        slot_class,
+        sync_run_id.clone(),
+        Arc::clone(&cancelled),
+    ) else {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(SyncResponse::error(format!(
+                "{} sync already in progress for this source",
+                slot_class
+            ))),
+        ));
+    };
 
     // Bootstrap MCP discovery now that we have credentials. Populates the
     // adapter's cache so subsequent /manifest reads (which run without creds)

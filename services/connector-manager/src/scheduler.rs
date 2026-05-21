@@ -8,7 +8,7 @@ use shared::db::repositories::{SourceRepository, SyncRunRepository};
 use shared::models::{Source, SyncRun, SyncSlotClass, SyncStatus, SyncType};
 use sqlx::PgPool;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use time::{Duration as TimeDuration, OffsetDateTime};
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info, warn};
@@ -18,6 +18,7 @@ pub struct Scheduler {
     redis_client: RedisClient,
     config: ConnectorManagerConfig,
     sync_manager: Arc<SyncManager>,
+    slot_health: Arc<Mutex<HashMap<SlotHealthKey, SlotHealth>>>,
 }
 
 impl Scheduler {
@@ -32,6 +33,7 @@ impl Scheduler {
             redis_client,
             config,
             sync_manager,
+            slot_health: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -98,10 +100,14 @@ impl Scheduler {
             .find_active_sources()
             .await
             .map_err(|e| SchedulerError::DatabaseError(e.to_string()))?;
+        let now = OffsetDateTime::now_utc();
 
         for source in active_sources {
             let modes = get_sync_modes_for_source(&self.redis_client, source.source_type).await;
             if !modes.contains(&SyncType::Realtime) {
+                continue;
+            }
+            if self.slot_backoff_active(&source, SyncSlotClass::Realtime, now) {
                 continue;
             }
 
@@ -127,6 +133,7 @@ impl Scheduler {
                 .await
             {
                 Ok(sync_run_id) => {
+                    self.mark_slot_healthy(&source.id, SyncSlotClass::Realtime);
                     info!(
                         "Realtime sync {} started for source {} ({:?})",
                         sync_run_id, source.name, source.source_type
@@ -137,6 +144,18 @@ impl Scheduler {
                     break;
                 }
                 Err(SyncError::SyncAlreadyRunning(_)) => continue,
+                Err(SyncError::SyncModeUnavailable { .. }) => {
+                    self.mark_slot_unhealthy(
+                        &source.id,
+                        SyncSlotClass::Realtime,
+                        OffsetDateTime::now_utc(),
+                    );
+                    info!(
+                        "Realtime sync is not available for source {} ({:?})",
+                        source.id, source.source_type
+                    );
+                    continue;
+                }
                 Err(e) => {
                     warn!(
                         "Failed to start realtime sync for source {}: {}",
@@ -147,6 +166,59 @@ impl Scheduler {
         }
 
         Ok(())
+    }
+
+    fn mark_slot_healthy(&self, source_id: &str, slot_class: SyncSlotClass) {
+        let mut slot_health = self.slot_health.lock().expect("slot health lock poisoned");
+        slot_health.remove(&SlotHealthKey::new(source_id, slot_class));
+    }
+
+    fn mark_slot_unhealthy(
+        &self,
+        source_id: &str,
+        slot_class: SyncSlotClass,
+        failed_at: OffsetDateTime,
+    ) {
+        let mut slot_health = self.slot_health.lock().expect("slot health lock poisoned");
+        let health = slot_health
+            .entry(SlotHealthKey::new(source_id, slot_class))
+            .or_default();
+        health.consecutive_failures += 1;
+        health.last_failure_at = Some(failed_at);
+    }
+
+    fn slot_backoff_active(
+        &self,
+        source: &Source,
+        slot_class: SyncSlotClass,
+        now: OffsetDateTime,
+    ) -> bool {
+        let health = {
+            let slot_health = self.slot_health.lock().expect("slot health lock poisoned");
+            slot_health
+                .get(&SlotHealthKey::new(&source.id, slot_class))
+                .copied()
+        };
+
+        let Some((consecutive_failures, last_failure_at)) = active_backoff(
+            &health,
+            now,
+            self.config.sync_backoff_base_seconds,
+            self.config.sync_backoff_max_seconds,
+        ) else {
+            return false;
+        };
+
+        info!(
+            "Skipping {} sync for source {} ({:?}): slot backoff still active after {} failures; last failure at {}, backoff {}s",
+            slot_class,
+            source.id,
+            source.source_type,
+            consecutive_failures,
+            last_failure_at,
+            backoff_seconds(consecutive_failures, self.config.sync_backoff_base_seconds, self.config.sync_backoff_max_seconds)
+        );
+        true
     }
 
     async fn process_due_sources(&self) -> Result<(), SchedulerError> {
@@ -160,8 +232,9 @@ impl Scheduler {
             .map_err(|e| SchedulerError::DatabaseError(e.to_string()))?;
         let source_ids: Vec<String> = sources.iter().map(|source| source.id.clone()).collect();
         let sync_runs = sync_run_repo
-            .list_runs(
+            .list_runs_for_sync_types(
                 &source_ids,
+                &[SyncType::Full, SyncType::Incremental],
                 i64::from(self.config.sync_max_consecutive_failures.max(1)),
             )
             .await
@@ -183,6 +256,10 @@ impl Scheduler {
         info!("Found {} sources due for sync", due_sources.len());
 
         for source in due_sources {
+            if self.slot_backoff_active(&source, SyncSlotClass::Scheduled, now) {
+                continue;
+            }
+
             if self
                 .sync_manager
                 .is_sync_class_running(&source.id, SyncSlotClass::Scheduled)
@@ -206,6 +283,7 @@ impl Scheduler {
                 .await
             {
                 Ok(sync_run_id) => {
+                    self.mark_slot_healthy(&source.id, SyncSlotClass::Scheduled);
                     info!(
                         "Scheduled sync {} triggered for source {} ({:?})",
                         sync_run_id, source.name, source.source_type
@@ -216,6 +294,11 @@ impl Scheduler {
                     break;
                 }
                 Err(e) => {
+                    self.mark_slot_unhealthy(
+                        &source.id,
+                        SyncSlotClass::Scheduled,
+                        OffsetDateTime::now_utc(),
+                    );
                     warn!(
                         "Failed to trigger scheduled sync for source {}: {}",
                         source.id, e
@@ -238,6 +321,9 @@ fn sources_due_for_sync(
 ) -> Vec<Source> {
     let mut runs_by_source = HashMap::<String, Vec<SyncRun>>::new();
     for run in sync_runs {
+        if run.sync_type.slot_class() != SyncSlotClass::Scheduled {
+            continue;
+        }
         runs_by_source
             .entry(run.source_id.clone())
             .or_default()
@@ -365,6 +451,27 @@ fn backoff_seconds(
     backoff_max_seconds.min(backoff_base_seconds.saturating_mul(multiplier))
 }
 
+fn active_backoff(
+    health: &Option<SlotHealth>,
+    now: OffsetDateTime,
+    backoff_base_seconds: i64,
+    backoff_max_seconds: i64,
+) -> Option<(usize, OffsetDateTime)> {
+    let health = health.as_ref()?;
+    let last_failure_at = health.last_failure_at?;
+    let backoff = backoff_seconds(
+        health.consecutive_failures,
+        backoff_base_seconds,
+        backoff_max_seconds,
+    );
+
+    if last_failure_at + TimeDuration::seconds(backoff) <= now {
+        None
+    } else {
+        Some((health.consecutive_failures, last_failure_at))
+    }
+}
+
 /// Pick the sync type a scheduled tick should request for a source. Realtime
 /// is intentionally excluded — realtime watchers occupy a separate slot and are
 /// supervised by [`Scheduler::ensure_realtime_running`]. Prefer Incremental
@@ -381,6 +488,27 @@ fn pick_scheduled_sync_type(sync_modes: &[SyncType]) -> SyncType {
 pub enum SchedulerError {
     #[error("Database error: {0}")]
     DatabaseError(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SlotHealthKey {
+    source_id: String,
+    slot_class: SyncSlotClass,
+}
+
+impl SlotHealthKey {
+    fn new(source_id: &str, slot_class: SyncSlotClass) -> Self {
+        Self {
+            source_id: source_id.to_string(),
+            slot_class,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SlotHealth {
+    consecutive_failures: usize,
+    last_failure_at: Option<OffsetDateTime>,
 }
 
 #[cfg(test)]
@@ -416,11 +544,21 @@ mod tests {
         status: SyncStatus,
         completed_at: Option<OffsetDateTime>,
     ) -> SyncRun {
+        sync_run_with_type(id, source_id, SyncType::Incremental, status, completed_at)
+    }
+
+    fn sync_run_with_type(
+        id: &str,
+        source_id: &str,
+        sync_type: SyncType,
+        status: SyncStatus,
+        completed_at: Option<OffsetDateTime>,
+    ) -> SyncRun {
         let now = OffsetDateTime::now_utc();
         SyncRun {
             id: id.to_string(),
             source_id: source_id.to_string(),
-            sync_type: SyncType::Incremental,
+            sync_type,
             started_at: completed_at,
             completed_at,
             status,
@@ -464,6 +602,31 @@ mod tests {
     #[test]
     fn falls_back_to_full_when_empty() {
         assert_eq!(pick_scheduled_sync_type(&[]), SyncType::Full);
+    }
+
+    #[test]
+    fn slot_health_backoff_uses_in_memory_state() {
+        let now = OffsetDateTime::now_utc();
+        let health = Some(SlotHealth {
+            consecutive_failures: 2,
+            last_failure_at: Some(now - TimeDuration::seconds(50)),
+        });
+
+        assert_eq!(
+            active_backoff(&health, now, 30, 3600),
+            health.map(|health| (health.consecutive_failures, health.last_failure_at.unwrap()))
+        );
+    }
+
+    #[test]
+    fn slot_health_backoff_expires() {
+        let now = OffsetDateTime::now_utc();
+        let health = Some(SlotHealth {
+            consecutive_failures: 1,
+            last_failure_at: Some(now - TimeDuration::seconds(31)),
+        });
+
+        assert!(active_backoff(&health, now, 30, 3600).is_none());
     }
 
     #[test]
@@ -592,6 +755,27 @@ mod tests {
             )],
             now,
             10,
+            30,
+            3600,
+        );
+
+        assert_eq!(due[0].id, "source-1");
+    }
+
+    #[test]
+    fn realtime_failures_do_not_block_scheduled_syncs() {
+        let now = OffsetDateTime::now_utc();
+        let due = sources_due_for_sync(
+            vec![source("source-1", Some(60))],
+            vec![sync_run_with_type(
+                "run-1",
+                "source-1",
+                SyncType::Realtime,
+                SyncStatus::Failed,
+                Some(now - TimeDuration::seconds(10)),
+            )],
+            now,
+            1,
             30,
             3600,
         );

@@ -7,7 +7,7 @@ use omni_connector_manager::source_cleanup::SourceCleanup;
 use redis::AsyncCommands;
 use serde_json::json;
 use shared::db::repositories::SyncRunRepository;
-use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions, SyncStatus};
+use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions, SyncStatus, SyncType};
 use shared::queue::EventQueue;
 
 fn test_server(fixture: &common::TestFixture) -> TestServer {
@@ -238,6 +238,36 @@ async fn test_sync_connector_failure() {
     let repo = SyncRunRepository::new(pool);
     let runs = repo.find_all_running().await.unwrap();
     assert!(runs.is_empty());
+}
+
+#[tokio::test]
+async fn test_realtime_unavailable_is_not_failed() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let pool = fixture.state.db_pool.pool();
+
+    fixture
+        .mock_connector
+        .set_sync_response(StatusCode::NOT_FOUND, json!({"error": "not available"}));
+
+    let server = test_server_no_expect(&fixture);
+    let resp = server
+        .post("/sync")
+        .json(&json!({"source_id": TEST_SOURCE_ID, "sync_mode": "realtime"}))
+        .await;
+    resp.assert_status(StatusCode::BAD_REQUEST);
+
+    let repo = SyncRunRepository::new(pool);
+    let runs = repo
+        .list_runs_for_sync_types(&[TEST_SOURCE_ID.to_string()], &[SyncType::Realtime], 1)
+        .await
+        .unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].status, SyncStatus::Cancelled);
+    assert_eq!(
+        runs[0].error_message.as_deref(),
+        Some("Realtime sync not available for this source")
+    );
+    assert!(repo.find_all_running().await.unwrap().is_empty());
 }
 
 // ============================================================================

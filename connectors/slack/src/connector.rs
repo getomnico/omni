@@ -1,9 +1,11 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use omni_connector_sdk::{
-    Connector, SearchOperator, ServiceCredential, Source, SourceType, SyncContext, SyncType,
+    Connector, SearchOperator, ServiceCredential, Source, SourceType, SyncContext,
+    SyncRequestValidationError, SyncType,
 };
 use serde_json::Value as JsonValue;
+use std::result::Result as StdResult;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{info, warn};
@@ -37,10 +39,13 @@ impl SlackConnector {
     async fn run_realtime(&self, creds: ServiceCredential, ctx: SyncContext) -> Result<()> {
         let source_id = ctx.source_id().to_string();
         let creds: SlackCredentials = serde_json::from_value(creds.credentials)
-            .map_err(|e| anyhow!("Failed to decode Slack credentials: {}", e))?;
-        let app_token = creds.app_token.ok_or_else(|| {
-            anyhow!("Slack realtime sync requires `app_token` in service credentials")
-        })?;
+            .map_err(|e| anyhow::anyhow!("Failed to decode Slack credentials: {}", e))?;
+        let app_token = creds
+            .app_token
+            .filter(|token| !token.trim().is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!("Slack realtime sync requires `app_token` in service credentials")
+            })?;
 
         info!(source_id, "Starting Slack realtime watcher");
         self.socket_manager
@@ -110,6 +115,43 @@ impl Connector for SlackConnector {
         }]
     }
 
+    async fn validate_sync_request(
+        &self,
+        _source: &Source,
+        credentials: Option<&ServiceCredential>,
+        sync_type: SyncType,
+    ) -> StdResult<(), SyncRequestValidationError> {
+        if sync_type != SyncType::Realtime {
+            return Ok(());
+        }
+
+        let Some(credentials) = credentials else {
+            return Err(SyncRequestValidationError::BadRequest(
+                "Slack realtime sync requires credentials".to_string(),
+            ));
+        };
+        let creds: SlackCredentials =
+            serde_path_to_error::deserialize(credentials.credentials.clone()).map_err(|e| {
+                SyncRequestValidationError::BadRequest(format!(
+                    "Failed to decode Slack credentials: {}",
+                    e
+                ))
+            })?;
+
+        if creds
+            .app_token
+            .as_deref()
+            .is_some_and(|token| !token.trim().is_empty())
+        {
+            Ok(())
+        } else {
+            Err(SyncRequestValidationError::Unavailable(
+                "Slack realtime sync is not available because no app token is configured"
+                    .to_string(),
+            ))
+        }
+    }
+
     async fn sync(
         &self,
         source: Source,
@@ -117,7 +159,8 @@ impl Connector for SlackConnector {
         state: Option<Self::State>,
         ctx: SyncContext,
     ) -> Result<()> {
-        let creds = credentials.ok_or_else(|| anyhow!("Slack sync requires credentials"))?;
+        let creds =
+            credentials.ok_or_else(|| anyhow::anyhow!("Slack sync requires credentials"))?;
 
         match ctx.sync_mode() {
             SyncType::Full | SyncType::Incremental => {
@@ -130,5 +173,90 @@ impl Connector for SlackConnector {
     async fn cancel(&self, _sync_run_id: &str) -> bool {
         // SDK owns the cancellation flag (exposed via SyncContext); just ack.
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use omni_connector_sdk::SdkClient;
+    use serde_json::json;
+    use shared::models::{AuthType, ServiceProvider, SourceScope, UserFilterMode};
+    use time::OffsetDateTime;
+
+    fn connector() -> SlackConnector {
+        SlackConnector::new(
+            Arc::new(SyncManager::new(SdkClient::new("http://127.0.0.1:0"))),
+            Arc::new(SocketModeManager::new()),
+        )
+    }
+
+    fn source() -> Source {
+        let now = OffsetDateTime::now_utc();
+        Source {
+            id: "source-1".to_string(),
+            name: "Slack".to_string(),
+            source_type: SourceType::Slack,
+            config: json!({}),
+            is_active: true,
+            is_deleted: false,
+            scope: SourceScope::Org,
+            user_filter_mode: UserFilterMode::All,
+            user_whitelist: None,
+            user_blacklist: None,
+            connector_state: None,
+            sync_interval_seconds: Some(3600),
+            created_at: now,
+            updated_at: now,
+            created_by: "01JGF7V3E0Y2R1X8P5Q7W9T4N6".to_string(),
+        }
+    }
+
+    fn credentials(credentials: serde_json::Value) -> ServiceCredential {
+        let now = OffsetDateTime::now_utc();
+        ServiceCredential {
+            id: "creds-1".to_string(),
+            source_id: "source-1".to_string(),
+            user_id: None,
+            provider: ServiceProvider::Slack,
+            auth_type: AuthType::BotToken,
+            principal_email: None,
+            credentials,
+            config: json!({}),
+            expires_at: None,
+            last_validated_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[tokio::test]
+    async fn realtime_requires_app_token() {
+        let connector = connector();
+        let source = source();
+        let creds = credentials(json!({ "bot_token": "xoxb-test" }));
+
+        assert!(connector
+            .validate_sync_request(&source, Some(&creds), SyncType::Realtime)
+            .await
+            .is_err());
+        assert!(connector
+            .validate_sync_request(&source, Some(&creds), SyncType::Full)
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn malformed_credentials_are_bad_request() {
+        let connector = connector();
+        let source = source();
+        let creds = credentials(json!({ "bot_token": 123 }));
+
+        let error = connector
+            .validate_sync_request(&source, Some(&creds), SyncType::Realtime)
+            .await
+            .expect_err("malformed credentials should fail before starting");
+
+        assert!(matches!(error, SyncRequestValidationError::BadRequest(_)));
     }
 }

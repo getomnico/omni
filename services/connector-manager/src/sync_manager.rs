@@ -133,6 +133,15 @@ impl SyncManager {
                 );
                 Ok(sync_run.id)
             }
+            Err(ClientError::ConnectorError { status: 404, .. })
+                if effective_sync_type == SyncType::Realtime =>
+            {
+                self.mark_sync_unavailable(&sync_run.id).await?;
+                Err(SyncError::SyncModeUnavailable {
+                    source_id: source_id.to_string(),
+                    sync_type: effective_sync_type,
+                })
+            }
             Err(e) => {
                 self.mark_sync_failed(&sync_run.id, &e.to_string()).await?;
                 Err(SyncError::ConnectorError(e))
@@ -503,6 +512,16 @@ impl SyncManager {
         self.resume_attempts.remove(sync_run_id);
         Ok(())
     }
+
+    async fn mark_sync_unavailable(&self, sync_run_id: &str) -> Result<(), SyncError> {
+        self.sync_run_repo
+            .mark_cancelled_with_message(sync_run_id, "Realtime sync not available for this source")
+            .await
+            .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
+
+        self.resume_attempts.remove(sync_run_id);
+        Ok(())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -527,6 +546,12 @@ pub enum SyncError {
 
     #[error("Concurrency limit reached")]
     ConcurrencyLimitReached,
+
+    #[error("{sync_type} sync is not available for source: {source_id}")]
+    SyncModeUnavailable {
+        source_id: String,
+        sync_type: SyncType,
+    },
 
     #[error("Database error: {0}")]
     DatabaseError(String),

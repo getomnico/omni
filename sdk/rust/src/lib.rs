@@ -6,7 +6,7 @@ pub mod models;
 pub mod server;
 
 pub use client::{build_connector_url, SdkClient, SdkError, SdkResult};
-pub use connector::Connector;
+pub use connector::{Connector, SyncRequestValidationError};
 pub use context::SyncContext;
 pub use mcp_adapter::{HttpMcpServer, McpAdapter, McpCredentials, McpServer, StdioMcpServer};
 pub use models::{
