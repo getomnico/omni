@@ -23,7 +23,8 @@ use shared::clients::docling::{DoclingClient, DoclingError};
 use shared::constants::REDIS_SYSTEM_SETTINGS_KEY;
 use shared::db::repositories::SyncRunRepository;
 use shared::models::{
-    ActionMode, ConnectorManifest, SearchOperator, ServiceProvider, SourceType, SyncRun, SyncType,
+    ActionMode, ConnectorManifest, SearchOperator, ServiceProvider, Source, SourceType, SyncRun,
+    SyncType,
 };
 use shared::queue::EventQueue;
 use shared::utils;
@@ -229,13 +230,39 @@ pub async fn list_sources(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<SourceSyncOverview>>, ApiError> {
     let source_repo = SourceRepository::new(state.db_pool.pool());
-    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
-
     let sources = source_repo
         .find_all_sources()
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
+    Ok(Json(build_source_sync_overviews(&state, sources).await?))
+}
+
+pub async fn get_source(
+    State(state): State<AppState>,
+    Path(source_id): Path<String>,
+) -> Result<Json<SourceSyncOverview>, ApiError> {
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let source = source_repo
+        .find_by_id(source_id.clone())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .filter(|source| !source.is_deleted)
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
+
+    let mut overviews = build_source_sync_overviews(&state, vec![source]).await?;
+    let overview = overviews
+        .pop()
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
+
+    Ok(Json(overview))
+}
+
+async fn build_source_sync_overviews(
+    state: &AppState,
+    sources: Vec<Source>,
+) -> Result<Vec<SourceSyncOverview>, ApiError> {
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
     let source_ids: Vec<String> = sources.iter().map(|s| s.id.clone()).collect();
     // Fetch more than the 10 runs we return to the UI so health evaluation can
     // ignore manual failures while still finding enough scheduled failures to
@@ -262,7 +289,7 @@ pub async fn list_sources(
             .push(run);
     }
 
-    let overviews = sources
+    Ok(sources
         .into_iter()
         .map(|source| {
             let sync_runs = runs_by_source.remove(&source.id).unwrap_or_default();
@@ -280,9 +307,7 @@ pub async fn list_sources(
                 health,
             }
         })
-        .collect();
-
-    Ok(Json(overviews))
+        .collect())
 }
 
 pub async fn list_connectors(
