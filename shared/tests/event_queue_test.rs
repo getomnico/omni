@@ -43,7 +43,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dequeue_batches_by_single_sync_run() {
+    async fn test_dequeue_batch_drains_oldest_pending_events() {
         let env = TestEnvironment::new().await.unwrap();
         let queue = EventQueue::new(env.db_pool.pool().clone());
 
@@ -58,12 +58,24 @@ mod tests {
         let event_b = make_event(&run_b, "doc-b1");
         queue.enqueue(TEST_SOURCE_ID, &event_b).await.unwrap();
 
-        // Dequeue should pick run_a (most pending events)
+        // Dequeue drains the oldest pending events across sync runs. The
+        // indexer groups them by sync_run_id after dequeueing.
         let batch = queue.dequeue_batch(10).await.unwrap();
-        assert_eq!(batch.len(), 3);
-        for item in &batch {
-            assert_eq!(item.sync_run_id, run_a);
-        }
+        assert_eq!(batch.len(), 4);
+        assert_eq!(
+            batch
+                .iter()
+                .filter(|item| item.sync_run_id == run_a)
+                .count(),
+            3
+        );
+        assert_eq!(
+            batch
+                .iter()
+                .filter(|item| item.sync_run_id == run_b)
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -212,6 +224,64 @@ mod tests {
 
         let stats = queue.get_queue_stats().await.unwrap();
         assert_eq!(stats.failed, 2);
+    }
+
+    #[tokio::test]
+    async fn test_batch_dead_letter_uses_incremented_retry_count() {
+        let env = TestEnvironment::new().await.unwrap();
+        let pool = env.db_pool.pool().clone();
+        let queue = EventQueue::new(pool.clone());
+
+        let near_limit_event = make_event("run-1", "doc-near-limit");
+        let below_limit_event = make_event("run-1", "doc-below-limit");
+        let near_limit_id = queue
+            .enqueue(TEST_SOURCE_ID, &near_limit_event)
+            .await
+            .unwrap();
+        let below_limit_id = queue
+            .enqueue(TEST_SOURCE_ID, &below_limit_event)
+            .await
+            .unwrap();
+
+        queue.dequeue_batch(10).await.unwrap();
+
+        sqlx::query("UPDATE connector_events_queue SET retry_count = $1 WHERE id = $2")
+            .bind(2)
+            .bind(&near_limit_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE connector_events_queue SET retry_count = $1 WHERE id = $2")
+            .bind(1)
+            .bind(&below_limit_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let updated = queue
+            .mark_events_dead_letter_batch(vec![
+                (near_limit_id.clone(), "near limit".to_string()),
+                (below_limit_id.clone(), "below limit".to_string()),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(updated, 2);
+
+        let near_limit_row: (String, i32) =
+            sqlx::query_as("SELECT status, retry_count FROM connector_events_queue WHERE id = $1")
+                .bind(&near_limit_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(near_limit_row, ("dead_letter".to_string(), 3));
+
+        let below_limit_row: (String, i32) =
+            sqlx::query_as("SELECT status, retry_count FROM connector_events_queue WHERE id = $1")
+                .bind(&below_limit_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(below_limit_row, ("failed".to_string(), 2));
     }
 
     #[tokio::test]
