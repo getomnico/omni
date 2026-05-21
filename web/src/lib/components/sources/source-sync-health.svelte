@@ -1,6 +1,6 @@
 <script lang="ts">
     import * as Alert from '$lib/components/ui/alert'
-    import { AlertTriangle } from '@lucide/svelte'
+    import { AlertCircle } from '@lucide/svelte'
     import type { SourceSyncRun } from '$lib/types'
 
     let { health, syncRuns = [] }: { health: 'healthy' | 'unhealthy'; syncRuns?: SourceSyncRun[] } =
@@ -10,13 +10,20 @@
 </script>
 
 {#if health === 'unhealthy'}
-    <Alert.Root variant="destructive">
-        <AlertTriangle class="h-4 w-4" />
+    <Alert.Root
+        class="border-red-200 bg-red-50 text-red-900 dark:border-red-900 dark:bg-red-950 dark:text-red-50">
+        <AlertCircle class="h-4 w-4" />
         <Alert.Title>Source unhealthy</Alert.Title>
         <Alert.Description>
             Scheduled syncs have been paused after repeated failures.
             {#if latestFailedRun?.errorMessage}
-                <span class="block break-words">{latestFailedRun.errorMessage}</span>
+                <div class="mt-3 space-y-1">
+                    <div class="text-xs font-medium">Error message</div>
+                    <code
+                        class="block max-h-48 overflow-y-auto font-mono text-xs break-words whitespace-pre-wrap">
+                        {latestFailedRun.errorMessage}
+                    </code>
+                </div>
             {/if}
         </Alert.Description>
     </Alert.Root>

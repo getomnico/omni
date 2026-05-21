@@ -8,6 +8,8 @@
         CardFooter,
     } from '$lib/components/ui/card'
     import { Button } from '$lib/components/ui/button'
+    import * as Popover from '$lib/components/ui/popover'
+    import * as Alert from '$lib/components/ui/alert'
     import type { PageProps } from './$types'
     import googleLogo from '$lib/images/icons/google.svg'
     import slackLogo from '$lib/images/icons/slack.svg'
@@ -232,6 +234,38 @@
                                                 <AlertTriangle class="h-3 w-3" />
                                                 Unhealthy
                                             </span>
+                                            {#if sync?.errorMessage}
+                                                <Popover.Root>
+                                                    <Popover.Trigger
+                                                        class="cursor-pointer border-0 bg-transparent p-0 text-xs font-medium text-red-600 underline-offset-2 hover:underline">
+                                                        View error
+                                                    </Popover.Trigger>
+                                                    <Popover.Content
+                                                        align="start"
+                                                        class="bg-card w-96 max-w-[calc(100vw-2rem)] p-4">
+                                                        <Alert.Root
+                                                            class="border-0 bg-transparent p-0 text-red-900 dark:text-red-50">
+                                                            <AlertTriangle class="h-4 w-4" />
+                                                            <Alert.Title
+                                                                >Source unhealthy</Alert.Title>
+                                                            <Alert.Description>
+                                                                Scheduled syncs have been paused
+                                                                after repeated failures.
+                                                                <div class="mt-3 space-y-1">
+                                                                    <div
+                                                                        class="text-xs font-medium">
+                                                                        Error message
+                                                                    </div>
+                                                                    <code
+                                                                        class="block max-h-48 overflow-y-auto font-mono text-xs break-words whitespace-pre-wrap">
+                                                                        {sync.errorMessage}
+                                                                    </code>
+                                                                </div>
+                                                            </Alert.Description>
+                                                        </Alert.Root>
+                                                    </Popover.Content>
+                                                </Popover.Root>
+                                            {/if}
                                         {/if}
                                     </div>
                                     <div
@@ -256,12 +290,6 @@
                                                 >Last sync: {formatDate(
                                                     sync?.completedAt ?? null,
                                                 )}</span>
-                                            {#if health === 'unhealthy' && sync?.errorMessage}
-                                                <span class="text-muted-foreground">·</span>
-                                                <span class="max-w-md truncate text-red-600">
-                                                    {sync.errorMessage}
-                                                </span>
-                                            {/if}
                                         {/if}
                                         {#if !sync || normalizeStatus(sync.status) !== 'running'}
                                             {#if documentCounts[source.id]}
@@ -295,7 +323,7 @@
                                         source.sourceType as SourceType,
                                         source.id,
                                     )}>
-                                    Configure
+                                    Settings
                                 </Button>
                             </div>
                         </div>
