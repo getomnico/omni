@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use chrono::DateTime;
 use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::Client;
@@ -15,6 +16,11 @@ use tracing::{debug, error, info, warn};
 
 const MAX_RECONNECT_DELAY_SECS: u64 = 300;
 const DEBOUNCE_SECS: u64 = 600;
+
+fn slack_ts_date_key(ts: &str) -> Option<String> {
+    let secs = ts.split('.').next()?.parse::<i64>().ok()?;
+    DateTime::from_timestamp(secs, 0).map(|dt| dt.date_naive().to_string())
+}
 
 // ============================================================================
 // Socket Mode protocol types
@@ -360,6 +366,14 @@ async fn handle_event(
             return;
         }
     };
+    let message_ts = match payload.pointer("/event/ts").and_then(|v| v.as_str()) {
+        Some(ts) => ts,
+        None => {
+            warn!(source_id, channel_id, "Message event missing ts field");
+            return;
+        }
+    };
+    let thread_ts = payload.pointer("/event/thread_ts").and_then(|v| v.as_str());
 
     let sync_manager = match sync_manager {
         Some(sm) => sm,
@@ -372,10 +386,20 @@ async fn handle_event(
         }
     };
 
-    // Trailing-edge debounce: each event resets the timer. The sync fires
-    // only after DEBOUNCE_SECS of quiet. Different channels debounce
-    // independently.
-    let debounce_key = format!("{}:{}", source_id, channel_id);
+    let repair_target = match thread_ts {
+        Some(parent_ts) if parent_ts != message_ts => format!("thread:{}", parent_ts),
+        _ => match slack_ts_date_key(message_ts) {
+            Some(date) => format!("day:{}", date),
+            None => {
+                warn!(
+                    source_id,
+                    channel_id, message_ts, "Message event has invalid Slack timestamp"
+                );
+                return;
+            }
+        },
+    };
+    let debounce_key = format!("{}:{}:{}", source_id, channel_id, repair_target);
     let fire_at = Instant::now() + Duration::from_secs(DEBOUNCE_SECS);
     let is_new = !debounce_targets.contains_key(&debounce_key);
     debounce_targets.insert(debounce_key.clone(), fire_at);
@@ -386,6 +410,8 @@ async fn handle_event(
         let sm = sync_manager.clone();
         let sid = source_id.to_string();
         let cid = channel_id.to_string();
+        let mts = message_ts.to_string();
+        let tts = thread_ts.map(|ts| ts.to_string());
         let key = debounce_key;
 
         tokio::spawn(async move {
@@ -410,7 +436,10 @@ async fn handle_event(
                 "Debounce expired, starting realtime sync"
             );
 
-            if let Err(e) = sm.sync_realtime_event(&sid, &cid).await {
+            if let Err(e) = sm
+                .sync_realtime_message_event(&sid, &cid, &mts, tts.as_deref())
+                .await
+            {
                 error!(
                     source_id = sid.as_str(),
                     channel_id = cid.as_str(),

@@ -7,7 +7,6 @@ use omni_connector_sdk::SdkClient;
 use shared::db::repositories::SyncRunRepository;
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
-use shared::{DatabaseConfig, RedisConfig};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -33,15 +32,8 @@ impl SlackConnectorTestFixture {
         let test_env = TestEnvironment::new().await?;
 
         let cm_config = ConnectorManagerConfig {
-            database: DatabaseConfig {
-                database_url: "postgresql://test:test@localhost/test".to_string(),
-                max_connections: 5,
-                acquire_timeout_seconds: 3,
-                require_ssl: false,
-            },
-            redis: RedisConfig {
-                redis_url: "redis://localhost".to_string(),
-            },
+            database: test_env.database_config(),
+            redis: test_env.redis_config(),
             port: 0,
             max_concurrent_syncs: 10,
             max_concurrent_syncs_per_type: 3,
