@@ -8,6 +8,8 @@
         getSyncRunStatusColor,
     } from '$lib/utils/sources'
     import type { SyncRun } from '$lib/server/db/schema'
+    import { Info } from '@lucide/svelte'
+    import * as Tooltip from '$lib/components/ui/tooltip'
 
     let { runs = [] }: { runs?: SyncRun[] } = $props()
 </script>
@@ -36,8 +38,32 @@
                                         <th class="py-2 pr-4 font-medium">Type</th>
                                         <th class="py-2 pr-4 font-medium">Started</th>
                                         <th class="py-2 pr-4 font-medium">Duration</th>
-                                        <th class="py-2 pr-4 text-right font-medium">
-                                            Scanned / Processed / Updated
+                                        <th class="py-2 pr-4 font-medium">
+                                            <div class="flex items-center justify-end gap-1">
+                                                <span>Scanned / Processed / Updated</span>
+                                                <Tooltip.Provider delayDuration={300}>
+                                                    <Tooltip.Root>
+                                                        <Tooltip.Trigger
+                                                            class="text-muted-foreground hover:text-foreground inline-flex cursor-pointer items-center">
+                                                            <Info class="h-3.5 w-3.5" />
+                                                            <span class="sr-only"
+                                                                >Sync count definitions</span>
+                                                        </Tooltip.Trigger>
+                                                        <Tooltip.Content
+                                                            side="top"
+                                                            align="end"
+                                                            class="max-w-xs text-left leading-relaxed">
+                                                            Scanned counts source items the
+                                                            connector inspected. Processed and
+                                                            updated count search documents written
+                                                            to the index. Some connectors group
+                                                            multiple source items into fewer indexed
+                                                            documents, so processed can be lower
+                                                            than scanned without data being dropped.
+                                                        </Tooltip.Content>
+                                                    </Tooltip.Root>
+                                                </Tooltip.Provider>
+                                            </div>
                                         </th>
                                         <th class="py-2 font-medium">Error</th>
                                     </tr>
