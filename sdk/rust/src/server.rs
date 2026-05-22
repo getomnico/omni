@@ -18,7 +18,7 @@ use axum::{
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use serde::de::DeserializeOwned;
-use shared::models::SyncSlotClass;
+use shared::models::{SyncSlotClass, SyncType};
 use shared::telemetry;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -459,11 +459,21 @@ where
             .sync(source, credentials, typed_state, ctx.clone())
             .await;
 
-        if let Err(error) = result {
-            error!("Sync {} failed: {}", sync_run_id, error);
-            if !ctx.is_cancelled() {
-                if let Err(report_error) = ctx.fail(&error.to_string()).await {
-                    error!("Failed to report sync failure: {}", report_error);
+        match result {
+            Ok(()) => {
+                if !ctx.terminal_reported() && ctx.sync_mode() != SyncType::Realtime {
+                    warn!(
+                        "Sync {} returned Ok without reporting completion; call ctx.complete() for successful batch syncs",
+                        sync_run_id
+                    );
+                }
+            }
+            Err(error) => {
+                error!("Sync {} failed: {}", sync_run_id, error);
+                if !ctx.is_cancelled() {
+                    if let Err(report_error) = ctx.fail(&error.to_string()).await {
+                        error!("Failed to report sync failure: {}", report_error);
+                    }
                 }
             }
         }

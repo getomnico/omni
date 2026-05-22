@@ -4,6 +4,7 @@ use crate::handlers::get_connector_url_for_source;
 use crate::models::{SyncRequest, TriggerType};
 use dashmap::DashMap;
 use redis::Client as RedisClient;
+use shared::db::error::DatabaseError;
 use shared::db::repositories::SyncRunRepository;
 use shared::models::{SourceType, SyncSlotClass, SyncStatus, SyncType};
 use shared::{DatabasePool, Repository, SourceRepository};
@@ -61,6 +62,13 @@ impl SyncManager {
             return Err(SyncError::ConcurrencyLimitReached);
         }
 
+        let slot_class = sync_type.slot_class();
+        if self.active_sync_count_for_slot_class(slot_class).await?
+            >= self.config.max_concurrent_syncs_per_type
+        {
+            return Err(SyncError::ConcurrencyLimitReachedForSlot(slot_class));
+        }
+
         // Get source details
         let source_repo = SourceRepository::new(&self.pool);
         let source = source_repo
@@ -111,7 +119,14 @@ impl SyncManager {
             .sync_run_repo
             .create(source_id, effective_sync_type, &trigger_type.to_string())
             .await
-            .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
+            .map_err(|e| match e {
+                DatabaseError::ConstraintViolation(name)
+                    if name == "idx_sync_runs_one_running_per_source_slot" =>
+                {
+                    SyncError::SyncAlreadyRunning(source_id.to_string())
+                }
+                other => SyncError::DatabaseError(other.to_string()),
+            })?;
 
         let sync_request = SyncRequest {
             sync_run_id: sync_run.id.clone(),
@@ -181,10 +196,14 @@ impl SyncManager {
             warn!("Failed to send cancel request to connector: {}", e);
         }
 
-        self.sync_run_repo
+        let updated = self
+            .sync_run_repo
             .mark_cancelled(sync_run_id)
             .await
             .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
+        if !updated {
+            return Err(SyncError::SyncNotRunning(sync_run_id.to_string()));
+        }
 
         self.resume_attempts.remove(sync_run_id);
         info!("Sync {} cancelled", sync_run_id);
@@ -227,6 +246,17 @@ impl SyncManager {
             .find_all_running()
             .await
             .map(|r| r.len())
+            .map_err(|e| SyncError::DatabaseError(e.to_string()))
+    }
+
+    pub async fn active_sync_count_for_slot_class(
+        &self,
+        slot_class: SyncSlotClass,
+    ) -> Result<usize, SyncError> {
+        self.sync_run_repo
+            .count_running_in_slot_class(slot_class)
+            .await
+            .map(|count| count as usize)
             .map_err(|e| SyncError::DatabaseError(e.to_string()))
     }
 
@@ -504,10 +534,17 @@ impl SyncManager {
     }
 
     async fn mark_sync_failed(&self, sync_run_id: &str, error: &str) -> Result<(), SyncError> {
-        self.sync_run_repo
+        let updated = self
+            .sync_run_repo
             .mark_failed(sync_run_id, error)
             .await
             .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
+        if !updated {
+            warn!(
+                "Ignoring stale failure transition for non-running sync {}",
+                sync_run_id
+            );
+        }
 
         self.resume_attempts.remove(sync_run_id);
         Ok(())
@@ -552,6 +589,9 @@ pub enum SyncError {
         source_id: String,
         sync_type: SyncType,
     },
+
+    #[error("Concurrency limit reached for {0} syncs")]
+    ConcurrencyLimitReachedForSlot(SyncSlotClass),
 
     #[error("Database error: {0}")]
     DatabaseError(String),

@@ -13,6 +13,7 @@ pub struct SyncContext {
     source_type: SourceType,
     sync_mode: SyncType,
     cancelled: Arc<AtomicBool>,
+    terminal_reported: Arc<AtomicBool>,
 }
 
 impl SyncContext {
@@ -31,6 +32,7 @@ impl SyncContext {
             source_type,
             sync_mode,
             cancelled,
+            terminal_reported: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -56,6 +58,10 @@ impl SyncContext {
 
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
+    }
+
+    pub fn terminal_reported(&self) -> bool {
+        self.terminal_reported.load(Ordering::SeqCst)
     }
 
     /// Emit a single event. Events are buffered in memory and auto-flushed
@@ -126,6 +132,7 @@ impl SyncContext {
     /// connector state from `save_connector_state`.
     pub async fn complete(&self) -> Result<()> {
         self.sdk_client.complete(&self.sync_run_id).await?;
+        self.terminal_reported.store(true, Ordering::SeqCst);
         Ok(())
     }
 
@@ -140,6 +147,7 @@ impl SyncContext {
             );
         }
         self.sdk_client.fail(&self.sync_run_id, error).await?;
+        self.terminal_reported.store(true, Ordering::SeqCst);
         Ok(())
     }
 
@@ -150,6 +158,7 @@ impl SyncContext {
 
     pub async fn cancel(&self) -> Result<()> {
         self.sdk_client.cancel(&self.sync_run_id).await?;
+        self.terminal_reported.store(true, Ordering::SeqCst);
         Ok(())
     }
 
