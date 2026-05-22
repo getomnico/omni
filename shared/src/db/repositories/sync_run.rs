@@ -3,8 +3,19 @@ use crate::{
     models::{SyncRun, SyncStatus, SyncType},
     utils::generate_ulid,
 };
-use sqlx::PgPool;
+use sqlx::{Error as SqlxError, PgPool};
 use time::OffsetDateTime;
+
+const RUNNING_SYNC_SLOT_INDEX: &str = "idx_sync_runs_one_running_per_source_slot";
+
+fn map_sqlx_error(error: SqlxError) -> DatabaseError {
+    if let SqlxError::Database(db_error) = &error {
+        if db_error.constraint() == Some(RUNNING_SYNC_SLOT_INDEX) {
+            return DatabaseError::RunningSyncSlotConflict;
+        }
+    }
+    DatabaseError::Connection(error)
+}
 
 #[derive(Clone)]
 pub struct SyncRunRepository {
@@ -36,7 +47,8 @@ impl SyncRunRepository {
         .bind(trigger_type)
         .bind(now)
         .execute(&self.pool)
-        .await?;
+        .await
+        .map_err(map_sqlx_error)?;
 
         Ok(SyncRun {
             id,
@@ -75,65 +87,71 @@ impl SyncRunRepository {
     /// Flip status to `Completed`. Counters are maintained by
     /// `increment_scanned` / `increment_updated`, so this only touches
     /// status fields.
-    pub async fn mark_completed(&self, id: &str) -> Result<(), DatabaseError> {
-        sqlx::query(
+    pub async fn mark_completed(&self, id: &str) -> Result<bool, DatabaseError> {
+        let result = sqlx::query(
             "UPDATE sync_runs
              SET status = $1, completed_at = CURRENT_TIMESTAMP,
                  updated_at = CURRENT_TIMESTAMP
-             WHERE id = $2",
+             WHERE id = $2 AND status = $3",
         )
         .bind(SyncStatus::Completed)
         .bind(id)
+        .bind(SyncStatus::Running)
         .execute(&self.pool)
         .await?;
 
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
-    pub async fn mark_failed(&self, id: &str, error: &str) -> Result<(), DatabaseError> {
-        sqlx::query(
+    pub async fn mark_failed(&self, id: &str, error: &str) -> Result<bool, DatabaseError> {
+        let result = sqlx::query(
             "UPDATE sync_runs
              SET status = $1, completed_at = CURRENT_TIMESTAMP,
                  error_message = $2, updated_at = CURRENT_TIMESTAMP
-             WHERE id = $3",
+             WHERE id = $3 AND status = $4",
         )
         .bind(SyncStatus::Failed)
         .bind(error)
         .bind(id)
+        .bind(SyncStatus::Running)
         .execute(&self.pool)
         .await?;
 
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
-    pub async fn increment_scanned(&self, id: &str, count: i32) -> Result<(), DatabaseError> {
-        sqlx::query(
+    pub async fn increment_scanned(&self, id: &str, count: i32) -> Result<bool, DatabaseError> {
+        let result = sqlx::query(
             "UPDATE sync_runs
              SET documents_scanned = documents_scanned + $1,
+                 last_activity_at = CURRENT_TIMESTAMP,
                  updated_at = CURRENT_TIMESTAMP
-             WHERE id = $2",
+             WHERE id = $2 AND status = $3",
         )
         .bind(count)
         .bind(id)
+        .bind(SyncStatus::Running)
         .execute(&self.pool)
         .await?;
 
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
-    pub async fn increment_updated(&self, id: &str, count: i32) -> Result<(), DatabaseError> {
-        sqlx::query(
+    pub async fn increment_updated(&self, id: &str, count: i32) -> Result<bool, DatabaseError> {
+        let result = sqlx::query(
             "UPDATE sync_runs
              SET documents_updated = documents_updated + $1,
+                 last_activity_at = CURRENT_TIMESTAMP,
                  updated_at = CURRENT_TIMESTAMP
-             WHERE id = $2",
+             WHERE id = $2 AND status = $3",
         )
         .bind(count)
         .bind(id)
+        .bind(SyncStatus::Running)
         .execute(&self.pool)
         .await?;
 
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn increment_progress(&self, id: &str) -> Result<(), DatabaseError> {
@@ -144,11 +162,13 @@ impl SyncRunRepository {
         sqlx::query(
             "UPDATE sync_runs
              SET documents_processed = documents_processed + $1,
+                 last_activity_at = CURRENT_TIMESTAMP,
                  updated_at = CURRENT_TIMESTAMP
-             WHERE id = $2",
+             WHERE id = $2 AND status = $3",
         )
         .bind(count)
         .bind(id)
+        .bind(SyncStatus::Running)
         .execute(&self.pool)
         .await?;
 
@@ -275,7 +295,27 @@ impl SyncRunRepository {
         Ok(sync_runs)
     }
 
-    pub async fn mark_cancelled(&self, id: &str) -> Result<(), DatabaseError> {
+    pub async fn count_running_in_slot_class(
+        &self,
+        slot_class: crate::models::SyncSlotClass,
+    ) -> Result<i64, DatabaseError> {
+        let sync_types: &[SyncType] = match slot_class {
+            crate::models::SyncSlotClass::Realtime => &[SyncType::Realtime],
+            crate::models::SyncSlotClass::Scheduled => &[SyncType::Full, SyncType::Incremental],
+        };
+        let type_strs: Vec<String> = sync_types.iter().map(|t| t.to_string()).collect();
+        let count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sync_runs WHERE status = $1 AND sync_type::text = ANY($2)",
+        )
+        .bind(SyncStatus::Running)
+        .bind(&type_strs)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(count)
+    }
+
+    pub async fn mark_cancelled(&self, id: &str) -> Result<bool, DatabaseError> {
         self.mark_cancelled_with_message(id, "Cancelled by user")
             .await
     }
@@ -284,33 +324,35 @@ impl SyncRunRepository {
         &self,
         id: &str,
         message: &str,
-    ) -> Result<(), DatabaseError> {
-        sqlx::query(
+    ) -> Result<bool, DatabaseError> {
+        let result = sqlx::query(
             "UPDATE sync_runs
              SET status = $1, completed_at = CURRENT_TIMESTAMP,
                  error_message = $2, updated_at = CURRENT_TIMESTAMP
-             WHERE id = $3",
+             WHERE id = $3 AND status = $4",
         )
         .bind(SyncStatus::Cancelled)
         .bind(message)
         .bind(id)
+        .bind(SyncStatus::Running)
         .execute(&self.pool)
         .await?;
 
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
-    pub async fn update_activity(&self, id: &str) -> Result<(), DatabaseError> {
-        sqlx::query(
+    pub async fn update_activity(&self, id: &str) -> Result<bool, DatabaseError> {
+        let result = sqlx::query(
             "UPDATE sync_runs
              SET last_activity_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-             WHERE id = $1",
+             WHERE id = $1 AND status = $2",
         )
         .bind(id)
+        .bind(SyncStatus::Running)
         .execute(&self.pool)
         .await?;
 
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn find_latest_for_sources(
@@ -381,20 +423,5 @@ impl SyncRunRepository {
         .await?;
 
         Ok(sync_runs)
-    }
-
-    pub async fn increment_scanned_with_activity(&self, id: &str) -> Result<(), DatabaseError> {
-        sqlx::query(
-            "UPDATE sync_runs
-             SET documents_scanned = documents_scanned + 1,
-                 last_activity_at = CURRENT_TIMESTAMP,
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE id = $1",
-        )
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
     }
 }

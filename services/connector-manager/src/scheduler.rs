@@ -4,15 +4,23 @@ use crate::models::TriggerType;
 use crate::source_cleanup::SourceCleanup;
 use crate::sync_circuit_breaker::current_unsuccessful_streak;
 use crate::sync_manager::{SyncError, SyncManager};
+use futures::FutureExt;
 use redis::Client as RedisClient;
 use shared::db::repositories::{SourceRepository, SyncRunRepository};
 use shared::models::{Source, SyncRun, SyncSlotClass, SyncStatus, SyncType};
 use sqlx::PgPool;
 use std::collections::HashMap;
+use std::fmt::Display;
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use time::{Duration as TimeDuration, OffsetDateTime};
-use tokio::time::{interval, Duration};
+use tokio::time::{interval, sleep, timeout, Duration};
 use tracing::{debug, error, info, warn};
+
+const SCHEDULER_PHASE_TIMEOUT: Duration = Duration::from_secs(300);
+const SCHEDULER_RESTART_DELAY: Duration = Duration::from_secs(5);
 
 pub struct Scheduler {
     pool: PgPool,
@@ -23,6 +31,36 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
+    pub async fn run(
+        pool: PgPool,
+        redis_client: RedisClient,
+        config: ConnectorManagerConfig,
+        sync_manager: Arc<SyncManager>,
+    ) {
+        loop {
+            let scheduler = Self::new(
+                pool.clone(),
+                redis_client.clone(),
+                config.clone(),
+                sync_manager.clone(),
+            );
+
+            match AssertUnwindSafe(scheduler.run_internal())
+                .catch_unwind()
+                .await
+            {
+                Ok(()) => {
+                    error!("Scheduler exited unexpectedly; restarting");
+                }
+                Err(_) => {
+                    error!("Scheduler panicked; restarting");
+                }
+            }
+
+            sleep(SCHEDULER_RESTART_DELAY).await;
+        }
+    }
+
     pub fn new(
         pool: PgPool,
         redis_client: RedisClient,
@@ -38,7 +76,7 @@ impl Scheduler {
         }
     }
 
-    pub async fn run(&self) {
+    async fn run_internal(&self) {
         let mut scheduler_interval =
             interval(Duration::from_secs(self.config.scheduler_interval_seconds));
 
@@ -56,37 +94,73 @@ impl Scheduler {
     async fn tick(&self) {
         debug!("Scheduler tick");
 
-        // Ensure realtime watchers are running for sources that declared the
-        // capability. Independent of the scheduled-sync slot, so realtime
-        // never starves Full / Incremental and vice versa.
-        if let Err(e) = self.ensure_realtime_running().await {
-            error!("Error ensuring realtime syncs: {}", e);
-        }
+        self.run_phase("ensure_realtime_running", self.ensure_realtime_running())
+            .await;
 
-        // Check for sources due for scheduled (Full / Incremental) sync.
-        if let Err(e) = self.process_due_sources().await {
-            error!("Error processing due sources: {}", e);
-        }
+        self.run_phase("process_due_sources", self.process_due_sources())
+            .await;
 
-        // Probe in-flight syncs and reconcile any the connector has lost
-        if let Err(e) = self.sync_manager.monitor_running_syncs().await {
-            error!("Error monitoring running syncs: {}", e);
-        }
+        self.run_phase(
+            "monitor_running_syncs",
+            self.sync_manager.monitor_running_syncs(),
+        )
+        .await;
 
-        // Detect and handle stale syncs
-        match self.sync_manager.detect_stale_syncs().await {
-            Ok(stale) => {
-                if !stale.is_empty() {
-                    info!("Marked {} stale syncs as failed", stale.len());
-                }
-            }
-            Err(e) => {
-                error!("Error detecting stale syncs: {}", e);
+        if let Some(stale) = self
+            .run_phase("detect_stale_syncs", self.sync_manager.detect_stale_syncs())
+            .await
+        {
+            if !stale.is_empty() {
+                info!("Marked {} stale syncs as failed", stale.len());
             }
         }
 
-        // Clean up soft-deleted sources
-        SourceCleanup::cleanup_deleted_sources(&self.pool).await;
+        self.run_phase("cleanup_deleted_sources", async {
+            SourceCleanup::cleanup_deleted_sources(&self.pool).await;
+            Ok::<(), SchedulerError>(())
+        })
+        .await;
+    }
+
+    async fn run_phase<T, E, F>(&self, phase: &'static str, future: F) -> Option<T>
+    where
+        E: Display,
+        F: Future<Output = Result<T, E>>,
+    {
+        let started = Instant::now();
+        debug!(
+            phase,
+            timeout_secs = SCHEDULER_PHASE_TIMEOUT.as_secs(),
+            "Scheduler phase started"
+        );
+
+        match timeout(SCHEDULER_PHASE_TIMEOUT, future).await {
+            Ok(Ok(value)) => {
+                debug!(
+                    phase,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "Scheduler phase completed"
+                );
+                Some(value)
+            }
+            Ok(Err(e)) => {
+                error!(
+                    phase,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    error = %e,
+                    "Scheduler phase failed"
+                );
+                None
+            }
+            Err(_) => {
+                error!(
+                    phase,
+                    timeout_secs = SCHEDULER_PHASE_TIMEOUT.as_secs(),
+                    "Scheduler phase timed out; continuing with next phase"
+                );
+                None
+            }
+        }
     }
 
     /// Ensure each active source whose connector advertised `Realtime` has a
@@ -117,7 +191,14 @@ impl Scheduler {
                 .is_sync_class_running(&source.id, SyncSlotClass::Realtime)
                 .await
             {
-                Ok(true) => continue,
+                Ok(true) => {
+                    debug!(
+                        source_id = %source.id,
+                        source_type = ?source.source_type,
+                        "Realtime sync already running"
+                    );
+                    continue;
+                }
                 Ok(false) => {}
                 Err(e) => {
                     warn!(
@@ -128,6 +209,12 @@ impl Scheduler {
                 }
             }
 
+            debug!(
+                source_id = %source.id,
+                source_type = ?source.source_type,
+                source_name = %source.name,
+                "Starting realtime sync"
+            );
             match self
                 .sync_manager
                 .trigger_sync(&source.id, SyncType::Realtime, TriggerType::Scheduled)

@@ -4,16 +4,20 @@ use crate::handlers::get_connector_url_for_source;
 use crate::models::{SyncRequest, TriggerType};
 use dashmap::DashMap;
 use redis::Client as RedisClient;
+use shared::db::error::DatabaseError;
 use shared::db::repositories::SyncRunRepository;
 use shared::models::{SourceType, SyncSlotClass, SyncStatus, SyncType};
 use shared::{DatabasePool, Repository, SourceRepository};
 use sqlx::PgPool;
 use std::sync::Arc;
+use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
-use tracing::{error, info, warn};
+use tokio::time::timeout;
+use tracing::{debug, error, info, warn};
 
 const MAX_RESUME_ATTEMPTS: usize = 3;
+const CONNECTOR_TRIGGER_TIMEOUT: Duration = Duration::from_secs(150);
 
 #[derive(Clone)]
 pub struct SyncManager {
@@ -59,6 +63,13 @@ impl SyncManager {
 
         if self.active_sync_count().await? >= self.config.max_concurrent_syncs {
             return Err(SyncError::ConcurrencyLimitReached);
+        }
+
+        let slot_class = sync_type.slot_class();
+        if self.active_sync_count_for_slot_class(slot_class).await?
+            >= self.config.max_concurrent_syncs_per_type
+        {
+            return Err(SyncError::ConcurrencyLimitReachedForSlot(slot_class));
         }
 
         // Get source details
@@ -111,7 +122,21 @@ impl SyncManager {
             .sync_run_repo
             .create(source_id, effective_sync_type, &trigger_type.to_string())
             .await
-            .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
+            .map_err(|e| match e {
+                DatabaseError::RunningSyncSlotConflict => {
+                    SyncError::SyncAlreadyRunning(source_id.to_string())
+                }
+                other => SyncError::DatabaseError(other.to_string()),
+            })?;
+
+        debug!(
+            sync_run_id = %sync_run.id,
+            source_id = %source_id,
+            sync_type = ?effective_sync_type,
+            trigger_type = %trigger_type,
+            connector_url = %connector_url,
+            "Created sync_run; triggering connector"
+        );
 
         let sync_request = SyncRequest {
             sync_run_id: sync_run.id.clone(),
@@ -120,20 +145,22 @@ impl SyncManager {
             last_sync_at,
         };
 
-        // Trigger sync (non-blocking call to connector)
-        match self
-            .connector_client
-            .trigger_sync(&connector_url, &sync_request)
-            .await
-        {
-            Ok(response) => {
+        let trigger_result = timeout(
+            CONNECTOR_TRIGGER_TIMEOUT,
+            self.connector_client
+                .trigger_sync(&connector_url, &sync_request),
+        )
+        .await;
+
+        match trigger_result {
+            Ok(Ok(response)) => {
                 info!(
                     "Sync triggered for source {}: {:?}",
                     source_id, response.status
                 );
                 Ok(sync_run.id)
             }
-            Err(ClientError::ConnectorError { status: 404, .. })
+            Ok(Err(ClientError::ConnectorError { status: 404, .. }))
                 if effective_sync_type == SyncType::Realtime =>
             {
                 self.mark_sync_unavailable(&sync_run.id).await?;
@@ -142,9 +169,20 @@ impl SyncManager {
                     sync_type: effective_sync_type,
                 })
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 self.mark_sync_failed(&sync_run.id, &e.to_string()).await?;
                 Err(SyncError::ConnectorError(e))
+            }
+            Err(_) => {
+                let message = format!(
+                    "Connector trigger timed out after {}s",
+                    CONNECTOR_TRIGGER_TIMEOUT.as_secs()
+                );
+                self.mark_sync_failed(&sync_run.id, &message).await?;
+                Err(SyncError::ConnectorTriggerTimedOut {
+                    sync_run_id: sync_run.id,
+                    timeout_seconds: CONNECTOR_TRIGGER_TIMEOUT.as_secs(),
+                })
             }
         }
     }
@@ -181,10 +219,14 @@ impl SyncManager {
             warn!("Failed to send cancel request to connector: {}", e);
         }
 
-        self.sync_run_repo
+        let updated = self
+            .sync_run_repo
             .mark_cancelled(sync_run_id)
             .await
             .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
+        if !updated {
+            return Err(SyncError::SyncNotRunning(sync_run_id.to_string()));
+        }
 
         self.resume_attempts.remove(sync_run_id);
         info!("Sync {} cancelled", sync_run_id);
@@ -227,6 +269,17 @@ impl SyncManager {
             .find_all_running()
             .await
             .map(|r| r.len())
+            .map_err(|e| SyncError::DatabaseError(e.to_string()))
+    }
+
+    pub async fn active_sync_count_for_slot_class(
+        &self,
+        slot_class: SyncSlotClass,
+    ) -> Result<usize, SyncError> {
+        self.sync_run_repo
+            .count_running_in_slot_class(slot_class)
+            .await
+            .map(|count| count as usize)
             .map_err(|e| SyncError::DatabaseError(e.to_string()))
     }
 
@@ -413,12 +466,14 @@ impl SyncManager {
             last_sync_at,
         };
 
-        match self
-            .connector_client
-            .trigger_sync(&connector_url, &sync_request)
-            .await
+        match timeout(
+            CONNECTOR_TRIGGER_TIMEOUT,
+            self.connector_client
+                .trigger_sync(&connector_url, &sync_request),
+        )
+        .await
         {
-            Ok(_) => {
+            Ok(Ok(_)) => {
                 info!(
                     "Auto-resumed sync {} on connector (attempt {}/{})",
                     sync_run_id, attempts, MAX_RESUME_ATTEMPTS
@@ -432,10 +487,19 @@ impl SyncManager {
                     );
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 warn!(
                     "Failed to re-trigger sync {} on connector (attempt {}/{}): {}",
                     sync_run_id, attempts, MAX_RESUME_ATTEMPTS, e
+                );
+            }
+            Err(_) => {
+                warn!(
+                    "Timed out re-triggering sync {} on connector after {}s (attempt {}/{})",
+                    sync_run_id,
+                    CONNECTOR_TRIGGER_TIMEOUT.as_secs(),
+                    attempts,
+                    MAX_RESUME_ATTEMPTS
                 );
             }
         }
@@ -504,10 +568,17 @@ impl SyncManager {
     }
 
     async fn mark_sync_failed(&self, sync_run_id: &str, error: &str) -> Result<(), SyncError> {
-        self.sync_run_repo
+        let updated = self
+            .sync_run_repo
             .mark_failed(sync_run_id, error)
             .await
             .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
+        if !updated {
+            warn!(
+                "Ignoring stale failure transition for non-running sync {}",
+                sync_run_id
+            );
+        }
 
         self.resume_attempts.remove(sync_run_id);
         Ok(())
@@ -551,6 +622,15 @@ pub enum SyncError {
     SyncModeUnavailable {
         source_id: String,
         sync_type: SyncType,
+    },
+
+    #[error("Concurrency limit reached for {0} syncs")]
+    ConcurrencyLimitReachedForSlot(SyncSlotClass),
+
+    #[error("Connector trigger timed out for sync {sync_run_id} after {timeout_seconds}s")]
+    ConnectorTriggerTimedOut {
+        sync_run_id: String,
+        timeout_seconds: u64,
     },
 
     #[error("Database error: {0}")]

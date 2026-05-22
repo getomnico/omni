@@ -901,8 +901,13 @@ impl From<SyncError> for ApiError {
                 "{} sync is not available for source: {}",
                 sync_type, source_id
             )),
+            SyncError::ConcurrencyLimitReachedForSlot(slot_class) => ApiError::Conflict(format!(
+                "Concurrency limit reached for {} syncs, try again later",
+                slot_class
+            )),
             SyncError::DatabaseError(e) => ApiError::Internal(e),
             SyncError::ConnectorError(e) => ApiError::Internal(e.to_string()),
+            e @ SyncError::ConnectorTriggerTimedOut { .. } => ApiError::Internal(e.to_string()),
         }
     }
 }
@@ -1648,10 +1653,16 @@ pub async fn sdk_complete(
 
     // Status flip only. Counts come from increment_scanned/updated;
     // connector state from save_connector_state.
-    sync_run_repo
+    let updated = sync_run_repo
         .mark_completed(&sync_run_id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to mark completed: {}", e)))?;
+    if !updated {
+        warn!(
+            "SDK: Ignoring stale complete for non-running sync_run={}",
+            sync_run_id
+        );
+    }
 
     Ok(Json(SdkStatusResponse {
         status: "ok".to_string(),
@@ -1668,10 +1679,16 @@ pub async fn sdk_fail(
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
 
     // Mark sync as failed
-    sync_run_repo
+    let updated = sync_run_repo
         .mark_failed(&sync_run_id, &request.error)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to mark failed: {}", e)))?;
+    if !updated {
+        warn!(
+            "SDK: Ignoring stale fail for non-running sync_run={}",
+            sync_run_id
+        );
+    }
 
     Ok(Json(SdkStatusResponse {
         status: "ok".to_string(),
@@ -1689,10 +1706,16 @@ pub async fn sdk_increment_scanned(
     );
 
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
-    sync_run_repo
+    let updated = sync_run_repo
         .increment_scanned(&sync_run_id, request.count)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to increment scanned: {}", e)))?;
+    if !updated {
+        warn!(
+            "SDK: Ignoring stale scanned increment for non-running sync_run={}",
+            sync_run_id
+        );
+    }
 
     Ok(Json(SdkStatusResponse {
         status: "ok".to_string(),
@@ -1710,10 +1733,16 @@ pub async fn sdk_increment_updated(
     );
 
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
-    sync_run_repo
+    let updated = sync_run_repo
         .increment_updated(&sync_run_id, request.count)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to increment updated: {}", e)))?;
+    if !updated {
+        warn!(
+            "SDK: Ignoring stale updated increment for non-running sync_run={}",
+            sync_run_id
+        );
+    }
 
     Ok(Json(SdkStatusResponse {
         status: "ok".to_string(),
@@ -1813,11 +1842,56 @@ pub async fn sdk_create_sync(
         request.source_id, request.sync_type
     );
 
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let source = source_repo
+        .find_by_id(request.source_id.clone())
+        .await
+        .map_err(|e| ApiError::Internal(format!("Database error: {}", e)))?
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
+    if !source.is_active {
+        return Err(ApiError::BadRequest(format!(
+            "Source is inactive: {}",
+            request.source_id
+        )));
+    }
+    if state
+        .sync_manager
+        .is_sync_class_running(&request.source_id, request.sync_type.slot_class())
+        .await?
+    {
+        return Err(ApiError::Conflict(format!(
+            "Sync already running for source: {}",
+            request.source_id
+        )));
+    }
+    if state.sync_manager.active_sync_count().await? >= state.config.max_concurrent_syncs {
+        return Err(ApiError::Conflict(
+            "Concurrency limit reached, try again later".to_string(),
+        ));
+    }
+    let slot_class = request.sync_type.slot_class();
+    if state
+        .sync_manager
+        .active_sync_count_for_slot_class(slot_class)
+        .await?
+        >= state.config.max_concurrent_syncs_per_type
+    {
+        return Err(ApiError::Conflict(format!(
+            "Concurrency limit reached for {} syncs, try again later",
+            slot_class
+        )));
+    }
+
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
     let sync_run = sync_run_repo
         .create(&request.source_id, request.sync_type, "manual")
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to create sync run: {}", e)))?;
+        .map_err(|e| match e {
+            shared::db::error::DatabaseError::RunningSyncSlotConflict => ApiError::Conflict(
+                format!("Sync already running for source: {}", request.source_id),
+            ),
+            other => ApiError::Internal(format!("Failed to create sync run: {}", other)),
+        })?;
 
     Ok(Json(SdkCreateSyncResponse {
         sync_run_id: sync_run.id,
@@ -1831,10 +1905,16 @@ pub async fn sdk_cancel_sync(
     info!("SDK: Cancelling sync_run={}", request.sync_run_id);
 
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
-    sync_run_repo
+    let updated = sync_run_repo
         .mark_cancelled(&request.sync_run_id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to cancel sync: {}", e)))?;
+    if !updated {
+        warn!(
+            "SDK: Ignoring stale cancel for non-running sync_run={}",
+            request.sync_run_id
+        );
+    }
 
     Ok(Json(SdkCancelSyncResponse { success: true }))
 }

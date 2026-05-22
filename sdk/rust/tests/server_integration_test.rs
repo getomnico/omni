@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
-use axum::{routing, Router};
+use axum::{http::StatusCode, routing, Router};
 use axum_test::{TestServer, TestServerConfig};
 use common::{GetSourceBehavior, MockConnectorManager, SyncBehavior, TestConnector};
 use omni_connector_sdk::{
@@ -58,6 +58,23 @@ async fn wait_for_slot_release(server: &TestServer, sync_run_id: &str, source_id
     panic!("slot never released");
 }
 
+async fn wait_for_complete_call(mock: &MockConnectorManager, sync_run_id: &str) {
+    for _ in 0..40 {
+        if mock
+            .state
+            .lock()
+            .unwrap()
+            .complete_calls
+            .iter()
+            .any(|id| id == sync_run_id)
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("sync was not completed");
+}
+
 #[tokio::test]
 async fn t1_manifest_endpoint_returns_connector_metadata() -> Result<()> {
     let mock = MockConnectorManager::spawn().await;
@@ -69,6 +86,27 @@ async fn t1_manifest_endpoint_returns_connector_metadata() -> Result<()> {
     assert_eq!(body["name"], "test");
     assert_eq!(body["version"], "0.0.0");
     assert_eq!(body["connector_url"], CONNECTOR_URL);
+    Ok(())
+}
+
+#[tokio::test]
+async fn t1_successful_batch_sync_auto_completes() -> Result<()> {
+    let mock = MockConnectorManager::spawn().await;
+    mock.set_source(json!({}));
+    let connector = Arc::new(TestConnector::new(SyncBehavior::Ok));
+    let server = build_server(connector, &mock);
+
+    let resp = server
+        .post("/sync")
+        .json(&json!({
+            "sync_run_id": "run-auto-complete",
+            "source_id": "src-1",
+            "sync_mode": "full",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+
+    wait_for_complete_call(&mock, "run-auto-complete").await;
     Ok(())
 }
 

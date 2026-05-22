@@ -11,6 +11,9 @@ pub enum DatabaseError {
     #[error("Constraint violation: {0}")]
     ConstraintViolation(String),
 
+    #[error("Running sync slot already occupied")]
+    RunningSyncSlotConflict,
+
     #[error("Invalid input: {0}")]
     InvalidInput(String),
 

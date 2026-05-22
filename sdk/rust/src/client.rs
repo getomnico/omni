@@ -569,7 +569,13 @@ impl SdkClient {
         Ok(credentials)
     }
 
-    /// Create a new sync run for a source
+    /// Create a new sync run for a source.
+    ///
+    /// Under normal circumstances, the connector-manager is responsible for
+    /// creating sync runs before calling the connector's `/sync` endpoint. We
+    /// allow connectors to also create sync runs when work is initiated from
+    /// inside the connector itself, such as a realtime/webhook event that
+    /// needs to trigger a short follow-up incremental sync.
     pub async fn create_sync_run(&self, source_id: &str, sync_type: SyncType) -> SdkResult<String> {
         debug!(
             "SDK: Creating sync run for source_id={}, type={:?}",
