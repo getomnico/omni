@@ -457,6 +457,11 @@ impl Connector for GoogleConnector {
                 value_type: "person".to_string(),
             },
             SearchOperator {
+                operator: "to".to_string(),
+                attribute_key: "to".to_string(),
+                value_type: "person".to_string(),
+            },
+            SearchOperator {
                 operator: "label".to_string(),
                 attribute_key: "labels".to_string(),
                 value_type: "text".to_string(),

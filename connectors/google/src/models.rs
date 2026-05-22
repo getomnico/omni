@@ -122,6 +122,9 @@ pub fn mime_type_to_content_type(mime_type: &str) -> Option<String> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GmailThreadAttributes {
     pub sender: Option<String>,
+    pub from: Option<String>,
+    pub to: Vec<String>,
+    pub cc: Vec<String>,
     pub labels: Vec<String>,
     pub message_count: usize,
     pub date: Option<String>, // ISO 8601 date (YYYY-MM-DD) for date range queries
@@ -131,7 +134,16 @@ impl GmailThreadAttributes {
     pub fn into_attributes(self) -> DocumentAttributes {
         let mut attrs = HashMap::new();
         if let Some(sender) = self.sender {
-            attrs.insert("sender".into(), json!(sender));
+            attrs.insert("sender".into(), json!(sender.clone()));
+        }
+        if let Some(from) = self.from {
+            attrs.insert("from".into(), json!(from));
+        }
+        if !self.to.is_empty() {
+            attrs.insert("to".into(), json!(self.to));
+        }
+        if !self.cc.is_empty() {
+            attrs.insert("cc".into(), json!(self.cc));
         }
         if !self.labels.is_empty() {
             attrs.insert("labels".into(), json!(self.labels));
@@ -429,6 +441,9 @@ pub struct GmailThread {
     pub thread_id: String,
     pub messages: Vec<GmailMessage>,
     pub participants: HashSet<String>,
+    pub from: HashSet<String>,
+    pub to: HashSet<String>,
+    pub cc: HashSet<String>,
     pub subject: String,
     pub latest_date: String,
     pub total_messages: usize,
@@ -456,6 +471,9 @@ impl GmailThread {
             thread_id,
             messages: Vec::new(),
             participants: HashSet::new(),
+            from: HashSet::new(),
+            to: HashSet::new(),
+            cc: HashSet::new(),
             subject: String::new(),
             latest_date: String::new(),
             total_messages: 0,
@@ -503,12 +521,14 @@ impl GmailThread {
     }
 
     fn extract_participants(&mut self, message: &GmailMessage) {
-        // Gmail API does not expose Bcc headers to other recipients
-        let headers_to_check = ["From", "To", "Cc"];
-
-        for header_name in &headers_to_check {
-            if let Some(header_value) = self.extract_header_value(message, header_name) {
+        for (header_name, recipient_set) in [
+            ("From", &mut self.from),
+            ("To", &mut self.to),
+            ("Cc", &mut self.cc),
+        ] {
+            if let Some(header_value) = extract_header_value(message, header_name) {
                 for email in parse_email_addresses(&header_value) {
+                    recipient_set.insert(email.clone());
                     self.participants.insert(email);
                 }
             }
@@ -516,14 +536,15 @@ impl GmailThread {
     }
 
     fn extract_header_value(&self, message: &GmailMessage, header_name: &str) -> Option<String> {
-        message
-            .payload
-            .as_ref()?
-            .headers
-            .as_ref()?
-            .iter()
-            .find(|h| h.name.eq_ignore_ascii_case(header_name))
-            .map(|h| h.value.clone())
+        extract_header_value(message, header_name)
+    }
+
+    pub fn canonical_external_id(&self) -> String {
+        self.message_id
+            .as_deref()
+            .map(clean_message_id)
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| self.thread_id.clone())
     }
 
     pub async fn aggregate_content(
@@ -607,11 +628,11 @@ impl GmailThread {
     }
 
     pub fn to_attributes(&self) -> GmailThreadAttributes {
-        // Extract sender from first message
         let sender = self
             .messages
             .first()
-            .and_then(|msg| self.extract_header_value(msg, "From"));
+            .and_then(|msg| extract_header_value(msg, "From"))
+            .and_then(|from| parse_email_addresses(&from).into_iter().next());
 
         // Collect unique labels from all messages
         let labels: Vec<String> = self
@@ -635,11 +656,20 @@ impl GmailThread {
         };
 
         GmailThreadAttributes {
-            sender,
+            sender: sender.clone(),
+            from: sender,
+            to: self.sorted_email_values(&self.to),
+            cc: self.sorted_email_values(&self.cc),
             labels,
             message_count: self.total_messages,
             date,
         }
+    }
+
+    fn sorted_email_values(&self, values: &HashSet<String>) -> Vec<String> {
+        let mut values = values.iter().cloned().collect::<Vec<_>>();
+        values.sort();
+        values
     }
 
     pub fn to_connector_event(
@@ -648,13 +678,15 @@ impl GmailThread {
         source_id: &str,
         content_id: &str,
         known_groups: &HashSet<String>,
+        user_email: &str,
         attachments: &[AttachmentPointer],
     ) -> Result<ConnectorEvent, anyhow::Error> {
+        let canonical_external_id = self.canonical_external_id();
         let mut extra = HashMap::new();
         extra.insert("thread_id".to_string(), json!(self.thread_id));
         extra.insert(
             "participants".to_string(),
-            json!(self.participants.iter().collect::<Vec<_>>()),
+            json!(self.sorted_email_values(&self.participants)),
         );
         if !attachments.is_empty() {
             extra.insert("attachments".to_string(), json!(attachments));
@@ -711,13 +743,19 @@ impl GmailThread {
         // Split participants into users and groups based on known org groups
         let mut users = Vec::new();
         let mut groups = Vec::new();
-        for participant in &self.participants {
+        let mut permission_participants = self.participants.clone();
+        permission_participants.insert(user_email.to_lowercase());
+        for participant in &permission_participants {
             if known_groups.contains(participant) {
                 groups.push(participant.clone());
             } else {
                 users.push(participant.clone());
             }
         }
+        users.sort();
+        users.dedup();
+        groups.sort();
+        groups.dedup();
 
         let permissions = DocumentPermissions {
             public: false,
@@ -730,13 +768,32 @@ impl GmailThread {
         Ok(ConnectorEvent::DocumentCreated {
             sync_run_id: sync_run_id.to_string(),
             source_id: source_id.to_string(),
-            document_id: self.thread_id.clone(),
+            document_id: canonical_external_id,
             content_id: content_id.to_string(),
             metadata,
             permissions,
             attributes: Some(attributes),
         })
     }
+}
+
+fn extract_header_value(message: &GmailMessage, header_name: &str) -> Option<String> {
+    message
+        .payload
+        .as_ref()?
+        .headers
+        .as_ref()?
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case(header_name))
+        .map(|h| h.value.clone())
+}
+
+fn clean_message_id(message_id: &str) -> String {
+    message_id
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .to_string()
 }
 
 /// Parse email addresses from a header value, handling quoted display names
@@ -795,6 +852,36 @@ fn extract_email(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gmail::{GmailMessage, Header, MessagePart};
+
+    fn gmail_message_with_headers(headers: Vec<(&str, &str)>) -> GmailMessage {
+        GmailMessage {
+            id: "msg1".to_string(),
+            thread_id: "gmail-thread-1".to_string(),
+            label_ids: Some(vec!["INBOX".to_string()]),
+            snippet: None,
+            history_id: None,
+            internal_date: Some("1686787200000".to_string()),
+            payload: Some(MessagePart {
+                part_id: None,
+                mime_type: Some("text/plain".to_string()),
+                filename: None,
+                headers: Some(
+                    headers
+                        .into_iter()
+                        .map(|(name, value)| Header {
+                            name: name.to_string(),
+                            value: value.to_string(),
+                        })
+                        .collect(),
+                ),
+                body: None,
+                parts: None,
+            }),
+            size_estimate: None,
+            raw: None,
+        }
+    }
 
     #[test]
     fn test_google_drive_file_to_connector_event() {
@@ -893,6 +980,12 @@ mod tests {
     fn test_gmail_thread_attributes() {
         let attrs = GmailThreadAttributes {
             sender: Some("sender@example.com".to_string()),
+            from: Some("sender@example.com".to_string()),
+            to: vec![
+                "alice@example.com".to_string(),
+                "bob@example.com".to_string(),
+            ],
+            cc: vec!["carol@example.com".to_string()],
             labels: vec!["INBOX".to_string(), "IMPORTANT".to_string()],
             message_count: 5,
             date: Some("2023-06-15".to_string()),
@@ -904,6 +997,12 @@ mod tests {
             doc_attrs.get("sender").unwrap().as_str().unwrap(),
             "sender@example.com"
         );
+        assert_eq!(
+            doc_attrs.get("from").unwrap().as_str().unwrap(),
+            "sender@example.com"
+        );
+        assert_eq!(doc_attrs.get("to").unwrap().as_array().unwrap().len(), 2);
+        assert_eq!(doc_attrs.get("cc").unwrap().as_array().unwrap().len(), 1);
         assert!(doc_attrs.get("labels").unwrap().is_array());
         assert_eq!(doc_attrs.get("message_count").unwrap().as_i64().unwrap(), 5);
         assert_eq!(
@@ -916,6 +1015,9 @@ mod tests {
     fn test_gmail_thread_attributes_minimal() {
         let attrs = GmailThreadAttributes {
             sender: None,
+            from: None,
+            to: vec![],
+            cc: vec![],
             labels: vec![],
             message_count: 1,
             date: None,
@@ -924,6 +1026,9 @@ mod tests {
         let doc_attrs = attrs.into_attributes();
 
         assert!(doc_attrs.get("sender").is_none());
+        assert!(doc_attrs.get("from").is_none());
+        assert!(doc_attrs.get("to").is_none());
+        assert!(doc_attrs.get("cc").is_none());
         assert!(doc_attrs.get("labels").is_none());
         assert_eq!(doc_attrs.get("message_count").unwrap().as_i64().unwrap(), 1);
         assert!(doc_attrs.get("date").is_none());
@@ -971,6 +1076,9 @@ mod tests {
         assert_eq!(thread.thread_id, "thread123");
         assert!(thread.messages.is_empty());
         assert!(thread.participants.is_empty());
+        assert!(thread.from.is_empty());
+        assert!(thread.to.is_empty());
+        assert!(thread.cc.is_empty());
         assert!(thread.subject.is_empty());
         assert!(thread.latest_date.is_empty());
         assert_eq!(thread.total_messages, 0);
@@ -1242,6 +1350,102 @@ mod tests {
     }
 
     #[test]
+    fn test_gmail_thread_uses_message_id_as_canonical_external_id() {
+        let mut thread = GmailThread::new("gmail-thread-local".to_string());
+        thread.add_message(gmail_message_with_headers(vec![
+            ("Message-ID", "<canonical@example.com>"),
+            ("From", "Sender <sender@example.com>"),
+            ("To", "Alice <alice@example.com>"),
+        ]));
+
+        assert_eq!(thread.canonical_external_id(), "canonical@example.com");
+
+        let event = thread
+            .to_connector_event(
+                "sync1",
+                "source1",
+                "content1",
+                &HashSet::new(),
+                "alice@example.com",
+                &[],
+            )
+            .unwrap();
+
+        match event {
+            ConnectorEvent::DocumentCreated {
+                document_id,
+                metadata,
+                ..
+            } => {
+                assert_eq!(document_id, "canonical@example.com");
+                let extra = metadata.extra.expect("extra populated");
+                assert_eq!(extra["thread_id"], "gmail-thread-local");
+            }
+            _ => panic!("Expected DocumentCreated event"),
+        }
+    }
+
+    #[test]
+    fn test_gmail_thread_extracts_recipient_attributes_without_bcc() {
+        let mut thread = GmailThread::new("thread123".to_string());
+        thread.add_message(gmail_message_with_headers(vec![
+            ("Message-ID", "<m1@example.com>"),
+            ("From", "Sender <sender@example.com>"),
+            (
+                "To",
+                "Alice <alice@example.com>, \"Bob, Example\" <bob@example.com>",
+            ),
+            ("Cc", "Carol <carol@example.com>"),
+            ("Bcc", "Hidden <hidden@example.com>"),
+        ]));
+
+        let attrs = thread.to_attributes().into_attributes();
+        assert_eq!(attrs["sender"], "sender@example.com");
+        assert_eq!(attrs["from"], "sender@example.com");
+        assert_eq!(
+            attrs["to"].as_array().unwrap(),
+            &vec![json!("alice@example.com"), json!("bob@example.com")]
+        );
+        assert_eq!(
+            attrs["cc"].as_array().unwrap(),
+            &vec![json!("carol@example.com")]
+        );
+        assert!(attrs.get("bcc").is_none());
+    }
+
+    #[test]
+    fn test_gmail_thread_permissions_include_mailbox_owner() {
+        let mut thread = GmailThread::new("thread123".to_string());
+        thread.add_message(gmail_message_with_headers(vec![
+            ("Message-ID", "<m1@example.com>"),
+            ("From", "Sender <sender@example.com>"),
+            ("To", "Alice <alice@example.com>"),
+        ]));
+
+        let event = thread
+            .to_connector_event(
+                "sync1",
+                "source1",
+                "content1",
+                &HashSet::new(),
+                "owner@example.com",
+                &[],
+            )
+            .unwrap();
+
+        match event {
+            ConnectorEvent::DocumentCreated { permissions, .. } => {
+                assert!(permissions.users.contains(&"alice@example.com".to_string()));
+                assert!(permissions.users.contains(&"owner@example.com".to_string()));
+                assert!(permissions
+                    .users
+                    .contains(&"sender@example.com".to_string()));
+            }
+            _ => panic!("Expected DocumentCreated event"),
+        }
+    }
+
+    #[test]
     fn test_gmail_thread_to_connector_event_includes_attachment_pointers() {
         let mut thread = GmailThread::new("thread123".to_string());
         thread.subject = "Q3 Report".to_string();
@@ -1261,6 +1465,7 @@ mod tests {
                 "source1",
                 "content1",
                 &HashSet::new(),
+                "alice@co.com",
                 &attachments,
             )
             .unwrap();
@@ -1294,7 +1499,14 @@ mod tests {
         thread.participants.insert("alice@co.com".to_string());
 
         let event = thread
-            .to_connector_event("sync1", "source1", "content1", &HashSet::new(), &[])
+            .to_connector_event(
+                "sync1",
+                "source1",
+                "content1",
+                &HashSet::new(),
+                "alice@co.com",
+                &[],
+            )
             .unwrap();
 
         match event {

@@ -2024,6 +2024,7 @@ impl SyncManager {
                     ctx.source_id(),
                     &content_id,
                     known_groups,
+                    user_email,
                     &attachment_pointers,
                 )
                 .context("build connector event")?;
@@ -2046,13 +2047,19 @@ impl SyncManager {
 
         let mut att_users = Vec::new();
         let mut att_groups = Vec::new();
-        for participant in &gmail_thread.participants {
+        let mut att_participants = gmail_thread.participants.clone();
+        att_participants.insert(user_email.to_lowercase());
+        for participant in &att_participants {
             if known_groups.contains(participant) {
                 att_groups.push(participant.clone());
             } else {
                 att_users.push(participant.clone());
             }
         }
+        att_users.sort();
+        att_users.dedup();
+        att_groups.sort();
+        att_groups.dedup();
         let att_permissions = DocumentPermissions {
             public: false,
             users: att_users,
@@ -2063,7 +2070,11 @@ impl SyncManager {
             let att_doc_id = build_attachment_doc_id(&rfc822_msgid, &att.filename, att.size);
 
             let mut att_extra = HashMap::new();
-            att_extra.insert("parent_thread_id".to_string(), json!(thread_id));
+            att_extra.insert(
+                "parent_thread_id".to_string(),
+                json!(gmail_thread.canonical_external_id()),
+            );
+            att_extra.insert("gmail_thread_id".to_string(), json!(thread_id));
 
             let att_metadata = DocumentMetadata {
                 title: Some(att.filename.clone()),
