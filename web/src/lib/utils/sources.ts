@@ -26,7 +26,7 @@ export function formatSyncRunDuration(
 const sourceNouns: Record<string, string> = {
     [SourceType.GOOGLE_DRIVE]: 'documents',
     [SourceType.GMAIL]: 'threads',
-    [SourceType.SLACK]: 'messages',
+    [SourceType.SLACK]: 'threads',
     [SourceType.CONFLUENCE]: 'pages',
     [SourceType.JIRA]: 'issues',
     [SourceType.HUBSPOT]: 'records',
