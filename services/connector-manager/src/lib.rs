@@ -163,16 +163,12 @@ pub async fn run_server() -> AnyhowResult<()> {
         warn!("Startup sync reconciliation failed: {}", e);
     }
 
-    // Start scheduler in background
-    let scheduler = scheduler::Scheduler::new(
+    tokio::spawn(scheduler::Scheduler::run(
         db_pool.pool().clone(),
         redis_client,
         config.clone(),
         sync_manager,
-    );
-    tokio::spawn(async move {
-        scheduler.run().await;
-    });
+    ));
     info!("Scheduler started");
 
     let app = create_app(app_state);

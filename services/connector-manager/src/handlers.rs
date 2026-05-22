@@ -907,6 +907,7 @@ impl From<SyncError> for ApiError {
             )),
             SyncError::DatabaseError(e) => ApiError::Internal(e),
             SyncError::ConnectorError(e) => ApiError::Internal(e.to_string()),
+            e @ SyncError::ConnectorTriggerTimedOut { .. } => ApiError::Internal(e.to_string()),
         }
     }
 }

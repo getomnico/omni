@@ -5,6 +5,7 @@ use crate::models::{
 use reqwest::Client;
 use shared::models::SyncType;
 use shared::{RateLimiter, RetryableError};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use tracing::{debug, error, warn};
 
@@ -67,8 +68,11 @@ impl ConnectorClient {
     ) -> Result<SyncResponse, ClientError> {
         let url = format!("{}/sync", connector_url);
         debug!(
-            "Triggering sync at {} for source {}",
-            url, request.source_id
+            url,
+            source_id = %request.source_id,
+            sync_run_id = %request.sync_run_id,
+            sync_mode = ?request.sync_mode,
+            "Triggering sync"
         );
 
         let response = self.trigger_sync_with_retry(&url, request).await?;
@@ -98,14 +102,47 @@ impl ConnectorClient {
         url: &str,
         request: &SyncRequest,
     ) -> Result<reqwest::Response, ClientError> {
+        let attempts = AtomicU32::new(0);
         self.sync_trigger_retry
             .execute_with_retry(|| async {
-                self.client
-                    .post(url)
-                    .json(request)
-                    .send()
-                    .await
-                    .map_err(|e| RetryableError::Transient(e.into()))
+                let attempt = attempts.fetch_add(1, Ordering::Relaxed) + 1;
+                debug!(
+                    url,
+                    source_id = %request.source_id,
+                    sync_run_id = %request.sync_run_id,
+                    sync_mode = ?request.sync_mode,
+                    attempt,
+                    "Sending connector sync trigger"
+                );
+
+                let result = self.client.post(url).json(request).send().await;
+
+                match result {
+                    Ok(response) => {
+                        debug!(
+                            url,
+                            source_id = %request.source_id,
+                            sync_run_id = %request.sync_run_id,
+                            sync_mode = ?request.sync_mode,
+                            attempt,
+                            status = response.status().as_u16(),
+                            "Connector sync trigger returned"
+                        );
+                        Ok(response)
+                    }
+                    Err(e) => {
+                        warn!(
+                            url,
+                            source_id = %request.source_id,
+                            sync_run_id = %request.sync_run_id,
+                            sync_mode = ?request.sync_mode,
+                            attempt,
+                            error = %e,
+                            "Connector sync trigger request failed"
+                        );
+                        Err(RetryableError::Transient(e.into()))
+                    }
+                }
             })
             .await
             .map_err(|e| ClientError::RequestFailed(e.to_string()))
