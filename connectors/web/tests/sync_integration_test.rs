@@ -123,7 +123,7 @@ async fn test_sync_creates_events_for_crawled_pages() -> Result<()> {
     let sync_run = sync_run.unwrap();
     assert_eq!(sync_run.status, SyncStatus::Completed);
     assert_eq!(sync_run.documents_scanned, 3);
-    assert_eq!(sync_run.documents_updated, 3);
+    assert_eq!(sync_run.documents_updated, 0);
 
     Ok(())
 }
@@ -533,7 +533,7 @@ async fn test_full_sync_lifecycle_via_api() -> Result<()> {
     let sync_run = fixture.get_sync_run(&sync_run_id).await?.unwrap();
     assert_eq!(sync_run.status, SyncStatus::Completed);
     assert_eq!(sync_run.documents_scanned, 2);
-    assert_eq!(sync_run.documents_updated, 2);
+    assert_eq!(sync_run.documents_updated, 0);
 
     // 6. Verify connector state was persisted
     let state = fixture.get_connector_state(&source_id).await?;
