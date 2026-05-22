@@ -461,11 +461,10 @@ where
 
         match result {
             Ok(()) => {
-                if !ctx.terminal_reported() && ctx.sync_mode() != SyncType::Realtime {
-                    warn!(
-                        "Sync {} returned Ok without reporting completion; call ctx.complete() for successful batch syncs",
-                        sync_run_id
-                    );
+                if ctx.sync_mode() != SyncType::Realtime {
+                    if let Err(error) = ctx.complete().await {
+                        error!("Failed to auto-complete sync {}: {}", sync_run_id, error);
+                    }
                 }
             }
             Err(error) => {

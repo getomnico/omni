@@ -11,7 +11,7 @@ const RUNNING_SYNC_SLOT_INDEX: &str = "idx_sync_runs_one_running_per_source_slot
 fn map_sqlx_error(error: SqlxError) -> DatabaseError {
     if let SqlxError::Database(db_error) = &error {
         if db_error.constraint() == Some(RUNNING_SYNC_SLOT_INDEX) {
-            return DatabaseError::ConstraintViolation(RUNNING_SYNC_SLOT_INDEX.to_string());
+            return DatabaseError::RunningSyncSlotConflict;
         }
     }
     DatabaseError::Connection(error)

@@ -148,6 +148,7 @@ fn test_source_json(id: &str, config: JsonValue, connector_state: Option<JsonVal
         "config": config,
         "is_active": true,
         "is_deleted": false,
+        "scope": "org",
         "user_filter_mode": "all",
         "user_whitelist": null,
         "user_blacklist": null,
@@ -185,7 +186,6 @@ async fn handle_fail(
 async fn handle_complete(
     State(state): State<SharedState>,
     Path(sync_run_id): Path<String>,
-    Json(_body): Json<JsonValue>,
 ) -> impl IntoResponse {
     state.lock().unwrap().complete_calls.push(sync_run_id);
     StatusCode::NO_CONTENT

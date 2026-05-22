@@ -1887,14 +1887,9 @@ pub async fn sdk_create_sync(
         .create(&request.source_id, request.sync_type, "manual")
         .await
         .map_err(|e| match e {
-            shared::db::error::DatabaseError::ConstraintViolation(name)
-                if name == "idx_sync_runs_one_running_per_source_slot" =>
-            {
-                ApiError::Conflict(format!(
-                    "Sync already running for source: {}",
-                    request.source_id
-                ))
-            }
+            shared::db::error::DatabaseError::RunningSyncSlotConflict => ApiError::Conflict(
+                format!("Sync already running for source: {}", request.source_id),
+            ),
             other => ApiError::Internal(format!("Failed to create sync run: {}", other)),
         })?;
 

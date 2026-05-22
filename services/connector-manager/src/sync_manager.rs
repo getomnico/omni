@@ -123,9 +123,7 @@ impl SyncManager {
             .create(source_id, effective_sync_type, &trigger_type.to_string())
             .await
             .map_err(|e| match e {
-                DatabaseError::ConstraintViolation(name)
-                    if name == "idx_sync_runs_one_running_per_source_slot" =>
-                {
+                DatabaseError::RunningSyncSlotConflict => {
                     SyncError::SyncAlreadyRunning(source_id.to_string())
                 }
                 other => SyncError::DatabaseError(other.to_string()),
