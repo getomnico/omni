@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use chrono::DateTime;
 use dashmap::DashMap;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::Client;
@@ -15,6 +16,11 @@ use tracing::{debug, error, info, warn};
 
 const MAX_RECONNECT_DELAY_SECS: u64 = 300;
 const DEBOUNCE_SECS: u64 = 600;
+
+fn slack_ts_date_key(ts: &str) -> Option<String> {
+    let secs = ts.split('.').next()?.parse::<i64>().ok()?;
+    DateTime::from_timestamp(secs, 0).map(|dt| dt.date_naive().to_string())
+}
 
 // ============================================================================
 // Socket Mode protocol types
@@ -382,7 +388,16 @@ async fn handle_event(
 
     let repair_target = match thread_ts {
         Some(parent_ts) if parent_ts != message_ts => format!("thread:{}", parent_ts),
-        _ => format!("message:{}", message_ts),
+        _ => match slack_ts_date_key(message_ts) {
+            Some(date) => format!("day:{}", date),
+            None => {
+                warn!(
+                    source_id,
+                    channel_id, message_ts, "Message event has invalid Slack timestamp"
+                );
+                return;
+            }
+        },
     };
     let debounce_key = format!("{}:{}:{}", source_id, channel_id, repair_target);
     let fire_at = Instant::now() + Duration::from_secs(DEBOUNCE_SECS);
