@@ -1,3 +1,4 @@
+use crate::AppState;
 use crate::connector_client::ConnectorClient;
 use crate::models::{
     ActionContext, ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
@@ -7,19 +8,18 @@ use crate::models::{
 };
 use crate::sync_circuit_breaker::has_failure_streak;
 use crate::sync_manager::SyncError;
-use crate::AppState;
 use axum::{
-    extract::{Path, Query, State},
-    http::{header, HeaderValue, StatusCode},
-    response::{
-        sse::{Event, KeepAlive, Sse},
-        IntoResponse,
-    },
     Json,
+    extract::{Path, Query, State},
+    http::{HeaderValue, StatusCode, header},
+    response::{
+        IntoResponse,
+        sse::{Event, KeepAlive, Sse},
+    },
 };
 use futures::stream::Stream;
 use redis::AsyncCommands;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shared::clients::docling::{DoclingClient, DoclingError};
 use shared::db::repositories::{ConfigurationRepository, SyncRunRepository};
 use shared::models::{

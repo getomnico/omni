@@ -1161,6 +1161,10 @@ pub struct McpCredentials {
     /// The provider-specific service config blob.
     #[serde(default)]
     pub config: JsonValue,
+    /// Credential auth type. Required by connectors that share their normal
+    /// credential-loading path for MCP auth preparation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_type: Option<AuthType>,
     /// Optional acting-user email (for delegated/principal-aware connectors).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub principal_email: Option<String>,
@@ -1173,6 +1177,7 @@ impl McpCredentials {
         Self {
             credentials: creds.credentials.clone(),
             config: creds.config.clone(),
+            auth_type: Some(creds.auth_type),
             principal_email: creds.principal_email.clone(),
         }
     }

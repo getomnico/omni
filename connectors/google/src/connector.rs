@@ -13,12 +13,13 @@ use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
-    ActionDefinition, ActionResponse, Connector, OAuthManifestConfig, OAuthScopeSet,
-    SearchOperator, ServiceCredential, ServiceProvider, Source, SourceType, SyncContext,
-    SyncRequestValidationError, SyncType,
+    ActionDefinition, ActionResponse, AuthType, Connector, McpCredentials, McpServer,
+    OAuthManifestConfig, OAuthScopeSet, SearchOperator, ServiceCredential, ServiceProvider, Source,
+    SourceType, StdioMcpServer, SyncContext, SyncRequestValidationError, SyncType,
 };
 use serde_json::{Value as JsonValue, json};
 use std::collections::HashMap;
+use time::OffsetDateTime;
 use tracing::debug;
 
 /// Build the composite external_id we use for a Gmail attachment document.
@@ -122,6 +123,49 @@ impl GoogleConnector {
         Self {
             sync_manager,
             admin_client,
+        }
+    }
+
+    fn mcp_service_credential(&self, credentials: &McpCredentials) -> ServiceCredential {
+        let auth_type = credentials.auth_type.unwrap_or_else(|| {
+            if credentials.credentials.get("refresh_token").is_some() {
+                AuthType::OAuth
+            } else {
+                AuthType::Jwt
+            }
+        });
+
+        let config = if auth_type == AuthType::Jwt && credentials.config.get("scopes").is_none() {
+            let mut config = credentials.config.as_object().cloned().unwrap_or_default();
+            config.insert(
+                "scopes".to_string(),
+                json!([
+                    "https://www.googleapis.com/auth/admin.directory.user.readonly",
+                    "https://www.googleapis.com/auth/admin.directory.group.readonly",
+                    "https://www.googleapis.com/auth/drive.readonly",
+                    "https://www.googleapis.com/auth/gmail.readonly"
+                ]),
+            );
+            let config = JsonValue::Object(config);
+            config
+        } else {
+            credentials.config.clone()
+        };
+
+        let now = OffsetDateTime::now_utc();
+        ServiceCredential {
+            id: "mcp".to_string(),
+            source_id: "mcp".to_string(),
+            user_id: None,
+            provider: ServiceProvider::Google,
+            auth_type,
+            principal_email: credentials.principal_email.clone(),
+            credentials: credentials.credentials.clone(),
+            config,
+            expires_at: None,
+            last_validated_at: None,
+            created_at: now,
+            updated_at: now,
         }
     }
 
@@ -459,6 +503,35 @@ impl Connector for GoogleConnector {
         ]
     }
 
+    fn mcp_server(&self) -> Option<McpServer> {
+        Some(McpServer::Stdio(StdioMcpServer::new("gws").with_args([
+            "mcp",
+            "--tool-mode",
+            "compact",
+        ])))
+    }
+
+    async fn prepare_mcp_env(
+        &self,
+        credentials: &McpCredentials,
+    ) -> Result<HashMap<String, String>> {
+        let service_credential = self.mcp_service_credential(credentials);
+        let auth = self
+            .sync_manager
+            .create_auth(&service_credential, SourceType::GoogleDrive)
+            .await?;
+        let principal_email = auth
+            .oauth_user_email()
+            .or(service_credential.principal_email.as_deref())
+            .ok_or_else(|| anyhow!("Missing principal_email in Google MCP credentials"))?;
+        let token = auth.get_fresh_token(principal_email).await?;
+
+        Ok(HashMap::from([(
+            "GOOGLE_WORKSPACE_CLI_TOKEN".to_string(),
+            token,
+        )]))
+    }
+
     fn search_operators(&self) -> Vec<SearchOperator> {
         vec![
             SearchOperator {
@@ -634,7 +707,78 @@ impl Connector for GoogleConnector {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_attachment_doc_id, parse_attachment_doc_id};
+    use std::sync::Arc;
+
+    use omni_connector_sdk::{AuthType, Connector, McpCredentials, McpServer, SdkClient};
+    use serde_json::json;
+
+    use crate::admin::AdminClient;
+    use crate::sync::SyncManager;
+
+    use super::{GoogleConnector, build_attachment_doc_id, parse_attachment_doc_id};
+
+    fn test_connector() -> GoogleConnector {
+        let sdk_client = SdkClient::new("http://127.0.0.1:1");
+        let admin_client = Arc::new(AdminClient::new());
+        let sync_manager = Arc::new(SyncManager::new(
+            Arc::clone(&admin_client),
+            sdk_client,
+            None,
+        ));
+        GoogleConnector::new(sync_manager, admin_client)
+    }
+
+    #[test]
+    fn mcp_server_uses_gws_compact_stdio() {
+        let connector = test_connector();
+        let server = connector.mcp_server().expect("mcp server");
+        match server {
+            McpServer::Stdio(stdio) => {
+                assert_eq!(stdio.command, "gws");
+                assert_eq!(stdio.args, ["mcp", "--tool-mode", "compact"]);
+            }
+            McpServer::Http(_) => panic!("google MCP should use stdio"),
+        }
+    }
+
+    #[test]
+    fn mcp_service_credential_infers_oauth_auth_type() {
+        let connector = test_connector();
+        let creds = connector.mcp_service_credential(&McpCredentials {
+            credentials: json!({
+                "access_token": "access",
+                "refresh_token": "refresh",
+                "user_email": "user@example.com"
+            }),
+            ..Default::default()
+        });
+
+        assert_eq!(creds.auth_type, AuthType::OAuth);
+        assert_eq!(creds.credentials["refresh_token"], "refresh");
+    }
+
+    #[test]
+    fn mcp_service_credential_adds_combined_scopes_for_service_accounts() {
+        let connector = test_connector();
+        let creds = connector.mcp_service_credential(&McpCredentials {
+            credentials: json!({"service_account_key": "{}"}),
+            principal_email: Some("admin@example.com".to_string()),
+            ..Default::default()
+        });
+
+        assert_eq!(creds.auth_type, AuthType::Jwt);
+        let scopes = creds.config["scopes"].as_array().expect("scopes");
+        assert!(
+            scopes
+                .iter()
+                .any(|s| s == "https://www.googleapis.com/auth/drive.readonly")
+        );
+        assert!(
+            scopes
+                .iter()
+                .any(|s| s == "https://www.googleapis.com/auth/gmail.readonly")
+        );
+    }
 
     #[test]
     fn round_trips_simple_msgid() {

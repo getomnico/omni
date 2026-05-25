@@ -88,14 +88,20 @@ pub trait Connector: Send + Sync + 'static {
     /// argument is the wire-format wrapper forwarded by the connector-manager
     /// (`{credentials, config, principal_email}`). Connectors typically
     /// deserialize `credentials.credentials` into their own typed struct.
-    fn prepare_mcp_env(&self, _credentials: &McpCredentials) -> HashMap<String, String> {
-        HashMap::new()
+    async fn prepare_mcp_env(
+        &self,
+        _credentials: &McpCredentials,
+    ) -> Result<HashMap<String, String>> {
+        Ok(HashMap::new())
     }
 
     /// Return HTTP headers for a remote MCP server. Used only when
     /// `mcp_server()` returns `Some(McpServer::Http(_))`.
-    fn prepare_mcp_headers(&self, _credentials: &McpCredentials) -> HashMap<String, String> {
-        HashMap::new()
+    async fn prepare_mcp_headers(
+        &self,
+        _credentials: &McpCredentials,
+    ) -> Result<HashMap<String, String>> {
+        Ok(HashMap::new())
     }
 
     /// Declarative OAuth2 config consumed by the web app's generic OAuth

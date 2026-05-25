@@ -10,6 +10,13 @@ FROM chef AS builder
 ARG BUILD_MODE=release
 COPY --from=planner /app/recipe.json recipe.json
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install the Google Workspace CLI used by the connector's MCP stdio adapter.
+RUN cargo install --git https://github.com/googleworkspace/cli --locked
+
 # Cook dependencies based on build mode
 RUN if [ "$BUILD_MODE" = "debug" ]; then \
         cargo chef cook --recipe-path recipe.json; \
@@ -45,5 +52,6 @@ RUN if [ "$BUILD_MODE" = "debug" ]; then \
     fi
 
 COPY --from=builder /app/target/${BUILD_MODE}/omni-google-connector /usr/local/bin/omni-google-connector
+COPY --from=builder /usr/local/cargo/bin/gws /usr/local/bin/gws
 
 CMD ["omni-google-connector"]

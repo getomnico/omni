@@ -142,17 +142,22 @@ impl<C: Connector> ServerState<C> {
 
 /// Build the env-vs-headers tuple to pass to the MCP adapter, dispatching
 /// based on the configured transport variant.
-fn build_mcp_auth<C: Connector>(
+async fn build_mcp_auth<C: Connector>(
     connector: &C,
     credentials: &McpCredentials,
-) -> (
+) -> Result<(
     Option<HashMap<String, String>>,
     Option<HashMap<String, String>>,
-) {
+)> {
     match connector.mcp_server() {
-        Some(McpServer::Http(_)) => (None, Some(connector.prepare_mcp_headers(credentials))),
-        Some(McpServer::Stdio(_)) => (Some(connector.prepare_mcp_env(credentials)), None),
-        None => (None, None),
+        Some(McpServer::Http(_)) => Ok((
+            None,
+            Some(connector.prepare_mcp_headers(credentials).await?),
+        )),
+        Some(McpServer::Stdio(_)) => {
+            Ok((Some(connector.prepare_mcp_env(credentials).await?), None))
+        }
+        None => Ok((None, None)),
     }
 }
 
@@ -430,9 +435,13 @@ where
             .as_ref()
             .map(McpCredentials::from_service_credential)
             .unwrap_or_default();
-        let (env, headers) = build_mcp_auth(&*state.connector, &creds);
-        if let Err(e) = adapter.discover(env, headers).await {
-            warn!("MCP bootstrap failed: {}", e);
+        match build_mcp_auth(&*state.connector, &creds).await {
+            Ok((env, headers)) => {
+                if let Err(e) = adapter.discover(env, headers).await {
+                    warn!("MCP bootstrap failed: {}", e);
+                }
+            }
+            Err(e) => warn!("MCP auth preparation failed: {:#}", e),
         }
     }
 
@@ -547,7 +556,16 @@ where
             .as_ref()
             .map(McpCredentials::from_service_credential)
             .unwrap_or_default();
-        let (env, headers) = build_mcp_auth(&*state.connector, &creds);
+        let (env, headers) = match build_mcp_auth(&*state.connector, &creds).await {
+            Ok(auth) => auth,
+            Err(e) => {
+                warn!(
+                    "MCP auth preparation failed; falling back to connector: {:#}",
+                    e
+                );
+                (None, None)
+            }
+        };
         match adapter
             .get_action_definitions(env.clone(), headers.clone())
             .await
@@ -593,7 +611,18 @@ where
             Json(serde_json::json!({ "error": "MCP not enabled for this connector" })),
         )
     })?;
-    let (env, headers) = build_mcp_auth(&*state.connector, &request.credentials);
+    let (env, headers) = build_mcp_auth(&*state.connector, &request.credentials)
+        .await
+        .map_err(|e| {
+            error!(
+                "MCP auth preparation failed for resource {}: {:#}",
+                request.uri, e
+            );
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+        })?;
     adapter
         .read_resource(&request.uri, env, headers)
         .await
@@ -621,7 +650,18 @@ where
             Json(serde_json::json!({ "error": "MCP not enabled for this connector" })),
         )
     })?;
-    let (env, headers) = build_mcp_auth(&*state.connector, &request.credentials);
+    let (env, headers) = build_mcp_auth(&*state.connector, &request.credentials)
+        .await
+        .map_err(|e| {
+            error!(
+                "MCP auth preparation failed for prompt {}: {:#}",
+                request.name, e
+            );
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+        })?;
     adapter
         .get_prompt(&request.name, request.arguments, env, headers)
         .await
