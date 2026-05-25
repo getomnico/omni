@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::admin::AdminClient;
 use crate::auth::{
@@ -13,14 +14,56 @@ use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
-    ActionDefinition, ActionResponse, AuthType, Connector, McpCredentials, McpServer,
-    OAuthManifestConfig, OAuthScopeSet, SearchOperator, ServiceCredential, ServiceProvider, Source,
-    SourceType, StdioMcpServer, SyncContext, SyncRequestValidationError, SyncType,
+    ActionDefinition, ActionResponse, AuthType, Connector, OAuthManifestConfig, OAuthScopeSet,
+    SearchOperator, ServiceCredential, ServiceProvider, Source, SourceType, SyncContext,
+    SyncRequestValidationError, SyncType,
 };
+use serde::Deserialize;
 use serde_json::{Value as JsonValue, json};
 use std::collections::HashMap;
-use time::OffsetDateTime;
+use tokio::process::Command;
+use tokio::time::timeout;
 use tracing::debug;
+
+const GWS_COMMAND: &str = "gws";
+const GWS_TIMEOUT: Duration = Duration::from_secs(60);
+const GOOGLE_WORKSPACE_CLI_TOKEN: &str = "GOOGLE_WORKSPACE_CLI_TOKEN";
+const GOOGLE_WORKSPACE_SCOPES: &[&str] = &[
+    "https://www.googleapis.com/auth/admin.directory.user.readonly",
+    "https://www.googleapis.com/auth/admin.directory.group.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/gmail.readonly",
+];
+
+#[derive(Debug, Deserialize)]
+struct GwsSchemaRequest {
+    schema: String,
+    #[serde(default = "default_resolve_refs")]
+    resolve_refs: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct GwsCallRequest {
+    service: String,
+    resource: String,
+    #[serde(default)]
+    sub_resource: Option<String>,
+    method: String,
+    #[serde(default)]
+    params: Option<JsonValue>,
+    #[serde(default)]
+    body: Option<JsonValue>,
+    #[serde(default)]
+    api_version: Option<String>,
+    #[serde(default)]
+    page_all: bool,
+    #[serde(default)]
+    page_limit: Option<u64>,
+}
+
+fn default_resolve_refs() -> bool {
+    true
+}
 
 /// Build the composite external_id we use for a Gmail attachment document.
 ///
@@ -118,6 +161,110 @@ pub struct GoogleConnector {
     pub admin_client: Arc<AdminClient>,
 }
 
+fn validate_gws_token(value: &str, label: &str) -> Result<()> {
+    if value.is_empty()
+        || !value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(anyhow!(
+            "{} must contain only ASCII letters, numbers, hyphen, underscore, or dot",
+            label
+        ));
+    }
+    Ok(())
+}
+
+fn push_gws_path(args: &mut Vec<String>, value: &str, label: &str) -> Result<()> {
+    for segment in value.split('.') {
+        validate_gws_token(segment, label)?;
+        args.push(segment.to_string());
+    }
+    Ok(())
+}
+
+fn build_gws_schema_args(request: &GwsSchemaRequest) -> Result<Vec<String>> {
+    if request.schema.is_empty() {
+        return Err(anyhow!("schema is required"));
+    }
+    for segment in request.schema.split('.') {
+        validate_gws_token(segment, "schema")?;
+    }
+
+    let mut args = vec!["schema".to_string(), request.schema.clone()];
+    if request.resolve_refs {
+        args.push("--resolve-refs".to_string());
+    }
+    Ok(args)
+}
+
+fn build_gws_call_args(request: &GwsCallRequest) -> Result<Vec<String>> {
+    validate_gws_token(&request.service, "service")?;
+    validate_gws_token(&request.method, "method")?;
+
+    let mut args = vec![request.service.clone()];
+    push_gws_path(&mut args, &request.resource, "resource")?;
+    if let Some(sub_resource) = &request.sub_resource {
+        push_gws_path(&mut args, sub_resource, "sub_resource")?;
+    }
+    args.push(request.method.clone());
+
+    if let Some(params) = &request.params {
+        if !params.is_object() {
+            return Err(anyhow!("params must be a JSON object"));
+        }
+        args.push("--params".to_string());
+        args.push(serde_json::to_string(params)?);
+    }
+    if let Some(body) = &request.body {
+        if !body.is_object() {
+            return Err(anyhow!("body must be a JSON object"));
+        }
+        args.push("--json".to_string());
+        args.push(serde_json::to_string(body)?);
+    }
+    if let Some(api_version) = &request.api_version {
+        validate_gws_token(api_version, "api_version")?;
+        args.push("--api-version".to_string());
+        args.push(api_version.clone());
+    }
+    if request.page_all {
+        args.push("--page-all".to_string());
+    }
+    if let Some(page_limit) = request.page_limit {
+        args.push("--page-limit".to_string());
+        args.push(page_limit.to_string());
+    }
+
+    Ok(args)
+}
+
+fn gws_action_response(
+    success: bool,
+    exit_code: Option<i32>,
+    stdout: &str,
+    stderr: &str,
+) -> ActionResponse {
+    if !success {
+        return ActionResponse::failure(
+            json!({
+                "exit_code": exit_code,
+                "stdout": stdout,
+                "stderr": stderr,
+            })
+            .to_string(),
+        );
+    }
+
+    let result = if stdout.is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(stdout).unwrap_or_else(|_| json!({ "content": stdout }))
+    };
+
+    ActionResponse::success(result)
+}
+
 impl GoogleConnector {
     pub fn new(sync_manager: Arc<SyncManager>, admin_client: Arc<AdminClient>) -> Self {
         Self {
@@ -126,47 +273,102 @@ impl GoogleConnector {
         }
     }
 
-    fn mcp_service_credential(&self, credentials: &McpCredentials) -> ServiceCredential {
-        let auth_type = credentials.auth_type.unwrap_or_else(|| {
-            if credentials.credentials.get("refresh_token").is_some() {
-                AuthType::OAuth
-            } else {
-                AuthType::Jwt
-            }
-        });
-
-        let config = if auth_type == AuthType::Jwt && credentials.config.get("scopes").is_none() {
+    fn gws_service_credential(&self, credentials: &ServiceCredential) -> ServiceCredential {
+        let config = if credentials.auth_type == AuthType::Jwt
+            && credentials.config.get("scopes").is_none()
+        {
             let mut config = credentials.config.as_object().cloned().unwrap_or_default();
-            config.insert(
-                "scopes".to_string(),
-                json!([
-                    "https://www.googleapis.com/auth/admin.directory.user.readonly",
-                    "https://www.googleapis.com/auth/admin.directory.group.readonly",
-                    "https://www.googleapis.com/auth/drive.readonly",
-                    "https://www.googleapis.com/auth/gmail.readonly"
-                ]),
-            );
-            let config = JsonValue::Object(config);
-            config
+            config.insert("scopes".to_string(), json!(GOOGLE_WORKSPACE_SCOPES));
+            JsonValue::Object(config)
         } else {
             credentials.config.clone()
         };
 
-        let now = OffsetDateTime::now_utc();
         ServiceCredential {
-            id: "mcp".to_string(),
-            source_id: "mcp".to_string(),
-            user_id: None,
+            id: credentials.id.clone(),
+            source_id: credentials.source_id.clone(),
+            user_id: credentials.user_id.clone(),
             provider: ServiceProvider::Google,
-            auth_type,
+            auth_type: credentials.auth_type,
             principal_email: credentials.principal_email.clone(),
             credentials: credentials.credentials.clone(),
             config,
-            expires_at: None,
-            last_validated_at: None,
-            created_at: now,
-            updated_at: now,
+            expires_at: credentials.expires_at,
+            last_validated_at: credentials.last_validated_at,
+            created_at: credentials.created_at,
+            updated_at: credentials.updated_at,
         }
+    }
+
+    async fn gws_token(&self, credentials: &ServiceCredential) -> Result<String> {
+        let service_credential = self.gws_service_credential(credentials);
+        let auth = self
+            .sync_manager
+            .create_auth(&service_credential, SourceType::GoogleDrive)
+            .await?;
+        let principal_email = auth
+            .oauth_user_email()
+            .or(service_credential.principal_email.as_deref())
+            .ok_or_else(|| anyhow!("Missing principal_email in Google Workspace credentials"))?;
+
+        auth.get_fresh_token(principal_email).await
+    }
+
+    async fn execute_gws_args(
+        &self,
+        args: Vec<String>,
+        creds: &ServiceCredential,
+    ) -> Result<Response> {
+        let token = self.gws_token(creds).await?;
+        debug!("Executing gws with args: {:?}", args);
+
+        let mut command = Command::new(GWS_COMMAND);
+        command
+            .args(&args)
+            .env(GOOGLE_WORKSPACE_CLI_TOKEN, token)
+            .kill_on_drop(true);
+
+        let output = timeout(GWS_TIMEOUT, command.output())
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "gws command timed out after {} seconds",
+                    GWS_TIMEOUT.as_secs()
+                )
+            })?
+            .context("Failed to execute gws command")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Ok(gws_action_response(
+            output.status.success(),
+            output.status.code(),
+            &stdout,
+            &stderr,
+        )
+        .into_response())
+    }
+
+    async fn execute_gws_schema(
+        &self,
+        params: JsonValue,
+        creds: &ServiceCredential,
+    ) -> Result<Response> {
+        let request: GwsSchemaRequest =
+            serde_json::from_value(params).context("Invalid google_workspace_schema params")?;
+        let args = build_gws_schema_args(&request)?;
+        self.execute_gws_args(args, creds).await
+    }
+
+    async fn execute_gws_call(
+        &self,
+        params: JsonValue,
+        creds: &ServiceCredential,
+    ) -> Result<Response> {
+        let request: GwsCallRequest =
+            serde_json::from_value(params).context("Invalid google_workspace_call params")?;
+        let args = build_gws_call_args(&request)?;
+        self.execute_gws_args(args, creds).await
     }
 
     async fn execute_fetch_file(
@@ -500,36 +702,83 @@ impl Connector for GoogleConnector {
                 admin_only: true,
                 hidden: false,
             },
+            ActionDefinition {
+                name: "google_workspace_schema".to_string(),
+                description: "Inspect the JSON schema for a Google Workspace CLI method"
+                    .to_string(),
+                mode: omni_connector_sdk::ActionMode::Read,
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "schema": {
+                            "type": "string",
+                            "description": "Google Workspace CLI schema name, e.g. drive.files.list or gmail.users.messages.get"
+                        },
+                        "resolve_refs": {
+                            "type": "boolean",
+                            "default": true,
+                            "description": "Whether to resolve schema references"
+                        }
+                    },
+                    "required": ["schema"]
+                }),
+                source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
+                admin_only: false,
+                hidden: false,
+            },
+            ActionDefinition {
+                name: "google_workspace_call".to_string(),
+                description: "Call a Google Workspace API through the installed gws CLI"
+                    .to_string(),
+                mode: omni_connector_sdk::ActionMode::Write,
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "service": {
+                            "type": "string",
+                            "description": "Google Workspace service, e.g. drive, gmail, calendar"
+                        },
+                        "resource": {
+                            "type": "string",
+                            "description": "Resource path, dot-separated for nested resources, e.g. files or users.messages"
+                        },
+                        "sub_resource": {
+                            "type": "string",
+                            "description": "Optional additional nested resource path"
+                        },
+                        "method": {
+                            "type": "string",
+                            "description": "Method name, e.g. list, get, send"
+                        },
+                        "params": {
+                            "type": "object",
+                            "description": "URL/query parameters passed to gws --params"
+                        },
+                        "body": {
+                            "type": "object",
+                            "description": "Request body passed to gws --json"
+                        },
+                        "api_version": {
+                            "type": "string",
+                            "description": "Optional API version override"
+                        },
+                        "page_all": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Whether gws should auto-paginate"
+                        },
+                        "page_limit": {
+                            "type": "integer",
+                            "description": "Maximum pages to fetch when page_all is true"
+                        }
+                    },
+                    "required": ["service", "resource", "method"]
+                }),
+                source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
+                admin_only: false,
+                hidden: false,
+            },
         ]
-    }
-
-    fn mcp_server(&self) -> Option<McpServer> {
-        Some(McpServer::Stdio(StdioMcpServer::new("gws").with_args([
-            "mcp",
-            "--tool-mode",
-            "compact",
-        ])))
-    }
-
-    async fn prepare_mcp_env(
-        &self,
-        credentials: &McpCredentials,
-    ) -> Result<HashMap<String, String>> {
-        let service_credential = self.mcp_service_credential(credentials);
-        let auth = self
-            .sync_manager
-            .create_auth(&service_credential, SourceType::GoogleDrive)
-            .await?;
-        let principal_email = auth
-            .oauth_user_email()
-            .or(service_credential.principal_email.as_deref())
-            .ok_or_else(|| anyhow!("Missing principal_email in Google MCP credentials"))?;
-        let token = auth.get_fresh_token(principal_email).await?;
-
-        Ok(HashMap::from([(
-            "GOOGLE_WORKSPACE_CLI_TOKEN".to_string(),
-            token,
-        )]))
     }
 
     fn search_operators(&self) -> Vec<SearchOperator> {
@@ -568,8 +817,8 @@ impl Connector for GoogleConnector {
             "google_drive".to_string(),
             OAuthScopeSet {
                 read: vec!["https://www.googleapis.com/auth/drive.readonly".to_string()],
-                // drive.file scopes the grant to files the app creates/opens — the
-                // safe default for MCP write tools.
+                // drive.file scopes the grant to files the app creates/opens,
+                // which is the safe default for Workspace write tools.
                 write: vec!["https://www.googleapis.com/auth/drive.file".to_string()],
             },
         );
@@ -690,6 +939,8 @@ impl Connector for GoogleConnector {
         match action {
             "fetch_file" => self.execute_fetch_file(params, &creds).await,
             "search_users" => self.execute_search_users(params, &creds).await,
+            "google_workspace_schema" => self.execute_gws_schema(params, &creds).await,
+            "google_workspace_call" => self.execute_gws_call(params, &creds).await,
             _ => {
                 use axum::http::StatusCode;
                 Ok(ActionResponse::not_supported(action)
@@ -709,13 +960,16 @@ impl Connector for GoogleConnector {
 mod tests {
     use std::sync::Arc;
 
-    use omni_connector_sdk::{AuthType, Connector, McpCredentials, McpServer, SdkClient};
+    use omni_connector_sdk::{AuthType, Connector, SdkClient, ServiceCredential, ServiceProvider};
     use serde_json::json;
 
     use crate::admin::AdminClient;
     use crate::sync::SyncManager;
 
-    use super::{GoogleConnector, build_attachment_doc_id, parse_attachment_doc_id};
+    use super::{
+        GoogleConnector, GwsCallRequest, GwsSchemaRequest, build_attachment_doc_id,
+        build_gws_call_args, build_gws_schema_args, gws_action_response, parse_attachment_doc_id,
+    };
 
     fn test_connector() -> GoogleConnector {
         let sdk_client = SdkClient::new("http://127.0.0.1:1");
@@ -728,43 +982,57 @@ mod tests {
         GoogleConnector::new(sync_manager, admin_client)
     }
 
-    #[test]
-    fn mcp_server_uses_gws_compact_stdio() {
-        let connector = test_connector();
-        let server = connector.mcp_server().expect("mcp server");
-        match server {
-            McpServer::Stdio(stdio) => {
-                assert_eq!(stdio.command, "gws");
-                assert_eq!(stdio.args, ["mcp", "--tool-mode", "compact"]);
-            }
-            McpServer::Http(_) => panic!("google MCP should use stdio"),
+    fn test_service_credential(
+        auth_type: AuthType,
+        config: serde_json::Value,
+    ) -> ServiceCredential {
+        let now = time::OffsetDateTime::now_utc();
+        ServiceCredential {
+            id: "credential".to_string(),
+            source_id: "source".to_string(),
+            user_id: Some("user".to_string()),
+            provider: ServiceProvider::Google,
+            auth_type,
+            principal_email: Some("admin@example.com".to_string()),
+            credentials: json!({"service_account_key": "{}"}),
+            config,
+            expires_at: None,
+            last_validated_at: None,
+            created_at: now,
+            updated_at: now,
         }
     }
 
     #[test]
-    fn mcp_service_credential_infers_oauth_auth_type() {
+    fn google_connector_does_not_use_mcp_server() {
         let connector = test_connector();
-        let creds = connector.mcp_service_credential(&McpCredentials {
-            credentials: json!({
-                "access_token": "access",
-                "refresh_token": "refresh",
-                "user_email": "user@example.com"
-            }),
-            ..Default::default()
-        });
-
-        assert_eq!(creds.auth_type, AuthType::OAuth);
-        assert_eq!(creds.credentials["refresh_token"], "refresh");
+        assert!(connector.mcp_server().is_none());
     }
 
     #[test]
-    fn mcp_service_credential_adds_combined_scopes_for_service_accounts() {
+    fn manifest_includes_google_workspace_bridge_actions() {
         let connector = test_connector();
-        let creds = connector.mcp_service_credential(&McpCredentials {
-            credentials: json!({"service_account_key": "{}"}),
-            principal_email: Some("admin@example.com".to_string()),
-            ..Default::default()
-        });
+        let actions = connector.actions();
+        assert!(actions.iter().any(|a| a.name == "google_workspace_schema"));
+        assert!(actions.iter().any(|a| a.name == "google_workspace_call"));
+    }
+
+    #[test]
+    fn gws_service_credential_preserves_oauth_auth_type() {
+        let connector = test_connector();
+        let credential = test_service_credential(AuthType::OAuth, json!({}));
+        let creds = connector.gws_service_credential(&credential);
+
+        assert_eq!(creds.auth_type, AuthType::OAuth);
+        assert_eq!(creds.id, "credential");
+        assert_eq!(creds.user_id.as_deref(), Some("user"));
+    }
+
+    #[test]
+    fn gws_service_credential_adds_combined_scopes_for_service_accounts() {
+        let connector = test_connector();
+        let credential = test_service_credential(AuthType::Jwt, json!({}));
+        let creds = connector.gws_service_credential(&credential);
 
         assert_eq!(creds.auth_type, AuthType::Jwt);
         let scopes = creds.config["scopes"].as_array().expect("scopes");
@@ -778,6 +1046,86 @@ mod tests {
                 .iter()
                 .any(|s| s == "https://www.googleapis.com/auth/gmail.readonly")
         );
+    }
+
+    #[test]
+    fn build_gws_schema_args_resolves_refs_by_default() {
+        let args = build_gws_schema_args(&GwsSchemaRequest {
+            schema: "drive.files.list".to_string(),
+            resolve_refs: true,
+        })
+        .unwrap();
+
+        assert_eq!(args, ["schema", "drive.files.list", "--resolve-refs"]);
+    }
+
+    #[test]
+    fn build_gws_call_args_uses_positional_path_and_optional_flags() {
+        let args = build_gws_call_args(&GwsCallRequest {
+            service: "gmail".to_string(),
+            resource: "users.messages".to_string(),
+            sub_resource: None,
+            method: "list".to_string(),
+            params: Some(json!({"userId": "me"})),
+            body: None,
+            api_version: Some("v1".to_string()),
+            page_all: true,
+            page_limit: Some(2),
+        })
+        .unwrap();
+
+        assert_eq!(
+            args,
+            [
+                "gmail",
+                "users",
+                "messages",
+                "list",
+                "--params",
+                "{\"userId\":\"me\"}",
+                "--api-version",
+                "v1",
+                "--page-all",
+                "--page-limit",
+                "2"
+            ]
+        );
+    }
+
+    #[test]
+    fn build_gws_call_args_rejects_non_object_params() {
+        let err = build_gws_call_args(&GwsCallRequest {
+            service: "drive".to_string(),
+            resource: "files".to_string(),
+            sub_resource: None,
+            method: "list".to_string(),
+            params: Some(json!("not-an-object")),
+            body: None,
+            api_version: None,
+            page_all: false,
+            page_limit: None,
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("params must be a JSON object"));
+    }
+
+    #[test]
+    fn gws_action_response_maps_nonzero_exit_to_failure() {
+        let response = gws_action_response(false, Some(3), "", "bad args");
+
+        assert_eq!(response.status, "error");
+        let error = response.error.expect("error");
+        assert!(error.contains("\"exit_code\":3"));
+        assert!(error.contains("\"stderr\":\"bad args\""));
+    }
+
+    #[test]
+    fn gws_action_response_parses_json_stdout() {
+        let response = gws_action_response(true, Some(0), "{\"ok\":true}", "");
+
+        assert_eq!(response.status, "success");
+        assert_eq!(response.result, Some(json!({"ok": true})));
     }
 
     #[test]

@@ -1,14 +1,19 @@
 # Google Drive Skill
 
 Source: adapted from `googleworkspace/cli` `skills/gws-drive/SKILL.md`
-at https://github.com/googleworkspace/cli. Omni uses Google connector MCP tools
-instead of direct local `gws` commands.
+at https://github.com/googleworkspace/cli. Omni routes Google Workspace CLI
+requests through connector actions instead of direct local `gws` commands.
 
 ## Tool Use
-Use available connector tools for Google Drive, usually named with the
-`google_drive__` prefix. Do not run local `gws` commands from the sandbox for
-Drive access; Omni owns authentication and routes requests through connector
-tools with source permissions.
+Use the Google connector's `google_workspace_schema` and
+`google_workspace_call` actions for Drive API access. Do not run local `gws` commands from the sandbox for Drive access; Omni owns authentication and routes
+requests through connector tools with source permissions.
+
+For unfamiliar Drive methods, call `google_workspace_schema` first with schema
+names like `drive.files.list`, `drive.files.get`, or `drive.permissions.create`.
+Then call `google_workspace_call` with `service: "drive"`, the resource path
+such as `files` or `permissions`, the method, and any query parameters in
+`params`.
 
 ## Search First
 When the user gives a file name, folder name, shared drive name, or vague

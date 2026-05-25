@@ -1,14 +1,19 @@
 # Gmail Skill
 
 Source: adapted from `googleworkspace/cli` `skills/gws-gmail/SKILL.md`
-at https://github.com/googleworkspace/cli. Omni uses Google connector MCP tools
-instead of direct local `gws` commands.
+at https://github.com/googleworkspace/cli. Omni routes Google Workspace CLI
+requests through connector actions instead of direct local `gws` commands.
 
 ## Tool Use
-Use available connector tools for Gmail, usually named with the `gmail__`
-prefix. Do not run local `gws` commands from the sandbox for mailbox access;
-Omni owns authentication and routes requests through connector tools with source
-permissions.
+Use the Google connector's `google_workspace_schema` and
+`google_workspace_call` actions for Gmail API access. Do not run local `gws` commands from the sandbox for mailbox access; Omni owns authentication and
+routes requests through connector tools with source permissions.
+
+For unfamiliar Gmail methods, call `google_workspace_schema` first with schema
+names like `gmail.users.messages.list`, `gmail.users.messages.get`, or
+`gmail.users.threads.get`. Then call `google_workspace_call` with
+`service: "gmail"`, resource paths such as `users.messages` or `users.threads`,
+method names like `list` or `get`, and Gmail query parameters in `params`.
 
 ## Search Before Reading
 Use Gmail search/list tools before reading full messages or threads. Gmail query

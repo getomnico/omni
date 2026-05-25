@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install the Google Workspace CLI used by the connector's MCP stdio adapter.
+# Install the Google Workspace CLI used by the connector's action bridge.
 RUN cargo install --git https://github.com/googleworkspace/cli --locked
 
 # Cook dependencies based on build mode
