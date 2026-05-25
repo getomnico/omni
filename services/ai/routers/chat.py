@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import pathlib
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import cast
 
@@ -14,6 +15,7 @@ from anthropic.types import (
     CitationsDelta,
     CitationSearchResultLocationParam,
     CitationWebSearchResultLocationParam,
+    ContentBlockParam,
     MessageParam,
     TextBlockParam,
     TextCitationParam,
@@ -61,10 +63,11 @@ from tools import (
     PeopleSearchHandler,
     SearchToolHandler,
     ToolContext,
+    ToolHandler,
     ToolRegistry,
 )
 from tools.connector_handler import SearchOperator, ToolsetSummary
-from tools.meta_handler import LOADED_TOOLS_MARKER, MetaToolHandler, OnLoad
+from tools.meta_handler import MetaToolHandler, OnLoad
 from tools.omni_tool_result import OAuthRequiredPayload
 from tools.sandbox_handler import SandboxToolHandler
 from tools.search_handler import fetch_operator_values
@@ -173,86 +176,49 @@ class RegistryResult:
     registry: ToolRegistry
     # Handlers whose tools are always exposed in the LLM's per-turn tool list
     # (built-ins + meta-tools). Connector tools are handled separately.
-    always_on_handlers: list
+    always_on_handlers: list[ToolHandler]
     connector_handler: ConnectorToolHandler | None
-    toolsets: list[ToolsetSummary] | None
-    sources: list[Source] | None
-    search_operators: list[SearchOperator] | None
+    toolsets: list[ToolsetSummary]
+    sources: list[Source]
+    search_operators: list[SearchOperator]
 
 
 def _loaded_tools_from_history(
-    messages: list[MessageParam], connector_handler: ConnectorToolHandler | None
+    messages: list[MessageParam], connector_handler: ConnectorToolHandler
 ) -> set[str]:
-    """Rebuild loaded connector tool names from prior meta-tool calls/results."""
-    if connector_handler is None:
-        return set()
-
-    tool_calls: dict[str, tuple[str, dict[str, object]]] = {}
+    """Rebuild loaded connector tool names from successful meta-tool calls."""
+    tool_calls: dict[str, ToolUseBlockParam] = {}
     loaded: set[str] = set()
 
     for message in messages:
         for block in _message_content_blocks(message):
-            match block:
-                case {
-                    "type": "tool_use",
-                    "id": str(tool_use_id),
-                    "name": str(name),
-                    "input": dict(tool_input),
-                }:
-                    tool_calls[tool_use_id] = (
-                        name,
-                        cast(dict[str, object], tool_input),
-                    )
-                case {"type": "tool_result", "is_error": True}:
-                    continue
-                case {
-                    "type": "tool_result",
-                    "tool_use_id": str(tool_use_id),
-                    "content": result_content,
-                }:
-                    text = _tool_result_text(result_content)
-                    loaded.update(_parse_loaded_tools_marker(text))
-
-                    call = tool_calls.get(tool_use_id)
+            match block["type"]:
+                case "tool_use":
+                    tool_use = cast(ToolUseBlockParam, block)
+                    tool_calls[tool_use["id"]] = tool_use
+                case "tool_result":
+                    tool_result = cast(ToolResultBlockParam, block)
+                    if tool_result.get("is_error", False):
+                        continue
+                    call = tool_calls.get(tool_result["tool_use_id"])
                     if call is None:
                         continue
                     loaded.update(
                         _loaded_tools_from_meta_call(
-                            call[0], call[1], connector_handler
+                            call["name"], call["input"], connector_handler
                         )
                     )
+                case _:
+                    continue
 
     return loaded
 
 
-def _message_content_blocks(message: MessageParam) -> list[object]:
-    match message:
-        case {"content": str()}:
-            return []
-        case {"content": [*blocks]}:
-            return blocks
-    return []
-
-
-def _tool_result_text(content: object) -> str:
-    if not isinstance(content, list):
-        return ""
-    parts: list[str] = []
-    for block in content:
-        if isinstance(block, dict) and block.get("type") == "text":
-            text = block.get("text")
-            if isinstance(text, str):
-                parts.append(text)
-    return "\n".join(parts)
-
-
-def _parse_loaded_tools_marker(text: str) -> set[str]:
-    for line in text.splitlines():
-        if not line.startswith(LOADED_TOOLS_MARKER):
-            continue
-        raw_names = line.removeprefix(LOADED_TOOLS_MARKER).strip()
-        return {name.strip() for name in raw_names.split(",") if name.strip()}
-    return set()
+def _message_content_blocks(message: MessageParam) -> list[ContentBlockParam]:
+    content = message["content"]
+    if isinstance(content, str):
+        return []
+    return list(cast(Iterable[ContentBlockParam], content))
 
 
 def _loaded_source_ids(
@@ -337,14 +303,14 @@ async def _build_registry(
     `load_tool_set` (issue #203).
     """
     registry = ToolRegistry()
-    always_on_handlers: list = []
+    always_on_handlers: list[ToolHandler] = []
 
     # Fetch sources from connector manager once, share with all handlers
-    sources = await _fetch_sources_from_connector_manager()
+    sources = await _fetch_sources_from_connector_manager() or []
 
     connector_handler: ConnectorToolHandler | None = None
-    toolsets: list[ToolsetSummary] | None = None
-    search_operators: list[SearchOperator] | None = None
+    toolsets: list[ToolsetSummary] = []
+    search_operators: list[SearchOperator] = []
 
     # Register connector tools if connector-manager is configured
     if CONNECTOR_MANAGER_URL:
@@ -381,7 +347,7 @@ async def _build_registry(
         always_on_handlers.append(meta_handler)
 
     # Fetch dynamic operator values for enriched search tool description
-    active_sources = [s for s in (sources or []) if s.is_active and not s.is_deleted]
+    active_sources = [s for s in sources if s.is_active and not s.is_deleted]
     connected_source_types = list({s.source_type for s in active_sources})
     operator_values: dict[str, list[str]] = {}
     if search_operators:
@@ -458,14 +424,14 @@ async def _build_agent_chat_registry(
     Write/connector-action tools are intentionally not registered — agent chats are read-only.
     """
     registry = ToolRegistry()
-    always_on_handlers: list = []
+    always_on_handlers: list[ToolHandler] = []
 
-    sources = await _fetch_sources_from_connector_manager()
+    sources = await _fetch_sources_from_connector_manager() or []
 
     source_filter = _build_source_filter(agent) if agent.agent_type == "user" else None
 
     # We still need connector handler for search operators, but won't register it
-    search_operators = None
+    search_operators: list[SearchOperator] = []
     if CONNECTOR_MANAGER_URL:
         connector_handler = ConnectorToolHandler(
             connector_manager_url=CONNECTOR_MANAGER_URL,
@@ -480,7 +446,7 @@ async def _build_agent_chat_registry(
         if connector_handler.search_operators:
             search_operators = connector_handler.search_operators
 
-    active_sources = [s for s in (sources or []) if s.is_active and not s.is_deleted]
+    active_sources = [s for s in sources if s.is_active and not s.is_deleted]
     connected_source_types = list({s.source_type for s in active_sources})
     operator_values: dict[str, list[str]] = {}
     if search_operators:
@@ -531,7 +497,7 @@ async def _build_agent_chat_registry(
         registry=registry,
         always_on_handlers=always_on_handlers,
         connector_handler=None,
-        toolsets=None,
+        toolsets=[],
         sources=sources,
         search_operators=search_operators,
     )
@@ -709,7 +675,7 @@ async def stream_chat(
         run_repo = AgentRunRepository()
         runs = await run_repo.list_runs(agent.id, limit=20)
         active_sources = [
-            s for s in (build_result.sources or []) if s.is_active and not s.is_deleted
+            s for s in build_result.sources if s.is_active and not s.is_deleted
         ]
 
         # Memory: fetch agent-scoped memories (same scoping as background executor)
@@ -797,9 +763,10 @@ async def stream_chat(
             is_admin=is_admin,
             loaded_toolsets=loaded_toolsets,
         )
-        loaded_toolsets.update(
-            _loaded_tools_from_history(messages, build_result.connector_handler)
-        )
+        if build_result.connector_handler is not None:
+            loaded_toolsets.update(
+                _loaded_tools_from_history(messages, build_result.connector_handler)
+            )
         registry = build_result.registry
 
         # Check for pending approval / OAuth resume flow
@@ -810,7 +777,7 @@ async def stream_chat(
             pending_oauth = await _get_pending_oauth(redis_client, chat_id)
 
         active_sources = [
-            s for s in (build_result.sources or []) if s.is_active and not s.is_deleted
+            s for s in build_result.sources if s.is_active and not s.is_deleted
         ]
 
         # Memory: resolve mode and fetch relevant memories

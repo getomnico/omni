@@ -33,7 +33,7 @@ def _connector_with(actions: list[ConnectorAction]) -> ConnectorToolHandler:
 
 
 @pytest.mark.asyncio
-async def test_chat_resume_restores_loaded_tool_from_history_marker():
+async def test_chat_resume_restores_loaded_tool_from_successful_tool_call():
     connector_handler = _connector_with(
         [
             _action("src-gmail-1", "gmail", "send_email"),
@@ -62,10 +62,7 @@ async def test_chat_resume_restores_loaded_tool_from_history_marker():
                     content=[
                         {
                             "type": "text",
-                            "text": (
-                                "Loaded tool: gmail__send_email\n"
-                                "Loaded tool names: gmail__send_email"
-                            ),
+                            "text": "Loaded tool: gmail__send_email",
                         }
                     ],
                     is_error=False,

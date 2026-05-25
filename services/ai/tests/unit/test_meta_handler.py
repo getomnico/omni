@@ -179,7 +179,7 @@ async def test_load_tool_loads_one_exact_tool(actions):
     assert not result.is_error
     assert loaded == {"gmail__send_email"}
     assert fired == [{"gmail__send_email"}]
-    assert "Loaded tool names: gmail__send_email" in result.content[0]["text"]
+    assert "Loaded tool: gmail__send_email" in result.content[0]["text"]
 
 
 @pytest.mark.asyncio

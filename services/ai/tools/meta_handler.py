@@ -29,8 +29,6 @@ _TOOL_NAMES = {"tool_search", "load_tool", "load_tool_set"}
 _DEFAULT_LIMIT = 10
 _MAX_LIMIT = 25
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
-LOADED_TOOLS_MARKER = "Loaded tool names:"
-
 OnLoad = Callable[[set[str]], Awaitable[None]]
 
 
@@ -300,7 +298,6 @@ class MetaToolHandler:
         lines = [f"Loaded tool: {tool_name}"]
         if desc:
             lines.append(f"- {desc}")
-        lines.append(f"{LOADED_TOOLS_MARKER} {tool_name}")
         if not newly_loaded:
             lines.append("(Tool was already loaded.)")
         lines.append("Call this tool on your next turn.")
@@ -358,7 +355,6 @@ class MetaToolHandler:
                 else ""
             )
             lines.append(f"- {tool_name} — {desc}")
-        lines.append(f"{LOADED_TOOLS_MARKER} {', '.join(sorted(matched_tools))}")
         if not newly_loaded:
             lines.append("(All targeted tools were already loaded.)")
         lines.append("Call any of these tools on your next turn.")
