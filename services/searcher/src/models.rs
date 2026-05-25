@@ -193,6 +193,10 @@ pub struct AttributeValuesResponse {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CapabilityUpsert {
     pub id: String,
+    pub capability_type: String,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    pub search_text: String,
     pub data: serde_json::Value,
 }
 
@@ -227,6 +231,9 @@ impl CapabilitySearchRequest {
 #[derive(Debug, Clone, Serialize)]
 pub struct CapabilitySearchResult {
     pub id: String,
+    pub capability_type: String,
+    pub user_id: Option<String>,
+    pub search_text: String,
     pub data: serde_json::Value,
     pub score: f32,
 }

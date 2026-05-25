@@ -226,15 +226,14 @@ class MetaToolHandler:
             capabilities.append(
                 CapabilityUpsert(
                     id=f"tool:{tool_name}",
+                    capability_type="tool",
+                    search_text=(
+                        f"{tool_name} {action.source_type} {action.source_name} "
+                        f"{action.action_name} {action.description or ''}"
+                    ),
                     data={
-                        "capability_type": "tool",
                         "tool_name": tool_name,
-                        "title": tool_name,
                         "description": action.description or "",
-                        "body": (
-                            f"{action.source_type} {action.source_name} "
-                            f"{action.action_name} {action.description or ''}"
-                        ),
                         "source_id": action.source_id,
                         "source_type": action.source_type,
                         "source_name": action.source_name,

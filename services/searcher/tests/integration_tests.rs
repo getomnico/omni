@@ -88,6 +88,75 @@ async fn test_health_check() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_capability_search_indexes_json_data_fields() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+
+    let upsert_body = json!({
+        "capabilities": [
+            {
+                "id": "tool:gmail__send_email",
+                "capability_type": "tool",
+                "user_id": null,
+                "search_text": "Gmail quokka title. Send narwhal updates through Gmail. Useful for composing platypus announcements. wombat workspace",
+                "data": {
+                    "tool_name": "gmail__send_email",
+                    "source_id": "src-gmail-1",
+                    "source_type": "gmail",
+                    "metadata": {
+                        "connector_label": "wombat workspace"
+                    }
+                }
+            },
+            {
+                "id": "tool:slack__post_message",
+                "capability_type": "tool",
+                "search_text": "Slack unrelated title. Post ordinary team messages.",
+                "data": {
+                    "tool_name": "slack__post_message",
+                    "source_id": "src-slack-1",
+                    "source_type": "slack"
+                }
+            }
+        ]
+    });
+
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/capabilities/upsert")
+        .header("content-type", "application/json")
+        .body(Body::from(upsert_body.to_string()))?;
+    let response = fixture.app.clone().oneshot(request).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let _body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+
+    for query in ["quokka", "narwhal", "platypus", "wombat"] {
+        let search_body = json!({
+            "capability_type": "tool",
+            "query": query,
+            "limit": 10
+        });
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/capabilities/search")
+            .header("content-type", "application/json")
+            .body(Body::from(search_body.to_string()))?;
+        let response = fixture.app.clone().oneshot(request).await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+        let json: Value = serde_json::from_slice(&body)?;
+        let results = json["results"].as_array().unwrap();
+        assert!(
+            results
+                .iter()
+                .any(|result| result["id"] == "tool:gmail__send_email"),
+            "Expected capability search for {query:?} to match JSON data fields, got: {json}"
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_empty_search_returns_error() -> Result<()> {
     let fixture = SearcherTestFixture::new().await?;
     let _doc_ids = fixture.seed_search_data().await?;

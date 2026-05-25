@@ -90,7 +90,10 @@ class PeopleSearchResponse(BaseModel):
 
 class CapabilityUpsert(BaseModel):
     id: str
+    capability_type: str
+    search_text: str
     data: JsonObject
+    user_id: str | None = None
 
 
 class CapabilitiesUpsertRequest(BaseModel):
@@ -111,8 +114,11 @@ class CapabilitySearchRequest(BaseModel):
 
 class CapabilitySearchResult(BaseModel):
     id: str
+    capability_type: str
+    search_text: str
     data: JsonObject
     score: float
+    user_id: str | None = None
 
 
 class CapabilitySearchResponse(BaseModel):
