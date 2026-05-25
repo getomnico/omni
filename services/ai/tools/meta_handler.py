@@ -15,6 +15,12 @@ from anthropic.types import ToolParam
 
 from tools.connector_handler import ConnectorAction, ConnectorToolHandler
 from tools.registry import ToolContext, ToolResult
+from tools.searcher_client import (
+    CapabilitiesUpsertRequest,
+    CapabilitySearchRequest,
+    CapabilityUpsert,
+    SearcherClient,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +40,12 @@ class MetaToolHandler:
         connector_handler: ConnectorToolHandler,
         loaded: set[str],
         on_load: OnLoad,
+        searcher_client: SearcherClient | None = None,
     ) -> None:
         self._ch = connector_handler
         self._loaded = loaded
         self._on_load = on_load
+        self._searcher_client = searcher_client
 
     def get_tools(self) -> list[ToolParam]:
         return [
@@ -138,21 +146,7 @@ class MetaToolHandler:
                 is_error=True,
             )
 
-        scored: list[tuple[int, str, ConnectorAction]] = []
-        for tool_name, action in self._ch.actions.items():
-            name_tokens = set(_TOKEN_RE.findall(tool_name.lower()))
-            desc_tokens = set(_TOKEN_RE.findall((action.description or "").lower()))
-            type_tokens = set(_TOKEN_RE.findall(action.source_type.lower()))
-            score = (
-                3 * len(query_tokens & name_tokens)
-                + 1 * len(query_tokens & desc_tokens)
-                + 2 * len(query_tokens & type_tokens)
-            )
-            if score > 0:
-                scored.append((score, tool_name, action))
-
-        scored.sort(key=lambda x: (-x[0], x[1]))
-        matches = scored[:limit]
+        matches = await self._search_tool_capabilities(query, limit, query_tokens)
 
         if not matches:
             return ToolResult(
@@ -168,11 +162,11 @@ class MetaToolHandler:
             )
 
         newly_loaded = await self._mark_loaded(
-            {action.source_id for _, _, action in matches}
+            {action.source_id for _, action in matches}
         )
 
         lines = [f"Loaded {len(matches)} tool(s) matching {query!r}:"]
-        for _, tool_name, action in matches:
+        for tool_name, action in matches:
             desc = (
                 (action.description or "").strip().splitlines()[0]
                 if action.description
@@ -186,6 +180,85 @@ class MetaToolHandler:
         lines.append("Call any of these tools on your next turn.")
 
         return ToolResult(content=[{"type": "text", "text": "\n".join(lines)}])
+
+    async def _search_tool_capabilities(
+        self, query: str, limit: int, query_tokens: set[str]
+    ) -> list[tuple[str, ConnectorAction]]:
+        if self._searcher_client is not None:
+            try:
+                await self._publish_tool_capabilities()
+                response = await self._searcher_client.search_capabilities(
+                    CapabilitySearchRequest(
+                        capability_type="tool",
+                        query=query,
+                        limit=limit,
+                        allowed_item_ids=list(self._ch.actions.keys()),
+                    )
+                )
+                matches: list[tuple[str, ConnectorAction]] = []
+                seen: set[str] = set()
+                for result in response.results:
+                    action = self._ch.actions.get(result.item_id)
+                    if action is None or result.item_id in seen:
+                        continue
+                    seen.add(result.item_id)
+                    matches.append((result.item_id, action))
+                if matches:
+                    return matches
+            except Exception as e:
+                logger.warning(
+                    f"Capability tool search failed; using local fallback: {e}"
+                )
+
+        return self._local_tool_search(query_tokens, limit)
+
+    async def _publish_tool_capabilities(self) -> None:
+        if self._searcher_client is None or not self._ch.actions:
+            return
+        capabilities: list[CapabilityUpsert] = []
+        for tool_name, action in self._ch.actions.items():
+            capabilities.append(
+                CapabilityUpsert(
+                    capability_id=f"tool:{tool_name}",
+                    capability_type="tool",
+                    item_id=tool_name,
+                    title=tool_name,
+                    description=action.description or "",
+                    body=(
+                        f"{action.source_type} {action.source_name} "
+                        f"{action.action_name} {action.description or ''}"
+                    ),
+                    source_id=action.source_id,
+                    source_type=action.source_type,
+                    metadata={
+                        "source_name": action.source_name,
+                        "action_name": action.action_name,
+                        "mode": action.mode,
+                    },
+                )
+            )
+        await self._searcher_client.upsert_capabilities(
+            CapabilitiesUpsertRequest(capabilities=capabilities)
+        )
+
+    def _local_tool_search(
+        self, query_tokens: set[str], limit: int
+    ) -> list[tuple[str, ConnectorAction]]:
+        scored: list[tuple[int, str, ConnectorAction]] = []
+        for tool_name, action in self._ch.actions.items():
+            name_tokens = set(_TOKEN_RE.findall(tool_name.lower()))
+            desc_tokens = set(_TOKEN_RE.findall((action.description or "").lower()))
+            type_tokens = set(_TOKEN_RE.findall(action.source_type.lower()))
+            score = (
+                3 * len(query_tokens & name_tokens)
+                + 1 * len(query_tokens & desc_tokens)
+                + 2 * len(query_tokens & type_tokens)
+            )
+            if score > 0:
+                scored.append((score, tool_name, action))
+
+        scored.sort(key=lambda x: (-x[0], x[1]))
+        return [(tool_name, action) for _, tool_name, action in scored[:limit]]
 
     async def _load_tool_set(self, tool_input: dict) -> ToolResult:
         source_id = tool_input.get("source_id")
@@ -205,10 +278,9 @@ class MetaToolHandler:
         target_ids: set[str] = set()
         matched_actions: list[ConnectorAction] = []
         for action in self._ch.actions.values():
-            if source_id and action.source_id == source_id:
-                target_ids.add(action.source_id)
-                matched_actions.append(action)
-            elif source_type and action.source_type == source_type:
+            if (source_id and action.source_id == source_id) or (
+                source_type and action.source_type == source_type
+            ):
                 target_ids.add(action.source_id)
                 matched_actions.append(action)
 
@@ -229,10 +301,13 @@ class MetaToolHandler:
 
         newly_loaded = await self._mark_loaded(target_ids)
 
-        # Group by tool_name for reporting (a single source may have many tools).
+        # Group by actual LLM tool name for reporting. Duplicate source types may
+        # have source-suffixed tool names, so do not reconstruct names here.
         unique_tools: dict[str, ConnectorAction] = {}
-        for action in matched_actions:
-            tool_name = f"{action.source_type}__{action.action_name}"
+        matched_ids = {id(action) for action in matched_actions}
+        for tool_name, action in self._ch.actions.items():
+            if id(action) not in matched_ids:
+                continue
             unique_tools.setdefault(tool_name, action)
 
         lines = [

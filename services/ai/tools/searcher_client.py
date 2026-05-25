@@ -2,12 +2,12 @@
 Client for communicating with the omni-searcher service.
 """
 
+import logging
 import os
 import sys
-import logging
-from typing import Optional, List
-from pydantic import BaseModel
+
 import httpx
+from pydantic import BaseModel, Field
 
 from db.models import UserConfiguration
 
@@ -16,22 +16,22 @@ logger = logging.getLogger(__name__)
 
 class SearchRequest(BaseModel):
     query: str
-    source_types: Optional[List[str]] = None
-    content_types: Optional[List[str]] = None
+    source_types: list[str] | None = None
+    content_types: list[str] | None = None
     limit: int = 20
     offset: int = 0
     mode: str = "hybrid"
-    user_id: Optional[str] = None
-    user_email: Optional[str] = None
+    user_id: str | None = None
+    user_email: str | None = None
     user_configuration: UserConfiguration | None = None
-    is_generated_query: Optional[bool] = None
-    original_user_query: Optional[str] = None
-    document_id: Optional[str] = None
-    document_content_start_line: Optional[int] = None
-    document_content_end_line: Optional[int] = None
-    include_facets: Optional[bool] = None
-    ignore_typos: Optional[bool] = None
-    attribute_filters: Optional[dict] = None
+    is_generated_query: bool | None = None
+    original_user_query: str | None = None
+    document_id: str | None = None
+    document_content_start_line: int | None = None
+    document_content_end_line: int | None = None
+    include_facets: bool | None = None
+    ignore_typos: bool | None = None
+    attribute_filters: dict | None = None
 
 
 class Document(BaseModel):
@@ -70,16 +70,62 @@ class PeopleSearchRequest(BaseModel):
 class PersonResult(BaseModel):
     id: str
     email: str
-    display_name: Optional[str] = None
-    given_name: Optional[str] = None
-    surname: Optional[str] = None
-    job_title: Optional[str] = None
-    department: Optional[str] = None
+    display_name: str | None = None
+    given_name: str | None = None
+    surname: str | None = None
+    job_title: str | None = None
+    department: str | None = None
     score: float
 
 
 class PeopleSearchResponse(BaseModel):
     people: list[PersonResult]
+
+
+class CapabilityUpsert(BaseModel):
+    capability_id: str
+    capability_type: str
+    item_id: str
+    title: str = ""
+    description: str = ""
+    body: str = ""
+    source_id: str | None = None
+    source_type: str | None = None
+    visibility: dict = Field(default_factory=dict)
+    metadata: dict = Field(default_factory=dict)
+
+
+class CapabilitiesUpsertRequest(BaseModel):
+    capabilities: list[CapabilityUpsert]
+
+
+class CapabilitiesUpsertResponse(BaseModel):
+    upserted: int
+
+
+class CapabilitySearchRequest(BaseModel):
+    capability_type: str
+    query: str
+    limit: int = 10
+    allowed_item_ids: list[str] | None = None
+    allowed_source_ids: list[str] | None = None
+
+
+class CapabilitySearchResult(BaseModel):
+    capability_id: str
+    capability_type: str
+    item_id: str
+    title: str
+    description: str
+    body: str
+    source_id: str | None = None
+    source_type: str | None = None
+    metadata: dict = Field(default_factory=dict)
+    score: float
+
+
+class CapabilitySearchResponse(BaseModel):
+    results: list[CapabilitySearchResult]
 
 
 class SearcherClient:
@@ -160,6 +206,44 @@ class SearcherClient:
         except Exception as e:
             logger.error(f"People search failed: {e}")
             raise
+
+    async def upsert_capabilities(
+        self, request: CapabilitiesUpsertRequest
+    ) -> CapabilitiesUpsertResponse:
+        """Publish searchable agent capability projections to omni-searcher."""
+        response = await self.client.post(
+            f"{self.searcher_url}/capabilities/upsert",
+            json=request.model_dump(),
+        )
+        if response.status_code == 200:
+            return CapabilitiesUpsertResponse.model_validate(response.json())
+        logger.error(
+            f"Capability upsert error: {response.status_code} - {response.text}"
+        )
+        raise SearcherError(
+            message=f"Capability upsert failed: {response.status_code} {response.text}",
+            request=response.request,
+            response=response,
+        )
+
+    async def search_capabilities(
+        self, request: CapabilitySearchRequest
+    ) -> CapabilitySearchResponse:
+        """Search agent capabilities using omni-searcher's ParadeDB index."""
+        response = await self.client.post(
+            f"{self.searcher_url}/capabilities/search",
+            json=request.model_dump(),
+        )
+        if response.status_code == 200:
+            return CapabilitySearchResponse.model_validate(response.json())
+        logger.error(
+            f"Capability search error: {response.status_code} - {response.text}"
+        )
+        raise SearcherError(
+            message=f"Capability search failed: {response.status_code} {response.text}",
+            request=response.request,
+            response=response,
+        )
 
     async def get_attribute_values(
         self, keys: list[str], limit: int = 25

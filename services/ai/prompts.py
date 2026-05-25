@@ -80,8 +80,8 @@ Connected apps: {connected_apps}
 - For processed spreadsheets or other output files, also use `present_artifact` so the user can download them.
 
 # Skills
-- Use `load_skill` to load detailed instructions when working with specific file types or complex tasks.
-- When working with Excel/spreadsheet files, load the "excel" skill first for guidance on data boundaries, merged cells, type inference, and the `excel` CLI tool.
+- Use `skill_search` to find detailed instructions when working with specific file types, connectors, or complex tasks, then call `load_skill` with the returned skill id.
+- When working with Excel/spreadsheet files, search for and load the Excel skill first for guidance on data boundaries, merged cells, type inference, and the `excel` CLI tool.
 {source_skill_lines}
 
 # Response style

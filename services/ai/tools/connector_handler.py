@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import asdict, dataclass
 from typing import Literal
 
@@ -24,6 +25,7 @@ from tools.sandbox import (
 logger = logging.getLogger(__name__)
 
 ACTIONS_CACHE_TTL = 60  # seconds
+_TOOL_NAME_SAFE_RE = re.compile(r"[^a-zA-Z0-9_]")
 
 SourceMode = Literal["read", "write"]
 # Maps source_id -> list of modes allowed for that source.
@@ -223,7 +225,7 @@ class ConnectorToolHandler:
         self._actions.clear()
         self._tools.clear()
 
-        seen_tools: set[str] = set()
+        base_name_counts: dict[str, int] = {}
         for action in actions:
             # Hidden actions (e.g. internal setup actions) never appear in
             # chat/agent tool lists, admins included.
@@ -242,16 +244,22 @@ class ConnectorToolHandler:
                     continue
 
             # Namespace: {source_type}__{action_name}
-            tool_name = f"{action.source_type}__{action.action_name}"
+            base_tool_name = f"{action.source_type}__{action.action_name}"
 
             # Apply action_whitelist: skip actions not in whitelist
             if self._action_whitelist is not None:
-                if tool_name not in self._action_whitelist:
+                if base_tool_name not in self._action_whitelist:
                     continue
 
-            if tool_name in seen_tools:
-                continue
-            seen_tools.add(tool_name)
+            occurrence = base_name_counts.get(base_tool_name, 0)
+            base_name_counts[base_tool_name] = occurrence + 1
+            if occurrence == 0:
+                tool_name = base_tool_name
+            else:
+                source_suffix = _TOOL_NAME_SAFE_RE.sub("_", action.source_id)
+                tool_name = f"{base_tool_name}__source_{source_suffix}"
+                if tool_name in self._actions:
+                    tool_name = f"{tool_name}_{occurrence + 1}"
 
             self._actions[tool_name] = action
 

@@ -284,3 +284,35 @@ def test_list_toolsets_groups_by_source(actions):
     # Sample names are sorted action_names, capped at 3.
     assert "list_threads" in by_source["src-gmail-1"]["sample_tool_names"]
     assert "send_email" in by_source["src-gmail-1"]["sample_tool_names"]
+
+
+def test_duplicate_source_type_actions_are_not_dropped():
+    actions = [
+        _make_action(
+            "src-gmail-work",
+            "gmail",
+            "send_email",
+            "Send from work Gmail.",
+            source_name="Work Gmail",
+        ),
+        _make_action(
+            "src-gmail-personal",
+            "gmail",
+            "send_email",
+            "Send from personal Gmail.",
+            source_name="Personal Gmail",
+        ),
+    ]
+    handler = _make_handler(actions)
+
+    toolsets = handler.list_toolsets()
+    assert {ts["source_id"] for ts in toolsets} == {
+        "src-gmail-work",
+        "src-gmail-personal",
+    }
+
+    work_names = {t["name"] for t in handler.filtered_tools({"src-gmail-work"})}
+    personal_names = {t["name"] for t in handler.filtered_tools({"src-gmail-personal"})}
+
+    assert work_names == {"gmail__send_email"}
+    assert personal_names == {"gmail__send_email__source_src_gmail_personal"}

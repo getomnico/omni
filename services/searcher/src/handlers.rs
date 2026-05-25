@@ -1,11 +1,12 @@
+use crate::capabilities_repository::AgentCapabilitiesRepository;
 use crate::models::{
-    AttributeValuesResponse, PeopleSearchResponse, PersonResult, RecentSearchesRequest,
-    SearchRequest, SuggestedQuestionsRequest, SuggestedQuestionsResponse, TypeaheadQuery,
-    TypeaheadResponse,
+    AttributeValuesResponse, CapabilitiesUpsertRequest, CapabilitiesUpsertResponse,
+    CapabilitySearchRequest, CapabilitySearchResponse, PeopleSearchResponse, PersonResult,
+    RecentSearchesRequest, SearchRequest, SuggestedQuestionsRequest, SuggestedQuestionsResponse,
+    TypeaheadQuery, TypeaheadResponse,
 };
 use crate::search::SearchEngine;
 use crate::search_repository::SearchDocumentRepository;
-use crate::suggested_questions::{self, SuggestedQuestionsGenerator};
 use crate::{AppState, Result as SearcherResult, SearcherError};
 use anyhow::anyhow;
 use axum::body::Body;
@@ -409,4 +410,54 @@ pub async fn attribute_values(
         .map_err(|e| SearcherError::Internal(anyhow!("Failed to fetch attribute values: {}", e)))?;
 
     Ok(Json(AttributeValuesResponse { attributes }))
+}
+
+pub async fn capabilities_upsert(
+    State(state): State<AppState>,
+    Json(request): Json<CapabilitiesUpsertRequest>,
+) -> SearcherResult<Json<CapabilitiesUpsertResponse>> {
+    if request.capabilities.len() > 500 {
+        return Err(SearcherError::BadRequest(
+            "capabilities batch is limited to 500 items".to_string(),
+        ));
+    }
+
+    let repo = AgentCapabilitiesRepository::new(state.db_pool.pool());
+    repo.upsert_many(&request.capabilities)
+        .await
+        .map_err(|e| SearcherError::Internal(anyhow!("Capability upsert failed: {}", e)))?;
+
+    Ok(Json(CapabilitiesUpsertResponse {
+        upserted: request.capabilities.len(),
+    }))
+}
+
+pub async fn capabilities_search(
+    State(state): State<AppState>,
+    Json(request): Json<CapabilitySearchRequest>,
+) -> SearcherResult<Json<CapabilitySearchResponse>> {
+    if request.query.trim().is_empty() {
+        return Err(SearcherError::BadRequest(
+            "query cannot be empty".to_string(),
+        ));
+    }
+    if request.capability_type.trim().is_empty() {
+        return Err(SearcherError::BadRequest(
+            "capability_type is required".to_string(),
+        ));
+    }
+
+    let repo = AgentCapabilitiesRepository::new(state.db_pool.pool());
+    let results = repo
+        .search(
+            &request.capability_type,
+            &request.query,
+            request.limit(),
+            request.allowed_item_ids.as_deref(),
+            request.allowed_source_ids.as_deref(),
+        )
+        .await
+        .map_err(|e| SearcherError::Internal(anyhow!("Capability search failed: {}", e)))?;
+
+    Ok(Json(CapabilitySearchResponse { results }))
 }

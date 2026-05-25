@@ -148,6 +148,7 @@ async def _build_agent_registry(
             connector_handler=connector_handler,
             loaded=loaded_toolsets,
             on_load=_noop_on_load,
+            searcher_client=app_state.searcher_tool.client,
         )
         registry.register(meta_handler)
         always_on_handlers.append(meta_handler)
@@ -197,7 +198,9 @@ async def _build_agent_registry(
         always_on_handlers.append(sandbox_handler)
 
     skills_dir = Path(__file__).resolve().parent.parent / "skills"
-    skill_handler = SkillHandler(skills_dir=skills_dir)
+    skill_handler = SkillHandler(
+        skills_dir=skills_dir, searcher_client=app_state.searcher_tool.client
+    )
     if skill_handler._available:
         registry.register(skill_handler)
         always_on_handlers.append(skill_handler)

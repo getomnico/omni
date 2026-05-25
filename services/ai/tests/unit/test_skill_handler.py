@@ -3,7 +3,41 @@ from __future__ import annotations
 import pytest
 
 from tools.registry import ToolContext
+from tools.searcher_client import CapabilitySearchResponse, CapabilitySearchResult
 from tools.skill_handler import SkillHandler
+
+
+class _FakeSearcherClient:
+    def __init__(self) -> None:
+        self.upserts = []
+        self.searches = []
+
+    async def upsert_capabilities(self, request):
+        self.upserts.append(request)
+        return type("Resp", (), {"upserted": len(request.capabilities)})()
+
+    async def search_capabilities(self, request):
+        self.searches.append(request)
+        return CapabilitySearchResponse(
+            results=[
+                CapabilitySearchResult(
+                    capability_id="skill:excel",
+                    capability_type="skill",
+                    item_id="excel",
+                    title="Excel Skill",
+                    description="Spreadsheet guidance",
+                    body="Inspect spreadsheet headers and merged cells.",
+                    source_id=None,
+                    source_type=None,
+                    metadata={},
+                    score=4.2,
+                )
+            ]
+        )
+
+
+def _ctx() -> ToolContext:
+    return ToolContext(chat_id="c1", user_id="u1")
 
 
 @pytest.mark.asyncio
@@ -27,10 +61,13 @@ async def test_skill_handler_discovers_directory_skills_and_legacy_files(tmp_pat
     assert sorted(handler._available) == ["excel", "google_ads", "legacy_only"]
     assert handler._available["excel"] == excel_dir / "SKILL.md"
 
-    context = ToolContext(chat_id="chat", user_id="user")
-    excel_result = await handler.execute("load_skill", {"skill": "excel"}, context)
-    legacy_result = await handler.execute("load_skill", {"skill": "legacy_only"}, context)
-    google_ads_result = await handler.execute("load_skill", {"skill": "google_ads"}, context)
+    excel_result = await handler.execute("load_skill", {"skill": "excel"}, _ctx())
+    legacy_result = await handler.execute(
+        "load_skill", {"skill": "legacy_only"}, _ctx()
+    )
+    google_ads_result = await handler.execute(
+        "load_skill", {"skill": "google_ads"}, _ctx()
+    )
 
     assert not excel_result.is_error
     assert excel_result.content[0]["text"] == "directory excel"
@@ -38,16 +75,35 @@ async def test_skill_handler_discovers_directory_skills_and_legacy_files(tmp_pat
     assert google_ads_result.content[0]["text"] == "google ads skill"
 
 
-def test_skill_handler_tool_description_lists_directory_skills(tmp_path):
-    skills_dir = tmp_path / "skills"
-    (skills_dir / "google_ads").mkdir(parents=True)
-    (skills_dir / "google_ads" / "SKILL.md").write_text(
-        "google ads skill", encoding="utf-8"
-    )
+@pytest.mark.asyncio
+async def test_skill_search_uses_searcher_and_publishes_skills(tmp_path):
+    (tmp_path / "excel.md").write_text("# Excel Skill\n\nInspect spreadsheets.")
+    skill_dir = tmp_path / "slack"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("# Slack Skill\n\nThreads.")
+    searcher = _FakeSearcherClient()
+    handler = SkillHandler(tmp_path, searcher_client=searcher)
 
-    handler = SkillHandler(skills_dir)
-    tool = handler.get_tools()[0]
+    result = await handler.execute("skill_search", {"query": "spreadsheet"}, _ctx())
 
-    assert tool["name"] == "load_skill"
-    assert "google_ads" in tool["description"]
-    assert "google_ads" in tool["input_schema"]["properties"]["skill"]["description"]
+    assert not result.is_error
+    assert "excel" in result.content[0]["text"]
+    assert searcher.upserts
+    assert {c.item_id for c in searcher.upserts[0].capabilities} == {
+        "excel",
+        "slack",
+    }
+    assert searcher.searches[0].capability_type == "skill"
+    assert set(searcher.searches[0].allowed_item_ids) == {"excel", "slack"}
+
+
+@pytest.mark.asyncio
+async def test_skill_search_falls_back_to_local_search(tmp_path):
+    (tmp_path / "excel.md").write_text("# Excel Skill\n\nSpreadsheet formulas.")
+    handler = SkillHandler(tmp_path)
+
+    result = await handler.execute("skill_search", {"query": "formulas"}, _ctx())
+
+    assert not result.is_error
+    assert "excel" in result.content[0]["text"]
+    assert "load_skill" in result.content[0]["text"]

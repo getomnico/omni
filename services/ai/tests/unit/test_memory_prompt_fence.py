@@ -24,7 +24,7 @@ class TestMemoryFencing:
         prompt = build_agent_system_prompt(
             _FakeAgent(),
             sources=[],
-            connector_actions=None,
+            toolsets=None,
             user_name=None,
             user_email="agent@example.com",
             memories=["User likes brevity", "Prior run delivered 3 reports"],
@@ -38,7 +38,7 @@ class TestMemoryFencing:
     def test_chat_prompt_wraps_memories_in_untrusted_fence(self):
         prompt = build_chat_system_prompt(
             sources=[],
-            connector_actions=None,
+            toolsets=None,
             user_name=None,
             user_email="u@example.com",
             memories=["Prefers tables over prose"],
@@ -51,7 +51,7 @@ class TestMemoryFencing:
         huge = "x" * 10_000
         prompt = build_chat_system_prompt(
             sources=[],
-            connector_actions=None,
+            toolsets=None,
             user_name=None,
             user_email="u@example.com",
             memories=[huge],
@@ -65,7 +65,7 @@ class TestMemoryFencing:
     def test_no_fence_when_memories_empty(self):
         prompt = build_chat_system_prompt(
             sources=[],
-            connector_actions=None,
+            toolsets=None,
             user_name=None,
             user_email="u@example.com",
             memories=None,
@@ -79,3 +79,14 @@ class TestMemoryFencing:
         google_ads_prompt = build_chat_system_prompt(sources=[_FakeSource("google_ads")])
         assert "Connected apps: Google Ads" in google_ads_prompt
         assert 'load the "google_ads" skill' in google_ads_prompt
+
+    def test_chat_prompt_mentions_skill_search(self):
+        prompt = build_chat_system_prompt(
+            sources=[],
+            toolsets=None,
+            user_name=None,
+            user_email="u@example.com",
+            memories=None,
+        )
+        assert "skill_search" in prompt
+        assert "load_skill" in prompt

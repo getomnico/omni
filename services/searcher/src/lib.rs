@@ -1,3 +1,4 @@
+pub mod capabilities_repository;
 pub mod handlers;
 pub mod models;
 pub mod operator_registry;
@@ -96,6 +97,8 @@ pub fn create_app(state: AppState) -> Router {
         .route("/recent-searches", get(handlers::recent_searches))
         .route("/typeahead", get(handlers::typeahead))
         .route("/people/search", get(handlers::people_search))
+        .route("/capabilities/upsert", post(handlers::capabilities_upsert))
+        .route("/capabilities/search", post(handlers::capabilities_search))
         .route("/suggested-questions", post(handlers::suggested_questions))
         .route("/attributes/values", get(handlers::attribute_values))
         .layer(
