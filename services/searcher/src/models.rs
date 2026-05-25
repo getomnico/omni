@@ -192,23 +192,8 @@ pub struct AttributeValuesResponse {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CapabilityUpsert {
-    pub capability_id: String,
-    pub capability_type: String,
-    pub item_id: String,
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default)]
-    pub body: String,
-    #[serde(default)]
-    pub source_id: Option<String>,
-    #[serde(default)]
-    pub source_type: Option<String>,
-    #[serde(default)]
-    pub visibility: serde_json::Value,
-    #[serde(default)]
-    pub metadata: serde_json::Value,
+    pub id: String,
+    pub data: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -228,7 +213,7 @@ pub struct CapabilitySearchRequest {
     #[serde(default)]
     pub limit: Option<i64>,
     #[serde(default)]
-    pub allowed_item_ids: Option<Vec<String>>,
+    pub allowed_ids: Option<Vec<String>>,
     #[serde(default)]
     pub allowed_source_ids: Option<Vec<String>>,
 }
@@ -241,15 +226,8 @@ impl CapabilitySearchRequest {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CapabilitySearchResult {
-    pub capability_id: String,
-    pub capability_type: String,
-    pub item_id: String,
-    pub title: String,
-    pub description: String,
-    pub body: String,
-    pub source_id: Option<String>,
-    pub source_type: Option<String>,
-    pub metadata: serde_json::Value,
+    pub id: String,
+    pub data: serde_json::Value,
     pub score: f32,
 }
 

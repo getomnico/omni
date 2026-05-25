@@ -6,7 +6,7 @@ import json
 import logging
 import re
 from dataclasses import asdict, dataclass
-from typing import Literal
+from typing import Literal, TypedDict
 
 import httpx
 import redis.asyncio as aioredis
@@ -30,6 +30,14 @@ _TOOL_NAME_SAFE_RE = re.compile(r"[^a-zA-Z0-9_]")
 SourceMode = Literal["read", "write"]
 # Maps source_id -> list of modes allowed for that source.
 SourceFilter = dict[str, list[SourceMode]]
+
+
+class ToolsetSummary(TypedDict):
+    source_id: str
+    source_type: str
+    source_name: str
+    tool_count: int
+    sample_tool_names: list[str]
 
 
 @dataclass
@@ -301,7 +309,7 @@ class ConnectorToolHandler:
             and action.source_id in allowed_source_ids
         ]
 
-    def list_toolsets(self) -> list[dict]:
+    def list_toolsets(self) -> list[ToolsetSummary]:
         """One entry per source for prompt rendering and tool_search.
 
         Returns dicts with: source_id, source_type, source_name, tool_count,
@@ -311,7 +319,7 @@ class ConnectorToolHandler:
         for tool_name, action in self._actions.items():
             by_source.setdefault(action.source_id, []).append(action)
 
-        toolsets: list[dict] = []
+        toolsets: list[ToolsetSummary] = []
         for source_id, actions in by_source.items():
             sample = sorted({a.action_name for a in actions})[:3]
             first = actions[0]

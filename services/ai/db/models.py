@@ -340,7 +340,6 @@ class Chat:
     created_at: datetime
     updated_at: datetime
     agent_id: str | None = None
-    loaded_toolsets: list[str] = field(default_factory=list)
 
     @classmethod
     def from_row(cls, row: dict) -> "Chat":
@@ -356,7 +355,6 @@ class Chat:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             agent_id=row.get("agent_id"),
-            loaded_toolsets=list(row.get("loaded_toolsets") or []),
         )
 
     def to_dict(self) -> dict:
@@ -367,7 +365,6 @@ class Chat:
             "title": self.title,
             "model_id": self.model_id,
             "agent_id": self.agent_id,
-            "loaded_toolsets": list(self.loaded_toolsets),
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }

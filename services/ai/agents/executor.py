@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -11,6 +12,7 @@ import httpx
 from anthropic.types import (
     MessageParam,
     TextBlockParam,
+    ToolParam,
     ToolResultBlockParam,
     ToolUseBlockParam,
 )
@@ -40,9 +42,10 @@ from tools import (
     PeopleSearchHandler,
     SearchToolHandler,
     ToolContext,
+    ToolHandler,
     ToolRegistry,
 )
-from tools.connector_handler import ConnectorAction, ConnectorToolHandler, SourceFilter
+from tools.connector_handler import ConnectorToolHandler, SourceFilter, ToolsetSummary
 from tools.email_handler import EmailToolHandler
 from tools.meta_handler import MetaToolHandler
 from tools.sandbox_handler import SandboxToolHandler
@@ -95,21 +98,36 @@ def _build_source_filter(agent: Agent) -> SourceFilter | None:
     }
 
 
+@dataclass
+class AgentRegistry:
+    registry: ToolRegistry
+    always_on_handlers: list[ToolHandler]
+    connector_handlers: list[ConnectorToolHandler]
+    toolsets: list[ToolsetSummary]
+
+    def build_turn_tools(self, loaded_toolsets: set[str]) -> list[ToolParam]:
+        connector_handler = (
+            self.connector_handlers[0] if self.connector_handlers else None
+        )
+        return build_turn_tools(
+            self.always_on_handlers, connector_handler, loaded_toolsets
+        )
+
+
 async def _build_agent_registry(
     app_state: AppState,
     agent: Agent,
     sources: list[Source] | None,
     loaded_toolsets: set[str],
-) -> tuple[ToolRegistry, list, ConnectorToolHandler | None, list[dict] | None]:
+) -> AgentRegistry:
     """Build a ToolRegistry configured for the agent's permissions.
 
-    Returns: (registry, always_on_handlers, connector_handler, toolsets).
     Connector tools are dispatched through the registry but exposed lazily via
     `MetaToolHandler` (issue #203). The agent's `source_filter` and
     `action_whitelist` already constrain which actions are visible.
     """
     registry = ToolRegistry()
-    always_on_handlers: list = []
+    always_on_handlers: list[ToolHandler] = []
 
     source_filter = _build_source_filter(agent) if agent.agent_type == "user" else None
     action_whitelist = agent.allowed_actions if agent.agent_type == "org" else None
@@ -122,7 +140,8 @@ async def _build_agent_registry(
         is_admin = bool(owner and owner.role == "admin")
 
     connector_handler: ConnectorToolHandler | None = None
-    toolsets: list[dict] | None = None
+    connector_handlers: list[ConnectorToolHandler] = []
+    toolsets: list[ToolsetSummary] = []
 
     if CONNECTOR_MANAGER_URL:
         connector_handler = ConnectorToolHandler(
@@ -138,6 +157,7 @@ async def _build_agent_registry(
         )
         await connector_handler._ensure_initialized()
         registry.register(connector_handler)
+        connector_handlers.append(connector_handler)
 
         if connector_handler.actions:
             toolsets = connector_handler.list_toolsets()
@@ -215,7 +235,12 @@ async def _build_agent_registry(
         registry.register(email_handler)
         always_on_handlers.append(email_handler)
 
-    return registry, always_on_handlers, connector_handler, toolsets
+    return AgentRegistry(
+        registry=registry,
+        always_on_handlers=always_on_handlers,
+        connector_handlers=connector_handlers,
+        toolsets=toolsets,
+    )
 
 
 async def _noop_on_load(_: set[str]) -> None:
@@ -244,12 +269,11 @@ async def _run_agent_loop(
     # Each agent run starts with no toolsets loaded — discovery is per-run.
     loaded_toolsets: set[str] = set()
 
-    (
-        registry,
-        always_on_handlers,
-        connector_handler,
-        toolsets,
-    ) = await _build_agent_registry(app_state, agent, sources, loaded_toolsets)
+    agent_registry = await _build_agent_registry(
+        app_state, agent, sources, loaded_toolsets
+    )
+    registry = agent_registry.registry
+    toolsets = agent_registry.toolsets
 
     # Org agents search all data (no user-scoping); personal agents are scoped to owner
     # Using run ID as chat_id — tool handlers use this to scope sandbox workspaces and cache keys
@@ -351,9 +375,7 @@ async def _run_agent_loop(
 
         # Per-turn tool list — picks up any toolsets the LLM loaded in the
         # previous iteration via tool_search / load_tool_set.
-        turn_tools = build_turn_tools(
-            always_on_handlers, connector_handler, loaded_toolsets
-        )
+        turn_tools = agent_registry.build_turn_tools(loaded_toolsets)
 
         # Check if compaction is needed
         if compactor.needs_compaction(conversation_messages, turn_tools):

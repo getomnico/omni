@@ -421,6 +421,15 @@ pub async fn capabilities_upsert(
             "capabilities batch is limited to 500 items".to_string(),
         ));
     }
+    if request
+        .capabilities
+        .iter()
+        .any(|capability| capability.id.trim().is_empty())
+    {
+        return Err(SearcherError::BadRequest(
+            "capability id is required".to_string(),
+        ));
+    }
 
     let repo = AgentCapabilitiesRepository::new(state.db_pool.pool());
     repo.upsert_many(&request.capabilities)
@@ -453,7 +462,7 @@ pub async fn capabilities_search(
             &request.capability_type,
             &request.query,
             request.limit(),
-            request.allowed_item_ids.as_deref(),
+            request.allowed_ids.as_deref(),
             request.allowed_source_ids.as_deref(),
         )
         .await

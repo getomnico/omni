@@ -21,15 +21,14 @@ class _FakeSearcherClient:
         return CapabilitySearchResponse(
             results=[
                 CapabilitySearchResult(
-                    capability_id="skill:excel",
-                    capability_type="skill",
-                    item_id="excel",
-                    title="Excel Skill",
-                    description="Spreadsheet guidance",
-                    body="Inspect spreadsheet headers and merged cells.",
-                    source_id=None,
-                    source_type=None,
-                    metadata={},
+                    id="skill:excel",
+                    data={
+                        "capability_type": "skill",
+                        "skill_id": "excel",
+                        "title": "Excel Skill",
+                        "description": "Spreadsheet guidance",
+                        "body": "Inspect spreadsheet headers and merged cells.",
+                    },
                     score=4.2,
                 )
             ]
@@ -89,12 +88,15 @@ async def test_skill_search_uses_searcher_and_publishes_skills(tmp_path):
     assert not result.is_error
     assert "excel" in result.content[0]["text"]
     assert searcher.upserts
-    assert {c.item_id for c in searcher.upserts[0].capabilities} == {
-        "excel",
-        "slack",
+    assert {c.id for c in searcher.upserts[0].capabilities} == {
+        "skill:excel",
+        "skill:slack",
     }
     assert searcher.searches[0].capability_type == "skill"
-    assert set(searcher.searches[0].allowed_item_ids) == {"excel", "slack"}
+    assert set(searcher.searches[0].allowed_ids) == {
+        "skill:excel",
+        "skill:slack",
+    }
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,13 @@
+from __future__ import annotations
+
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from db.models import UserConfiguration
 from datetime_utils import format_datetime
+
+if TYPE_CHECKING:
+    from tools.connector_handler import ToolsetSummary
 
 SOURCE_DISPLAY_NAMES = {
     "google_drive": "Google Drive",
@@ -228,7 +234,7 @@ def _format_user_line(
 
 
 def _build_toolsets_section(
-    toolsets: list[dict] | None,
+    toolsets: list[ToolsetSummary] | None,
     loaded_source_ids: set[str] | None,
 ) -> str:
     """Render the per-source toolset summary block.
@@ -268,7 +274,7 @@ def _build_toolsets_section(
 def build_agent_system_prompt(
     agent,
     sources: list,
-    toolsets: list[dict] | None = None,
+    toolsets: list[ToolsetSummary] | None = None,
     loaded_source_ids: set[str] | None = None,
     user_name: str | None = None,
     user_email: str | None = None,
@@ -312,7 +318,7 @@ def build_agent_system_prompt(
 
 def build_chat_system_prompt(
     sources: list,
-    toolsets: list[dict] | None = None,
+    toolsets: list[ToolsetSummary] | None = None,
     loaded_source_ids: set[str] | None = None,
     user_name: str | None = None,
     user_email: str | None = None,

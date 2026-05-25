@@ -63,8 +63,8 @@ from tools import (
     ToolContext,
     ToolRegistry,
 )
-from tools.connector_handler import ConnectorAction, SearchOperator
-from tools.meta_handler import MetaToolHandler, OnLoad
+from tools.connector_handler import SearchOperator, ToolsetSummary
+from tools.meta_handler import LOADED_SOURCES_MARKER, MetaToolHandler, OnLoad
 from tools.omni_tool_result import OAuthRequiredPayload
 from tools.sandbox_handler import SandboxToolHandler
 from tools.search_handler import fetch_operator_values
@@ -175,9 +175,109 @@ class RegistryResult:
     # (built-ins + meta-tools). Connector tools are handled separately.
     always_on_handlers: list
     connector_handler: ConnectorToolHandler | None
-    toolsets: list[dict] | None
+    toolsets: list[ToolsetSummary] | None
     sources: list[Source] | None
     search_operators: list[SearchOperator] | None
+
+
+def _loaded_toolsets_from_history(
+    messages: list[MessageParam], connector_handler: ConnectorToolHandler | None
+) -> set[str]:
+    """Rebuild loaded connector sources from prior meta-tool calls/results."""
+    if connector_handler is None:
+        return set()
+
+    tool_calls: dict[str, tuple[str, dict[str, object]]] = {}
+    loaded: set[str] = set()
+
+    for message in messages:
+        for block in _message_content_blocks(message):
+            match block:
+                case {
+                    "type": "tool_use",
+                    "id": str(tool_use_id),
+                    "name": str(name),
+                    "input": dict(tool_input),
+                }:
+                    tool_calls[tool_use_id] = (
+                        name,
+                        cast(dict[str, object], tool_input),
+                    )
+                case {"type": "tool_result", "is_error": True}:
+                    continue
+                case {
+                    "type": "tool_result",
+                    "tool_use_id": str(tool_use_id),
+                    "content": result_content,
+                }:
+                    text = _tool_result_text(result_content)
+                    loaded.update(_parse_loaded_sources_marker(text))
+
+                    call = tool_calls.get(tool_use_id)
+                    if call is None:
+                        continue
+                    loaded.update(
+                        _loaded_sources_from_meta_call(
+                            call[0], call[1], connector_handler
+                        )
+                    )
+
+    return loaded
+
+
+def _message_content_blocks(message: MessageParam) -> list[object]:
+    match message:
+        case {"content": str()}:
+            return []
+        case {"content": [*blocks]}:
+            return blocks
+    return []
+
+
+def _tool_result_text(content: object) -> str:
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            text = block.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+    return "\n".join(parts)
+
+
+def _parse_loaded_sources_marker(text: str) -> set[str]:
+    for line in text.splitlines():
+        if not line.startswith(LOADED_SOURCES_MARKER):
+            continue
+        raw_ids = line.removeprefix(LOADED_SOURCES_MARKER).strip()
+        return {
+            source_id.strip() for source_id in raw_ids.split(",") if source_id.strip()
+        }
+    return set()
+
+
+def _loaded_sources_from_meta_call(
+    tool_name: str,
+    tool_input: dict[str, object],
+    connector_handler: ConnectorToolHandler,
+) -> set[str]:
+    if tool_name == "load_tool_set":
+        source_id = tool_input.get("source_id")
+        if isinstance(source_id, str) and source_id:
+            return {
+                action.source_id
+                for action in connector_handler.actions.values()
+                if action.source_id == source_id
+            }
+        source_type = tool_input.get("source_type")
+        if isinstance(source_type, str) and source_type:
+            return {
+                action.source_id
+                for action in connector_handler.actions.values()
+                if action.source_type == source_type
+            }
+    return set()
 
 
 def _copy_provider_extras(src: object, dst: dict, keys: tuple[str, ...]) -> None:
@@ -229,7 +329,7 @@ async def _build_registry(
     sources = await _fetch_sources_from_connector_manager()
 
     connector_handler: ConnectorToolHandler | None = None
-    toolsets: list[dict] | None = None
+    toolsets: list[ToolsetSummary] | None = None
     search_operators: list[SearchOperator] | None = None
 
     # Register connector tools if connector-manager is configured
@@ -669,26 +769,22 @@ async def stream_chat(
         if not chat_messages:
             raise HTTPException(status_code=404, detail="No messages found for chat")
 
-        # Initialize the chat-scoped loaded toolset state (mutated by the
-        # MetaToolHandler as the LLM calls tool_search / load_tool_set).
-        loaded_toolsets: set[str] = set(chat.loaded_toolsets or [])
+        messages: list[MessageParam] = [
+            MessageParam(**msg.message) for msg in chat_messages
+        ]
 
-        async def _persist_loaded_toolsets(newly_loaded: set[str]) -> None:
-            if not newly_loaded:
-                return
-            try:
-                await chats_repo.update_loaded_toolsets(chat_id, list(newly_loaded))
-            except Exception as e:
-                logger.warning(
-                    f"Failed to persist loaded_toolsets for chat {chat_id}: {e}"
-                )
+        # Rebuild loaded connector sources from prior meta-tool calls/results.
+        # Tool discovery is part of the conversation, not chat-session state.
+        loaded_toolsets: set[str] = set()
 
         build_result = await _build_registry(
             request,
             chat,
             is_admin=is_admin,
             loaded_toolsets=loaded_toolsets,
-            on_load=_persist_loaded_toolsets,
+        )
+        loaded_toolsets.update(
+            _loaded_toolsets_from_history(messages, build_result.connector_handler)
         )
         registry = build_result.registry
 
@@ -745,10 +841,6 @@ async def stream_chat(
             memories=memories if memories else None,
             user_configuration=user_configuration,
         )
-
-        messages: list[MessageParam] = [
-            MessageParam(**msg.message) for msg in chat_messages
-        ]
 
     # Expand any omni_upload content blocks (inline small text, stage larger/binary in sandbox).
     storage = request.app.state.content_storage

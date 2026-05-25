@@ -209,20 +209,21 @@ class SkillHandler:
                         capability_type="skill",
                         query=query,
                         limit=limit,
-                        allowed_item_ids=list(self._available.keys()),
+                        allowed_ids=[
+                            f"skill:{skill_id}" for skill_id in self._available
+                        ],
                     )
                 )
                 matches: list[tuple[str, str, str]] = []
                 for result in response.results:
-                    if result.item_id not in self._available:
+                    skill_id = result.data["skill_id"]
+                    if skill_id not in self._available:
                         continue
-                    matches.append(
-                        (
-                            result.item_id,
-                            result.title or result.item_id,
-                            self._snippet(result.body or result.description),
-                        )
+                    title = result.data.get("title") or skill_id
+                    body = (
+                        result.data.get("body") or result.data.get("description") or ""
                     )
+                    matches.append((skill_id, title, self._snippet(body)))
                 if matches:
                     return matches
             except Exception as e:
@@ -242,13 +243,15 @@ class SkillHandler:
             title = self._title(skill_id, content)
             capabilities.append(
                 CapabilityUpsert(
-                    capability_id=f"skill:{skill_id}",
-                    capability_type="skill",
-                    item_id=skill_id,
-                    title=title,
-                    description=self._snippet(content, max_chars=240),
-                    body=content,
-                    metadata={"path": str(path.relative_to(self._skills_dir))},
+                    id=f"skill:{skill_id}",
+                    data={
+                        "capability_type": "skill",
+                        "skill_id": skill_id,
+                        "title": title,
+                        "description": self._snippet(content, max_chars=240),
+                        "body": content,
+                        "path": str(path.relative_to(self._skills_dir)),
+                    },
                 )
             )
         await self._searcher_client.upsert_capabilities(

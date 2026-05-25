@@ -2,16 +2,22 @@
 Client for communicating with the omni-searcher service.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import sys
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from db.models import UserConfiguration
 
 logger = logging.getLogger(__name__)
+
+JsonPrimitive = str | int | float | bool | None
+JsonValue = JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"]
+JsonObject = dict[str, JsonValue]
 
 
 class SearchRequest(BaseModel):
@@ -83,16 +89,8 @@ class PeopleSearchResponse(BaseModel):
 
 
 class CapabilityUpsert(BaseModel):
-    capability_id: str
-    capability_type: str
-    item_id: str
-    title: str = ""
-    description: str = ""
-    body: str = ""
-    source_id: str | None = None
-    source_type: str | None = None
-    visibility: dict = Field(default_factory=dict)
-    metadata: dict = Field(default_factory=dict)
+    id: str
+    data: JsonObject
 
 
 class CapabilitiesUpsertRequest(BaseModel):
@@ -107,20 +105,13 @@ class CapabilitySearchRequest(BaseModel):
     capability_type: str
     query: str
     limit: int = 10
-    allowed_item_ids: list[str] | None = None
+    allowed_ids: list[str] | None = None
     allowed_source_ids: list[str] | None = None
 
 
 class CapabilitySearchResult(BaseModel):
-    capability_id: str
-    capability_type: str
-    item_id: str
-    title: str
-    description: str
-    body: str
-    source_id: str | None = None
-    source_type: str | None = None
-    metadata: dict = Field(default_factory=dict)
+    id: str
+    data: JsonObject
     score: float
 
 

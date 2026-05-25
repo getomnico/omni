@@ -28,6 +28,7 @@ _TOOL_NAMES = {"tool_search", "load_tool_set"}
 _DEFAULT_LIMIT = 10
 _MAX_LIMIT = 25
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+LOADED_SOURCES_MARKER = "Loaded source ids:"
 
 OnLoad = Callable[[set[str]], Awaitable[None]]
 
@@ -173,9 +174,11 @@ class MetaToolHandler:
                 else ""
             )
             lines.append(f"- {tool_name} — {desc}")
+        loaded_ids = {action.source_id for _, action in matches}
+        lines.append(f"{LOADED_SOURCES_MARKER} {', '.join(sorted(loaded_ids))}")
         if newly_loaded:
             lines.append(
-                f"\nSources newly available this turn: {', '.join(sorted(newly_loaded))}."
+                f"Sources newly available this turn: {', '.join(sorted(newly_loaded))}."
             )
         lines.append("Call any of these tools on your next turn.")
 
@@ -192,17 +195,20 @@ class MetaToolHandler:
                         capability_type="tool",
                         query=query,
                         limit=limit,
-                        allowed_item_ids=list(self._ch.actions.keys()),
+                        allowed_ids=[
+                            f"tool:{tool_name}" for tool_name in self._ch.actions
+                        ],
                     )
                 )
                 matches: list[tuple[str, ConnectorAction]] = []
                 seen: set[str] = set()
                 for result in response.results:
-                    action = self._ch.actions.get(result.item_id)
-                    if action is None or result.item_id in seen:
+                    tool_name = result.data["tool_name"]
+                    action = self._ch.actions.get(tool_name)
+                    if action is None or tool_name in seen:
                         continue
-                    seen.add(result.item_id)
-                    matches.append((result.item_id, action))
+                    seen.add(tool_name)
+                    matches.append((tool_name, action))
                 if matches:
                     return matches
             except Exception as e:
@@ -219,18 +225,18 @@ class MetaToolHandler:
         for tool_name, action in self._ch.actions.items():
             capabilities.append(
                 CapabilityUpsert(
-                    capability_id=f"tool:{tool_name}",
-                    capability_type="tool",
-                    item_id=tool_name,
-                    title=tool_name,
-                    description=action.description or "",
-                    body=(
-                        f"{action.source_type} {action.source_name} "
-                        f"{action.action_name} {action.description or ''}"
-                    ),
-                    source_id=action.source_id,
-                    source_type=action.source_type,
-                    metadata={
+                    id=f"tool:{tool_name}",
+                    data={
+                        "capability_type": "tool",
+                        "tool_name": tool_name,
+                        "title": tool_name,
+                        "description": action.description or "",
+                        "body": (
+                            f"{action.source_type} {action.source_name} "
+                            f"{action.action_name} {action.description or ''}"
+                        ),
+                        "source_id": action.source_id,
+                        "source_type": action.source_type,
                         "source_name": action.source_name,
                         "action_name": action.action_name,
                         "mode": action.mode,
@@ -320,8 +326,9 @@ class MetaToolHandler:
                 else ""
             )
             lines.append(f"- {tool_name} — {desc}")
+        lines.append(f"{LOADED_SOURCES_MARKER} {', '.join(sorted(target_ids))}")
         if not newly_loaded:
-            lines.append("\n(All targeted sources were already loaded.)")
+            lines.append("(All targeted sources were already loaded.)")
         lines.append("Call any of these tools on your next turn.")
 
         return ToolResult(content=[{"type": "text", "text": "\n".join(lines)}])

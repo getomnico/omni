@@ -6,9 +6,7 @@ from .models import Chat
 from .connection import get_db_pool
 
 
-_CHAT_COLUMNS = (
-    "id, user_id, title, model_id, agent_id, loaded_toolsets, created_at, updated_at"
-)
+_CHAT_COLUMNS = "id, user_id, title, model_id, agent_id, created_at, updated_at"
 
 
 class ChatsRepository:
@@ -80,27 +78,3 @@ class ChatsRepository:
         if row:
             return Chat.from_row(dict(row))
         return None
-
-    async def update_loaded_toolsets(self, chat_id: str, source_ids: list[str]) -> None:
-        """Union-merge source_ids into chats.loaded_toolsets.
-
-        Uses set-union semantics so concurrent streaming requests for the same
-        chat (rare, but possible) cannot clobber each other's loads.
-        """
-        if not source_ids:
-            return
-
-        pool = await self._get_pool()
-
-        query = """
-            UPDATE chats
-            SET loaded_toolsets = COALESCE(
-                (SELECT array_agg(DISTINCT x) FROM unnest(loaded_toolsets || $2::text[]) x),
-                '{}'::text[]
-            ),
-            updated_at = NOW()
-            WHERE id = $1
-        """
-
-        async with pool.acquire() as conn:
-            await conn.execute(query, chat_id, list(source_ids))
