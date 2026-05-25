@@ -64,7 +64,7 @@ from tools import (
     ToolRegistry,
 )
 from tools.connector_handler import SearchOperator, ToolsetSummary
-from tools.meta_handler import LOADED_SOURCES_MARKER, MetaToolHandler, OnLoad
+from tools.meta_handler import LOADED_TOOLS_MARKER, MetaToolHandler, OnLoad
 from tools.omni_tool_result import OAuthRequiredPayload
 from tools.sandbox_handler import SandboxToolHandler
 from tools.search_handler import fetch_operator_values
@@ -180,10 +180,10 @@ class RegistryResult:
     search_operators: list[SearchOperator] | None
 
 
-def _loaded_toolsets_from_history(
+def _loaded_tools_from_history(
     messages: list[MessageParam], connector_handler: ConnectorToolHandler | None
 ) -> set[str]:
-    """Rebuild loaded connector sources from prior meta-tool calls/results."""
+    """Rebuild loaded connector tool names from prior meta-tool calls/results."""
     if connector_handler is None:
         return set()
 
@@ -211,13 +211,13 @@ def _loaded_toolsets_from_history(
                     "content": result_content,
                 }:
                     text = _tool_result_text(result_content)
-                    loaded.update(_parse_loaded_sources_marker(text))
+                    loaded.update(_parse_loaded_tools_marker(text))
 
                     call = tool_calls.get(tool_use_id)
                     if call is None:
                         continue
                     loaded.update(
-                        _loaded_sources_from_meta_call(
+                        _loaded_tools_from_meta_call(
                             call[0], call[1], connector_handler
                         )
                     )
@@ -246,35 +246,49 @@ def _tool_result_text(content: object) -> str:
     return "\n".join(parts)
 
 
-def _parse_loaded_sources_marker(text: str) -> set[str]:
+def _parse_loaded_tools_marker(text: str) -> set[str]:
     for line in text.splitlines():
-        if not line.startswith(LOADED_SOURCES_MARKER):
+        if not line.startswith(LOADED_TOOLS_MARKER):
             continue
-        raw_ids = line.removeprefix(LOADED_SOURCES_MARKER).strip()
-        return {
-            source_id.strip() for source_id in raw_ids.split(",") if source_id.strip()
-        }
+        raw_names = line.removeprefix(LOADED_TOOLS_MARKER).strip()
+        return {name.strip() for name in raw_names.split(",") if name.strip()}
     return set()
 
 
-def _loaded_sources_from_meta_call(
+def _loaded_source_ids(
+    loaded_tool_names: set[str], connector_handler: ConnectorToolHandler | None
+) -> set[str]:
+    if connector_handler is None:
+        return set()
+    return {
+        action.source_id
+        for tool_name, action in connector_handler.actions.items()
+        if tool_name in loaded_tool_names
+    }
+
+
+def _loaded_tools_from_meta_call(
     tool_name: str,
     tool_input: dict[str, object],
     connector_handler: ConnectorToolHandler,
 ) -> set[str]:
+    if tool_name == "load_tool":
+        requested = tool_input.get("tool_name")
+        if isinstance(requested, str) and requested in connector_handler.actions:
+            return {requested}
     if tool_name == "load_tool_set":
         source_id = tool_input.get("source_id")
         if isinstance(source_id, str) and source_id:
             return {
-                action.source_id
-                for action in connector_handler.actions.values()
+                name
+                for name, action in connector_handler.actions.items()
                 if action.source_id == source_id
             }
         source_type = tool_input.get("source_type")
         if isinstance(source_type, str) and source_type:
             return {
-                action.source_id
-                for action in connector_handler.actions.values()
+                name
+                for name, action in connector_handler.actions.items()
                 if action.source_type == source_type
             }
     return set()
@@ -301,7 +315,7 @@ async def _fetch_sources_from_connector_manager() -> list[Source] | None:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(f"{CONNECTOR_MANAGER_URL.rstrip('/')}/sources")
             resp.raise_for_status()
-            return [Source.from_row(s["source"]) for s in resp.json()]
+            return [Source.from_row(s.get("source", s)) for s in resp.json()]
     except Exception as e:
         logger.warning(f"Failed to fetch sources from connector manager: {e}")
         return None
@@ -319,7 +333,7 @@ async def _build_registry(
     Connector tools are registered for *dispatch* but not for *exposure*: the
     chat router rebuilds the per-turn LLM tool list from `always_on_handlers`
     plus `connector_handler.filtered_tools(loaded_toolsets)` so the model only
-    sees connector actions it has explicitly loaded via `tool_search` or
+    sees connector actions it has explicitly loaded via `load_tool` or
     `load_tool_set` (issue #203).
     """
     registry = ToolRegistry()
@@ -353,9 +367,9 @@ async def _build_registry(
         if connector_handler.search_operators:
             search_operators = connector_handler.search_operators
 
-    # Meta-tools: discoverable as always-on so the LLM can opt-in to specific
-    # connector toolsets. Only register when there's actually a connector
-    # handler with toolsets to load.
+    # Meta-tools: discoverable as always-on so the LLM can opt in to specific
+    # connector tools. Only register when there's actually a connector handler
+    # with toolsets to advertise.
     if connector_handler is not None and toolsets:
         meta_handler = MetaToolHandler(
             connector_handler=connector_handler,
@@ -784,7 +798,7 @@ async def stream_chat(
             loaded_toolsets=loaded_toolsets,
         )
         loaded_toolsets.update(
-            _loaded_toolsets_from_history(messages, build_result.connector_handler)
+            _loaded_tools_from_history(messages, build_result.connector_handler)
         )
         registry = build_result.registry
 
@@ -832,10 +846,13 @@ async def stream_chat(
                     )
                     memories = [h.record.text for h in hits if h.record.text]
 
+        loaded_source_ids = _loaded_source_ids(
+            loaded_toolsets, build_result.connector_handler
+        )
         system_prompt = build_chat_system_prompt(
             active_sources,
             toolsets=build_result.toolsets,
-            loaded_source_ids=loaded_toolsets,
+            loaded_source_ids=loaded_source_ids,
             user_name=user_name,
             user_email=user_email,
             memories=memories if memories else None,
@@ -1112,8 +1129,8 @@ async def stream_chat(
                 provider_extras = llm_provider.PERSISTED_BLOCK_EXTRAS
 
                 # Rebuild the per-turn tool list. The set of loaded connector
-                # toolsets may have grown during the previous iteration via the
-                # tool_search / load_tool_set meta-tools.
+                # loaded connector tools may have grown during the previous iteration via the
+                # load_tool / load_tool_set meta-tools.
                 turn_tools = build_turn_tools(
                     build_result.always_on_handlers,
                     build_result.connector_handler,

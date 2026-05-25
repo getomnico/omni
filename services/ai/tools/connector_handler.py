@@ -155,7 +155,9 @@ class ConnectorToolHandler:
                         f"{self._connector_manager_url}/sources"
                     )
                     sources_resp.raise_for_status()
-                    sources = [Source.from_row(s["source"]) for s in sources_resp.json()]
+                    sources = [
+                        Source.from_row(s.get("source", s)) for s in sources_resp.json()
+                    ]
 
         except Exception as e:
             logger.error(f"Failed to fetch connector info: {e}")
@@ -293,21 +295,11 @@ class ConnectorToolHandler:
         """All resolved actions, keyed by namespaced tool name."""
         return self._actions
 
-    def filtered_tools(self, allowed_source_ids: set[str]) -> list[ToolParam]:
-        """Subset of tools whose backing action belongs to an allowed source.
-
-        Used by the chat router / agent executor to expose only the connector
-        tools that have been "loaded" into the current session via the
-        tool_search / load_tool_set meta-tools.
-        """
-        if not allowed_source_ids:
+    def filtered_tools(self, allowed_tool_names: set[str]) -> list[ToolParam]:
+        """Subset of tools explicitly loaded into the current session."""
+        if not allowed_tool_names:
             return []
-        return [
-            tool
-            for tool in self._tools
-            if (action := self._actions.get(tool["name"])) is not None
-            and action.source_id in allowed_source_ids
-        ]
+        return [tool for tool in self._tools if tool["name"] in allowed_tool_names]
 
     def list_toolsets(self) -> list[ToolsetSummary]:
         """One entry per source for prompt rendering and tool_search.

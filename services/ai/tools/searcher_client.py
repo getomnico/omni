@@ -15,9 +15,7 @@ from db.models import UserConfiguration
 
 logger = logging.getLogger(__name__)
 
-JsonPrimitive = str | int | float | bool | None
-JsonValue = JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"]
-JsonObject = dict[str, JsonValue]
+JsonObject = dict[str, object]
 
 
 class SearchRequest(BaseModel):

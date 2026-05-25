@@ -8,8 +8,11 @@ Validates the full flow:
 Uses existing db_pool/redis fixtures from conftest.py.
 """
 
+import json
 import subprocess
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -26,6 +29,7 @@ from db.models import Chat, Source
 import db.connection
 from prompts import build_chat_system_prompt
 from routers.chat import _build_registry
+from tools.registry import ToolContext
 from tools.search_handler import _build_search_tools
 
 pytestmark = pytest.mark.integration
@@ -210,8 +214,33 @@ def _make_chat(user_id: str) -> Chat:
         title=None,
         created_at=None,
         updated_at=None,
-        loaded_toolsets=[],
     )
+
+
+class _HealthyConnectorHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/health":
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+            return
+        self.send_response(404)
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        return
+
+
+@pytest.fixture
+def healthy_connector_url():
+    server = ThreadingHTTPServer(("0.0.0.0", 0), _HealthyConnectorHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://host.docker.internal:{server.server_port}"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +427,119 @@ async def test_build_registry_search_tool_has_dynamic_sources(
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_connector_actions_from_real_connector_manager_are_loadable(
+    db_pool,
+    test_user,
+    _patch_db_pool,
+    connector_manager_url,
+    redis_client,
+    healthy_connector_url,
+    monkeypatch,
+):
+    """Real connector-manager manifests produce loadable connector tools."""
+    monkeypatch.setattr("routers.chat.CONNECTOR_MANAGER_URL", connector_manager_url)
+    monkeypatch.setattr("routers.chat.SANDBOX_URL", "")
+
+    source_id = str(ULID())
+    async with db_pool.acquire() as conn:
+        await _insert_source(
+            conn,
+            source_id=source_id,
+            name="Work Gmail",
+            source_type="gmail",
+            is_active=True,
+            created_by=test_user,
+        )
+
+    manifest = {
+        "name": "gmail_test",
+        "display_name": "Gmail Test",
+        "version": "1.0.0",
+        "sync_modes": ["full"],
+        "connector_id": "gmail_test",
+        "connector_url": healthy_connector_url,
+        "source_types": ["gmail"],
+        "description": None,
+        "actions": [
+            {
+                "name": "send_email",
+                "description": "Send a quokka email via Gmail.",
+                "input_schema": {"type": "object", "properties": {}},
+                "mode": "write",
+                "source_types": [],
+                "admin_only": False,
+            },
+            {
+                "name": "list_threads",
+                "description": "List recent Gmail threads.",
+                "input_schema": {"type": "object", "properties": {}},
+                "mode": "read",
+                "source_types": [],
+                "admin_only": False,
+            },
+        ],
+        "search_operators": [],
+        "read_only": False,
+        "extra_schema": None,
+        "attributes_schema": None,
+        "mcp_enabled": False,
+        "prompts": [],
+        "resources": [],
+        "oauth": None,
+    }
+    await redis_client.setex("connector:manifest:gmail_test", 600, json.dumps(manifest))
+
+    try:
+        app = _make_app()
+        app.state.searcher_tool.client = None
+        request = _make_request(app)
+        chat = _make_chat(test_user)
+        loaded_tools: set[str] = set()
+
+        result = await _build_registry(
+            request, chat, is_admin=False, loaded_toolsets=loaded_tools
+        )
+
+        assert result.connector_handler is not None
+        assert "gmail__send_email" in result.connector_handler.actions
+        assert result.connector_handler.filtered_tools(loaded_tools) == []
+
+        search_result = await result.registry.execute(
+            "tool_search", {"query": "quokka"}, ToolContext(chat.id, test_user)
+        )
+        assert not search_result.is_error
+        assert "gmail__send_email" in search_result.content[0]["text"]
+        assert loaded_tools == set()
+
+        load_result = await result.registry.execute(
+            "load_tool",
+            {"tool_name": "gmail__send_email"},
+            ToolContext(chat.id, test_user),
+        )
+        assert not load_result.is_error
+        assert loaded_tools == {"gmail__send_email"}
+        exposed = {
+            tool["name"]
+            for tool in result.connector_handler.filtered_tools(loaded_tools)
+        }
+        assert exposed == {"gmail__send_email"}
+
+        await result.registry.execute(
+            "load_tool_set", {"source_type": "gmail"}, ToolContext(chat.id, test_user)
+        )
+        exposed = {
+            tool["name"]
+            for tool in result.connector_handler.filtered_tools(loaded_tools)
+        }
+        assert exposed == {"gmail__send_email", "gmail__list_threads"}
+    finally:
+        await redis_client.delete("connector:manifest:gmail_test")
+        async with db_pool.acquire() as conn:
+            await _cleanup_sources(conn, test_user)
+
+
+@pytest.mark.asyncio
 async def test_build_registry_no_sources_generic_description(
     db_pool,
     test_user,
@@ -417,9 +559,7 @@ async def test_build_registry_no_sources_generic_description(
     request = _make_request(app)
     chat = _make_chat(test_user)
 
-    result = await _build_registry(
-        request, chat, is_admin=False, loaded_toolsets=set()
-    )
+    result = await _build_registry(request, chat, is_admin=False, loaded_toolsets=set())
 
     search_tools = result.registry.get_all_tools()
     search_tool = next(t for t in search_tools if t["name"] == "search_documents")

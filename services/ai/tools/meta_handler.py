@@ -1,8 +1,9 @@
-"""MetaToolHandler: tool_search and load_tool_set for on-demand connector loading.
+"""MetaToolHandler: discover and load connector tools on demand.
 
 Connector tools are no longer dumped into the LLM context up front. Instead, the
-system prompt advertises *toolsets* (one entry per source) and the model loads
-specific actions on demand via the meta-tools defined here. See issue #203.
+system prompt advertises *toolsets* (one entry per source), tool_search discovers
+candidate tools, and the model explicitly loads tools via load_tool or
+load_tool_set. See issue #203.
 """
 
 from __future__ import annotations
@@ -24,17 +25,17 @@ from tools.searcher_client import (
 
 logger = logging.getLogger(__name__)
 
-_TOOL_NAMES = {"tool_search", "load_tool_set"}
+_TOOL_NAMES = {"tool_search", "load_tool", "load_tool_set"}
 _DEFAULT_LIMIT = 10
 _MAX_LIMIT = 25
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
-LOADED_SOURCES_MARKER = "Loaded source ids:"
+LOADED_TOOLS_MARKER = "Loaded tool names:"
 
 OnLoad = Callable[[set[str]], Awaitable[None]]
 
 
 class MetaToolHandler:
-    """Two meta-tools that let the LLM discover and load connector tools on demand."""
+    """Meta-tools that let the LLM discover and load connector tools on demand."""
 
     def __init__(
         self,
@@ -53,9 +54,9 @@ class MetaToolHandler:
             ToolParam(
                 name="tool_search",
                 description=(
-                    "Search across all available connector tools by keyword and load "
-                    "the best matches into this conversation. The matched tool schemas "
-                    "become callable on your next turn."
+                    "Search across available connector tools by keyword. Returns "
+                    "matching tool names and descriptions; use load_tool to make "
+                    "chosen tools callable on your next turn."
                 ),
                 input_schema={
                     "type": "object",
@@ -66,13 +67,33 @@ class MetaToolHandler:
                         },
                         "limit": {
                             "type": "integer",
-                            "description": f"Max tools to load (default {_DEFAULT_LIMIT}, max {_MAX_LIMIT}).",
+                            "description": (
+                                f"Max tools to return (default {_DEFAULT_LIMIT}, "
+                                f"max {_MAX_LIMIT})."
+                            ),
                             "default": _DEFAULT_LIMIT,
                             "maximum": _MAX_LIMIT,
                             "minimum": 1,
                         },
                     },
                     "required": ["query"],
+                },
+            ),
+            ToolParam(
+                name="load_tool",
+                description=(
+                    "Load one exact connector tool by tool name. Use tool_search first "
+                    "to find tool names. Loaded tools become callable on your next turn."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "tool_name": {
+                            "type": "string",
+                            "description": "Exact tool name returned by tool_search.",
+                        }
+                    },
+                    "required": ["tool_name"],
                 },
             ),
             ToolParam(
@@ -114,6 +135,8 @@ class MetaToolHandler:
     ) -> ToolResult:
         if tool_name == "tool_search":
             return await self._tool_search(tool_input)
+        if tool_name == "load_tool":
+            return await self._load_tool(tool_input)
         if tool_name == "load_tool_set":
             return await self._load_tool_set(tool_input)
         return ToolResult(
@@ -162,11 +185,7 @@ class MetaToolHandler:
                 ],
             )
 
-        newly_loaded = await self._mark_loaded(
-            {action.source_id for _, action in matches}
-        )
-
-        lines = [f"Loaded {len(matches)} tool(s) matching {query!r}:"]
+        lines = [f"Found {len(matches)} tool(s) matching {query!r}:"]
         for tool_name, action in matches:
             desc = (
                 (action.description or "").strip().splitlines()[0]
@@ -174,13 +193,7 @@ class MetaToolHandler:
                 else ""
             )
             lines.append(f"- {tool_name} — {desc}")
-        loaded_ids = {action.source_id for _, action in matches}
-        lines.append(f"{LOADED_SOURCES_MARKER} {', '.join(sorted(loaded_ids))}")
-        if newly_loaded:
-            lines.append(
-                f"Sources newly available this turn: {', '.join(sorted(newly_loaded))}."
-            )
-        lines.append("Call any of these tools on your next turn.")
+        lines.append("Call load_tool with the exact tool name for any tools you need.")
 
         return ToolResult(content=[{"type": "text", "text": "\n".join(lines)}])
 
@@ -265,6 +278,34 @@ class MetaToolHandler:
         scored.sort(key=lambda x: (-x[0], x[1]))
         return [(tool_name, action) for _, tool_name, action in scored[:limit]]
 
+    async def _load_tool(self, tool_input: dict) -> ToolResult:
+        tool_name = (tool_input.get("tool_name") or "").strip()
+        if not tool_name:
+            return ToolResult(
+                content=[
+                    {"type": "text", "text": "Missing required parameter: tool_name"}
+                ],
+                is_error=True,
+            )
+
+        action = self._ch.actions.get(tool_name)
+        if action is None:
+            return ToolResult(
+                content=[{"type": "text", "text": f"Unknown tool: {tool_name}"}],
+                is_error=True,
+            )
+
+        newly_loaded = await self._mark_loaded({tool_name})
+        desc = (action.description or "").strip().splitlines()[0]
+        lines = [f"Loaded tool: {tool_name}"]
+        if desc:
+            lines.append(f"- {desc}")
+        lines.append(f"{LOADED_TOOLS_MARKER} {tool_name}")
+        if not newly_loaded:
+            lines.append("(Tool was already loaded.)")
+        lines.append("Call this tool on your next turn.")
+        return ToolResult(content=[{"type": "text", "text": "\n".join(lines)}])
+
     async def _load_tool_set(self, tool_input: dict) -> ToolResult:
         source_id = tool_input.get("source_id")
         source_type = tool_input.get("source_type")
@@ -281,13 +322,13 @@ class MetaToolHandler:
             )
 
         target_ids: set[str] = set()
-        matched_actions: list[ConnectorAction] = []
-        for action in self._ch.actions.values():
+        matched_tools: dict[str, ConnectorAction] = {}
+        for tool_name, action in self._ch.actions.items():
             if (source_id and action.source_id == source_id) or (
                 source_type and action.source_type == source_type
             ):
                 target_ids.add(action.source_id)
-                matched_actions.append(action)
+                matched_tools[tool_name] = action
 
         if not target_ids:
             key = source_id or source_type
@@ -297,44 +338,36 @@ class MetaToolHandler:
                         "type": "text",
                         "text": (
                             f"No connector toolset found for {key!r}. "
-                            "Use the toolsets list in the system prompt to find a valid source_type."
+                            "Use the toolsets list in the system prompt to find "
+                            "a valid source_type."
                         ),
                     }
                 ],
                 is_error=True,
             )
 
-        newly_loaded = await self._mark_loaded(target_ids)
-
-        # Group by actual LLM tool name for reporting. Duplicate source types may
-        # have source-suffixed tool names, so do not reconstruct names here.
-        unique_tools: dict[str, ConnectorAction] = {}
-        matched_ids = {id(action) for action in matched_actions}
-        for tool_name, action in self._ch.actions.items():
-            if id(action) not in matched_ids:
-                continue
-            unique_tools.setdefault(tool_name, action)
+        newly_loaded = await self._mark_loaded(set(matched_tools))
 
         lines = [
-            f"Loaded {len(unique_tools)} tool(s) from " f"{len(target_ids)} source(s):"
+            f"Loaded {len(matched_tools)} tool(s) from " f"{len(target_ids)} source(s):"
         ]
-        for tool_name, action in sorted(unique_tools.items()):
+        for tool_name, action in sorted(matched_tools.items()):
             desc = (
                 (action.description or "").strip().splitlines()[0]
                 if action.description
                 else ""
             )
             lines.append(f"- {tool_name} — {desc}")
-        lines.append(f"{LOADED_SOURCES_MARKER} {', '.join(sorted(target_ids))}")
+        lines.append(f"{LOADED_TOOLS_MARKER} {', '.join(sorted(matched_tools))}")
         if not newly_loaded:
-            lines.append("(All targeted sources were already loaded.)")
+            lines.append("(All targeted tools were already loaded.)")
         lines.append("Call any of these tools on your next turn.")
 
         return ToolResult(content=[{"type": "text", "text": "\n".join(lines)}])
 
-    async def _mark_loaded(self, source_ids: set[str]) -> set[str]:
-        """Add source_ids to the loaded set; persist if the set changed."""
-        newly = source_ids - self._loaded
+    async def _mark_loaded(self, tool_names: set[str]) -> set[str]:
+        """Add tool names to the loaded set; persist if the set changed."""
+        newly = tool_names - self._loaded
         if not newly:
             return set()
         self._loaded |= newly

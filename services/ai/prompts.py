@@ -241,8 +241,9 @@ def _build_toolsets_section(
 
     Connector tools are loaded on demand (issue #203) so we advertise the
     *toolsets* available rather than every individual action schema. The model
-    uses `tool_search` / `load_tool_set` to admit specific tools into the
-    conversation; once loaded, tools persist for the rest of the chat.
+    uses `tool_search` to find candidate tools and `load_tool` / `load_tool_set`
+    to admit tools into the conversation; once loaded, tools persist for the rest
+    of the chat.
     """
     if not toolsets:
         return ""
@@ -253,8 +254,9 @@ def _build_toolsets_section(
         "# Available toolsets",
         (
             'Connector actions are NOT pre-loaded. Use `tool_search("keywords")` to find '
-            'specific tools across all sources, or `load_tool_set(source_type="gmail")` '
-            "to load every tool for a source. Loaded tools persist for the rest of this "
+            "candidate tool names, then `load_tool(tool_name=...)` for the exact tools "
+            'you need. Use `load_tool_set(source_type="gmail")` only when you need every '
+            "tool for a source. Loaded tools persist for the rest of this "
             "conversation. The toolsets below show what's available; tool schemas appear "
             "in your tool list only after they're loaded."
         ),

@@ -82,7 +82,7 @@ async def _fetch_sources() -> list[Source] | None:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(f"{CONNECTOR_MANAGER_URL.rstrip('/')}/sources")
             resp.raise_for_status()
-            return [Source.from_row(s["source"]) for s in resp.json()]
+            return [Source.from_row(s.get("source", s)) for s in resp.json()]
     except Exception as e:
         logger.warning(f"Failed to fetch sources: {e}")
         return None
@@ -244,7 +244,7 @@ async def _build_agent_registry(
 
 
 async def _noop_on_load(_: set[str]) -> None:
-    """Agent runs are one-shot — loaded toolsets are not persisted across runs."""
+    """Agent runs are one-shot — loaded tools are not persisted across runs."""
     return None
 
 
@@ -266,7 +266,7 @@ async def _run_agent_loop(
     llm_provider = _resolve_llm_provider(app_state, agent)
     sources = await _fetch_sources()
 
-    # Each agent run starts with no toolsets loaded — discovery is per-run.
+    # Each agent run starts with no connector tools loaded — discovery is per-run.
     loaded_toolsets: set[str] = set()
 
     agent_registry = await _build_agent_registry(
@@ -318,7 +318,7 @@ async def _run_agent_loop(
         agent,
         active_sources,
         toolsets=toolsets,
-        loaded_source_ids=loaded_toolsets,
+        loaded_source_ids=set(),
         user_name=agent_user_name if not is_org_agent else None,
         user_email=agent_user_email if not is_org_agent else None,
         memories=memories if memories else None,
@@ -373,8 +373,8 @@ async def _run_agent_loop(
     for iteration in range(AGENT_MAX_ITERATIONS):
         logger.info(f"Agent {agent.id} run {run.id}: iteration {iteration + 1}")
 
-        # Per-turn tool list — picks up any toolsets the LLM loaded in the
-        # previous iteration via tool_search / load_tool_set.
+        # Per-turn tool list — picks up any connector tools the LLM loaded in the
+        # previous iteration via load_tool / load_tool_set.
         turn_tools = agent_registry.build_turn_tools(loaded_toolsets)
 
         # Check if compaction is needed
