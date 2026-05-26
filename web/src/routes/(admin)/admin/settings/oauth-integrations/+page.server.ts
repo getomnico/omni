@@ -2,8 +2,6 @@ import { requireAdmin } from '$lib/server/authHelpers'
 import { getConfig } from '$lib/server/config'
 import { getAllConnectorConfigsPublic } from '$lib/server/db/connector-configs'
 import { callbackUrl, type OAuthManifestConfig } from '$lib/server/oauth/connectorOAuth'
-import { getSourceDisplayName } from '$lib/utils/icons'
-import type { SourceType } from '$lib/types'
 import type { PageServerLoad } from './$types'
 
 interface ConnectorInfo {
@@ -19,8 +17,6 @@ interface ConnectorInfo {
 export interface OAuthIntegrationProvider {
     provider: string
     displayName: string
-    sourceTypes: string[]
-    sourceTypeNames: string[]
     configured: boolean
     updatedAt: Date | null
     config: Record<string, unknown>
@@ -80,15 +76,9 @@ export const load: PageServerLoad = async ({ locals }) => {
             providers = Array.from(sourceTypesByProvider.entries())
                 .map(([provider, sourceTypesSet]) => {
                     const saved = savedByProvider.get(provider)
-                    const sourceTypes = Array.from(sourceTypesSet).sort()
                     return {
                         provider,
                         displayName: providerDisplayName(provider, connectors),
-                        sourceTypes,
-                        sourceTypeNames: sourceTypes.map(
-                            (sourceType) =>
-                                getSourceDisplayName(sourceType as SourceType) ?? sourceType,
-                        ),
                         configured: !!(
                             saved?.config?.oauth_client_id && saved?.config?.oauth_client_secret
                         ),

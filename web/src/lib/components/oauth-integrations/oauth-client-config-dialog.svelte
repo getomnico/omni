@@ -10,7 +10,6 @@
         open: boolean
         provider: string
         displayName: string
-        redirectUri: string
         configured?: boolean
         config?: Record<string, unknown>
         onSaved?: () => void
@@ -21,7 +20,6 @@
         open = false,
         provider,
         displayName,
-        redirectUri,
         configured = false,
         config = {},
         onSaved,
@@ -38,11 +36,6 @@
             clientSecret = ''
         }
     })
-
-    async function copyRedirectUri() {
-        await navigator.clipboard.writeText(redirectUri)
-        toast.success('Redirect URI copied')
-    }
 
     async function save() {
         if (!clientId.trim()) {
@@ -97,21 +90,11 @@
             <Dialog.Title
                 >{configured ? 'Edit' : 'Configure'} {displayName} OAuth client</Dialog.Title>
             <Dialog.Description>
-                Register this redirect URI in your provider's OAuth app, then paste the app client
-                credentials here.
+                Paste the OAuth app client credentials for this integration provider.
             </Dialog.Description>
         </Dialog.Header>
 
         <div class="space-y-4">
-            <div class="space-y-2">
-                <Label for="redirect-uri">Redirect URI</Label>
-                <div class="flex gap-2">
-                    <Input id="redirect-uri" readonly value={redirectUri} />
-                    <Button variant="outline" onclick={copyRedirectUri} class="cursor-pointer"
-                        >Copy</Button>
-                </div>
-            </div>
-
             <div class="space-y-2">
                 <Label for="oauth-client-id">Client ID</Label>
                 <Input
