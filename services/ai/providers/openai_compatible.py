@@ -51,6 +51,26 @@ from . import LLMProvider, LLMProviderStreamError, TokenUsage
 
 logger = logging.getLogger(__name__)
 
+# Some OpenAI-compatible providers expose non-standard assistant-message fields
+# that must be round-tripped in later requests. Keep this as a narrow allowlist:
+# only fields we have actually received from a provider are persisted/sent back.
+REASONING_CONTENT_KEY = "reasoning_content"
+ASSISTANT_MESSAGE_PASSTHROUGH_KEYS = (REASONING_CONTENT_KEY,)
+
+
+def _get_passthrough_delta_value(delta: object, key: str) -> str | None:
+    value = getattr(delta, key, None)
+    if isinstance(value, str):
+        return value
+
+    model_extra = getattr(delta, "model_extra", None)
+    if isinstance(model_extra, dict):
+        extra_value = model_extra.get(key)
+        if isinstance(extra_value, str):
+            return extra_value
+
+    return None
+
 
 def _convert_tools_to_openai(tools: list[ToolParam]) -> list[ChatCompletionToolParam]:
     """Convert Anthropic tool schema to OpenAI Chat Completions function-calling format."""
@@ -110,6 +130,8 @@ def _convert_messages_to_openai(
         tool_calls: list[ChatCompletionMessageToolCallParam] = []
         tool_results: list[ChatCompletionToolMessageParam] = []
 
+        reasoning_content: str | None = None
+
         for block in content:
             if not isinstance(block, dict):
                 continue
@@ -117,10 +139,14 @@ def _convert_messages_to_openai(
             block = cast(
                 TextBlockParam | ToolUseBlockParam | ToolResultBlockParam, block
             )
+            block_reasoning_content = block.get(REASONING_CONTENT_KEY)
+            if isinstance(block_reasoning_content, str):
+                reasoning_content = block_reasoning_content
 
             if block["type"] == "text":
                 block = cast(TextBlockParam, block)
-                text_parts.append(block["text"])
+                if block["text"]:
+                    text_parts.append(block["text"])
             elif block["type"] == "tool_use":
                 block = cast(ToolUseBlockParam, block)
                 raw_input = block["input"]
@@ -174,6 +200,10 @@ def _convert_messages_to_openai(
                 assistant_msg["content"] = "\n".join(text_parts)
             if tool_calls:
                 assistant_msg["tool_calls"] = tool_calls
+            if reasoning_content:
+                # OpenAI-compatible provider extension: DeepSeek thinking mode,
+                # for example, requires this exact field to be echoed back.
+                assistant_msg[REASONING_CONTENT_KEY] = reasoning_content  # type: ignore[typeddict-unknown-key]
             result.append(assistant_msg)
         elif role == "user" and tool_results:
             result.extend(tool_results)
@@ -194,6 +224,8 @@ class OpenAICompatibleProvider(LLMProvider):
     Uses the OpenAI SDK pointed at a user-supplied base URL, giving us Chat
     Completions with full tool/function-calling support.
     """
+
+    PERSISTED_BLOCK_EXTRAS = ASSISTANT_MESSAGE_PASSTHROUGH_KEYS
 
     def __init__(
         self, base_url: str, api_key: str | None = None, model: str = "default"
@@ -274,6 +306,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
             stream_input_tokens = 0
             stream_output_tokens = 0
+            reasoning_content_parts: list[str] = []
 
             chunk: ChatCompletionChunk
             async for chunk in stream:
@@ -286,6 +319,9 @@ class OpenAICompatibleProvider(LLMProvider):
                     continue
 
                 delta = chunk.choices[0].delta
+                reasoning_content = _get_passthrough_delta_value(delta, REASONING_CONTENT_KEY)
+                if reasoning_content:
+                    reasoning_content_parts.append(reasoning_content)
 
                 # Handle text content
                 if delta.content:
@@ -368,6 +404,25 @@ class OpenAICompatibleProvider(LLMProvider):
                 yield RawContentBlockStopEvent(
                     type="content_block_stop",
                     index=block_index,
+                )
+
+            reasoning_content = "".join(reasoning_content_parts)
+            if reasoning_content:
+                reasoning_block_index = next_block_index
+                next_block_index += 1
+                reasoning_block_kwargs: dict[str, Any] = {
+                    "type": "text",
+                    "text": "",
+                    REASONING_CONTENT_KEY: reasoning_content,
+                }
+                yield RawContentBlockStartEvent(
+                    type="content_block_start",
+                    index=reasoning_block_index,
+                    content_block=TextBlock(**reasoning_block_kwargs),
+                )
+                yield RawContentBlockStopEvent(
+                    type="content_block_stop",
+                    index=reasoning_block_index,
                 )
 
             if stream_input_tokens or stream_output_tokens:
