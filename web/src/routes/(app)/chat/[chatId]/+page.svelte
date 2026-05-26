@@ -145,22 +145,11 @@
     let error = $state<string | null>(null)
     let eventSource: EventSource | null = $state(null)
 
-    function streamErrorMessage(event: Event): string {
-        if (!(event instanceof MessageEvent) || typeof event.data !== 'string' || !event.data) {
-            return 'Failed to generate response. Please try again.'
-        }
+    type StreamErrorPayload = { message: string }
 
-        try {
-            const payload: unknown = JSON.parse(event.data)
-            if (payload && typeof payload === 'object' && 'message' in payload) {
-                const message = payload.message
-                if (typeof message === 'string' && message) return message
-            }
-        } catch {
-            return event.data
-        }
-
-        return event.data
+    function streamErrorMessage(event: MessageEvent<string>): string {
+        const payload = JSON.parse(event.data) as StreamErrorPayload
+        return payload.message
     }
 
     const defaultVerbs = ['Thinking', 'Reasoning', 'Analyzing', 'Processing']
@@ -1014,7 +1003,7 @@
         })
 
         eventSource.addEventListener('title_error', (event) => {
-            error = streamErrorMessage(event)
+            error = streamErrorMessage(event as MessageEvent<string>)
             requestAnimationFrame(() => recalcBottomPadding())
         })
 
@@ -1155,7 +1144,10 @@
         })
 
         const handleStreamError = (event: Event) => {
-            error = streamErrorMessage(event)
+            error =
+                event instanceof MessageEvent
+                    ? streamErrorMessage(event as MessageEvent<string>)
+                    : 'Failed to generate response. Please try again.'
             isStreaming = false
             stopThinkingText()
             requestAnimationFrame(() => recalcBottomPadding())
