@@ -38,6 +38,32 @@ pytestmark = pytest.mark.integration
 SOURCE_ID = "src-gmail-main"
 
 
+class _RecordingSearcherClient:
+    def __init__(self, inner) -> None:
+        self.inner = inner
+        self.upsert_calls: list[Any] = []
+        self.search_calls: list[Any] = []
+        self.search_responses: list[Any] = []
+        self.search_errors: list[Exception] = []
+
+    async def upsert_capabilities(self, request):
+        self.upsert_calls.append(request)
+        return await self.inner.upsert_capabilities(request)
+
+    async def search_capabilities(self, request):
+        self.search_calls.append(request)
+        try:
+            response = await self.inner.search_capabilities(request)
+        except Exception as e:
+            self.search_errors.append(e)
+            raise
+        self.search_responses.append(response)
+        return response
+
+    async def search_documents(self, request):
+        return await self.inner.search_documents(request)
+
+
 class _RecordingLLM:
     PERSISTED_BLOCK_EXTRAS: tuple[str, ...] = ()
     model_name = "recording-model"
@@ -174,7 +200,11 @@ def _build_app(llm: _RecordingLLM, model_id: str) -> FastAPI:
     app.state.models = {model_id: llm}
     app.state.default_model_id = model_id
     app.state.secondary_model_id = model_id
-    app.state.searcher_tool = SearcherTool()
+    searcher_tool = SearcherTool()
+    recording_client = _RecordingSearcherClient(searcher_tool.client)
+    searcher_tool.client = recording_client
+    app.state.searcher_tool = searcher_tool
+    app.state.recording_searcher_client = recording_client
     app.state.content_storage = None
     app.state.redis_client = None
     app.state.memory_provider = None
@@ -278,7 +308,19 @@ async def test_load_tool_persists_for_subsequent_model_turns(
         model_id,
     )
 
-    await _stream(_build_app(llm, model_id), chat_id)
+    app = _build_app(llm, model_id)
+    await _stream(app, chat_id)
+
+    searcher_client = app.state.recording_searcher_client
+    assert searcher_client.upsert_calls
+    assert len(searcher_client.search_calls) >= 2
+    assert searcher_client.search_errors == []
+    searched_tool_names = {
+        result.data["tool_name"]
+        for response in searcher_client.search_responses
+        for result in response.results
+    }
+    assert "gmail__send_email" in searched_tool_names
 
     assert len(llm.calls) == 4
     first_turn_tools = _tool_names(llm.calls[0])
