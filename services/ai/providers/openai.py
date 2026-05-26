@@ -28,7 +28,7 @@ from anthropic.types import (
 from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic.types.raw_message_delta_event import Delta
 
-from . import LLMProvider, TokenUsage
+from . import LLMProvider, LLMProviderStreamError, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +216,7 @@ class OpenAIProvider(LLMProvider):
 
         except Exception as e:
             logger.error(f"Failed to stream from OpenAI: {str(e)}", exc_info=True)
-            raise Exception(f"Failed to stream response: {str(e)}") from e
+            raise LLMProviderStreamError(str(e)) from e
 
     def _convert_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert Anthropic-style messages to OpenAI Responses API input items."""

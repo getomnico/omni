@@ -47,7 +47,7 @@ from anthropic.types import (
 from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic.types.raw_message_delta_event import Delta
 
-from . import LLMProvider, TokenUsage
+from . import LLMProvider, LLMProviderStreamError, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -387,7 +387,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 f"Failed to stream from OpenAI-compatible endpoint: {e}",
                 exc_info=True,
             )
-            raise Exception(f"Failed to stream response: {str(e)}") from e
+            raise LLMProviderStreamError(str(e)) from e
 
     async def generate_response(
         self,

@@ -19,7 +19,7 @@ from anthropic.types.tool_result_block_param import (
     Content as ToolResultContentBlockParam,
 )
 
-from . import LLMProvider, TokenUsage
+from . import LLMProvider, LLMProviderStreamError, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -241,7 +241,7 @@ class AnthropicProvider(LLMProvider):
 
         except Exception as e:
             logger.error(f"Failed to stream from Anthropic: {str(e)}", exc_info=True)
-            raise Exception(f"Failed to stream response: {str(e)}") from e
+            raise LLMProviderStreamError(str(e)) from e
 
     async def generate_response(
         self,

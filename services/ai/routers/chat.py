@@ -51,7 +51,7 @@ from memory import (
     user_key,
 )
 from prompts import build_agent_chat_system_prompt, build_chat_system_prompt
-from providers import LLMProvider
+from providers import LLMProvider, LLMProviderStreamError
 from services.compaction import ConversationCompactor
 from services.usage import UsageContext, UsagePurpose, UsageTracker, track_usage
 from state import AppState
@@ -83,16 +83,14 @@ Just respond with the title text, nothing else."""
 
 
 def _chat_error_message(exc: Exception) -> str:
+    if isinstance(exc, LLMProviderStreamError) and exc.message:
+        return f"Failed to generate response: {exc.message}"
+
     message = str(exc).strip()
-    if not message:
-        return "Failed to generate response. Please try again."
+    if message:
+        return f"Failed to generate response: {message}"
 
-    for prefix in ("Failed to generate response: ", "Failed to stream response: "):
-        if message.startswith(prefix):
-            message = message[len(prefix) :].strip()
-            break
-
-    return f"Failed to generate response: {message}"
+    return "Failed to generate response. Please try again."
 
 
 def _sse_event(event_type: str, data: object) -> str:

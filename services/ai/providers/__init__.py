@@ -18,6 +18,18 @@ class TokenUsage:
     cache_creation_tokens: int = 0
 
 
+class LLMProviderError(Exception):
+    """Base exception for provider failures with a user-facing message."""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
+class LLMProviderStreamError(LLMProviderError):
+    """Raised when a provider fails while streaming a response."""
+
+
 class LLMProvider(ABC):
     """Abstract base class for LLM providers.
 
@@ -148,6 +160,8 @@ def create_llm_provider(provider_type: str, **kwargs) -> LLMProvider:
 
 __all__ = [
     "TokenUsage",
+    "LLMProviderError",
+    "LLMProviderStreamError",
     "LLMProvider",
     "AnthropicProvider",
     "OpenAICompatibleProvider",
