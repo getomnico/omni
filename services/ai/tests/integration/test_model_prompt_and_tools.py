@@ -239,7 +239,7 @@ async def test_initial_chat_turn_sends_loadable_toolsets_but_no_connector_tools(
 
 
 @pytest.mark.asyncio
-async def test_load_tool_adds_only_that_connector_tool_to_next_model_turn(
+async def test_load_tool_persists_for_subsequent_model_turns(
     chat_ids,
     connector_state,
     _patch_db_pool,
@@ -257,22 +257,34 @@ async def test_load_tool_adds_only_that_connector_tool_to_next_model_turn(
                     "id": "toolu_load_one",
                 },
             ),
-            ("text", "The Gmail send tool is loaded."),
+            (
+                "tool_call",
+                {
+                    "name": "tool_search",
+                    "input": {"query": "threads"},
+                    "id": "toolu_search_after_load",
+                },
+            ),
+            ("text", "The Gmail send tool is still loaded."),
         ],
         model_id,
     )
 
     await _stream(_build_app(llm, model_id), chat_id)
 
-    assert len(llm.calls) == 2
+    assert len(llm.calls) == 3
     first_turn_tools = _tool_names(llm.calls[0])
     second_turn_tools = _tool_names(llm.calls[1])
+    third_turn_tools = _tool_names(llm.calls[2])
 
     assert "gmail__send_email" not in first_turn_tools
     assert "gmail__list_threads" not in first_turn_tools
     assert "gmail__send_email" in second_turn_tools
     assert "gmail__list_threads" not in second_turn_tools
+    assert "gmail__send_email" in third_turn_tools
+    assert "gmail__list_threads" not in third_turn_tools
     assert {"tool_search", "load_tool", "load_tool_set"} <= second_turn_tools
+    assert {"tool_search", "load_tool", "load_tool_set"} <= third_turn_tools
 
 
 @pytest.mark.asyncio
