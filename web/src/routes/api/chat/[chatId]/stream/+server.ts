@@ -46,13 +46,18 @@ async function aiErrorMessage(response: Response): Promise<string> {
     return `AI service unavailable (status ${response.status})`
 }
 
-async function triggerTitleGeneration(chatId: string, logger: any): Promise<string | null> {
+type TitleGenerationResult =
+    | { status: 'generated'; title: string }
+    | { status: 'skipped' }
+    | { status: 'failed'; message: string }
+
+async function triggerTitleGeneration(chatId: string, logger: any): Promise<TitleGenerationResult> {
     try {
         // First check if title already exists
         const chat = await chatRepository.get(chatId)
         if (chat?.title) {
             logger.debug('Chat already has a title, skipping title generation', { chatId })
-            return null
+            return { status: 'skipped' }
         }
 
         logger.info('Triggering title generation', { chatId })
@@ -71,14 +76,20 @@ async function triggerTitleGeneration(chatId: string, logger: any): Promise<stri
                 title: result.title,
                 status: result.status,
             })
-            return result.title
+            return { status: 'generated', title: result.title }
         } else {
-            logger.warn('Title generation failed', undefined, { chatId, status: response.status })
-            return null
+            const message = await aiErrorMessage(response)
+            logger.warn('Title generation failed', undefined, {
+                chatId,
+                status: response.status,
+                message,
+            })
+            return { status: 'failed', message }
         }
     } catch (error) {
         logger.warn('Error during title generation', error, { chatId })
-        return null
+        const message = error instanceof Error ? error.message : 'Failed to generate chat title'
+        return { status: 'failed', message }
     }
 }
 
@@ -152,10 +163,21 @@ export const GET: RequestHandler = async ({ params, locals }) => {
                     if (!chat.title) {
                         logger.info('Generating title for chat', { chatId })
                         triggerTitleGeneration(chatId, logger)
-                            .then((title) => {
-                                logger.info(`Generated title for chat ${chatId}: ${title}`)
-                                const event = `event: title\ndata: ${title}\n\n`
-                                controller.enqueue(encoder.encode(event))
+                            .then((result) => {
+                                if (result.status === 'generated') {
+                                    logger.info(
+                                        `Generated title for chat ${chatId}: ${result.title}`,
+                                    )
+                                    controller.enqueue(
+                                        encoder.encode(sseEvent('title', { title: result.title })),
+                                    )
+                                } else if (result.status === 'failed') {
+                                    controller.enqueue(
+                                        encoder.encode(
+                                            sseEvent('title_error', { message: result.message }),
+                                        ),
+                                    )
+                                }
                             })
                             .catch((err) =>
                                 logger.error(`Failed to generate title for chat ${chatId}`, err),

@@ -1013,6 +1013,11 @@
             invalidate('app:recent_chats') // This will force a re-fetch of recent chats and update the title in the sidebar
         })
 
+        eventSource.addEventListener('title_error', (event) => {
+            error = streamErrorMessage(event)
+            requestAnimationFrame(() => recalcBottomPadding())
+        })
+
         eventSource.addEventListener('message', (event) => {
             try {
                 const data: MessageStreamEvent | ToolResultBlockParam = JSON.parse(event.data)
