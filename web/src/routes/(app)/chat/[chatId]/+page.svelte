@@ -1742,7 +1742,7 @@
                                 {#if message.siblingIds && message.siblingIds.length > 1}
                                     {@render branchNavigation(message)}
                                 {/if}
-                                {#if !(isStreaming && i === processedMessages.length - 1)}
+                                {#if !(isStreaming && i === processedMessages.length - 1) && !(error && i === processedMessages.length - 1)}
                                     {@render messageControls(message)}
                                 {/if}
                             </div>
