@@ -24,7 +24,6 @@
     type Provider = (typeof data.providers)[number]
 
     let activeProvider = $state<Provider | null>(null)
-    let configDialogOpen = $state(false)
     let redirectUriCopied = $state(false)
     let copyResetTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -42,13 +41,7 @@
         slack: slackLogo,
     }
 
-    function openConfigDialog(provider: Provider) {
-        activeProvider = provider
-        configDialogOpen = true
-    }
-
     function closeDialog() {
-        configDialogOpen = false
         activeProvider = null
     }
 
@@ -142,7 +135,7 @@
                                         size="sm"
                                         variant={provider.configured ? 'outline' : 'default'}
                                         class="cursor-pointer"
-                                        onclick={() => openConfigDialog(provider)}>
+                                        onclick={() => (activeProvider = provider)}>
                                         {provider.configured ? 'Edit' : 'Add client'}
                                     </Button>
                                 </div>
@@ -185,11 +178,13 @@
     </div>
 </div>
 
-<OAuthClientConfigDialog
-    open={configDialogOpen && activeProvider !== null}
-    provider={activeProvider?.provider ?? ''}
-    displayName={activeProvider?.displayName ?? ''}
-    configured={activeProvider?.configured ?? false}
-    config={activeProvider?.config ?? {}}
-    onSaved={closeDialog}
-    onCancel={closeDialog} />
+{#if activeProvider}
+    <OAuthClientConfigDialog
+        open={activeProvider !== null}
+        provider={activeProvider.provider}
+        displayName={activeProvider.displayName}
+        configured={activeProvider.configured}
+        config={activeProvider.config}
+        onSaved={closeDialog}
+        onCancel={closeDialog} />
+{/if}
