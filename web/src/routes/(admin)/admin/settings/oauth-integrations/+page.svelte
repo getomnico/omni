@@ -132,18 +132,12 @@
                                 class="grid grid-cols-[1.4fr_0.8fr_1fr_0.8fr] items-center gap-4 border-t px-4 py-3 text-sm">
                                 <div class="flex items-center gap-2 font-medium">
                                     {#if providerIcons[provider.provider]}
-                                        <div
-                                            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200/70 bg-white/95 shadow-sm dark:border-white/10 dark:shadow-none">
-                                            <img
-                                                src={providerIcons[provider.provider]}
-                                                alt={provider.displayName}
-                                                class="h-4 w-4 object-contain" />
-                                        </div>
+                                        <img
+                                            src={providerIcons[provider.provider]}
+                                            alt={provider.displayName}
+                                            class="h-5 w-5 shrink-0 object-contain" />
                                     {:else}
-                                        <div
-                                            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200/70 bg-white/95 shadow-sm dark:border-white/10 dark:shadow-none">
-                                            <KeyRound class="text-muted-foreground h-4 w-4" />
-                                        </div>
+                                        <KeyRound class="text-muted-foreground h-5 w-5 shrink-0" />
                                     {/if}
                                     {provider.displayName}
                                 </div>
