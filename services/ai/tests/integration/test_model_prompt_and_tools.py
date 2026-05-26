@@ -252,6 +252,14 @@ async def test_load_tool_persists_for_subsequent_model_turns(
             (
                 "tool_call",
                 {
+                    "name": "tool_search",
+                    "input": {"query": "send email"},
+                    "id": "toolu_search_first",
+                },
+            ),
+            (
+                "tool_call",
+                {
                     "name": "load_tool",
                     "input": {"tool_name": "gmail__send_email"},
                     "id": "toolu_load_one",
@@ -272,19 +280,23 @@ async def test_load_tool_persists_for_subsequent_model_turns(
 
     await _stream(_build_app(llm, model_id), chat_id)
 
-    assert len(llm.calls) == 3
+    assert len(llm.calls) == 4
     first_turn_tools = _tool_names(llm.calls[0])
     second_turn_tools = _tool_names(llm.calls[1])
     third_turn_tools = _tool_names(llm.calls[2])
+    fourth_turn_tools = _tool_names(llm.calls[3])
 
     assert "gmail__send_email" not in first_turn_tools
     assert "gmail__list_threads" not in first_turn_tools
-    assert "gmail__send_email" in second_turn_tools
+    assert "gmail__send_email" not in second_turn_tools
     assert "gmail__list_threads" not in second_turn_tools
     assert "gmail__send_email" in third_turn_tools
     assert "gmail__list_threads" not in third_turn_tools
+    assert "gmail__send_email" in fourth_turn_tools
+    assert "gmail__list_threads" not in fourth_turn_tools
     assert {"tool_search", "load_tool", "load_tool_set"} <= second_turn_tools
     assert {"tool_search", "load_tool", "load_tool_set"} <= third_turn_tools
+    assert {"tool_search", "load_tool", "load_tool_set"} <= fourth_turn_tools
 
 
 @pytest.mark.asyncio
