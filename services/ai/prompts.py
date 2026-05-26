@@ -251,14 +251,13 @@ def _build_toolsets_section(
     loaded = loaded_source_ids or set()
     lines = [
         "",
-        "# Available toolsets",
+        "# Loadable connector toolsets (not currently callable)",
         (
-            'Connector actions are NOT pre-loaded. Use `tool_search("keywords")` to find '
-            "candidate tool names, then `load_tool(tool_name=...)` for the exact tools "
-            'you need. Use `load_tool_set(source_type="gmail")` only when you need every '
-            "tool for a source. Loaded tools persist for the rest of this "
-            "conversation. The toolsets below show what's available; tool schemas appear "
-            "in your tool list only after they're loaded."
+            "The connector actions below are NOT in your current tool list. They are "
+            'only loadable candidates. Use `tool_search("keywords")` to find candidate '
+            "tool names, then `load_tool(tool_name=...)` for the exact tools you need. "
+            'Use `load_tool_set(source_type="gmail")` only when you need every tool for '
+            "a source. Loaded tools persist for the rest of this conversation."
         ),
     ]
     for ts in toolsets:
