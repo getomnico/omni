@@ -116,9 +116,9 @@
             {#if isAdmin}
                 <p class="mt-2">
                     <a
-                        href="/admin/settings/oauth-integrations"
+                        href="/admin/settings/integrations?tab=oauth"
                         class="text-primary underline underline-offset-2">
-                        Configure OAuth Integrations
+                        Configure OAuth Clients
                     </a>
                 </p>
             {/if}

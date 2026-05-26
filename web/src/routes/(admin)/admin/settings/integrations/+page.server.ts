@@ -1,6 +1,8 @@
 import { requireAdmin } from '$lib/server/authHelpers'
 import { getConfig } from '$lib/server/config'
 import { sourcesRepository } from '$lib/server/repositories/sources'
+import { getAllConnectorConfigsPublic } from '$lib/server/db/connector-configs'
+import { callbackUrl, type OAuthManifestConfig } from '$lib/server/oauth/connectorOAuth'
 import type { SyncRun } from '$lib/server/db/schema'
 import type { PageServerLoad } from './$types'
 
@@ -42,7 +44,32 @@ interface ConnectorInfo {
         display_name?: string
         description?: string
         source_types?: string[]
+        oauth?: OAuthManifestConfig | null
     }
+}
+
+export interface OAuthIntegrationProvider {
+    provider: string
+    displayName: string
+    configured: boolean
+    updatedAt: Date | null
+    config: Record<string, unknown>
+}
+
+const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+    github: 'GitHub',
+    google: 'Google',
+    microsoft: 'Microsoft',
+}
+
+function providerDisplayName(provider: string, connectors: ConnectorInfo[]): string {
+    if (PROVIDER_DISPLAY_NAMES[provider]) return PROVIDER_DISPLAY_NAMES[provider]
+    const connector = connectors.find((c) => c.manifest?.oauth?.provider === provider)
+    if (connector?.manifest?.display_name) return connector.manifest.display_name
+    return provider
+        .split(/[_-]/)
+        .map((part) => (part ? `${part[0].toUpperCase()}${part.slice(1)}` : part))
+        .join(' ')
 }
 
 interface ConnectorManagerSourceOverview {
@@ -75,6 +102,9 @@ export const load: PageServerLoad = async ({ locals }) => {
 
     const connectedSources = await sourcesRepository.getOrgWide()
     const latestSyncRuns = await sourcesRepository.getLatestSyncRuns()
+    const savedOAuthConfigs = await getAllConnectorConfigsPublic()
+    const savedOAuthConfigByProvider = new Map(savedOAuthConfigs.map((row) => [row.provider, row]))
+
     // Fetch registered connectors from connector manager
     const config = getConfig()
     let availableIntegrations: {
@@ -83,6 +113,7 @@ export const load: PageServerLoad = async ({ locals }) => {
         description: string
         connected: boolean
     }[] = []
+    let oauthProviders: OAuthIntegrationProvider[] = []
     const sourceHealth = new Map<string, 'healthy' | 'unhealthy'>()
 
     try {
@@ -109,6 +140,7 @@ export const load: PageServerLoad = async ({ locals }) => {
                 string,
                 { id: string; name: string; description: string; connected: boolean }
             >()
+            const sourceTypesByOAuthProvider = new Map<string, Set<string>>()
 
             for (const connector of connectors) {
                 const connectorId = connector.manifest?.connector_id ?? connector.source_type
@@ -124,7 +156,40 @@ export const load: PageServerLoad = async ({ locals }) => {
                 if (connectedSources.some((s) => s.sourceType === connector.source_type)) {
                     integration.connected = true
                 }
+
+                const oauth = connector.manifest?.oauth
+                if (oauth?.provider) {
+                    const sourceTypes = connector.manifest?.source_types?.length
+                        ? connector.manifest.source_types
+                        : [connector.source_type]
+
+                    if (!sourceTypesByOAuthProvider.has(oauth.provider)) {
+                        sourceTypesByOAuthProvider.set(oauth.provider, new Set())
+                    }
+                    const set = sourceTypesByOAuthProvider.get(oauth.provider)!
+                    for (const sourceType of sourceTypes) {
+                        if (oauth.scopes[sourceType]) set.add(sourceType)
+                    }
+                    if (set.size === 0) {
+                        for (const sourceType of sourceTypes) set.add(sourceType)
+                    }
+                }
             }
+
+            oauthProviders = Array.from(sourceTypesByOAuthProvider.keys())
+                .map((provider) => {
+                    const saved = savedOAuthConfigByProvider.get(provider)
+                    return {
+                        provider,
+                        displayName: providerDisplayName(provider, connectors),
+                        configured: !!(
+                            saved?.config?.oauth_client_id && saved?.config?.oauth_client_secret
+                        ),
+                        updatedAt: saved?.updatedAt ?? null,
+                        config: saved?.config ?? {},
+                    }
+                })
+                .sort((a, b) => a.displayName.localeCompare(b.displayName))
 
             availableIntegrations = Array.from(integrationMap.values()).sort((a, b) => {
                 const idxA = CONNECTOR_DISPLAY_ORDER.indexOf(a.id)
@@ -143,5 +208,7 @@ export const load: PageServerLoad = async ({ locals }) => {
         latestSyncRuns,
         sourceHealth,
         availableIntegrations,
+        oauthProviders,
+        oauthRedirectUri: callbackUrl(),
     }
 }

@@ -78,7 +78,7 @@
             <h1 class="text-3xl font-bold tracking-tight">Authentication</h1>
             <p class="text-muted-foreground mt-2">
                 Configure only how users sign in to your Omni instance. OAuth clients for connecting
-                external apps are managed under OAuth Integrations.
+                external apps are managed under Integrations → OAuth Clients.
             </p>
         </div>
 
