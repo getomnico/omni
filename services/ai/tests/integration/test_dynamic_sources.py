@@ -428,7 +428,7 @@ async def test_build_registry_search_tool_has_dynamic_sources(
 
 @pytest.mark.asyncio
 @pytest.mark.asyncio
-async def test_connector_actions_from_real_connector_manager_are_loadable(
+async def test_connector_actions_from_connector_manager_are_loadable(
     db_pool,
     test_user,
     _patch_db_pool,
