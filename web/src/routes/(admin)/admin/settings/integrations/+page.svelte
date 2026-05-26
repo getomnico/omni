@@ -253,8 +253,16 @@
 
         <Tabs.Root bind:value={activeTab}>
             <Tabs.List>
-                <Tabs.Trigger value="sources">Data Sources</Tabs.Trigger>
-                <Tabs.Trigger value="oauth">OAuth Clients</Tabs.Trigger>
+                <Tabs.Trigger
+                    value="sources"
+                    class="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">
+                    Data Sources
+                </Tabs.Trigger>
+                <Tabs.Trigger
+                    value="oauth"
+                    class="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">
+                    OAuth Clients
+                </Tabs.Trigger>
             </Tabs.List>
 
             <Tabs.Content value="sources" class="space-y-8">
