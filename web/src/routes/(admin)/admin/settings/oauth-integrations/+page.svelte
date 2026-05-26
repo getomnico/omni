@@ -21,14 +21,31 @@
     }
 
     async function copyRedirectUri() {
-        await navigator.clipboard.writeText(data.redirectUri)
-        redirectUriCopied = true
-        toast.success('Redirect URI copied')
-        if (copyResetTimer) clearTimeout(copyResetTimer)
-        copyResetTimer = setTimeout(() => {
-            redirectUriCopied = false
-            copyResetTimer = null
-        }, 2000)
+        try {
+            if (navigator.clipboard?.writeText) {
+                await navigator.clipboard.writeText(data.redirectUri)
+            } else {
+                const textarea = document.createElement('textarea')
+                textarea.value = data.redirectUri
+                textarea.setAttribute('readonly', '')
+                textarea.style.position = 'fixed'
+                textarea.style.left = '-9999px'
+                document.body.appendChild(textarea)
+                textarea.select()
+                document.execCommand('copy')
+                document.body.removeChild(textarea)
+            }
+
+            redirectUriCopied = true
+            toast.success('Redirect URI copied')
+            if (copyResetTimer) clearTimeout(copyResetTimer)
+            copyResetTimer = setTimeout(() => {
+                redirectUriCopied = false
+                copyResetTimer = null
+            }, 2000)
+        } catch {
+            toast.error('Failed to copy redirect URI')
+        }
     }
 </script>
 
@@ -108,7 +125,7 @@
                                         variant={provider.configured ? 'outline' : 'default'}
                                         class="cursor-pointer"
                                         onclick={() => (activeProvider = provider)}>
-                                        {provider.configured ? 'Edit' : 'Configure'}
+                                        {provider.configured ? 'Edit' : 'Add client'}
                                     </Button>
                                 </div>
                             </div>

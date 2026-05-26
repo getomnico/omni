@@ -87,8 +87,7 @@
 <Dialog.Root {open} onOpenChange={(o) => !o && cancel()}>
     <Dialog.Content class="max-w-lg">
         <Dialog.Header>
-            <Dialog.Title
-                >{configured ? 'Edit' : 'Configure'} {displayName} OAuth client</Dialog.Title>
+            <Dialog.Title>{configured ? 'Edit' : 'Add'} {displayName} OAuth client</Dialog.Title>
             <Dialog.Description>
                 Paste the OAuth app client credentials for this integration provider.
             </Dialog.Description>
