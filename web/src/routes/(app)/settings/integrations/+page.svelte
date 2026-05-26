@@ -254,7 +254,7 @@
         {/if}
 
         <!-- Available Connections -->
-        <!-- TODO: Move google-specific stuff out of here -->
+        <!-- TODO: Generate these cards from OAuth-capable, admin-configured providers instead of Google-specific state. -->
         {#if data.googleOAuthConfigured}
             <div class="space-y-4">
                 <div>

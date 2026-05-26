@@ -47,7 +47,9 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     }
 
     const flow = state.metadata.flow
-    const grantedScopes = (tokens.scope ?? '').split(config.scope_separator).filter(Boolean)
+    const grantedScopes = (tokens.scope ?? '')
+        .split(config.scope_separator === ',' ? ',' : /[\s,]+/)
+        .filter(Boolean)
     const requiredScopes = state.metadata.requiredScopes
     if (state.metadata.strictScopeCheck && flow.type === 'user_write') {
         const missing = requiredScopes.filter((s) => !grantedScopes.includes(s))

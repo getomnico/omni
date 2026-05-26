@@ -2,6 +2,7 @@ import { json, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
 import {
     getAllConnectorConfigsPublic,
+    getConnectorConfig,
     upsertConnectorConfig,
 } from '$lib/server/db/connector-configs'
 
@@ -26,6 +27,20 @@ export const POST: RequestHandler = async ({ locals, request }) => {
         throw error(400, 'Missing provider or config')
     }
 
-    const result = await upsertConnectorConfig(provider, config, locals.user.id)
+    const existing = await getConnectorConfig(provider)
+    const existingConfig = (existing?.config ?? {}) as Record<string, unknown>
+    const nextConfig = { ...existingConfig, ...config }
+
+    // Public reads redact secrets. If a client edits a provider without sending
+    // a new secret, preserve the stored secret instead of overwriting it with a
+    // redaction marker or deleting it.
+    if (
+        (!config.oauth_client_secret || config.oauth_client_secret === '••••••••') &&
+        existingConfig.oauth_client_secret
+    ) {
+        nextConfig.oauth_client_secret = existingConfig.oauth_client_secret
+    }
+
+    const result = await upsertConnectorConfig(provider, nextConfig, locals.user.id)
     return json({ provider: result.provider, updatedAt: result.updatedAt })
 }

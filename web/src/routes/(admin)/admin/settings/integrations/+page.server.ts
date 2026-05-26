@@ -1,7 +1,6 @@
 import { requireAdmin } from '$lib/server/authHelpers'
 import { getConfig } from '$lib/server/config'
 import { sourcesRepository } from '$lib/server/repositories/sources'
-import { getConnectorConfigPublic } from '$lib/server/db/connector-configs'
 import type { SyncRun } from '$lib/server/db/schema'
 import type { PageServerLoad } from './$types'
 
@@ -76,8 +75,6 @@ export const load: PageServerLoad = async ({ locals }) => {
 
     const connectedSources = await sourcesRepository.getOrgWide()
     const latestSyncRuns = await sourcesRepository.getLatestSyncRuns()
-    const googleConnectorConfig = await getConnectorConfigPublic('google')
-
     // Fetch registered connectors from connector manager
     const config = getConfig()
     let availableIntegrations: {
@@ -145,9 +142,6 @@ export const load: PageServerLoad = async ({ locals }) => {
         connectedSources,
         latestSyncRuns,
         sourceHealth,
-        googleOAuthConfigured: !!(
-            googleConnectorConfig && googleConnectorConfig.config.oauth_client_id
-        ),
         availableIntegrations,
     }
 }

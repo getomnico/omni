@@ -34,6 +34,8 @@ async def test_connector_manifest(
     assert manifest["version"] == "1.0.0"
     assert "full" in manifest["sync_modes"]
     assert "incremental" in manifest["sync_modes"]
+    assert manifest["oauth"]["provider"] == "github"
+    assert "github" in manifest["oauth"]["scopes"]
 
 
 async def test_direct_health_check(connector_server: str):

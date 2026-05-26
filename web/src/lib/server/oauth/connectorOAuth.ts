@@ -284,7 +284,10 @@ export async function exchangeCodeAndIdentify(
     const tokenEndpoint = creds.tokenEndpoint ?? config.token_endpoint
     const tokenResp = await fetch(tokenEndpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            Accept: 'application/json',
+        },
         body: tokenParams.toString(),
     })
     const tokenData = await tokenResp.json()
@@ -295,18 +298,53 @@ export async function exchangeCodeAndIdentify(
     const tokens = tokenData as OAuthTokens
 
     const userinfoResp = await fetch(config.userinfo_endpoint, {
-        headers: { Authorization: `Bearer ${tokens.access_token}` },
+        headers: {
+            Authorization: `Bearer ${tokens.access_token}`,
+            Accept: 'application/json',
+        },
     })
     if (!userinfoResp.ok) {
         throw new Error(`Failed to fetch userinfo: ${userinfoResp.status}`)
     }
     const profile = (await userinfoResp.json()) as Record<string, unknown>
-    const email = profile[config.userinfo_email_field]
-    if (typeof email !== 'string') {
+    let email = profile[config.userinfo_email_field]
+    if (typeof email !== 'string' || !email) {
+        email = await providerEmailFallback(config.provider, tokens.access_token)
+    }
+    if (typeof email !== 'string' || !email) {
         throw new Error(`userinfo response missing field "${config.userinfo_email_field}"`)
     }
 
     return { tokens, state, config, principalEmail: email }
+}
+
+async function providerEmailFallback(
+    provider: string,
+    accessToken: string,
+): Promise<string | null> {
+    // GitHub's /user endpoint often returns `email: null` when the user's
+    // primary email is private. The OAuth app must request `user:email`, then
+    // we can resolve the primary verified address from /user/emails.
+    if (provider !== 'github') return null
+
+    const resp = await fetch('https://api.github.com/user/emails', {
+        headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: 'application/vnd.github+json',
+        },
+    })
+    if (!resp.ok) return null
+    const emails = (await resp.json()) as Array<{
+        email?: string
+        primary?: boolean
+        verified?: boolean
+    }>
+    return (
+        emails.find((entry) => entry.primary && entry.verified && entry.email)?.email ??
+        emails.find((entry) => entry.verified && entry.email)?.email ??
+        emails.find((entry) => entry.email)?.email ??
+        null
+    )
 }
 
 async function manifestForFlow(

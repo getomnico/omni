@@ -77,7 +77,8 @@
         <div>
             <h1 class="text-3xl font-bold tracking-tight">Authentication</h1>
             <p class="text-muted-foreground mt-2">
-                Configure how users sign in to your Omni instance
+                Configure only how users sign in to your Omni instance. OAuth clients for connecting
+                external apps are managed under OAuth Integrations.
             </p>
         </div>
 
@@ -454,10 +455,7 @@
                     <div class="flex items-center gap-3">
                         <div
                             class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
-                            <img
-                                src={googleIcon}
-                                alt="Google"
-                                class="h-7 w-7 object-contain" />
+                            <img src={googleIcon} alt="Google" class="h-7 w-7 object-contain" />
                         </div>
                         <div>
                             <div class="text-base leading-tight font-semibold">Google</div>

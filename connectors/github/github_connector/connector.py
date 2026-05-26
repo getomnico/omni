@@ -5,12 +5,17 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from omni_connector import Connector, SearchOperator, StdioMcpServer, SyncContext
+from omni_connector import (
+    Connector,
+    OAuthManifestConfig,
+    OAuthScopeSet,
+    SearchOperator,
+    StdioMcpServer,
+    SyncContext,
+)
 
 from .client import AuthenticationError, GitHubClient, GitHubError, GitHubRepo
-from .models import GitHubCredentials, GitHubSourceConfig
 from .config import CHECKPOINT_INTERVAL
-
 from .mappers import (
     generate_discussion_content,
     generate_issue_content,
@@ -21,6 +26,7 @@ from .mappers import (
     map_pr_to_document,
     map_repo_to_document,
 )
+from .models import GitHubCredentials, GitHubSourceConfig
 
 logger = logging.getLogger(__name__)
 
@@ -74,10 +80,27 @@ class GitHubConnector(Connector):
             args=["stdio", "--toolsets", "all"],
         )
 
+    def oauth_config(self) -> OAuthManifestConfig | None:
+        return OAuthManifestConfig(
+            provider="github",
+            auth_endpoint="https://github.com/login/oauth/authorize",
+            token_endpoint="https://github.com/login/oauth/access_token",
+            userinfo_endpoint="https://api.github.com/user",
+            userinfo_email_field="email",
+            identity_scopes=["read:user", "user:email"],
+            scopes={
+                "github": OAuthScopeSet(
+                    read=["repo", "read:org"],
+                    write=["repo"],
+                )
+            },
+            scope_separator=" ",
+        )
+
     def prepare_mcp_env(self, credentials: dict[str, Any]) -> dict[str, str]:
         raw_creds = credentials.get("credentials", credentials)
         creds = GitHubCredentials(**raw_creds)
-        return {"GITHUB_PERSONAL_ACCESS_TOKEN": creds.token}
+        return {"GITHUB_PERSONAL_ACCESS_TOKEN": creds.effective_token}
 
     async def sync(
         self,
@@ -89,11 +112,11 @@ class GitHubConnector(Connector):
         try:
             creds = GitHubCredentials(**credentials)
         except Exception:
-            await ctx.fail("Missing 'token' in credentials")
+            await ctx.fail("Missing 'token' or 'access_token' in credentials")
             return
 
         config = GitHubSourceConfig(**source_config)
-        client = GitHubClient(token=creds.token, base_url=config.api_url)
+        client = GitHubClient(token=creds.effective_token, base_url=config.api_url)
 
         try:
             username = await client.validate_token()

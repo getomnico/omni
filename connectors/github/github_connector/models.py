@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class GitHubSourceConfig(BaseModel):
@@ -12,4 +12,15 @@ class GitHubSourceConfig(BaseModel):
 
 
 class GitHubCredentials(BaseModel):
-    token: str
+    token: str | None = None
+    access_token: str | None = None
+
+    @model_validator(mode="after")
+    def require_token(self) -> "GitHubCredentials":
+        if not self.token and not self.access_token:
+            raise ValueError("Missing 'token' or 'access_token' in credentials")
+        return self
+
+    @property
+    def effective_token(self) -> str:
+        return self.token or self.access_token or ""
