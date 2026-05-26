@@ -33,29 +33,21 @@ SourceMode = Literal["read", "write"]
 SourceFilter = dict[str, list[SourceMode]]
 
 
-@dataclass
-class _SourceSyncOverview:
-    source: Source
-
-    @classmethod
-    def from_api_response(cls, payload: Mapping[str, object]) -> "_SourceSyncOverview":
-        source_payload = payload["source"]
-        if not isinstance(source_payload, Mapping):
-            raise TypeError("connector-manager source overview missing source object")
-        return cls(source=Source.from_row(source_payload))
-
-
-def _sources_from_sync_overview_response(payload: object) -> list[Source]:
+def sources_from_sync_overview_response(payload: object) -> list[Source]:
     if not isinstance(payload, list):
         raise TypeError("connector-manager /sources response must be a list")
-    overviews: list[_SourceSyncOverview] = []
+
+    sources: list[Source] = []
     for item in payload:
         if not isinstance(item, Mapping):
             raise TypeError(
                 "connector-manager /sources response contains a non-object item"
             )
-        overviews.append(_SourceSyncOverview.from_api_response(item))
-    return [overview.source for overview in overviews]
+        source_payload = item["source"]
+        if not isinstance(source_payload, Mapping):
+            raise TypeError("connector-manager source overview missing source object")
+        sources.append(Source.from_row(source_payload))
+    return sources
 
 
 class ToolsetSummary(TypedDict):
@@ -181,7 +173,7 @@ class ConnectorToolHandler:
                         f"{self._connector_manager_url}/sources"
                     )
                     sources_resp.raise_for_status()
-                    sources = _sources_from_sync_overview_response(sources_resp.json())
+                    sources = sources_from_sync_overview_response(sources_resp.json())
 
         except Exception as e:
             logger.error(f"Failed to fetch connector info: {e}")

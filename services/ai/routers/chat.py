@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import pathlib
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import cast
 
@@ -66,7 +66,11 @@ from tools import (
     ToolHandler,
     ToolRegistry,
 )
-from tools.connector_handler import SearchOperator, ToolsetSummary
+from tools.connector_handler import (
+    SearchOperator,
+    ToolsetSummary,
+    sources_from_sync_overview_response,
+)
 from tools.meta_handler import MetaToolHandler, OnLoad
 from tools.omni_tool_result import OAuthRequiredPayload
 from tools.sandbox_handler import SandboxToolHandler
@@ -273,31 +277,6 @@ def _copy_provider_extras(src: object, dst: dict, keys: tuple[str, ...]) -> None
             dst[key] = value  # type: ignore[typeddict-unknown-key]
 
 
-@dataclass
-class _SourceSyncOverview:
-    source: Source
-
-    @classmethod
-    def from_api_response(cls, payload: Mapping[str, object]) -> "_SourceSyncOverview":
-        source_payload = payload["source"]
-        if not isinstance(source_payload, Mapping):
-            raise TypeError("connector-manager source overview missing source object")
-        return cls(source=Source.from_row(source_payload))
-
-
-def _sources_from_sync_overview_response(payload: object) -> list[Source]:
-    if not isinstance(payload, list):
-        raise TypeError("connector-manager /sources response must be a list")
-    overviews: list[_SourceSyncOverview] = []
-    for item in payload:
-        if not isinstance(item, Mapping):
-            raise TypeError(
-                "connector-manager /sources response contains a non-object item"
-            )
-        overviews.append(_SourceSyncOverview.from_api_response(item))
-    return [overview.source for overview in overviews]
-
-
 async def _fetch_sources_from_connector_manager() -> list[Source] | None:
     """Fetch all sources from the connector manager. Returns None on failure."""
     if not CONNECTOR_MANAGER_URL:
@@ -306,7 +285,7 @@ async def _fetch_sources_from_connector_manager() -> list[Source] | None:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(f"{CONNECTOR_MANAGER_URL.rstrip('/')}/sources")
             resp.raise_for_status()
-            return _sources_from_sync_overview_response(resp.json())
+            return sources_from_sync_overview_response(resp.json())
     except Exception as e:
         logger.warning(f"Failed to fetch sources from connector manager: {e}")
         return None
