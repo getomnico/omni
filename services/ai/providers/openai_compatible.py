@@ -387,6 +387,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 f"Failed to stream from OpenAI-compatible endpoint: {e}",
                 exc_info=True,
             )
+            raise Exception(f"Failed to stream response: {str(e)}") from e
 
     async def generate_response(
         self,

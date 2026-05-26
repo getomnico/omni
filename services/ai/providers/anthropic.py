@@ -241,6 +241,7 @@ class AnthropicProvider(LLMProvider):
 
         except Exception as e:
             logger.error(f"Failed to stream from Anthropic: {str(e)}", exc_info=True)
+            raise Exception(f"Failed to stream response: {str(e)}") from e
 
     async def generate_response(
         self,

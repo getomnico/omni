@@ -589,10 +589,12 @@ class BedrockProvider(LLMProvider):
                 f"[BEDROCK] AWS Bedrock client error ({error_code}): {str(e)}",
                 exc_info=True,
             )
+            raise Exception(f"Failed to stream response: {str(e)}") from e
         except Exception as e:
             logger.error(
                 f"[BEDROCK] Failed to stream from AWS Bedrock: {str(e)}", exc_info=True
             )
+            raise Exception(f"Failed to stream response: {str(e)}") from e
 
     async def generate_response(
         self,
