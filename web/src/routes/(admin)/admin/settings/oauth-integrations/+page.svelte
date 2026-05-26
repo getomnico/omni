@@ -91,33 +91,12 @@
             <Card.Header>
                 <Card.Title>Connector OAuth clients</Card.Title>
                 <Card.Description>
-                    Each provider uses one provider-level OAuth client. A provider can power
-                    multiple source types, such as Google Drive and Gmail.
+                    Configure OAuth clients for your connected apps. These clients will be used when
+                    users set up their own connections, or when users invoke API calls to the
+                    connected apps.
                 </Card.Description>
             </Card.Header>
             <Card.Content class="space-y-6">
-                <div class="space-y-2">
-                    <div class="text-sm font-medium">Shared redirect URI</div>
-                    <p class="text-muted-foreground text-sm">
-                        Use this callback URL when creating OAuth apps in Google, GitHub, Microsoft,
-                        or another provider.
-                    </p>
-                    <div class="flex gap-2">
-                        <code
-                            class="bg-muted text-muted-foreground flex-1 rounded-md px-3 py-2 text-sm break-all">
-                            {data.redirectUri}
-                        </code>
-                        <Button variant="outline" class="cursor-pointer" onclick={copyRedirectUri}>
-                            {#if redirectUriCopied}
-                                <Check class="h-4 w-4 text-green-600" />
-                                Copied
-                            {:else}
-                                <Copy class="h-4 w-4" />
-                                Copy
-                            {/if}
-                        </Button>
-                    </div>
-                </div>
                 {#if data.providers.length > 0}
                     <div class="overflow-hidden rounded-lg border">
                         <div
@@ -125,7 +104,7 @@
                             <div>Provider</div>
                             <div>Status</div>
                             <div>Last updated</div>
-                            <div class="text-right">Action</div>
+                            <div class="text-right"></div>
                         </div>
                         {#each data.providers as provider}
                             <div
@@ -162,6 +141,30 @@
                                 </div>
                             </div>
                         {/each}
+                    </div>
+                    <div class="space-y-2">
+                        <div class="text-sm font-medium">Shared redirect URI</div>
+                        <p class="text-muted-foreground text-sm">
+                            Use this callback URL when creating OAuth clients for your providers.
+                        </p>
+                        <div class="flex gap-2">
+                            <code
+                                class="bg-muted text-muted-foreground flex-1 rounded-md px-3 py-2 text-sm break-all">
+                                {data.redirectUri}
+                            </code>
+                            <Button
+                                variant="outline"
+                                class="cursor-pointer"
+                                onclick={copyRedirectUri}>
+                                {#if redirectUriCopied}
+                                    <Check class="h-4 w-4 text-green-600" />
+                                    Copied
+                                {:else}
+                                    <Copy class="h-4 w-4" />
+                                    Copy
+                                {/if}
+                            </Button>
+                        </div>
                     </div>
                 {:else}
                     <div class="py-12 text-center">

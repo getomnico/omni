@@ -63,6 +63,20 @@
                         <Sidebar.MenuItem>
                             <Sidebar.MenuButton
                                 class={cn(
+                                    page.url.pathname === '/admin/settings/oauth-integrations' &&
+                                        'bg-sidebar-accent text-sidebar-accent-foreground',
+                                )}>
+                                {#snippet child({ props })}
+                                    <a href="/admin/settings/oauth-integrations" {...props}>
+                                        <KeyRound class="h-4 w-4" />
+                                        <span>OAuth Integrations</span>
+                                    </a>
+                                {/snippet}
+                            </Sidebar.MenuButton>
+                        </Sidebar.MenuItem>
+                        <Sidebar.MenuItem>
+                            <Sidebar.MenuButton
+                                class={cn(
                                     page.url.pathname === '/admin/settings/user-management' &&
                                         'bg-sidebar-accent text-sidebar-accent-foreground',
                                 )}>
@@ -84,20 +98,6 @@
                                     <a href="/admin/settings/authentication" {...props}>
                                         <Shield class="h-4 w-4" />
                                         <span>Authentication</span>
-                                    </a>
-                                {/snippet}
-                            </Sidebar.MenuButton>
-                        </Sidebar.MenuItem>
-                        <Sidebar.MenuItem>
-                            <Sidebar.MenuButton
-                                class={cn(
-                                    page.url.pathname === '/admin/settings/oauth-integrations' &&
-                                        'bg-sidebar-accent text-sidebar-accent-foreground',
-                                )}>
-                                {#snippet child({ props })}
-                                    <a href="/admin/settings/oauth-integrations" {...props}>
-                                        <KeyRound class="h-4 w-4" />
-                                        <span>OAuth Integrations</span>
                                     </a>
                                 {/snippet}
                             </Sidebar.MenuButton>
