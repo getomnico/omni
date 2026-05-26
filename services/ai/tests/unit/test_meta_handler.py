@@ -120,6 +120,7 @@ async def test_tool_search_uses_searcher_without_loading(actions):
     loaded: set[str] = set()
     searcher = _FakeSearcherClient()
     meta = MetaToolHandler(handler, loaded, lambda _: None, searcher_client=searcher)
+    await meta.publish_tool_capabilities()
 
     result = await meta.execute("tool_search", {"query": "email"}, _ctx())
 
@@ -133,6 +134,18 @@ async def test_tool_search_uses_searcher_without_loading(actions):
     }
     assert searcher.searches[0].capability_type == "tool"
     assert "tool:gmail__send_email" in searcher.searches[0].allowed_ids
+
+
+@pytest.mark.asyncio
+async def test_publish_tool_capabilities_skips_unchanged_refresh(actions):
+    handler = _make_handler(actions)
+    searcher = _FakeSearcherClient()
+    meta = MetaToolHandler(handler, set(), lambda _: None, searcher_client=searcher)
+
+    await meta.publish_tool_capabilities()
+    await meta.publish_tool_capabilities()
+
+    assert len(searcher.upserts) == 1
 
 
 @pytest.mark.asyncio

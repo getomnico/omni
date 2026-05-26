@@ -8,6 +8,9 @@ load_tool_set. See issue #203.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
@@ -34,6 +37,9 @@ OnLoad = Callable[[set[str]], Awaitable[None]]
 
 class MetaToolHandler:
     """Meta-tools that let the LLM discover and load connector tools on demand."""
+
+    _publish_lock = asyncio.Lock()
+    _published_capability_keys: set[tuple[int, str]] = set()
 
     def __init__(
         self,
@@ -200,7 +206,6 @@ class MetaToolHandler:
     ) -> list[tuple[str, ConnectorAction]]:
         if self._searcher_client is not None:
             try:
-                await self._publish_tool_capabilities()
                 response = await self._searcher_client.search_capabilities(
                     CapabilitySearchRequest(
                         capability_type="tool",
@@ -229,9 +234,31 @@ class MetaToolHandler:
 
         return self._local_tool_search(query_tokens, limit)
 
-    async def _publish_tool_capabilities(self) -> None:
+    async def publish_tool_capabilities(self) -> None:
         if self._searcher_client is None or not self._ch.actions:
             return
+
+        capabilities = self._tool_capabilities()
+        publish_key = (
+            id(self._searcher_client),
+            self._capability_fingerprint(capabilities),
+        )
+        if publish_key in self._published_capability_keys:
+            return
+
+        async with self._publish_lock:
+            if publish_key in self._published_capability_keys:
+                return
+            try:
+                await self._searcher_client.upsert_capabilities(
+                    CapabilitiesUpsertRequest(capabilities=capabilities)
+                )
+            except Exception as e:
+                logger.warning(f"Failed to publish connector tool capabilities: {e}")
+                return
+            self._published_capability_keys.add(publish_key)
+
+    def _tool_capabilities(self) -> list[CapabilityUpsert]:
         capabilities: list[CapabilityUpsert] = []
         for tool_name, action in self._ch.actions.items():
             capabilities.append(
@@ -253,9 +280,13 @@ class MetaToolHandler:
                     },
                 )
             )
-        await self._searcher_client.upsert_capabilities(
-            CapabilitiesUpsertRequest(capabilities=capabilities)
-        )
+        return capabilities
+
+    def _capability_fingerprint(self, capabilities: list[CapabilityUpsert]) -> str:
+        payload = [capability.model_dump() for capability in capabilities]
+        payload.sort(key=lambda capability: capability["id"])
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def _local_tool_search(
         self, query_tokens: set[str], limit: int

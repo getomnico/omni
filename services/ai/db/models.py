@@ -1,9 +1,10 @@
 import json
 import logging
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from crypto import decrypt_config
@@ -414,13 +415,13 @@ class Source:
     is_deleted: bool
 
     @classmethod
-    def from_row(cls, row: dict) -> "Source":
+    def from_row(cls, row: Mapping[str, object]) -> "Source":
         return cls(
-            id=row["id"],
-            name=row["name"],
-            source_type=row["source_type"],
-            is_active=row["is_active"],
-            is_deleted=row["is_deleted"],
+            id=cast(str, row["id"]),
+            name=cast(str, row["name"]),
+            source_type=cast(str, row["source_type"]),
+            is_active=cast(bool, row["is_active"]),
+            is_deleted=cast(bool, row["is_deleted"]),
         )
 
 

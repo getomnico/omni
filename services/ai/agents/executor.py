@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -74,6 +75,31 @@ def _resolve_llm_provider(state: AppState, agent: Agent) -> LLMProvider:
     return next(iter(models.values()))
 
 
+@dataclass
+class _SourceSyncOverview:
+    source: Source
+
+    @classmethod
+    def from_api_response(cls, payload: Mapping[str, object]) -> "_SourceSyncOverview":
+        source_payload = payload["source"]
+        if not isinstance(source_payload, Mapping):
+            raise TypeError("connector-manager source overview missing source object")
+        return cls(source=Source.from_row(source_payload))
+
+
+def _sources_from_sync_overview_response(payload: object) -> list[Source]:
+    if not isinstance(payload, list):
+        raise TypeError("connector-manager /sources response must be a list")
+    overviews: list[_SourceSyncOverview] = []
+    for item in payload:
+        if not isinstance(item, Mapping):
+            raise TypeError(
+                "connector-manager /sources response contains a non-object item"
+            )
+        overviews.append(_SourceSyncOverview.from_api_response(item))
+    return [overview.source for overview in overviews]
+
+
 async def _fetch_sources() -> list[Source] | None:
     """Fetch all sources from the connector manager."""
     if not CONNECTOR_MANAGER_URL:
@@ -82,7 +108,7 @@ async def _fetch_sources() -> list[Source] | None:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(f"{CONNECTOR_MANAGER_URL.rstrip('/')}/sources")
             resp.raise_for_status()
-            return [Source.from_row(s.get("source", s)) for s in resp.json()]
+            return _sources_from_sync_overview_response(resp.json())
     except Exception as e:
         logger.warning(f"Failed to fetch sources: {e}")
         return None
@@ -170,6 +196,7 @@ async def _build_agent_registry(
             on_load=_noop_on_load,
             searcher_client=app_state.searcher_tool.client,
         )
+        await meta_handler.publish_tool_capabilities()
         registry.register(meta_handler)
         always_on_handlers.append(meta_handler)
 
