@@ -261,7 +261,31 @@
     let processedMessages = $derived(processMessages(chatMessages))
     let lastUserMessageIndex = $derived(processedMessages.findLastIndex((m) => m.role === 'user'))
 
-    function copyMessageToClipboard(message: ProcessedMessage) {
+    async function copyTextToClipboard(text: string) {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text)
+            return
+        }
+
+        const textArea = document.createElement('textarea')
+        textArea.value = text
+        textArea.style.position = 'fixed'
+        textArea.style.left = '-9999px'
+        textArea.style.top = '-9999px'
+        document.body.appendChild(textArea)
+        textArea.focus()
+        textArea.select()
+
+        try {
+            if (!document.execCommand('copy')) {
+                throw new Error('copy command failed')
+            }
+        } finally {
+            document.body.removeChild(textArea)
+        }
+    }
+
+    async function copyMessageToClipboard(message: ProcessedMessage) {
         const content = message.content
             .map((block) => {
                 if (block.type === 'text') {
@@ -276,25 +300,38 @@
                         })
                         return toolText
                     }
+                    if (toolBlock.actionResult) {
+                        return toolBlock.actionResult.text
+                    }
                 }
                 return ''
             })
             .filter((text) => text.length > 0)
             .join('\n\n')
 
-        navigator.clipboard.writeText(content)
-        copiedMessageId = message.id
-        setTimeout(() => {
-            copiedMessageId = null
-        }, 2000)
+        try {
+            await copyTextToClipboard(content)
+            copiedMessageId = message.id
+            setTimeout(() => {
+                copiedMessageId = null
+            }, 2000)
+        } catch (error) {
+            console.error('Failed to copy message:', error)
+            toast.error('Failed to copy message')
+        }
     }
 
-    function copyCurrentUrlToClipboard() {
-        navigator.clipboard.writeText(window.location.href)
-        copiedUrl = true
-        setTimeout(() => {
-            copiedUrl = false
-        }, 2000)
+    async function copyCurrentUrlToClipboard() {
+        try {
+            await copyTextToClipboard(window.location.href)
+            copiedUrl = true
+            setTimeout(() => {
+                copiedUrl = false
+            }, 2000)
+        } catch (error) {
+            console.error('Failed to copy URL:', error)
+            toast.error('Failed to copy link')
+        }
     }
 
     function handleStop() {
@@ -1465,17 +1502,20 @@
         <Tooltip.Provider delayDuration={300}>
             <Tooltip.Root>
                 <Tooltip.Trigger>
-                    <Button
-                        class="cursor-pointer"
-                        size="icon"
-                        variant="ghost"
-                        onclick={() => copyMessageToClipboard(message)}>
-                        {#if copiedMessageId === message.id}
-                            <Check class="h-4 w-4 text-green-600" />
-                        {:else}
-                            <Copy class="h-4 w-4" />
-                        {/if}
-                    </Button>
+                    {#snippet child({ props })}
+                        <Button
+                            {...props}
+                            class="cursor-pointer"
+                            size="icon"
+                            variant="ghost"
+                            onclick={() => copyMessageToClipboard(message)}>
+                            {#if copiedMessageId === message.id}
+                                <Check class="h-4 w-4 text-green-600" />
+                            {:else}
+                                <Copy class="h-4 w-4" />
+                            {/if}
+                        </Button>
+                    {/snippet}
                 </Tooltip.Trigger>
                 <Tooltip.Content>
                     <p>Copy message</p>
@@ -1486,17 +1526,20 @@
             <Tooltip.Provider delayDuration={300}>
                 <Tooltip.Root>
                     <Tooltip.Trigger>
-                        <Button
-                            class={cn(
-                                'cursor-pointer',
-                                messageFeedback[message.origMessageId] === 'upvote' &&
-                                    'text-green-600',
-                            )}
-                            size="icon"
-                            variant="ghost"
-                            onclick={() => handleFeedback(message.origMessageId, 'upvote')}>
-                            <ThumbsUp class="h-4 w-4" />
-                        </Button>
+                        {#snippet child({ props })}
+                            <Button
+                                {...props}
+                                class={cn(
+                                    'cursor-pointer',
+                                    messageFeedback[message.origMessageId] === 'upvote' &&
+                                        'text-green-600',
+                                )}
+                                size="icon"
+                                variant="ghost"
+                                onclick={() => handleFeedback(message.origMessageId, 'upvote')}>
+                                <ThumbsUp class="h-4 w-4" />
+                            </Button>
+                        {/snippet}
                     </Tooltip.Trigger>
                     <Tooltip.Content>
                         <p>Good response</p>
@@ -1508,17 +1551,20 @@
             <Tooltip.Provider delayDuration={300}>
                 <Tooltip.Root>
                     <Tooltip.Trigger>
-                        <Button
-                            class={cn(
-                                'cursor-pointer',
-                                messageFeedback[message.origMessageId] === 'downvote' &&
-                                    'text-red-600',
-                            )}
-                            size="icon"
-                            variant="ghost"
-                            onclick={() => handleFeedback(message.origMessageId, 'downvote')}>
-                            <ThumbsDown class="h-4 w-4" />
-                        </Button>
+                        {#snippet child({ props })}
+                            <Button
+                                {...props}
+                                class={cn(
+                                    'cursor-pointer',
+                                    messageFeedback[message.origMessageId] === 'downvote' &&
+                                        'text-red-600',
+                                )}
+                                size="icon"
+                                variant="ghost"
+                                onclick={() => handleFeedback(message.origMessageId, 'downvote')}>
+                                <ThumbsDown class="h-4 w-4" />
+                            </Button>
+                        {/snippet}
                     </Tooltip.Trigger>
                     <Tooltip.Content>
                         <p>Bad response</p>
@@ -1529,17 +1575,20 @@
         <Tooltip.Provider delayDuration={300}>
             <Tooltip.Root>
                 <Tooltip.Trigger>
-                    <Button
-                        class="cursor-pointer"
-                        size="icon"
-                        variant="ghost"
-                        onclick={copyCurrentUrlToClipboard}>
-                        {#if copiedUrl}
-                            <Check class="h-4 w-4 text-green-600" />
-                        {:else}
-                            <Share class="h-4 w-4" />
-                        {/if}
-                    </Button>
+                    {#snippet child({ props })}
+                        <Button
+                            {...props}
+                            class="cursor-pointer"
+                            size="icon"
+                            variant="ghost"
+                            onclick={copyCurrentUrlToClipboard}>
+                            {#if copiedUrl}
+                                <Check class="h-4 w-4 text-green-600" />
+                            {:else}
+                                <Share class="h-4 w-4" />
+                            {/if}
+                        </Button>
+                    {/snippet}
                 </Tooltip.Trigger>
                 <Tooltip.Content>
                     <p>Share</p>
