@@ -25,6 +25,7 @@
     import nextcloudLogo from '$lib/images/icons/nextcloud.svg'
     import paperlessLogo from '$lib/images/icons/paperless.svg'
     import imapLogo from '$lib/images/icons/imap.svg'
+    import { copyTextToClipboard } from '$lib/utils'
     import { getSourceIconPath } from '$lib/utils/icons'
     import {
         AlertTriangle,
@@ -157,20 +158,7 @@
 
     async function copyRedirectUri() {
         try {
-            if (navigator.clipboard?.writeText) {
-                await navigator.clipboard.writeText(data.oauthRedirectUri)
-            } else {
-                const textarea = document.createElement('textarea')
-                textarea.value = data.oauthRedirectUri
-                textarea.setAttribute('readonly', '')
-                textarea.style.position = 'fixed'
-                textarea.style.left = '-9999px'
-                document.body.appendChild(textarea)
-                textarea.select()
-                document.execCommand('copy')
-                document.body.removeChild(textarea)
-            }
-
+            await copyTextToClipboard(data.oauthRedirectUri)
             redirectUriCopied = true
             toast.success('Redirect URI copied')
             if (copyResetTimer) clearTimeout(copyResetTimer)

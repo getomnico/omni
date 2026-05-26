@@ -60,6 +60,7 @@
     import * as Alert from '$lib/components/ui/alert'
     import type { Attachment } from 'svelte/attachments'
     import * as HoverCard from '$lib/components/ui/hover-card'
+    import { copyTextToClipboard } from '$lib/utils'
     import {
         getIconFromSearchResult,
         getSourceDisplayName,
@@ -260,30 +261,6 @@
 
     let processedMessages = $derived(processMessages(chatMessages))
     let lastUserMessageIndex = $derived(processedMessages.findLastIndex((m) => m.role === 'user'))
-
-    async function copyTextToClipboard(text: string) {
-        if (navigator.clipboard && window.isSecureContext) {
-            await navigator.clipboard.writeText(text)
-            return
-        }
-
-        const textArea = document.createElement('textarea')
-        textArea.value = text
-        textArea.style.position = 'fixed'
-        textArea.style.left = '-9999px'
-        textArea.style.top = '-9999px'
-        document.body.appendChild(textArea)
-        textArea.focus()
-        textArea.select()
-
-        try {
-            if (!document.execCommand('copy')) {
-                throw new Error('copy command failed')
-            }
-        } finally {
-            document.body.removeChild(textArea)
-        }
-    }
 
     async function copyMessageToClipboard(message: ProcessedMessage) {
         const content = message.content

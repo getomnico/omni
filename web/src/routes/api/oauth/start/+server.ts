@@ -41,7 +41,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
         if (!(await isProviderConfigured(config.provider))) {
             throw error(
                 412,
-                `OAuth client for ${config.provider} is not configured. Ask an admin to set it up under Admin → Settings → Integrations → OAuth Clients.`,
+                `OAuth client for ${config.provider} is not configured. Ask an admin to set it up under Admin → Settings → Integrations → OAuth Apps.`,
             )
         }
 
@@ -65,7 +65,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
         if (!(await isProviderConfigured(config.provider))) {
             throw error(
                 412,
-                `OAuth client for ${config.provider} is not configured. Ask an admin to set it up under Admin → Settings → Integrations → OAuth Clients.`,
+                `OAuth client for ${config.provider} is not configured. Ask an admin to set it up under Admin → Settings → Integrations → OAuth Apps.`,
             )
         }
 

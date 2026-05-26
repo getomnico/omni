@@ -118,7 +118,7 @@
                     <a
                         href="/admin/settings/integrations?tab=oauth"
                         class="text-primary underline underline-offset-2">
-                        Configure OAuth Clients
+                        Configure OAuth Apps
                     </a>
                 </p>
             {/if}

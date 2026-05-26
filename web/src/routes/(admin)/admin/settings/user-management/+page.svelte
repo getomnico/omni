@@ -5,6 +5,7 @@
     import * as AlertDialog from '$lib/components/ui/alert-dialog'
     import * as Tooltip from '$lib/components/ui/tooltip'
     import { Button } from '$lib/components/ui/button'
+    import { copyTextToClipboard } from '$lib/utils'
     import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
     import { Badge } from '$lib/components/ui/badge'
@@ -68,7 +69,7 @@
 
     async function copyPassword() {
         try {
-            await navigator.clipboard.writeText(generatedPassword)
+            await copyTextToClipboard(generatedPassword)
             toast.success('Password copied to clipboard')
         } catch (err) {
             toast.error('Failed to copy password')

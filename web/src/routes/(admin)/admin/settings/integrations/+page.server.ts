@@ -56,14 +56,7 @@ export interface OAuthIntegrationProvider {
     config: Record<string, unknown>
 }
 
-const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
-    github: 'GitHub',
-    google: 'Google',
-    microsoft: 'Microsoft',
-}
-
 function providerDisplayName(provider: string, connectors: ConnectorInfo[]): string {
-    if (PROVIDER_DISPLAY_NAMES[provider]) return PROVIDER_DISPLAY_NAMES[provider]
     const connector = connectors.find((c) => c.manifest?.oauth?.provider === provider)
     if (connector?.manifest?.display_name) return connector.manifest.display_name
     return provider

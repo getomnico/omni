@@ -31,13 +31,7 @@ export const POST: RequestHandler = async ({ locals, request }) => {
     const existingConfig = (existing?.config ?? {}) as Record<string, unknown>
     const nextConfig = { ...existingConfig, ...config }
 
-    // Public reads redact secrets. If a client edits a provider without sending
-    // a new secret, preserve the stored secret instead of overwriting it with a
-    // redaction marker or deleting it.
-    if (
-        (!config.oauth_client_secret || config.oauth_client_secret === '••••••••') &&
-        existingConfig.oauth_client_secret
-    ) {
+    if (!config.oauth_client_secret && existingConfig.oauth_client_secret) {
         nextConfig.oauth_client_secret = existingConfig.oauth_client_secret
     }
 
