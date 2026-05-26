@@ -16,7 +16,7 @@
     } from '@lucide/svelte'
     import type { ToolMessageContent, ToolName } from '$lib/types/message'
     import { ToolApprovalStatus } from '$lib/types/message'
-    import OAuthRequiredCard from '$lib/components/oauth-required-card.svelte'
+    import OAuthRequiredCard from '$lib/components/oauth-integrations/oauth-required-card.svelte'
     import { cn } from '$lib/utils'
     import {
         getIconFromSearchResult,
