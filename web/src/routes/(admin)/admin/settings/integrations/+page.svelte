@@ -170,17 +170,6 @@
         const slug = sourceTypeSlug[sourceType] ?? sourceType
         return `/admin/settings/integrations/${slug}/${sourceId}`
     }
-
-    function getIntegrationDescription(integration: { id: string; description: string }): string {
-        if (integration.id === 'google') {
-            return 'Set up org-wide Google Workspace sync with a service account and domain-wide delegation. Personal Google OAuth clients are configured under OAuth Integrations.'
-        }
-        return integration.description
-    }
-
-    function getConnectLabel(integrationId: string): string {
-        return integrationId === 'google' ? 'Connect org workspace' : 'Connect'
-    }
 </script>
 
 <svelte:head>
@@ -400,8 +389,7 @@
                                 {/if}
                                 <span>{integration.name}</span>
                             </CardTitle>
-                            <CardDescription
-                                >{getIntegrationDescription(integration)}</CardDescription>
+                            <CardDescription>{integration.description}</CardDescription>
                         </CardHeader>
                         <CardContent class="flex-1" />
                         <CardFooter class="flex gap-2">
@@ -409,7 +397,7 @@
                                 size="sm"
                                 class="cursor-pointer"
                                 onclick={() => handleConnect(integration.id)}>
-                                {getConnectLabel(integration.id)}
+                                Connect
                             </Button>
                         </CardFooter>
                     </Card>
