@@ -105,7 +105,8 @@
                                             <td class="max-w-xs py-2">
                                                 {#if run.errorMessage}
                                                     <span
-                                                        class="line-clamp-2 break-words text-red-600">
+                                                        class="line-clamp-2 break-words text-red-600"
+                                                        title={run.errorMessage}>
                                                         {run.errorMessage}
                                                     </span>
                                                 {:else}

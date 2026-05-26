@@ -1655,6 +1655,14 @@
                                     isAdmin={data.user.role === 'admin'}
                                     onOAuthComplete={() => streamResponse(data.chat.id)} />
                             </div>
+                            {#if error && i === processedMessages.length - 1}
+                                <div class="flex px-2">
+                                    <Alert.Root variant="destructive" title={error}>
+                                        <CircleAlert />
+                                        <Alert.Title>{error}</Alert.Title>
+                                    </Alert.Root>
+                                </div>
+                            {/if}
                             {#if pendingApproval && i === processedMessages.length - 1}
                                 {@const connectorName = pendingApproval.tool_name.split('__')[0]}
                                 {@const actionName = pendingApproval.tool_name
@@ -1751,13 +1759,12 @@
                 {/each}
 
                 <!-- Streaming AI Response -->
-                {#if isStreaming || error}
+                {#if isStreaming || (error && processedMessages[processedMessages.length - 1]?.role !== 'assistant')}
                     <div class="flex px-2">
                         {#if error}
-                            <Alert.Root variant="destructive">
+                            <Alert.Root variant="destructive" title={error}>
                                 <CircleAlert />
                                 <Alert.Title>{error}</Alert.Title>
-                                <!-- <Alert.Description>{error}</Alert.Description> -->
                             </Alert.Root>
                         {:else if isStreaming}
                             <span class="thinking-container mt-2 flex items-center gap-1.5">
