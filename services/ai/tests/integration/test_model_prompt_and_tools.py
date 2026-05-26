@@ -227,7 +227,7 @@ async def test_initial_chat_turn_sends_loadable_toolsets_but_no_connector_tools(
     names = _tool_names(llm.calls[0])
     assert {"tool_search", "load_tool", "load_tool_set"} <= names
     assert "search_documents" in names
-    assert "gmail__send_email" in names
+    assert "gmail__send_email" not in names
     assert "gmail__list_threads" not in names
 
     prompt = _system_prompt(llm.calls[0])
