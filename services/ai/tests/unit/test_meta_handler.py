@@ -55,6 +55,8 @@ class _FakeSearcherClient:
                 CapabilitySearchResult(
                     id="tool:gmail__send_email",
                     capability_type="tool",
+                    name="gmail__send_email",
+                    description="Send an email via Gmail.",
                     search_text="gmail send email",
                     data={"tool_name": "gmail__send_email"},
                     score=1.0,

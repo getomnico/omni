@@ -424,10 +424,11 @@ pub async fn capabilities_upsert(
     if request.capabilities.iter().any(|capability| {
         capability.id.trim().is_empty()
             || capability.capability_type.trim().is_empty()
+            || capability.name.trim().is_empty()
             || capability.search_text.trim().is_empty()
     }) {
         return Err(SearcherError::BadRequest(
-            "capability id, capability_type, and search_text are required".to_string(),
+            "capability id, capability_type, name, and search_text are required".to_string(),
         ));
     }
 

@@ -96,7 +96,11 @@ async fn test_capability_search_indexes_search_text() -> Result<()> {
             {
                 "id": "tool:gmail__send_email",
                 "capability_type": "tool",
+                "name": "gmail__send_email",
+                "description": "Send narwhal updates through Gmail.",
                 "user_id": null,
+                "source_id": "src-gmail-1",
+                "source_type": "gmail",
                 "search_text": "Gmail quokka title. Send narwhal updates through Gmail. Useful for composing platypus announcements. wombat workspace",
                 "data": {
                     "tool_name": "gmail__send_email",
@@ -110,6 +114,10 @@ async fn test_capability_search_indexes_search_text() -> Result<()> {
             {
                 "id": "tool:slack__post_message",
                 "capability_type": "tool",
+                "name": "slack__post_message",
+                "description": "Post ordinary team messages.",
+                "source_id": "src-slack-1",
+                "source_type": "slack",
                 "search_text": "Slack unrelated title. Post ordinary team messages.",
                 "data": {
                     "tool_name": "slack__post_message",

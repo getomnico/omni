@@ -23,6 +23,8 @@ class _FakeSearcherClient:
                 CapabilitySearchResult(
                     id="skill:excel",
                     capability_type="skill",
+                    name="excel",
+                    description="Spreadsheet guidance",
                     search_text="Excel Skill Spreadsheet guidance",
                     data={
                         "skill_id": "excel",

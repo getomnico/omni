@@ -245,6 +245,8 @@ class SkillHandler:
                 CapabilityUpsert(
                     id=f"skill:{skill_id}",
                     capability_type="skill",
+                    name=skill_id,
+                    description=self._snippet(content, max_chars=240),
                     search_text=f"{skill_id} {title}\n{content}",
                     data={
                         "skill_id": skill_id,

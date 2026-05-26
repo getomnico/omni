@@ -194,8 +194,15 @@ pub struct AttributeValuesResponse {
 pub struct CapabilityUpsert {
     pub id: String,
     pub capability_type: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
     #[serde(default)]
     pub user_id: Option<String>,
+    #[serde(default)]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub source_type: Option<String>,
     pub search_text: String,
     pub data: serde_json::Value,
 }
@@ -232,7 +239,11 @@ impl CapabilitySearchRequest {
 pub struct CapabilitySearchResult {
     pub id: String,
     pub capability_type: String,
+    pub name: String,
+    pub description: String,
     pub user_id: Option<String>,
+    pub source_id: Option<String>,
+    pub source_type: Option<String>,
     pub search_text: String,
     pub data: serde_json::Value,
     pub score: f32,
