@@ -6,6 +6,17 @@
     import { Check, Copy, KeyRound } from '@lucide/svelte'
     import { formatDate } from '$lib/utils/sources'
     import OAuthClientConfigDialog from '$lib/components/oauth-integrations/oauth-client-config-dialog.svelte'
+    import atlassianLogo from '$lib/images/icons/atlassian.svg'
+    import clickupLogo from '$lib/images/icons/clickup.svg'
+    import firefliesLogo from '$lib/images/icons/fireflies.svg'
+    import githubLogo from '$lib/images/icons/github.svg'
+    import googleLogo from '$lib/images/icons/google.svg'
+    import hubspotLogo from '$lib/images/icons/hubspot.svg'
+    import linearLogo from '$lib/images/icons/linear.svg'
+    import microsoftLogo from '$lib/images/icons/microsoft.svg'
+    import nextcloudLogo from '$lib/images/icons/nextcloud.svg'
+    import notionLogo from '$lib/images/icons/notion.svg'
+    import slackLogo from '$lib/images/icons/slack.svg'
     import type { PageProps } from './$types'
 
     let { data }: PageProps = $props()
@@ -15,6 +26,20 @@
     let activeProvider = $state<Provider | null>(null)
     let redirectUriCopied = $state(false)
     let copyResetTimer: ReturnType<typeof setTimeout> | null = null
+
+    const providerIcons: Record<string, string> = {
+        atlassian: atlassianLogo,
+        clickup: clickupLogo,
+        fireflies: firefliesLogo,
+        github: githubLogo,
+        google: googleLogo,
+        hubspot: hubspotLogo,
+        linear: linearLogo,
+        microsoft: microsoftLogo,
+        nextcloud: nextcloudLogo,
+        notion: notionLogo,
+        slack: slackLogo,
+    }
 
     function closeDialog() {
         activeProvider = null
@@ -106,7 +131,20 @@
                             <div
                                 class="grid grid-cols-[1.4fr_0.8fr_1fr_0.8fr] items-center gap-4 border-t px-4 py-3 text-sm">
                                 <div class="flex items-center gap-2 font-medium">
-                                    <KeyRound class="text-muted-foreground h-4 w-4" />
+                                    {#if providerIcons[provider.provider]}
+                                        <div
+                                            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200/70 bg-white/95 shadow-sm dark:border-white/10 dark:shadow-none">
+                                            <img
+                                                src={providerIcons[provider.provider]}
+                                                alt={provider.displayName}
+                                                class="h-4 w-4 object-contain" />
+                                        </div>
+                                    {:else}
+                                        <div
+                                            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200/70 bg-white/95 shadow-sm dark:border-white/10 dark:shadow-none">
+                                            <KeyRound class="text-muted-foreground h-4 w-4" />
+                                        </div>
+                                    {/if}
                                     {provider.displayName}
                                 </div>
                                 <div>
