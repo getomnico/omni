@@ -256,12 +256,12 @@
                 <Tabs.Trigger
                     value="sources"
                     class="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">
-                    Data Sources
+                    Sources
                 </Tabs.Trigger>
                 <Tabs.Trigger
                     value="oauth"
                     class="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">
-                    OAuth Clients
+                    OAuth Apps
                 </Tabs.Trigger>
             </Tabs.List>
 
@@ -490,101 +490,99 @@
                             </Card>
                         {/each}
                     </div>
-                </div></Tabs.Content>
+                </div>
+            </Tabs.Content>
 
-            <Tabs.Content value="oauth">
-                <Card>
-                    <CardHeader>
-                        <CardTitle>Connector OAuth clients</CardTitle>
-                        <CardDescription>
-                            Configure OAuth clients for your connected apps. These clients are used
-                            when users set up their own connections, or when users invoke API calls
-                            to connected apps.
-                        </CardDescription>
-                    </CardHeader>
-                    <CardContent class="space-y-6">
-                        {#if data.oauthProviders.length > 0}
-                            <div class="overflow-hidden rounded-lg border">
+            <Tabs.Content value="oauth" class="space-y-6">
+                <div>
+                    <h2 class="text-xl font-semibold">OAuth app clients</h2>
+                    <p class="text-muted-foreground text-sm">
+                        Configure OAuth clients for your connected apps. These clients are used when
+                        users set up their own connections, or when users invoke API calls to
+                        connected apps.
+                    </p>
+                </div>
+
+                <div class="space-y-6">
+                    {#if data.oauthProviders.length > 0}
+                        <div class="overflow-hidden rounded-lg border">
+                            <div
+                                class="bg-muted/50 text-muted-foreground grid grid-cols-[1.4fr_0.8fr_1fr_0.8fr] gap-4 px-4 py-3 text-sm font-medium">
+                                <div>Provider</div>
+                                <div>Status</div>
+                                <div>Last updated</div>
+                                <div class="text-right"></div>
+                            </div>
+                            {#each data.oauthProviders as provider}
                                 <div
-                                    class="bg-muted/50 text-muted-foreground grid grid-cols-[1.4fr_0.8fr_1fr_0.8fr] gap-4 px-4 py-3 text-sm font-medium">
-                                    <div>Provider</div>
-                                    <div>Status</div>
-                                    <div>Last updated</div>
-                                    <div class="text-right"></div>
-                                </div>
-                                {#each data.oauthProviders as provider}
-                                    <div
-                                        class="grid grid-cols-[1.4fr_0.8fr_1fr_0.8fr] items-center gap-4 border-t px-4 py-3 text-sm">
-                                        <div class="flex items-center gap-2 font-medium">
-                                            {#if oauthProviderIcons[provider.provider]}
-                                                <img
-                                                    src={oauthProviderIcons[provider.provider]}
-                                                    alt={provider.displayName}
-                                                    class="h-5 w-5 shrink-0 object-contain" />
-                                            {:else}
-                                                <KeyRound
-                                                    class="text-muted-foreground h-5 w-5 shrink-0" />
-                                            {/if}
-                                            {provider.displayName}
-                                        </div>
-                                        <div>
-                                            {#if provider.configured}
-                                                <Badge variant="secondary">Configured</Badge>
-                                            {:else}
-                                                <Badge variant="outline">Not configured</Badge>
-                                            {/if}
-                                        </div>
-                                        <div class="text-muted-foreground">
-                                            {formatDate(provider.updatedAt)}
-                                        </div>
-                                        <div class="text-right">
-                                            <Button
-                                                size="sm"
-                                                variant={provider.configured
-                                                    ? 'outline'
-                                                    : 'default'}
-                                                class="cursor-pointer"
-                                                onclick={() => (activeOAuthProvider = provider)}>
-                                                {provider.configured ? 'Edit' : 'Add client'}
-                                            </Button>
-                                        </div>
-                                    </div>
-                                {/each}
-                            </div>
-                            <div class="space-y-2">
-                                <div class="text-sm font-medium">Shared redirect URI</div>
-                                <p class="text-muted-foreground text-sm">
-                                    Use this callback URL when creating OAuth clients for your
-                                    providers.
-                                </p>
-                                <div class="flex gap-2">
-                                    <code
-                                        class="bg-muted text-muted-foreground flex-1 rounded-md px-3 py-2 text-sm break-all">
-                                        {data.oauthRedirectUri}
-                                    </code>
-                                    <Button
-                                        variant="outline"
-                                        class="cursor-pointer"
-                                        onclick={copyRedirectUri}>
-                                        {#if redirectUriCopied}
-                                            <Check class="h-4 w-4 text-green-600" />
-                                            Copied
+                                    class="grid grid-cols-[1.4fr_0.8fr_1fr_0.8fr] items-center gap-4 border-t px-4 py-3 text-sm">
+                                    <div class="flex items-center gap-2 font-medium">
+                                        {#if oauthProviderIcons[provider.provider]}
+                                            <img
+                                                src={oauthProviderIcons[provider.provider]}
+                                                alt={provider.displayName}
+                                                class="h-5 w-5 shrink-0 object-contain" />
                                         {:else}
-                                            <Copy class="h-4 w-4" />
-                                            Copy
+                                            <KeyRound
+                                                class="text-muted-foreground h-5 w-5 shrink-0" />
                                         {/if}
-                                    </Button>
+                                        {provider.displayName}
+                                    </div>
+                                    <div>
+                                        {#if provider.configured}
+                                            <Badge variant="secondary">Configured</Badge>
+                                        {:else}
+                                            <Badge variant="outline">Not configured</Badge>
+                                        {/if}
+                                    </div>
+                                    <div class="text-muted-foreground">
+                                        {formatDate(provider.updatedAt)}
+                                    </div>
+                                    <div class="text-right">
+                                        <Button
+                                            size="sm"
+                                            variant={provider.configured ? 'outline' : 'default'}
+                                            class="cursor-pointer"
+                                            onclick={() => (activeOAuthProvider = provider)}>
+                                            {provider.configured ? 'Edit' : 'Add client'}
+                                        </Button>
+                                    </div>
                                 </div>
+                            {/each}
+                        </div>
+                        <div class="space-y-2">
+                            <div class="text-sm font-medium">Shared redirect URI</div>
+                            <p class="text-muted-foreground text-sm">
+                                Use this callback URL when creating OAuth clients for your
+                                providers.
+                            </p>
+                            <div class="flex gap-2">
+                                <code
+                                    class="bg-muted text-muted-foreground flex-1 rounded-md px-3 py-2 text-sm break-all">
+                                    {data.oauthRedirectUri}
+                                </code>
+                                <Button
+                                    variant="outline"
+                                    class="cursor-pointer"
+                                    onclick={copyRedirectUri}>
+                                    {#if redirectUriCopied}
+                                        <Check class="h-4 w-4 text-green-600" />
+                                        Copied
+                                    {:else}
+                                        <Copy class="h-4 w-4" />
+                                        Copy
+                                    {/if}
+                                </Button>
                             </div>
-                        {:else}
-                            <div class="py-12 text-center">
-                                <p class="text-muted-foreground text-sm">
-                                    No OAuth-capable connector manifests are currently registered.
-                                </p>
-                            </div>
-                        {/if}
-                    </CardContent>
-                </Card>
+                        </div>
+                    {:else}
+                        <div class="py-12 text-center">
+                            <p class="text-muted-foreground text-sm">
+                                No OAuth-capable connector manifests are currently registered.
+                            </p>
+                        </div>
+                    {/if}
+                </div>
             </Tabs.Content>
         </Tabs.Root>
     </div>
