@@ -82,6 +82,23 @@ Based on the first message(s) of a conversation, generate a title that is:
 Just respond with the title text, nothing else."""
 
 
+def _chat_error_message(exc: Exception) -> str:
+    message = str(exc).strip()
+    if not message:
+        return "Failed to generate response. Please try again."
+
+    for prefix in ("Failed to generate response: ", "Failed to stream response: "):
+        if message.startswith(prefix):
+            message = message[len(prefix) :].strip()
+            break
+
+    return f"Failed to generate response: {message}"
+
+
+def _sse_event(event_type: str, data: object) -> str:
+    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+
 def _resolve_provider(state: AppState, model_id: str | None) -> LLMProvider:
     """Resolve a model by ID, returning the provider.
     Priority: requested model -> default model -> first available.
@@ -1261,7 +1278,7 @@ async def stream_chat(
             logger.error(
                 f"Failed to generate AI response with tools: {e}", exc_info=True
             )
-            yield "event: error\ndata: Something went wrong, please try again later.\n\n"
+            yield _sse_event("stream_error", {"message": _chat_error_message(e)})
 
     return StreamingResponse(
         stream_generator(),

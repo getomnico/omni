@@ -13,6 +13,39 @@ import type {
     ToolUseBlockParam,
 } from '@anthropic-ai/sdk/resources/messages'
 
+function sseEvent(eventType: string, data: object): string {
+    return `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`
+}
+
+function sseErrorResponse(message: string): Response {
+    return new Response(sseEvent('stream_error', { message }), {
+        status: 200,
+        headers: {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
+        },
+    })
+}
+
+async function aiErrorMessage(response: Response): Promise<string> {
+    try {
+        const body: unknown = await response.json()
+        if (body && typeof body === 'object' && 'detail' in body) {
+            const detail = body.detail
+            if (typeof detail === 'string') return detail
+        }
+        if (body && typeof body === 'object' && 'error' in body) {
+            const error = body.error
+            if (typeof error === 'string') return error
+        }
+    } catch {
+        return `AI service unavailable (status ${response.status})`
+    }
+
+    return `AI service unavailable (status ${response.status})`
+}
+
 async function triggerTitleGeneration(chatId: string, logger: any): Promise<string | null> {
     try {
         // First check if title already exists
@@ -90,13 +123,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
                 statusText: response.statusText,
                 chatId,
             })
-            return json(
-                {
-                    error: 'AI service unavailable',
-                    details: `Status: ${response.status}`,
-                },
-                { status: 502 },
-            )
+            return sseErrorResponse(await aiErrorMessage(response))
         }
 
         logger.info('Chat stream started successfully', { chatId })
@@ -323,7 +350,10 @@ export const GET: RequestHandler = async ({ params, locals }) => {
                     }
                 } catch (error) {
                     logger.error('Error in stream processing', error, { chatId })
-                    controller.error(error)
+                    const message =
+                        error instanceof Error ? error.message : 'Failed to process chat stream'
+                    controller.enqueue(encoder.encode(sseEvent('stream_error', { message })))
+                    controller.close()
                 }
             },
             async cancel() {
@@ -398,12 +428,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
         })
     } catch (error) {
         logger.error('Error calling AI service', error, { chatId })
-        return json(
-            {
-                error: 'Failed to process request',
-                details: error instanceof Error ? error.message : 'Unknown error',
-            },
-            { status: 500 },
-        )
+        const message = error instanceof Error ? error.message : 'Failed to process request'
+        return sseErrorResponse(message)
     }
 }

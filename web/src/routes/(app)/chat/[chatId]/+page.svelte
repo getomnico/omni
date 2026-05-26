@@ -145,6 +145,24 @@
     let error = $state<string | null>(null)
     let eventSource: EventSource | null = $state(null)
 
+    function streamErrorMessage(event: Event): string {
+        if (!(event instanceof MessageEvent) || typeof event.data !== 'string' || !event.data) {
+            return 'Failed to generate response. Please try again.'
+        }
+
+        try {
+            const payload: unknown = JSON.parse(event.data)
+            if (payload && typeof payload === 'object' && 'message' in payload) {
+                const message = payload.message
+                if (typeof message === 'string' && message) return message
+            }
+        } catch {
+            return event.data
+        }
+
+        return event.data
+    }
+
     const defaultVerbs = ['Thinking', 'Reasoning', 'Analyzing', 'Processing']
     const slowMessages = [
         'Still working',
@@ -1131,15 +1149,18 @@
             }
         })
 
-        eventSource.addEventListener('error', (event) => {
-            error = 'Failed to generate response. Please try again.'
+        const handleStreamError = (event: Event) => {
+            error = streamErrorMessage(event)
             isStreaming = false
             stopThinkingText()
             requestAnimationFrame(() => recalcBottomPadding())
             userInputRef?.focus()
             eventSource?.close()
             eventSource = null
-        })
+        }
+
+        eventSource.addEventListener('stream_error', handleStreamError)
+        eventSource.addEventListener('error', handleStreamError)
     }
 
     async function handleApproval(decision: 'approved' | 'denied') {
