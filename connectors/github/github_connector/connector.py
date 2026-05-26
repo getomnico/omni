@@ -85,7 +85,7 @@ class GitHubConnector(Connector):
             provider="github",
             auth_endpoint="https://github.com/login/oauth/authorize",
             token_endpoint="https://github.com/login/oauth/access_token",
-            userinfo_endpoint="https://api.github.com/user",
+            userinfo_endpoint="https://api.github.com/user/emails",
             userinfo_email_field="email",
             identity_scopes=["read:user", "user:email"],
             scopes={

@@ -23,4 +23,7 @@ class GitHubCredentials(BaseModel):
 
     @property
     def effective_token(self) -> str:
-        return self.token or self.access_token or ""
+        token = self.token or self.access_token
+        if token is None:
+            raise ValueError("Missing 'token' or 'access_token' in credentials")
+        return token

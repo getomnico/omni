@@ -306,45 +306,47 @@ export async function exchangeCodeAndIdentify(
     if (!userinfoResp.ok) {
         throw new Error(`Failed to fetch userinfo: ${userinfoResp.status}`)
     }
-    const profile = (await userinfoResp.json()) as Record<string, unknown>
-    let email = profile[config.userinfo_email_field]
-    if (typeof email !== 'string' || !email) {
-        email = await providerEmailFallback(config.provider, tokens.access_token)
-    }
-    if (typeof email !== 'string' || !email) {
+    const profile = (await userinfoResp.json()) as unknown
+    const email = extractEmailFromUserinfo(profile, config.userinfo_email_field)
+    if (!email) {
         throw new Error(`userinfo response missing field "${config.userinfo_email_field}"`)
     }
 
     return { tokens, state, config, principalEmail: email }
 }
 
-async function providerEmailFallback(
-    provider: string,
-    accessToken: string,
-): Promise<string | null> {
-    // GitHub's /user endpoint often returns `email: null` when the user's
-    // primary email is private. The OAuth app must request `user:email`, then
-    // we can resolve the primary verified address from /user/emails.
-    if (provider !== 'github') return null
+function extractEmailFromUserinfo(profile: unknown, emailField: string): string | null {
+    if (Array.isArray(profile)) {
+        const entries = profile.filter(isUserinfoObject)
+        return (
+            getStringField(
+                entries.find((entry) => entry.primary === true && entry.verified === true),
+                emailField,
+            ) ??
+            getStringField(
+                entries.find((entry) => entry.verified === true),
+                emailField,
+            ) ??
+            getStringField(
+                entries.find((entry) => typeof entry[emailField] === 'string'),
+                emailField,
+            )
+        )
+    }
 
-    const resp = await fetch('https://api.github.com/user/emails', {
-        headers: {
-            Authorization: `Bearer ${accessToken}`,
-            Accept: 'application/vnd.github+json',
-        },
-    })
-    if (!resp.ok) return null
-    const emails = (await resp.json()) as Array<{
-        email?: string
-        primary?: boolean
-        verified?: boolean
-    }>
-    return (
-        emails.find((entry) => entry.primary && entry.verified && entry.email)?.email ??
-        emails.find((entry) => entry.verified && entry.email)?.email ??
-        emails.find((entry) => entry.email)?.email ??
-        null
-    )
+    return getStringField(isUserinfoObject(profile) ? profile : null, emailField)
+}
+
+function isUserinfoObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null
+}
+
+function getStringField(
+    value: Record<string, unknown> | null | undefined,
+    field: string,
+): string | null {
+    const fieldValue = value?.[field]
+    return typeof fieldValue === 'string' && fieldValue ? fieldValue : null
 }
 
 async function manifestForFlow(

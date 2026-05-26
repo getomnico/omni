@@ -26,16 +26,14 @@
         onCancel,
     }: Props = $props()
 
-    let clientId = $state('')
+    let clientIdOverride = $state<string | null>(null)
     let clientSecret = $state('')
     let isSaving = $state(false)
 
-    $effect(() => {
-        if (open) {
-            clientId = typeof config.oauth_client_id === 'string' ? config.oauth_client_id : ''
-            clientSecret = ''
-        }
-    })
+    const savedClientId = $derived(
+        open && typeof config.oauth_client_id === 'string' ? config.oauth_client_id : '',
+    )
+    const clientId = $derived(clientIdOverride ?? savedClientId)
 
     async function save() {
         if (!clientId.trim()) {
@@ -78,7 +76,7 @@
     }
 
     function cancel() {
-        clientId = ''
+        clientIdOverride = null
         clientSecret = ''
         onCancel?.()
     }
@@ -98,7 +96,9 @@
                 <Label for="oauth-client-id">Client ID</Label>
                 <Input
                     id="oauth-client-id"
-                    bind:value={clientId}
+                    value={clientId}
+                    oninput={(event) =>
+                        (clientIdOverride = (event.currentTarget as HTMLInputElement).value)}
                     placeholder={`Enter ${displayName} client ID`} />
             </div>
 
