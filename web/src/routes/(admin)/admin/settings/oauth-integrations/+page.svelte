@@ -3,7 +3,7 @@
     import * as Card from '$lib/components/ui/card'
     import { Badge } from '$lib/components/ui/badge'
     import { toast } from 'svelte-sonner'
-    import { Copy, KeyRound } from '@lucide/svelte'
+    import { Check, Copy, KeyRound } from '@lucide/svelte'
     import { formatDate } from '$lib/utils/sources'
     import OAuthClientConfigDialog from '$lib/components/oauth-integrations/oauth-client-config-dialog.svelte'
     import type { PageProps } from './$types'
@@ -13,6 +13,8 @@
     type Provider = (typeof data.providers)[number]
 
     let activeProvider = $state<Provider | null>(null)
+    let redirectUriCopied = $state(false)
+    let copyResetTimer: ReturnType<typeof setTimeout> | null = null
 
     function closeDialog() {
         activeProvider = null
@@ -20,7 +22,13 @@
 
     async function copyRedirectUri() {
         await navigator.clipboard.writeText(data.redirectUri)
+        redirectUriCopied = true
         toast.success('Redirect URI copied')
+        if (copyResetTimer) clearTimeout(copyResetTimer)
+        copyResetTimer = setTimeout(() => {
+            redirectUriCopied = false
+            copyResetTimer = null
+        }, 2000)
     }
 </script>
 
@@ -39,35 +47,35 @@
 
         <Card.Root>
             <Card.Header>
-                <Card.Title>Shared redirect URI</Card.Title>
-                <Card.Description>
-                    Use this callback URL when creating OAuth apps in Google, GitHub, Microsoft, or
-                    another provider.
-                </Card.Description>
-            </Card.Header>
-            <Card.Content>
-                <div class="flex gap-2">
-                    <code
-                        class="bg-muted text-muted-foreground flex-1 rounded-md px-3 py-2 text-sm break-all">
-                        {data.redirectUri}
-                    </code>
-                    <Button variant="outline" class="cursor-pointer" onclick={copyRedirectUri}>
-                        <Copy class="h-4 w-4" />
-                        Copy
-                    </Button>
-                </div>
-            </Card.Content>
-        </Card.Root>
-
-        <Card.Root>
-            <Card.Header>
                 <Card.Title>Connector OAuth clients</Card.Title>
                 <Card.Description>
                     Each provider uses one provider-level OAuth client. A provider can power
                     multiple source types, such as Google Drive and Gmail.
                 </Card.Description>
             </Card.Header>
-            <Card.Content>
+            <Card.Content class="space-y-6">
+                <div class="space-y-2">
+                    <div class="text-sm font-medium">Shared redirect URI</div>
+                    <p class="text-muted-foreground text-sm">
+                        Use this callback URL when creating OAuth apps in Google, GitHub, Microsoft,
+                        or another provider.
+                    </p>
+                    <div class="flex gap-2">
+                        <code
+                            class="bg-muted text-muted-foreground flex-1 rounded-md px-3 py-2 text-sm break-all">
+                            {data.redirectUri}
+                        </code>
+                        <Button variant="outline" class="cursor-pointer" onclick={copyRedirectUri}>
+                            {#if redirectUriCopied}
+                                <Check class="h-4 w-4 text-green-600" />
+                                Copied
+                            {:else}
+                                <Copy class="h-4 w-4" />
+                                Copy
+                            {/if}
+                        </Button>
+                    </div>
+                </div>
                 {#if data.providers.length > 0}
                     <div class="overflow-hidden rounded-lg border">
                         <div
