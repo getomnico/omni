@@ -149,8 +149,12 @@
     type StreamErrorPayload = { message: string }
 
     function streamErrorMessage(event: MessageEvent<string>): string {
-        const payload = JSON.parse(event.data) as StreamErrorPayload
-        return payload.message
+        try {
+            const payload = JSON.parse(event.data) as StreamErrorPayload
+            return payload.message
+        } catch {
+            return event.data || 'Failed to generate response. Please try again.'
+        }
     }
 
     const defaultVerbs = ['Thinking', 'Reasoning', 'Analyzing', 'Processing']
@@ -879,9 +883,10 @@
         error = null
         startThinkingText()
 
-        let currToolUseId: string
-        let currToolUseName: string
-        let currToolUseInputStr: string
+        const toolUseStateByIndex = new Map<
+            number,
+            { id: string; name: string; inputJson: string }
+        >()
 
         eventSource = new EventSource(`/api/chat/${chatId}/stream`, { withCredentials: true })
 
@@ -891,6 +896,7 @@
         const collectStreamingResponse = (
             block:
                 | ToolUseBlock
+                | TextBlockParam
                 | TextDelta
                 | InputJSONDelta
                 | ToolResultBlockParam
@@ -905,7 +911,32 @@
             }
 
             const existingBlocks = lastMessage.message.content as ContentBlockParam[]
-            if (block.type === 'text_delta') {
+            if (block.type === 'text') {
+                if (blockIdx === undefined) {
+                    throw new Error('blockIdx is required for text block')
+                }
+                if (blockIdx >= existingBlocks.length) {
+                    existingBlocks.push({
+                        type: 'text',
+                        text: block.text,
+                        citations: block.citations ? [...block.citations] : undefined,
+                    })
+                } else {
+                    const existingBlock = existingBlocks[blockIdx]
+                    if (existingBlock.type !== 'text') {
+                        throw new Error(
+                            `Error handling text block, existing block at index ${blockIdx} is not a text block`,
+                        )
+                    }
+                    existingBlock.text += block.text
+                    if (block.citations) {
+                        existingBlock.citations = [
+                            ...(existingBlock.citations ?? []),
+                            ...block.citations,
+                        ]
+                    }
+                }
+            } else if (block.type === 'text_delta') {
                 if (blockIdx === undefined) {
                     throw new Error('blockIdx is required for text_delta')
                 }
@@ -1009,6 +1040,7 @@
             const lastMessage = chatMessages[chatMessages.length - 1]
             if (lastMessage && lastMessage.id.toString().startsWith('temp-')) {
                 lastMessage.id = messageId
+                chatMessages = [...chatMessages]
             }
         })
 
@@ -1043,10 +1075,14 @@
                 } else if (data.type === 'content_block_start') {
                     if (data.content_block.type === 'tool_use') {
                         collectStreamingResponse(data.content_block, data.index)
-                        currToolUseId = data.content_block.id
-                        currToolUseName = data.content_block.name
-                        currToolUseInputStr = ''
+                        toolUseStateByIndex.set(data.index, {
+                            id: data.content_block.id,
+                            name: data.content_block.name,
+                            inputJson: '',
+                        })
                         updateThinkingForTool(data.content_block.name)
+                    } else if (data.content_block.type === 'text') {
+                        collectStreamingResponse(data.content_block, data.index)
                     }
                 } else if (data.type === 'content_block_delta') {
                     if (data.delta.type === 'text_delta' && data.delta.text) {
@@ -1055,15 +1091,23 @@
                     } else if (data.delta.type === 'citations_delta') {
                         collectStreamingResponse(data.delta, data.index)
                     } else if (data.delta.type === 'input_json_delta') {
+                        const toolUseState = toolUseStateByIndex.get(data.index)
+                        if (!toolUseState) {
+                            console.warn(
+                                `Received input JSON delta for unknown tool block index ${data.index}`,
+                            )
+                            return
+                        }
+
                         // Parse partial JSON to show search query if possible
-                        currToolUseInputStr += data.delta.partial_json
+                        toolUseState.inputJson += data.delta.partial_json
                         try {
-                            const parsedInput = JSON.parse(currToolUseInputStr)
+                            const parsedInput = JSON.parse(toolUseState.inputJson)
                             collectStreamingResponse(
                                 {
                                     type: 'tool_use',
-                                    id: currToolUseId,
-                                    name: currToolUseName,
+                                    id: toolUseState.id,
+                                    name: toolUseState.name,
                                     input: parsedInput,
                                 },
                                 data.index,
@@ -1076,6 +1120,7 @@
                     collectStreamingResponse(data)
                 }
 
+                chatMessages = [...chatMessages]
                 if (!userHasScrolled) scrollToBottom()
             } catch (err) {
                 console.error('Failed to parse SSE data:', event.data, err)
@@ -1135,6 +1180,7 @@
                     if (replaced) {
                         cm.message = { ...cm.message, content: next }
                         delete oauthEventByToolCallId[data.tool_use_id]
+                        chatMessages = [...chatMessages]
                         break
                     }
                 }
@@ -1170,8 +1216,22 @@
             eventSource = null
         }
 
+        const handleConnectionError = () => {
+            if (streamCompleted) return
+            error =
+                messageEventsReceived > 0
+                    ? 'Response stream disconnected before it finished. Please try again.'
+                    : 'Failed to connect to the response stream. Please try again.'
+            isStreaming = false
+            stopThinkingText()
+            requestAnimationFrame(() => recalcBottomPadding())
+            userInputRef?.focus()
+            eventSource?.close()
+            eventSource = null
+        }
+
         eventSource.addEventListener('stream_error', handleStreamError)
-        eventSource.addEventListener('error', handleStreamError)
+        eventSource.addEventListener('error', handleConnectionError)
     }
 
     async function handleApproval(decision: 'approved' | 'denied') {
@@ -1216,20 +1276,30 @@
 
         const attachmentIds = readyAttachments.map((u) => u.id)
 
-        const response = await fetch(`/api/chat/${data.chat.id}/messages`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                content: userMsg,
-                role: 'user',
-                parentId,
-                attachmentIds,
-            }),
-        })
+        userMessage = ''
+
+        let response: Response
+        try {
+            response = await fetch(`/api/chat/${data.chat.id}/messages`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    content: userMsg,
+                    role: 'user',
+                    parentId,
+                    attachmentIds,
+                }),
+            })
+        } catch (err) {
+            userMessage = userMsg
+            console.error('Failed to send message to chat session', err)
+            return
+        }
 
         if (!response.ok) {
+            userMessage = userMsg
             console.error('Failed to send message to chat session')
             return
         }
@@ -1266,7 +1336,6 @@
         }
         chatMessages.push(newUserMessage)
 
-        userMessage = ''
         pendingUploads = []
         userHasScrolled = false
 

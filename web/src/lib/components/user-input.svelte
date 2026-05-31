@@ -183,7 +183,11 @@
         // This prevents the reactivity loop from triggering while the user is actively typing,
         // which completely avoids disrupting both cursor positions and Korean IME composition.
         if (inputRef && value !== inputRef.innerText) {
-            inputRef.innerText = value
+            if (value) {
+                inputRef.innerText = value
+            } else {
+                inputRef.replaceChildren()
+            }
         }
     })
 
@@ -359,7 +363,8 @@
 
     function handleInputChange() {
         if (inputRef) {
-            onInput(inputRef.innerText)
+            value = inputRef.innerText
+            onInput(value)
             detectMention()
             if (!mentionActive && onPopoverChange) {
                 onPopoverChange(false)
