@@ -157,6 +157,75 @@
         }
     }
 
+    type StreamDebugData = Record<string, unknown>
+
+    function debugStream(label: string, details: StreamDebugData = {}) {
+        try {
+            console.debug(`[chat-stream] ${label}`, {
+                ...details,
+                chatMessageCount: chatMessages.length,
+                chatMessages: chatMessages.map((m, idx) => ({
+                    idx,
+                    id: m.id,
+                    parentId: m.parentId,
+                    role: m.message.role,
+                    content: summarizeMessageContent(m.message.content),
+                })),
+                processedMessageCount: processedMessages.length,
+                processedMessages: processedMessages.map((m, idx) => ({
+                    idx,
+                    origMessageId: m.origMessageId,
+                    role: m.role,
+                    blockCount: m.content.length,
+                    blocks: m.content.map((b) => ({
+                        id: b.id,
+                        type: b.type,
+                        textLength: b.type === 'text' ? b.text.length : undefined,
+                        textPreview: b.type === 'text' ? b.text.slice(0, 80) : undefined,
+                        toolName: b.type === 'tool' ? b.toolUse.name : undefined,
+                        toolUseId: b.type === 'tool' ? b.toolUse.id : undefined,
+                    })),
+                })),
+            })
+        } catch (err) {
+            console.debug(`[chat-stream] ${label}:debug-failed`, {
+                ...details,
+                error: err instanceof Error ? err.message : String(err),
+            })
+        }
+    }
+
+    function summarizeMessageContent(content: MessageParam['content']): unknown {
+        if (typeof content === 'string') {
+            return { kind: 'string', length: content.length, preview: content.slice(0, 80) }
+        }
+
+        return content.map((block, idx) => {
+            if (block.type === 'text') {
+                return {
+                    idx,
+                    type: block.type,
+                    length: block.text.length,
+                    preview: block.text.slice(0, 80),
+                    citations: block.citations?.length ?? 0,
+                }
+            }
+            if (block.type === 'tool_use') {
+                return { idx, type: block.type, id: block.id, name: block.name, input: block.input }
+            }
+            if (block.type === 'tool_result') {
+                return {
+                    idx,
+                    type: block.type,
+                    toolUseId: block.tool_use_id,
+                    isError: block.is_error,
+                    contentLength: Array.isArray(block.content) ? block.content.length : 0,
+                }
+            }
+            return { idx, type: block.type }
+        })
+    }
+
     const defaultVerbs = ['Thinking', 'Reasoning', 'Analyzing', 'Processing']
     const slowMessages = [
         'Still working',
@@ -879,6 +948,7 @@
     })
 
     function streamResponse(chatId: string) {
+        debugStream('streamResponse:start', { chatId })
         isStreaming = true
         error = null
         startThinkingText()
@@ -889,6 +959,7 @@
         >()
 
         eventSource = new EventSource(`/api/chat/${chatId}/stream`, { withCredentials: true })
+        debugStream('eventSource:created', { url: `/api/chat/${chatId}/stream` })
 
         let streamCompleted = false
         let messageEventsReceived = 0
@@ -906,11 +977,29 @@
             const lastMessage = chatMessages[chatMessages.length - 1]
             if (!lastMessage) {
                 // This should never happen
+                debugStream('collect:no-last-message', { blockType: block.type, blockIdx })
                 console.error('No last message found when streaming response')
                 return
             }
 
             const existingBlocks = lastMessage.message.content as ContentBlockParam[]
+            debugStream('collect:before', {
+                blockType: block.type,
+                blockIdx,
+                targetMessageId: lastMessage.id,
+                targetRole: lastMessage.message.role,
+                targetContentIsArray: Array.isArray(lastMessage.message.content),
+                existingBlocks: Array.isArray(lastMessage.message.content)
+                    ? existingBlocks.map((b, idx) => ({
+                          idx,
+                          type: b.type,
+                          textLength: b.type === 'text' ? b.text.length : undefined,
+                          textPreview: b.type === 'text' ? b.text.slice(0, 80) : undefined,
+                          toolUseId: b.type === 'tool_use' ? b.id : undefined,
+                          toolName: b.type === 'tool_use' ? b.name : undefined,
+                      }))
+                    : lastMessage.message.content,
+            })
             if (block.type === 'text') {
                 if (blockIdx === undefined) {
                     throw new Error('blockIdx is required for text block')
@@ -1009,6 +1098,11 @@
                     }
                 }
             } else if (block.type === 'tool_result') {
+                debugStream('collect:tool_result:before', {
+                    toolUseId: block.tool_use_id,
+                    targetMessageId: lastMessage.id,
+                    targetRole: lastMessage.message.role,
+                })
                 // Push a new message with the tool result
                 const lastMessage = chatMessages[chatMessages.length - 1]
                 if (lastMessage && lastMessage.message.role === 'user') {
@@ -1033,22 +1127,34 @@
                     })
                 }
             }
+            debugStream('collect:after', {
+                blockType: block.type,
+                blockIdx,
+                targetMessageId: lastMessage.id,
+                targetRole: lastMessage.message.role,
+            })
         }
 
         eventSource.addEventListener('message_id', (event) => {
+            debugStream('event:message_id:received', { data: event.data })
             const messageId = event.data
             const lastMessage = chatMessages[chatMessages.length - 1]
             if (lastMessage && lastMessage.id.toString().startsWith('temp-')) {
                 lastMessage.id = messageId
                 chatMessages = [...chatMessages]
+                debugStream('event:message_id:applied', { messageId })
+            } else {
+                debugStream('event:message_id:no-temp-message', { messageId })
             }
         })
 
         eventSource.addEventListener('title', (event) => {
+            debugStream('event:title', { data: event.data })
             invalidate('app:recent_chats') // This will force a re-fetch of recent chats and update the title in the sidebar
         })
 
         eventSource.addEventListener('title_error', (event) => {
+            debugStream('event:title_error', { data: event.data })
             error = streamErrorMessage(event as MessageEvent<string>)
             requestAnimationFrame(() => recalcBottomPadding())
         })
@@ -1056,7 +1162,13 @@
         eventSource.addEventListener('message', (event) => {
             try {
                 const data: MessageStreamEvent | ToolResultBlockParam = JSON.parse(event.data)
+                debugStream('event:message:parsed', {
+                    type: data.type,
+                    rawLength: event.data.length,
+                    rawPreview: event.data.slice(0, 500),
+                })
                 if (data.type === 'message_start') {
+                    debugStream('event:message_start:before')
                     // Find the last message in current display path to use as parent
                     const displayPath = getDisplayPath(chatMessages)
                     const streamParentId =
@@ -1072,7 +1184,24 @@
                         messageSeqNum: chatMessages.length + 1,
                         createdAt: new Date(),
                     })
+                    debugStream('event:message_start:after-push', { streamParentId })
                 } else if (data.type === 'content_block_start') {
+                    debugStream('event:content_block_start', {
+                        index: data.index,
+                        blockType: data.content_block.type,
+                        textLength:
+                            data.content_block.type === 'text'
+                                ? data.content_block.text.length
+                                : undefined,
+                        toolName:
+                            data.content_block.type === 'tool_use'
+                                ? data.content_block.name
+                                : undefined,
+                        toolUseId:
+                            data.content_block.type === 'tool_use'
+                                ? data.content_block.id
+                                : undefined,
+                    })
                     if (data.content_block.type === 'tool_use') {
                         collectStreamingResponse(data.content_block, data.index)
                         toolUseStateByIndex.set(data.index, {
@@ -1085,6 +1214,20 @@
                         collectStreamingResponse(data.content_block, data.index)
                     }
                 } else if (data.type === 'content_block_delta') {
+                    debugStream('event:content_block_delta', {
+                        index: data.index,
+                        deltaType: data.delta.type,
+                        textLength:
+                            data.delta.type === 'text_delta' ? data.delta.text.length : undefined,
+                        textPreview:
+                            data.delta.type === 'text_delta'
+                                ? data.delta.text.slice(0, 120)
+                                : undefined,
+                        partialJsonLength:
+                            data.delta.type === 'input_json_delta'
+                                ? data.delta.partial_json.length
+                                : undefined,
+                    })
                     if (data.delta.type === 'text_delta' && data.delta.text) {
                         updateThinkingForText()
                         collectStreamingResponse(data.delta, data.index)
@@ -1093,6 +1236,10 @@
                     } else if (data.delta.type === 'input_json_delta') {
                         const toolUseState = toolUseStateByIndex.get(data.index)
                         if (!toolUseState) {
+                            debugStream('event:input_json_delta:missing-tool-state', {
+                                index: data.index,
+                                knownToolIndexes: Array.from(toolUseStateByIndex.keys()),
+                            })
                             console.warn(
                                 `Received input JSON delta for unknown tool block index ${data.index}`,
                             )
@@ -1113,16 +1260,32 @@
                                 data.index,
                             )
                         } catch (err) {
+                            debugStream('event:input_json_delta:partial-json', {
+                                index: data.index,
+                                currentLength: toolUseState.inputJson.length,
+                                error: err instanceof Error ? err.message : String(err),
+                            })
                             // Ignore JSON parse errors for partial input
                         }
                     }
                 } else if (data.type == 'tool_result') {
+                    debugStream('event:tool_result', {
+                        toolUseId: data.tool_use_id,
+                        isError: data.is_error,
+                        contentLength: Array.isArray(data.content) ? data.content.length : 0,
+                    })
                     collectStreamingResponse(data)
                 }
 
                 chatMessages = [...chatMessages]
+                debugStream('event:message:after-apply', { type: data.type })
                 if (!userHasScrolled) scrollToBottom()
             } catch (err) {
+                debugStream('event:message:parse-or-apply-error', {
+                    rawLength: event.data.length,
+                    rawPreview: event.data.slice(0, 1000),
+                    error: err instanceof Error ? err.message : String(err),
+                })
                 console.error('Failed to parse SSE data:', event.data, err)
             } finally {
                 messageEventsReceived += 1
@@ -1130,30 +1293,48 @@
         })
 
         eventSource.addEventListener('approval_required', (event) => {
+            debugStream('event:approval_required:received', { data: event.data })
             try {
                 const approvalData: ApprovalRequiredEvent = JSON.parse(event.data)
                 pendingApproval = approvalData
                 isStreaming = false
                 stopThinkingText()
                 requestAnimationFrame(() => recalcBottomPadding())
+                debugStream('event:approval_required:applied', {
+                    approvalId: approvalData.approval_id,
+                    toolName: approvalData.tool_name,
+                })
             } catch (err) {
+                debugStream('event:approval_required:error', {
+                    error: err instanceof Error ? err.message : String(err),
+                })
                 console.error('Failed to parse approval_required event:', err)
             }
         })
 
         eventSource.addEventListener('oauth_required', (event) => {
+            debugStream('event:oauth_required:received', { data: event.data })
             try {
                 const oauthData: OAuthRequiredEvent = JSON.parse(event.data)
                 oauthEventByToolCallId[oauthData.tool_call_id] = oauthData
                 isStreaming = false
                 stopThinkingText()
                 requestAnimationFrame(() => recalcBottomPadding())
+                debugStream('event:oauth_required:applied', {
+                    toolCallId: oauthData.tool_call_id,
+                    toolName: oauthData.tool_name,
+                    sourceType: oauthData.source_type,
+                })
             } catch (err) {
+                debugStream('event:oauth_required:error', {
+                    error: err instanceof Error ? err.message : String(err),
+                })
                 console.error('Failed to parse oauth_required event:', err)
             }
         })
 
         eventSource.addEventListener('tool_result_replaced', (event) => {
+            debugStream('event:tool_result_replaced:received', { data: event.data })
             try {
                 const data: ToolResultReplacedEvent = JSON.parse(event.data)
                 // Find the user-role chat message that holds the placeholder
@@ -1181,15 +1362,26 @@
                         cm.message = { ...cm.message, content: next }
                         delete oauthEventByToolCallId[data.tool_use_id]
                         chatMessages = [...chatMessages]
+                        debugStream('event:tool_result_replaced:applied', {
+                            toolUseId: data.tool_use_id,
+                        })
                         break
                     }
                 }
             } catch (err) {
+                debugStream('event:tool_result_replaced:error', {
+                    error: err instanceof Error ? err.message : String(err),
+                })
                 console.error('Failed to parse tool_result_replaced event:', err)
             }
         })
 
-        eventSource.addEventListener('end_of_stream', () => {
+        eventSource.addEventListener('end_of_stream', (event) => {
+            const messageEvent = event as MessageEvent<string>
+            debugStream('event:end_of_stream:received', {
+                data: messageEvent.data,
+                messageEventsReceived,
+            })
             streamCompleted = true
             isStreaming = false
             stopThinkingText()
@@ -1201,9 +1393,13 @@
             if (messageEventsReceived === 0 && !error) {
                 error = 'Failed to generate response. Please try again.'
             }
+            debugStream('event:end_of_stream:applied', { error })
         })
 
         const handleStreamError = (event: Event) => {
+            debugStream('event:stream_error:received', {
+                data: event instanceof MessageEvent ? event.data : undefined,
+            })
             error =
                 event instanceof MessageEvent
                     ? streamErrorMessage(event as MessageEvent<string>)
@@ -1214,9 +1410,15 @@
             userInputRef?.focus()
             eventSource?.close()
             eventSource = null
+            debugStream('event:stream_error:applied', { error })
         }
 
         const handleConnectionError = () => {
+            debugStream('event:error:received', {
+                streamCompleted,
+                messageEventsReceived,
+                readyState: eventSource?.readyState,
+            })
             if (streamCompleted) return
             error =
                 messageEventsReceived > 0
@@ -1228,6 +1430,7 @@
             userInputRef?.focus()
             eventSource?.close()
             eventSource = null
+            debugStream('event:error:applied', { error })
         }
 
         eventSource.addEventListener('stream_error', handleStreamError)
