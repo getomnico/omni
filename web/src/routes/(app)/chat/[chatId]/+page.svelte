@@ -161,10 +161,30 @@
 
     function debugStream(label: string, details: StreamDebugData = {}) {
         try {
-            console.debug(`[chat-stream] ${label}`, {
+            const snapshot = {
                 ...details,
+                isStreaming,
+                error,
+                pendingApproval: pendingApproval
+                    ? {
+                          approvalId: pendingApproval.approval_id,
+                          toolName: pendingApproval.tool_name,
+                          toolCallId: pendingApproval.tool_call_id,
+                      }
+                    : null,
+                oauthToolCallIds: Object.keys(oauthEventByToolCallId),
+                userHasScrolled,
+                bottomPadding,
+                lastUserMessageIndex,
                 chatMessageCount: chatMessages.length,
                 chatMessages: chatMessages.map((m, idx) => ({
+                    idx,
+                    id: m.id,
+                    parentId: m.parentId,
+                    role: m.message.role,
+                    content: summarizeMessageContent(m.message.content),
+                })),
+                displayPath: getDisplayPath(chatMessages).map((m, idx) => ({
                     idx,
                     id: m.id,
                     parentId: m.parentId,
@@ -175,23 +195,31 @@
                 processedMessages: processedMessages.map((m, idx) => ({
                     idx,
                     origMessageId: m.origMessageId,
+                    parentMessageId: m.parentMessageId,
                     role: m.role,
                     blockCount: m.content.length,
                     blocks: m.content.map((b) => ({
                         id: b.id,
                         type: b.type,
                         textLength: b.type === 'text' ? b.text.length : undefined,
-                        textPreview: b.type === 'text' ? b.text.slice(0, 80) : undefined,
+                        textPreview: b.type === 'text' ? b.text.slice(0, 200) : undefined,
                         toolName: b.type === 'tool' ? b.toolUse.name : undefined,
                         toolUseId: b.type === 'tool' ? b.toolUse.id : undefined,
+                        hasToolResult: b.type === 'tool' ? !!b.toolResult : undefined,
+                        hasActionResult: b.type === 'tool' ? !!b.actionResult : undefined,
+                        hasOAuthRequired: b.type === 'tool' ? !!b.oauthRequired : undefined,
                     })),
                 })),
-            })
+            }
+            console.debug(`[chat-stream] ${label}`, JSON.stringify(snapshot))
         } catch (err) {
-            console.debug(`[chat-stream] ${label}:debug-failed`, {
-                ...details,
-                error: err instanceof Error ? err.message : String(err),
-            })
+            console.debug(
+                `[chat-stream] ${label}:debug-failed`,
+                JSON.stringify({
+                    ...details,
+                    error: err instanceof Error ? err.message : String(err),
+                }),
+            )
         }
     }
 
