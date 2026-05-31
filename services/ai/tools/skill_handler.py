@@ -181,7 +181,7 @@ class SkillHandler:
                 is_error=True,
             )
 
-        matches = await self._search_skill_capabilities(query, limit, query_tokens)
+        matches = await self._search_skill_capabilities(query, limit)
         if not matches:
             return ToolResult(
                 content=[{"type": "text", "text": f"No skills matched {query!r}."}]
@@ -199,39 +199,29 @@ class SkillHandler:
         return ToolResult(content=[{"type": "text", "text": "\n".join(lines)}])
 
     async def _search_skill_capabilities(
-        self, query: str, limit: int, query_tokens: set[str]
+        self, query: str, limit: int
     ) -> list[tuple[str, str, str]]:
-        if self._searcher_client is not None:
-            try:
-                await self._publish_skill_capabilities()
-                response = await self._searcher_client.search_capabilities(
-                    CapabilitySearchRequest(
-                        capability_type="skill",
-                        query=query,
-                        limit=limit,
-                        allowed_ids=[
-                            f"skill:{skill_id}" for skill_id in self._available
-                        ],
-                    )
-                )
-                matches: list[tuple[str, str, str]] = []
-                for result in response.results:
-                    skill_id = result.data["skill_id"]
-                    if skill_id not in self._available:
-                        continue
-                    title = result.data.get("title") or skill_id
-                    body = (
-                        result.data.get("body") or result.data.get("description") or ""
-                    )
-                    matches.append((skill_id, title, self._snippet(body)))
-                if matches:
-                    return matches
-            except Exception as e:
-                logger.warning(
-                    f"Capability skill search failed; using local fallback: {e}"
-                )
+        if self._searcher_client is None:
+            raise RuntimeError("skill_search requires a searcher client")
 
-        return self._local_skill_search(query_tokens, limit)
+        await self._publish_skill_capabilities()
+        response = await self._searcher_client.search_capabilities(
+            CapabilitySearchRequest(
+                capability_type="skill",
+                query=query,
+                limit=limit,
+                allowed_ids=[f"skill:{skill_id}" for skill_id in self._available],
+            )
+        )
+        matches: list[tuple[str, str, str]] = []
+        for result in response.results:
+            skill_id = result.data["skill_id"]
+            if skill_id not in self._available:
+                continue
+            title = result.data.get("title") or skill_id
+            body = result.data.get("body") or result.data.get("description") or ""
+            matches.append((skill_id, title, self._snippet(body)))
+        return matches
 
     async def _publish_skill_capabilities(self) -> None:
         if self._searcher_client is None or not self._available:
@@ -260,28 +250,6 @@ class SkillHandler:
         await self._searcher_client.upsert_capabilities(
             CapabilitiesUpsertRequest(capabilities=capabilities)
         )
-
-    def _local_skill_search(
-        self, query_tokens: set[str], limit: int
-    ) -> list[tuple[str, str, str]]:
-        scored: list[tuple[int, str, str, str]] = []
-        for skill_id, path in self._available.items():
-            content = path.read_text()
-            title = self._title(skill_id, content)
-            id_tokens = set(_TOKEN_RE.findall(skill_id.lower()))
-            title_tokens = set(_TOKEN_RE.findall(title.lower()))
-            body_tokens = set(_TOKEN_RE.findall(content.lower()))
-            score = (
-                4 * len(query_tokens & id_tokens)
-                + 3 * len(query_tokens & title_tokens)
-                + len(query_tokens & body_tokens)
-            )
-            if score > 0:
-                scored.append((score, skill_id, title, self._snippet(content)))
-        scored.sort(key=lambda x: (-x[0], x[1]))
-        return [
-            (skill_id, title, snippet) for _, skill_id, title, snippet in scored[:limit]
-        ]
 
     @staticmethod
     def _title(skill_id: str, content: str) -> str:

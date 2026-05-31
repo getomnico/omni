@@ -174,7 +174,7 @@ class MetaToolHandler:
                 is_error=True,
             )
 
-        matches = await self._search_tool_capabilities(query, limit, query_tokens)
+        matches = await self._search_tool_capabilities(query, limit)
 
         if not matches:
             return ToolResult(
@@ -202,37 +202,29 @@ class MetaToolHandler:
         return ToolResult(content=[{"type": "text", "text": "\n".join(lines)}])
 
     async def _search_tool_capabilities(
-        self, query: str, limit: int, query_tokens: set[str]
+        self, query: str, limit: int
     ) -> list[tuple[str, ConnectorAction]]:
-        if self._searcher_client is not None:
-            try:
-                response = await self._searcher_client.search_capabilities(
-                    CapabilitySearchRequest(
-                        capability_type="tool",
-                        query=query,
-                        limit=limit,
-                        allowed_ids=[
-                            f"tool:{tool_name}" for tool_name in self._ch.actions
-                        ],
-                    )
-                )
-                matches: list[tuple[str, ConnectorAction]] = []
-                seen: set[str] = set()
-                for result in response.results:
-                    tool_name = result.data["tool_name"]
-                    action = self._ch.actions.get(tool_name)
-                    if action is None or tool_name in seen:
-                        continue
-                    seen.add(tool_name)
-                    matches.append((tool_name, action))
-                if matches:
-                    return matches
-            except Exception as e:
-                logger.warning(
-                    f"Capability tool search failed; using local fallback: {e}"
-                )
+        if self._searcher_client is None:
+            raise RuntimeError("tool_search requires a searcher client")
 
-        return self._local_tool_search(query_tokens, limit)
+        response = await self._searcher_client.search_capabilities(
+            CapabilitySearchRequest(
+                capability_type="tool",
+                query=query,
+                limit=limit,
+                allowed_ids=[f"tool:{tool_name}" for tool_name in self._ch.actions],
+            )
+        )
+        matches: list[tuple[str, ConnectorAction]] = []
+        seen: set[str] = set()
+        for result in response.results:
+            tool_name = result.data["tool_name"]
+            action = self._ch.actions.get(tool_name)
+            if action is None or tool_name in seen:
+                continue
+            seen.add(tool_name)
+            matches.append((tool_name, action))
+        return matches
 
     async def publish_tool_capabilities(self) -> None:
         if self._searcher_client is None or not self._ch.actions:
@@ -291,25 +283,6 @@ class MetaToolHandler:
         payload.sort(key=lambda capability: capability["id"])
         raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-    def _local_tool_search(
-        self, query_tokens: set[str], limit: int
-    ) -> list[tuple[str, ConnectorAction]]:
-        scored: list[tuple[int, str, ConnectorAction]] = []
-        for tool_name, action in self._ch.actions.items():
-            name_tokens = set(_TOKEN_RE.findall(tool_name.lower()))
-            desc_tokens = set(_TOKEN_RE.findall((action.description or "").lower()))
-            type_tokens = set(_TOKEN_RE.findall(action.source_type.lower()))
-            score = (
-                3 * len(query_tokens & name_tokens)
-                + 1 * len(query_tokens & desc_tokens)
-                + 2 * len(query_tokens & type_tokens)
-            )
-            if score > 0:
-                scored.append((score, tool_name, action))
-
-        scored.sort(key=lambda x: (-x[0], x[1]))
-        return [(tool_name, action) for _, tool_name, action in scored[:limit]]
 
     async def _load_tool(self, tool_input: dict) -> ToolResult:
         tool_name = (tool_input.get("tool_name") or "").strip()

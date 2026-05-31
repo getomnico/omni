@@ -40,9 +40,10 @@ def _ctx() -> ToolContext:
 
 
 class _FakeSearcherClient:
-    def __init__(self) -> None:
+    def __init__(self, tool_names: list[str] | None = None) -> None:
         self.upserts = []
         self.searches = []
+        self.tool_names = ["gmail__send_email"] if tool_names is None else tool_names
 
     async def upsert_capabilities(self, request):
         self.upserts.append(request)
@@ -53,14 +54,15 @@ class _FakeSearcherClient:
         return CapabilitySearchResponse(
             results=[
                 CapabilitySearchResult(
-                    id="tool:gmail__send_email",
+                    id=f"tool:{tool_name}",
                     capability_type="tool",
-                    name="gmail__send_email",
-                    description="Send an email via Gmail.",
-                    search_text="gmail send email",
-                    data={"tool_name": "gmail__send_email"},
+                    name=tool_name,
+                    description=f"Description for {tool_name}.",
+                    search_text=tool_name.replace("__", " ").replace("_", " "),
+                    data={"tool_name": tool_name},
                     score=1.0,
                 )
+                for tool_name in self.tool_names[: request.limit]
             ]
         )
 
@@ -103,7 +105,8 @@ async def test_tool_search_returns_matches_without_loading(actions):
     async def on_load(newly: set[str]) -> None:
         fired.append(newly)
 
-    meta = MetaToolHandler(handler, loaded, on_load)
+    searcher = _FakeSearcherClient(["gmail__send_email", "outlook__send_email"])
+    meta = MetaToolHandler(handler, loaded, on_load, searcher_client=searcher)
     result = await meta.execute("tool_search", {"query": "email"}, _ctx())
 
     assert not result.is_error
@@ -154,7 +157,9 @@ async def test_publish_tool_capabilities_skips_unchanged_refresh(actions):
 async def test_tool_search_no_matches_returns_no_load(actions):
     handler = _make_handler(actions)
     loaded: set[str] = set()
-    meta = MetaToolHandler(handler, loaded, lambda _: None)
+    meta = MetaToolHandler(
+        handler, loaded, lambda _: None, searcher_client=_FakeSearcherClient([])
+    )
 
     result = await meta.execute("tool_search", {"query": "xyzwhatever"}, _ctx())
 
@@ -166,7 +171,14 @@ async def test_tool_search_no_matches_returns_no_load(actions):
 @pytest.mark.asyncio
 async def test_tool_search_respects_limit(actions):
     handler = _make_handler(actions)
-    meta = MetaToolHandler(handler, set(), lambda _: None)
+    meta = MetaToolHandler(
+        handler,
+        set(),
+        lambda _: None,
+        searcher_client=_FakeSearcherClient(
+            ["gmail__send_email", "outlook__send_email"]
+        ),
+    )
 
     result = await meta.execute(
         "tool_search", {"query": "send email", "limit": 1}, _ctx()

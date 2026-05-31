@@ -31,6 +31,7 @@ from prompts import build_chat_system_prompt
 from routers.chat import _build_registry
 from tools.registry import ToolContext
 from tools.search_handler import _build_search_tools
+from tools.searcher_client import CapabilitySearchResponse, CapabilitySearchResult
 
 pytestmark = pytest.mark.integration
 
@@ -204,6 +205,39 @@ def _make_app() -> FastAPI:
         },
     )()
     return app
+
+
+class _FakeCapabilitySearcherClient:
+    def __init__(self) -> None:
+        self.capabilities = []
+
+    async def upsert_capabilities(self, request):
+        self.capabilities = request.capabilities
+        return type("Resp", (), {"upserted": len(request.capabilities)})()
+
+    async def search_capabilities(self, request):
+        query = request.query.lower()
+        results = []
+        allowed_ids = set(request.allowed_ids or [])
+        for capability in self.capabilities:
+            if allowed_ids and capability.id not in allowed_ids:
+                continue
+            if query not in capability.search_text.lower():
+                continue
+            results.append(
+                CapabilitySearchResult(
+                    id=capability.id,
+                    capability_type=capability.capability_type,
+                    name=capability.name,
+                    description=capability.description,
+                    search_text=capability.search_text,
+                    data=capability.data,
+                    source_id=capability.source_id,
+                    source_type=capability.source_type,
+                    score=1.0,
+                )
+            )
+        return CapabilitySearchResponse(results=results[: request.limit])
 
 
 def _make_chat(user_id: str) -> Chat:
@@ -492,7 +526,7 @@ async def test_connector_actions_from_connector_manager_are_loadable(
 
     try:
         app = _make_app()
-        app.state.searcher_tool.client = None
+        app.state.searcher_tool.client = _FakeCapabilitySearcherClient()
         request = _make_request(app)
         chat = _make_chat(test_user)
         loaded_tools: set[str] = set()

@@ -8,9 +8,10 @@ from tools.skill_handler import SkillHandler
 
 
 class _FakeSearcherClient:
-    def __init__(self) -> None:
+    def __init__(self, include_excel: bool = True) -> None:
         self.upserts = []
         self.searches = []
+        self.include_excel = include_excel
 
     async def upsert_capabilities(self, request):
         self.upserts.append(request)
@@ -18,8 +19,9 @@ class _FakeSearcherClient:
 
     async def search_capabilities(self, request):
         self.searches.append(request)
-        return CapabilitySearchResponse(
-            results=[
+        results = []
+        if self.include_excel:
+            results.append(
                 CapabilitySearchResult(
                     id="skill:excel",
                     capability_type="skill",
@@ -34,8 +36,8 @@ class _FakeSearcherClient:
                     },
                     score=4.2,
                 )
-            ]
-        )
+            )
+        return CapabilitySearchResponse(results=results)
 
 
 def _ctx() -> ToolContext:
@@ -103,12 +105,11 @@ async def test_skill_search_uses_searcher_and_publishes_skills(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_skill_search_falls_back_to_local_search(tmp_path):
+async def test_skill_search_empty_searcher_results_do_not_fall_back(tmp_path):
     (tmp_path / "excel.md").write_text("# Excel Skill\n\nSpreadsheet formulas.")
-    handler = SkillHandler(tmp_path)
+    handler = SkillHandler(tmp_path, searcher_client=_FakeSearcherClient(False))
 
     result = await handler.execute("skill_search", {"query": "formulas"}, _ctx())
 
     assert not result.is_error
-    assert "excel" in result.content[0]["text"]
-    assert "load_skill" in result.content[0]["text"]
+    assert "No skills matched" in result.content[0]["text"]
