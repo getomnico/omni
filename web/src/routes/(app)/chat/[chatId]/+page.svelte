@@ -1010,6 +1010,45 @@
                 return
             }
 
+            if (block.type === 'tool_result') {
+                debugStream('collect:tool_result:before', {
+                    toolUseId: block.tool_use_id,
+                    targetMessageId: lastMessage.id,
+                    targetRole: lastMessage.message.role,
+                })
+
+                if (lastMessage.message.role === 'user') {
+                    const blocks = lastMessage.message.content
+                    if (!Array.isArray(blocks)) {
+                        throw new Error(
+                            'Cannot append tool_result to non-array user message content',
+                        )
+                    }
+                    blocks.push(block)
+                } else {
+                    const displayPath = getDisplayPath(chatMessages)
+                    const toolParentId =
+                        displayPath.length > 0 ? displayPath[displayPath.length - 1].id : undefined
+                    chatMessages.push({
+                        id: `temp-${Date.now()}`,
+                        chatId,
+                        parentId: toolParentId ?? null,
+                        message: {
+                            role: 'user',
+                            content: [block],
+                        },
+                        messageSeqNum: chatMessages.length + 1,
+                        createdAt: new Date(),
+                    })
+                }
+
+                debugStream('collect:tool_result:after', {
+                    toolUseId: block.tool_use_id,
+                    chatMessageCount: chatMessages.length,
+                })
+                return
+            }
+
             const existingBlocks = lastMessage.message.content as ContentBlockParam[]
             debugStream('collect:before', {
                 blockType: block.type,
@@ -1124,35 +1163,6 @@
                             input: block.input,
                         })
                     }
-                }
-            } else if (block.type === 'tool_result') {
-                debugStream('collect:tool_result:before', {
-                    toolUseId: block.tool_use_id,
-                    targetMessageId: lastMessage.id,
-                    targetRole: lastMessage.message.role,
-                })
-                // Push a new message with the tool result
-                const lastMessage = chatMessages[chatMessages.length - 1]
-                if (lastMessage && lastMessage.message.role === 'user') {
-                    const blocks = lastMessage.message.content
-                    if (Array.isArray(blocks)) {
-                        blocks.push(block)
-                    }
-                } else {
-                    const displayPath = getDisplayPath(chatMessages)
-                    const toolParentId =
-                        displayPath.length > 0 ? displayPath[displayPath.length - 1].id : undefined
-                    chatMessages.push({
-                        id: `temp-${Date.now()}`,
-                        chatId,
-                        parentId: toolParentId ?? null,
-                        message: {
-                            role: 'user',
-                            content: [block],
-                        },
-                        messageSeqNum: chatMessages.length + 1,
-                        createdAt: new Date(),
-                    })
                 }
             }
             debugStream('collect:after', {
@@ -1312,7 +1322,7 @@
                 debugStream('event:message:parse-or-apply-error', {
                     rawLength: event.data.length,
                     rawPreview: event.data.slice(0, 1000),
-                    error: err instanceof Error ? err.message : String(err),
+                    exception: err instanceof Error ? err.message : String(err),
                 })
                 console.error('Failed to parse SSE data:', event.data, err)
             } finally {
