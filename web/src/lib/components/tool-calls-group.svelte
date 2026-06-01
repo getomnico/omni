@@ -61,34 +61,6 @@
     let recentBlocks = $derived(
         collapsibleCount > 0 ? visibleBlocks.slice(cutoffIndex) : visibleBlocks,
     )
-
-    function inspectBlock(block: MessageContent[number]) {
-        return {
-            id: block.id,
-            type: block.type,
-            textLength: block.type === 'text' ? block.text.length : undefined,
-            textPreview: block.type === 'text' ? block.text.slice(0, 120) : undefined,
-            toolUseId: block.type === 'tool' ? block.toolUse.id : undefined,
-            toolName: block.type === 'tool' ? block.toolUse.name : undefined,
-            hasToolResult: block.type === 'tool' ? !!block.toolResult : undefined,
-            hasActionResult: block.type === 'tool' ? !!block.actionResult : undefined,
-            hasOAuthRequired: block.type === 'tool' ? !!block.oauthRequired : undefined,
-        }
-    }
-
-    let toolCallsInspectState = $derived({
-        isStreaming,
-        contentCount: content.length,
-        visibleCount: visibleBlocks.length,
-        recentCount: recentBlocks.length,
-        collapsibleCount,
-        content: content.map(inspectBlock),
-        recentBlocks: recentBlocks.map(inspectBlock),
-    })
-
-    $inspect(toolCallsInspectState).with((type, value) => {
-        console.debug('[chat-stream][$inspect] tool-calls-group', type, JSON.stringify(value))
-    })
 </script>
 
 {#if collapsibleCount > 0}

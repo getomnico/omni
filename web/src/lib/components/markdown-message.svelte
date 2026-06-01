@@ -32,35 +32,12 @@
 
     let renderedHtml = $derived(marked.parse(content, { async: false }) as string)
 
-    let markdownInspectState = $derived({
-        contentLength: content.length,
-        contentPreview: content.slice(0, 120),
-        renderedHtmlLength: renderedHtml.length,
-        renderedHtmlPreview: renderedHtml.slice(0, 120),
-        citationCount: citations?.length ?? 0,
-    })
-
-    $inspect(markdownInspectState).with((type, value) => {
-        console.debug('[chat-stream][$inspect] markdown-message', type, JSON.stringify(value))
-    })
-
     $effect(() => {
         renderedHtml
         if (!containerRef) return
 
         tick().then(() => {
             if (!containerRef) return
-
-            console.debug(
-                '[chat-stream][$inspect] markdown-message:dom-after-render',
-                JSON.stringify({
-                    contentLength: content.length,
-                    renderedHtmlLength: renderedHtml.length,
-                    innerTextLength: containerRef.innerText.length,
-                    innerHtmlLength: containerRef.innerHTML.length,
-                    innerTextPreview: containerRef.innerText.slice(0, 120),
-                }),
-            )
 
             const linkPlaceholders = containerRef.querySelectorAll('.omni-reflink')
             linkPlaceholders.forEach((link) => {
