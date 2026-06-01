@@ -22,6 +22,7 @@ def test_build_messages_for_api_strips_extra_search_result_fields_without_mutati
                             "title": "Issue",
                             "source": "https://jira.example/browse/PROJ-1",
                             "source_type": "jira",
+                            "internal_extra": "must-not-be-sent",
                             "content": [{"type": "text", "text": "body"}],
                             "citations": {"enabled": True},
                         }
@@ -37,7 +38,9 @@ def test_build_messages_for_api_strips_extra_search_result_fields_without_mutati
     internal_search_result = messages[0]["content"][0]["content"][0]
     api_search_result = api_messages[0]["content"][0]["content"][0]
     assert internal_search_result["source_type"] == "jira"
+    assert internal_search_result["internal_extra"] == "must-not-be-sent"
     assert "source_type" not in api_search_result
+    assert "internal_extra" not in api_search_result
     assert api_search_result == {
         "type": "search_result",
         "title": "Issue",

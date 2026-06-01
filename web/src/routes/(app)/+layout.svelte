@@ -145,12 +145,15 @@
         const chatId = deleteTargetChat.id
         deleteTargetChat = null
 
-        await fetch(`/api/chat/${chatId}`, { method: 'DELETE' })
+        const response = await fetch(`/api/chat/${chatId}`, { method: 'DELETE' })
+        if (!response.ok) return
 
         if (page.params.chatId === chatId) {
-            goto('/')
+            await goto('/', { invalidateAll: true })
+            return
         }
-        invalidate('app:recent_chats')
+
+        await invalidate('app:recent_chats')
     }
 
     async function confirmRename() {

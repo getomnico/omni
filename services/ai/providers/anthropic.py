@@ -8,31 +8,12 @@ from collections.abc import AsyncIterator, Iterable
 from typing import Any, cast
 
 from anthropic import AsyncAnthropic, AsyncStream, MessageStreamEvent
-from anthropic.types import (
-    ContentBlockParam,
-    MessageParam,
-    SearchResultBlockParam,
-    ToolParam,
-    ToolResultBlockParam,
-)
-from anthropic.types.tool_result_block_param import (
-    Content as ToolResultContentBlockParam,
-)
+from anthropic.types import MessageParam, ToolParam
 
 from . import LLMProvider, LLMProviderStreamError, TokenUsage
+from .anthropic_message_adapter import build_messages_for_anthropic_api
 
 logger = logging.getLogger(__name__)
-
-
-class OmniSearchResultBlockParam(SearchResultBlockParam, total=False):
-    source_type: str
-
-
-type OmniContentBlockParam = ContentBlockParam | OmniSearchResultBlockParam
-type OmniToolResultContentBlockParam = (
-    ToolResultContentBlockParam | OmniSearchResultBlockParam
-)
-type AnthropicMessageContent = str | Iterable[OmniContentBlockParam]
 
 
 class AnthropicProvider(LLMProvider):
@@ -79,81 +60,7 @@ class AnthropicProvider(LLMProvider):
         messages: list[MessageParam],
     ) -> list[MessageParam]:
         """Convert Omni's internal message blocks to Anthropic's request shape."""
-        return [
-            MessageParam(
-                role=msg["role"],
-                content=self._build_content_for_api(msg["content"]),
-            )
-            for msg in messages
-        ]
-
-    def _build_content_for_api(
-        self, content: AnthropicMessageContent
-    ) -> str | list[ContentBlockParam]:
-        if isinstance(content, str):
-            return content
-        return [self._build_block_for_api(block) for block in content]
-
-    def _build_block_for_api(self, block: OmniContentBlockParam) -> ContentBlockParam:
-        if block["type"] == "tool_result":
-            return self._build_tool_result_block_for_api(
-                cast(ToolResultBlockParam, block)
-            )
-        if block["type"] == "search_result":
-            return self._build_search_result_block_for_api(
-                cast(OmniSearchResultBlockParam, block)
-            )
-        return block
-
-    def _build_tool_result_block_for_api(
-        self, block: ToolResultBlockParam
-    ) -> ToolResultBlockParam:
-        result = ToolResultBlockParam(
-            type="tool_result",
-            tool_use_id=block["tool_use_id"],
-        )
-        if "content" in block:
-            result["content"] = self._build_tool_result_content_for_api(
-                block["content"]
-            )
-        if "is_error" in block:
-            result["is_error"] = block["is_error"]
-        if "cache_control" in block:
-            result["cache_control"] = block["cache_control"]
-        return result
-
-    def _build_tool_result_content_for_api(
-        self, content: str | Iterable[OmniToolResultContentBlockParam]
-    ) -> str | list[ToolResultContentBlockParam]:
-        if isinstance(content, str):
-            return content
-        return [
-            self._build_tool_result_content_block_for_api(block) for block in content
-        ]
-
-    def _build_tool_result_content_block_for_api(
-        self, block: OmniToolResultContentBlockParam
-    ) -> ToolResultContentBlockParam:
-        if block["type"] == "search_result":
-            return self._build_search_result_block_for_api(
-                cast(OmniSearchResultBlockParam, block)
-            )
-        return block
-
-    def _build_search_result_block_for_api(
-        self, block: OmniSearchResultBlockParam
-    ) -> SearchResultBlockParam:
-        result = SearchResultBlockParam(
-            type="search_result",
-            title=block["title"],
-            source=block["source"],
-            content=block["content"],
-        )
-        if "citations" in block:
-            result["citations"] = block["citations"]
-        if "cache_control" in block:
-            result["cache_control"] = block["cache_control"]
-        return result
+        return build_messages_for_anthropic_api(messages)
 
     async def stream_response(
         self,

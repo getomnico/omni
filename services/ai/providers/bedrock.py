@@ -2,14 +2,14 @@
 AWS Bedrock Provider for Claude models.
 """
 
-import time
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
 import boto3
-from botocore.exceptions import ClientError
+from anthropic import AnthropicBedrock
 from anthropic.types import (
     MessageParam,
     Message,
@@ -36,9 +36,10 @@ from anthropic.types import (
 )
 from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic.types.raw_message_delta_event import Delta
-from anthropic import AnthropicBedrock
+from botocore.exceptions import ClientError
 
 from . import LLMProvider, LLMProviderStreamError, TokenUsage
+from .anthropic_message_adapter import build_messages_for_anthropic_api
 
 logger = logging.getLogger(__name__)
 
@@ -444,7 +445,11 @@ class BedrockProvider(LLMProvider):
         """Stream response from AWS Bedrock models."""
         try:
             if self.model_family == "anthropic":
-                msg_list = messages or [{"role": "user", "content": prompt}]
+                msg_list = (
+                    build_messages_for_anthropic_api(cast(list[MessageParam], messages))
+                    if messages
+                    else [{"role": "user", "content": prompt}]
+                )
 
                 # Prepare the request body for Claude models
                 request_params = {
