@@ -880,8 +880,6 @@
     })
 
     function streamResponse(chatId: string) {
-        userHasScrolled = false
-        scrollUserMessageToTop()
         isStreaming = true
         error = null
         startThinkingText()
@@ -917,52 +915,15 @@
                 chatMessages = [...chatMessages.slice(0, -1), message]
             }
 
-            if (block.type === 'tool_result') {
-                if (lastMessage.message.role === 'user') {
-                    const blocks = lastMessage.message.content
-                    if (!Array.isArray(blocks)) {
-                        throw new Error(
-                            'Cannot append tool_result to non-array user message content',
-                        )
-                    }
-                    replaceLastMessage({
-                        ...lastMessage,
-                        message: {
-                            ...lastMessage.message,
-                            content: [...blocks, block],
-                        },
-                    })
-                } else {
-                    const displayPath = getDisplayPath(chatMessages)
-                    const toolParentId =
-                        displayPath.length > 0 ? displayPath[displayPath.length - 1].id : undefined
-                    chatMessages = [
-                        ...chatMessages,
-                        {
-                            id: `temp-${Date.now()}`,
-                            chatId,
-                            parentId: toolParentId ?? null,
-                            message: {
-                                role: 'user',
-                                content: [block],
-                            },
-                            contentText: null,
-                            messageSeqNum: chatMessages.length + 1,
-                            createdAt: new Date(),
-                        },
-                    ]
-                }
-
-                return
-            }
-
-            if (!Array.isArray(lastMessage.message.content)) {
+            if (block.type !== 'tool_result' && !Array.isArray(lastMessage.message.content)) {
                 throw new Error(
                     'Cannot append streamed assistant content to non-array message content',
                 )
             }
 
-            const existingBlocks = [...lastMessage.message.content] as ContentBlockParam[]
+            const existingBlocks = Array.isArray(lastMessage.message.content)
+                ? ([...lastMessage.message.content] as ContentBlockParam[])
+                : []
             if (block.type === 'text') {
                 if (blockIdx === undefined) {
                     throw new Error('blockIdx is required for text block')
@@ -1062,6 +1023,40 @@
                         })
                     }
                 }
+            } else if (block.type === 'tool_result') {
+                if (lastMessage.message.role === 'user') {
+                    const blocks = lastMessage.message.content
+                    if (Array.isArray(blocks)) {
+                        replaceLastMessage({
+                            ...lastMessage,
+                            message: {
+                                ...lastMessage.message,
+                                content: [...blocks, block],
+                            },
+                        })
+                    }
+                } else {
+                    const displayPath = getDisplayPath(chatMessages)
+                    const toolParentId =
+                        displayPath.length > 0 ? displayPath[displayPath.length - 1].id : undefined
+                    chatMessages = [
+                        ...chatMessages,
+                        {
+                            id: `temp-${Date.now()}`,
+                            chatId,
+                            parentId: toolParentId ?? null,
+                            message: {
+                                role: 'user',
+                                content: [block],
+                            },
+                            contentText: null,
+                            messageSeqNum: chatMessages.length + 1,
+                            createdAt: new Date(),
+                        },
+                    ]
+                }
+
+                return
             }
 
             replaceLastMessage({

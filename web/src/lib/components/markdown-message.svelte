@@ -32,34 +32,36 @@
 
     let renderedHtml = $derived(marked.parse(content, { async: false }) as string)
 
-    $effect(() => {
-        renderedHtml
-        if (!containerRef) return
+    async function mountReflinkHoverCards(html: string, container: HTMLElement | undefined) {
+        if (!container) return
 
-        tick().then(() => {
-            if (!containerRef) return
+        await tick()
+        if (renderedHtml !== html || containerRef !== container) return
 
-            const linkPlaceholders = containerRef.querySelectorAll('.omni-reflink')
-            linkPlaceholders.forEach((link) => {
-                const href = link.getAttribute('href')
-                const title = link.getAttribute('title')
-                const text = link.textContent
-                const snippet = link.getAttribute('data-snippet')
+        const linkPlaceholders = container.querySelectorAll('.omni-reflink')
+        linkPlaceholders.forEach((link) => {
+            const href = link.getAttribute('href')
+            const title = link.getAttribute('title')
+            const text = link.textContent
+            const snippet = link.getAttribute('data-snippet')
 
-                mount(LinkHoverCard, {
-                    target: link.parentNode as Element,
-                    anchor: link,
-                    props: {
-                        href: href || '#',
-                        title: title || '',
-                        text: text ?? '',
-                        snippet: snippet || undefined,
-                    },
-                })
-
-                link.remove()
+            mount(LinkHoverCard, {
+                target: link.parentNode as Element,
+                anchor: link,
+                props: {
+                    href: href || '#',
+                    title: title || '',
+                    text: text ?? '',
+                    snippet: snippet || undefined,
+                },
             })
+
+            link.remove()
         })
+    }
+
+    $effect(() => {
+        void mountReflinkHoverCards(renderedHtml, containerRef)
     })
 </script>
 
