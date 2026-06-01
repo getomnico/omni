@@ -1,6 +1,6 @@
 <script lang="ts">
     import { marked, type Tokens, type RendererObject } from 'marked'
-    import { mount } from 'svelte'
+    import { mount, tick } from 'svelte'
     import LinkHoverCard from './reflink-hover-card.svelte'
     import type { TextCitationParam } from '@anthropic-ai/sdk/resources.js'
     import type { CitationSearchResultLocationParam } from '@anthropic-ai/sdk/resources'
@@ -30,14 +30,15 @@
 
     marked.use({ renderer })
 
-    $effect(() => {
-        if (!containerRef) {
-            return
-        }
+    let renderedHtml = $derived(marked.parse(content, { async: false }) as string)
 
-        containerRef.innerHTML = marked.parse(content, { async: false })
+    async function mountReflinkHoverCards(html: string, container: HTMLElement | undefined) {
+        if (!container) return
 
-        const linkPlaceholders = containerRef.querySelectorAll('.omni-reflink')
+        await tick()
+        if (renderedHtml !== html || containerRef !== container) return
+
+        const linkPlaceholders = container.querySelectorAll('.omni-reflink')
         linkPlaceholders.forEach((link) => {
             const href = link.getAttribute('href')
             const title = link.getAttribute('title')
@@ -50,14 +51,18 @@
                 props: {
                     href: href || '#',
                     title: title || '',
-                    text,
+                    text: text ?? '',
                     snippet: snippet || undefined,
                 },
             })
 
             link.remove()
         })
+    }
+
+    $effect(() => {
+        void mountReflinkHoverCards(renderedHtml, containerRef)
     })
 </script>
 
-<div bind:this={containerRef}></div>
+<div bind:this={containerRef}>{@html renderedHtml}</div>
