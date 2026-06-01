@@ -1,0 +1,72 @@
+name: Build Omni CLI
+
+on:
+  workflow_call:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.asset-name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset-name: omni-linux-x86_64
+            binary: omni
+          - os: macos-14
+            asset-name: omni-macos-arm64
+            binary: omni
+          - os: windows-latest
+            asset-name: omni-windows-x86_64.exe
+            binary: omni.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Test CLI
+        run: cargo test -p omni-cli
+
+      - name: Build CLI
+        run: cargo build --release -p omni-cli
+
+      - name: Stage artifact (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cp target/release/${{ matrix.binary }} ${{ matrix.asset-name }}
+          chmod +x ${{ matrix.asset-name }}
+          shasum -a 256 ${{ matrix.asset-name }} > ${{ matrix.asset-name }}.sha256
+
+      - name: Stage artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item target/release/${{ matrix.binary }} ${{ matrix.asset-name }}
+          Get-FileHash ${{ matrix.asset-name }} -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  ${{ matrix.asset-name }}" } | Set-Content ${{ matrix.asset-name }}.sha256
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset-name }}
+          path: |
+            ${{ matrix.asset-name }}
+            ${{ matrix.asset-name }}.sha256
+
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ matrix.asset-name }}
+            ${{ matrix.asset-name }}.sha256

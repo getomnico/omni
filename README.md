@@ -52,6 +52,7 @@ See the full [architecture documentation](https://docs.getomni.co/architecture) 
 Omni can be deployed entirely on your own infra. See our deployment guides:
 
 - [Docker Compose](https://docs.getomni.co/deployment/docker-compose)
+- [Omni CLI for Docker Compose upgrades and diagnostics](docs/cli.md)
 - [Terraform (AWS/GCP)](https://docs.getomni.co/deployment/aws-terraform)
 
 ## Supported Integrations

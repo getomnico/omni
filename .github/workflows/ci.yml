@@ -632,6 +632,11 @@ jobs:
       connector-type: ${{ matrix.connector-type }}
     secrets: inherit
 
+  release-cli:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.is-tag == 'true'
+    uses: ./.github/workflows/build-cli.yml
+
   # ---------------------------------------------------------------------------
   # Deployment packaging
   # ---------------------------------------------------------------------------

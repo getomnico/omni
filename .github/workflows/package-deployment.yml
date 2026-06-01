@@ -23,6 +23,7 @@ jobs:
           cp .env.example staging/docker-compose/
           cp Caddyfile staging/docker-compose/
           tar -czf omni-docker-compose.tar.gz -C staging/docker-compose .
+          sha256sum omni-docker-compose.tar.gz > omni-docker-compose.tar.gz.sha256
 
       - name: Package AWS Terraform deployment
         run: |
@@ -42,6 +43,7 @@ jobs:
           name: deployment-archives
           path: |
             omni-docker-compose.tar.gz
+            omni-docker-compose.tar.gz.sha256
             omni-terraform-aws.tar.gz
             omni-terraform-gcp.tar.gz
 
@@ -51,5 +53,6 @@ jobs:
         with:
           files: |
             omni-docker-compose.tar.gz
+            omni-docker-compose.tar.gz.sha256
             omni-terraform-aws.tar.gz
             omni-terraform-gcp.tar.gz

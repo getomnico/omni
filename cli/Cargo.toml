@@ -1,0 +1,34 @@
+[package]
+name = "omni-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Command-line tools for managing Omni Docker Compose deployments"
+
+[[bin]]
+name = "omni"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde.workspace = true
+serde_json.workspace = true
+dotenvy.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+clap = { version = "4.5", features = ["derive", "env"] }
+flate2 = "1.0"
+tar = "0.4"
+inquire = "0.7"
+indicatif = "0.17"
+comfy-table = "7.1"
+anstyle = "1.0"
+tempfile = "3.10"
+
+[dev-dependencies]
+tempfile = "3.10"
