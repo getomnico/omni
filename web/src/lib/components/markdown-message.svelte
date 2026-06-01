@@ -1,6 +1,6 @@
 <script lang="ts">
     import { marked, type Tokens, type RendererObject } from 'marked'
-    import { mount } from 'svelte'
+    import { mount, tick } from 'svelte'
     import LinkHoverCard from './reflink-hover-card.svelte'
     import type { TextCitationParam } from '@anthropic-ai/sdk/resources.js'
     import type { CitationSearchResultLocationParam } from '@anthropic-ai/sdk/resources'
@@ -30,9 +30,13 @@
 
     marked.use({ renderer })
 
+    let renderedHtml = $derived(marked.parse(content, { async: false }) as string)
+
     let markdownInspectState = $derived({
         contentLength: content.length,
         contentPreview: content.slice(0, 120),
+        renderedHtmlLength: renderedHtml.length,
+        renderedHtmlPreview: renderedHtml.slice(0, 120),
         citationCount: citations?.length ?? 0,
     })
 
@@ -41,42 +45,45 @@
     })
 
     $effect(() => {
-        if (!containerRef) {
-            return
-        }
+        renderedHtml
+        if (!containerRef) return
 
-        containerRef.innerHTML = marked.parse(content, { async: false })
-        console.debug(
-            '[chat-stream][$inspect] markdown-message:dom-after-render',
-            JSON.stringify({
-                contentLength: content.length,
-                innerTextLength: containerRef.innerText.length,
-                innerHtmlLength: containerRef.innerHTML.length,
-                innerTextPreview: containerRef.innerText.slice(0, 120),
-            }),
-        )
+        tick().then(() => {
+            if (!containerRef) return
 
-        const linkPlaceholders = containerRef.querySelectorAll('.omni-reflink')
-        linkPlaceholders.forEach((link) => {
-            const href = link.getAttribute('href')
-            const title = link.getAttribute('title')
-            const text = link.textContent
-            const snippet = link.getAttribute('data-snippet')
+            console.debug(
+                '[chat-stream][$inspect] markdown-message:dom-after-render',
+                JSON.stringify({
+                    contentLength: content.length,
+                    renderedHtmlLength: renderedHtml.length,
+                    innerTextLength: containerRef.innerText.length,
+                    innerHtmlLength: containerRef.innerHTML.length,
+                    innerTextPreview: containerRef.innerText.slice(0, 120),
+                }),
+            )
 
-            mount(LinkHoverCard, {
-                target: link.parentNode as Element,
-                anchor: link,
-                props: {
-                    href: href || '#',
-                    title: title || '',
-                    text: text ?? '',
-                    snippet: snippet || undefined,
-                },
+            const linkPlaceholders = containerRef.querySelectorAll('.omni-reflink')
+            linkPlaceholders.forEach((link) => {
+                const href = link.getAttribute('href')
+                const title = link.getAttribute('title')
+                const text = link.textContent
+                const snippet = link.getAttribute('data-snippet')
+
+                mount(LinkHoverCard, {
+                    target: link.parentNode as Element,
+                    anchor: link,
+                    props: {
+                        href: href || '#',
+                        title: title || '',
+                        text: text ?? '',
+                        snippet: snippet || undefined,
+                    },
+                })
+
+                link.remove()
             })
-
-            link.remove()
         })
     })
 </script>
 
-<div bind:this={containerRef}></div>
+<div bind:this={containerRef}>{@html renderedHtml}</div>
