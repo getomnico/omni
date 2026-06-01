@@ -363,6 +363,56 @@
     let processedMessages = $derived(processMessages(chatMessages))
     let lastUserMessageIndex = $derived(processedMessages.findLastIndex((m) => m.role === 'user'))
 
+    function inspectChatMessage(message: ChatMessage | undefined) {
+        if (!message) return null
+        return {
+            id: message.id,
+            parentId: message.parentId,
+            role: message.message.role,
+            content: summarizeMessageContent(message.message.content),
+        }
+    }
+
+    function inspectProcessedMessage(message: ProcessedMessage | undefined) {
+        if (!message) return null
+        return {
+            id: message.id,
+            origMessageId: message.origMessageId,
+            parentMessageId: message.parentMessageId,
+            role: message.role,
+            blockCount: message.content.length,
+            blocks: message.content.map((block) => ({
+                id: block.id,
+                type: block.type,
+                textLength: block.type === 'text' ? block.text.length : undefined,
+                textPreview: block.type === 'text' ? block.text.slice(0, 120) : undefined,
+                toolUseId: block.type === 'tool' ? block.toolUse.id : undefined,
+                toolName: block.type === 'tool' ? block.toolUse.name : undefined,
+                hasToolResult: block.type === 'tool' ? !!block.toolResult : undefined,
+                hasActionResult: block.type === 'tool' ? !!block.actionResult : undefined,
+                hasOAuthRequired: block.type === 'tool' ? !!block.oauthRequired : undefined,
+            })),
+        }
+    }
+
+    let renderInspectState = $derived.by(() => {
+        const displayPath = getDisplayPath(chatMessages)
+        return {
+            isStreaming,
+            chatMessageCount: chatMessages.length,
+            displayPathCount: displayPath.length,
+            processedMessageCount: processedMessages.length,
+            lastUserMessageIndex,
+            lastChatMessage: inspectChatMessage(chatMessages.at(-1)),
+            lastDisplayPathMessage: inspectChatMessage(displayPath.at(-1)),
+            lastProcessedMessage: inspectProcessedMessage(processedMessages.at(-1)),
+        }
+    })
+
+    $inspect(renderInspectState).with((type, value) => {
+        console.debug('[chat-stream][$inspect] page:render-state', type, JSON.stringify(value))
+    })
+
     async function copyMessageToClipboard(message: ProcessedMessage) {
         const content = message.content
             .map((block) => {
@@ -605,10 +655,11 @@
             chatId: data.chat.id,
             parentId: origMsg?.parentId ?? null,
             message: { role: 'user', content: newContent },
+            contentText: newContent,
             messageSeqNum: chatMessages.length + 1,
             createdAt: new Date(),
         }
-        chatMessages.push(newUserMessage)
+        chatMessages = [...chatMessages, newUserMessage]
 
         // Select the new branch
         branchSelections[parentKey] = messageId
@@ -976,6 +1027,8 @@
     })
 
     function streamResponse(chatId: string) {
+        userHasScrolled = false
+        scrollUserMessageToTop()
         debugStream('streamResponse:start', { chatId })
         isStreaming = true
         error = null
@@ -1010,6 +1063,10 @@
                 return
             }
 
+            const replaceLastMessage = (message: ChatMessage) => {
+                chatMessages = [...chatMessages.slice(0, -1), message]
+            }
+
             if (block.type === 'tool_result') {
                 debugStream('collect:tool_result:before', {
                     toolUseId: block.tool_use_id,
@@ -1024,22 +1081,32 @@
                             'Cannot append tool_result to non-array user message content',
                         )
                     }
-                    blocks.push(block)
+                    replaceLastMessage({
+                        ...lastMessage,
+                        message: {
+                            ...lastMessage.message,
+                            content: [...blocks, block],
+                        },
+                    })
                 } else {
                     const displayPath = getDisplayPath(chatMessages)
                     const toolParentId =
                         displayPath.length > 0 ? displayPath[displayPath.length - 1].id : undefined
-                    chatMessages.push({
-                        id: `temp-${Date.now()}`,
-                        chatId,
-                        parentId: toolParentId ?? null,
-                        message: {
-                            role: 'user',
-                            content: [block],
+                    chatMessages = [
+                        ...chatMessages,
+                        {
+                            id: `temp-${Date.now()}`,
+                            chatId,
+                            parentId: toolParentId ?? null,
+                            message: {
+                                role: 'user',
+                                content: [block],
+                            },
+                            contentText: null,
+                            messageSeqNum: chatMessages.length + 1,
+                            createdAt: new Date(),
                         },
-                        messageSeqNum: chatMessages.length + 1,
-                        createdAt: new Date(),
-                    })
+                    ]
                 }
 
                 debugStream('collect:tool_result:after', {
@@ -1049,23 +1116,27 @@
                 return
             }
 
-            const existingBlocks = lastMessage.message.content as ContentBlockParam[]
+            if (!Array.isArray(lastMessage.message.content)) {
+                throw new Error(
+                    'Cannot append streamed assistant content to non-array message content',
+                )
+            }
+
+            const existingBlocks = [...lastMessage.message.content] as ContentBlockParam[]
             debugStream('collect:before', {
                 blockType: block.type,
                 blockIdx,
                 targetMessageId: lastMessage.id,
                 targetRole: lastMessage.message.role,
                 targetContentIsArray: Array.isArray(lastMessage.message.content),
-                existingBlocks: Array.isArray(lastMessage.message.content)
-                    ? existingBlocks.map((b, idx) => ({
-                          idx,
-                          type: b.type,
-                          textLength: b.type === 'text' ? b.text.length : undefined,
-                          textPreview: b.type === 'text' ? b.text.slice(0, 80) : undefined,
-                          toolUseId: b.type === 'tool_use' ? b.id : undefined,
-                          toolName: b.type === 'tool_use' ? b.name : undefined,
-                      }))
-                    : lastMessage.message.content,
+                existingBlocks: existingBlocks.map((b, idx) => ({
+                    idx,
+                    type: b.type,
+                    textLength: b.type === 'text' ? b.text.length : undefined,
+                    textPreview: b.type === 'text' ? b.text.slice(0, 80) : undefined,
+                    toolUseId: b.type === 'tool_use' ? b.id : undefined,
+                    toolName: b.type === 'tool_use' ? b.name : undefined,
+                })),
             })
             if (block.type === 'text') {
                 if (blockIdx === undefined) {
@@ -1084,12 +1155,12 @@
                             `Error handling text block, existing block at index ${blockIdx} is not a text block`,
                         )
                     }
-                    existingBlock.text += block.text
-                    if (block.citations) {
-                        existingBlock.citations = [
-                            ...(existingBlock.citations ?? []),
-                            ...block.citations,
-                        ]
+                    existingBlocks[blockIdx] = {
+                        ...existingBlock,
+                        text: existingBlock.text + block.text,
+                        citations: block.citations
+                            ? [...(existingBlock.citations ?? []), ...block.citations]
+                            : existingBlock.citations,
                     }
                 }
             } else if (block.type === 'text_delta') {
@@ -1108,7 +1179,10 @@
                             `Error handling text_delta, existing block at index ${blockIdx} is not a text block`,
                         )
                     }
-                    existingBlock.text += block.text
+                    existingBlocks[blockIdx] = {
+                        ...existingBlock,
+                        text: existingBlock.text + block.text,
+                    }
                 }
             } else if (block.type === 'citations_delta') {
                 if (blockIdx === undefined) {
@@ -1127,10 +1201,10 @@
                             `Error handling citations_delta, existing block at index ${blockIdx} is not a text block`,
                         )
                     }
-                    if (!existingBlock.citations) {
-                        existingBlock.citations = []
+                    existingBlocks[blockIdx] = {
+                        ...existingBlock,
+                        citations: [...(existingBlock.citations ?? []), block.citation],
                     }
-                    existingBlock.citations.push(block.citation)
                 }
             } else if (block.type === 'tool_use') {
                 if (blockIdx === undefined) {
@@ -1144,18 +1218,17 @@
                         input: block.input,
                     })
                 } else {
-                    // We could also use blockIdx, but we use the id instead
-                    const existingToolUse = existingBlocks.find(
+                    const existingToolUseIdx = existingBlocks.findIndex(
                         (b) => b.type === 'tool_use' && b.id === block.id,
                     )
 
-                    // TODO: Instead of updating the input JSON in one go, handle input_json_delta in this method instead
-                    // Currently, the caller to this method is accumulating all the input JSON deltas and sending it in a
-                    // single tool_use block
-                    if (existingToolUse) {
-                        ;(existingToolUse as ToolUseBlock).input = block.input
+                    if (existingToolUseIdx !== -1) {
+                        const existingToolUse = existingBlocks[existingToolUseIdx] as ToolUseBlock
+                        existingBlocks[existingToolUseIdx] = {
+                            ...existingToolUse,
+                            input: block.input,
+                        }
                     } else {
-                        // TODO: This should never happen, because we add a new block above in the blockIdx check
                         existingBlocks.push({
                             type: 'tool_use',
                             id: block.id,
@@ -1165,6 +1238,14 @@
                     }
                 }
             }
+
+            replaceLastMessage({
+                ...lastMessage,
+                message: {
+                    ...lastMessage.message,
+                    content: existingBlocks,
+                },
+            })
             debugStream('collect:after', {
                 blockType: block.type,
                 blockIdx,
@@ -1178,8 +1259,13 @@
             const messageId = event.data
             const lastMessage = chatMessages[chatMessages.length - 1]
             if (lastMessage && lastMessage.id.toString().startsWith('temp-')) {
-                lastMessage.id = messageId
-                chatMessages = [...chatMessages]
+                chatMessages = [
+                    ...chatMessages.slice(0, -1),
+                    {
+                        ...lastMessage,
+                        id: messageId,
+                    },
+                ]
                 debugStream('event:message_id:applied', { messageId })
             } else {
                 debugStream('event:message_id:no-temp-message', { messageId })
@@ -1211,17 +1297,21 @@
                     const displayPath = getDisplayPath(chatMessages)
                     const streamParentId =
                         displayPath.length > 0 ? displayPath[displayPath.length - 1].id : undefined
-                    chatMessages.push({
-                        id: `temp-${Date.now()}`,
-                        chatId,
-                        parentId: streamParentId ?? null,
-                        message: {
-                            role: data.message.role,
-                            content: data.message.content,
+                    chatMessages = [
+                        ...chatMessages,
+                        {
+                            id: `temp-${Date.now()}`,
+                            chatId,
+                            parentId: streamParentId ?? null,
+                            message: {
+                                role: data.message.role,
+                                content: data.message.content,
+                            },
+                            contentText: null,
+                            messageSeqNum: chatMessages.length + 1,
+                            createdAt: new Date(),
                         },
-                        messageSeqNum: chatMessages.length + 1,
-                        createdAt: new Date(),
-                    })
+                    ]
                     debugStream('event:message_start:after-push', { streamParentId })
                 } else if (data.type === 'content_block_start') {
                     debugStream('event:content_block_start', {
@@ -1572,10 +1662,11 @@
                 role: 'user',
                 content: messageContent,
             } as unknown as ChatMessage['message'],
+            contentText: userMsg,
             messageSeqNum: chatMessages.length + 1,
             createdAt: new Date(),
         }
-        chatMessages.push(newUserMessage)
+        chatMessages = [...chatMessages, newUserMessage]
 
         pendingUploads = []
         userHasScrolled = false

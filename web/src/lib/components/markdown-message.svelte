@@ -30,12 +30,31 @@
 
     marked.use({ renderer })
 
+    let markdownInspectState = $derived({
+        contentLength: content.length,
+        contentPreview: content.slice(0, 120),
+        citationCount: citations?.length ?? 0,
+    })
+
+    $inspect(markdownInspectState).with((type, value) => {
+        console.debug('[chat-stream][$inspect] markdown-message', type, JSON.stringify(value))
+    })
+
     $effect(() => {
         if (!containerRef) {
             return
         }
 
         containerRef.innerHTML = marked.parse(content, { async: false })
+        console.debug(
+            '[chat-stream][$inspect] markdown-message:dom-after-render',
+            JSON.stringify({
+                contentLength: content.length,
+                innerTextLength: containerRef.innerText.length,
+                innerHtmlLength: containerRef.innerHTML.length,
+                innerTextPreview: containerRef.innerText.slice(0, 120),
+            }),
+        )
 
         const linkPlaceholders = containerRef.querySelectorAll('.omni-reflink')
         linkPlaceholders.forEach((link) => {
@@ -50,7 +69,7 @@
                 props: {
                     href: href || '#',
                     title: title || '',
-                    text,
+                    text: text ?? '',
                     snippet: snippet || undefined,
                 },
             })
