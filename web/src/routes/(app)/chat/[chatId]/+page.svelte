@@ -1632,8 +1632,10 @@
 
 {#snippet branchNavigation(message: ProcessedMessage)}
     <div
+        data-testid={`branch-nav-${message.origMessageId}`}
         class="text-muted-foreground flex items-center gap-0.5 text-xs opacity-0 transition-opacity group-hover:opacity-100">
         <Button
+            data-testid="branch-prev"
             size="icon"
             variant="ghost"
             class="h-6 w-6 cursor-pointer"
@@ -1641,9 +1643,10 @@
             onclick={() => switchBranch(message.parentMessageId ?? null, 'prev')}>
             <ChevronLeft class="h-3.5 w-3.5" />
         </Button>
-        <span class="min-w-[3ch] text-center"
+        <span data-testid="branch-position" class="min-w-[3ch] text-center"
             >{(message.siblingIndex ?? 0) + 1}/{message.siblingIds?.length ?? 1}</span>
         <Button
+            data-testid="branch-next"
             size="icon"
             variant="ghost"
             class="h-6 w-6 cursor-pointer"
@@ -1929,18 +1932,23 @@
                         <!-- User Message -->
                         {#if i === lastUserMessageIndex}
                             <div
+                                data-testid={`chat-message-${message.origMessageId}`}
                                 class="group mt-8 flex flex-col items-end"
                                 bind:this={lastUserMessageRef}>
                                 {@render userMessageContent(message)}
                             </div>
                         {:else}
-                            <div class="group mt-8 flex flex-col items-end">
+                            <div
+                                data-testid={`chat-message-${message.origMessageId}`}
+                                class="group mt-8 flex flex-col items-end">
                                 {@render userMessageContent(message)}
                             </div>
                         {/if}
                     {:else if message.role === 'assistant'}
                         <!-- Assistant Message -->
-                        <div class="group mt-8 flex flex-col gap-1">
+                        <div
+                            data-testid={`chat-message-${message.origMessageId}`}
+                            class="group mt-8 flex flex-col gap-1">
                             <div
                                 class="prose prose-p:my-3 prose-headings:text-foreground prose-p:text-foreground prose-li:text-foreground prose-strong:text-foreground prose-code:text-foreground prose-a:text-primary dark:prose-invert max-w-none">
                                 {#key `${message.renderKey}:${messageContentRenderKey(message.content)}`}
