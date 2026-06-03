@@ -105,6 +105,10 @@ export type UploadMessageContent = {
 export type MessageContent = Array<TextMessageContent | ToolMessageContent | UploadMessageContent>
 export type ProcessedMessage = {
     id: number
+    // IDs of the raw chat_messages rows represented by this display message.
+    sourceMessageIds: string[]
+    // Stable key for the display message across the conversation tree.
+    renderKey: string
     // ID of the message in the db.
     // Multiple messages might be combined into a single ProcessedMessage, in that case, this field will contain the ID of the last message.
     origMessageId: string

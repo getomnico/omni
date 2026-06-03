@@ -28,7 +28,7 @@
         RotateCcw,
     } from '@lucide/svelte'
     import { marked } from 'marked'
-    import { onMount } from 'svelte'
+    import { onDestroy, onMount } from 'svelte'
     import type { PageProps } from './$types'
     import type {
         ProcessedMessage,
@@ -76,11 +76,18 @@
     let chatMessages = $state<ChatMessage[]>([...data.messages])
     let uploadFilenames = $state<Record<string, string>>({ ...data.uploadFilenames })
 
+    onDestroy(() => {
+        eventSource?.close()
+        eventSource = null
+    })
+
     afterNavigate(() => {
         chatMessages = [...data.messages]
         branchSelections = {}
+        activeStreamingMessageId = null
         editingMessageId = null
         uploadFilenames = { ...data.uploadFilenames }
+        markChatMessagesChanged()
     })
 
     let userMessage = $state('')
@@ -259,12 +266,43 @@
     let editingContent = $state('')
     // Tracks user's branch choices: parentId -> chosen childId
     let branchSelections = $state<Record<string, string>>({})
+    let activeStreamingMessageId = $state<string | null>(null)
     let userHasScrolled = $state(false)
     let showTopShadow = $state(false)
     let bottomPadding = $state(80)
 
-    let processedMessages = $derived(processMessages(chatMessages))
+    let processedMessages = $state<ProcessedMessage[]>(processMessages(chatMessages))
+    let processedMessagesRefreshScheduled = false
     let lastUserMessageIndex = $derived(processedMessages.findLastIndex((m) => m.role === 'user'))
+
+    function refreshProcessedMessages() {
+        processedMessages = processMessages(chatMessages)
+    }
+
+    function scheduleProcessedMessagesRefresh() {
+        if (processedMessagesRefreshScheduled) return
+        processedMessagesRefreshScheduled = true
+        requestAnimationFrame(() => {
+            processedMessagesRefreshScheduled = false
+            refreshProcessedMessages()
+        })
+    }
+
+    function messageContentRenderKey(content: MessageContent): string {
+        return content
+            .map((block) => {
+                if (block.type === 'text') return `text:${block.id}:${block.citations?.length ?? 0}`
+                if (block.type === 'tool') {
+                    return `tool:${block.id}:${block.toolUse.id}:${JSON.stringify(block.toolUse.input)}:${block.toolResult?.content.length ?? 0}:${block.actionResult?.isError ?? ''}:${block.oauthRequired?.status ?? ''}`
+                }
+                return `${block.type}:${block.id}`
+            })
+            .join('|')
+    }
+
+    function markChatMessagesChanged() {
+        scheduleProcessedMessagesRefresh()
+    }
 
     async function copyMessageToClipboard(message: ProcessedMessage) {
         const content = message.content
@@ -396,9 +434,29 @@
         return childrenMap
     }
 
+    function getPathToMessage(messages: ChatMessage[], messageId: string): ChatMessage[] {
+        const messageById = new Map(messages.map((message) => [message.id, message]))
+        const path: ChatMessage[] = []
+        let current = messageById.get(messageId)
+        const seen = new Set<string>()
+
+        while (current && !seen.has(current.id)) {
+            seen.add(current.id)
+            path.push(current)
+            current = current.parentId ? messageById.get(current.parentId) : undefined
+        }
+
+        return path.reverse()
+    }
+
     // Build the display path from the message tree based on branch selections
     function getDisplayPath(chatMessages: ChatMessage[]): ChatMessage[] {
         if (chatMessages.length === 0) return []
+
+        if (activeStreamingMessageId) {
+            const streamingPath = getPathToMessage(chatMessages, activeStreamingMessageId)
+            if (streamingPath.length > 0) return streamingPath
+        }
 
         const childrenMap = buildChildrenMap(chatMessages)
 
@@ -446,6 +504,32 @@
         return result
     }
 
+    function nextMessageSeqNum(messages: ChatMessage[]): number {
+        return Math.max(0, ...messages.map((message) => message.messageSeqNum)) + 1
+    }
+
+    function branchSelectionKey(parentId: string | null | undefined): string {
+        return parentId ?? '.root'
+    }
+
+    function selectBranch(parentId: string | null | undefined, messageId: string) {
+        branchSelections[branchSelectionKey(parentId)] = messageId
+    }
+
+    function replaceMessageIdInBranchSelections(oldId: string, newId: string) {
+        const nextBranchSelections = { ...branchSelections }
+        if (nextBranchSelections[oldId] !== undefined) {
+            nextBranchSelections[newId] = nextBranchSelections[oldId]
+            delete nextBranchSelections[oldId]
+        }
+        for (const [parentId, selectedId] of Object.entries(nextBranchSelections)) {
+            if (selectedId === oldId) {
+                nextBranchSelections[parentId] = newId
+            }
+        }
+        branchSelections = nextBranchSelections
+    }
+
     function switchBranch(parentId: string | null, direction: 'prev' | 'next') {
         const parentKey = parentId ?? null
         const childrenMap = buildChildrenMap(chatMessages)
@@ -453,7 +537,7 @@
         const siblings = childrenMap.get(parentKey)
         if (!siblings || siblings.length <= 1) return
 
-        const selectionKey = parentKey === null ? '.root' : parentKey!
+        const selectionKey = branchSelectionKey(parentKey)
         const currentId = branchSelections[selectionKey]
         let currentIdx = currentId
             ? siblings.findIndex((s) => s.id === currentId)
@@ -466,8 +550,10 @@
                 : Math.min(siblings.length - 1, currentIdx + 1)
 
         branchSelections[selectionKey] = siblings[newIdx].id
+        activeStreamingMessageId = null
         // Clear downstream selections so we follow the default (active) path from here
         clearDownstreamSelections(siblings[newIdx].id)
+        refreshProcessedMessages()
     }
 
     function clearDownstreamSelections(fromId: string) {
@@ -501,7 +587,7 @@
 
         // Find the original message's parent to set the branch selection
         const origMsg = chatMessages.find((m) => m.id === origMessageId)
-        const parentKey = origMsg?.parentId ?? '.root'
+        const parentKey = branchSelectionKey(origMsg?.parentId)
 
         const newUserMessage: ChatMessage = {
             id: messageId,
@@ -509,7 +595,7 @@
             parentId: origMsg?.parentId ?? null,
             message: { role: 'user', content: newContent },
             contentText: newContent,
-            messageSeqNum: chatMessages.length + 1,
+            messageSeqNum: nextMessageSeqNum(chatMessages),
             createdAt: new Date(),
         }
         chatMessages = [...chatMessages, newUserMessage]
@@ -517,6 +603,7 @@
         // Select the new branch
         branchSelections[parentKey] = messageId
         clearDownstreamSelections(messageId)
+        markChatMessagesChanged()
 
         streamResponse(data.chat.id)
     }
@@ -524,47 +611,88 @@
     // Converts messages into a format that makes it easy to render the messages
     // E.g., combines multiple content blocks into a single content block, handles citations, etc.
     function processMessages(chatMessages: ChatMessage[]): ProcessedMessage[] {
-        const processedMessages: ProcessedMessage[] = []
+        let result: ProcessedMessage[] = []
         const siblingInfo = computeSiblingInfo(chatMessages)
         const displayPath = getDisplayPath(chatMessages)
 
         const addMessage = (message: ProcessedMessage) => {
-            const lastMessage = processedMessages[processedMessages.length - 1]
-            let messageToUpdate: ProcessedMessage
-            if (!lastMessage || lastMessage.role !== message.role) {
-                const newMessage = {
-                    id: processedMessages.length,
-                    origMessageId: message.origMessageId,
-                    role: message.role,
-                    content: [] as MessageContent,
-                    parentMessageId: message.parentMessageId,
-                    siblingIds: message.siblingIds,
-                    siblingIndex: message.siblingIndex,
-                    createdAt: message.createdAt,
-                }
-                processedMessages.push(newMessage)
-                messageToUpdate = newMessage
-            } else {
-                messageToUpdate = lastMessage
-            }
+            const lastMessage = result[result.length - 1]
+            const messageIndex =
+                lastMessage && lastMessage.role === message.role ? result.length - 1 : result.length
+
+            const sourceMessageIds =
+                lastMessage && lastMessage.role === message.role
+                    ? [...lastMessage.sourceMessageIds, ...message.sourceMessageIds]
+                    : [...message.sourceMessageIds]
+
+            let messageToUpdate: ProcessedMessage =
+                lastMessage && lastMessage.role === message.role
+                    ? {
+                          ...lastMessage,
+                          sourceMessageIds,
+                          renderKey: sourceMessageIds.join('+'),
+                          origMessageId: message.origMessageId,
+                          parentMessageId: message.parentMessageId,
+                          siblingIds: message.siblingIds,
+                          siblingIndex: message.siblingIndex,
+                          createdAt: message.createdAt,
+                          content: [...lastMessage.content],
+                      }
+                    : {
+                          id: result.length,
+                          sourceMessageIds,
+                          renderKey: sourceMessageIds.join('+'),
+                          origMessageId: message.origMessageId,
+                          role: message.role,
+                          content: [] as MessageContent,
+                          parentMessageId: message.parentMessageId,
+                          siblingIds: message.siblingIds,
+                          siblingIndex: message.siblingIndex,
+                          createdAt: message.createdAt,
+                      }
+
+            result =
+                messageIndex === result.length
+                    ? [...result, messageToUpdate]
+                    : [
+                          ...result.slice(0, messageIndex),
+                          messageToUpdate,
+                          ...result.slice(messageIndex + 1),
+                      ]
 
             for (const block of message.content) {
                 const lastBlock = messageToUpdate.content[messageToUpdate.content.length - 1]
-                if (lastBlock && lastBlock.type === 'text' && block.type === 'text') {
-                    // Combine text blocks
-                    lastBlock.text += '\n\n' + block.text
-                    if (block.citations) {
-                        if (!lastBlock.citations) {
-                            lastBlock.citations = []
-                        }
-                        lastBlock.citations.push(...block.citations)
-                    }
-                } else {
-                    messageToUpdate.content.push({
-                        ...block,
-                        id: messageToUpdate.content.length,
-                    })
+                const nextContent: MessageContent =
+                    lastBlock && lastBlock.type === 'text' && block.type === 'text'
+                        ? [
+                              ...messageToUpdate.content.slice(0, -1),
+                              {
+                                  ...lastBlock,
+                                  text: lastBlock.text + '\n\n' + block.text,
+                                  citations: block.citations
+                                      ? [...(lastBlock.citations ?? []), ...block.citations]
+                                      : lastBlock.citations
+                                        ? [...lastBlock.citations]
+                                        : undefined,
+                              },
+                          ]
+                        : [
+                              ...messageToUpdate.content,
+                              {
+                                  ...block,
+                                  id: messageToUpdate.content.length,
+                              },
+                          ]
+
+                messageToUpdate = {
+                    ...messageToUpdate,
+                    content: nextContent,
                 }
+                result = [
+                    ...result.slice(0, messageIndex),
+                    messageToUpdate,
+                    ...result.slice(messageIndex + 1),
+                ]
             }
         }
 
@@ -575,20 +703,44 @@
         // "completed: 0 results" pill in the catch-all accordion branch of
         // tool-message.svelte.
         const SEARCH_TOOLS = new Set(['search_documents', 'search_people'])
+        const updateToolBlock = (
+            toolUseId: string,
+            updateBlock: (block: ToolMessageContent) => ToolMessageContent,
+        ) => {
+            for (let messageIdx = 0; messageIdx < result.length; messageIdx++) {
+                const message = result[messageIdx]
+                if (message.role !== 'assistant') continue
+
+                const blockIdx = message.content.findIndex(
+                    (block) => block.type === 'tool' && block.toolUse.id === toolUseId,
+                )
+                if (blockIdx === -1) continue
+
+                const block = message.content[blockIdx]
+                if (block.type !== 'tool') return
+
+                const nextMessage = {
+                    ...message,
+                    content: [
+                        ...message.content.slice(0, blockIdx),
+                        updateBlock(block),
+                        ...message.content.slice(blockIdx + 1),
+                    ],
+                }
+                result = [
+                    ...result.slice(0, messageIdx),
+                    nextMessage,
+                    ...result.slice(messageIdx + 1),
+                ]
+                return
+            }
+        }
+
         const updateToolResults = (toolResult: ToolMessageContent['toolResult']) => {
             if (!toolResult) return
-            for (const message of processedMessages) {
-                if (message.role === 'assistant') {
-                    for (const block of message.content) {
-                        if (block.type === 'tool' && block.toolUse.id === toolResult.toolUseId) {
-                            if (SEARCH_TOOLS.has(block.toolUse.name)) {
-                                block.toolResult = toolResult
-                            }
-                            return
-                        }
-                    }
-                }
-            }
+            updateToolBlock(toolResult.toolUseId, (block) =>
+                SEARCH_TOOLS.has(block.toolUse.name) ? { ...block, toolResult } : block,
+            )
         }
 
         const updateActionResult = (actionResult: {
@@ -596,29 +748,11 @@
             text: string
             isError: boolean
         }) => {
-            for (const message of processedMessages) {
-                if (message.role === 'assistant') {
-                    for (const block of message.content) {
-                        if (block.type === 'tool' && block.toolUse.id === actionResult.toolUseId) {
-                            block.actionResult = actionResult
-                            return
-                        }
-                    }
-                }
-            }
+            updateToolBlock(actionResult.toolUseId, (block) => ({ ...block, actionResult }))
         }
 
         const updateOAuthRequired = (toolUseId: string, oauthRequired: OAuthRequired) => {
-            for (const message of processedMessages) {
-                if (message.role === 'assistant') {
-                    for (const block of message.content) {
-                        if (block.type === 'tool' && block.toolUse.id === toolUseId) {
-                            block.oauthRequired = oauthRequired
-                            return
-                        }
-                    }
-                }
-            }
+            updateToolBlock(toolUseId, (block) => ({ ...block, oauthRequired }))
         }
 
         for (let i = 0; i < displayPath.length; i++) {
@@ -653,7 +787,9 @@
                               .filter((b): b is MessageContent[number] => b !== null)
 
                 const processedUserMessage: ProcessedMessage = {
-                    id: processedMessages.length,
+                    id: result.length,
+                    sourceMessageIds: [chatMsg.id],
+                    renderKey: chatMsg.id,
                     origMessageId: chatMsg.id,
                     role: 'user',
                     content: userMessageContent,
@@ -670,7 +806,9 @@
             } else {
                 // Here we handle both assistant messages (with possible tool uses) and also user messages that contain tool results
                 const processedMessage: ProcessedMessage = {
-                    id: processedMessages.length,
+                    id: result.length,
+                    sourceMessageIds: [chatMsg.id],
+                    renderKey: chatMsg.id,
                     origMessageId: chatMsg.id,
                     role: 'assistant',
                     content: [],
@@ -745,8 +883,10 @@
                             })
 
                             // Extract text content for non-search tool results (e.g., present_artifact)
-                            const textBlocks = Array.isArray(block.content)
-                                ? block.content.filter((b: any) => b.type === 'text')
+                            const textBlocks: TextBlockParam[] = Array.isArray(block.content)
+                                ? block.content.filter(
+                                      (b): b is TextBlockParam => b.type === 'text',
+                                  )
                                 : []
                             // First text block may carry an Omni envelope (OAuth-required
                             // prompt). Surface it as a typed UI variant; if it doesn't
@@ -813,7 +953,7 @@
             }
         }
 
-        return processedMessages
+        return result
     }
 
     function isUserMessage(message: MessageParam) {
@@ -881,6 +1021,7 @@
 
     function streamResponse(chatId: string) {
         isStreaming = true
+        activeStreamingMessageId = null
         error = null
         startThinkingText()
 
@@ -913,6 +1054,7 @@
 
             const replaceLastMessage = (message: ChatMessage) => {
                 chatMessages = [...chatMessages.slice(0, -1), message]
+                markChatMessagesChanged()
             }
 
             if (block.type !== 'tool_result' && !Array.isArray(lastMessage.message.content)) {
@@ -1039,21 +1181,22 @@
                     const displayPath = getDisplayPath(chatMessages)
                     const toolParentId =
                         displayPath.length > 0 ? displayPath[displayPath.length - 1].id : undefined
-                    chatMessages = [
-                        ...chatMessages,
-                        {
-                            id: `temp-${Date.now()}`,
-                            chatId,
-                            parentId: toolParentId ?? null,
-                            message: {
-                                role: 'user',
-                                content: [block],
-                            },
-                            contentText: null,
-                            messageSeqNum: chatMessages.length + 1,
-                            createdAt: new Date(),
+                    const toolResultMessage: ChatMessage = {
+                        id: `temp-${Date.now()}`,
+                        chatId,
+                        parentId: toolParentId ?? null,
+                        message: {
+                            role: 'user',
+                            content: [block],
                         },
-                    ]
+                        contentText: null,
+                        messageSeqNum: nextMessageSeqNum(chatMessages),
+                        createdAt: new Date(),
+                    }
+                    chatMessages = [...chatMessages, toolResultMessage]
+                    activeStreamingMessageId = toolResultMessage.id
+                    selectBranch(toolResultMessage.parentId, toolResultMessage.id)
+                    markChatMessagesChanged()
                 }
 
                 return
@@ -1072,13 +1215,21 @@
             const messageId = event.data
             const lastMessage = chatMessages[chatMessages.length - 1]
             if (lastMessage && lastMessage.id.toString().startsWith('temp-')) {
-                chatMessages = [
-                    ...chatMessages.slice(0, -1),
-                    {
-                        ...lastMessage,
-                        id: messageId,
-                    },
-                ]
+                const tempId = lastMessage.id
+                chatMessages = chatMessages.map((message) => {
+                    if (message.id === tempId) {
+                        return { ...message, id: messageId }
+                    }
+                    if (message.parentId === tempId) {
+                        return { ...message, parentId: messageId }
+                    }
+                    return message
+                })
+                if (activeStreamingMessageId === tempId) {
+                    activeStreamingMessageId = messageId
+                }
+                replaceMessageIdInBranchSelections(tempId, messageId)
+                markChatMessagesChanged()
             }
         })
 
@@ -1099,21 +1250,22 @@
                     const displayPath = getDisplayPath(chatMessages)
                     const streamParentId =
                         displayPath.length > 0 ? displayPath[displayPath.length - 1].id : undefined
-                    chatMessages = [
-                        ...chatMessages,
-                        {
-                            id: `temp-${Date.now()}`,
-                            chatId,
-                            parentId: streamParentId ?? null,
-                            message: {
-                                role: data.message.role,
-                                content: data.message.content,
-                            },
-                            contentText: null,
-                            messageSeqNum: chatMessages.length + 1,
-                            createdAt: new Date(),
+                    const startedMessage: ChatMessage = {
+                        id: `temp-${Date.now()}`,
+                        chatId,
+                        parentId: streamParentId ?? null,
+                        message: {
+                            role: data.message.role,
+                            content: data.message.content,
                         },
-                    ]
+                        contentText: null,
+                        messageSeqNum: nextMessageSeqNum(chatMessages),
+                        createdAt: new Date(),
+                    }
+                    chatMessages = [...chatMessages, startedMessage]
+                    activeStreamingMessageId = startedMessage.id
+                    selectBranch(startedMessage.parentId, startedMessage.id)
+                    markChatMessagesChanged()
                 } else if (data.type === 'content_block_start') {
                     if (data.content_block.type === 'tool_use') {
                         collectStreamingResponse(data.content_block, data.index)
@@ -1162,7 +1314,6 @@
                     collectStreamingResponse(data)
                 }
 
-                chatMessages = [...chatMessages]
                 if (!userHasScrolled) scrollToBottom()
             } catch (err) {
                 console.error('Failed to parse SSE data:', event.data, err)
@@ -1176,6 +1327,8 @@
                 const approvalData: ApprovalRequiredEvent = JSON.parse(event.data)
                 pendingApproval = approvalData
                 isStreaming = false
+                activeStreamingMessageId = null
+                refreshProcessedMessages()
                 stopThinkingText()
                 requestAnimationFrame(() => recalcBottomPadding())
             } catch (err) {
@@ -1188,6 +1341,8 @@
                 const oauthData: OAuthRequiredEvent = JSON.parse(event.data)
                 oauthEventByToolCallId[oauthData.tool_call_id] = oauthData
                 isStreaming = false
+                activeStreamingMessageId = null
+                refreshProcessedMessages()
                 stopThinkingText()
                 requestAnimationFrame(() => recalcBottomPadding())
             } catch (err) {
@@ -1207,15 +1362,16 @@
                     const content = cm.message.content
                     if (!Array.isArray(content)) continue
                     let replaced = false
-                    const next = content.map((b) => {
+                    const next: ContentBlockParam[] = content.map((b) => {
                         if (b.type === 'tool_result' && b.tool_use_id === data.tool_use_id) {
                             replaced = true
-                            return {
+                            const replacement: ToolResultBlockParam = {
                                 type: 'tool_result',
                                 tool_use_id: data.tool_use_id,
-                                content: data.content,
+                                content: data.content as ToolResultBlockParam['content'],
                                 is_error: data.is_error,
                             }
+                            return replacement
                         }
                         return b
                     })
@@ -1223,6 +1379,7 @@
                         cm.message = { ...cm.message, content: next }
                         delete oauthEventByToolCallId[data.tool_use_id]
                         chatMessages = [...chatMessages]
+                        markChatMessagesChanged()
                         break
                     }
                 }
@@ -1234,6 +1391,8 @@
         eventSource.addEventListener('end_of_stream', () => {
             streamCompleted = true
             isStreaming = false
+            activeStreamingMessageId = null
+            refreshProcessedMessages()
             stopThinkingText()
             requestAnimationFrame(() => recalcBottomPadding())
             userInputRef?.focus()
@@ -1251,6 +1410,8 @@
                     ? streamErrorMessage(event as MessageEvent<string>)
                     : 'Failed to generate response. Please try again.'
             isStreaming = false
+            activeStreamingMessageId = null
+            refreshProcessedMessages()
             stopThinkingText()
             requestAnimationFrame(() => recalcBottomPadding())
             userInputRef?.focus()
@@ -1265,6 +1426,8 @@
                     ? 'Response stream disconnected before it finished. Please try again.'
                     : 'Failed to connect to the response stream. Please try again.'
             isStreaming = false
+            activeStreamingMessageId = null
+            refreshProcessedMessages()
             stopThinkingText()
             requestAnimationFrame(() => recalcBottomPadding())
             userInputRef?.focus()
@@ -1374,10 +1537,12 @@
                 content: messageContent,
             } as unknown as ChatMessage['message'],
             contentText: userMsg,
-            messageSeqNum: chatMessages.length + 1,
+            messageSeqNum: nextMessageSeqNum(chatMessages),
             createdAt: new Date(),
         }
         chatMessages = [...chatMessages, newUserMessage]
+        selectBranch(newUserMessage.parentId, newUserMessage.id)
+        markChatMessagesChanged()
 
         pendingUploads = []
         userHasScrolled = false
@@ -1759,7 +1924,7 @@
                     </div>
                 {/if}
                 <!-- Existing Messages -->
-                {#each processedMessages as message, i (message.id)}
+                {#each processedMessages as message, i (message.renderKey)}
                     {#if message.role === 'user'}
                         <!-- User Message -->
                         {#if i === lastUserMessageIndex}
@@ -1778,12 +1943,15 @@
                         <div class="group mt-8 flex flex-col gap-1">
                             <div
                                 class="prose prose-p:my-3 prose-headings:text-foreground prose-p:text-foreground prose-li:text-foreground prose-strong:text-foreground prose-code:text-foreground prose-a:text-primary dark:prose-invert max-w-none">
-                                <ToolCallsGroup
-                                    content={message.content}
-                                    isStreaming={isStreaming && i === processedMessages.length - 1}
-                                    {stripThinkingContent}
-                                    isAdmin={data.user.role === 'admin'}
-                                    onOAuthComplete={() => streamResponse(data.chat.id)} />
+                                {#key `${message.renderKey}:${messageContentRenderKey(message.content)}`}
+                                    <ToolCallsGroup
+                                        content={message.content}
+                                        isStreaming={isStreaming &&
+                                            i === processedMessages.length - 1}
+                                        {stripThinkingContent}
+                                        isAdmin={data.user.role === 'admin'}
+                                        onOAuthComplete={() => streamResponse(data.chat.id)} />
+                                {/key}
                             </div>
                             {#if error && i === processedMessages.length - 1}
                                 <div class="flex px-2">

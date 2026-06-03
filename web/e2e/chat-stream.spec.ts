@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import crypto from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import postgres from 'postgres'
 import { createClient } from 'redis'
 import { ulid } from 'ulid'
@@ -16,6 +17,10 @@ const redisUrl = process.env.REDIS_URL ?? 'redis://localhost:6379'
 const authSessionCookieName = process.env.SESSION_COOKIE_NAME ?? 'auth-session'
 
 const streamedMarkdown = `Here are the tools I have available to call right now:\n\n### Search & Retrieval\n- **\`search_documents(query, limit, document_id?)\`** — Search indexed documents\n- **\`read_document(document_id)\`** — Read a document`
+const branchedTemplateFixture = new URL(
+    './fixtures/chat-01KT1M7YAYQBDP6Z46FAY7G42H.json',
+    import.meta.url,
+)
 
 type SeededChat = {
     userId: string
@@ -23,6 +28,15 @@ type SeededChat = {
     userMessageId: string
     sessionToken: string
     sessionKey: string
+}
+
+type TemplateChatMessage = {
+    id: string
+    parentId: string | null
+    messageSeqNum: number
+    message: unknown
+    contentText: string | null
+    createdAt: string
 }
 
 function sseMessage(data: unknown): string {
@@ -94,6 +108,67 @@ async function seedChat(): Promise<SeededChat> {
                 'What tools can you use?'
             )
         `
+    })
+    await sql.end()
+
+    const redis = createClient({ url: redisUrl })
+    await redis.connect()
+    await redis.setEx(
+        sessionKey,
+        60 * 10,
+        JSON.stringify({ id: sessionId, userId, expiresAt: new Date(Date.now() + 60 * 10 * 1000) }),
+    )
+    await redis.disconnect()
+
+    return { userId, chatId, userMessageId, sessionToken, sessionKey }
+}
+
+async function seedChatFromTemplateFixture(): Promise<SeededChat> {
+    const sql = postgres(dbConfig)
+    const suffix = crypto.randomUUID()
+    const userId = ulid()
+    const chatId = ulid()
+    const sessionToken = `playwright-session-${suffix}`
+    const sessionId = crypto.createHash('sha256').update(sessionToken).digest('hex')
+    const sessionKey = `session:${sessionId}`
+    const templateMessages = JSON.parse(
+        await readFile(branchedTemplateFixture, 'utf8'),
+    ) as TemplateChatMessage[]
+    const idMap = new Map(templateMessages.map((message) => [message.id, ulid()]))
+    const userMessageId = idMap.get(templateMessages[0].id)!
+
+    await sql.begin(async (tx) => {
+        await tx`
+            INSERT INTO users (id, email, role, is_active, auth_method, must_change_password)
+            VALUES (${userId}, ${`${userId}@example.test`}, 'admin', true, 'magic_link', false)
+        `
+        await tx`
+            INSERT INTO chats (id, user_id, title, is_starred, is_deleted)
+            VALUES (${chatId}, ${userId}, 'Playwright branched streaming chat', false, false)
+        `
+
+        for (const message of templateMessages) {
+            await tx`
+                INSERT INTO chat_messages (
+                    id,
+                    chat_id,
+                    parent_id,
+                    message_seq_num,
+                    message,
+                    content_text,
+                    created_at
+                )
+                VALUES (
+                    ${idMap.get(message.id)!},
+                    ${chatId},
+                    ${message.parentId ? idMap.get(message.parentId)! : null},
+                    ${message.messageSeqNum},
+                    ${tx.json(message.message)},
+                    ${message.contentText},
+                    ${new Date(message.createdAt)}
+                )
+            `
+        }
     })
     await sql.end()
 
@@ -181,6 +256,34 @@ test('chat page renders streamed assistant markdown from the SSE stream endpoint
         await expect(page.getByRole('heading', { name: 'Search & Retrieval' })).toBeVisible()
         await expect(page.getByText('search_documents(query, limit, document_id?)')).toBeVisible()
         await expect(page.getByText('Read a document')).toBeVisible()
+    } finally {
+        await cleanupChat(seeded)
+    }
+})
+
+test('branched chat renders streamed tool calls from the SSE stream endpoint', async ({ page }) => {
+    let seeded: SeededChat | null = null
+    try {
+        seeded = await seedChatFromTemplateFixture()
+        await authenticate(page, seeded)
+
+        // Use the real messages and stream endpoints here. Playwright config points
+        // the stream endpoint at the recorded SSE fixture for this regression flow.
+        await page.goto(`/chat/${seeded.chatId}`)
+        await page.getByRole('main').getByRole('textbox').fill('Replay the failing stream')
+        await page.keyboard.press('Enter')
+
+        await expect(page.getByText('Replay the failing stream')).toBeVisible()
+        await expect(
+            page.getByText("I'll search for more documents related to Nepanagar and NEPA."),
+        ).toBeVisible()
+        await expect(page.locator('.thinking-container')).toBeVisible()
+
+        const earlierStepsButton = page.getByRole('button', { name: /earlier steps?/ })
+        await expect(earlierStepsButton).toBeVisible({ timeout: 10_000 })
+        await earlierStepsButton.click()
+        await expect(page.getByText('searched: Nepanagar NEPA mill township')).toBeVisible()
+        await expect(page.getByText(/search for more documents related to Nepanagar/)).toBeVisible()
     } finally {
         await cleanupChat(seeded)
     }

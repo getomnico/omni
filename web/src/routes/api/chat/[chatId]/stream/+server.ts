@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
 import { json, error } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
 import type { RequestHandler } from './$types.js'
@@ -51,6 +53,62 @@ type TitleGenerationResult =
     | { status: 'skipped' }
     | { status: 'failed'; message: string }
 
+function replayStreamFixturePath(): string | null {
+    const fixturePath = env.OMNI_CHAT_STREAM_REPLAY_PATH?.trim()
+    return fixturePath ? resolve(process.cwd(), fixturePath) : null
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function replayStreamResponse(sampleStream: string): Response {
+    const encoder = new TextEncoder()
+    const runId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+    let messageIdCounter = 0
+    let cancelled = false
+
+    const stream = new ReadableStream({
+        async start(controller) {
+            const events = sampleStream
+                .split(/\n\n+/)
+                .map((event) => event.trimEnd())
+                .filter((event) => event.length > 0)
+
+            try {
+                for (const event of events) {
+                    if (cancelled) return
+                    const eventToSend = event.startsWith('event: message_id')
+                        ? `event: message_id\ndata: sample-${runId}-${messageIdCounter++}`
+                        : event
+                    controller.enqueue(encoder.encode(`${eventToSend}\n\n`))
+                    await sleep(10)
+                }
+
+                if (!sampleStream.includes('event: end_of_stream')) {
+                    controller.enqueue(
+                        encoder.encode('event: end_of_stream\ndata: Stream ended\n\n'),
+                    )
+                }
+            } finally {
+                if (!cancelled) controller.close()
+            }
+        },
+        cancel() {
+            cancelled = true
+        },
+    })
+
+    return new Response(stream, {
+        status: 200,
+        headers: {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            Connection: 'keep-alive',
+        },
+    })
+}
+
 async function triggerTitleGeneration(chatId: string, logger: any): Promise<TitleGenerationResult> {
     try {
         // First check if title already exists
@@ -94,6 +152,12 @@ async function triggerTitleGeneration(chatId: string, logger: any): Promise<Titl
 }
 
 export const GET: RequestHandler = async ({ params, locals }) => {
+    const replayPath = replayStreamFixturePath()
+    if (replayPath) {
+        const sampleStream = await readFile(replayPath, 'utf-8')
+        return replayStreamResponse(sampleStream)
+    }
+
     const logger = locals.logger.child('chat')
 
     const chatId = params.chatId

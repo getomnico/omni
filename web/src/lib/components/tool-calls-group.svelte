@@ -30,7 +30,7 @@
     // placeholder so the hidden blocks become real tool results naturally.
     let skippedOAuthBlockIds = $derived.by(() => {
         const seen = new Set<string>()
-        const skip = new Set<string>()
+        const skip = new Set<number>()
         for (const block of content) {
             if (block.type === 'tool' && block.oauthRequired) {
                 const key = block.oauthRequired.sourceId
