@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use omni_connector_sdk::SyncContext;
 use omni_connector_sdk::{ConnectorEvent, SyncType};
 use std::collections::{HashMap, HashSet};
+use std::io;
 use tracing::{error, info, warn};
 
 use crate::client::ImapSession;
@@ -13,6 +14,26 @@ use crate::models::{
 };
 
 const FETCH_BATCH_SIZE: usize = 50;
+
+/// Returns `true` when the error chain indicates the underlying TCP
+/// connection was lost (broken pipe, connection reset, unexpected EOF,
+/// etc.).  Used to decide whether an IMAP session should be
+/// re-established after a folder sync failure.
+fn is_connection_error(e: &anyhow::Error) -> bool {
+    e.chain().any(|cause| {
+        if let Some(io_err) = cause.downcast_ref::<io::Error>() {
+            return matches!(
+                io_err.kind(),
+                io::ErrorKind::BrokenPipe
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+                    | io::ErrorKind::NotConnected
+                    | io::ErrorKind::UnexpectedEof
+            );
+        }
+        false
+    })
+}
 
 pub struct SyncManager;
 
@@ -159,7 +180,26 @@ impl SyncManager {
                         "Failed to sync folder '{}' for source {}: {}",
                         folder, source_id, e
                     );
-                    // Continue with remaining folders.
+                    // If the error is connection-level, attempt to re-establish
+                    // the IMAP session so subsequent folders can still be synced.
+                    if is_connection_error(&e) {
+                        match ImapSession::connect(config, username, password).await {
+                            Ok(new_session) => {
+                                info!(
+                                    "Reconnected IMAP session for source {} after connection loss",
+                                    source_id
+                                );
+                                session = new_session;
+                            }
+                            Err(reconnect_err) => {
+                                warn!(
+                                    "Failed to reconnect IMAP session for source {}: {}",
+                                    source_id, reconnect_err
+                                );
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -304,6 +344,14 @@ impl SyncManager {
                         match session.fetch_messages(&[uid]).await {
                             Ok(msgs) => recovered.extend(msgs),
                             Err(single_err) => {
+                                if is_connection_error(&single_err) {
+                                    // Propagate immediately so execute_sync can reconnect
+                                    // rather than retrying every UID on a dead connection.
+                                    return Err(single_err.context(format!(
+                                        "Connection lost during UID fetch in folder '{}'",
+                                        folder
+                                    )));
+                                }
                                 warn!(
                                     "Skipping UID {} in '{}': {}",
                                     uid, folder, single_err
