@@ -288,14 +288,37 @@
         })
     }
 
+    function hashString(value: string): string {
+        let hash = 2166136261
+        for (let i = 0; i < value.length; i++) {
+            hash ^= value.charCodeAt(i)
+            hash = Math.imul(hash, 16777619)
+        }
+        return (hash >>> 0).toString(36)
+    }
+
     function messageContentRenderKey(content: MessageContent): string {
+        // This is an invalidation signature for remounting ToolCallsGroup, not a
+        // globally unique message identity. Keep it readable and bounded: hash
+        // potentially large tool inputs, and let text/citation updates flow
+        // through props without forcing remounts.
         return content
-            .map((block) => {
-                if (block.type === 'text') return `text:${block.id}:${block.citations?.length ?? 0}`
+            .map((block, index) => {
+                if (block.type === 'text') return `t:${index}`
+
                 if (block.type === 'tool') {
-                    return `tool:${block.id}:${block.toolUse.id}:${JSON.stringify(block.toolUse.input)}:${block.toolResult?.content.length ?? 0}:${block.actionResult?.isError ?? ''}:${block.oauthRequired?.status ?? ''}`
+                    const inputHash = hashString(JSON.stringify(block.toolUse.input ?? {}))
+                    const toolState = block.oauthRequired
+                        ? `o:${block.oauthRequired.status}`
+                        : block.actionResult
+                          ? `a:${block.actionResult.isError ? 1 : 0}`
+                          : block.toolResult
+                            ? `r:${block.toolResult.content.length}`
+                            : 'p'
+                    return `u:${index}:${block.toolUse.id}:${inputHash}:${toolState}`
                 }
-                return `${block.type}:${block.id}`
+
+                return `${block.type}:${index}`
             })
             .join('|')
     }
