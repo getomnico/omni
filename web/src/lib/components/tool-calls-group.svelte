@@ -61,6 +61,16 @@
     let recentBlocks = $derived(
         collapsibleCount > 0 ? visibleBlocks.slice(cutoffIndex) : visibleBlocks,
     )
+
+    function blockRenderKey(block: MessageContent[number]): string {
+        // Streamed text blocks keep the same numeric id while their markdown grows.
+        // Remount just that markdown subtree so a partial parsed render cannot stay stale.
+        if (block.type === 'text') {
+            return `text:${block.id}:${block.text.length}:${block.citations?.length ?? 0}`
+        }
+
+        return `${block.type}:${block.id}`
+    }
 </script>
 
 {#if collapsibleCount > 0}
@@ -83,7 +93,7 @@
         class:opacity-0={!expanded}
         class:pointer-events-none={!expanded}>
         <div class="mb-3 max-h-64 overflow-y-auto pr-1 opacity-80">
-            {#each earlierBlocks as block (block.id)}
+            {#each earlierBlocks as block (blockRenderKey(block))}
                 {#if block.type === 'text'}
                     <MarkdownMessage
                         content={stripThinkingContent(block.text, 'thinking')}
@@ -99,7 +109,7 @@
 {/if}
 
 <!-- Recent blocks: always visible -->
-{#each recentBlocks as block (block.id)}
+{#each recentBlocks as block (blockRenderKey(block))}
     {#if block.type === 'text'}
         <MarkdownMessage
             content={stripThinkingContent(block.text, 'thinking')}

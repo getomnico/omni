@@ -15,12 +15,20 @@ const dbConfig = {
 
 const redisUrl = process.env.REDIS_URL ?? 'redis://localhost:6379'
 const authSessionCookieName = process.env.SESSION_COOKIE_NAME ?? 'auth-session'
+const capturedSeedChatPath = process.env.OMNI_CAPTURE_SEED_CHAT_PATH
+const capturedExpectedText = process.env.OMNI_CAPTURE_EXPECT_TEXT
+const capturedSubmitText = process.env.OMNI_CAPTURE_SUBMIT_TEXT
 
 const streamedMarkdown = `Here are the tools I have available to call right now:\n\n### Search & Retrieval\n- **\`search_documents(query, limit, document_id?)\`** — Search indexed documents\n- **\`read_document(document_id)\`** — Read a document`
 const branchedTemplateFixture = new URL(
     './fixtures/chat-01KT1M7YAYQBDP6Z46FAY7G42H.json',
     import.meta.url,
 )
+const capturedSearchesTemplateFixture = new URL(
+    './fixtures/chat-captured-searches-seed.json',
+    import.meta.url,
+)
+const replayFixtureCookieName = 'omni-chat-stream-replay-fixture'
 
 type SeededChat = {
     userId: string
@@ -229,7 +237,9 @@ async function seedChat(): Promise<SeededChat> {
     return { userId, chatId, userMessageId, sessionToken, sessionKey }
 }
 
-async function seedChatFromTemplateFixture(): Promise<SeededChat> {
+async function seedChatFromTemplateFixture(
+    fixturePath: URL | string = branchedTemplateFixture,
+): Promise<SeededChat> {
     const sql = postgres(dbConfig)
     const suffix = crypto.randomUUID()
     const userId = ulid()
@@ -238,7 +248,7 @@ async function seedChatFromTemplateFixture(): Promise<SeededChat> {
     const sessionId = crypto.createHash('sha256').update(sessionToken).digest('hex')
     const sessionKey = `session:${sessionId}`
     const templateMessages = JSON.parse(
-        await readFile(branchedTemplateFixture, 'utf8'),
+        await readFile(fixturePath, 'utf8'),
     ) as TemplateChatMessage[]
     const idMap = new Map(templateMessages.map((message) => [message.id, ulid()]))
     const userMessageId = idMap.get(templateMessages[0].id)!
@@ -312,6 +322,20 @@ async function authenticate(page: Page, seeded: SeededChat): Promise<void> {
         {
             name: authSessionCookieName,
             value: seeded.sessionToken,
+            domain: 'localhost',
+            path: '/',
+            httpOnly: true,
+            sameSite: 'Lax',
+            expires: Math.floor(Date.now() / 1000) + 60 * 10,
+        },
+    ])
+}
+
+async function selectReplayFixture(page: Page, fixtureName: string): Promise<void> {
+    await page.context().addCookies([
+        {
+            name: replayFixtureCookieName,
+            value: fixtureName,
             domain: 'localhost',
             path: '/',
             httpOnly: true,
@@ -443,6 +467,55 @@ test('branched chat keeps the second streamed assistant response on delayed tool
                 name: 'Synthetic Project Summary (Updated with Recent Information)',
             }),
         ).toBeVisible()
+    } finally {
+        await cleanupChat(seeded)
+    }
+})
+
+test('chat renders a sanitized captured stream with incrementally replayed markdown', async ({
+    page,
+}) => {
+    let seeded: SeededChat | null = null
+    try {
+        seeded = await seedChatFromTemplateFixture(capturedSearchesTemplateFixture)
+        await authenticate(page, seeded)
+        await selectReplayFixture(page, 'captured-searches-stream.sse')
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await page
+            .getByRole('main')
+            .getByRole('textbox')
+            .fill('Replay the synthetic stale markdown stream')
+        await page.keyboard.press('Enter')
+
+        await expect(
+            page.getByText("The searches aren't returning additional details"),
+        ).toBeVisible({ timeout: 30_000 })
+        await expect(page.getByText('organizational challenges at SyntheticCo/Acme')).toBeVisible()
+    } finally {
+        await cleanupChat(seeded)
+    }
+})
+
+test('chat renders a captured stream from a seeded chat fixture', async ({ page }) => {
+    test.skip(
+        !capturedSeedChatPath ||
+            !capturedExpectedText ||
+            !capturedSubmitText ||
+            !process.env.OMNI_CHAT_STREAM_REPLAY_PATH,
+        'Set OMNI_CAPTURE_SEED_CHAT_PATH, OMNI_CAPTURE_SUBMIT_TEXT, OMNI_CAPTURE_EXPECT_TEXT, and OMNI_CHAT_STREAM_REPLAY_PATH to run this capture replay test.',
+    )
+
+    let seeded: SeededChat | null = null
+    try {
+        seeded = await seedChatFromTemplateFixture(capturedSeedChatPath!)
+        await authenticate(page, seeded)
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await page.getByRole('main').getByRole('textbox').fill(capturedSubmitText!)
+        await page.keyboard.press('Enter')
+
+        await expect(page.getByText(capturedExpectedText!)).toBeVisible({ timeout: 30_000 })
     } finally {
         await cleanupChat(seeded)
     }

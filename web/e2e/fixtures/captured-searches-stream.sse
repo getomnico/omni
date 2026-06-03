@@ -1,0 +1,575 @@
+event: message
+data: {"message":{"id":"msg_bdrk_01YS372VPHyjdf47UZNQhEDv","content":[],"model":"claude-sonnet-4-5-20250929","role":"assistant","stop_reason":null,"stop_sequence":null,"type":"message","usage":{"cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"input_tokens":11990,"output_tokens":5}},"type":"message_start"}
+
+event: message
+data: {"content_block":{"id":"toolu_bdrk_01L5f8soX2KKwkWKrMUNj7cK","input":{},"name":"search_documents","type":"tool_use"},"index":0,"type":"content_block_start"}
+
+event: message
+data: {"delta":{"partial_json":"","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"{\"lim","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"it\"","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":": ","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"10","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":", \"","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"query\": \"Jo","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"sh","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":" Morgan","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":" Synthetic","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"Co accoun","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"tability t","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"argets","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":" b","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"onuses ","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"in:slack not","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"eslearnings","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"\"}","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"index":0,"type":"content_block_stop"}
+
+event: message
+data: {"delta":{"stop_reason":"tool_use","stop_sequence":null},"type":"message_delta","usage":{"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"input_tokens":11990,"output_tokens":88}}
+
+event: message
+data: {"type":"message_stop","amazon-bedrock-invocationMetrics":{"inputTokenCount":11990,"outputTokenCount":88,"invocationLatency":2198,"firstByteLatency":1352}}
+
+event: message_id
+data: 01KT6NCM3P5EKGG03R7PCGZSY5
+
+event: message
+data: {"type":"tool_result","tool_use_id":"toolu_bdrk_01L5f8soX2KKwkWKrMUNj7cK","content":[{"type":"search_result","title":"#synthetic-notes - 2026-05-12","source":"synthetic://sources/slack-note#meta=message","source_type":"slack","content":[]},{"type":"search_result","title":"#synthetic-notes - 2025-07-17","source":"synthetic://sources/slack-note#meta=message","source_type":"slack","content":[]},{"type":"search_result","title":"#synthetic-notes - 2026-05-06","source":"synthetic://sources/slack-note#meta=message","source_type":"slack","content":[]},{"type":"search_result","title":"#synthetic-notes - 2025-11-05","source":"synthetic://sources/slack-note#meta=message","source_type":"slack","content":[]},{"type":"search_result","title":"#synthetic-notes - 2026-05-20","source":"synthetic://sources/slack-note#meta=message","source_type":"slack","content":[]},{"type":"search_result","title":"#synthetic-notes - 2025-09-04","source":"synthetic://sources/slack-note#meta=message","source_type":"slack","content":[]},{"type":"search_result","title":"#synthetic-notes - 2025-07-24","source":"synthetic://sources/slack-note#meta=message","source_type":"slack","content":[]},{"type":"search_result","title":"#synthetic-notes - 2025-10-22","source":"synthetic://sources/slack-note#meta=message","source_type":"slack","content":[]},{"type":"search_result","title":"#synthetic-notes - 2025-08-05","source":"synthetic://sources/slack-note#meta=message","source_type":"slack","content":[]},{"type":"search_result","title":"#synthetic-notes - 2025-08-06","source":"synthetic://sources/slack-note#meta=message","source_type":"slack","content":[]}],"is_error":false}
+
+event: message_id
+data: 01KT6NCMB3CF5FVY0N7X3HBS77
+
+event: message
+data: {"message":{"id":"msg_bdrk_01Jzo6KPHjMHjPhZSeWWufyZ","content":[],"model":"claude-sonnet-4-5-20250929","role":"assistant","stop_reason":null,"stop_sequence":null,"type":"message","usage":{"cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"input_tokens":16602,"output_tokens":27}},"type":"message_start"}
+
+event: message
+data: {"content_block":{"id":"toolu_bdrk_01T5YmwHqCHKq237uxjo58qh","input":{},"name":"search_documents","type":"tool_use"},"index":0,"type":"content_block_start"}
+
+event: message
+data: {"delta":{"partial_json":"","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"{\"limit\":","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":" 1","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"0","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":", \"q","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"uery\":","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":" \"by:Alex Ac","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"&B D","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"un Bradstree","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"t account","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":" ma","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"nagers in:s","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"lack af","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"ter:2026-05-","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"partial_json":"10\"}","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"index":0,"type":"content_block_stop"}
+
+event: message
+data: {"delta":{"stop_reason":"tool_use","stop_sequence":null},"type":"message_delta","usage":{"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"input_tokens":16602,"output_tokens":95}}
+
+event: message
+data: {"type":"message_stop","amazon-bedrock-invocationMetrics":{"inputTokenCount":16602,"outputTokenCount":95,"invocationLatency":3154,"firstByteLatency":1748}}
+
+event: message_id
+data: 01KT6NCQF12Q7EVPHSMCNBW6M1
+
+event: message
+data: {"type":"tool_result","tool_use_id":"toolu_bdrk_01T5YmwHqCHKq237uxjo58qh","content":[],"is_error":false}
+
+event: message_id
+data: 01KT6NCQNSA0NDZY0DQWFVVEH1
+
+event: message
+data: {"message":{"id":"msg_bdrk_01Y38CDjLaoq7xezHHXcab6L","content":[],"model":"claude-sonnet-4-5-20250929","role":"assistant","stop_reason":null,"stop_sequence":null,"type":"message","usage":{"cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"input_tokens":16723,"output_tokens":1}},"type":"message_start"}
+
+event: message
+data: {"content_block":{"text":"","type":"text"},"index":0,"type":"content_block_start"}
+
+event: message
+data: {"delta":{"text":"The","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" searches","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" aren","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"'t returning additional","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" details","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" beyond","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" what","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" we","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" already found","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":". Based","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" on the available search","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" results from","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" the #","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"synthetic-notes","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" Slack channel, here","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"'s the","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" complete","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" summary","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" of","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" Alex","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"'s","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" notes","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" on","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" Synthetic","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"Co/","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"Ac","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"me:\n\n**Alex","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"'s","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" Notes on SyntheticCo/Ac","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"me (","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"May","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" 12","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":", 2026)**","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"\n\n","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message
+data: {"index":0,"type":"content_block_stop"}
+
+event: message
+data: {"content_block":{"citations":[],"text":"","type":"text"},"index":1,"type":"content_block_start"}
+
+event: message
+data: {"delta":{"citation":{"cited_text":"Alex Morgan [18:23]: Met with **Taylor** **Lee**, **SyntheticCo**'s **Global** **Head** of **Data** **Licensing** today.\nCouple of takeaways:\n1. Overall feeling: he is positive about what ... headwinds\na. **SyntheticCo** and Acme are still a mess with respect to targets, bonuses, accountability, basically everything\nb. Because of this, **Taylor** has a hard time getting Account","end_block_index":8,"search_result_index":15,"source":"synthetic://sources/slack-note#meta=message","start_block_index":7,"title":"#synthetic-notes - 2026-05-12","type":"search_result_location"},"type":"citations_delta"},"index":1,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"Alex met","type":"text_delta"},"index":1,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" with Taylor","type":"text_delta"},"index":1,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" Lee","type":"text_delta"},"index":1,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":",","type":"text_delta"},"index":1,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" SyntheticCo's Global","type":"text_delta"},"index":1,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" Head of Data","type":"text_delta"},"index":1,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" Licensing","type":"text_delta"},"index":1,"type":"content_block_delta"}
+
+event: message
+data: {"index":1,"type":"content_block_stop"}
+
+event: message
+data: {"content_block":{"text":"","type":"text"},"index":2,"type":"content_block_start"}
+
+event: message
+data: {"delta":{"text":". His","type":"text_delta"},"index":2,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" key","type":"text_delta"},"index":2,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" take","type":"text_delta"},"index":2,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"aways were:","type":"text_delta"},"index":2,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"\n\n1. **Overall","type":"text_delta"},"index":2,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" sentiment","type":"text_delta"},"index":2,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"**: ","type":"text_delta"},"index":2,"type":"content_block_delta"}
+
+event: message
+data: {"index":2,"type":"content_block_stop"}
+
+event: message
+data: {"content_block":{"citations":[],"text":"","type":"text"},"index":3,"type":"content_block_start"}
+
+event: message
+data: {"delta":{"citation":{"cited_text":"Alex Morgan [18:23]: Met with **Taylor** **Lee**, **SyntheticCo**'s **Global** **Head** of **Data** **Licensing** today.\nCouple of takeaways:\n1. Overall feeling: he is positive about what ... headwinds\na. **SyntheticCo** and Acme are still a mess with respect to targets, bonuses, accountability, basically everything\nb. Because of this, **Taylor** has a hard time getting Account","end_block_index":8,"search_result_index":15,"source":"synthetic://sources/slack-note#meta=message","start_block_index":7,"title":"#synthetic-notes - 2026-05-12","type":"search_result_location"},"type":"citations_delta"},"index":3,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"Taylor","type":"text_delta"},"index":3,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" is","type":"text_delta"},"index":3,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" positive","type":"text_delta"},"index":3,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" about what","type":"text_delta"},"index":3,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" they","type":"text_delta"},"index":3,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"'re doing despite","type":"text_delta"},"index":3,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" head","type":"text_delta"},"index":3,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"winds","type":"text_delta"},"index":3,"type":"content_block_delta"}
+
+event: message
+data: {"index":3,"type":"content_block_stop"}
+
+event: message
+data: {"content_block":{"text":"","type":"text"},"index":4,"type":"content_block_start"}
+
+event: message
+data: {"delta":{"text":"\n\n2. **Organizational","type":"text_delta"},"index":4,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" issues","type":"text_delta"},"index":4,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"**: ","type":"text_delta"},"index":4,"type":"content_block_delta"}
+
+event: message
+data: {"index":4,"type":"content_block_stop"}
+
+event: message
+data: {"content_block":{"citations":[],"text":"","type":"text"},"index":5,"type":"content_block_start"}
+
+event: message
+data: {"delta":{"citation":{"cited_text":"Alex Morgan [18:23]: Met with **Taylor** **Lee**, **SyntheticCo**'s **Global** **Head** of **Data** **Licensing** today.\nCouple of takeaways:\n1. Overall feeling: he is positive about what ... headwinds\na. **SyntheticCo** and Acme are still a mess with respect to targets, bonuses, accountability, basically everything\nb. Because of this, **Taylor** has a hard time getting Account","end_block_index":8,"search_result_index":15,"source":"synthetic://sources/slack-note#meta=message","start_block_index":7,"title":"#synthetic-notes - 2026-05-12","type":"search_result_location"},"type":"citations_delta"},"index":5,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"SyntheticCo and","type":"text_delta"},"index":5,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" Acme are still","type":"text_delta"},"index":5,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" a","type":"text_delta"},"index":5,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" mess","type":"text_delta"},"index":5,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" with","type":"text_delta"},"index":5,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" respect","type":"text_delta"},"index":5,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" to targets","type":"text_delta"},"index":5,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":",","type":"text_delta"},"index":5,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" bon","type":"text_delta"},"index":5,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"uses, accountability","type":"text_delta"},"index":5,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":", basically","type":"text_delta"},"index":5,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" everything","type":"text_delta"},"index":5,"type":"content_block_delta"}
+
+event: message
+data: {"index":5,"type":"content_block_stop"}
+
+event: message
+data: {"content_block":{"text":"","type":"text"},"index":6,"type":"content_block_start"}
+
+event: message
+data: {"delta":{"text":"\n\n3. **Impact","type":"text_delta"},"index":6,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" on operations","type":"text_delta"},"index":6,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"**: ","type":"text_delta"},"index":6,"type":"content_block_delta"}
+
+event: message
+data: {"index":6,"type":"content_block_stop"}
+
+event: message
+data: {"content_block":{"citations":[],"text":"","type":"text"},"index":7,"type":"content_block_start"}
+
+event: message
+data: {"delta":{"citation":{"cited_text":"Alex Morgan [18:23]: Met with **Taylor** **Lee**, **SyntheticCo**'s **Global** **Head** of **Data** **Licensing** today.\nCouple of takeaways:\n1. Overall feeling: he is positive about what ... headwinds\na. **SyntheticCo** and Acme are still a mess with respect to targets, bonuses, accountability, basically everything\nb. Because of this, **Taylor** has a hard time getting Account","end_block_index":8,"search_result_index":15,"source":"synthetic://sources/slack-note#meta=message","start_block_index":7,"title":"#synthetic-notes - 2026-05-12","type":"search_result_location"},"type":"citations_delta"},"index":7,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"Because","type":"text_delta"},"index":7,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" of this","type":"text_delta"},"index":7,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" organizational","type":"text_delta"},"index":7,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" dis","type":"text_delta"},"index":7,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"array","type":"text_delta"},"index":7,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":", Taylor","type":"text_delta"},"index":7,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" has","type":"text_delta"},"index":7,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" a","type":"text_delta"},"index":7,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" hard","type":"text_delta"},"index":7,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" time getting Account","type":"text_delta"},"index":7,"type":"content_block_delta"}
+
+event: message
+data: {"index":7,"type":"content_block_stop"}
+
+event: message
+data: {"content_block":{"text":"","type":"text"},"index":8,"type":"content_block_start"}
+
+event: message
+data: {"delta":{"text":" [","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"managers","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" engaged","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" -","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" the","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" note","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" appears","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" to be trunc","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"ated]\n\nThe","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" notes","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" suggest","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" that","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" while","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" Taylor","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" Lee","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" remains","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" optim","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"istic about their","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" work","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" direction","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":", significant","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" internal","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" organizational","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" challenges","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" at","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" SyntheticCo/Acme","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" are hin","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":"dering effective","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" execution","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" and","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" account","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"delta":{"text":" management.","type":"text_delta"},"index":8,"type":"content_block_delta"}
+
+event: message
+data: {"index":8,"type":"content_block_stop"}
+
+event: message
+data: {"delta":{"stop_reason":"end_turn","stop_sequence":null},"type":"message_delta","usage":{"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"input_tokens":16723,"output_tokens":292}}
+
+event: message
+data: {"type":"message_stop","amazon-bedrock-invocationMetrics":{"inputTokenCount":16723,"outputTokenCount":289,"invocationLatency":8261,"firstByteLatency":1465}}
+
+event: message_id
+data: 01KT6NCZSB3DCWHSDRM7SBRDA5
+
+event: end_of_stream
+data: Stream ended

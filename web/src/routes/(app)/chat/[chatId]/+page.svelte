@@ -301,7 +301,7 @@
         // This is an invalidation signature for remounting ToolCallsGroup, not a
         // globally unique message identity. Keep it readable and bounded: hash
         // potentially large tool inputs, and let text/citation updates flow
-        // through props without forcing remounts.
+        // through props without forcing a full group remount.
         return content
             .map((block, index) => {
                 if (block.type === 'text') return `t:${index}`

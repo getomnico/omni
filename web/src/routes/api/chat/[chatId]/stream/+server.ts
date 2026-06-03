@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { relative, resolve } from 'node:path'
 import { json, error } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
 import type { RequestHandler } from './$types.js'
@@ -53,7 +53,23 @@ type TitleGenerationResult =
     | { status: 'skipped' }
     | { status: 'failed'; message: string }
 
-function replayStreamFixturePath(): string | null {
+const replayFixtureCookieName = 'omni-chat-stream-replay-fixture'
+
+function replayStreamFixturePath(cookies: {
+    get(name: string): string | undefined
+}): string | null {
+    const fixtureName = cookies.get(replayFixtureCookieName)?.trim()
+    const fixtureDir = env.OMNI_CHAT_STREAM_REPLAY_FIXTURE_DIR?.trim()
+    if (fixtureName && fixtureDir) {
+        const baseDir = resolve(process.cwd(), fixtureDir)
+        const fixturePath = resolve(baseDir, fixtureName)
+        const relativePath = relative(baseDir, fixturePath)
+        if (relativePath.startsWith('..') || resolve(relativePath) === relativePath) {
+            throw error(400, 'Invalid replay fixture path')
+        }
+        return fixturePath
+    }
+
     const fixturePath = env.OMNI_CHAT_STREAM_REPLAY_PATH?.trim()
     return fixturePath ? resolve(process.cwd(), fixturePath) : null
 }
@@ -151,8 +167,8 @@ async function triggerTitleGeneration(chatId: string, logger: any): Promise<Titl
     }
 }
 
-export const GET: RequestHandler = async ({ params, locals }) => {
-    const replayPath = replayStreamFixturePath()
+export const GET: RequestHandler = async ({ params, locals, cookies }) => {
+    const replayPath = replayStreamFixturePath(cookies)
     if (replayPath) {
         const sampleStream = await readFile(replayPath, 'utf-8')
         return replayStreamResponse(sampleStream)

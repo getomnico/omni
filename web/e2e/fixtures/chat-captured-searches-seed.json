@@ -1,0 +1,29 @@
+[
+    {
+        "id": "seed-user-1",
+        "parentId": null,
+        "messageSeqNum": 1,
+        "message": {
+            "role": "user",
+            "content": "Summarize the synthetic project notes."
+        },
+        "contentText": "Summarize the synthetic project notes.",
+        "createdAt": "2026-01-01T00:00:00.000Z"
+    },
+    {
+        "id": "seed-assistant-1",
+        "parentId": "seed-user-1",
+        "messageSeqNum": 2,
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Initial synthetic summary is already persisted."
+                }
+            ]
+        },
+        "contentText": "Initial synthetic summary is already persisted.",
+        "createdAt": "2026-01-01T00:00:01.000Z"
+    }
+]

@@ -19,6 +19,8 @@ export default defineConfig({
             APP_URL: process.env.APP_URL ?? 'http://localhost:4173',
             OMNI_CHAT_STREAM_REPLAY_PATH:
                 process.env.OMNI_CHAT_STREAM_REPLAY_PATH ?? 'e2e/fixtures/branched-chat-stream.sse',
+            OMNI_CHAT_STREAM_REPLAY_FIXTURE_DIR:
+                process.env.OMNI_CHAT_STREAM_REPLAY_FIXTURE_DIR ?? 'e2e/fixtures',
         },
     },
     testDir: 'e2e',
