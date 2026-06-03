@@ -505,6 +505,62 @@ impl SyncManager {
         }
     }
 
+    /// Cancel any running sync whose source has been disabled or deleted.
+    /// Runs on every scheduler tick so that disabling a source stops an
+    /// in-progress sync within one tick interval.
+    pub async fn cancel_syncs_for_inactive_sources(&self) -> Result<Vec<String>, SyncError> {
+        let running: Vec<(String, String, SourceType)> = sqlx::query_as(
+            r#"
+            SELECT sr.id, sr.source_id, s.source_type
+            FROM sync_runs sr
+            JOIN sources s ON sr.source_id = s.id
+            WHERE sr.status = 'running'
+            AND (s.is_active = false OR s.is_deleted = true)
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
+
+        let mut cancelled = Vec::new();
+        for (sync_run_id, source_id, source_type) in running {
+            info!(
+                "Cancelling sync {} for inactive/deleted source {}",
+                sync_run_id, source_id
+            );
+
+            if let Some(connector_url) =
+                get_connector_url_for_source(&self.redis_client, source_type).await
+            {
+                if let Err(e) = self
+                    .connector_client
+                    .cancel_sync(&connector_url, &sync_run_id)
+                    .await
+                {
+                    warn!(
+                        "Failed to cancel sync {} on connector for inactive source {}: {}",
+                        sync_run_id, source_id, e
+                    );
+                }
+            }
+
+            match self
+                .sync_run_repo
+                .mark_cancelled_with_message(&sync_run_id, "Source was disabled")
+                .await
+            {
+                Ok(true) => cancelled.push(sync_run_id),
+                Ok(false) => {}
+                Err(e) => error!(
+                    "Failed to mark sync {} cancelled for inactive source {}: {}",
+                    sync_run_id, source_id, e
+                ),
+            }
+        }
+
+        Ok(cancelled)
+    }
+
     /// Sweep running syncs whose `last_activity_at` hasn't advanced within the
     /// configured timeout — mark them failed and cancel on the connector.
     /// Realtime watchers rely on periodic `ctx.heartbeat()` calls to stay on
