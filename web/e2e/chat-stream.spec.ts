@@ -43,6 +43,112 @@ function sseMessage(data: unknown): string {
     return `event: message\ndata: ${JSON.stringify(data)}\n\n`
 }
 
+function assistantStart(): string {
+    return sseMessage({
+        type: 'message_start',
+        message: {
+            id: `msg_${ulid()}`,
+            type: 'message',
+            role: 'assistant',
+            content: [],
+            model: 'playwright-model',
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 1, output_tokens: 1 },
+        },
+    })
+}
+
+function assistantSearchToolEvents(index: number, toolUseId: string, query: string): string[] {
+    return [
+        sseMessage({
+            type: 'content_block_start',
+            index,
+            content_block: {
+                type: 'tool_use',
+                id: toolUseId,
+                name: 'search_documents',
+                input: {},
+            },
+        }),
+        sseMessage({
+            type: 'content_block_delta',
+            index,
+            delta: {
+                type: 'input_json_delta',
+                partial_json: JSON.stringify({ query, limit: 10 }),
+            },
+        }),
+        sseMessage({ type: 'content_block_stop', index }),
+        sseMessage({ type: 'message_stop' }),
+        `event: message_id\ndata: ${ulid()}\n\n`,
+    ]
+}
+
+function searchToolResult(toolUseId: string): string {
+    return sseMessage({
+        type: 'tool_result',
+        tool_use_id: toolUseId,
+        content: [
+            {
+                type: 'search_result',
+                title: 'Synthetic search result',
+                source: `synthetic://documents/${toolUseId}`,
+                source_type: 'slack',
+                content: [],
+            },
+        ],
+        is_error: false,
+    })
+}
+
+function finalAssistantTextSse(text: string): string {
+    return [
+        assistantStart(),
+        sseMessage({
+            type: 'content_block_start',
+            index: 0,
+            content_block: { type: 'text', text: '' },
+        }),
+        sseMessage({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } }),
+        sseMessage({ type: 'content_block_stop', index: 0 }),
+        sseMessage({ type: 'message_stop' }),
+        `event: message_id\ndata: ${ulid()}\n\n`,
+    ].join('')
+}
+
+function delayedMessageIdFollowUpSse(): string {
+    const firstToolUseId = 'toolu_delayed_message_id_first'
+    const secondToolUseId = 'toolu_delayed_message_id_second'
+    const secondAssistantStart = assistantStart()
+
+    return [
+        assistantStart(),
+        ...assistantSearchToolEvents(
+            0,
+            firstToolUseId,
+            'synthetic recent project status in:team-channel',
+        ),
+        searchToolResult(firstToolUseId),
+        // Reproduce the production ordering that exposed stale second-assistant
+        // stream handling: the next assistant response can begin before the
+        // previous tool-result save id reaches the browser.
+        secondAssistantStart,
+        `event: message_id\ndata: ${ulid()}\n\n`,
+        ...assistantSearchToolEvents(
+            0,
+            secondToolUseId,
+            'synthetic stakeholder update in:team-channel',
+        ),
+        searchToolResult(secondToolUseId),
+        `event: message_id\ndata: ${ulid()}\n\n`,
+        finalAssistantTextSse(
+            '## Synthetic Project Summary (Updated with Recent Information)\n\nThe final answer includes both recent status and stakeholder context.',
+        ),
+        'event: end_of_stream\ndata: {}\n\n',
+    ].join('')
+}
+
 function mockedChatSse(finalMessageId: string): string {
     return [
         sseMessage({
@@ -284,6 +390,59 @@ test('branched chat renders streamed tool calls from the SSE stream endpoint', a
         await earlierStepsButton.click()
         await expect(page.getByText('searched: Nepanagar NEPA mill township')).toBeVisible()
         await expect(page.getByText(/search for more documents related to Nepanagar/)).toBeVisible()
+    } finally {
+        await cleanupChat(seeded)
+    }
+})
+
+test('branched chat keeps the second streamed assistant response on delayed tool-result id', async ({
+    page,
+}) => {
+    let seeded: SeededChat | null = null
+    try {
+        seeded = await seedChatFromTemplateFixture()
+        await authenticate(page, seeded)
+
+        await page.route(`**/api/chat/${seeded.chatId}/messages`, async (route) => {
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ messageId: ulid() }),
+            })
+        })
+
+        await page.route(`**/api/chat/${seeded.chatId}/stream`, async (route) => {
+            await route.fulfill({
+                status: 200,
+                headers: {
+                    'content-type': 'text/event-stream',
+                    'cache-control': 'no-cache',
+                    connection: 'keep-alive',
+                },
+                body: delayedMessageIdFollowUpSse(),
+            })
+        })
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await page
+            .getByRole('main')
+            .getByRole('textbox')
+            .fill(
+                'ok great, can you do just one or two more searches to gather the most current information',
+            )
+        await page.keyboard.press('Enter')
+
+        await expect(
+            page.getByText('searched: synthetic recent project status in:team-channel'),
+        ).toBeVisible()
+        await expect(
+            page.getByText('searched: synthetic stakeholder update in:team-channel'),
+        ).toBeVisible()
+        await expect(
+            page.getByRole('heading', {
+                name: 'Synthetic Project Summary (Updated with Recent Information)',
+            }),
+        ).toBeVisible()
     } finally {
         await cleanupChat(seeded)
     }

@@ -1052,11 +1052,51 @@
             number,
             { id: string; name: string; inputJson: string }
         >()
+        const pendingTempMessageIds: string[] = []
+        const pendingPersistedMessageIds: string[] = []
+        let tempMessageCounter = 0
 
         eventSource = new EventSource(`/api/chat/${chatId}/stream`, { withCredentials: true })
 
         let streamCompleted = false
         let messageEventsReceived = 0
+
+        const nextTempMessageId = () => `temp-${Date.now()}-${tempMessageCounter++}`
+
+        const replaceTempMessageId = (tempId: string, messageId: string) => {
+            chatMessages = chatMessages.map((message) => {
+                if (message.id === tempId) {
+                    return { ...message, id: messageId }
+                }
+                if (message.parentId === tempId) {
+                    return { ...message, parentId: messageId }
+                }
+                return message
+            })
+            if (activeStreamingMessageId === tempId) {
+                activeStreamingMessageId = messageId
+            }
+            replaceMessageIdInBranchSelections(tempId, messageId)
+            markChatMessagesChanged()
+        }
+
+        const trackTempMessage = (tempId: string) => {
+            const persistedMessageId = pendingPersistedMessageIds.shift()
+            if (persistedMessageId) {
+                replaceTempMessageId(tempId, persistedMessageId)
+                return
+            }
+            pendingTempMessageIds.push(tempId)
+        }
+
+        const applyPersistedMessageId = (messageId: string) => {
+            const tempId = pendingTempMessageIds.shift()
+            if (!tempId) {
+                pendingPersistedMessageIds.push(messageId)
+                return
+            }
+            replaceTempMessageId(tempId, messageId)
+        }
 
         const collectStreamingResponse = (
             block:
@@ -1205,7 +1245,7 @@
                     const toolParentId =
                         displayPath.length > 0 ? displayPath[displayPath.length - 1].id : undefined
                     const toolResultMessage: ChatMessage = {
-                        id: `temp-${Date.now()}`,
+                        id: nextTempMessageId(),
                         chatId,
                         parentId: toolParentId ?? null,
                         message: {
@@ -1219,6 +1259,7 @@
                     chatMessages = [...chatMessages, toolResultMessage]
                     activeStreamingMessageId = toolResultMessage.id
                     selectBranch(toolResultMessage.parentId, toolResultMessage.id)
+                    trackTempMessage(toolResultMessage.id)
                     markChatMessagesChanged()
                 }
 
@@ -1235,25 +1276,7 @@
         }
 
         eventSource.addEventListener('message_id', (event) => {
-            const messageId = event.data
-            const lastMessage = chatMessages[chatMessages.length - 1]
-            if (lastMessage && lastMessage.id.toString().startsWith('temp-')) {
-                const tempId = lastMessage.id
-                chatMessages = chatMessages.map((message) => {
-                    if (message.id === tempId) {
-                        return { ...message, id: messageId }
-                    }
-                    if (message.parentId === tempId) {
-                        return { ...message, parentId: messageId }
-                    }
-                    return message
-                })
-                if (activeStreamingMessageId === tempId) {
-                    activeStreamingMessageId = messageId
-                }
-                replaceMessageIdInBranchSelections(tempId, messageId)
-                markChatMessagesChanged()
-            }
+            applyPersistedMessageId(event.data)
         })
 
         eventSource.addEventListener('title', () => {
@@ -1274,7 +1297,7 @@
                     const streamParentId =
                         displayPath.length > 0 ? displayPath[displayPath.length - 1].id : undefined
                     const startedMessage: ChatMessage = {
-                        id: `temp-${Date.now()}`,
+                        id: nextTempMessageId(),
                         chatId,
                         parentId: streamParentId ?? null,
                         message: {
@@ -1288,6 +1311,7 @@
                     chatMessages = [...chatMessages, startedMessage]
                     activeStreamingMessageId = startedMessage.id
                     selectBranch(startedMessage.parentId, startedMessage.id)
+                    trackTempMessage(startedMessage.id)
                     markChatMessagesChanged()
                 } else if (data.type === 'content_block_start') {
                     if (data.content_block.type === 'tool_use') {
