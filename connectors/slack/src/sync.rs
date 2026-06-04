@@ -284,8 +284,11 @@ impl SyncManager {
                         ),
                     }
 
-                    if let Err(e) = ctx.increment_scanned(1).await {
-                        error!("Failed to increment scanned count: {}", e);
+                    let emitted_documents = mg + fl;
+                    if emitted_documents > 0 {
+                        if let Err(e) = ctx.increment_scanned(emitted_documents as i32).await {
+                            error!("Failed to increment scanned count: {}", e);
+                        }
                     }
                 }
                 Err(e) => {
@@ -396,8 +399,10 @@ impl SyncManager {
                 .await?;
 
             let updated = mg + fl;
-            ctx.increment_scanned(1).await?;
-            ctx.increment_updated(updated as i32).await?;
+            if updated > 0 {
+                ctx.increment_scanned(updated as i32).await?;
+                ctx.increment_updated(updated as i32).await?;
+            }
             ctx.complete().await?;
 
             info!(
@@ -488,7 +493,7 @@ impl SyncManager {
             )
             .await?;
 
-            match thread_ts {
+            let emitted_documents = match thread_ts {
                 Some(parent_ts) if parent_ts != message_ts => {
                     self.repair_thread_document(
                         &ctx,
@@ -501,7 +506,7 @@ impl SyncManager {
                         parent_ts,
                         true,
                     )
-                    .await?;
+                    .await?
                 }
                 _ => {
                     let date = slack_ts_date(message_ts)?;
@@ -516,12 +521,15 @@ impl SyncManager {
                         date,
                         true,
                     )
-                    .await?;
+                    .await?
                 }
-            }
+            };
 
             ctx.flush().await?;
-            ctx.increment_scanned(1).await?;
+            if emitted_documents > 0 {
+                ctx.increment_scanned(emitted_documents as i32).await?;
+                ctx.increment_updated(emitted_documents as i32).await?;
+            }
             ctx.complete().await?;
             Ok(())
         }
@@ -627,6 +635,28 @@ impl SyncManager {
         Ok(messages)
     }
 
+    async fn fetch_thread_permalink(
+        &self,
+        token: &str,
+        channel_id: &str,
+        thread_ts: &str,
+    ) -> Option<String> {
+        match self
+            .slack_client
+            .get_permalink(token, channel_id, thread_ts)
+            .await
+        {
+            Ok(permalink) => Some(permalink),
+            Err(e) => {
+                warn!(
+                    "Failed to fetch Slack permalink for channel {} thread {}: {}",
+                    channel_id, thread_ts, e
+                );
+                None
+            }
+        }
+    }
+
     async fn fetch_thread_replies_all(
         &self,
         token: &str,
@@ -729,7 +759,7 @@ impl SyncManager {
         content_processor: &ContentProcessor,
         thread_ts: &str,
         is_update: bool,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         let thread_messages = self
             .fetch_thread_replies_all(token, &channel.id, thread_ts)
             .await
@@ -747,6 +777,10 @@ impl SyncManager {
             true,
             Some(thread_ts.to_string()),
         );
+        thread_group.set_permalink(
+            self.fetch_thread_permalink(token, &channel.id, thread_ts)
+                .await,
+        );
         for message in thread_messages {
             let author_name = content_processor.get_author_name(&message.user);
             thread_group.add_message(message, author_name);
@@ -759,7 +793,8 @@ impl SyncManager {
             group_email,
             is_update,
         )
-        .await
+        .await?;
+        Ok(1)
     }
 
     async fn repair_day_documents(
@@ -773,7 +808,7 @@ impl SyncManager {
         content_processor: &ContentProcessor,
         date: NaiveDate,
         is_update: bool,
-    ) -> Result<Vec<SlackMessage>> {
+    ) -> Result<usize> {
         let (day_oldest, day_latest) = day_bounds(date)?;
         let day_messages = self
             .fetch_history_window_all(token, &channel.id, Some(&day_oldest), Some(&day_latest))
@@ -797,30 +832,33 @@ impl SyncManager {
             channel.display_name(),
             top_level_messages.clone(),
         )?;
+        let mut emitted_documents = 0;
         for group in message_groups {
             self.emit_message_group(ctx, group, sync_run_id, source_id, group_email, is_update)
                 .await?;
+            emitted_documents += 1;
         }
 
         for parent in top_level_messages
             .iter()
             .filter(|message| message.reply_count.unwrap_or(0) > 0)
         {
-            self.repair_thread_document(
-                ctx,
-                sync_run_id,
-                source_id,
-                channel,
-                group_email,
-                token,
-                content_processor,
-                &parent.ts,
-                is_update,
-            )
-            .await?;
+            emitted_documents += self
+                .repair_thread_document(
+                    ctx,
+                    sync_run_id,
+                    source_id,
+                    channel,
+                    group_email,
+                    token,
+                    content_processor,
+                    &parent.ts,
+                    is_update,
+                )
+                .await?;
         }
 
-        Ok(top_level_messages)
+        Ok(emitted_documents)
     }
 
     /// Sync a single channel, emitting documents through the SDK's
@@ -916,6 +954,10 @@ impl SyncManager {
                     thread_date,
                     true,
                     Some(parent.ts.clone()),
+                );
+                thread_group.set_permalink(
+                    self.fetch_thread_permalink(token, &channel.id, &parent.ts)
+                        .await,
                 );
                 for message in thread_messages {
                     let author_name = content_processor.get_author_name(&message.user);

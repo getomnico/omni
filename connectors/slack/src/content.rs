@@ -152,6 +152,7 @@ impl ContentProcessor {
             group.is_thread,
             group.thread_ts.clone(),
         );
+        current_group.set_permalink(group.permalink.clone());
 
         for (message, author) in group.messages {
             current_group.add_message(message, author);
@@ -170,6 +171,7 @@ impl ContentProcessor {
                     group.is_thread,
                     group.thread_ts.clone(),
                 );
+                current_group.set_permalink(group.permalink.clone());
                 current_group.add_message(last_message.0, last_message.1);
             }
         }

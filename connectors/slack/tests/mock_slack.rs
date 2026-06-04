@@ -5,9 +5,9 @@ use axum::{
     Router,
 };
 use omni_slack_connector::models::{
-    AuthTestResponse, ConversationInfoResponse, ConversationsHistoryResponse,
-    ConversationsListResponse, ConversationsMembersResponse, ResponseMetadata, SlackChannel,
-    SlackMessage, SlackUser, SlackUserProfile, UsersListResponse,
+    AuthTestResponse, ChatGetPermalinkResponse, ConversationInfoResponse,
+    ConversationsHistoryResponse, ConversationsListResponse, ConversationsMembersResponse,
+    ResponseMetadata, SlackChannel, SlackMessage, SlackUser, SlackUserProfile, UsersListResponse,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -41,6 +41,7 @@ impl MockSlackServer {
             .route("/conversations.info", get(conversations_info))
             .route("/conversations.history", get(conversations_history))
             .route("/conversations.replies", get(conversations_replies))
+            .route("/chat.getPermalink", get(chat_get_permalink))
             .route("/users.list", get(users_list))
             .route("/conversations.members", get(conversations_members))
             .route("/conversations.join", post(conversations_join))
@@ -220,6 +221,26 @@ async fn conversations_members(
 
 async fn conversations_join() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "ok": true }))
+}
+
+#[derive(Deserialize)]
+struct ChatGetPermalinkParams {
+    channel: String,
+    message_ts: String,
+}
+
+async fn chat_get_permalink(
+    Query(params): Query<ChatGetPermalinkParams>,
+) -> Json<ChatGetPermalinkResponse> {
+    Json(ChatGetPermalinkResponse {
+        ok: true,
+        permalink: format!(
+            "https://test-team.slack.com/archives/{}/p{}",
+            params.channel,
+            params.message_ts.replace('.', "")
+        ),
+        error: None,
+    })
 }
 
 #[derive(Deserialize)]

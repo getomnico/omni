@@ -187,6 +187,13 @@ pub struct ConversationsMembersResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct ChatGetPermalinkResponse {
+    pub ok: bool,
+    pub permalink: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AuthTestResponse {
     pub ok: bool,
     pub url: String,
@@ -212,6 +219,7 @@ pub struct MessageGroup {
     pub messages: Vec<(SlackMessage, String)>, // (message, author_name)
     pub is_thread: bool,
     pub thread_ts: Option<String>,
+    pub permalink: Option<String>,
     pub part: Option<usize>,
 }
 
@@ -260,8 +268,13 @@ impl MessageGroup {
             messages: Vec::new(),
             is_thread,
             thread_ts,
+            permalink: None,
             part: None,
         }
+    }
+
+    pub fn set_permalink(&mut self, permalink: Option<String>) {
+        self.permalink = permalink;
     }
 
     pub fn add_message(&mut self, message: SlackMessage, author_name: String) {
@@ -399,6 +412,9 @@ impl MessageGroup {
             }
         };
 
+        let existing_slack_url =
+            format!("slack://channel/{}/archive/{}", self.channel_id, self.date);
+
         let metadata = DocumentMetadata {
             title: Some(title),
             author: Some(if authors.len() == 1 {
@@ -411,10 +427,7 @@ impl MessageGroup {
             content_type: Some("message".to_string()),
             mime_type: Some("text/plain".to_string()),
             size: Some(self.content_size().to_string()),
-            url: Some(format!(
-                "slack://channel/{}/archive/{}",
-                self.channel_id, self.date
-            )),
+            url: self.permalink.clone().or_else(|| Some(existing_slack_url)),
             path: Some(format!("#{}", self.channel_name)), // Display channel as path
             extra: Some(extra),
         };

@@ -6,8 +6,8 @@ use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use crate::models::{
-    ConversationInfoResponse, ConversationsHistoryResponse, ConversationsListResponse,
-    ConversationsMembersResponse, SlackFile, UsersListResponse,
+    ChatGetPermalinkResponse, ConversationInfoResponse, ConversationsHistoryResponse,
+    ConversationsListResponse, ConversationsMembersResponse, SlackFile, UsersListResponse,
 };
 
 const DEFAULT_SLACK_API_BASE: &str = "https://slack.com/api";
@@ -305,6 +305,29 @@ impl SlackClient {
         }
 
         Ok(response.channel)
+    }
+
+    pub async fn get_permalink(
+        &self,
+        token: &str,
+        channel_id: &str,
+        message_ts: &str,
+    ) -> Result<String> {
+        let url = format!(
+            "{}/chat.getPermalink?channel={}&message_ts={}",
+            self.base_url, channel_id, message_ts
+        );
+
+        let response: ChatGetPermalinkResponse = self.make_request(&url, token).await?;
+
+        if !response.ok {
+            return Err(anyhow!(
+                "chat.getPermalink failed: {}",
+                response.error.unwrap_or("Unknown error".to_string())
+            ));
+        }
+
+        Ok(response.permalink)
     }
 
     pub async fn get_conversation_members(
