@@ -110,6 +110,18 @@ fn sort_messages_chronological(messages: &mut [SlackMessage]) {
     messages.sort_by(|a, b| a.ts.cmp(&b.ts));
 }
 
+struct SyncChannelOutcome {
+    published_groups: usize,
+    published_files: usize,
+    scanned_items: usize,
+    latest_ts: Option<String>,
+}
+
+struct RepairOutcome {
+    emitted_documents: usize,
+    scanned_items: usize,
+}
+
 pub struct SyncManager {
     auth_manager: AuthManager,
     slack_client: SlackClient,
@@ -243,11 +255,11 @@ impl SyncManager {
                 )
                 .await
             {
-                Ok((mg, fl, new_ts)) => {
+                Ok(outcome) => {
                     processed_channels += 1;
-                    total_message_groups += mg;
-                    total_files += fl;
-                    if let Some(ts) = new_ts {
+                    total_message_groups += outcome.published_groups;
+                    total_files += outcome.published_files;
+                    if let Some(ts) = outcome.latest_ts {
                         connector_state
                             .channel_timestamps
                             .insert(channel.id.clone(), ts);
@@ -255,8 +267,8 @@ impl SyncManager {
                     debug!(
                         "Synced channel {}: {} message groups, {} files",
                         channel.display_name(),
-                        mg,
-                        fl
+                        outcome.published_groups,
+                        outcome.published_files
                     );
 
                     // Per-channel checkpoint: flush emitted events FIRST so
@@ -284,9 +296,8 @@ impl SyncManager {
                         ),
                     }
 
-                    let emitted_documents = mg + fl;
-                    if emitted_documents > 0 {
-                        if let Err(e) = ctx.increment_scanned(emitted_documents as i32).await {
+                    if outcome.scanned_items > 0 {
+                        if let Err(e) = ctx.increment_scanned(outcome.scanned_items as i32).await {
                             error!("Failed to increment scanned count: {}", e);
                         }
                     }
@@ -376,7 +387,7 @@ impl SyncManager {
 
             let group_email = channel_group_email(&bot_creds.team_id, &channel.id);
 
-            let (mg, fl, new_ts) = self
+            let outcome = self
                 .sync_channel(
                     &ctx,
                     &channel,
@@ -388,7 +399,7 @@ impl SyncManager {
                 )
                 .await?;
 
-            if let Some(ts) = new_ts {
+            if let Some(ts) = outcome.latest_ts {
                 connector_state
                     .channel_timestamps
                     .insert(channel_id.to_string(), ts);
@@ -398,16 +409,21 @@ impl SyncManager {
             ctx.save_connector_state(serde_json::to_value(&connector_state)?)
                 .await?;
 
-            let updated = mg + fl;
+            let updated = outcome.published_groups + outcome.published_files;
+            if outcome.scanned_items > 0 {
+                ctx.increment_scanned(outcome.scanned_items as i32).await?;
+            }
             if updated > 0 {
-                ctx.increment_scanned(updated as i32).await?;
                 ctx.increment_updated(updated as i32).await?;
             }
             ctx.complete().await?;
 
             info!(
                 source_id,
-                channel_id, mg, fl, "Realtime sync completed for channel"
+                channel_id,
+                outcome.published_groups,
+                outcome.published_files,
+                "Realtime sync completed for channel"
             );
             Ok(())
         }
@@ -493,7 +509,7 @@ impl SyncManager {
             )
             .await?;
 
-            let emitted_documents = match thread_ts {
+            let outcome = match thread_ts {
                 Some(parent_ts) if parent_ts != message_ts => {
                     self.repair_thread_document(
                         &ctx,
@@ -526,9 +542,12 @@ impl SyncManager {
             };
 
             ctx.flush().await?;
-            if emitted_documents > 0 {
-                ctx.increment_scanned(emitted_documents as i32).await?;
-                ctx.increment_updated(emitted_documents as i32).await?;
+            if outcome.scanned_items > 0 {
+                ctx.increment_scanned(outcome.scanned_items as i32).await?;
+            }
+            if outcome.emitted_documents > 0 {
+                ctx.increment_updated(outcome.emitted_documents as i32)
+                    .await?;
             }
             ctx.complete().await?;
             Ok(())
@@ -759,7 +778,7 @@ impl SyncManager {
         content_processor: &ContentProcessor,
         thread_ts: &str,
         is_update: bool,
-    ) -> Result<usize> {
+    ) -> Result<RepairOutcome> {
         let thread_messages = self
             .fetch_thread_replies_all(token, &channel.id, thread_ts)
             .await
@@ -769,6 +788,7 @@ impl SyncManager {
                     thread_ts, channel.id
                 )
             })?;
+        let scanned_items = thread_messages.len();
         let thread_date = slack_ts_date(thread_ts)?;
         let mut thread_group = MessageGroup::new(
             channel.id.clone(),
@@ -794,7 +814,10 @@ impl SyncManager {
             is_update,
         )
         .await?;
-        Ok(1)
+        Ok(RepairOutcome {
+            emitted_documents: 1,
+            scanned_items,
+        })
     }
 
     async fn repair_day_documents(
@@ -808,7 +831,7 @@ impl SyncManager {
         content_processor: &ContentProcessor,
         date: NaiveDate,
         is_update: bool,
-    ) -> Result<usize> {
+    ) -> Result<RepairOutcome> {
         let (day_oldest, day_latest) = day_bounds(date)?;
         let day_messages = self
             .fetch_history_window_all(token, &channel.id, Some(&day_oldest), Some(&day_latest))
@@ -819,6 +842,8 @@ impl SyncManager {
                     date, channel.id
                 )
             })?;
+
+        let mut scanned_items = day_messages.len();
 
         let mut top_level_messages: Vec<SlackMessage> = day_messages
             .iter()
@@ -843,7 +868,7 @@ impl SyncManager {
             .iter()
             .filter(|message| message.reply_count.unwrap_or(0) > 0)
         {
-            emitted_documents += self
+            let outcome = self
                 .repair_thread_document(
                     ctx,
                     sync_run_id,
@@ -856,9 +881,14 @@ impl SyncManager {
                     is_update,
                 )
                 .await?;
+            emitted_documents += outcome.emitted_documents;
+            scanned_items += outcome.scanned_items;
         }
 
-        Ok(emitted_documents)
+        Ok(RepairOutcome {
+            emitted_documents,
+            scanned_items,
+        })
     }
 
     /// Sync a single channel, emitting documents through the SDK's
@@ -874,7 +904,7 @@ impl SyncManager {
         last_ts: Option<&str>,
         content_processor: &ContentProcessor,
         is_update: bool,
-    ) -> Result<(usize, usize, Option<String>)> {
+    ) -> Result<SyncChannelOutcome> {
         let source_id = ctx.source_id().to_string();
         let sync_run_id = ctx.sync_run_id().to_string();
         debug!(
@@ -905,6 +935,7 @@ impl SyncManager {
 
         let mut message_groups = Vec::new();
         let mut all_messages = Vec::new();
+        let mut scanned_items = 0;
 
         for date in affected_dates {
             let (day_oldest, day_latest) = day_bounds(date)?;
@@ -917,6 +948,8 @@ impl SyncManager {
                         date, channel.id
                     )
                 })?;
+
+            scanned_items += day_messages.len();
 
             let mut top_level_messages: Vec<SlackMessage> = day_messages
                 .iter()
@@ -946,6 +979,7 @@ impl SyncManager {
                         )
                     })?;
 
+                scanned_items += thread_messages.len();
                 all_messages.extend(thread_messages.clone());
                 let thread_date = slack_ts_date(&parent.ts)?;
                 let mut thread_group = MessageGroup::new(
@@ -989,6 +1023,7 @@ impl SyncManager {
         }
 
         let files = content_processor.extract_files_from_messages(&all_messages);
+        scanned_items += files.len();
         for file in files {
             let (bytes, response_content_type) =
                 match self.slack_client.download_file(token, file).await {
@@ -1040,7 +1075,12 @@ impl SyncManager {
             published_files += 1;
         }
 
-        Ok((published_groups, published_files, latest_ts))
+        Ok(SyncChannelOutcome {
+            published_groups,
+            published_files,
+            scanned_items,
+            latest_ts,
+        })
     }
 
     async fn fetch_channel_members(&self, token: &str, channel_id: &str) -> Result<Vec<String>> {

@@ -232,7 +232,7 @@ async fn test_full_sync_creates_events() {
         shared::models::SyncStatus::Completed,
         "Sync run should be completed"
     );
-    assert_eq!(sync_run.documents_scanned, 2);
+    assert_eq!(sync_run.documents_scanned, 6);
 
     // Verify connector state
     let state_value = fixture
@@ -711,7 +711,7 @@ async fn test_sync_fetches_thread_replies() {
 
     let sync_run = fixture.get_sync_run(&sync_run_id).await.unwrap().unwrap();
     assert_eq!(
-        sync_run.documents_scanned, 3,
-        "sync with one thread should scan two channel-day docs plus one thread doc"
+        sync_run.documents_scanned, 10,
+        "sync with one thread should scan fetched channel messages plus fetched thread messages"
     );
 }
