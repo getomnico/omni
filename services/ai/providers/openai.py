@@ -32,6 +32,39 @@ from . import LLMProvider, LLMProviderStreamError, TokenUsage
 
 logger = logging.getLogger(__name__)
 
+MIN_REASONING_OUTPUT_TOKENS = 1024
+
+
+def _is_reasoning_model(model: str) -> bool:
+    normalized = model.lower()
+    return normalized.startswith(("gpt-5", "o1", "o3", "o4"))
+
+
+def _supports_sampling_params(model: str) -> bool:
+    """Whether the model accepts temperature/top_p on the Responses API."""
+    return not _is_reasoning_model(model)
+
+
+def _effective_max_output_tokens(model: str, max_tokens: int | None) -> int:
+    tokens = max_tokens or 4096
+    if _is_reasoning_model(model):
+        return max(tokens, MIN_REASONING_OUTPUT_TOKENS)
+    return tokens
+
+
+def _add_sampling_params(
+    params: dict[str, Any],
+    model: str,
+    temperature: float | None,
+    top_p: float | None,
+) -> None:
+    if not _supports_sampling_params(model):
+        return
+    if temperature is not None:
+        params["temperature"] = temperature
+    if top_p is not None:
+        params["top_p"] = top_p
+
 
 def _convert_tools_to_openai(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert Anthropic tool schema to OpenAI Responses API function-calling format (flat)."""
@@ -73,17 +106,16 @@ class OpenAIProvider(LLMProvider):
             request_params: dict[str, Any] = {
                 "model": self.model,
                 "input": input_items,
-                "max_output_tokens": max_tokens or 4096,
+                "max_output_tokens": _effective_max_output_tokens(
+                    self.model, max_tokens
+                ),
                 "stream": True,
             }
 
             if system_prompt:
                 request_params["instructions"] = system_prompt
 
-            if temperature is not None:
-                request_params["temperature"] = temperature
-            if top_p is not None:
-                request_params["top_p"] = top_p
+            _add_sampling_params(request_params, self.model, temperature, top_p)
 
             if tools:
                 request_params["tools"] = _convert_tools_to_openai(tools)
@@ -354,21 +386,20 @@ class OpenAIProvider(LLMProvider):
     ) -> tuple[str, TokenUsage]:
         """Generate non-streaming response from OpenAI Responses API."""
         try:
-            # Reasoning models (gpt-5.x, o-series) consume their internal reasoning
-            # chain against max_output_tokens before producing any visible text.
-            # Enforce a minimum so small caller-supplied limits do not exhaust the
-            # budget before any output is written.
-            effective_max_tokens = max(max_tokens or 4096, 1024)
+            # Reasoning models consume their internal reasoning chain against
+            # max_output_tokens before producing any visible text. Enforce a
+            # minimum so short utility calls, like title generation, still have
+            # room to write an answer.
+            effective_max_tokens = _effective_max_output_tokens(
+                self.model, max_tokens
+            )
             params: dict[str, Any] = {
                 "model": self.model,
                 "input": prompt,
                 "max_output_tokens": effective_max_tokens,
                 "stream": False,
             }
-            if temperature is not None:
-                params["temperature"] = temperature
-            if top_p is not None:
-                params["top_p"] = top_p
+            _add_sampling_params(params, self.model, temperature, top_p)
 
             response = await self.client.responses.create(**params)
 
@@ -413,7 +444,7 @@ class OpenAIProvider(LLMProvider):
             await self.client.responses.create(
                 model=self.model,
                 input="Hello",
-                max_output_tokens=1,
+                max_output_tokens=_effective_max_output_tokens(self.model, 16),
                 stream=False,
             )
             return True
