@@ -38,8 +38,8 @@
         await tick()
         if (renderedHtml !== html || containerRef !== container) return
 
-        const linkPlaceholders = container.querySelectorAll('.omni-reflink')
-        linkPlaceholders.forEach((link) => {
+        const linkPlaceholders = Array.from(container.querySelectorAll('.omni-reflink'))
+        for (const link of linkPlaceholders) {
             const href = link.getAttribute('href')
             const title = link.getAttribute('title')
             const text = link.textContent
@@ -55,9 +55,21 @@
                     snippet: snippet || undefined,
                 },
             })
+        }
+
+        await tick()
+        if (renderedHtml !== html || containerRef !== container) return
+
+        for (const link of linkPlaceholders) {
+            let previousSibling = link.previousSibling
+            while (previousSibling instanceof Text && previousSibling.textContent?.trim() === '') {
+                const whitespaceNode = previousSibling
+                previousSibling = previousSibling.previousSibling
+                whitespaceNode.remove()
+            }
 
             link.remove()
-        })
+        }
     }
 
     $effect(() => {

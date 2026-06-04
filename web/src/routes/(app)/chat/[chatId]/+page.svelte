@@ -683,15 +683,18 @@
                           ...result.slice(messageIndex + 1),
                       ]
 
-            for (const block of message.content) {
+            for (const [blockIdx, block] of message.content.entries()) {
                 const lastBlock = messageToUpdate.content[messageToUpdate.content.length - 1]
+                const crossesMessageBoundary =
+                    blockIdx === 0 && lastMessage && lastMessage.role === message.role
+                const textSeparator = crossesMessageBoundary ? '\n\n' : ''
                 const nextContent: MessageContent =
                     lastBlock && lastBlock.type === 'text' && block.type === 'text'
                         ? [
                               ...messageToUpdate.content.slice(0, -1),
                               {
                                   ...lastBlock,
-                                  text: lastBlock.text + '\n\n' + block.text,
+                                  text: lastBlock.text + textSeparator + block.text,
                                   citations: block.citations
                                       ? [...(lastBlock.citations ?? []), ...block.citations]
                                       : lastBlock.citations

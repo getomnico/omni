@@ -28,6 +28,10 @@ const capturedSearchesTemplateFixture = new URL(
     './fixtures/chat-captured-searches-seed.json',
     import.meta.url,
 )
+const citationRenderingTemplateFixture = new URL(
+    './fixtures/citation-rendering-chat.json',
+    import.meta.url,
+)
 const replayFixtureCookieName = 'omni-chat-stream-replay-fixture'
 
 type SeededChat = {
@@ -45,6 +49,10 @@ type TemplateChatMessage = {
     message: unknown
     contentText: string | null
     createdAt: string
+}
+
+type SeededCitationChat = SeededChat & {
+    assistantMessageId: string
 }
 
 function sseMessage(data: unknown): string {
@@ -300,6 +308,18 @@ async function seedChatFromTemplateFixture(
     return { userId, chatId, userMessageId, sessionToken, sessionKey }
 }
 
+async function seedCitationRenderingChat(): Promise<SeededCitationChat> {
+    const seeded = await seedChatFromTemplateFixture(citationRenderingTemplateFixture)
+    const sql = postgres(dbConfig)
+    const [assistantMessage] = await sql<{ id: string }[]>`
+        SELECT id FROM chat_messages
+        WHERE chat_id = ${seeded.chatId} AND message_seq_num = 2
+    `
+    await sql.end()
+
+    return { ...seeded, assistantMessageId: assistantMessage.id }
+}
+
 async function cleanupChat(seeded: SeededChat | null): Promise<void> {
     if (!seeded) return
 
@@ -386,6 +406,49 @@ test('chat page renders streamed assistant markdown from the SSE stream endpoint
         await expect(page.getByRole('heading', { name: 'Search & Retrieval' })).toBeVisible()
         await expect(page.getByText('search_documents(query, limit, document_id?)')).toBeVisible()
         await expect(page.getByText('Read a document')).toBeVisible()
+    } finally {
+        await cleanupChat(seeded)
+    }
+})
+
+test('chat renders text after a citation in the same paragraph', async ({ page }) => {
+    let seeded: SeededCitationChat | null = null
+    try {
+        seeded = await seedCitationRenderingChat()
+        await authenticate(page, seeded)
+
+        await page.goto(`/chat/${seeded.chatId}`)
+
+        const message = page.getByTestId(`chat-message-${seeded.assistantMessageId}`)
+        await expect(message.getByText('A cited answer')).toBeVisible()
+        await expect(message.getByText('It should stay inline')).toBeVisible()
+        await expect(message.getByText('A cited bullet')).toBeVisible()
+        await expect(message.getByText('A text-only bullet')).toBeVisible()
+
+        await expect
+            .poll(async () =>
+                message
+                    .locator('p')
+                    .first()
+                    .evaluate((paragraph) => paragraph.textContent?.replace(/\s+/g, ' ').trim()),
+            )
+            .toBe('A cited answer [0]. It should stay inline.')
+        await expect
+            .poll(async () =>
+                message
+                    .locator('li')
+                    .nth(0)
+                    .evaluate((listItem) => listItem.textContent?.replace(/\s+/g, ' ').trim()),
+            )
+            .toBe('A cited bullet [1] should also stay inline.')
+        await expect
+            .poll(async () =>
+                message
+                    .locator('li')
+                    .nth(1)
+                    .evaluate((listItem) => listItem.textContent?.replace(/\s+/g, ' ').trim()),
+            )
+            .toBe('A text-only bullet should also stay inline too.')
     } finally {
         await cleanupChat(seeded)
     }

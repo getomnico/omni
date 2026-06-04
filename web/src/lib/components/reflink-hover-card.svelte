@@ -49,16 +49,6 @@
 </script>
 
 <HoverCard.Root>
-    <HoverCard.Trigger
-        {href}
-        {title}
-        target="_blank"
-        rel="noreferrer noopener"
-        class="text-muted-foreground hover:text-foreground/80 inline-block max-w-36 items-center 
-        gap-1 truncate overflow-hidden border p-0.5 text-xs no-underline 
-        transition-colors">
-        [{text}]
-    </HoverCard.Trigger>
     <HoverCard.Content>
         <div class="flex flex-col gap-1">
             <div class="flex items-center gap-1">
@@ -82,4 +72,13 @@
             </div>
         </div>
     </HoverCard.Content>
-</HoverCard.Root>
+    <!-- Keep the trigger last and close Root inline so Svelte does not emit whitespace between the citation and following punctuation. -->
+    <HoverCard.Trigger
+        {href}
+        {title}
+        target="_blank"
+        rel="noreferrer noopener"
+        class="text-muted-foreground hover:text-foreground/80 inline-block max-w-36 items-center 
+        gap-1 truncate overflow-hidden border p-0.5 text-xs no-underline 
+        transition-colors">[{text}]</HoverCard.Trigger
+    ></HoverCard.Root>
