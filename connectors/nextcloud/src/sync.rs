@@ -328,7 +328,7 @@ fn parse_datetime(s: &str) -> Option<time::OffsetDateTime> {
 }
 
 /// Build an absolute download URL from server_url and the entry href.
-fn build_download_url(server_url: &str, href: &str) -> String {
+pub(crate) fn build_download_url(server_url: &str, href: &str) -> String {
     if href.starts_with("http://") || href.starts_with("https://") {
         return href.to_string();
     }

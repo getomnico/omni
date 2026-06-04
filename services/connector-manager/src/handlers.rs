@@ -449,6 +449,21 @@ pub async fn execute_action(
         // If not found, assume the ID is already a source-native ID and pass through
     }
 
+    // Merge source config into params so connectors can access source-level
+    // settings during action execution (e.g., server_url for Nextcloud
+    // fetch_file). Caller-provided param values always take precedence.
+    // Null/missing params is promoted to an empty object so the merge runs.
+    if params.is_null() {
+        params = serde_json::Value::Object(serde_json::Map::new());
+    }
+    if let (Some(src_obj), Some(params_obj)) =
+        (source.config.as_object(), params.as_object_mut())
+    {
+        for (k, v) in src_obj {
+            params_obj.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+    }
+
     info!(
         "Dispatching action '{}' to connector {} with credential {} (provider={:?}, auth_type={:?}, principal={:?})",
         request.action,

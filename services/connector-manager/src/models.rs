@@ -120,6 +120,7 @@ pub struct ExecuteActionRequest {
     #[serde(default)]
     pub user_id: Option<String>,
     pub action: String,
+    #[serde(default)]
     pub params: JsonValue,
 }
 

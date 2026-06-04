@@ -170,6 +170,51 @@ impl NextcloudClient {
         Ok(bytes.to_vec())
     }
 
+    /// Resolve a Nextcloud file ID (oc:fileid) to its WebDAV href via the meta
+    /// endpoint (`/remote.php/dav/meta/{fileId}/`). Returns the path component
+    /// that can be appended to server_url for a direct download.
+    pub async fn get_href_by_file_id(&self, server_url: &str, file_id: &str) -> Result<String> {
+        let meta_url = format!(
+            "{}/remote.php/dav/meta/{}/",
+            server_url.trim_end_matches('/'),
+            file_id
+        );
+        let response = self
+            .client
+            .request(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &meta_url)
+            .basic_auth(&self.username, Some(&self.password))
+            .header("Depth", "0")
+            .header("Content-Type", "application/xml")
+            .body(PROPFIND_BODY)
+            .send()
+            .await
+            .context("PROPFIND meta request failed")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("PROPFIND meta failed with status {}: {}", status, body);
+        }
+
+        let xml = response
+            .text()
+            .await
+            .context("Failed to read PROPFIND meta response")?;
+
+        let entries = parse_multistatus(&xml)?;
+        entries
+            .into_iter()
+            .next()
+            .map(|e| e.href)
+            .filter(|h| !h.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No href found in PROPFIND meta response for file_id {}",
+                    file_id
+                )
+            })
+    }
+
     /// Validate credentials by issuing a PROPFIND Depth:0 on the user's root.
     pub async fn validate_credentials(&self, base_url: &str) -> Result<bool> {
         let response = self
