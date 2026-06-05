@@ -6,7 +6,6 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
-
 import redis.asyncio as aioredis
 from pydantic import ValidationError
 from anthropic.types import (
@@ -287,15 +286,10 @@ class SearchToolHandler:
                 TextBlockParam(type="text", text=h) for h in result.highlights
             ]
 
-            metadata_blocks = [
-                TextBlockParam(type="text", text=f"[Document ID: {doc.id}]"),
-                TextBlockParam(type="text", text=f"[Document Name: {doc.title}]"),
-                TextBlockParam(
-                    type="text",
-                    text=f"[Source: {source_type or 'unknown'}]",
-                ),
-                TextBlockParam(type="text", text=f"[URL: {doc.url or '<unknown>'}]"),
-            ]
+            # Connectors may emit a human-readable "doc_source" attribute as a
+            # fallback when no webmail/web URL exists (e.g. IMAP emails).
+            # Format (IMAP): "imap:{account} / {folder} / {YYYY-MM-DD} / {subject}"
+            attr_doc_source: str | None = (doc.attributes or {}).get("doc_source")
 
             # Extract a human-readable date for the LLM. Prefer metadata updated_at
             # (original content date) over created_at, falling back to a unix timestamp
@@ -323,6 +317,46 @@ class SearchToolHandler:
                         date_str = dt.strftime("%Y-%m-%d %H:%M UTC")
                     except (OSError, OverflowError, ValueError):
                         pass
+
+            # Build a human-readable source reference for the LLM.
+            # Priority:
+            #   1. doc_source attribute (e.g. IMAP: "imap:account / folder / date / subject")
+            #   2. URL (e.g. Nextcloud, Google Drive, Jira, …)
+            #   3. Opaque ULID document ID (last resort)
+            # This lets every LLM provider cite the document by a meaningful location
+            # rather than an opaque internal ID, without connector-specific logic here.
+            human_source = attr_doc_source or doc.url
+            if human_source:
+                doc_id_block = TextBlockParam(
+                    type="text", text=f"[Document source: {human_source}]"
+                )
+            else:
+                doc_id_block = TextBlockParam(
+                    type="text", text=f"[Document ID: {doc.id}]"
+                )
+
+            # When the doc_id_block shows a URL/doc_source instead of the ULID, also emit the
+            # ULID explicitly. Without this, the LLM has no document ID available for
+            # read_document calls and falls back to re-searching by filename — which causes
+            # umlaut corruption in generated queries and returns 0 results.
+            metadata_blocks = [
+                doc_id_block,
+                TextBlockParam(type="text", text=f"[Document Name: {doc.title}]"),
+                TextBlockParam(
+                    type="text",
+                    text=f"[Source: {source_type or 'unknown'}]",
+                ),
+            ]
+            if human_source:
+                # doc_id_block already contains the URL/source; add ULID separately
+                metadata_blocks.insert(
+                    1, TextBlockParam(type="text", text=f"[Document ID: {doc.id}]")
+                )
+            if doc.url:
+                metadata_blocks.append(
+                    TextBlockParam(type="text", text=f"[URL: {doc.url}]")
+                )
+
             if date_str:
                 metadata_blocks.append(
                     TextBlockParam(type="text", text=f"[Date: {date_str}]")
@@ -341,11 +375,16 @@ class SearchToolHandler:
                     TextBlockParam(type="text", text=f"[Extra: {extra_str}]")
                 )
 
+            # Use doc_source attribute as the citation source when no URL is available.
+            # This is the value shown in Anthropic 【source】 citation markers and
+            # serialised as [title](source) for OpenAI.
+            doc_source = doc.url or attr_doc_source or "<unknown>"
+
             content_blocks.append(
                 SearchResultBlockParam(
                     type="search_result",
                     title=doc.title,
-                    source=doc.url or "<unknown>",
+                    source=doc_source,
                     source_type=source_type,
                     content=[*metadata_blocks, *doc_content_text_blocks],
                     citations=CitationsConfigParam(enabled=True),
