@@ -187,9 +187,9 @@
             'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
         )}>
         <div class="flex w-full items-center justify-between">
-            <div class="flex items-center gap-2">
-                <Users class="h-5 w-5 text-blue-600" />
-                <div class="max-w-screen-md truncate text-sm font-normal">
+            <div class="flex min-w-0 flex-1 items-center gap-2">
+                <Users class="h-5 w-5 shrink-0 text-blue-600" />
+                <div class="min-w-0 truncate text-sm font-normal">
                     {statusIndicator}: {message.toolUse.input[toolInputKey]}
                 </div>
             </div>
@@ -201,9 +201,9 @@
             'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
         )}>
         <div class="flex w-full items-center justify-between">
-            <div class="flex items-center gap-2">
-                <TextSearch class="h-5 w-5" />
-                <div class="max-w-screen-md truncate text-sm font-normal">
+            <div class="flex min-w-0 flex-1 items-center gap-2">
+                <TextSearch class="h-5 w-5 shrink-0" />
+                <div class="min-w-0 truncate text-sm font-normal">
                     {statusIndicator}: {message.toolUse.input[toolInputKey]}
                 </div>
             </div>
@@ -241,19 +241,19 @@
                 'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
             )}>
             <div class="flex w-full items-center justify-between">
-                <div class="flex items-center gap-2">
+                <div class="flex min-w-0 flex-1 items-center gap-2">
                     {#if toolName === 'present_artifact'}
-                        <Image class="h-5 w-5 text-violet-600" />
+                        <Image class="h-5 w-5 shrink-0 text-violet-600" />
                     {:else if toolName === 'run_python'}
-                        <FileCode class="h-5 w-5 text-blue-600" />
+                        <FileCode class="h-5 w-5 shrink-0 text-blue-600" />
                     {:else if toolName === 'run_bash'}
-                        <Terminal class="h-5 w-5 text-green-600" />
+                        <Terminal class="h-5 w-5 shrink-0 text-green-600" />
                     {:else if toolName === 'write_file'}
-                        <Pencil class="h-5 w-5 text-amber-600" />
+                        <Pencil class="h-5 w-5 shrink-0 text-amber-600" />
                     {:else}
-                        <FileText class="h-5 w-5" />
+                        <FileText class="h-5 w-5 shrink-0" />
                     {/if}
-                    <div class="max-w-screen-md truncate text-sm font-normal">
+                    <div class="min-w-0 truncate text-sm font-normal">
                         {statusIndicator}: {inputSummary()}
                     </div>
                 </div>
@@ -266,9 +266,9 @@
             'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
         )}>
         <div class="flex w-full items-center justify-between">
-            <div class="flex items-center gap-2">
-                <BookOpen class="h-5 w-5 text-indigo-600" />
-                <div class="max-w-screen-md truncate text-sm font-normal">
+            <div class="flex min-w-0 flex-1 items-center gap-2">
+                <BookOpen class="h-5 w-5 shrink-0 text-indigo-600" />
+                <div class="min-w-0 truncate text-sm font-normal">
                     {statusIndicator}: {message.toolUse.input[toolInputKey]}
                 </div>
             </div>
@@ -282,13 +282,13 @@
             message.approval && ToolApprovalColors[message.approval.status]?.bgColor,
         )}>
         <div class="flex w-full items-center justify-between">
-            <div class="flex items-center gap-2">
+            <div class="flex min-w-0 flex-1 items-center gap-2">
                 {#if connectorIconPath}
-                    <img src={connectorIconPath} alt={connectorSourceType} class="!m-0 h-5 w-5" />
+                    <img src={connectorIconPath} alt={connectorSourceType} class="!m-0 h-5 w-5 shrink-0" />
                 {:else}
-                    <Play class="h-5 w-5 text-purple-600" />
+                    <Play class="h-5 w-5 shrink-0 text-purple-600" />
                 {/if}
-                <div class="max-w-screen-md truncate text-sm font-normal">
+                <div class="min-w-0 truncate text-sm font-normal">
                     {statusIndicator}: {connectorDisplayName}
                     {#if inputSummary()}
                         <span class="text-muted-foreground"> ({inputSummary()})</span>
@@ -324,9 +324,9 @@
                     selectedItem === message.toolUse.id && 'bg-card rounded-b-none border-b-0',
                 )}>
                 <div class="flex w-full items-center justify-between">
-                    <div class="flex items-center gap-2">
+                    <div class="flex min-w-0 flex-1 items-center gap-2">
                         {#if sources.length > 0}
-                            <div class="flex items-center gap-1">
+                            <div class="flex shrink-0 items-center gap-1">
                                 {#each sources as source}
                                     {#if getSourceIconPath(source)}
                                         <img
@@ -340,9 +340,9 @@
                                 {/each}
                             </div>
                         {:else}
-                            <Search class="h-4 w-4" />
+                            <Search class="h-4 w-4 shrink-0" />
                         {/if}
-                        <div class="max-w-screen-md truncate text-sm font-normal">
+                        <div class="min-w-0 truncate text-sm font-normal">
                             {#if sources.length > 0}
                                 {statusIndicator}
                                 {sources
@@ -381,12 +381,11 @@
                                             href={result.source.split('#')[0]}
                                             target="_blank"
                                             rel="noopener noreferrer"
-                                            class="block max-w-screen-sm overflow-hidden font-normal text-ellipsis whitespace-nowrap no-underline hover:underline">
+                                            class="block min-w-0 truncate font-normal no-underline hover:underline">
                                             {result.title}
                                         </a>
                                     {:else}
-                                        <span
-                                            class="block max-w-screen-sm overflow-hidden text-ellipsis whitespace-nowrap font-normal">
+                                        <span class="block min-w-0 truncate font-normal">
                                             {result.title}
                                         </span>
                                     {/if}
