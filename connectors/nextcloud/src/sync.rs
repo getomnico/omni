@@ -96,6 +96,10 @@ async fn execute_sync(
     let mut total_scanned = 0usize;
     let mut total_processed = 0usize;
     let mut current_keys = HashSet::<String>::new();
+    // Keys for files that exist on the server but whose format is not supported for extraction.
+    // Kept separate from current_keys (which drives deletion detection) so that their
+    // "skipped:{etag}" etag entries survive the retain() pruning pass at the end.
+    let mut skipped_server_keys = HashSet::<String>::new();
 
     // TODO: this is not real incremental sync, we do a full PROPFIND every run,
     // and skip based on e-tags. Also, we save state (checkpoint) only at the end.
@@ -136,6 +140,7 @@ async fn execute_sync(
             total_processed += p;
             for key in unsupported {
                 current_keys.remove(&key);
+                skipped_server_keys.insert(key);
             }
         }
         Err(_) => {
@@ -197,6 +202,7 @@ async fn execute_sync(
                 total_processed += p;
                 for key in unsupported {
                     current_keys.remove(&key);
+                    skipped_server_keys.insert(key);
                 }
             }
         }
@@ -222,8 +228,15 @@ async fn execute_sync(
             }
         }
 
-        // Remove stale etags
-        state.etags.retain(|k, _| current_keys.contains(k));
+        // Remove stale etags. Keep etags for:
+        //   - indexed files (current_keys)
+        //   - unsupported-format files that still exist on the server (skipped_server_keys),
+        //     so their "skipped:{etag}" marker is not erased and the file is not
+        //     re-downloaded on every subsequent sync.
+        state.etags.retain(|k, v| {
+            current_keys.contains(k)
+                || (v.starts_with("skipped:") && skipped_server_keys.contains(k))
+        });
     }
 
     // Persist current file key set
