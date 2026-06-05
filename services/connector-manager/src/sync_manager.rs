@@ -9,6 +9,7 @@ use shared::db::repositories::SyncRunRepository;
 use shared::models::{SourceType, SyncSlotClass, SyncStatus, SyncType};
 use shared::{DatabasePool, Repository, SourceRepository};
 use sqlx::PgPool;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
@@ -503,6 +504,67 @@ impl SyncManager {
                 );
             }
         }
+    }
+
+    /// Cancel any running sync whose source has been disabled or deleted.
+    /// Runs on every scheduler tick so that disabling a source stops an
+    /// in-progress sync within one tick interval.
+    pub async fn cancel_syncs_for_inactive_sources(&self) -> Result<Vec<String>, SyncError> {
+        let source_repo = SourceRepository::new(&self.pool);
+
+        let inactive_sources = source_repo
+            .find_inactive()
+            .await
+            .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
+
+        if inactive_sources.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let source_type_map: HashMap<String, SourceType> = inactive_sources
+            .iter()
+            .map(|s| (s.id.clone(), s.source_type))
+            .collect();
+        let source_ids: Vec<String> = inactive_sources.into_iter().map(|s| s.id).collect();
+
+        let running = self
+            .sync_run_repo
+            .find_running_for_sources(&source_ids)
+            .await
+            .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
+
+        if running.is_empty() {
+            return Ok(vec![]);
+        }
+
+        for run in &running {
+            info!(
+                "Cancelling sync {} for inactive/deleted source {}",
+                run.id, run.source_id
+            );
+            if let Some(&source_type) = source_type_map.get(&run.source_id) {
+                if let Some(connector_url) =
+                    get_connector_url_for_source(&self.redis_client, source_type).await
+                {
+                    if let Err(e) = self
+                        .connector_client
+                        .cancel_sync(&connector_url, &run.id)
+                        .await
+                    {
+                        warn!(
+                            "Failed to cancel sync {} on connector for inactive source {}: {}",
+                            run.id, run.source_id, e
+                        );
+                    }
+                }
+            }
+        }
+
+        let run_ids: Vec<String> = running.into_iter().map(|r| r.id).collect();
+        self.sync_run_repo
+            .mark_cancelled_many(&run_ids, "Source was disabled")
+            .await
+            .map_err(|e| SyncError::DatabaseError(e.to_string()))
     }
 
     /// Sweep running syncs whose `last_activity_at` hasn't advanced within the

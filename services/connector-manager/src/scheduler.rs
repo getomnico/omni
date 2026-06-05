@@ -101,6 +101,20 @@ impl Scheduler {
             .await;
 
         self.run_phase(
+            "cancel_syncs_for_inactive_sources",
+            self.sync_manager.cancel_syncs_for_inactive_sources(),
+        )
+        .await
+        .inspect(|cancelled| {
+            if !cancelled.is_empty() {
+                info!(
+                    "Cancelled {} sync(s) for inactive/deleted sources",
+                    cancelled.len()
+                );
+            }
+        });
+
+        self.run_phase(
             "monitor_running_syncs",
             self.sync_manager.monitor_running_syncs(),
         )

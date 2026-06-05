@@ -295,6 +295,59 @@ impl SyncRunRepository {
         Ok(sync_runs)
     }
 
+    /// Fetch all running sync runs whose source_id is in the supplied list.
+    pub async fn find_running_for_sources(
+        &self,
+        source_ids: &[String],
+    ) -> Result<Vec<SyncRun>, DatabaseError> {
+        if source_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let sync_runs = sqlx::query_as::<_, SyncRun>(
+            r#"
+            SELECT id, source_id, sync_type, started_at, completed_at, status, trigger_type,
+                   documents_scanned, documents_processed, documents_updated, error_message,
+                   created_at, updated_at
+            FROM sync_runs
+            WHERE status = $1 AND source_id = ANY($2)
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(SyncStatus::Running)
+        .bind(source_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(sync_runs)
+    }
+
+    /// Mark a batch of sync runs as cancelled, returning the IDs that were
+    /// actually transitioned (i.e., were still in `running` state).
+    pub async fn mark_cancelled_many(
+        &self,
+        ids: &[String],
+        message: &str,
+    ) -> Result<Vec<String>, DatabaseError> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "UPDATE sync_runs
+             SET status = $1, completed_at = CURRENT_TIMESTAMP,
+                 error_message = $2, updated_at = CURRENT_TIMESTAMP
+             WHERE id = ANY($3) AND status = $4
+             RETURNING id",
+        )
+        .bind(SyncStatus::Cancelled)
+        .bind(message)
+        .bind(ids)
+        .bind(SyncStatus::Running)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
     pub async fn count_running_in_slot_class(
         &self,
         slot_class: crate::models::SyncSlotClass,
