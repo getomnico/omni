@@ -288,7 +288,7 @@ class SearchToolHandler:
             ]
 
             metadata_blocks = [
-                TextBlockParam(type="text", text=f"[Document ID: {doc.id}]"),
+                TextBlockParam(type="text", text=f"[doc_ref: {doc.id}]"),
                 TextBlockParam(type="text", text=f"[Document Name: {doc.title}]"),
                 TextBlockParam(
                     type="text",

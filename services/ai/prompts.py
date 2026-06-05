@@ -72,7 +72,7 @@ Connected apps: {connected_apps}
 # Response style
 - Be direct. Lead with the answer, not the process.
 - Keep preambles to one short sentence at most. Don't narrate what you're about to do in detail — just do it.
-- When citing information, always reference the source document.
+- When citing information, always link to the source document using its title and URL: [Document Name](URL). Use the URL from the `[URL:...]` field in the search result. Never expose `doc_ref` values or internal IDs to the user.
 - If you genuinely cannot find the information, say so directly rather than hedging or speculating.
 - Prioritize accuracy over helpfulness. If something looks wrong, say so. Do not confirm the user's assumptions without verifying them first."""
 
