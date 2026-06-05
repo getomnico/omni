@@ -1,5 +1,6 @@
 <script lang="ts">
     import * as Sidebar from '$lib/components/ui/sidebar'
+    import SidebarNavigationClose from '$lib/components/sidebar-navigation-close.svelte'
     import type { Snippet } from 'svelte'
     import { cn } from '$lib/utils'
     import { page } from '$app/state'
@@ -30,6 +31,7 @@
 </script>
 
 <Sidebar.Provider>
+    <SidebarNavigationClose />
     <Sidebar.Root variant="floating" collapsible="offcanvas" class="h-svh shrink-0 border-r">
         <Sidebar.Header class="flex justify-start">
             <Button

@@ -43,6 +43,7 @@
     import { page } from '$app/state'
     import { invalidate, invalidateAll, goto, afterNavigate } from '$app/navigation'
     import SidebarUserMenu from '$lib/components/sidebar-user-menu.svelte'
+    import SidebarNavigationClose from '$lib/components/sidebar-navigation-close.svelte'
     import type { Chat } from '$lib/server/db/schema'
 
     import { themeStore } from '$lib/themes/store.svelte'
@@ -231,6 +232,7 @@
 </Dialog.Root>
 
 <SidebarProvider>
+    <SidebarNavigationClose />
     <!-- Chat History Sidebar -->
     <Sidebar collapsible="icon" variant="sidebar">
         <SidebarHeader class="h-16">
