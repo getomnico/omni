@@ -353,6 +353,33 @@ pub fn build_thread_connector_event(
         if let Some(date) = updated_at {
             a.insert("updated_at".to_string(), json!(date.unix_timestamp()));
         }
+
+        // Human-readable source label used by the AI search tool and chat UI to
+        // identify this email's location without a webmail URL.
+        // Format: imap:{account} / {folder} / {YYYY-MM-DD} / {subject}
+        // The "imap:" prefix lets generic code detect these without connector-specific logic.
+        let ref_date = updated_at.or(created_at);
+        let date_part = ref_date.map(|dt| {
+            format!("{:04}-{:02}-{:02}", dt.year(), dt.month() as u8, dt.day())
+        });
+        // Include subject only when it is not the placeholder sentinel.
+        let subject_part = if title != NO_SUBJECT_PLACEHOLDER {
+            Some(title.as_str())
+        } else {
+            None
+        };
+        let doc_source_parts: Vec<&str> = [
+            Some(account_display_name),
+            Some(first.folder.as_str()),
+            date_part.as_deref(),
+            subject_part,
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let doc_source = format!("imap:{}", doc_source_parts.join(" / "));
+        a.insert("doc_source".to_string(), json!(doc_source));
+
         a
     };
 

@@ -22,6 +22,7 @@
         CircleAlertIcon,
         ExternalLink,
         FileText,
+        Mail,
         Pencil,
         ChevronLeft,
         ChevronRight,
@@ -887,7 +888,13 @@
                         processedMessage.content.push({
                             id: processedMessage.content.length,
                             type: 'text',
-                            text: citationTxt ? `${block.text} ${citationTxt}` : block.text,
+                            text: (() => {
+                                // Anthropic inlines 【source】 markers into block.text when
+                                // citations are enabled. Replace them with clean [source] so
+                                // the readable IMAP label is not shown raw with unicode brackets.
+                                const cleaned = block.text.replace(/【([^】]*)】/g, '[$1]')
+                                return citationTxt ? `${cleaned} ${citationTxt}` : cleaned
+                            })(),
                             citations: block.citations ? [...block.citations] : undefined,
                         })
                     } else {
@@ -1928,14 +1935,17 @@
             <div class="flex flex-wrap gap-1">
                 {#each citations as citation, idx}
                     {#if citation.type === 'search_result_location'}
+                        {@const isImap = citation.source?.startsWith('imap:')}
                         <a
-                            href={citation.source}
+                            href={isImap ? undefined : citation.source}
                             class="border-primary/10 hover:border-primary/20 hover:bg-muted/40 rounded-lg border p-2 px-2.5 text-xs font-normal no-underline transition-colors"
                             target="_blank"
                             rel="noopener noreferrer">
                             <div class="flex items-center gap-1">
                                 <div class="text-muted-foreground text-sm">[{idx}]</div>
-                                {#if getIconFromSearchResult(citation.source)}
+                                {#if isImap}
+                                    <Mail class="text-muted-foreground h-4 w-4 flex-shrink-0" />
+                                {:else if getIconFromSearchResult(citation.source)}
                                     <img
                                         src={getIconFromSearchResult(citation.source)}
                                         alt=""
@@ -1943,9 +1953,12 @@
                                 {:else}
                                     <FileText class="text-muted-foreground h-4 w-4 flex-shrink-0" />
                                 {/if}
-                                <h1 class="text-muted-foreground text-sm font-semibold">
-                                    {citation.title}
-                                </h1>
+                                <div class="flex flex-col gap-0.5">
+                                    <h1 class="text-muted-foreground text-sm font-semibold">
+                                        {citation.title}
+                                    </h1>
+                                    <ImapCitationSource source={citation.source} />
+                                </div>
                             </div>
                         </a>
                     {/if}

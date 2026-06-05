@@ -475,7 +475,7 @@ pub fn build_file_event(
             .or(entry.oc_size)
             .map(|s| s.to_string()),
         url: Some(web_url),
-        path: Some(relative_path),
+        path: Some(relative_path.clone()),
         extra: if extra.is_empty() { None } else { Some(extra) },
     };
 
@@ -486,6 +486,11 @@ pub fn build_file_event(
     };
 
     let mut attributes = HashMap::new();
+
+    // Relative path for display in the chat UI (e.g. "/Documents/report.pdf").
+    // Stored in attributes so it's returned alongside the document in search results
+    // and can be shown as a subtitle under the filename in citations.
+    attributes.insert("path".to_string(), serde_json::json!(relative_path));
 
     // Extract file extension for filtering
     if let Some(ext_pos) = filename.rfind('.') {
