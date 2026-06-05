@@ -11,6 +11,8 @@ pub struct ConnectorManagerConfig {
     pub max_concurrent_syncs_per_type: usize,
     pub scheduler_interval_seconds: u64,
     pub stale_sync_timeout_minutes: u64,
+    pub extraction_concurrency: usize,
+    pub extraction_retry_after_seconds: u64,
     pub sync_backoff_base_seconds: i64,
     pub sync_backoff_max_seconds: i64,
     pub sync_max_consecutive_failures: i32,
@@ -47,6 +49,17 @@ impl ConnectorManagerConfig {
             .parse::<u64>()
             .unwrap_or(10);
 
+        let extraction_concurrency = env::var("EXTRACTION_CONCURRENCY")
+            .unwrap_or_else(|_| "2".to_string())
+            .parse::<usize>()
+            .unwrap_or(2)
+            .max(1);
+
+        let extraction_retry_after_seconds = env::var("EXTRACTION_RETRY_AFTER_SECONDS")
+            .unwrap_or_else(|_| "30".to_string())
+            .parse::<u64>()
+            .unwrap_or(30);
+
         let sync_backoff_base_seconds = env::var("SYNC_BACKOFF_BASE_SECONDS")
             .unwrap_or_else(|_| "30".to_string())
             .parse::<i64>()
@@ -70,6 +83,8 @@ impl ConnectorManagerConfig {
             max_concurrent_syncs_per_type,
             scheduler_interval_seconds,
             stale_sync_timeout_minutes,
+            extraction_concurrency,
+            extraction_retry_after_seconds,
             sync_backoff_base_seconds,
             sync_backoff_max_seconds,
             sync_max_consecutive_failures,

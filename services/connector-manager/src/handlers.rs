@@ -32,6 +32,7 @@ use shared::{DocumentRepository, Repository, ServiceCredentialsRepo, SourceRepos
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::time::Duration;
+use tokio::sync::OwnedSemaphorePermit;
 use tracing::{debug, error, info, warn};
 
 pub async fn health_check() -> impl IntoResponse {
@@ -1393,6 +1394,33 @@ struct ExtractMultipartFields {
     data: Vec<u8>,
 }
 
+fn acquire_extraction_permit(state: &AppState) -> Result<OwnedSemaphorePermit, ApiError> {
+    state
+        .extraction_semaphore
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ApiError::TooManyRequests {
+            message: "Document extraction is busy. Try again later.".to_string(),
+            retry_after_secs: state.config.extraction_retry_after_seconds,
+        })
+}
+
+async fn extract_content_blocking(
+    data: Vec<u8>,
+    mime_type: String,
+    filename: Option<String>,
+) -> Result<String, ApiError> {
+    tokio::task::spawn_blocking(move || {
+        shared::content_extractor::extract_content(&data, &mime_type, filename.as_deref())
+            .unwrap_or_else(|e| {
+                warn!("Content extraction failed: {}", e);
+                String::new()
+            })
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("Content extraction task failed: {}", e)))
+}
+
 /// Parse common multipart fields used by both extract-content and extract-text.
 async fn parse_extract_multipart(
     mut multipart: axum::extract::Multipart,
@@ -1456,25 +1484,27 @@ async fn parse_extract_multipart(
 /// Extract text from binary data using Docling (if enabled) or the built-in extractor.
 async fn do_extract_text(
     redis_client: &redis::Client,
-    mime_type: &str,
-    filename: Option<&str>,
-    data: &[u8],
+    mime_type: String,
+    filename: Option<String>,
+    data: Vec<u8>,
 ) -> Result<String, ApiError> {
-    let docling_candidate = is_docling_supported_mime(mime_type)
-        || (mime_type == "application/octet-stream" && is_docling_supported_extension(filename));
+    let docling_candidate = is_docling_supported_mime(&mime_type)
+        || (mime_type == "application/octet-stream"
+            && is_docling_supported_extension(filename.as_deref()));
     let (docling_enabled, preset) = if docling_candidate {
         get_docling_settings(redis_client).await
     } else {
         (false, DEFAULT_DOCLING_PRESET.to_string())
     };
+
     if docling_candidate && docling_enabled {
         let docling_result = if let Some(client) = DoclingClient::from_env() {
-            let file_name = filename.unwrap_or("document");
+            let file_name = filename.as_deref().unwrap_or("document");
             debug!(
                 "Using docling-based document content extraction for file '{}' (preset={})",
                 file_name, preset
             );
-            match client.convert(data, file_name, &preset).await {
+            match client.convert(&data, file_name, &preset).await {
                 Ok(markdown) => {
                     debug!("Docling extraction succeeded: {} chars", markdown.len());
                     Some(markdown)
@@ -1500,28 +1530,18 @@ async fn do_extract_text(
             None
         };
 
-        Ok(docling_result.unwrap_or_else(|| {
+        if let Some(markdown) = docling_result {
+            Ok(markdown)
+        } else {
             debug!(
                 "Using built-in document content extraction for file {:?}",
                 filename
             );
-            shared::content_extractor::extract_content(data, mime_type, filename).unwrap_or_else(
-                |e| {
-                    warn!("Built-in content extraction failed: {}", e);
-                    String::new()
-                },
-            )
-        }))
+            extract_content_blocking(data, mime_type, filename).await
+        }
     } else {
         debug!("Using built-in document content extraction for file {:?} (docling_enabled={}, docling_candidate={})", filename, docling_enabled, docling_candidate);
-        Ok(
-            shared::content_extractor::extract_content(data, mime_type, filename).unwrap_or_else(
-                |e| {
-                    warn!("Content extraction failed: {}", e);
-                    String::new()
-                },
-            ),
-        )
+        extract_content_blocking(data, mime_type, filename).await
     }
 }
 
@@ -1529,6 +1549,7 @@ pub async fn sdk_extract_content(
     State(state): State<AppState>,
     multipart: axum::extract::Multipart,
 ) -> Result<Json<SdkExtractContentResponse>, ApiError> {
+    let _permit = acquire_extraction_permit(&state)?;
     let fields = parse_extract_multipart(multipart).await?;
 
     debug!(
@@ -1541,9 +1562,9 @@ pub async fn sdk_extract_content(
 
     let extracted_text = do_extract_text(
         &state.redis_client,
-        &fields.mime_type,
-        fields.filename.as_deref(),
-        &fields.data,
+        fields.mime_type.clone(),
+        fields.filename.clone(),
+        fields.data,
     )
     .await?;
 
@@ -1577,6 +1598,7 @@ pub async fn sdk_extract_text(
     State(state): State<AppState>,
     multipart: axum::extract::Multipart,
 ) -> Result<Json<SdkExtractTextResponse>, ApiError> {
+    let _permit = acquire_extraction_permit(&state)?;
     let fields = parse_extract_multipart(multipart).await?;
 
     debug!(
@@ -1589,9 +1611,9 @@ pub async fn sdk_extract_text(
 
     let extracted_text = do_extract_text(
         &state.redis_client,
-        &fields.mime_type,
-        fields.filename.as_deref(),
-        &fields.data,
+        fields.mime_type.clone(),
+        fields.filename.clone(),
+        fields.data,
     )
     .await?;
 

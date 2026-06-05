@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use dashmap::DashMap;
+use futures::{stream, StreamExt};
 use omni_connector_sdk::SyncContext;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,6 +9,8 @@ use std::time::{Duration, Instant};
 use time::{self, OffsetDateTime};
 use tokio::sync::Notify;
 use tracing::{debug, error, info, warn};
+
+const GOOGLE_FILE_CONCURRENCY: usize = 8;
 
 use crate::admin::AdminClient;
 use crate::auth::{GoogleAuth, OAuthAuth};
@@ -569,8 +572,12 @@ impl SyncManager {
             }
         });
 
-        let results = futures::future::join_all(tasks).await;
-        for (s, u) in results {
+        debug!(
+            "Processing Drive file batch with concurrency {}",
+            GOOGLE_FILE_CONCURRENCY
+        );
+        let mut results = stream::iter(tasks).buffer_unordered(GOOGLE_FILE_CONCURRENCY);
+        while let Some((s, u)) = results.next().await {
             scanned += s;
             updated += u;
         }
