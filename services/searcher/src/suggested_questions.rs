@@ -10,7 +10,7 @@ use shared::{AIClient, DatabasePool, DocumentRepository, GroupRepository, Object
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
-const REDIS_CACHE_KEY: &str = "suggested_questions:v2";
+const REDIS_CACHE_KEY: &str = "suggested_questions:v1";
 const CACHE_TTL_SECONDS: u64 = 86400; // 7 days
 const MAX_RETRIES: usize = 5;
 const QUESTION_PROMPT_TEMPLATE: &str = r#"You are helping generate example search queries for a workplace search tool that indexes company documents, emails, and files.
