@@ -247,7 +247,7 @@
             }} />
     {/if}
 
-    <div class="flex flex-col gap-4 sm:flex-row sm:gap-6 sm:px-6">
+    <div class="flex flex-col gap-4 md:flex-row md:gap-6 md:px-6">
         <!-- Search Results -->
         <div class="min-w-0 flex-1">
             {#if data.searchResults}
@@ -357,7 +357,7 @@
 
         <!-- Source Facets Sidebar -->
         {#if data.searchResults && sourceFacet}
-            <div class="w-full sm:w-64 sm:shrink-0">
+            <div class="w-full md:w-80 md:shrink-0">
                 <div class="">
                     <div class="mb-4 flex items-center justify-between">
                         <h3 class="flex flex-1 items-center gap-2 px-4 text-base font-semibold">
