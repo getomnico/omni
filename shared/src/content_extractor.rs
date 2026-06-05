@@ -153,7 +153,7 @@ fn extract_pdf_text(data: &[u8]) -> Result<String> {
     match result {
         Ok(Ok(text)) => Ok(text.trim().to_string()),
         Ok(Err(e)) => {
-            debug!("Skipping PDF with unextractable text: {}", e);
+            warn!("Skipping PDF with unextractable text: {}", e);
             Ok(String::new())
         }
         Err(_) => {
