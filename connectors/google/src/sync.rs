@@ -13,7 +13,7 @@ use tracing::{debug, error, info, warn};
 const GOOGLE_FILE_CONCURRENCY: usize = 8;
 
 use crate::admin::AdminClient;
-use crate::auth::{GoogleAuth, OAuthAuth};
+use crate::auth::{google_max_retries, GoogleAuth, OAuthAuth};
 use crate::cache::LruFolderCache;
 use crate::connector::build_attachment_doc_id;
 use crate::drive::{DriveClient, FileContent};
@@ -65,10 +65,7 @@ impl SyncManager {
             .parse::<u32>()
             .unwrap_or(50);
 
-        let max_retries = std::env::var("GOOGLE_MAX_RETRIES")
-            .unwrap_or_else(|_| "5".to_string())
-            .parse::<u32>()
-            .unwrap_or(5);
+        let max_retries = google_max_retries();
 
         let rate_limiter = Arc::new(RateLimiter::new(api_rate_limit, max_retries));
         let drive_client = DriveClient::with_rate_limiter(rate_limiter.clone());

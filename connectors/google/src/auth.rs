@@ -2,11 +2,13 @@ use anyhow::{anyhow, Result};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use omni_connector_sdk::RateLimiter;
-use omni_connector_sdk::{ServiceCredential, SourceType};
-use reqwest::Client;
+use omni_connector_sdk::{RetryableError, ServiceCredential, SourceType};
+use reqwest::header::{HeaderMap, RETRY_AFTER};
+use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration as StdDuration;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -461,30 +463,109 @@ pub fn get_domain_from_credentials(creds: &ServiceCredential) -> Result<String> 
         .ok_or_else(|| anyhow!("Missing domain in service credentials config"))
 }
 
-pub fn is_auth_error(status: reqwest::StatusCode) -> bool {
-    status == reqwest::StatusCode::UNAUTHORIZED
+pub const DEFAULT_GOOGLE_MAX_RETRIES: u32 = u32::MAX;
+
+pub fn google_max_retries() -> u32 {
+    std::env::var("GOOGLE_MAX_RETRIES")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(DEFAULT_GOOGLE_MAX_RETRIES)
+}
+
+pub fn is_auth_error(status: StatusCode) -> bool {
+    status == StatusCode::UNAUTHORIZED
+}
+
+pub fn is_rate_limit_error(status: StatusCode) -> bool {
+    status == StatusCode::TOO_MANY_REQUESTS
+}
+
+pub(crate) fn parse_retry_after(headers: &HeaderMap) -> Option<StdDuration> {
+    let value = headers.get(RETRY_AFTER)?.to_str().ok()?;
+
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(StdDuration::from_secs(seconds));
+    }
+
+    chrono::DateTime::parse_from_rfc2822(value)
+        .ok()
+        .and_then(|date| date.signed_duration_since(Utc::now()).to_std().ok())
+}
+
+fn classify_google_api_status<T>(
+    status: StatusCode,
+    headers: &HeaderMap,
+    error_text: String,
+    context: String,
+) -> ApiResult<T> {
+    if is_auth_error(status) {
+        ApiResult::AuthError(anyhow!(
+            "Google API auth error (HTTP {}): {}",
+            status,
+            error_text
+        ))
+    } else if is_rate_limit_error(status) {
+        let message = format!("{}: HTTP {} - {}", context, status, error_text);
+        match parse_retry_after(headers) {
+            Some(retry_after) => ApiResult::RetryableError(RetryableError::RateLimited {
+                retry_after,
+                message,
+            }),
+            None => ApiResult::RetryableError(RetryableError::Transient(anyhow!(message))),
+        }
+    } else {
+        ApiResult::OtherError(anyhow!("{}: HTTP {} - {}", context, status, error_text))
+    }
+}
+
+/// Consume a failed HTTP response and classify it for `execute_with_auth_retry`.
+///
+/// 401 responses are returned as auth errors so the caller can refresh a token.
+/// 429 responses are returned as retryable rate-limiter errors: with
+/// `Retry-After` they use the server-specified wait; without it they use the
+/// rate limiter's existing exponential backoff path.
+pub async fn classify_google_api_error<T>(
+    response: reqwest::Response,
+    context: impl Into<String>,
+) -> Result<ApiResult<T>> {
+    let status = response.status();
+    let headers = response.headers().clone();
+    let error_text = match response.text().await {
+        Ok(text) => text,
+        Err(e) => format!("(failed to read error body: {})", e),
+    };
+
+    Ok(classify_google_api_status(
+        status,
+        &headers,
+        error_text,
+        context.into(),
+    ))
 }
 
 /// Consume a failed HTTP response and produce an `ApiResult::AuthError`
 /// carrying the response body so the actual Google error message is
 /// preserved in the causal chain.
 pub async fn api_auth_error<T>(response: reqwest::Response) -> Result<ApiResult<T>> {
-    let status = response.status();
-    let error_text = match response.text().await {
-        Ok(text) => text,
-        Err(e) => format!("(failed to read error body: {})", e),
-    };
-    Ok(ApiResult::AuthError(anyhow!(
-        "Google API auth error (HTTP {}): {}",
-        status,
-        error_text
-    )))
+    classify_google_api_error(response, "Google API auth error").await
+}
+
+pub async fn classify_google_api_retry_error(
+    response: reqwest::Response,
+    context: impl Into<String>,
+) -> Result<RetryableError> {
+    match classify_google_api_error::<()>(response, context).await? {
+        ApiResult::RetryableError(e) => Ok(e),
+        ApiResult::AuthError(e) | ApiResult::OtherError(e) => Ok(RetryableError::Permanent(e)),
+        ApiResult::Success(_) => unreachable!("error classifier cannot return success"),
+    }
 }
 
 #[derive(Debug)]
 pub enum ApiResult<T> {
     Success(T),
     AuthError(anyhow::Error),
+    RetryableError(RetryableError),
     OtherError(anyhow::Error),
 }
 
@@ -502,7 +583,15 @@ where
 
     for attempt in 0..2 {
         let api_result = rate_limiter
-            .execute_with_retry(|| async { operation(token.clone()).await.map_err(Into::into) })
+            .execute_with_retry(|| async {
+                match operation(token.clone())
+                    .await
+                    .map_err(RetryableError::Transient)?
+                {
+                    ApiResult::RetryableError(e) => Err(e),
+                    other => Ok(other),
+                }
+            })
             .await?;
 
         match api_result {
@@ -521,6 +610,9 @@ where
                     "Authentication failed for user {} after token refresh",
                     user_email
                 )));
+            }
+            ApiResult::RetryableError(_) => {
+                unreachable!("retryable API result should be handled by RateLimiter")
             }
             ApiResult::OtherError(e) => return Err(e),
         }
@@ -649,6 +741,88 @@ mod tests {
         match result {
             ApiResult::AuthError(_) => {}
             _ => panic!("Expected AuthError variant"),
+        }
+    }
+
+    #[test]
+    fn test_classify_google_401_as_auth_error() {
+        let result: ApiResult<()> = classify_google_api_status(
+            StatusCode::UNAUTHORIZED,
+            &HeaderMap::new(),
+            "invalid token".to_string(),
+            "test request".to_string(),
+        );
+
+        match result {
+            ApiResult::AuthError(e) => assert!(e.to_string().contains("invalid token")),
+            _ => panic!("Expected AuthError variant"),
+        }
+    }
+
+    #[test]
+    fn test_classify_google_429_with_retry_after_as_rate_limited() {
+        let mut headers = HeaderMap::new();
+        headers.insert(RETRY_AFTER, "2".parse().unwrap());
+
+        let result: ApiResult<()> = classify_google_api_status(
+            StatusCode::TOO_MANY_REQUESTS,
+            &headers,
+            "quota exceeded".to_string(),
+            "test request".to_string(),
+        );
+
+        match result {
+            ApiResult::RetryableError(RetryableError::RateLimited {
+                retry_after,
+                message,
+            }) => {
+                assert_eq!(retry_after, StdDuration::from_secs(2));
+                assert!(message.contains("quota exceeded"));
+            }
+            _ => panic!("Expected RetryableError::RateLimited variant"),
+        }
+    }
+
+    #[test]
+    fn test_classify_google_429_without_retry_after_as_transient() {
+        let result: ApiResult<()> = classify_google_api_status(
+            StatusCode::TOO_MANY_REQUESTS,
+            &HeaderMap::new(),
+            "quota exceeded".to_string(),
+            "test request".to_string(),
+        );
+
+        match result {
+            ApiResult::RetryableError(RetryableError::Transient(e)) => {
+                assert!(e.to_string().contains("quota exceeded"));
+            }
+            _ => panic!("Expected RetryableError::Transient variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_retry_after_http_date() {
+        let mut headers = HeaderMap::new();
+        let retry_at = Utc::now() + Duration::seconds(120);
+        headers.insert(RETRY_AFTER, retry_at.to_rfc2822().parse().unwrap());
+
+        let parsed = parse_retry_after(&headers).expect("retry-after date should parse");
+        assert!(parsed <= StdDuration::from_secs(120));
+        assert!(parsed > StdDuration::from_secs(0));
+    }
+
+    #[test]
+    fn test_classify_non_429_as_other_error() {
+        let result: ApiResult<()> = classify_google_api_status(
+            StatusCode::NOT_FOUND,
+            &HeaderMap::new(),
+            "missing".to_string(),
+            "test request".to_string(),
+        );
+
+        match result {
+            ApiResult::OtherError(e) => assert!(e.to_string().contains("missing")),
+            _ => panic!("Expected OtherError variant"),
         }
     }
 

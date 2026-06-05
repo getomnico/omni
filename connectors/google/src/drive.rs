@@ -7,7 +7,9 @@ use tracing::{debug, warn};
 
 use std::collections::HashMap;
 
-use crate::auth::{api_auth_error, execute_with_auth_retry, is_auth_error, ApiResult, GoogleAuth};
+use crate::auth::{
+    classify_google_api_error, execute_with_auth_retry, google_max_retries, ApiResult, GoogleAuth,
+};
 use crate::models::{
     DriveChangesResponse, GoogleDriveFile, GooglePresentation, WebhookChannel,
     WebhookChannelResponse,
@@ -51,7 +53,7 @@ impl DriveClient {
             .build()
             .expect("Failed to build HTTP client");
 
-        let rate_limiter = Arc::new(RateLimiter::new(200, 5)); // 12000 req/min
+        let rate_limiter = Arc::new(RateLimiter::new(200, google_max_retries())); // 12000 req/min
         let user_rate_limiters = Arc::new(RwLock::new(HashMap::new()));
 
         Self {
@@ -127,18 +129,8 @@ impl DriveClient {
             let status = response.status();
             debug!("Drive list_files response status: {}", status);
 
-            if is_auth_error(status) {
-                return api_auth_error(response).await;
-            } else if !status.is_success() {
-                let error_text = match response.text().await {
-                    Ok(text) => text,
-                    Err(e) => format!("(failed to read error body: {})", e),
-                };
-                warn!(
-                    "Drive list_files failed: user={} status={} body={}",
-                    user_email, status, error_text
-                );
-                return Ok(ApiResult::OtherError(anyhow!("Failed to list files: HTTP {} - {}", status, error_text)));
+            if !status.is_success() {
+                return classify_google_api_error(response, "Failed to list files").await;
             }
 
             let response_text = response.text().await?;
@@ -223,7 +215,7 @@ impl DriveClient {
 
         let limiter = rate_limiters
             .entry(user_email.to_string())
-            .or_insert_with(|| Arc::new(RateLimiter::new(5, 5))) // 300 req/min for each user, 5 retry attempts
+            .or_insert_with(|| Arc::new(RateLimiter::new(5, google_max_retries()))) // 300 req/min for each user
             .clone();
 
         Ok(limiter)
@@ -269,16 +261,12 @@ impl DriveClient {
                     })?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Google Docs API returned error for file {}: HTTP {} - {}",
-                        file_id,
-                        status,
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(
+                        response,
+                        format!("Google Docs API returned error for file {}", file_id),
+                    )
+                    .await;
                 }
 
                 debug!("Google Docs API response status: {}", status);
@@ -318,14 +306,12 @@ impl DriveClient {
                 let response = self.client.get(&url).bearer_auth(&token).send().await?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Failed to get spreadsheet metadata: {}",
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(
+                        response,
+                        format!("Failed to get spreadsheet metadata for {}", file_id),
+                    )
+                    .await;
                 }
 
                 let sheet: GoogleSpreadsheet = response.json().await?;
@@ -347,15 +333,25 @@ impl DriveClient {
                         .send()
                         .await?;
 
-                    if values_response.status().is_success() {
-                        if let Ok(values) = values_response.json::<ValueRange>().await {
-                            content.push_str(&format!("Sheet: {}\n", sheet_name));
-                            for row in values.values.unwrap_or_default() {
-                                content.push_str(&row.join("\t"));
-                                content.push('\n');
-                            }
+                    let values_status = values_response.status();
+                    if !values_status.is_success() {
+                        return classify_google_api_error(
+                            values_response,
+                            format!(
+                                "Failed to get spreadsheet values for {} sheet {}",
+                                file_id, sheet_name
+                            ),
+                        )
+                        .await;
+                    }
+
+                    if let Ok(values) = values_response.json::<ValueRange>().await {
+                        content.push_str(&format!("Sheet: {}\n", sheet_name));
+                        for row in values.values.unwrap_or_default() {
+                            content.push_str(&row.join("\t"));
                             content.push('\n');
                         }
+                        content.push('\n');
                     }
                 }
 
@@ -382,14 +378,12 @@ impl DriveClient {
                 let response = self.client.get(&url).bearer_auth(&token).send().await?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Failed to get presentation content: {}",
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(
+                        response,
+                        format!("Failed to get presentation content for {}", file_id),
+                    )
+                    .await;
                 }
 
                 debug!("Google Slides API response status: {}", status);
@@ -439,20 +433,12 @@ impl DriveClient {
                     .with_context(|| format!("Failed to send request for file {}", file_id))?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    warn!(
-                        "Drive download_file_content failed: user={} file_id={} status={} body={}",
-                        user_email, file_id, status, error_text
-                    );
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Failed to download file {}: HTTP {} - {}",
-                        file_id,
-                        status,
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(
+                        response,
+                        format!("Failed to download file {}", file_id),
+                    )
+                    .await;
                 }
 
                 let content = response
@@ -493,20 +479,12 @@ impl DriveClient {
                     .with_context(|| format!("Failed to get metadata for file {}", file_id))?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    warn!(
-                        "Drive get_file_metadata failed: user={} file_id={} status={} body={}",
-                        user_email, file_id, status, error_text
-                    );
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Failed to get file metadata {}: HTTP {} - {}",
-                        file_id,
-                        status,
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(
+                        response,
+                        format!("Failed to get file metadata {}", file_id),
+                    )
+                    .await;
                 }
 
                 let file: GoogleDriveFile = response.json().await.with_context(|| {
@@ -552,20 +530,12 @@ impl DriveClient {
                     .with_context(|| format!("Failed to export file {}", file_id))?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    warn!(
-                        "Drive export_file failed: user={} file_id={} export_mime={} status={} body={}",
-                        user_email, file_id, export_mime_type, status, error_text
-                    );
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Failed to export file {}: HTTP {} - {}",
-                        file_id,
-                        status,
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(
+                        response,
+                        format!("Failed to export file {}", file_id),
+                    )
+                    .await;
                 }
 
                 let bytes = response.bytes().await.with_context(|| {
@@ -605,20 +575,12 @@ impl DriveClient {
                     .with_context(|| format!("Failed to send request for file {}", file_id))?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    warn!(
-                        "Drive download_binary_file failed: user={} file_id={} status={} body={}",
-                        user_email, file_id, status, error_text
-                    );
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Failed to download file {}: HTTP {} - {}",
-                        file_id,
-                        status,
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(
+                        response,
+                        format!("Failed to download file {}", file_id),
+                    )
+                    .await;
                 }
 
                 // Skip files over 100 MB to prevent OOM
@@ -780,15 +742,12 @@ impl DriveClient {
                     .await?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Failed to get folder metadata for {}: {}",
-                        folder_id,
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(
+                        response,
+                        format!("Failed to get folder metadata for {}", folder_id),
+                    )
+                    .await;
                 }
 
                 let response_text = response.text().await?;

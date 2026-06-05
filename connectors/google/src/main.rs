@@ -12,6 +12,7 @@ use tracing::{error, info, warn};
 
 use omni_connector_sdk::RateLimiter;
 use omni_google_connector::admin::AdminClient;
+use omni_google_connector::auth::google_max_retries;
 use omni_google_connector::config::GoogleConnectorConfig;
 use omni_google_connector::connector::GoogleConnector;
 use omni_google_connector::models;
@@ -33,10 +34,7 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "180".to_string())
         .parse::<u32>()
         .unwrap_or(180);
-    let max_retries = std::env::var("GOOGLE_MAX_RETRIES")
-        .unwrap_or_else(|_| "5".to_string())
-        .parse::<u32>()
-        .unwrap_or(5);
+    let max_retries = google_max_retries();
     let rate_limiter = Arc::new(RateLimiter::new(api_rate_limit, max_retries));
     let admin_client = Arc::new(AdminClient::with_rate_limiter(rate_limiter.clone()));
 
