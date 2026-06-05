@@ -120,13 +120,12 @@ class Source:
 
     @classmethod
     def from_row(cls, row: dict) -> "Source":
-        source = row.get("source") if isinstance(row.get("source"), dict) else row
         return cls(
-            id=source["id"],
-            name=source["name"],
-            source_type=source["source_type"],
-            is_active=source["is_active"],
-            is_deleted=source["is_deleted"],
+            id=row["id"],
+            name=row["name"],
+            source_type=row["source_type"],
+            is_active=row["is_active"],
+            is_deleted=row["is_deleted"],
         )
 
 
