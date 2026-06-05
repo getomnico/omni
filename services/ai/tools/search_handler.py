@@ -263,6 +263,10 @@ class SearchToolHandler:
                 is_error=True,
             )
 
+        # Strip the _ref: prefix if the LLM passes the internal reference token as document_id
+        if params.document_id and params.document_id.startswith("_ref:"):
+            params.document_id = params.document_id[len("_ref:"):]
+
         logger.info(
             f"Executing search_documents with query: {params.query}, document_id: {params.document_id}, context: {context}"
         )

@@ -49,7 +49,7 @@ Connected apps: {connected_apps}
 - Always search for **what the user is looking for** (facts, dates, decisions), not for document names or filenames. For example: instead of "termination_letter_employee_2026.pdf", search for "employee termination date last working day".
 - Never copy-paste a filename into the search query. The index contains the full document text — search for words that would appear inside the document.
 - Never re-search for a document you already found. If a search returned a document that seems relevant but the highlights don't have enough detail, use `read_document` with the `[_ref:ULID]` value from the result, not a new search with the filename.
-- If you find a document but need its full content, pass `document_id` to `search_documents` to search within that specific document: `{"query": "letzter Arbeitstag", "document_id": "<ULID>"}`. This returns all matching chunks from that single document.
+- If you find a document but need its full content, pass `document_id` to `search_documents` to search within that specific document: `{"query": "letzter Arbeitstag", "document_id": "_ref:ULID"}`. This returns all matching chunks from that single document.
 
 # Taking actions
 - Before executing a write action, state exactly what you will do and why in one sentence. The user will be prompted to approve or deny.
