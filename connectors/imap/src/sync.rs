@@ -64,11 +64,22 @@ impl SyncManager {
         }
 
         let mut connector_state = if ctx.sync_mode() == SyncType::Full {
+            // On a full sync we want to re-fetch all messages from scratch, but
+            // deletion detection requires the previous state:
+            // - indexed_uids: so deleted_uids = old_indexed_uids − server_uids can be computed
+            // - messages: so the deletion loop can find thread snapshots to emit DocumentDeleted
+            // indexed_uids is cleared immediately after deleted_uids is computed in
+            // sync_folder, before new messages are pushed, to avoid duplicates.
+            // Clear skipped_uids so oversized messages are retried on a full sync.
             info!(
-                "Full sync requested, resetting connector state for source {}",
+                "Full sync requested, preserving state for deletion detection for source {}",
                 source_id
             );
-            ImapConnectorState::default()
+            let mut old_state = state.unwrap_or_default();
+            for folder_state in old_state.folders.values_mut() {
+                folder_state.skipped_uids.clear();
+            }
+            old_state
         } else {
             state.unwrap_or_default()
         };
@@ -282,20 +293,39 @@ impl SyncManager {
             .filter(|uid| !server_uid_set.contains(uid))
             .collect();
 
+        // On a full sync, clear indexed_uids now that the deletion list has
+        // been captured.  Every surviving UID will be re-pushed in the
+        // new-message pass below, keeping the set clean with no duplicates.
+        if ctx.sync_mode() == SyncType::Full {
+            folder_state.indexed_uids.clear();
+        }
+
+        // Pre-compute a set of deleted UIDs so the new-message pass can exclude
+        // their stale snapshots from thread documents.  Without this, a thread
+        // update emitted for a surviving thread member would include the deleted
+        // member's old snapshot.  If that event and the deletion loop's
+        // corrective event land in the same indexer batch, the indexer's
+        // first-write-wins dedup would silently discard the correction.
+        let deleted_uid_set: HashSet<u32> = deleted_uids.iter().copied().collect();
+
         // --- New-message detection --------------------------------------------
-        // Compute new_uids = server_uids − indexed_uids_set.
-        //
-        // Using set subtraction (rather than a `last_uid` high-water-mark)
-        // guarantees that messages skipped in a previous sync due to parse
-        // errors, store failures, or size limits are retried on every
-        // subsequent sync instead of being permanently lost.
-        let indexed_uid_set: HashSet<u32> = folder_state.indexed_uids.iter().copied().collect();
-        let mut new_uids: Vec<u32> = server_uids
-            .into_iter()
-            .filter(|uid| {
-                !indexed_uid_set.contains(uid) && !folder_state.skipped_uids.contains(uid)
-            })
-            .collect();
+        // On incremental syncs: new_uids = server_uids − indexed_uids_set, so
+        // messages already indexed are not re-fetched.
+        // On full syncs: new_uids = all server_uids, so every message body is
+        // re-downloaded.  deleted_uids was captured before indexed_uids was
+        // cleared, so deletion detection still fires for removed messages.
+        let mut new_uids: Vec<u32> = if ctx.sync_mode() == SyncType::Full {
+            server_uids
+        } else {
+            let indexed_uid_set: HashSet<u32> =
+                folder_state.indexed_uids.iter().copied().collect();
+            server_uids
+                .into_iter()
+                .filter(|uid| {
+                    !indexed_uid_set.contains(uid) && !folder_state.skipped_uids.contains(uid)
+                })
+                .collect()
+        };
         new_uids.sort_unstable();
 
         let count_new = new_uids.len();
@@ -465,7 +495,13 @@ impl SyncManager {
                 let mut thread_messages: Vec<ParsedEmail> = folder_state
                     .messages
                     .values()
-                    .filter(|m| thread_root_map.get(&m.imap_uid) == Some(&thread_root))
+                    .filter(|m| {
+                        thread_root_map.get(&m.imap_uid) == Some(&thread_root)
+                            // Exclude UIDs already known to be deleted on the
+                            // server so the emitted document never includes
+                            // stale content from messages about to be removed.
+                            && !deleted_uid_set.contains(&m.imap_uid)
+                    })
                     .cloned()
                     .collect();
                 // Defensive: ensure the new email's UID is not already in the slice.
@@ -509,7 +545,8 @@ impl SyncManager {
                     by_message_id.insert(mid.clone(), raw.uid);
                 }
                 thread_root_map.insert(raw.uid, thread_root.clone());
-                // Guaranteed not in indexed_uids (new_uids = server_uids − indexed_uid_set − skipped_uids).
+                // On incremental syncs, UID was not in indexed_uids.
+                // On full syncs, indexed_uids was cleared before this pass; no duplicate can exist.
                 folder_state.indexed_uids.push(raw.uid);
                 folder_state.messages.insert(raw.uid, email);
                 processed += 1;
