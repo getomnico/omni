@@ -457,9 +457,7 @@ pub async fn execute_action(
     if params.is_null() {
         params = serde_json::Value::Object(serde_json::Map::new());
     }
-    if let (Some(src_obj), Some(params_obj)) =
-        (source.config.as_object(), params.as_object_mut())
-    {
+    if let (Some(src_obj), Some(params_obj)) = (source.config.as_object(), params.as_object_mut()) {
         for (k, v) in src_obj {
             params_obj.entry(k.clone()).or_insert_with(|| v.clone());
         }
@@ -1314,6 +1312,30 @@ fn is_docling_supported_extension(filename: Option<&str>) -> bool {
     )
 }
 
+fn has_extension(filename: Option<&str>, expected_ext: &str) -> bool {
+    filename
+        .and_then(|f| f.rsplit_once('.'))
+        .map(|(_, ext)| ext.eq_ignore_ascii_case(expected_ext))
+        .unwrap_or(false)
+}
+
+fn is_xlsx_extraction_target(mime_type: &str, filename: Option<&str>) -> bool {
+    mime_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        || (mime_type == "application/octet-stream" && has_extension(filename, "xlsx"))
+}
+
+fn maybe_filter_xlsx_extracted_text(
+    mime_type: &str,
+    filename: Option<&str>,
+    extracted_text: &str,
+) -> String {
+    if is_xlsx_extraction_target(mime_type, filename) {
+        shared::content_extractor::filter_extracted_spreadsheet_text(extracted_text)
+    } else {
+        extracted_text.to_string()
+    }
+}
+
 // ============================================================================
 // SDK Handlers - Called by connectors
 // ============================================================================
@@ -1488,6 +1510,7 @@ async fn do_extract_text(
     filename: Option<String>,
     data: Vec<u8>,
 ) -> Result<String, ApiError> {
+    let is_xlsx = is_xlsx_extraction_target(&mime_type, filename.as_deref());
     let docling_candidate = is_docling_supported_mime(&mime_type)
         || (mime_type == "application/octet-stream"
             && is_docling_supported_extension(filename.as_deref()));
@@ -1497,7 +1520,7 @@ async fn do_extract_text(
         (false, DEFAULT_DOCLING_PRESET.to_string())
     };
 
-    if docling_candidate && docling_enabled {
+    let extracted_text = if docling_candidate && docling_enabled {
         let docling_result = if let Some(client) = DoclingClient::from_env() {
             let file_name = filename.as_deref().unwrap_or("document");
             debug!(
@@ -1531,17 +1554,27 @@ async fn do_extract_text(
         };
 
         if let Some(markdown) = docling_result {
-            Ok(markdown)
+            markdown
         } else {
             debug!(
                 "Using built-in document content extraction for file {:?}",
                 filename
             );
-            extract_content_blocking(data, mime_type, filename).await
+            extract_content_blocking(data, mime_type.clone(), filename.clone()).await?
         }
     } else {
         debug!("Using built-in document content extraction for file {:?} (docling_enabled={}, docling_candidate={})", filename, docling_enabled, docling_candidate);
-        extract_content_blocking(data, mime_type, filename).await
+        extract_content_blocking(data, mime_type.clone(), filename.clone()).await?
+    };
+
+    if is_xlsx {
+        Ok(maybe_filter_xlsx_extracted_text(
+            &mime_type,
+            filename.as_deref(),
+            &extracted_text,
+        ))
+    } else {
+        Ok(extracted_text)
     }
 }
 
@@ -2257,5 +2290,74 @@ mod tests {
         assert!(!is_docling_supported_extension(Some("noext")));
         assert!(!is_docling_supported_extension(Some("pdf"))); // no dot — not an extension
         assert!(!is_docling_supported_extension(None));
+    }
+
+    #[test]
+    fn test_is_xlsx_extraction_target() {
+        assert!(is_xlsx_extraction_target(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            None
+        ));
+        assert!(is_xlsx_extraction_target(
+            "application/octet-stream",
+            Some("Report.XLSX")
+        ));
+        assert!(!is_xlsx_extraction_target(
+            "application/vnd.ms-excel",
+            Some("legacy.xls")
+        ));
+        assert!(!is_xlsx_extraction_target(
+            "application/octet-stream",
+            Some("notes.txt")
+        ));
+        assert!(!is_xlsx_extraction_target(
+            "application/pdf",
+            Some("sheet.xlsx")
+        ));
+    }
+
+    #[test]
+    fn test_xlsx_post_processing_for_tab_separated_output() {
+        let input = "Name\tAge\tCost\nAlice\t30\t$10.00\n123\t456\nQ4 revenue\t1.2e6\n";
+        let filtered = shared::content_extractor::filter_extracted_spreadsheet_text(input);
+
+        assert!(filtered.contains("Name\tAge\tCost"));
+        assert!(filtered.contains("Alice"));
+        assert!(filtered.contains("Q4 revenue"));
+        assert!(!filtered.contains("30"));
+        assert!(!filtered.contains("$10.00"));
+        assert!(!filtered.contains("123\t456"));
+        assert!(!filtered.contains("1.2e6"));
+    }
+
+    #[test]
+    fn test_xlsx_post_processing_for_markdown_table_output() {
+        let input = concat!(
+            "| Product | Count | Price |\n",
+            "| --- | --- | --- |\n",
+            "| Widget A | 100 | $9.99 |\n",
+            "| 111 | 222 | 333 |\n"
+        );
+        let filtered = shared::content_extractor::filter_extracted_spreadsheet_text(input);
+
+        assert!(filtered.contains("| Product | Count | Price |"));
+        assert!(filtered.contains("| Widget A |"));
+        assert!(!filtered.contains("$9.99"));
+        assert!(!filtered.contains("| 111 | 222 | 333 |"));
+    }
+
+    #[test]
+    fn test_non_xlsx_documents_do_not_match_xlsx_post_processing_target() {
+        assert!(!is_xlsx_extraction_target(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            Some("doc.docx")
+        ));
+        assert!(!is_xlsx_extraction_target("text/plain", Some("notes.txt")));
+
+        let text = "Report total\n123\t456\n";
+        assert_eq!(
+            maybe_filter_xlsx_extracted_text("text/plain", Some("notes.txt"), text),
+            text
+        );
     }
 }

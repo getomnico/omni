@@ -39,7 +39,7 @@ pub fn extract_content(data: &[u8], mime_type: &str, filename: Option<&str>) -> 
             extract_docx_text(data)
         }
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => {
-            extract_excel_text(data)
+            extract_xlsx_text_filtered(data)
         }
         "application/vnd.openxmlformats-officedocument.presentationml.presentation" => {
             extract_pptx_text(data)
@@ -228,6 +228,14 @@ fn extract_table_text(table: &docx_rs::Table, text: &mut String) {
 }
 
 fn extract_excel_text(data: &[u8]) -> Result<String> {
+    extract_excel_text_with_filter(data, false)
+}
+
+fn extract_xlsx_text_filtered(data: &[u8]) -> Result<String> {
+    extract_excel_text_with_filter(data, true)
+}
+
+fn extract_excel_text_with_filter(data: &[u8], filter_cells: bool) -> Result<String> {
     let cursor = Cursor::new(data);
     let mut workbook =
         open_workbook_auto_from_rs(cursor).context("Failed to open Excel workbook")?;
@@ -239,18 +247,111 @@ fn extract_excel_text(data: &[u8]) -> Result<String> {
         text.push_str(&format!("Sheet: {}\n", sheet_name));
         if let Ok(range) = workbook.worksheet_range(sheet_name) {
             for row in range.rows() {
-                let row_text: Vec<String> = row
-                    .iter()
-                    .map(|cell: &calamine::Data| cell.to_string())
-                    .collect();
-                text.push_str(&row_text.join("\t"));
-                text.push('\n');
+                let row_text: Vec<String> = if filter_cells {
+                    row.iter()
+                        .filter_map(|cell: &calamine::Data| {
+                            let cell_text = cell.to_string();
+                            let trimmed = cell_text.trim();
+                            if is_textual_spreadsheet_cell(trimmed) {
+                                Some(trimmed.to_string())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                } else {
+                    row.iter()
+                        .map(|cell: &calamine::Data| cell.to_string())
+                        .collect()
+                };
+
+                if !filter_cells || !row_text.is_empty() {
+                    text.push_str(&row_text.join("\t"));
+                    text.push('\n');
+                }
             }
         }
         text.push('\n');
     }
 
     Ok(text.trim().to_string())
+}
+
+pub fn is_textual_spreadsheet_cell(cell: &str) -> bool {
+    let trimmed = cell.trim();
+    if trimmed.is_empty() || is_numeric_like_spreadsheet_cell(trimmed) {
+        return false;
+    }
+
+    trimmed.chars().any(char::is_alphabetic)
+}
+
+fn is_numeric_like_spreadsheet_cell(cell: &str) -> bool {
+    let mut normalized = cell.trim().to_string();
+    if normalized.is_empty() {
+        return false;
+    }
+
+    if normalized.starts_with('(') && normalized.ends_with(')') && normalized.len() > 2 {
+        normalized = format!("-{}", &normalized[1..normalized.len() - 1]);
+    }
+
+    normalized.retain(|ch| {
+        !matches!(
+            ch,
+            ',' | '_' | ' ' | '$' | '€' | '£' | '¥' | '₹' | '%' | '+'
+        )
+    });
+
+    !normalized.is_empty() && normalized.parse::<f64>().is_ok()
+}
+
+pub fn filter_extracted_spreadsheet_text(text: &str) -> String {
+    let mut filtered = String::with_capacity(text.len());
+
+    for line in text.lines() {
+        if line.contains('\t') {
+            let cells: Vec<&str> = line
+                .split('\t')
+                .map(str::trim)
+                .filter(|cell| is_textual_spreadsheet_cell(cell))
+                .collect();
+            if !cells.is_empty() {
+                filtered.push_str(&cells.join("\t"));
+                filtered.push('\n');
+            }
+        } else if let Some(row) = filter_markdown_table_row(line) {
+            if !row.is_empty() {
+                filtered.push_str(&row);
+                filtered.push('\n');
+            }
+        } else if is_textual_spreadsheet_cell(line) {
+            filtered.push_str(line.trim());
+            filtered.push('\n');
+        }
+    }
+
+    filtered.trim().to_string()
+}
+
+fn filter_markdown_table_row(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if !trimmed.contains('|') {
+        return None;
+    }
+
+    let cells: Vec<&str> = trimmed
+        .trim_matches('|')
+        .split('|')
+        .map(str::trim)
+        .filter(|cell| is_textual_spreadsheet_cell(cell))
+        .collect();
+
+    if cells.is_empty() {
+        Some(String::new())
+    } else {
+        Some(format!("| {} |", cells.join(" | ")))
+    }
 }
 
 fn extract_pptx_text(data: &[u8]) -> Result<String> {
@@ -473,15 +574,56 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_xlsx() {
-        let data = create_test_xlsx(&[&["Name", "Age"], &["Alice", "30"]]);
+    fn test_extract_xlsx_filters_numeric_only_cells() {
+        let data = create_test_xlsx(&[
+            &["Name", "Age", "Cost"],
+            &["Alice", "30", "$10.00"],
+            &["123", "456", "2024-01-31"],
+            &["Q4 revenue", "1.2e6", "12%"],
+            &["東京", "99", "---"],
+        ]);
         let result = extract_content(
             &data,
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             None,
         )
         .unwrap();
-        assert!(result.contains("Name") && result.contains("Alice"));
+
+        assert!(result.contains("Sheet: Sheet1"));
+        assert!(result.contains("Name\tAge\tCost"));
+        assert!(result.contains("Alice"));
+        assert!(result.contains("Q4 revenue"));
+        assert!(result.contains("東京"));
+        assert!(!result.contains("30"));
+        assert!(!result.contains("$10.00"));
+        assert!(!result.contains("123\t456"));
+        assert!(!result.contains("1.2e6"));
+        assert!(!result.contains("2024-01-31"));
+    }
+
+    #[test]
+    fn test_filter_extracted_spreadsheet_text_handles_tabs_and_markdown_tables() {
+        let input = concat!(
+            "Sheet: Sheet1\n",
+            "Name\tAge\tCost\n",
+            "Alice\t30\t$10.00\n",
+            "123\t456\n",
+            "| Product | Count | Price |\n",
+            "| --- | --- | --- |\n",
+            "| Widget A | 100 | $9.99 |\n",
+            "| 111 | 222 |\n"
+        );
+
+        let filtered = filter_extracted_spreadsheet_text(input);
+
+        assert!(filtered.contains("Sheet: Sheet1"));
+        assert!(filtered.contains("Name\tAge\tCost"));
+        assert!(filtered.contains("Alice"));
+        assert!(filtered.contains("| Product | Count | Price |"));
+        assert!(filtered.contains("| Widget A |"));
+        assert!(!filtered.contains("$10.00"));
+        assert!(!filtered.contains("123\t456"));
+        assert!(!filtered.contains("| 111 | 222 |"));
     }
 
     #[test]

@@ -346,12 +346,11 @@ impl DriveClient {
                     }
 
                     if let Ok(values) = values_response.json::<ValueRange>().await {
-                        content.push_str(&format!("Sheet: {}\n", sheet_name));
-                        for row in values.values.unwrap_or_default() {
-                            content.push_str(&row.join("\t"));
-                            content.push('\n');
-                        }
-                        content.push('\n');
+                        append_filtered_spreadsheet_sheet(
+                            &mut content,
+                            sheet_name,
+                            values.values.unwrap_or_default(),
+                        );
                     }
                 }
 
@@ -949,6 +948,65 @@ struct ValueRange {
     values: Option<Vec<Vec<String>>>,
 }
 
+fn is_textual_spreadsheet_cell(cell: &str) -> bool {
+    let trimmed = cell.trim();
+    if trimmed.is_empty() || is_numeric_like_spreadsheet_cell(trimmed) {
+        return false;
+    }
+
+    trimmed.chars().any(char::is_alphabetic)
+}
+
+fn is_numeric_like_spreadsheet_cell(cell: &str) -> bool {
+    let mut normalized = cell.trim().to_string();
+    if normalized.is_empty() {
+        return false;
+    }
+
+    if normalized.starts_with('(') && normalized.ends_with(')') && normalized.len() > 2 {
+        normalized = format!("-{}", &normalized[1..normalized.len() - 1]);
+    }
+
+    normalized.retain(|ch| {
+        !matches!(
+            ch,
+            ',' | '_' | ' ' | '$' | '€' | '£' | '¥' | '₹' | '%' | '+'
+        )
+    });
+
+    !normalized.is_empty() && normalized.parse::<f64>().is_ok()
+}
+
+fn append_filtered_spreadsheet_sheet<I, R, C>(content: &mut String, sheet_name: &str, rows: I)
+where
+    I: IntoIterator<Item = R>,
+    R: IntoIterator<Item = C>,
+    C: AsRef<str>,
+{
+    content.push_str(&format!("Sheet: {}\n", sheet_name));
+
+    for row in rows {
+        let row_text: Vec<String> = row
+            .into_iter()
+            .filter_map(|cell| {
+                let trimmed = cell.as_ref().trim();
+                if is_textual_spreadsheet_cell(trimmed) {
+                    Some(trimmed.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if !row_text.is_empty() {
+            content.push_str(&row_text.join("\t"));
+            content.push('\n');
+        }
+    }
+
+    content.push('\n');
+}
+
 fn extract_text_from_presentation(presentation: &GooglePresentation) -> String {
     let mut text = String::new();
 
@@ -994,4 +1052,80 @@ fn extract_text_from_presentation(presentation: &GooglePresentation) -> String {
     }
 
     text.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spreadsheet_cell_textual_heuristic_filters_non_textual_values() {
+        let non_textual = [
+            "",
+            "   ",
+            "123",
+            "-123",
+            "+123",
+            "3.1415",
+            "-3.1415",
+            "1,234,567",
+            "$99.00",
+            "€1,234.56",
+            "12%",
+            "(123)",
+            "2024-01-31",
+            "1.2e6",
+            "1,234e5",
+            "---",
+            "***",
+        ];
+
+        for cell in non_textual {
+            assert!(
+                !is_textual_spreadsheet_cell(cell),
+                "expected non-textual cell to be filtered: {cell:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn spreadsheet_cell_textual_heuristic_keeps_text_bearing_values() {
+        let textual = [
+            "Invoice 123",
+            "Q4 revenue",
+            "SKU123",
+            "customer@example.com",
+            "hello",
+            "東京",
+            "مرحبا",
+            "строка 12",
+        ];
+
+        for cell in textual {
+            assert!(
+                is_textual_spreadsheet_cell(cell),
+                "expected text-bearing cell to be kept: {cell:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn filtered_spreadsheet_formatter_skips_numeric_only_rows() {
+        let rows = vec![
+            vec!["123".to_string(), "456".to_string()],
+            vec![
+                "Invoice".to_string(),
+                "123".to_string(),
+                "$10.00".to_string(),
+            ],
+            vec!["Q4 revenue".to_string(), "12%".to_string()],
+            vec!["   ".to_string(), "---".to_string()],
+            vec!["東京".to_string(), "2024-01-31".to_string()],
+        ];
+        let mut content = String::new();
+
+        append_filtered_spreadsheet_sheet(&mut content, "Budget", rows);
+
+        assert_eq!(content, "Sheet: Budget\nInvoice\nQ4 revenue\n東京\n\n");
+    }
 }
