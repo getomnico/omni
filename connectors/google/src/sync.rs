@@ -7,10 +7,32 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use time::{self, OffsetDateTime};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, error, info, warn};
 
 const GOOGLE_FILE_CONCURRENCY: usize = 8;
+const GOOGLE_MAX_BUFFERED_BYTES: usize = 512 * 1024 * 1024;
+const GOOGLE_BUFFER_PERMIT_UNIT: usize = 64 * 1024;
+const GOOGLE_BUFFER_PERMITS: usize = GOOGLE_MAX_BUFFERED_BYTES / GOOGLE_BUFFER_PERMIT_UNIT;
+
+pub(crate) fn permits_for_bytes(bytes: usize) -> u32 {
+    if bytes == 0 {
+        return 0;
+    }
+
+    bytes.div_ceil(GOOGLE_BUFFER_PERMIT_UNIT) as u32
+}
+
+fn file_content_len(content: &FileContent) -> usize {
+    match content {
+        FileContent::Text(text) => text.len(),
+        FileContent::Binary { data, .. } => data.len(),
+    }
+}
+
+fn estimated_file_size_bytes(file: &crate::models::GoogleDriveFile) -> Option<usize> {
+    file.size.as_ref()?.parse::<usize>().ok()
+}
 
 use crate::admin::AdminClient;
 use crate::auth::{google_max_retries, GoogleAuth, OAuthAuth};
@@ -46,6 +68,7 @@ pub struct SyncManager {
     webhook_url: Option<String>,
     pub webhook_debounce: DashMap<String, WebhookDebounce>,
     webhook_notify: Arc<Notify>,
+    drive_buffer_memory_budget: Arc<Semaphore>,
     pub debounce_duration_ms: AtomicU64,
 }
 
@@ -80,6 +103,7 @@ impl SyncManager {
             webhook_url,
             webhook_debounce: DashMap::new(),
             webhook_notify: Arc::new(Notify::new()),
+            drive_buffer_memory_budget: Arc::new(Semaphore::new(GOOGLE_BUFFER_PERMITS)),
             debounce_duration_ms: AtomicU64::new(10 * 60 * 1000),
         }
     }
@@ -476,12 +500,47 @@ impl SyncManager {
             let source_id = source_id_owned.clone();
             let sync_run_id = sync_run_id_owned.clone();
             let drive_client = self.drive_client.clone();
+            let memory_budget = self.drive_buffer_memory_budget.clone();
 
             async move {
                 debug!(
                     "Processing file: {} ({}) for user: {}",
                     user_file.file.name, user_file.file.id, user_file.user_email
                 );
+
+                let reserved_bytes = estimated_file_size_bytes(&user_file.file);
+                let reserved_permits = match reserved_bytes {
+                    Some(size) if size > GOOGLE_MAX_BUFFERED_BYTES => {
+                        warn!(
+                            "Skipping Drive file {} ({}) because its declared size {} bytes exceeds the {} byte buffer budget",
+                            user_file.file.name,
+                            user_file.file.id,
+                            size,
+                            GOOGLE_MAX_BUFFERED_BYTES
+                        );
+                        return (1, 0);
+                    }
+                    Some(size) => permits_for_bytes(size),
+                    // Google Workspace exports do not reliably expose their exported text size.
+                    // Reserve the full budget before download so unknown-size content cannot
+                    // accumulate concurrently in memory.
+                    None => GOOGLE_BUFFER_PERMITS as u32,
+                };
+
+                let buffer_permit: Option<OwnedSemaphorePermit> = if reserved_permits > 0 {
+                    match memory_budget.clone().acquire_many_owned(reserved_permits).await {
+                        Ok(permit) => Some(permit),
+                        Err(e) => {
+                            error!(
+                                "Drive buffer memory semaphore closed while processing file {} ({}): {:?}",
+                                user_file.file.name, user_file.file.id, e
+                            );
+                            return (1, 0);
+                        }
+                    }
+                } else {
+                    None
+                };
 
                 let result = drive_client
                     .get_file_content(&service_auth, &user_file.user_email, &user_file.file)
@@ -495,6 +554,43 @@ impl SyncManager {
 
                 match result {
                     Ok(file_content) => {
+                        let actual_size = file_content_len(&file_content);
+                        if actual_size > GOOGLE_MAX_BUFFERED_BYTES {
+                            warn!(
+                                "Skipping Drive file {} ({}) because buffered content is {} bytes, exceeding the {} byte budget",
+                                user_file.file.name,
+                                user_file.file.id,
+                                actual_size,
+                                GOOGLE_MAX_BUFFERED_BYTES
+                            );
+                            return (1, 0);
+                        }
+
+                        if let Some(size) = reserved_bytes {
+                            if actual_size > size {
+                                warn!(
+                                    "Skipping Drive file {} ({}) because buffered content is {} bytes, exceeding its declared size of {} bytes used for pre-download memory reservation",
+                                    user_file.file.name,
+                                    user_file.file.id,
+                                    actual_size,
+                                    size
+                                );
+                                return (1, 0);
+                            }
+                        }
+
+                        // Keep the pre-download permit alive until content has been
+                        // stored/extracted and the corresponding event has been emitted.
+                        // Dropping this value releases the connector-wide memory budget via RAII.
+                        let _buffer_permit = buffer_permit;
+                        debug!(
+                            "Drive file {} ({}) holds {} pre-download buffer permits for {} bytes",
+                            user_file.file.name,
+                            user_file.file.id,
+                            reserved_permits,
+                            actual_size
+                        );
+
                         let store_result = match file_content {
                             FileContent::Text(ref text) if text.is_empty() => {
                                 debug!("File {} has empty content, skipping", user_file.file.name);
@@ -2242,5 +2338,41 @@ impl SyncManager {
             total_members
         );
         Ok(group_emails)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::Semaphore;
+
+    #[test]
+    fn permits_for_bytes_rounds_up_to_64k_units() {
+        assert_eq!(permits_for_bytes(0), 0);
+        assert_eq!(permits_for_bytes(1), 1);
+        assert_eq!(permits_for_bytes(GOOGLE_BUFFER_PERMIT_UNIT), 1);
+        assert_eq!(permits_for_bytes(GOOGLE_BUFFER_PERMIT_UNIT + 1), 2);
+        assert_eq!(
+            permits_for_bytes(GOOGLE_MAX_BUFFERED_BYTES),
+            GOOGLE_BUFFER_PERMITS as u32
+        );
+    }
+
+    #[test]
+    fn oversized_single_buffer_requires_more_than_full_budget() {
+        assert!(permits_for_bytes(GOOGLE_MAX_BUFFERED_BYTES + 1) > GOOGLE_BUFFER_PERMITS as u32);
+    }
+
+    #[tokio::test]
+    async fn owned_buffer_permits_release_on_drop() {
+        let semaphore = Arc::new(Semaphore::new(2));
+        let permit = semaphore.clone().acquire_many_owned(2).await.unwrap();
+
+        assert!(semaphore.clone().try_acquire_owned().is_err());
+
+        drop(permit);
+
+        assert!(semaphore.try_acquire_many_owned(2).is_ok());
     }
 }

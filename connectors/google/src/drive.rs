@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
+use std::env;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tracing::{debug, warn};
@@ -31,6 +32,10 @@ const DRIVE_API_BASE: &str = "https://www.googleapis.com/drive/v3";
 const DOCS_API_BASE: &str = "https://docs.googleapis.com/v1";
 const SHEETS_API_BASE: &str = "https://sheets.googleapis.com/v4";
 const SLIDES_API_BASE: &str = "https://slides.googleapis.com/v1";
+
+fn drive_api_base() -> String {
+    env::var("GOOGLE_DRIVE_API_BASE").unwrap_or_else(|_| DRIVE_API_BASE.to_string())
+}
 
 #[derive(Clone)]
 pub struct DriveClient {
@@ -94,7 +99,7 @@ impl DriveClient {
             let page_token = page_token.clone();
             let created_after = created_after.clone();
             async move {
-            let url = format!("{}/files", DRIVE_API_BASE);
+            let url = format!("{}/files", drive_api_base().as_str());
 
             // Build the query filter
             let mut query_parts = vec!["trashed=false".to_string()];
@@ -417,7 +422,7 @@ impl DriveClient {
         execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
             let file_id = file_id.clone();
             async move {
-                let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, &file_id);
+                let url = format!("{}/files/{}?alt=media", drive_api_base().as_str(), &file_id);
 
                 debug!(
                     "Downloading file: {} (user={}, url={})",
@@ -465,7 +470,7 @@ impl DriveClient {
             async move {
                 let url = format!(
                     "{}/files/{}?fields=id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents",
-                    DRIVE_API_BASE, &file_id
+                    drive_api_base().as_str(), &file_id
                 );
 
                 debug!("Getting file metadata: {} (user={}, url={})", file_id, user_email, url);
@@ -513,7 +518,9 @@ impl DriveClient {
             async move {
                 let url = format!(
                     "{}/files/{}/export?mimeType={}",
-                    DRIVE_API_BASE, &file_id, &export_mime_type
+                    drive_api_base().as_str(),
+                    &file_id,
+                    &export_mime_type
                 );
 
                 debug!(
@@ -559,7 +566,7 @@ impl DriveClient {
         execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
             let file_id = file_id.clone();
             async move {
-                let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, &file_id);
+                let url = format!("{}/files/{}?alt=media", drive_api_base().as_str(), &file_id);
 
                 debug!(
                     "Downloading binary file: {} (user={}, url={})",
@@ -623,7 +630,7 @@ impl DriveClient {
         webhook_channel: &WebhookChannel,
         page_token: &str,
     ) -> Result<WebhookChannelResponse> {
-        let url = format!("{}/changes/watch", DRIVE_API_BASE);
+        let url = format!("{}/changes/watch", drive_api_base().as_str());
 
         let params = vec![
             ("pageToken", page_token),
@@ -664,7 +671,7 @@ impl DriveClient {
         channel_id: &str,
         resource_id: &str,
     ) -> Result<()> {
-        let url = format!("{}/channels/stop", DRIVE_API_BASE);
+        let url = format!("{}/channels/stop", drive_api_base().as_str());
 
         let stop_request = serde_json::json!({
             "id": channel_id,
@@ -689,7 +696,7 @@ impl DriveClient {
     }
 
     pub async fn get_start_page_token(&self, token: &str) -> Result<String> {
-        let url = format!("{}/changes/startPageToken", DRIVE_API_BASE);
+        let url = format!("{}/changes/startPageToken", drive_api_base().as_str());
 
         let params = vec![("supportsAllDrives", "true")];
 
@@ -725,7 +732,7 @@ impl DriveClient {
         execute_with_auth_retry(auth, user_email, self.rate_limiter.clone(), |token| {
             let folder_id = folder_id.clone();
             async move {
-                let url = format!("{}/files/{}", DRIVE_API_BASE, folder_id);
+                let url = format!("{}/files/{}", drive_api_base().as_str(), folder_id);
 
                 let params = vec![
                     ("fields", "id,name,parents,mimeType"),
@@ -772,7 +779,7 @@ impl DriveClient {
         token: &str,
         page_token: &str,
     ) -> Result<DriveChangesResponse> {
-        let url = format!("{}/changes", DRIVE_API_BASE);
+        let url = format!("{}/changes", drive_api_base().as_str());
 
         let params = vec![
             ("pageToken", page_token),
