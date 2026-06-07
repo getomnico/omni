@@ -463,7 +463,7 @@ pub fn get_domain_from_credentials(creds: &ServiceCredential) -> Result<String> 
         .ok_or_else(|| anyhow!("Missing domain in service credentials config"))
 }
 
-pub const DEFAULT_GOOGLE_MAX_RETRIES: u32 = u32::MAX;
+pub const DEFAULT_GOOGLE_MAX_RETRIES: u32 = 5;
 
 pub fn google_max_retries() -> u32 {
     std::env::var("GOOGLE_MAX_RETRIES")

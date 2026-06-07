@@ -494,9 +494,9 @@ where
         .active_syncs
         .iter()
         .find(|sync| sync.sync_run_id == request.sync_run_id)
-        .map(|sync| (sync.key().clone(), Arc::clone(&sync.cancelled)));
+        .map(|sync| Arc::clone(&sync.cancelled));
 
-    let Some((slot_key, cancelled)) = matching_sync else {
+    let Some(cancelled) = matching_sync else {
         return (
             StatusCode::NOT_FOUND,
             Json(CancelResponse {
@@ -506,7 +506,6 @@ where
     };
 
     cancelled.store(true, Ordering::SeqCst);
-    state.active_syncs.remove(&slot_key);
     let _ = state.connector.cancel(&request.sync_run_id).await;
 
     (

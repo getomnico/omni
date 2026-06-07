@@ -3,6 +3,7 @@ use dashmap::DashMap;
 use futures::{stream, StreamExt};
 use omni_connector_sdk::SyncContext;
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -32,6 +33,33 @@ fn file_content_len(content: &FileContent) -> usize {
 
 fn estimated_file_size_bytes(file: &crate::models::GoogleDriveFile) -> Option<usize> {
     file.size.as_ref()?.parse::<usize>().ok()
+}
+
+async fn await_with_heartbeat<T, F>(ctx: &SyncContext, operation: F) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    let heartbeat_interval = std::env::var("GOOGLE_SYNC_HEARTBEAT_INTERVAL_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(30)
+        .max(1);
+    let mut ticker = tokio::time::interval(Duration::from_secs(heartbeat_interval));
+    tokio::pin!(operation);
+
+    loop {
+        tokio::select! {
+            result = &mut operation => return result,
+            _ = ticker.tick() => {
+                if ctx.is_cancelled() {
+                    return Err(anyhow!("Sync cancelled"));
+                }
+                if let Err(e) = ctx.heartbeat().await {
+                    warn!("Failed to heartbeat during Google sync operation: {}", e);
+                }
+            }
+        }
+    }
 }
 
 use crate::admin::AdminClient;
@@ -501,8 +529,13 @@ impl SyncManager {
             let sync_run_id = sync_run_id_owned.clone();
             let drive_client = self.drive_client.clone();
             let memory_budget = self.drive_buffer_memory_budget.clone();
+            let ctx = ctx.clone();
 
             async move {
+                if ctx.is_cancelled() {
+                    return (0, 0);
+                }
+
                 debug!(
                     "Processing file: {} ({}) for user: {}",
                     user_file.file.name, user_file.file.id, user_file.user_email
@@ -542,15 +575,21 @@ impl SyncManager {
                     None
                 };
 
-                let result = drive_client
-                    .get_file_content(&service_auth, &user_file.user_email, &user_file.file)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "Getting content for file {} ({})",
-                            user_file.file.name, user_file.file.id
-                        )
-                    });
+                let result = await_with_heartbeat(
+                    &ctx,
+                    drive_client.get_file_content(
+                        &service_auth,
+                        &user_file.user_email,
+                        &user_file.file,
+                    ),
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "Getting content for file {} ({})",
+                        user_file.file.name, user_file.file.id
+                    )
+                });
 
                 match result {
                     Ok(file_content) => {
@@ -577,6 +616,10 @@ impl SyncManager {
                                 );
                                 return (1, 0);
                             }
+                        }
+
+                        if ctx.is_cancelled() {
+                            return (1, 0);
                         }
 
                         // Keep the pre-download permit alive until content has been

@@ -42,9 +42,12 @@ pub struct DriveClient {
     client: Client,
     // This rate limiter is for Drive APIs (rate limit: 12k req/min)
     rate_limiter: Arc<RateLimiter>,
-    // These rate limiters, one per user, are for Docs/Sheets etc. APIs,
-    // which have a rate limit per user of 300 req/min
+    // These rate limiters, one per user, are for Docs/Slides APIs,
+    // which have a rate limit per user of 300 req/min.
     user_rate_limiters: Arc<RwLock<HashMap<String, Arc<RateLimiter>>>>,
+    // Sheets has a lower per-user read quota (60 req/min). Keep it separate
+    // from Docs/Slides so spreadsheet crawls cannot overrun the Sheets quota.
+    user_sheets_rate_limiters: Arc<RwLock<HashMap<String, Arc<RateLimiter>>>>,
 }
 
 impl DriveClient {
@@ -60,11 +63,13 @@ impl DriveClient {
 
         let rate_limiter = Arc::new(RateLimiter::new(200, google_max_retries())); // 12000 req/min
         let user_rate_limiters = Arc::new(RwLock::new(HashMap::new()));
+        let user_sheets_rate_limiters = Arc::new(RwLock::new(HashMap::new()));
 
         Self {
             client,
             rate_limiter,
             user_rate_limiters,
+            user_sheets_rate_limiters,
         }
     }
 
@@ -82,6 +87,7 @@ impl DriveClient {
             client,
             rate_limiter,
             user_rate_limiters: Arc::new(RwLock::new(HashMap::new())),
+            user_sheets_rate_limiters: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -141,13 +147,16 @@ impl DriveClient {
             let response_text = response.text().await?;
             debug!("Drive API raw response: {}", response_text);
 
-            let parsed_response = serde_json::from_str(&response_text).map_err(|e| {
-                anyhow!(
-                    "Failed to parse Drive API response: {}. Raw response: {}",
-                    e,
-                    response_text
-                )
-            })?;
+            let parsed_response = match serde_json::from_str(&response_text) {
+                Ok(parsed_response) => parsed_response,
+                Err(e) => {
+                    return Ok(ApiResult::OtherError(anyhow!(
+                        "Failed to parse Drive API response: {}. Raw response: {}",
+                        e,
+                        response_text
+                    )));
+                }
+            };
 
             Ok(ApiResult::Success(parsed_response))
             }
@@ -226,6 +235,34 @@ impl DriveClient {
         Ok(limiter)
     }
 
+    fn get_or_create_user_sheets_rate_limiter(&self, user_email: &str) -> Result<Arc<RateLimiter>> {
+        {
+            let rate_limiters = self.user_sheets_rate_limiters.read().map_err(|e| {
+                anyhow!(
+                    "Failed to acquire read lock on user Sheets rate limiters: {:?}",
+                    e
+                )
+            })?;
+            if let Some(limiter) = rate_limiters.get(user_email) {
+                return Ok(Arc::clone(limiter));
+            }
+        }
+
+        let mut rate_limiters = self.user_sheets_rate_limiters.write().map_err(|e| {
+            anyhow!(
+                "Failed to acquire write lock on user Sheets rate limiters: {:?}",
+                e
+            )
+        })?;
+
+        let limiter = rate_limiters
+            .entry(user_email.to_string())
+            .or_insert_with(|| Arc::new(RateLimiter::new(1, google_max_retries())))
+            .clone();
+
+        Ok(limiter)
+    }
+
     fn delete_user_rate_limiter(&self, user_email: &str) -> Result<()> {
         let mut rate_limiters = self.user_rate_limiters.write().map_err(|e| {
             anyhow!(
@@ -234,6 +271,15 @@ impl DriveClient {
             )
         })?;
         rate_limiters.remove(user_email);
+        drop(rate_limiters);
+
+        let mut sheets_rate_limiters = self.user_sheets_rate_limiters.write().map_err(|e| {
+            anyhow!(
+                "Failed to acquire write lock on user Sheets rate limiters: {:?}",
+                e
+            )
+        })?;
+        sheets_rate_limiters.remove(user_email);
         Ok(())
     }
 
@@ -280,13 +326,17 @@ impl DriveClient {
                     .await
                     .context("Failed to read response body from Google Docs API")?;
 
-                let doc: GoogleDocument =
-                    serde_json::from_str(&response_text).with_context(|| {
-                        format!(
-                            "Failed to parse Google Docs API response for file {}. Raw response: {}",
-                            file_id, response_text
-                        )
-                    })?;
+                let doc: GoogleDocument = match serde_json::from_str(&response_text) {
+                    Ok(doc) => doc,
+                    Err(e) => {
+                        return Ok(ApiResult::OtherError(anyhow!(
+                            "Failed to parse Google Docs API response for file {}: {}. Raw response: {}",
+                            file_id,
+                            e,
+                            response_text
+                        )));
+                    }
+                };
 
                 Ok(ApiResult::Success(extract_text_from_document(&doc)))
             }
@@ -302,7 +352,7 @@ impl DriveClient {
     ) -> Result<String> {
         let file_id = file_id.to_string();
 
-        let rate_limiter = self.get_or_create_user_rate_limiter(user_email)?;
+        let rate_limiter = self.get_or_create_user_sheets_rate_limiter(user_email)?;
         execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
             let file_id = file_id.clone();
             async move {
@@ -319,7 +369,16 @@ impl DriveClient {
                     .await;
                 }
 
-                let sheet: GoogleSpreadsheet = response.json().await?;
+                let sheet: GoogleSpreadsheet = match response.json().await {
+                    Ok(sheet) => sheet,
+                    Err(e) => {
+                        return Ok(ApiResult::OtherError(anyhow!(
+                            "Failed to parse spreadsheet metadata for {}: {}",
+                            file_id,
+                            e
+                        )));
+                    }
+                };
                 let mut content = String::new();
 
                 for sheet_info in &sheet.sheets {
@@ -393,14 +452,17 @@ impl DriveClient {
                 debug!("Google Slides API response status: {}", status);
                 let response_text = response.text().await?;
 
-                let presentation: GooglePresentation = serde_json::from_str(&response_text)
-                    .map_err(|e| {
-                        anyhow!(
-                            "Failed to parse Google Slides API response: {}. Raw response: {}",
+                let presentation: GooglePresentation = match serde_json::from_str(&response_text) {
+                    Ok(presentation) => presentation,
+                    Err(e) => {
+                        return Ok(ApiResult::OtherError(anyhow!(
+                            "Failed to parse Google Slides API response for file {}: {}. Raw response: {}",
+                            file_id,
                             e,
                             response_text
-                        )
-                    })?;
+                        )));
+                    }
+                };
 
                 Ok(ApiResult::Success(extract_text_from_presentation(
                     &presentation,
