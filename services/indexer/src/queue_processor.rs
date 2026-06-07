@@ -641,7 +641,9 @@ impl QueueProcessor {
 
         let mut total_processed = 0;
 
-        for (sync_run_id, run_events) in by_sync_run {
+        for (sync_run_id, mut run_events) in by_sync_run {
+            run_events.sort_by(|a, b| a.id.cmp(&b.id));
+
             let batch_start_time = std::time::Instant::now();
             let events_clone = run_events.clone();
             let batch = self.group_events_by_type(sync_run_id, run_events).await?;
@@ -781,10 +783,13 @@ impl QueueProcessor {
                     )?;
 
                     let key = format!("{}:{}", source_id, document_id);
-                    upsert_docs
-                        .entry(key)
-                        .and_modify(|(_, event_ids)| event_ids.push(event_id.clone()))
-                        .or_insert_with(|| (document, vec![event_id]));
+                    let mut event_ids = deleted_docs
+                        .remove(&key)
+                        .map(|(_, _, event_ids)| event_ids)
+                        .or_else(|| upsert_docs.remove(&key).map(|(_, event_ids)| event_ids))
+                        .unwrap_or_default();
+                    event_ids.push(event_id);
+                    upsert_docs.insert(key, (document, event_ids));
                 }
                 ConnectorEvent::DocumentUpdated {
                     source_id,
@@ -820,10 +825,13 @@ impl QueueProcessor {
                     }
 
                     let key = format!("{}:{}", source_id, document_id);
-                    upsert_docs
-                        .entry(key)
-                        .and_modify(|(_, event_ids)| event_ids.push(event_id.clone()))
-                        .or_insert_with(|| (document, vec![event_id]));
+                    let mut event_ids = deleted_docs
+                        .remove(&key)
+                        .map(|(_, _, event_ids)| event_ids)
+                        .or_else(|| upsert_docs.remove(&key).map(|(_, event_ids)| event_ids))
+                        .unwrap_or_default();
+                    event_ids.push(event_id);
+                    upsert_docs.insert(key, (document, event_ids));
                 }
                 ConnectorEvent::DocumentDeleted {
                     source_id,
@@ -831,10 +839,13 @@ impl QueueProcessor {
                     ..
                 } => {
                     let key = format!("{}:{}", source_id, document_id);
-                    deleted_docs
-                        .entry(key)
-                        .and_modify(|(_, _, event_ids)| event_ids.push(event_id.clone()))
-                        .or_insert_with(|| (source_id, document_id, vec![event_id]));
+                    let mut event_ids = upsert_docs
+                        .remove(&key)
+                        .map(|(_, event_ids)| event_ids)
+                        .or_else(|| deleted_docs.remove(&key).map(|(_, _, event_ids)| event_ids))
+                        .unwrap_or_default();
+                    event_ids.push(event_id);
+                    deleted_docs.insert(key, (source_id, document_id, event_ids));
                 }
                 ConnectorEvent::GroupMembershipSync {
                     source_id,

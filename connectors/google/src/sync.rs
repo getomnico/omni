@@ -8,10 +8,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use time::{self, OffsetDateTime};
-use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, error, info, warn};
 
 const GOOGLE_FILE_CONCURRENCY: usize = 8;
+const DEFAULT_GOOGLE_DRIVE_PARALLEL_USERS: usize = 3;
+const DEFAULT_GOOGLE_DRIVE_MAX_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024;
 const GOOGLE_MAX_BUFFERED_BYTES: usize = 512 * 1024 * 1024;
 const GOOGLE_BUFFER_PERMIT_UNIT: usize = 64 * 1024;
 const GOOGLE_BUFFER_PERMITS: usize = GOOGLE_MAX_BUFFERED_BYTES / GOOGLE_BUFFER_PERMIT_UNIT;
@@ -33,6 +35,92 @@ fn file_content_len(content: &FileContent) -> usize {
 
 fn estimated_file_size_bytes(file: &crate::models::GoogleDriveFile) -> Option<usize> {
     file.size.as_ref()?.parse::<usize>().ok()
+}
+
+fn is_native_google_workspace_mime(mime_type: &str) -> bool {
+    mime_type.starts_with("application/vnd.google-apps.")
+}
+
+fn permits_for_unknown_size_file(file: &crate::models::GoogleDriveFile) -> u32 {
+    if is_native_google_workspace_mime(&file.mime_type) {
+        permits_for_bytes(google_drive_max_download_bytes())
+    } else {
+        GOOGLE_BUFFER_PERMITS as u32
+    }
+}
+
+fn google_drive_parallel_users() -> usize {
+    std::env::var("GOOGLE_DRIVE_PARALLEL_USERS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|users| *users > 0)
+        .unwrap_or(DEFAULT_GOOGLE_DRIVE_PARALLEL_USERS)
+}
+
+fn google_drive_max_download_bytes() -> usize {
+    std::env::var("GOOGLE_DRIVE_MAX_DOWNLOAD_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|bytes| *bytes > 0)
+        .unwrap_or(DEFAULT_GOOGLE_DRIVE_MAX_DOWNLOAD_BYTES)
+}
+
+#[derive(Default)]
+struct DriveContentCache {
+    content_ids: DashMap<String, String>,
+    permissions: DashMap<String, DocumentPermissions>,
+    locks: DashMap<String, Arc<Mutex<()>>>,
+}
+
+impl DriveContentCache {
+    fn get_content_id(&self, file_id: &str) -> Option<String> {
+        self.content_ids
+            .get(file_id)
+            .map(|content_id| content_id.value().clone())
+    }
+
+    fn insert_content_id(&self, file_id: &str, content_id: String) {
+        self.content_ids.insert(file_id.to_string(), content_id);
+    }
+
+    fn merge_permissions(
+        &self,
+        file_id: &str,
+        permissions: DocumentPermissions,
+    ) -> DocumentPermissions {
+        let mut merged = self
+            .permissions
+            .get(file_id)
+            .map(|cached| cached.value().clone())
+            .unwrap_or(DocumentPermissions {
+                public: false,
+                users: Vec::new(),
+                groups: Vec::new(),
+            });
+
+        merged.public |= permissions.public;
+        for user in permissions.users {
+            if !merged.users.contains(&user) {
+                merged.users.push(user);
+            }
+        }
+        for group in permissions.groups {
+            if !merged.groups.contains(&group) {
+                merged.groups.push(group);
+            }
+        }
+
+        self.permissions.insert(file_id.to_string(), merged.clone());
+        merged
+    }
+
+    fn lock_for_file(&self, file_id: &str) -> Arc<Mutex<()>> {
+        self.locks
+            .entry(file_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .value()
+            .clone()
+    }
 }
 
 async fn await_with_heartbeat<T, F>(ctx: &SyncContext, operation: F) -> Result<T>
@@ -62,12 +150,49 @@ where
     }
 }
 
+async fn emit_drive_event_with_content(
+    ctx: &SyncContext,
+    user_file: &crate::models::UserFile,
+    sync_run_id: &str,
+    source_id: &str,
+    content_id: &str,
+    file_path: Option<String>,
+    permissions: DocumentPermissions,
+) -> bool {
+    let mut event = user_file.file.to_connector_event(
+        sync_run_id,
+        source_id,
+        content_id,
+        file_path,
+        Some(&user_file.user_email),
+    );
+    if let ConnectorEvent::DocumentCreated {
+        permissions: event_permissions,
+        ..
+    } = &mut event
+    {
+        *event_permissions = permissions;
+    }
+
+    match ctx.emit_event(event).await {
+        Ok(_) => true,
+        Err(e) => {
+            error!(
+                "Failed to queue event for Drive file {} ({}): {:?}",
+                user_file.file.name, user_file.file.id, e
+            );
+            false
+        }
+    }
+}
+
 async fn emit_metadata_only_drive_event(
     ctx: &SyncContext,
     user_file: &crate::models::UserFile,
     sync_run_id: &str,
     source_id: &str,
     reason: &str,
+    permissions: DocumentPermissions,
 ) -> bool {
     let metadata_content = format!(
         "Title: {}\nMIME type: {}\nContent note: {}\n",
@@ -85,13 +210,20 @@ async fn emit_metadata_only_drive_event(
         }
     };
 
-    let event = user_file.file.to_connector_event(
+    let mut event = user_file.file.to_connector_event(
         sync_run_id,
         source_id,
         &content_id,
         Some(format!("/{}", user_file.file.name)),
         Some(&user_file.user_email),
     );
+    if let ConnectorEvent::DocumentCreated {
+        permissions: event_permissions,
+        ..
+    } = &mut event
+    {
+        *event_permissions = permissions;
+    }
 
     match ctx.emit_event(event).await {
         Ok(_) => true,
@@ -330,6 +462,7 @@ impl SyncManager {
         sync_run_id: &str,
         ctx: &SyncContext,
         created_after: Option<&str>,
+        content_cache: Arc<DriveContentCache>,
     ) -> Result<(usize, usize)> {
         info!("Processing Drive files for user: {}", user_email);
 
@@ -384,6 +517,7 @@ impl SyncManager {
                                 sync_run_id,
                                 ctx,
                                 service_auth.clone(),
+                                content_cache.clone(),
                             )
                             .await?;
 
@@ -419,6 +553,7 @@ impl SyncManager {
                     sync_run_id,
                     ctx,
                     service_auth.clone(),
+                    content_cache.clone(),
                 )
                 .await?;
 
@@ -441,6 +576,7 @@ impl SyncManager {
         sync_run_id: &str,
         ctx: &SyncContext,
         start_page_token: &str,
+        content_cache: Arc<DriveContentCache>,
     ) -> Result<(usize, usize)> {
         info!(
             "Processing incremental Drive sync for user {} from pageToken {}",
@@ -517,6 +653,7 @@ impl SyncManager {
                             sync_run_id,
                             ctx,
                             service_auth.clone(),
+                            content_cache.clone(),
                         )
                         .await?;
                     total_scanned += scanned;
@@ -534,6 +671,7 @@ impl SyncManager {
                     sync_run_id,
                     ctx,
                     service_auth.clone(),
+                    content_cache.clone(),
                 )
                 .await?;
             total_scanned += scanned;
@@ -554,6 +692,7 @@ impl SyncManager {
         sync_run_id: &str,
         ctx: &SyncContext,
         service_auth: Arc<GoogleAuth>,
+        content_cache: Arc<DriveContentCache>,
     ) -> Result<(usize, usize)> {
         info!("Processing batch of {} files", files.len());
 
@@ -572,6 +711,7 @@ impl SyncManager {
             let sync_run_id = sync_run_id_owned.clone();
             let drive_client = self.drive_client.clone();
             let memory_budget = self.drive_buffer_memory_budget.clone();
+            let content_cache = content_cache.clone();
             let ctx = ctx.clone();
 
             async move {
@@ -584,8 +724,71 @@ impl SyncManager {
                     user_file.file.name, user_file.file.id, user_file.user_email
                 );
 
+                let file_lock = content_cache.lock_for_file(&user_file.file.id);
+                let _file_guard = file_lock.lock().await;
+                let current_permissions = user_file
+                    .file
+                    .to_document_permissions(Some(&user_file.user_email));
+                let merged_permissions =
+                    content_cache.merge_permissions(&user_file.file.id, current_permissions);
+
+                if let Some(content_id) = content_cache.get_content_id(&user_file.file.id) {
+                    debug!(
+                        "Reusing cached content_id {} for Drive file {} ({}) after waiting for in-flight extraction",
+                        content_id, user_file.file.name, user_file.file.id
+                    );
+                    let file_path = match self
+                        .resolve_file_path(&service_auth, &user_file.user_email, &user_file.file)
+                        .await
+                    {
+                        Ok(path) => Some(path),
+                        Err(e) => {
+                            warn!(
+                                "Failed to resolve path for cached file {}: {}",
+                                user_file.file.name, e
+                            );
+                            Some(format!("/{}", user_file.file.name))
+                        }
+                    };
+                    let emitted = emit_drive_event_with_content(
+                        &ctx,
+                        &user_file,
+                        &sync_run_id,
+                        &source_id,
+                        &content_id,
+                        file_path,
+                        merged_permissions.clone(),
+                    )
+                    .await;
+                    return (1, usize::from(emitted));
+                }
+
                 let reserved_bytes = estimated_file_size_bytes(&user_file.file);
+                let max_download_bytes = google_drive_max_download_bytes();
                 let reserved_permits = match reserved_bytes {
+                    Some(size) if size > max_download_bytes => {
+                        warn!(
+                            "Indexing metadata only for Drive file {} ({}) because its declared size {} bytes exceeds the {} byte download limit",
+                            user_file.file.name,
+                            user_file.file.id,
+                            size,
+                            max_download_bytes
+                        );
+                        let reason = format!(
+                            "File content was not indexed because declared size {} bytes exceeds the {} byte download limit.",
+                            size, max_download_bytes
+                        );
+                        let emitted = emit_metadata_only_drive_event(
+                            &ctx,
+                            &user_file,
+                            &sync_run_id,
+                            &source_id,
+                            &reason,
+                            merged_permissions.clone(),
+                        )
+                        .await;
+                        return (1, usize::from(emitted));
+                    }
                     Some(size) if size > GOOGLE_MAX_BUFFERED_BYTES => {
                         warn!(
                             "Indexing metadata only for Drive file {} ({}) because its declared size {} bytes exceeds the {} byte buffer budget",
@@ -604,15 +807,16 @@ impl SyncManager {
                             &sync_run_id,
                             &source_id,
                             &reason,
+                            merged_permissions.clone(),
                         )
                         .await;
                         return (1, usize::from(emitted));
                     }
                     Some(size) => permits_for_bytes(size),
-                    // Google Workspace exports do not reliably expose their exported text size.
-                    // Reserve the full budget before download so unknown-size content cannot
-                    // accumulate concurrently in memory.
-                    None => GOOGLE_BUFFER_PERMITS as u32,
+                    // Native Google Workspace files usually do not expose byte size. Reserve the
+                    // configured download cap for those so they can still run concurrently; keep
+                    // the full-budget reservation for unknown-size uploaded files.
+                    None => permits_for_unknown_size_file(&user_file.file),
                 };
 
                 let buffer_permit: Option<OwnedSemaphorePermit> = if reserved_permits > 0 {
@@ -667,6 +871,7 @@ impl SyncManager {
                                 &sync_run_id,
                                 &source_id,
                                 &reason,
+                                merged_permissions.clone(),
                             )
                             .await;
                             return (1, usize::from(emitted));
@@ -698,6 +903,7 @@ impl SyncManager {
                                             &sync_run_id,
                                             &source_id,
                                             reason,
+                                            merged_permissions.clone(),
                                         )
                                         .await;
                                         return (1, usize::from(emitted));
@@ -736,6 +942,7 @@ impl SyncManager {
                                     &sync_run_id,
                                     &source_id,
                                     "File content was empty or unsupported, so only metadata was indexed.",
+                                    merged_permissions.clone(),
                                 )
                                 .await;
                                 return (1, usize::from(emitted));
@@ -752,6 +959,7 @@ impl SyncManager {
                         };
                         match store_result {
                             Ok(content_id) => {
+                                content_cache.insert_content_id(&user_file.file.id, content_id.clone());
                                 let file_path = match self
                                     .resolve_file_path(
                                         &service_auth,
@@ -770,31 +978,37 @@ impl SyncManager {
                                     }
                                 };
 
-                                let event = user_file.file.to_connector_event(
+                                let emitted = emit_drive_event_with_content(
+                                    &ctx,
+                                    &user_file,
                                     &sync_run_id,
                                     &source_id,
                                     &content_id,
                                     file_path,
-                                    Some(&user_file.user_email),
-                                );
-
-                                match ctx.emit_event(event).await {
-                                    Ok(_) => (1, 1),
-                                    Err(e) => {
-                                        error!(
-                                            "Failed to queue event for file {}: {:?}",
-                                            user_file.file.name, e
-                                        );
-                                        (1, 0)
-                                    }
-                                }
+                                    merged_permissions.clone(),
+                                )
+                                .await;
+                                (1, usize::from(emitted))
                             }
                             Err(e) => {
-                                error!(
-                                    "Failed to store content for file {}: {}",
-                                    user_file.file.name, e
+                                warn!(
+                                    "Failed to store extracted content for Drive file {} ({}), indexing metadata only: {}",
+                                    user_file.file.name, user_file.file.id, e
                                 );
-                                (1, 0)
+                                let reason = format!(
+                                    "File content was not indexed because extraction or content storage failed: {}",
+                                    e
+                                );
+                                let emitted = emit_metadata_only_drive_event(
+                                    &ctx,
+                                    &user_file,
+                                    &sync_run_id,
+                                    &source_id,
+                                    &reason,
+                                    merged_permissions.clone(),
+                                )
+                                .await;
+                                (1, usize::from(emitted))
                             }
                         }
                     }
@@ -813,6 +1027,7 @@ impl SyncManager {
                             &sync_run_id,
                             &source_id,
                             &reason,
+                            merged_permissions.clone(),
                         )
                         .await;
                         (1, usize::from(emitted))
@@ -914,124 +1129,151 @@ impl SyncManager {
         let mut total_scanned = 0;
         let mut total_updated = 0;
         let mut errors = 0;
+        let content_cache = Arc::new(DriveContentCache::default());
+        let parallel_users = google_drive_parallel_users();
+        info!("Processing Drive users with concurrency {}", parallel_users);
 
-        for cur_user_email in &user_emails {
-            if ctx.is_cancelled() {
-                info!("Sync {} cancelled, stopping Drive sync early", sync_run_id);
-                break;
-            }
+        let user_tasks = stream::iter(user_emails.iter().cloned()).map(|cur_user_email| {
+            let service_auth = service_auth.clone();
+            let source_id = source.id.clone();
+            let sync_run_id = sync_run_id.to_string();
+            let drive_cutoff_date = drive_cutoff_date.clone();
+            let ctx = ctx.clone();
+            let content_cache = content_cache.clone();
+            let stored_page_token = old_page_tokens.get(cur_user_email.as_str()).cloned();
 
-            match service_auth.get_access_token(cur_user_email).await {
-                Ok(access_token) => {
-                    info!("Processing user: {}", cur_user_email);
+            async move {
+                if ctx.is_cancelled() {
+                    info!(
+                        "Sync {} cancelled, skipping Drive sync for user {}",
+                        sync_run_id, cur_user_email
+                    );
+                    return (cur_user_email, Ok((0, 0, None)));
+                }
 
-                    let stored_page_token = old_page_tokens.get(cur_user_email.as_str());
-                    let use_incremental = is_incremental && stored_page_token.is_some();
-
-                    let result = if use_incremental {
-                        let start_token = stored_page_token.unwrap();
-                        info!(
-                            "Using incremental Drive sync for user {} from pageToken {}",
-                            cur_user_email, start_token
+                let access_token = match service_auth.get_access_token(&cur_user_email).await {
+                    Ok(access_token) => access_token,
+                    Err(e) => {
+                        return (
+                            cur_user_email.clone(),
+                            Err(anyhow!(
+                                "Failed to get access token for user {}: {}. This user may not have Drive access.",
+                                cur_user_email,
+                                e
+                            )),
                         );
-                        match self
-                            .sync_drive_for_user_incremental(
-                                &cur_user_email,
-                                service_auth.clone(),
-                                &source.id,
-                                sync_run_id,
-                                ctx,
-                                start_token,
-                            )
-                            .await
-                        {
-                            Ok(result) => Ok(result),
-                            Err(e) => {
-                                warn!(
-                                    error = ?e,
-                                    user = %cur_user_email,
-                                    "Incremental drive sync failed."
-                                );
-                                Err(e).with_context(|| {
-                                    format!(
-                                        "Incremental drive sync failed for {} at pageToken {}",
-                                        cur_user_email, start_token
-                                    )
-                                })
-                            }
-                        }
-                    } else {
-                        self.sync_drive_for_user(
+                    }
+                };
+
+                info!("Processing user: {}", cur_user_email);
+
+                let use_incremental = is_incremental && stored_page_token.is_some();
+                let result = if use_incremental {
+                    let start_token = stored_page_token.as_deref().unwrap();
+                    info!(
+                        "Using incremental Drive sync for user {} from pageToken {}",
+                        cur_user_email, start_token
+                    );
+                    match self
+                        .sync_drive_for_user_incremental(
                             &cur_user_email,
                             service_auth.clone(),
-                            &source.id,
-                            sync_run_id,
-                            ctx,
-                            Some(&drive_cutoff_date),
+                            &source_id,
+                            &sync_run_id,
+                            &ctx,
+                            start_token,
+                            content_cache.clone(),
                         )
                         .await
-                    };
-
-                    let user_succeeded = match result {
-                        Ok((scanned, updated)) => {
-                            total_scanned += scanned;
-                            total_updated += updated;
-                            info!(
-                                "User {} Drive sync completed: {} scanned, {} updated",
-                                cur_user_email, scanned, updated
-                            );
-                            true
-                        }
+                    {
+                        Ok(result) => Ok(result),
                         Err(e) => {
-                            error!("Failed to process Drive for user {}: {}", cur_user_email, e);
-                            errors += 1;
-                            false
+                            warn!(
+                                error = ?e,
+                                user = %cur_user_email,
+                                "Incremental drive sync failed."
+                            );
+                            Err(e).with_context(|| {
+                                format!(
+                                    "Incremental drive sync failed for {} at pageToken {}",
+                                    cur_user_email, start_token
+                                )
+                            })
                         }
-                    };
+                    }
+                } else {
+                    self.sync_drive_for_user(
+                        &cur_user_email,
+                        service_auth.clone(),
+                        &source_id,
+                        &sync_run_id,
+                        &ctx,
+                        Some(&drive_cutoff_date),
+                        content_cache.clone(),
+                    )
+                    .await
+                };
 
-                    // Capture the watermark AFTER the user's files are fully
-                    // processed. If we captured before and crashed mid-user,
-                    // resume would advance past the user's unprocessed files.
-                    if user_succeeded {
-                        match self.drive_client.get_start_page_token(&access_token).await {
-                            Ok(token) => {
-                                new_page_tokens.insert(cur_user_email.clone(), token);
-                            }
+                match result {
+                    Ok((scanned, updated)) => {
+                        let page_token = match self
+                            .drive_client
+                            .get_start_page_token(&access_token)
+                            .await
+                        {
+                            Ok(token) => Some(token),
                             Err(e) => {
                                 warn!(
                                     "Failed to get start page token for user {}: {}",
                                     cur_user_email, e
                                 );
-                            }
-                        }
-
-                        // Per-user checkpoint: persist progress so a crash
-                        // before later users finish doesn't lose this user's
-                        // work. State-save errors are fatal (silent loss is
-                        // worse than a failed sync).
-                        let checkpoint_state = GoogleConnectorState {
-                            webhook_channel_id: webhook_channel_id.clone(),
-                            webhook_resource_id: webhook_resource_id.clone(),
-                            webhook_expires_at,
-                            gmail_history_ids: gmail_history_ids.clone(),
-                            drive_page_tokens: if new_page_tokens.is_empty() {
                                 None
-                            } else {
-                                Some(new_page_tokens.clone())
-                            },
+                            }
                         };
-                        ctx.save_connector_state(serde_json::to_value(&checkpoint_state)?)
-                            .await
-                            .with_context(|| {
-                                format!(
-                                    "Failed to checkpoint Drive state after user {}",
-                                    cur_user_email
-                                )
-                            })?;
+                        (cur_user_email, Ok((scanned, updated, page_token)))
                     }
+                    Err(e) => (cur_user_email, Err(e)),
+                }
+            }
+        });
+
+        let mut user_results = user_tasks.buffer_unordered(parallel_users);
+        while let Some((cur_user_email, result)) = user_results.next().await {
+            match result {
+                Ok((scanned, updated, page_token)) => {
+                    total_scanned += scanned;
+                    total_updated += updated;
+                    info!(
+                        "User {} Drive sync completed: {} scanned, {} updated",
+                        cur_user_email, scanned, updated
+                    );
+
+                    if let Some(token) = page_token {
+                        new_page_tokens.insert(cur_user_email.clone(), token);
+                    }
+
+                    let checkpoint_state = GoogleConnectorState {
+                        webhook_channel_id: webhook_channel_id.clone(),
+                        webhook_resource_id: webhook_resource_id.clone(),
+                        webhook_expires_at,
+                        gmail_history_ids: gmail_history_ids.clone(),
+                        drive_page_tokens: if new_page_tokens.is_empty() {
+                            None
+                        } else {
+                            Some(new_page_tokens.clone())
+                        },
+                    };
+                    ctx.save_connector_state(serde_json::to_value(&checkpoint_state)?)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "Failed to checkpoint Drive state after user {}",
+                                cur_user_email
+                            )
+                        })?;
                 }
                 Err(e) => {
-                    warn!("Failed to get access token for user {}: {}. This user may not have Drive access.", cur_user_email, e);
+                    error!("Failed to process Drive for user {}: {}", cur_user_email, e);
                     errors += 1;
                 }
             }
@@ -2518,6 +2760,88 @@ mod tests {
     #[test]
     fn oversized_single_buffer_requires_more_than_full_budget() {
         assert!(permits_for_bytes(GOOGLE_MAX_BUFFERED_BYTES + 1) > GOOGLE_BUFFER_PERMITS as u32);
+    }
+
+    #[test]
+    fn unknown_size_native_workspace_files_do_not_reserve_full_budget() {
+        let file = crate::models::GoogleDriveFile {
+            id: "doc-1".to_string(),
+            name: "Doc".to_string(),
+            mime_type: "application/vnd.google-apps.document".to_string(),
+            web_view_link: None,
+            created_time: None,
+            modified_time: None,
+            size: None,
+            parents: None,
+            shared: None,
+            permissions: None,
+            owners: None,
+        };
+
+        assert_eq!(
+            permits_for_unknown_size_file(&file),
+            permits_for_bytes(DEFAULT_GOOGLE_DRIVE_MAX_DOWNLOAD_BYTES)
+        );
+        assert!(permits_for_unknown_size_file(&file) < GOOGLE_BUFFER_PERMITS as u32);
+    }
+
+    #[test]
+    fn unknown_size_uploaded_files_still_reserve_full_budget() {
+        let file = crate::models::GoogleDriveFile {
+            id: "file-1".to_string(),
+            name: "Report.xlsx".to_string(),
+            mime_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                .to_string(),
+            web_view_link: None,
+            created_time: None,
+            modified_time: None,
+            size: None,
+            parents: None,
+            shared: None,
+            permissions: None,
+            owners: None,
+        };
+
+        assert_eq!(
+            permits_for_unknown_size_file(&file),
+            GOOGLE_BUFFER_PERMITS as u32
+        );
+    }
+
+    #[test]
+    fn drive_content_cache_merges_permissions_for_duplicate_files() {
+        let cache = DriveContentCache::default();
+
+        let first = cache.merge_permissions(
+            "drive-file-1",
+            DocumentPermissions {
+                public: false,
+                users: vec!["alice@example.com".to_string()],
+                groups: vec!["team@example.com".to_string()],
+            },
+        );
+        assert!(!first.public);
+        assert_eq!(first.users, vec!["alice@example.com"]);
+        assert_eq!(first.groups, vec!["team@example.com"]);
+
+        let merged = cache.merge_permissions(
+            "drive-file-1",
+            DocumentPermissions {
+                public: true,
+                users: vec![
+                    "alice@example.com".to_string(),
+                    "bob@example.com".to_string(),
+                ],
+                groups: vec![
+                    "team@example.com".to_string(),
+                    "eng@example.com".to_string(),
+                ],
+            },
+        );
+
+        assert!(merged.public);
+        assert_eq!(merged.users, vec!["alice@example.com", "bob@example.com"]);
+        assert_eq!(merged.groups, vec!["team@example.com", "eng@example.com"]);
     }
 
     #[tokio::test]

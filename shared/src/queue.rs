@@ -1,6 +1,6 @@
+use crate::utils::generate_ulid;
 use anyhow::Result;
 use sqlx::{PgPool, Row};
-use ulid::Ulid;
 
 use crate::models::{ConnectorEvent, ConnectorEventQueueItem, EventStatus, SyncType};
 
@@ -26,7 +26,7 @@ impl EventQueue {
     }
 
     pub async fn enqueue(&self, source_id: &str, event: &ConnectorEvent) -> Result<String> {
-        let id = Ulid::new().to_string();
+        let id = generate_ulid();
         let event_type = event_type_str(event);
 
         sqlx::query(
@@ -62,7 +62,7 @@ impl EventQueue {
         let mut payloads: Vec<serde_json::Value> = Vec::with_capacity(events.len());
 
         for event in events {
-            ids.push(Ulid::new().to_string());
+            ids.push(generate_ulid());
             sync_run_ids.push(event.sync_run_id().to_string());
             source_ids.push(source_id.to_string());
             event_types.push(event_type_str(event).to_string());

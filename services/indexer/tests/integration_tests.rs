@@ -217,6 +217,134 @@ async fn test_event_driven_document_lifecycle() {
 }
 
 #[tokio::test]
+async fn test_latest_document_event_wins_within_indexer_batch() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let event_queue = EventQueue::new(fixture.state.db_pool.pool().clone());
+    let repo = DocumentRepository::new(fixture.state.db_pool.pool());
+
+    let doc_id = "last_event_wins_doc";
+    let first_content_id = fixture
+        .state
+        .content_storage
+        .store_content(b"first content", None)
+        .await
+        .unwrap();
+    let second_content_id = fixture
+        .state
+        .content_storage
+        .store_content(b"second content", None)
+        .await
+        .unwrap();
+
+    let first_event = ConnectorEvent::DocumentCreated {
+        sync_run_id: "sync_last_event_wins".to_string(),
+        source_id: TEST_SOURCE_ID.to_string(),
+        document_id: doc_id.to_string(),
+        content_id: first_content_id,
+        metadata: DocumentMetadata {
+            title: Some("First Event".to_string()),
+            author: None,
+            created_at: None,
+            updated_at: Some(OffsetDateTime::now_utc()),
+            content_type: None,
+            mime_type: Some("text/plain".to_string()),
+            size: Some("13".to_string()),
+            url: Some("https://example.com/first.txt".to_string()),
+            path: Some("/first.txt".to_string()),
+            extra: None,
+        },
+        permissions: DocumentPermissions {
+            public: false,
+            users: vec!["first@example.com".to_string()],
+            groups: vec![],
+        },
+        attributes: None,
+    };
+    let second_event = ConnectorEvent::DocumentCreated {
+        sync_run_id: "sync_last_event_wins".to_string(),
+        source_id: TEST_SOURCE_ID.to_string(),
+        document_id: doc_id.to_string(),
+        content_id: second_content_id,
+        metadata: DocumentMetadata {
+            title: Some("Second Event".to_string()),
+            author: None,
+            created_at: None,
+            updated_at: Some(OffsetDateTime::now_utc()),
+            content_type: None,
+            mime_type: Some("text/plain".to_string()),
+            size: Some("14".to_string()),
+            url: Some("https://example.com/second.txt".to_string()),
+            path: Some("/second.txt".to_string()),
+            extra: None,
+        },
+        permissions: DocumentPermissions {
+            public: true,
+            users: vec!["second@example.com".to_string()],
+            groups: vec!["second-group@example.com".to_string()],
+        },
+        attributes: None,
+    };
+
+    let event_ids = event_queue
+        .enqueue_batch(TEST_SOURCE_ID, &[first_event, second_event])
+        .await
+        .unwrap();
+    assert_eq!(event_ids.len(), 2);
+
+    let processor = QueueProcessor::new(fixture.state.clone())
+        .with_poll_interval(Duration::from_millis(200))
+        .with_batch_size(100);
+    let processor_handle = tokio::spawn(async move {
+        let _ = processor.start().await;
+    });
+
+    let document = common::wait_for_document_with_title(
+        &repo,
+        TEST_SOURCE_ID,
+        doc_id,
+        "Second Event",
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("latest event should determine final document state");
+
+    let stored_bytes = fixture
+        .state
+        .content_storage
+        .get_content(&document.content_id.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(String::from_utf8(stored_bytes).unwrap(), "second content");
+
+    assert_eq!(
+        document.url,
+        Some("https://example.com/second.txt".to_string())
+    );
+    let permissions = document.permissions.as_object().unwrap();
+    assert_eq!(permissions["public"].as_bool().unwrap(), true);
+    let users: Vec<_> = permissions["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u.as_str().unwrap())
+        .collect();
+    assert_eq!(users, vec!["second@example.com"]);
+    let groups: Vec<_> = permissions["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g.as_str().unwrap())
+        .collect();
+    assert_eq!(groups, vec!["second-group@example.com"]);
+
+    let completed =
+        common::wait_for_completed(fixture.state.db_pool.pool(), 2, Duration::from_secs(5)).await;
+    assert!(completed >= 2);
+
+    processor_handle.abort();
+}
+
+#[tokio::test]
 async fn test_url_inferred_file_extension_is_capped() {
     let fixture = common::setup_test_fixture().await.unwrap();
     let event_queue = EventQueue::new(fixture.state.db_pool.pool().clone());

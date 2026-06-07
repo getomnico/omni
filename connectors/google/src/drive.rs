@@ -33,6 +33,7 @@ const DOCS_API_BASE: &str = "https://docs.googleapis.com/v1";
 const SHEETS_API_BASE: &str = "https://sheets.googleapis.com/v4";
 const SLIDES_API_BASE: &str = "https://slides.googleapis.com/v1";
 const DEFAULT_GOOGLE_SHEETS_MAX_INDEXED_ROWS: usize = 1000;
+const DEFAULT_GOOGLE_DRIVE_MAX_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024;
 
 fn drive_api_base() -> String {
     env::var("GOOGLE_DRIVE_API_BASE").unwrap_or_else(|_| DRIVE_API_BASE.to_string())
@@ -44,6 +45,58 @@ fn google_sheets_max_indexed_rows() -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|rows| *rows > 0)
         .unwrap_or(DEFAULT_GOOGLE_SHEETS_MAX_INDEXED_ROWS)
+}
+
+fn google_drive_max_download_bytes() -> usize {
+    env::var("GOOGLE_DRIVE_MAX_DOWNLOAD_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|bytes| *bytes > 0)
+        .unwrap_or(DEFAULT_GOOGLE_DRIVE_MAX_DOWNLOAD_BYTES)
+}
+
+async fn read_response_bytes_limited(
+    mut response: reqwest::Response,
+    file_id: &str,
+    max_bytes: usize,
+) -> Result<ApiResult<Vec<u8>>> {
+    if let Some(content_length) = response.headers().get(reqwest::header::CONTENT_LENGTH) {
+        if let Ok(length_str) = content_length.to_str() {
+            if let Ok(length) = length_str.parse::<usize>() {
+                if length > max_bytes {
+                    warn!(
+                        "Skipping oversized Drive file {} ({} bytes > {} byte download limit)",
+                        file_id, length, max_bytes
+                    );
+                    return Ok(ApiResult::OtherError(anyhow!(
+                        "File too large ({} bytes), skipping content download",
+                        length
+                    )));
+                }
+            }
+        }
+    }
+
+    let mut data = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .with_context(|| format!("Failed to read content for file {}", file_id))?
+    {
+        if data.len().saturating_add(chunk.len()) > max_bytes {
+            warn!(
+                "Skipping oversized Drive file {} while streaming (exceeded {} byte download limit)",
+                file_id, max_bytes
+            );
+            return Ok(ApiResult::OtherError(anyhow!(
+                "File too large (exceeded {} bytes), skipping content download",
+                max_bytes
+            )));
+        }
+        data.extend_from_slice(&chunk);
+    }
+
+    Ok(ApiResult::Success(data))
 }
 
 fn escape_sheet_name_for_a1(sheet_name: &str) -> String {
@@ -199,12 +252,15 @@ impl DriveClient {
                 .get_google_slides_content(auth, user_email, &file.id)
                 .await
                 .map(FileContent::Text),
-            "text/plain" | "text/html" | "text/csv" => self
+            "text/plain" | "text/html" => self
                 .download_file_content(auth, user_email, &file.id)
                 .await
                 .map(FileContent::Text),
-            // Binary document formats — return raw bytes for extraction via SDK
+            // Binary and structured document formats — return raw bytes for extraction via SDK.
+            // CSV goes through connector-manager extraction so spreadsheet filtering/truncation
+            // is centralized with XLS/XLSX handling.
             "application/pdf"
+            | "text/csv"
             | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
@@ -606,10 +662,20 @@ impl DriveClient {
                     .await;
                 }
 
-                let content = response
-                    .text()
-                    .await
-                    .with_context(|| format!("Failed to read file content for {}", file_id))?;
+                let max_bytes = google_drive_max_download_bytes();
+                let bytes = match read_response_bytes_limited(response, &file_id, max_bytes).await?
+                {
+                    ApiResult::Success(bytes) => bytes,
+                    ApiResult::AuthError(e) => return Ok(ApiResult::AuthError(e)),
+                    ApiResult::RetryableError(e) => return Ok(ApiResult::RetryableError(e)),
+                    ApiResult::OtherError(e) => return Ok(ApiResult::OtherError(e)),
+                };
+                let content = String::from_utf8(bytes).with_context(|| {
+                    format!(
+                        "Downloaded file content for {} was not valid UTF-8",
+                        file_id
+                    )
+                })?;
 
                 Ok(ApiResult::Success(content))
             }
@@ -705,11 +771,18 @@ impl DriveClient {
                     .await;
                 }
 
-                let bytes = response.bytes().await.with_context(|| {
-                    format!("Failed to read export content for file {}", file_id)
-                })?;
-
-                Ok(ApiResult::Success(bytes.to_vec()))
+                match read_response_bytes_limited(
+                    response,
+                    &file_id,
+                    google_drive_max_download_bytes(),
+                )
+                .await?
+                {
+                    ApiResult::Success(bytes) => Ok(ApiResult::Success(bytes)),
+                    ApiResult::AuthError(e) => Ok(ApiResult::AuthError(e)),
+                    ApiResult::RetryableError(e) => Ok(ApiResult::RetryableError(e)),
+                    ApiResult::OtherError(e) => Ok(ApiResult::OtherError(e)),
+                }
             }
         })
         .await
@@ -750,36 +823,18 @@ impl DriveClient {
                     .await;
                 }
 
-                // Skip files over 100 MB to prevent OOM
-                const MAX_FILE_SIZE_MB: f64 = 100.0;
-                if let Some(content_length) =
-                    response.headers().get(reqwest::header::CONTENT_LENGTH)
+                match read_response_bytes_limited(
+                    response,
+                    &file_id,
+                    google_drive_max_download_bytes(),
+                )
+                .await?
                 {
-                    if let Ok(length_str) = content_length.to_str() {
-                        if let Ok(length) = length_str.parse::<u64>() {
-                            let mb = length as f64 / (1024.0 * 1024.0);
-                            if mb > MAX_FILE_SIZE_MB {
-                                warn!(
-                                    "Skipping oversized file {} ({:.1} MB > {:.0} MB limit)",
-                                    file_id, mb, MAX_FILE_SIZE_MB
-                                );
-                                return Ok(ApiResult::OtherError(anyhow!(
-                                    "File too large ({:.1} MB), skipping",
-                                    mb
-                                )));
-                            }
-                            if mb > 50.0 {
-                                warn!("Large office document detected ({}): {:.1} MB", file_id, mb);
-                            }
-                        }
-                    }
+                    ApiResult::Success(bytes) => Ok(ApiResult::Success(bytes)),
+                    ApiResult::AuthError(e) => Ok(ApiResult::AuthError(e)),
+                    ApiResult::RetryableError(e) => Ok(ApiResult::RetryableError(e)),
+                    ApiResult::OtherError(e) => Ok(ApiResult::OtherError(e)),
                 }
-
-                let binary_content = response.bytes().await.with_context(|| {
-                    format!("Failed to read binary content for file {}", file_id)
-                })?;
-
-                Ok(ApiResult::Success(binary_content.to_vec()))
             }
         })
         .await

@@ -8,22 +8,75 @@ use std::io::Cursor;
 use tracing::{debug, warn};
 use zip::ZipArchive;
 
+#[path = "content_extractor_xlsx.rs"]
+mod xlsx_extractor;
+
+const DEFAULT_SPREADSHEET_MAX_EXTRACTED_ROWS: usize = 1000;
+
 /// Extract human-readable text content from raw file bytes based on MIME type.
 ///
 /// When mime_type is `application/octet-stream`, falls back to extension-based
 /// detection using the optional filename.
 pub fn extract_content(data: &[u8], mime_type: &str, filename: Option<&str>) -> Result<String> {
-    let effective_mime = if mime_type == "application/octet-stream" {
+    let effective_mime = effective_mime_type(mime_type, filename);
+
+    if is_spreadsheet_mime(&effective_mime) {
+        return extract_spreadsheet_content_with_row_limit(
+            data,
+            &effective_mime,
+            None,
+            DEFAULT_SPREADSHEET_MAX_EXTRACTED_ROWS,
+        );
+    }
+
+    extract_non_spreadsheet_content(data, &effective_mime)
+}
+
+pub fn extract_spreadsheet_content_with_row_limit(
+    data: &[u8],
+    mime_type: &str,
+    filename: Option<&str>,
+    max_rows: usize,
+) -> Result<String> {
+    let effective_mime = effective_mime_type(mime_type, filename);
+
+    match effective_mime.as_str() {
+        "text/csv" => String::from_utf8(data.to_vec())
+            .or_else(|_| Ok(String::from_utf8_lossy(data).into_owned())),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => {
+            xlsx_extractor::extract_xlsx_text_filtered(data, max_rows)
+        }
+        "application/vnd.ms-excel" => extract_excel_text(data).or_else(|e| {
+            warn!("Failed to extract text from legacy .xls file: {}", e);
+            Ok(String::new())
+        }),
+        _ => extract_non_spreadsheet_content(data, &effective_mime),
+    }
+}
+
+fn effective_mime_type(mime_type: &str, filename: Option<&str>) -> String {
+    if mime_type == "application/octet-stream" {
         filename
             .and_then(mime_from_extension)
             .unwrap_or_else(|| mime_type.to_string())
     } else {
         mime_type.to_string()
-    };
+    }
+}
 
-    match effective_mime.as_str() {
+fn is_spreadsheet_mime(mime_type: &str) -> bool {
+    matches!(
+        mime_type,
+        "text/csv"
+            | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            | "application/vnd.ms-excel"
+    )
+}
+
+fn extract_non_spreadsheet_content(data: &[u8], effective_mime: &str) -> Result<String> {
+    match effective_mime {
         // Plain text formats — pass through as-is
-        "text/plain" | "text/markdown" | "text/csv" => String::from_utf8(data.to_vec())
+        "text/plain" | "text/markdown" => String::from_utf8(data.to_vec())
             .or_else(|_| Ok(String::from_utf8_lossy(data).into_owned())),
 
         "text/html" => {
@@ -39,18 +92,9 @@ pub fn extract_content(data: &[u8], mime_type: &str, filename: Option<&str>) -> 
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
             extract_docx_text(data)
         }
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => {
-            extract_xlsx_text_filtered(data)
-        }
         "application/vnd.openxmlformats-officedocument.presentationml.presentation" => {
             extract_pptx_text(data)
         }
-
-        // Legacy Excel — calamine supports this natively
-        "application/vnd.ms-excel" => extract_excel_text(data).or_else(|e| {
-            warn!("Failed to extract text from legacy .xls file: {}", e);
-            Ok(String::new())
-        }),
 
         // Legacy Word — cannot be parsed with docx_rs (different binary format)
         "application/msword" => {
@@ -238,10 +282,6 @@ fn extract_excel_text(data: &[u8]) -> Result<String> {
     extract_excel_text_with_filter(data, false)
 }
 
-fn extract_xlsx_text_filtered(data: &[u8]) -> Result<String> {
-    extract_excel_text_with_filter(data, true)
-}
-
 fn extract_excel_text_with_filter(data: &[u8], filter_cells: bool) -> Result<String> {
     let cursor = Cursor::new(data);
     let mut workbook =
@@ -314,9 +354,21 @@ fn is_numeric_like_spreadsheet_cell(cell: &str) -> bool {
 }
 
 pub fn filter_extracted_spreadsheet_text(text: &str) -> String {
+    filter_extracted_spreadsheet_text_with_row_limit(text, None)
+}
+
+pub fn filter_extracted_spreadsheet_text_with_row_limit(
+    text: &str,
+    max_rows: Option<usize>,
+) -> String {
     let mut filtered = String::with_capacity(text.len());
+    let mut rows_written = 0usize;
 
     for line in text.lines() {
+        if max_rows.is_some_and(|limit| rows_written >= limit) {
+            break;
+        }
+
         if line.contains('\t') {
             let cells: Vec<&str> = line
                 .split('\t')
@@ -326,15 +378,18 @@ pub fn filter_extracted_spreadsheet_text(text: &str) -> String {
             if !cells.is_empty() {
                 filtered.push_str(&cells.join("\t"));
                 filtered.push('\n');
+                rows_written += 1;
             }
         } else if let Some(row) = filter_markdown_table_row(line) {
             if !row.is_empty() {
                 filtered.push_str(&row);
                 filtered.push('\n');
+                rows_written += 1;
             }
         } else if is_textual_spreadsheet_cell(line) {
             filtered.push_str(line.trim());
             filtered.push('\n');
+            rows_written += 1;
         }
     }
 
@@ -526,12 +581,22 @@ fn extract_msg_text(data: &[u8]) -> Result<String> {
         md.push_str(&format!("**From:** {}\n", sender_str));
     }
 
-    let to_addrs: Vec<String> = msg.to.iter().map(format_person).filter(|s| !s.is_empty()).collect();
+    let to_addrs: Vec<String> = msg
+        .to
+        .iter()
+        .map(format_person)
+        .filter(|s| !s.is_empty())
+        .collect();
     if !to_addrs.is_empty() {
         md.push_str(&format!("**To:** {}\n", to_addrs.join(", ")));
     }
 
-    let cc_addrs: Vec<String> = msg.cc.iter().map(format_person).filter(|s| !s.is_empty()).collect();
+    let cc_addrs: Vec<String> = msg
+        .cc
+        .iter()
+        .map(format_person)
+        .filter(|s| !s.is_empty())
+        .collect();
     if !cc_addrs.is_empty() {
         md.push_str(&format!("**Cc:** {}\n", cc_addrs.join(", ")));
     }
@@ -695,34 +760,6 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_xlsx_filters_numeric_only_cells() {
-        let data = create_test_xlsx(&[
-            &["Name", "Age", "Cost"],
-            &["Alice", "30", "$10.00"],
-            &["123", "456", "2024-01-31"],
-            &["Q4 revenue", "1.2e6", "12%"],
-            &["東京", "99", "---"],
-        ]);
-        let result = extract_content(
-            &data,
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            None,
-        )
-        .unwrap();
-
-        assert!(result.contains("Sheet: Sheet1"));
-        assert!(result.contains("Name\tAge\tCost"));
-        assert!(result.contains("Alice"));
-        assert!(result.contains("Q4 revenue"));
-        assert!(result.contains("東京"));
-        assert!(!result.contains("30"));
-        assert!(!result.contains("$10.00"));
-        assert!(!result.contains("123\t456"));
-        assert!(!result.contains("1.2e6"));
-        assert!(!result.contains("2024-01-31"));
-    }
-
-    #[test]
     fn test_filter_extracted_spreadsheet_text_handles_tabs_and_markdown_tables() {
         let input = concat!(
             "Sheet: Sheet1\n",
@@ -745,6 +782,25 @@ mod tests {
         assert!(!filtered.contains("$10.00"));
         assert!(!filtered.contains("123\t456"));
         assert!(!filtered.contains("| 111 | 222 |"));
+    }
+
+    #[test]
+    fn test_filter_extracted_spreadsheet_text_applies_row_limit_after_filtering() {
+        let input = concat!(
+            "Name\tAge\n",
+            "123\t456\n",
+            "Alice\t30\n",
+            "Bob\t40\n",
+            "Carol\t50\n"
+        );
+
+        let filtered = filter_extracted_spreadsheet_text_with_row_limit(input, Some(2));
+
+        assert!(filtered.contains("Name\tAge"));
+        assert!(filtered.contains("Alice"));
+        assert!(!filtered.contains("Bob"));
+        assert!(!filtered.contains("Carol"));
+        assert!(!filtered.contains("123\t456"));
     }
 
     #[test]
@@ -794,80 +850,6 @@ mod tests {
 
     // ── Test helpers ──
 
-    fn create_test_xlsx(rows: &[&[&str]]) -> Vec<u8> {
-        use zip::write::SimpleFileOptions as FileOptions;
-
-        let mut buf = Vec::new();
-        {
-            let cursor = Cursor::new(&mut buf);
-            let mut zip = zip::ZipWriter::new(cursor);
-
-            zip.start_file("[Content_Types].xml", FileOptions::default())
-                .unwrap();
-            write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-</Types>"#).unwrap();
-
-            zip.start_file("_rels/.rels", FileOptions::default())
-                .unwrap();
-            write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
-</Relationships>"#).unwrap();
-
-            zip.start_file("xl/_rels/workbook.xml.rels", FileOptions::default())
-                .unwrap();
-            write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-</Relationships>"#).unwrap();
-
-            zip.start_file("xl/workbook.xml", FileOptions::default())
-                .unwrap();
-            write!(
-                zip,
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <sheets>
-    <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
-  </sheets>
-</workbook>"#
-            )
-            .unwrap();
-
-            let mut sheet_xml = String::from(
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <sheetData>"#,
-            );
-            for (row_idx, row) in rows.iter().enumerate() {
-                sheet_xml.push_str(&format!("\n    <row r=\"{}\">", row_idx + 1));
-                for (col_idx, cell_val) in row.iter().enumerate() {
-                    let col_letter = (b'A' + col_idx as u8) as char;
-                    sheet_xml.push_str(&format!(
-                        "<c r=\"{}{}\" t=\"inlineStr\"><is><t>{}</t></is></c>",
-                        col_letter,
-                        row_idx + 1,
-                        cell_val
-                    ));
-                }
-                sheet_xml.push_str("</row>");
-            }
-            sheet_xml.push_str("\n  </sheetData>\n</worksheet>");
-
-            zip.start_file("xl/worksheets/sheet1.xml", FileOptions::default())
-                .unwrap();
-            write!(zip, "{}", sheet_xml).unwrap();
-            zip.finish().unwrap();
-        }
-        buf
-    }
-
     fn create_test_pptx(slide_texts: &[&str]) -> Vec<u8> {
         use zip::write::SimpleFileOptions as FileOptions;
 
@@ -907,21 +889,28 @@ mod tests {
         let result = extract_content(SIMPLE_EML, "message/rfc822", None).unwrap();
         assert!(result.contains("test"), "subject missing");
         assert!(result.contains("andris@kreata.ee"), "from address missing");
-        assert!(result.contains("andris.reinman@gmail.com"), "to address missing");
+        assert!(
+            result.contains("andris.reinman@gmail.com"),
+            "to address missing"
+        );
         assert!(result.contains("Hello world!"), "body missing");
         assert!(result.contains("---"), "markdown separator missing");
     }
 
     #[test]
     fn test_extract_eml_via_extension_fallback() {
-        let result = extract_content(SIMPLE_EML, "application/octet-stream", Some("message.eml")).unwrap();
+        let result =
+            extract_content(SIMPLE_EML, "application/octet-stream", Some("message.eml")).unwrap();
         assert!(result.contains("Hello world!"));
     }
 
     #[test]
     fn test_extract_eml_markdown_structure() {
         let result = extract_content(SIMPLE_EML, "message/rfc822", None).unwrap();
-        assert!(result.starts_with("# "), "should start with markdown heading");
+        assert!(
+            result.starts_with("# "),
+            "should start with markdown heading"
+        );
         assert!(result.contains("**From:**"), "From header missing");
         assert!(result.contains("**To:**"), "To header missing");
         assert!(result.contains("**Date:**"), "Date header missing");
@@ -964,7 +953,8 @@ mod tests {
 
     #[test]
     fn test_extract_msg_via_extension_fallback() {
-        let result = extract_content(SAMPLE_MSG, "application/octet-stream", Some("email.msg")).unwrap();
+        let result =
+            extract_content(SAMPLE_MSG, "application/octet-stream", Some("email.msg")).unwrap();
         assert!(!result.is_empty(), "extension fallback produced no output");
     }
 }

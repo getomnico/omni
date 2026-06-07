@@ -877,6 +877,9 @@ pub enum ApiError {
     #[error("Internal error: {0}")]
     Internal(String),
 
+    #[error("Payload too large: {0}")]
+    PayloadTooLarge(String),
+
     #[error("Too many requests: {message} (retry after {retry_after_secs}s)")]
     TooManyRequests {
         message: String,
@@ -946,6 +949,7 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
+            ApiError::PayloadTooLarge(msg) => (StatusCode::PAYLOAD_TOO_LARGE, msg.clone()),
             ApiError::TooManyRequests { .. } => unreachable!(),
         };
 
@@ -1319,9 +1323,74 @@ fn has_extension(filename: Option<&str>, expected_ext: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn is_xlsx_extraction_target(mime_type: &str, filename: Option<&str>) -> bool {
-    mime_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        || (mime_type == "application/octet-stream" && has_extension(filename, "xlsx"))
+const DEFAULT_SPREADSHEET_MAX_INDEXED_ROWS: usize = 1000;
+const DEFAULT_MAX_EXTRACT_INPUT_BYTES: usize = 50 * 1024 * 1024;
+const DEFAULT_MAX_EXTRACTED_TEXT_BYTES: usize = 5 * 1024 * 1024;
+
+fn env_usize_or(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn spreadsheet_max_indexed_rows() -> usize {
+    env_usize_or(
+        "CONNECTOR_MANAGER_SPREADSHEET_MAX_INDEXED_ROWS",
+        DEFAULT_SPREADSHEET_MAX_INDEXED_ROWS,
+    )
+}
+
+fn max_extract_input_bytes() -> usize {
+    env_usize_or(
+        "CONNECTOR_MANAGER_MAX_EXTRACT_INPUT_BYTES",
+        DEFAULT_MAX_EXTRACT_INPUT_BYTES,
+    )
+}
+
+fn max_extracted_text_bytes() -> usize {
+    env_usize_or(
+        "CONNECTOR_MANAGER_MAX_EXTRACTED_TEXT_BYTES",
+        DEFAULT_MAX_EXTRACTED_TEXT_BYTES,
+    )
+}
+
+fn truncate_text_to_max_bytes(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+
+    let suffix =
+        "\n\n[Content truncated because extracted text exceeded the configured byte limit.]";
+    let include_suffix = max_bytes > suffix.len();
+    let content_limit = if include_suffix {
+        max_bytes - suffix.len()
+    } else {
+        max_bytes
+    };
+    let mut end = content_limit.min(text.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+
+    let mut truncated = text[..end].to_string();
+    if include_suffix {
+        truncated.push_str(suffix);
+    }
+    truncated
+}
+
+fn is_spreadsheet_extraction_target(mime_type: &str, filename: Option<&str>) -> bool {
+    matches!(
+        mime_type,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            | "application/vnd.ms-excel"
+            | "text/csv"
+    ) || (mime_type == "application/octet-stream"
+        && (has_extension(filename, "xlsx")
+            || has_extension(filename, "xls")
+            || has_extension(filename, "csv")))
 }
 
 fn maybe_filter_xlsx_extracted_text(
@@ -1329,8 +1398,11 @@ fn maybe_filter_xlsx_extracted_text(
     filename: Option<&str>,
     extracted_text: &str,
 ) -> String {
-    if is_xlsx_extraction_target(mime_type, filename) {
-        shared::content_extractor::filter_extracted_spreadsheet_text(extracted_text)
+    if is_spreadsheet_extraction_target(mime_type, filename) {
+        shared::content_extractor::filter_extracted_spreadsheet_text_with_row_limit(
+            extracted_text,
+            Some(spreadsheet_max_indexed_rows()),
+        )
     } else {
         extracted_text.to_string()
     }
@@ -1432,15 +1504,23 @@ async fn extract_content_blocking(
     mime_type: String,
     filename: Option<String>,
 ) -> Result<String, ApiError> {
+    let spreadsheet_max_rows = spreadsheet_max_indexed_rows();
+    let is_spreadsheet = is_spreadsheet_extraction_target(&mime_type, filename.as_deref());
     tokio::task::spawn_blocking(move || {
-        shared::content_extractor::extract_content(&data, &mime_type, filename.as_deref())
-            .unwrap_or_else(|e| {
-                warn!("Content extraction failed: {}", e);
-                String::new()
-            })
+        if is_spreadsheet {
+            shared::content_extractor::extract_spreadsheet_content_with_row_limit(
+                &data,
+                &mime_type,
+                filename.as_deref(),
+                spreadsheet_max_rows,
+            )
+        } else {
+            shared::content_extractor::extract_content(&data, &mime_type, filename.as_deref())
+        }
     })
     .await
-    .map_err(|e| ApiError::Internal(format!("Content extraction task failed: {}", e)))
+    .map_err(|e| ApiError::Internal(format!("Content extraction task failed: {}", e)))?
+    .map_err(|e| ApiError::Internal(format!("Content extraction failed: {}", e)))
 }
 
 /// Parse common multipart fields used by both extract-content and extract-text.
@@ -1481,13 +1561,19 @@ async fn parse_extract_multipart(
                 );
             }
             Some("data") => {
-                data = Some(
-                    field
-                        .bytes()
-                        .await
-                        .map_err(|e| ApiError::BadRequest(format!("Failed to read data: {}", e)))?
-                        .to_vec(),
-                );
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|e| ApiError::BadRequest(format!("Failed to read data: {}", e)))?;
+                let max_bytes = max_extract_input_bytes();
+                if bytes.len() > max_bytes {
+                    return Err(ApiError::PayloadTooLarge(format!(
+                        "Extraction input too large: {} bytes exceeds {} byte limit",
+                        bytes.len(),
+                        max_bytes
+                    )));
+                }
+                data = Some(bytes.to_vec());
             }
             _ => {}
         }
@@ -1510,7 +1596,7 @@ async fn do_extract_text(
     filename: Option<String>,
     data: Vec<u8>,
 ) -> Result<String, ApiError> {
-    let is_xlsx = is_xlsx_extraction_target(&mime_type, filename.as_deref());
+    let is_spreadsheet = is_spreadsheet_extraction_target(&mime_type, filename.as_deref());
     let docling_candidate = is_docling_supported_mime(&mime_type)
         || (mime_type == "application/octet-stream"
             && is_docling_supported_extension(filename.as_deref()));
@@ -1567,15 +1653,22 @@ async fn do_extract_text(
         extract_content_blocking(data, mime_type.clone(), filename.clone()).await?
     };
 
-    if is_xlsx {
-        Ok(maybe_filter_xlsx_extracted_text(
-            &mime_type,
-            filename.as_deref(),
-            &extracted_text,
-        ))
+    let processed_text = if is_spreadsheet {
+        maybe_filter_xlsx_extracted_text(&mime_type, filename.as_deref(), &extracted_text)
     } else {
-        Ok(extracted_text)
+        extracted_text
+    };
+
+    let max_bytes = max_extracted_text_bytes();
+    if processed_text.len() > max_bytes {
+        warn!(
+            "Truncating extracted content for {:?}: {} bytes > {} byte limit",
+            filename,
+            processed_text.len(),
+            max_bytes
+        );
     }
+    Ok(truncate_text_to_max_bytes(&processed_text, max_bytes))
 }
 
 pub async fn sdk_extract_content(
@@ -1680,7 +1773,17 @@ pub async fn sdk_store_content(
         request.sync_run_id
     );
 
-    let content = utils::normalize_whitespace(&request.content);
+    let normalized_content = utils::normalize_whitespace(&request.content);
+    let max_bytes = max_extracted_text_bytes();
+    if normalized_content.len() > max_bytes {
+        warn!(
+            "Truncating stored content for sync_run={}: {} bytes > {} byte limit",
+            request.sync_run_id,
+            normalized_content.len(),
+            max_bytes
+        );
+    }
+    let content = truncate_text_to_max_bytes(&normalized_content, max_bytes);
     let content_id = content_storage
         .store_text(&content, Some(&prefix))
         .await
@@ -2293,24 +2396,43 @@ mod tests {
     }
 
     #[test]
-    fn test_is_xlsx_extraction_target() {
-        assert!(is_xlsx_extraction_target(
+    fn test_truncate_text_to_max_bytes_respects_utf8_boundary() {
+        let text = "abc😀def";
+        let truncated = truncate_text_to_max_bytes(text, 8);
+
+        assert!(truncated.is_char_boundary(truncated.len()));
+        assert!(truncated.len() <= 8);
+        assert!(truncated.starts_with("abc"));
+    }
+
+    #[test]
+    fn test_is_spreadsheet_extraction_target() {
+        assert!(is_spreadsheet_extraction_target(
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             None
         ));
-        assert!(is_xlsx_extraction_target(
-            "application/octet-stream",
-            Some("Report.XLSX")
-        ));
-        assert!(!is_xlsx_extraction_target(
+        assert!(is_spreadsheet_extraction_target(
             "application/vnd.ms-excel",
             Some("legacy.xls")
         ));
-        assert!(!is_xlsx_extraction_target(
+        assert!(is_spreadsheet_extraction_target("text/csv", None));
+        assert!(is_spreadsheet_extraction_target(
+            "application/octet-stream",
+            Some("Report.XLSX")
+        ));
+        assert!(is_spreadsheet_extraction_target(
+            "application/octet-stream",
+            Some("legacy.xls")
+        ));
+        assert!(is_spreadsheet_extraction_target(
+            "application/octet-stream",
+            Some("data.csv")
+        ));
+        assert!(!is_spreadsheet_extraction_target(
             "application/octet-stream",
             Some("notes.txt")
         ));
-        assert!(!is_xlsx_extraction_target(
+        assert!(!is_spreadsheet_extraction_target(
             "application/pdf",
             Some("sheet.xlsx")
         ));
@@ -2347,12 +2469,15 @@ mod tests {
     }
 
     #[test]
-    fn test_non_xlsx_documents_do_not_match_xlsx_post_processing_target() {
-        assert!(!is_xlsx_extraction_target(
+    fn test_non_spreadsheet_documents_do_not_match_spreadsheet_post_processing_target() {
+        assert!(!is_spreadsheet_extraction_target(
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             Some("doc.docx")
         ));
-        assert!(!is_xlsx_extraction_target("text/plain", Some("notes.txt")));
+        assert!(!is_spreadsheet_extraction_target(
+            "text/plain",
+            Some("notes.txt")
+        ));
 
         let text = "Report total\n123\t456\n";
         assert_eq!(
