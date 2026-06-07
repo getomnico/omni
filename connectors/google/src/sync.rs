@@ -62,6 +62,49 @@ where
     }
 }
 
+async fn emit_metadata_only_drive_event(
+    ctx: &SyncContext,
+    user_file: &crate::models::UserFile,
+    sync_run_id: &str,
+    source_id: &str,
+    reason: &str,
+) -> bool {
+    let metadata_content = format!(
+        "Title: {}\nMIME type: {}\nContent note: {}\n",
+        user_file.file.name, user_file.file.mime_type, reason
+    );
+
+    let content_id = match ctx.store_content(&metadata_content).await {
+        Ok(content_id) => content_id,
+        Err(e) => {
+            error!(
+                "Failed to store metadata-only content for Drive file {} ({}): {}",
+                user_file.file.name, user_file.file.id, e
+            );
+            return false;
+        }
+    };
+
+    let event = user_file.file.to_connector_event(
+        sync_run_id,
+        source_id,
+        &content_id,
+        Some(format!("/{}", user_file.file.name)),
+        Some(&user_file.user_email),
+    );
+
+    match ctx.emit_event(event).await {
+        Ok(_) => true,
+        Err(e) => {
+            error!(
+                "Failed to queue metadata-only event for Drive file {} ({}): {:?}",
+                user_file.file.name, user_file.file.id, e
+            );
+            false
+        }
+    }
+}
+
 use crate::admin::AdminClient;
 use crate::auth::{google_max_retries, GoogleAuth, OAuthAuth};
 use crate::cache::LruFolderCache;
@@ -545,13 +588,25 @@ impl SyncManager {
                 let reserved_permits = match reserved_bytes {
                     Some(size) if size > GOOGLE_MAX_BUFFERED_BYTES => {
                         warn!(
-                            "Skipping Drive file {} ({}) because its declared size {} bytes exceeds the {} byte buffer budget",
+                            "Indexing metadata only for Drive file {} ({}) because its declared size {} bytes exceeds the {} byte buffer budget",
                             user_file.file.name,
                             user_file.file.id,
                             size,
                             GOOGLE_MAX_BUFFERED_BYTES
                         );
-                        return (1, 0);
+                        let reason = format!(
+                            "File content was not indexed because declared size {} bytes exceeds the {} byte in-memory buffer budget.",
+                            size, GOOGLE_MAX_BUFFERED_BYTES
+                        );
+                        let emitted = emit_metadata_only_drive_event(
+                            &ctx,
+                            &user_file,
+                            &sync_run_id,
+                            &source_id,
+                            &reason,
+                        )
+                        .await;
+                        return (1, usize::from(emitted));
                     }
                     Some(size) => permits_for_bytes(size),
                     // Google Workspace exports do not reliably expose their exported text size.
@@ -596,27 +651,61 @@ impl SyncManager {
                         let actual_size = file_content_len(&file_content);
                         if actual_size > GOOGLE_MAX_BUFFERED_BYTES {
                             warn!(
-                                "Skipping Drive file {} ({}) because buffered content is {} bytes, exceeding the {} byte budget",
+                                "Indexing metadata only for Drive file {} ({}) because buffered content is {} bytes, exceeding the {} byte budget",
                                 user_file.file.name,
                                 user_file.file.id,
                                 actual_size,
                                 GOOGLE_MAX_BUFFERED_BYTES
                             );
-                            return (1, 0);
+                            let reason = format!(
+                                "File content was not indexed because extracted content size {} bytes exceeds the {} byte in-memory buffer budget.",
+                                actual_size, GOOGLE_MAX_BUFFERED_BYTES
+                            );
+                            let emitted = emit_metadata_only_drive_event(
+                                &ctx,
+                                &user_file,
+                                &sync_run_id,
+                                &source_id,
+                                &reason,
+                            )
+                            .await;
+                            return (1, usize::from(emitted));
                         }
 
-                        if let Some(size) = reserved_bytes {
-                            if actual_size > size {
+                        let actual_permits = permits_for_bytes(actual_size);
+                        let extra_permits = actual_permits.saturating_sub(reserved_permits);
+                        let extra_buffer_permit: Option<OwnedSemaphorePermit> =
+                            if extra_permits > 0 {
                                 warn!(
-                                    "Skipping Drive file {} ({}) because buffered content is {} bytes, exceeding its declared size of {} bytes used for pre-download memory reservation",
+                                    "Drive file {} ({}) buffered content is {} bytes, exceeding reserved size {:?}; acquiring {} additional buffer permits",
                                     user_file.file.name,
                                     user_file.file.id,
                                     actual_size,
-                                    size
+                                    reserved_bytes,
+                                    extra_permits
                                 );
-                                return (1, 0);
-                            }
-                        }
+                                match memory_budget.clone().acquire_many_owned(extra_permits).await {
+                                    Ok(permit) => Some(permit),
+                                    Err(e) => {
+                                        error!(
+                                            "Drive buffer memory semaphore closed while acquiring extra permits for file {} ({}): {:?}",
+                                            user_file.file.name, user_file.file.id, e
+                                        );
+                                        let reason = "File content was not indexed because the connector could not reserve additional buffer memory after content extraction.";
+                                        let emitted = emit_metadata_only_drive_event(
+                                            &ctx,
+                                            &user_file,
+                                            &sync_run_id,
+                                            &source_id,
+                                            reason,
+                                        )
+                                        .await;
+                                        return (1, usize::from(emitted));
+                                    }
+                                }
+                            } else {
+                                None
+                            };
 
                         if ctx.is_cancelled() {
                             return (1, 0);
@@ -626,6 +715,7 @@ impl SyncManager {
                         // stored/extracted and the corresponding event has been emitted.
                         // Dropping this value releases the connector-wide memory budget via RAII.
                         let _buffer_permit = buffer_permit;
+                        let _extra_buffer_permit = extra_buffer_permit;
                         debug!(
                             "Drive file {} ({}) holds {} pre-download buffer permits for {} bytes",
                             user_file.file.name,
@@ -636,8 +726,19 @@ impl SyncManager {
 
                         let store_result = match file_content {
                             FileContent::Text(ref text) if text.is_empty() => {
-                                debug!("File {} has empty content, skipping", user_file.file.name);
-                                return (1, 0);
+                                debug!(
+                                    "File {} has empty content, indexing metadata only",
+                                    user_file.file.name
+                                );
+                                let emitted = emit_metadata_only_drive_event(
+                                    &ctx,
+                                    &user_file,
+                                    &sync_run_id,
+                                    &source_id,
+                                    "File content was empty or unsupported, so only metadata was indexed.",
+                                )
+                                .await;
+                                return (1, usize::from(emitted));
                             }
                             FileContent::Text(text) => ctx.store_content(&text).await,
                             FileContent::Binary {
@@ -699,10 +800,22 @@ impl SyncManager {
                     }
                     Err(e) => {
                         warn!(
-                            "Failed to get content for file {} ({}): {:?}",
+                            "Failed to get content for file {} ({}), indexing metadata only: {:?}",
                             user_file.file.name, user_file.file.id, e
                         );
-                        (1, 0)
+                        let reason = format!(
+                            "File content was not indexed because content extraction failed: {}",
+                            e
+                        );
+                        let emitted = emit_metadata_only_drive_event(
+                            &ctx,
+                            &user_file,
+                            &sync_run_id,
+                            &source_id,
+                            &reason,
+                        )
+                        .await;
+                        (1, usize::from(emitted))
                     }
                 }
             }
