@@ -50,6 +50,10 @@ fn escape_sheet_name_for_a1(sheet_name: &str) -> String {
     sheet_name.replace('\'', "''")
 }
 
+fn encode_a1_range_for_url(range: &str) -> String {
+    urlencoding::encode(range).into_owned()
+}
+
 #[derive(Clone)]
 pub struct DriveClient {
     client: Client,
@@ -464,9 +468,10 @@ impl DriveClient {
                     let escaped_sheet_name = escape_sheet_name_for_a1(sheet_name);
                     let range = format!("'{}'!1:{}", escaped_sheet_name, rows_to_fetch);
 
+                    let encoded_range = encode_a1_range_for_url(&range);
                     let values_url = format!(
                         "{}/spreadsheets/{}/values/{}",
-                        SHEETS_API_BASE, &file_id, range
+                        SHEETS_API_BASE, &file_id, encoded_range
                     );
 
                     let values_response = match self
@@ -1329,5 +1334,16 @@ mod tests {
     #[test]
     fn sheet_name_escape_doubles_single_quotes_for_a1_ranges() {
         assert_eq!(escape_sheet_name_for_a1("Bob's Sheet"), "Bob''s Sheet");
+    }
+
+    #[test]
+    fn a1_range_url_encoding_preserves_special_sheet_name_chars() {
+        let escaped_sheet_name = escape_sheet_name_for_a1("Bob's Gaming/Casino Disney+");
+        let range = format!("'{}'!1:1000", escaped_sheet_name);
+
+        assert_eq!(
+            encode_a1_range_for_url(&range),
+            "%27Bob%27%27s%20Gaming%2FCasino%20Disney%2B%27%211%3A1000"
+        );
     }
 }
