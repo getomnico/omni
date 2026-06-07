@@ -32,9 +32,22 @@ const DRIVE_API_BASE: &str = "https://www.googleapis.com/drive/v3";
 const DOCS_API_BASE: &str = "https://docs.googleapis.com/v1";
 const SHEETS_API_BASE: &str = "https://sheets.googleapis.com/v4";
 const SLIDES_API_BASE: &str = "https://slides.googleapis.com/v1";
+const DEFAULT_GOOGLE_SHEETS_MAX_INDEXED_ROWS: usize = 1000;
 
 fn drive_api_base() -> String {
     env::var("GOOGLE_DRIVE_API_BASE").unwrap_or_else(|_| DRIVE_API_BASE.to_string())
+}
+
+fn google_sheets_max_indexed_rows() -> usize {
+    env::var("GOOGLE_SHEETS_MAX_INDEXED_ROWS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|rows| *rows > 0)
+        .unwrap_or(DEFAULT_GOOGLE_SHEETS_MAX_INDEXED_ROWS)
+}
+
+fn escape_sheet_name_for_a1(sheet_name: &str) -> String {
+    sheet_name.replace('\'', "''")
 }
 
 #[derive(Clone)]
@@ -380,10 +393,24 @@ impl DriveClient {
                     }
                 };
                 let mut content = String::new();
+                let max_indexed_rows = google_sheets_max_indexed_rows();
 
                 for sheet_info in &sheet.sheets {
                     let sheet_name = &sheet_info.properties.title;
-                    let range = format!("'{}'", sheet_name);
+                    let sheet_rows = sheet_info
+                        .properties
+                        .grid_properties
+                        .as_ref()
+                        .and_then(|properties| properties.row_count)
+                        .unwrap_or(max_indexed_rows);
+                    let rows_to_fetch = sheet_rows.min(max_indexed_rows);
+                    if rows_to_fetch == 0 {
+                        continue;
+                    }
+                    let truncated = sheet_rows > rows_to_fetch;
+
+                    let escaped_sheet_name = escape_sheet_name_for_a1(sheet_name);
+                    let range = format!("'{}'!1:{}", escaped_sheet_name, rows_to_fetch);
 
                     let values_url = format!(
                         "{}/spreadsheets/{}/values/{}",
@@ -409,12 +436,28 @@ impl DriveClient {
                         .await;
                     }
 
-                    if let Ok(values) = values_response.json::<ValueRange>().await {
-                        append_filtered_spreadsheet_sheet(
-                            &mut content,
-                            sheet_name,
-                            values.values.unwrap_or_default(),
-                        );
+                    let values = match values_response.json::<ValueRange>().await {
+                        Ok(values) => values,
+                        Err(e) => {
+                            return Ok(ApiResult::OtherError(anyhow!(
+                                "Failed to parse spreadsheet values for {} sheet {}: {}",
+                                file_id,
+                                sheet_name,
+                                e
+                            )));
+                        }
+                    };
+                    append_filtered_spreadsheet_sheet(
+                        &mut content,
+                        sheet_name,
+                        values.values.unwrap_or_default(),
+                    );
+
+                    if truncated {
+                        content.push_str(&format!(
+                            "Sheet {} truncated to first {} rows for indexing.\n\n",
+                            sheet_name, max_indexed_rows
+                        ));
                     }
                 }
 
@@ -1010,6 +1053,14 @@ struct Sheet {
 #[derive(Debug, Deserialize)]
 struct SheetProperties {
     title: String,
+    #[serde(rename = "gridProperties")]
+    grid_properties: Option<GridProperties>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GridProperties {
+    #[serde(rename = "rowCount")]
+    row_count: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1196,5 +1247,36 @@ mod tests {
         append_filtered_spreadsheet_sheet(&mut content, "Budget", rows);
 
         assert_eq!(content, "Sheet: Budget\nInvoice\nQ4 revenue\n東京\n\n");
+    }
+
+    #[test]
+    fn spreadsheet_metadata_reads_sheet_row_count() {
+        let sheet: GoogleSpreadsheet = serde_json::from_str(
+            r#"{
+                "sheets": [
+                    {
+                        "properties": {
+                            "title": "Data",
+                            "gridProperties": { "rowCount": 1500 }
+                        }
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            sheet.sheets[0]
+                .properties
+                .grid_properties
+                .as_ref()
+                .and_then(|properties| properties.row_count),
+            Some(1500)
+        );
+    }
+
+    #[test]
+    fn sheet_name_escape_doubles_single_quotes_for_a1_ranges() {
+        assert_eq!(escape_sheet_name_for_a1("Bob's Sheet"), "Bob''s Sheet");
     }
 }
