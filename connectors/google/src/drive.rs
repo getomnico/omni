@@ -15,7 +15,7 @@ use crate::models::{
     DriveChangesResponse, GoogleDriveFile, GooglePresentation, WebhookChannel,
     WebhookChannelResponse,
 };
-use omni_connector_sdk::RateLimiter;
+use omni_connector_sdk::{RateLimiter, RetryableError};
 
 /// Content returned by `get_file_content`. Text formats are already extracted;
 /// binary formats carry raw bytes for extraction via the SDK.
@@ -296,6 +296,53 @@ impl DriveClient {
         Ok(())
     }
 
+    async fn send_sheets_get_with_retry(
+        &self,
+        rate_limiter: Arc<RateLimiter>,
+        token: &str,
+        url: &str,
+        context: String,
+    ) -> Result<ApiResult<reqwest::Response>> {
+        let token = token.to_string();
+        let url = url.to_string();
+        let context_for_error = context.clone();
+        let result = rate_limiter
+            .execute_with_retry(|| {
+                let client = self.client.clone();
+                let token = token.clone();
+                let url = url.clone();
+                let context = context.clone();
+
+                async move {
+                    let response = client
+                        .get(&url)
+                        .bearer_auth(&token)
+                        .send()
+                        .await
+                        .map_err(|e| RetryableError::Transient(anyhow!(e)))?;
+
+                    let status = response.status();
+                    if !status.is_success() {
+                        return match classify_google_api_error(response, context)
+                            .await
+                            .map_err(RetryableError::Transient)?
+                        {
+                            ApiResult::RetryableError(e) => Err(e),
+                            other => Ok(other),
+                        };
+                    }
+
+                    Ok(ApiResult::Success(response))
+                }
+            })
+            .await;
+
+        match result {
+            Ok(api_result) => Ok(api_result),
+            Err(e) => Ok(ApiResult::OtherError(e.context(context_for_error))),
+        }
+    }
+
     async fn get_google_doc_content(
         &self,
         auth: &GoogleAuth,
@@ -368,19 +415,24 @@ impl DriveClient {
         let rate_limiter = self.get_or_create_user_sheets_rate_limiter(user_email)?;
         execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
             let file_id = file_id.clone();
+            let rate_limiter = rate_limiter.clone();
             async move {
                 let url = format!("{}/spreadsheets/{}", SHEETS_API_BASE, &file_id);
 
-                let response = self.client.get(&url).bearer_auth(&token).send().await?;
-
-                let status = response.status();
-                if !status.is_success() {
-                    return classify_google_api_error(
-                        response,
+                let response = match self
+                    .send_sheets_get_with_retry(
+                        rate_limiter.clone(),
+                        &token,
+                        &url,
                         format!("Failed to get spreadsheet metadata for {}", file_id),
                     )
-                    .await;
-                }
+                    .await?
+                {
+                    ApiResult::Success(response) => response,
+                    ApiResult::AuthError(e) => return Ok(ApiResult::AuthError(e)),
+                    ApiResult::RetryableError(e) => return Ok(ApiResult::RetryableError(e)),
+                    ApiResult::OtherError(e) => return Ok(ApiResult::OtherError(e)),
+                };
 
                 let sheet: GoogleSpreadsheet = match response.json().await {
                     Ok(sheet) => sheet,
@@ -417,24 +469,23 @@ impl DriveClient {
                         SHEETS_API_BASE, &file_id, range
                     );
 
-                    let values_response = self
-                        .client
-                        .get(&values_url)
-                        .bearer_auth(&token)
-                        .send()
-                        .await?;
-
-                    let values_status = values_response.status();
-                    if !values_status.is_success() {
-                        return classify_google_api_error(
-                            values_response,
+                    let values_response = match self
+                        .send_sheets_get_with_retry(
+                            rate_limiter.clone(),
+                            &token,
+                            &values_url,
                             format!(
                                 "Failed to get spreadsheet values for {} sheet {}",
                                 file_id, sheet_name
                             ),
                         )
-                        .await;
-                    }
+                        .await?
+                    {
+                        ApiResult::Success(response) => response,
+                        ApiResult::AuthError(e) => return Ok(ApiResult::AuthError(e)),
+                        ApiResult::RetryableError(e) => return Ok(ApiResult::RetryableError(e)),
+                        ApiResult::OtherError(e) => return Ok(ApiResult::OtherError(e)),
+                    };
 
                     let values = match values_response.json::<ValueRange>().await {
                         Ok(values) => values,
