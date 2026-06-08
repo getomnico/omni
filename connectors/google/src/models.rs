@@ -37,6 +37,10 @@ pub struct GoogleConnectorState {
     pub webhook_channel_id: Option<String>,
     pub webhook_resource_id: Option<String>,
     pub webhook_expires_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GoogleSyncCheckpoint {
     pub gmail_history_ids: Option<HashMap<String, String>>,
     pub drive_page_tokens: Option<HashMap<String, String>>,
 }

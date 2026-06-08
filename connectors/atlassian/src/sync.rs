@@ -12,7 +12,7 @@ use crate::auth::{AtlassianCredentials, AuthManager};
 use crate::client::{AtlassianApi, OrgGroupInfo};
 use crate::confluence::ConfluenceProcessor;
 use crate::jira::JiraProcessor;
-use crate::models::{AtlassianConnectorState, AtlassianWebhookEvent};
+use crate::models::{AtlassianConnectorState, AtlassianSyncCheckpoint, AtlassianWebhookEvent};
 use crate::user_resolver::UserResolver;
 
 pub struct SyncManager {
@@ -49,7 +49,7 @@ impl SyncManager {
         &self,
         _source: Source,
         _credentials: Option<ServiceCredential>,
-        state: Option<AtlassianConnectorState>,
+        state: Option<AtlassianSyncCheckpoint>,
         ctx: SyncContext,
     ) -> Result<()> {
         let sync_run_id = ctx.sync_run_id().to_string();
@@ -86,7 +86,7 @@ impl SyncManager {
         source_id: &str,
         sync_run_id: &str,
         ctx: &SyncContext,
-        state: Option<AtlassianConnectorState>,
+        state: Option<AtlassianSyncCheckpoint>,
     ) -> Result<Option<u32>> {
         let source = self
             .sdk_client
@@ -172,10 +172,10 @@ impl SyncManager {
         }
         let user_resolver = Arc::new(UserResolver::new(self.client.clone(), user_directory));
 
-        let existing_state = state.unwrap_or_default();
+        let existing_checkpoint = state.unwrap_or_default();
         let sync_mode = ctx.sync_mode();
         let sync_start = Utc::now();
-        let last_sync = existing_state
+        let last_sync = existing_checkpoint
             .last_successful_sync_at
             .unwrap_or_else(|| sync_start - chrono::Duration::hours(24));
 
@@ -191,7 +191,7 @@ impl SyncManager {
                 let page_versions = if sync_mode == SyncType::Full {
                     HashMap::new()
                 } else {
-                    existing_state.confluence_page_versions.clone()
+                    existing_checkpoint.confluence_page_versions.clone()
                 };
                 let processor = ConfluenceProcessor::with_page_versions_and_resolver(
                     self.client.clone(),
@@ -264,7 +264,7 @@ impl SyncManager {
                 let groups = processor.drain_encountered_groups();
                 (
                     count,
-                    existing_state.confluence_page_versions.clone(),
+                    existing_checkpoint.confluence_page_versions.clone(),
                     groups,
                 )
             }
@@ -292,8 +292,6 @@ impl SyncManager {
             source.name, total_processed
         );
 
-        // ensure_webhook_registered may write webhook_id to connector state; we
-        // re-read state afterward so our checkpoint preserves any change.
         if let Err(e) = self
             .ensure_webhook_registered(source_id, &credentials)
             .await
@@ -301,21 +299,11 @@ impl SyncManager {
             warn!("Failed to register webhook for source {}: {}", source_id, e);
         }
 
-        let post_webhook_state: AtlassianConnectorState = self
-            .sdk_client
-            .get_connector_state(source_id)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default();
-
-        let new_state = AtlassianConnectorState {
-            webhook_id: post_webhook_state.webhook_id.or(existing_state.webhook_id),
+        let new_checkpoint = AtlassianSyncCheckpoint {
             last_successful_sync_at: Some(sync_start),
             confluence_page_versions: new_page_versions,
         };
-        ctx.save_checkpoint(serde_json::to_value(new_state)?)
+        ctx.save_checkpoint(serde_json::to_value(new_checkpoint)?)
             .await?;
 
         Ok(Some(total_processed))
@@ -502,12 +490,14 @@ impl SyncManager {
             None => return Ok(()),
         };
 
-        let state: AtlassianConnectorState = self
+        let existing_state = self
             .sdk_client
             .get_connector_state(source_id)
             .await
             .ok()
-            .flatten()
+            .flatten();
+        let state: AtlassianConnectorState = existing_state
+            .clone()
             .and_then(|v| serde_json::from_value(v).ok())
             .unwrap_or_default();
 
@@ -536,14 +526,12 @@ impl SyncManager {
         let webhook_id = self.client.register_webhook(creds, &full_url).await?;
         info!("Registered webhook {} for source {}", webhook_id, source_id);
 
-        // Preserve other state fields — run_sync writes page versions and
-        // last_successful_sync_at, which we must not clobber from this path.
-        let new_state = AtlassianConnectorState {
-            webhook_id: Some(webhook_id),
-            ..state
-        };
+        let mut new_state = existing_state
+            .filter(|value| value.is_object())
+            .unwrap_or_else(|| serde_json::json!({}));
+        new_state["webhook_id"] = serde_json::json!(webhook_id);
         self.sdk_client
-            .save_connector_state(source_id, serde_json::to_value(&new_state)?)
+            .save_connector_state(source_id, new_state)
             .await?;
 
         Ok(())
