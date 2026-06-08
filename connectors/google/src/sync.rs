@@ -14,6 +14,7 @@ use tracing::{debug, error, info, warn};
 const GOOGLE_FILE_CONCURRENCY: usize = 8;
 const DEFAULT_GOOGLE_DRIVE_PARALLEL_USERS: usize = 3;
 const DEFAULT_GOOGLE_DRIVE_MAX_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024;
+const DEFAULT_GOOGLE_WEBHOOK_DEBOUNCE_SECONDS: u64 = 4 * 60 * 60;
 const GOOGLE_MAX_BUFFERED_BYTES: usize = 512 * 1024 * 1024;
 const GOOGLE_BUFFER_PERMIT_UNIT: usize = 64 * 1024;
 const GOOGLE_BUFFER_PERMITS: usize = GOOGLE_MAX_BUFFERED_BYTES / GOOGLE_BUFFER_PERMIT_UNIT;
@@ -63,6 +64,15 @@ fn google_drive_max_download_bytes() -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|bytes| *bytes > 0)
         .unwrap_or(DEFAULT_GOOGLE_DRIVE_MAX_DOWNLOAD_BYTES)
+}
+
+fn google_webhook_debounce_duration_ms() -> u64 {
+    std::env::var("GOOGLE_WEBHOOK_DEBOUNCE_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .unwrap_or(DEFAULT_GOOGLE_WEBHOOK_DEBOUNCE_SECONDS)
+        .saturating_mul(1000)
 }
 
 #[derive(Default)]
@@ -297,6 +307,12 @@ impl SyncManager {
         let drive_client = DriveClient::with_rate_limiter(rate_limiter.clone());
         let gmail_client = GmailClient::with_rate_limiter(rate_limiter);
 
+        let debounce_duration_ms = google_webhook_debounce_duration_ms();
+        info!(
+            "Google webhook debounce duration set to {} seconds",
+            debounce_duration_ms / 1000
+        );
+
         Self {
             drive_client,
             gmail_client,
@@ -307,7 +323,7 @@ impl SyncManager {
             webhook_debounce: DashMap::new(),
             webhook_notify: Arc::new(Notify::new()),
             drive_buffer_memory_budget: Arc::new(Semaphore::new(GOOGLE_BUFFER_PERMITS)),
-            debounce_duration_ms: AtomicU64::new(10 * 60 * 1000),
+            debounce_duration_ms: AtomicU64::new(debounce_duration_ms),
         }
     }
 
