@@ -16,14 +16,6 @@ pub struct TitleEntry {
     pub source_id: String,
 }
 
-#[derive(Debug, Clone, FromRow)]
-pub struct DocumentContentState {
-    pub id: String,
-    pub source_id: String,
-    pub external_id: String,
-    pub content_id: Option<String>,
-}
-
 pub struct DocumentRepository {
     pool: PgPool,
 }
@@ -523,43 +515,6 @@ impl DocumentRepository {
         .await?;
 
         Ok(upserted_document)
-    }
-
-    pub async fn batch_get_content_state_by_source_external_ids(
-        &self,
-        keys: &[(String, String)],
-    ) -> Result<HashMap<(String, String), DocumentContentState>, DatabaseError> {
-        if keys.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        let source_ids: Vec<String> = keys
-            .iter()
-            .map(|(source_id, _)| source_id.clone())
-            .collect();
-        let external_ids: Vec<String> = keys
-            .iter()
-            .map(|(_, external_id)| external_id.clone())
-            .collect();
-
-        let rows = sqlx::query_as::<_, DocumentContentState>(
-            r#"
-            SELECT d.id, d.source_id, d.external_id, d.content_id
-            FROM UNNEST($1::text[], $2::text[]) AS t(source_id, external_id)
-            JOIN documents d
-              ON d.source_id = t.source_id
-             AND d.external_id = t.external_id
-            "#,
-        )
-        .bind(&source_ids)
-        .bind(&external_ids)
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(rows
-            .into_iter()
-            .map(|row| ((row.source_id.clone(), row.external_id.clone()), row))
-            .collect())
     }
 
     /// Directly populates the content field since we use the ParadeDB BM25 index now

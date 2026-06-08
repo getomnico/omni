@@ -1187,9 +1187,11 @@ impl QueueProcessor {
             .iter()
             .map(|doc| (doc.source_id.clone(), doc.external_id.clone()))
             .collect();
-        let existing_content_state = repo
-            .batch_get_content_state_by_source_external_ids(&document_keys)
-            .await?;
+        let existing_documents = repo.find_by_external_ids(&document_keys).await?;
+        let existing_content_by_key: HashMap<(String, String), Option<String>> = existing_documents
+            .into_iter()
+            .map(|doc| ((doc.source_id, doc.external_id), doc.content_id))
+            .collect();
 
         // Batch upsert documents with content
         let upsert_start = std::time::Instant::now();
@@ -1203,9 +1205,9 @@ impl QueueProcessor {
         let changed_content_doc_ids: Vec<String> = upserted_documents
             .iter()
             .filter(|doc| {
-                existing_content_state
+                existing_content_by_key
                     .get(&(doc.source_id.clone(), doc.external_id.clone()))
-                    .is_some_and(|existing| existing.content_id != doc.content_id)
+                    .is_some_and(|existing_content_id| existing_content_id != &doc.content_id)
             })
             .map(|doc| doc.id.clone())
             .collect();
