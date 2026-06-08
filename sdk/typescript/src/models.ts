@@ -131,6 +131,7 @@ export const SyncRequestSchema = z.object({
   source_id: z.string(),
   sync_mode: z.string(),
   checkpoint: z.record(z.unknown()).nullable().default(null),
+  is_resume: z.boolean().default(false),
   // Manager's running tally at dispatch time. Zero on a fresh sync;
   // non-zero on resume so the connector can keep counting from there.
   documents_scanned: z.number().int().default(0),

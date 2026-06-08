@@ -440,12 +440,13 @@ where
         .register_sync(&sync_run_id, request.sync_mode)
         .await;
 
-    let ctx = SyncContext::new(
+    let ctx = SyncContext::new_with_resume(
         state.sdk_client.clone(),
         sync_run_id.clone(),
         source_id.clone(),
         source.source_type,
         request.sync_mode,
+        request.is_resume,
         cancelled,
     );
     let connector = Arc::clone(&state.connector);

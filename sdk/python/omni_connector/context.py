@@ -48,6 +48,7 @@ class SyncContext:
         sync_mode: SyncMode = SyncMode.INCREMENTAL,
         documents_scanned: int = 0,
         documents_updated: int = 0,
+        is_resume: bool = False,
     ):
         self._client = sdk_client
         self._sync_run_id = sync_run_id
@@ -65,6 +66,7 @@ class SyncContext:
         self._user_whitelist = {e.lower() for e in (user_whitelist or [])}
         self._user_blacklist = {e.lower() for e in (user_blacklist or [])}
         self._sync_mode = sync_mode
+        self._is_resume = is_resume
         self._buffer_size_threshold, self._buffer_time_threshold = _thresholds_for(
             sync_mode
         )
@@ -98,6 +100,14 @@ class SyncContext:
     @property
     def documents_scanned(self) -> int:
         return self._documents_scanned
+
+    @property
+    def sync_mode(self) -> SyncMode:
+        return self._sync_mode
+
+    @property
+    def is_resume(self) -> bool:
+        return self._is_resume
 
     def should_index_user(self, user_email: str) -> bool:
         """Check if a user should be indexed based on filter settings."""

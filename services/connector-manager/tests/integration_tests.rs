@@ -854,6 +854,7 @@ async fn test_initial_sync_request_uses_latest_successful_source_checkpoint() {
     let requests = fixture.mock_connector.get_sync_requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].sync_run_id, sync_run_id);
+    assert!(!requests[0].is_resume);
     assert_eq!(
         requests[0].checkpoint.as_ref().unwrap()["cursor"].as_str(),
         Some("last-success")
@@ -885,6 +886,7 @@ async fn test_full_sync_resume_prefers_run_checkpoint_over_source_checkpoint() {
 
     let requests = fixture.mock_connector.get_sync_requests();
     assert_eq!(requests.len(), 2, "expected resume /sync call");
+    assert!(requests[1].is_resume);
     assert_eq!(
         requests[1].checkpoint.as_ref().unwrap()["cursor"].as_str(),
         Some("current-run")
@@ -911,6 +913,7 @@ async fn test_resume_falls_back_to_source_checkpoint_before_first_run_checkpoint
     let requests = fixture.mock_connector.get_sync_requests();
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[1].sync_run_id, sync_run_id);
+    assert!(requests[1].is_resume);
     assert_eq!(
         requests[1].checkpoint.as_ref().unwrap()["cursor"].as_str(),
         Some("last-success")

@@ -41,7 +41,6 @@ pub struct GoogleConnectorState {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GoogleSyncCheckpoint {
-    pub sync_run_id: Option<String>,
     pub gmail_history_ids: Option<HashMap<String, String>>,
     pub drive_page_tokens: Option<HashMap<String, String>>,
 }

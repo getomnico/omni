@@ -100,6 +100,7 @@ export function createServer(connector: Connector): Express {
       documents_scanned: documentsScanned,
       documents_updated: documentsUpdated,
       checkpoint: requestCheckpoint,
+      is_resume: isResume,
     } = parseResult.data;
 
     const isValidSyncMode = (Object.values(SyncMode) as string[]).includes(syncModeStr);
@@ -146,6 +147,7 @@ export function createServer(connector: Connector): Express {
       documentsScanned,
       documentsUpdated,
       {
+        isResume,
         sourceType: sourceData.source_type,
         userFilterMode: sourceData.user_filter_mode,
         userWhitelist: sourceData.user_whitelist,

@@ -12,6 +12,7 @@ pub struct SyncContext {
     source_id: String,
     source_type: SourceType,
     sync_mode: SyncType,
+    is_resume: bool,
     cancelled: Arc<AtomicBool>,
 }
 
@@ -24,12 +25,33 @@ impl SyncContext {
         sync_mode: SyncType,
         cancelled: Arc<AtomicBool>,
     ) -> Self {
+        Self::new_with_resume(
+            sdk_client,
+            sync_run_id,
+            source_id,
+            source_type,
+            sync_mode,
+            false,
+            cancelled,
+        )
+    }
+
+    pub fn new_with_resume(
+        sdk_client: SdkClient,
+        sync_run_id: String,
+        source_id: String,
+        source_type: SourceType,
+        sync_mode: SyncType,
+        is_resume: bool,
+        cancelled: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             sdk_client,
             sync_run_id,
             source_id,
             source_type,
             sync_mode,
+            is_resume,
             cancelled,
         }
     }
@@ -52,6 +74,10 @@ impl SyncContext {
 
     pub fn sync_mode(&self) -> SyncType {
         self.sync_mode
+    }
+
+    pub fn is_resume(&self) -> bool {
+        self.is_resume
     }
 
     pub fn is_cancelled(&self) -> bool {

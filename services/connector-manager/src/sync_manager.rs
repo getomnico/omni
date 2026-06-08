@@ -145,6 +145,7 @@ impl SyncManager {
             sync_mode: effective_sync_type,
             last_sync_at,
             checkpoint: source.checkpoint.clone(),
+            is_resume: false,
         };
 
         let trigger_result = timeout(
@@ -470,6 +471,7 @@ impl SyncManager {
                 .checkpoint
                 .clone()
                 .or_else(|| source.checkpoint.clone()),
+            is_resume: true,
         };
 
         match timeout(

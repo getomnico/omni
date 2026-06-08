@@ -31,6 +31,7 @@ export class SyncContext {
   private _documentsScanned = 0;
   private readonly _contentStorage: ContentStorage;
   private readonly _syncMode: SyncMode;
+  private readonly _isResume: boolean;
   private readonly bufferSizeThreshold: number;
   private readonly bufferTimeThresholdMs: number | null;
   private eventBuffer: ConnectorEventPayload[] = [];
@@ -49,6 +50,7 @@ export class SyncContext {
     documentsScanned = 0,
     documentsUpdated = 0,
     options?: {
+      isResume?: boolean;
       sourceType?: string | null;
       userFilterMode?: UserFilterMode;
       userWhitelist?: string[] | null;
@@ -62,6 +64,7 @@ export class SyncContext {
     this.abortController = new AbortController();
     this._contentStorage = new ContentStorage(client, syncRunId);
     this._syncMode = syncMode;
+    this._isResume = options?.isResume ?? false;
     const thresholds = thresholdsFor(syncMode);
     this.bufferSizeThreshold = thresholds.size;
     this.bufferTimeThresholdMs = thresholds.timeMs;
@@ -116,7 +119,11 @@ export class SyncContext {
   get syncMode(): SyncMode {
     return this._syncMode;
   }
-  
+
+  get isResume(): boolean {
+    return this._isResume;
+  }
+
   get sourceType(): string | null {
     return this._sourceType;
   }

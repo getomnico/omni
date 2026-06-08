@@ -1115,8 +1115,7 @@ impl SyncManager {
 
         let gmail_history_ids = existing_state.gmail_history_ids.clone();
         let old_page_tokens = existing_state.drive_page_tokens.unwrap_or_default();
-        let can_resume_full = sync_type == SyncType::Full
-            && existing_state.sync_run_id.as_deref() == Some(sync_run_id);
+        let can_resume_full = sync_type == SyncType::Full && ctx.is_resume();
         let mut new_page_tokens: HashMap<String, String> = if can_resume_full {
             old_page_tokens.clone()
         } else {
@@ -1264,7 +1263,6 @@ impl SyncManager {
                     }
 
                     let checkpoint_state = GoogleSyncCheckpoint {
-                        sync_run_id: Some(sync_run_id.to_string()),
                         gmail_history_ids: gmail_history_ids.clone(),
                         drive_page_tokens: if new_page_tokens.is_empty() {
                             None
@@ -1304,7 +1302,6 @@ impl SyncManager {
         info!("Completed sync for source: {}", source.id);
 
         Ok(GoogleSyncCheckpoint {
-            sync_run_id: Some(sync_run_id.to_string()),
             gmail_history_ids,
             drive_page_tokens: if new_page_tokens.is_empty() {
                 None
@@ -1366,8 +1363,7 @@ impl SyncManager {
 
         let drive_page_tokens = existing_state.drive_page_tokens.clone();
         let old_history_ids = existing_state.gmail_history_ids.unwrap_or_default();
-        let can_resume_full = sync_type == SyncType::Full
-            && existing_state.sync_run_id.as_deref() == Some(sync_run_id);
+        let can_resume_full = sync_type == SyncType::Full && ctx.is_resume();
         let mut new_history_ids: HashMap<String, String> = if can_resume_full {
             old_history_ids.clone()
         } else {
@@ -1496,7 +1492,6 @@ impl SyncManager {
                         }
 
                         let checkpoint_state = GoogleSyncCheckpoint {
-                            sync_run_id: Some(sync_run_id.to_string()),
                             gmail_history_ids: if new_history_ids.is_empty() {
                                 None
                             } else {
@@ -1528,7 +1523,6 @@ impl SyncManager {
         info!("Completed Gmail sync for source: {}", source.id);
 
         Ok(GoogleSyncCheckpoint {
-            sync_run_id: Some(sync_run_id.to_string()),
             gmail_history_ids: if new_history_ids.is_empty() {
                 None
             } else {

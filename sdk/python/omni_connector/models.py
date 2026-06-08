@@ -215,6 +215,7 @@ class SyncRequest(BaseModel):
     source_id: str
     sync_mode: str
     checkpoint: dict[str, Any] | None = None
+    is_resume: bool = False
     # Manager's running tally at dispatch time. Zero on a fresh sync;
     # non-zero on resume so the connector can keep counting from there.
     documents_scanned: int = 0
