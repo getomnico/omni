@@ -937,6 +937,44 @@ impl DriveClient {
         Ok(start_page_token.to_string())
     }
 
+    pub async fn get_start_page_token_for_user(
+        &self,
+        auth: &GoogleAuth,
+        user_email: &str,
+    ) -> Result<String> {
+        execute_with_auth_retry(
+            auth,
+            user_email,
+            self.rate_limiter.clone(),
+            |token| async move {
+                let url = format!("{}/changes/startPageToken", drive_api_base().as_str());
+                let params = vec![("supportsAllDrives", "true")];
+
+                let response = self
+                    .client
+                    .get(&url)
+                    .bearer_auth(&token)
+                    .query(&params)
+                    .send()
+                    .await?;
+
+                if !response.status().is_success() {
+                    return classify_google_api_error(response, "Failed to get start page token")
+                        .await;
+                }
+
+                let response_json: serde_json::Value = response.json().await?;
+                let start_page_token = response_json["startPageToken"]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("Missing startPageToken in response"))?
+                    .to_string();
+
+                Ok(ApiResult::Success(start_page_token))
+            },
+        )
+        .await
+    }
+
     pub async fn get_folder_metadata(
         &self,
         auth: &GoogleAuth,

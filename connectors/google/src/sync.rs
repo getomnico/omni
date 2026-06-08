@@ -1177,7 +1177,7 @@ impl SyncManager {
                     return (cur_user_email, Ok((0, 0, None)));
                 }
 
-                let access_token = match service_auth.get_access_token(&cur_user_email).await {
+                let _access_token = match service_auth.get_access_token(&cur_user_email).await {
                     Ok(access_token) => access_token,
                     Err(e) => {
                         return (
@@ -1244,7 +1244,7 @@ impl SyncManager {
                     Ok((scanned, updated)) => {
                         let page_token = match self
                             .drive_client
-                            .get_start_page_token(&access_token)
+                            .get_start_page_token_for_user(service_auth.as_ref(), &cur_user_email)
                             .await
                         {
                             Ok(token) => Some(token),
