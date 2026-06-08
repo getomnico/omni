@@ -47,7 +47,6 @@
     import ToolCallsGroup from '$lib/components/tool-calls-group.svelte'
     import { cn } from '$lib/utils'
     import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources'
-    import { page } from '$app/state'
     import * as Tooltip from '$lib/components/ui/tooltip'
     import { type ChatMessage } from '$lib/server/db/schema'
     import type {
@@ -55,6 +54,7 @@
         ContentBlockParam,
     } from '@anthropic-ai/sdk/resources.js'
     import { afterNavigate, invalidate } from '$app/navigation'
+    import { page } from '$app/state'
     import UserInput from '$lib/components/user-input.svelte'
     import UploadChip from '$lib/components/upload-chip.svelte'
     import * as Alert from '$lib/components/ui/alert'
@@ -79,23 +79,32 @@
     onDestroy(() => {
         eventSource?.close()
         eventSource = null
+        activeStreamChatId = null
     })
 
     afterNavigate(() => {
-        // Tear down any active stream from the previous chat before loading the new one.
-        if (eventSource) {
-            eventSource.close()
-            eventSource = null
+        const keepActiveStream = eventSource !== null && activeStreamChatId === data.chat.id
+
+        // Tear down an active stream only when it belongs to a different chat.
+        // On first navigation into a newly-created chat, onMount may have already
+        // opened the EventSource from page.state.stream; closing it here cancels
+        // the browser request before the stream can start.
+        if (!keepActiveStream) {
+            if (eventSource) {
+                eventSource.close()
+                eventSource = null
+            }
+            activeStreamChatId = null
+            isStreaming = false
+            error = null
+            stopThinkingText()
+            chatMessages = [...data.messages]
+            branchSelections = {}
+            activeStreamingMessageId = null
+            editingMessageId = null
+            uploadFilenames = { ...data.uploadFilenames }
+            markChatMessagesChanged()
         }
-        isStreaming = false
-        error = null
-        stopThinkingText()
-        chatMessages = [...data.messages]
-        branchSelections = {}
-        activeStreamingMessageId = null
-        editingMessageId = null
-        uploadFilenames = { ...data.uploadFilenames }
-        markChatMessagesChanged()
     })
 
     let userMessage = $state('')
@@ -160,6 +169,7 @@
     let isStreaming = $state(false)
     let error = $state<string | null>(null)
     let eventSource: EventSource | null = $state(null)
+    let activeStreamChatId: string | null = null
 
     type StreamErrorPayload = { message: string }
 
@@ -388,6 +398,7 @@
         if (eventSource) {
             eventSource.close()
             eventSource = null
+            activeStreamChatId = null
         }
         // Reset all stream state so the input is immediately ready for a new message.
         isStreaming = false
@@ -1060,6 +1071,7 @@
 
     function streamResponse(chatId: string) {
         isStreaming = true
+        activeStreamChatId = chatId
         activeStreamingMessageId = null
         error = null
         startThinkingText()
@@ -1461,6 +1473,7 @@
             userInputRef?.focus()
             eventSource?.close()
             eventSource = null
+            activeStreamChatId = null
 
             if (messageEventsReceived === 0 && !error) {
                 error = 'Failed to generate response. Please try again.'
@@ -1480,6 +1493,7 @@
             userInputRef?.focus()
             eventSource?.close()
             eventSource = null
+            activeStreamChatId = null
         }
 
         const handleConnectionError = () => {
@@ -1499,6 +1513,7 @@
             userInputRef?.focus()
             eventSource?.close()
             eventSource = null
+            activeStreamChatId = null
         }
 
         eventSource.addEventListener('stream_error', handleStreamError)
