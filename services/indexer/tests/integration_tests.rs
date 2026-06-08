@@ -197,6 +197,17 @@ async fn test_event_driven_document_lifecycle() {
         "documents.file_extension column must update when URL extension changes"
     );
 
+    sqlx::query(
+        r#"
+        INSERT INTO embeddings (id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name, dimensions)
+        VALUES ('01TESTLIFECYCLEDEL000001AA', $1, 0, 0, 10, '[0.1,0.2,0.3]'::vector, 'test-model', 3)
+        "#,
+    )
+    .bind(&updated_doc.id)
+    .execute(fixture.state.db_pool.pool())
+    .await
+    .unwrap();
+
     // --- Delete ---
     let delete_event = ConnectorEvent::DocumentDeleted {
         sync_run_id: "sync_lifecycle".to_string(),
@@ -212,6 +223,14 @@ async fn test_event_driven_document_lifecycle() {
     common::wait_for_document_deleted(&repo, TEST_SOURCE_ID, doc_id, Duration::from_secs(5))
         .await
         .expect("Document should be deleted");
+
+    let embedding_count_after_delete: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM embeddings WHERE document_id = $1")
+            .bind(&updated_doc.id)
+            .fetch_one(fixture.state.db_pool.pool())
+            .await
+            .unwrap();
+    assert_eq!(embedding_count_after_delete.0, 0);
 
     processor_handle.abort();
 }

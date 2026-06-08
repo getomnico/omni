@@ -172,31 +172,28 @@ class EmbeddingBatchProcessor:
         if not donor_by_content_id:
             return items
 
-        clone_pairs: list[tuple[str, str]] = []
+        clone_requests: list[tuple[str, str, str]] = []
         item_by_document_id = {item.document_id: item for item in items}
         for doc in docs_with_content:
             donor_id = donor_by_content_id.get(doc.content_id)
-            if donor_id:
-                clone_pairs.append((donor_id, doc.id))
+            item = item_by_document_id.get(doc.id)
+            if donor_id and item:
+                clone_requests.append((donor_id, doc.id, item.id))
 
-        if not clone_pairs:
+        if not clone_requests:
             return items
 
         clone_counts = await self.embeddings_repo.bulk_clone_for_documents(
-            clone_pairs, model_name
+            clone_requests, model_name
         )
         if not clone_counts:
             return items
 
-        cloned_item_ids = [
-            item_by_document_id[document_id].id for document_id in clone_counts
-        ]
-        await self.queue_repo.mark_completed(cloned_item_ids)
-        self._docs_completed += len(cloned_item_ids)
+        self._docs_completed += len(clone_counts)
         self._embeddings_written += sum(clone_counts.values())
         logger.info(
             "Cloned embeddings for %d documents with duplicate content (%d chunks)",
-            len(cloned_item_ids),
+            len(clone_counts),
             sum(clone_counts.values()),
         )
 

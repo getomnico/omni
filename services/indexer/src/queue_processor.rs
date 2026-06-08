@@ -2,7 +2,7 @@ use crate::people_extractor;
 use crate::AppState;
 use anyhow::{Context, Result};
 use shared::db::repositories::{
-    DocumentRepository, EmbeddingRepository, GroupRepository, PersonRepository, SyncRunRepository,
+    DocumentRepository, GroupRepository, PersonRepository, SyncRunRepository,
 };
 use shared::embedding_queue::EmbeddingQueue;
 use shared::models::{
@@ -1219,27 +1219,22 @@ impl QueueProcessor {
         // missing, so metadata/permission-only updates do not regenerate embeddings.
         let embedding_start = std::time::Instant::now();
         if !changed_content_doc_ids.is_empty() {
-            match self
+            let enqueued_ids = self
                 .state
                 .embedding_queue
                 .enqueue_batch(changed_content_doc_ids.clone())
                 .await
-            {
-                Ok(enqueued_ids) => {
-                    debug!(
-                        "Queued {} of {} content-changed documents for embedding",
-                        enqueued_ids.len(),
+                .with_context(|| {
+                    format!(
+                        "Failed to batch queue embeddings for {} content-changed documents",
                         changed_content_doc_ids.len()
-                    );
-                }
-                Err(e) => {
-                    error!(
-                        "Failed to batch queue embeddings for {} content-changed documents: {}",
-                        changed_content_doc_ids.len(),
-                        e
-                    );
-                }
-            }
+                    )
+                })?;
+            debug!(
+                "Queued {} of {} content-changed documents for embedding",
+                enqueued_ids.len(),
+                changed_content_doc_ids.len()
+            );
         }
 
         let doc_ids_missing_embeddings: Vec<String> = upserted_documents
@@ -1248,27 +1243,22 @@ impl QueueProcessor {
             .map(|doc| doc.id.clone())
             .collect();
         if !doc_ids_missing_embeddings.is_empty() {
-            match self
+            let enqueued_ids = self
                 .state
                 .embedding_queue
                 .enqueue_batch_missing_current_embeddings(doc_ids_missing_embeddings.clone())
                 .await
-            {
-                Ok(enqueued_ids) => {
-                    debug!(
-                        "Queued {} of {} unchanged/new documents missing embeddings",
-                        enqueued_ids.len(),
+                .with_context(|| {
+                    format!(
+                        "Failed to batch queue embeddings for {} unchanged/new documents",
                         doc_ids_missing_embeddings.len()
-                    );
-                }
-                Err(e) => {
-                    error!(
-                        "Failed to batch queue embeddings for {} unchanged/new documents: {}",
-                        doc_ids_missing_embeddings.len(),
-                        e
-                    );
-                }
-            }
+                    )
+                })?;
+            debug!(
+                "Queued {} of {} unchanged/new documents missing embeddings",
+                enqueued_ids.len(),
+                doc_ids_missing_embeddings.len()
+            );
         }
         debug!(
             "Embedding queue batch operation took {:?}",
@@ -1296,7 +1286,6 @@ impl QueueProcessor {
     ) -> Result<Vec<String>> {
         let start_time = std::time::Instant::now();
         let repo = DocumentRepository::new(self.state.db_pool.pool());
-        let embedding_repo = EmbeddingRepository::new(self.state.db_pool.pool());
 
         // All deletion events are considered successful (even if doc not found)
         let successful_event_ids: Vec<String> = deletions
@@ -1323,19 +1312,8 @@ impl QueueProcessor {
         }
 
         if !document_ids_to_delete.is_empty() {
-            // Delete embeddings in batch
-            if let Err(e) = embedding_repo
-                .bulk_delete_by_document_ids(&document_ids_to_delete)
-                .await
-            {
-                error!(
-                    "Failed to batch delete embeddings for {} documents: {}",
-                    document_ids_to_delete.len(),
-                    e
-                );
-            }
-
-            // Delete documents in batch
+            // embeddings.document_id has ON DELETE CASCADE, so embeddings are removed only if
+            // the document delete commits successfully.
             let delete_start = std::time::Instant::now();
             let deleted_count = repo.batch_delete(document_ids_to_delete.clone()).await?;
             debug!("Batch document deletion took {:?}", delete_start.elapsed());
