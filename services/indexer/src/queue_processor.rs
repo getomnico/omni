@@ -1183,6 +1183,13 @@ impl QueueProcessor {
         );
 
         let repo = DocumentRepository::new(self.state.db_pool.pool());
+        let document_keys: Vec<(String, String)> = documents
+            .iter()
+            .map(|doc| (doc.source_id.clone(), doc.external_id.clone()))
+            .collect();
+        let existing_content_state = repo
+            .batch_get_content_state_by_source_external_ids(&document_keys)
+            .await?;
 
         // Batch upsert documents with content
         let upsert_start = std::time::Instant::now();
@@ -1193,22 +1200,74 @@ impl QueueProcessor {
             upsert_start.elapsed()
         );
 
-        // Batch add documents to embedding queue
+        let changed_content_doc_ids: Vec<String> = upserted_documents
+            .iter()
+            .filter(|doc| {
+                existing_content_state
+                    .get(&(doc.source_id.clone(), doc.external_id.clone()))
+                    .is_some_and(|existing| existing.content_id != doc.content_id)
+            })
+            .map(|doc| doc.id.clone())
+            .collect();
+
+        let changed_content_doc_id_set: std::collections::HashSet<String> =
+            changed_content_doc_ids.iter().cloned().collect();
+
+        // Batch add documents to embedding queue. Content changes must be requeued even if
+        // embeddings already exist; the embedding processor replaces embeddings when it handles
+        // the queue item. Unchanged content is queued only when current-model embeddings are
+        // missing, so metadata/permission-only updates do not regenerate embeddings.
         let embedding_start = std::time::Instant::now();
-        let doc_ids_for_embedding: Vec<String> =
-            upserted_documents.iter().map(|d| d.id.clone()).collect();
-        if !doc_ids_for_embedding.is_empty() {
-            if let Err(e) = self
+        if !changed_content_doc_ids.is_empty() {
+            match self
                 .state
                 .embedding_queue
-                .enqueue_batch(doc_ids_for_embedding.clone())
+                .enqueue_batch(changed_content_doc_ids.clone())
                 .await
             {
-                error!(
-                    "Failed to batch queue embeddings for {} documents: {}",
-                    doc_ids_for_embedding.len(),
-                    e
-                );
+                Ok(enqueued_ids) => {
+                    debug!(
+                        "Queued {} of {} content-changed documents for embedding",
+                        enqueued_ids.len(),
+                        changed_content_doc_ids.len()
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        "Failed to batch queue embeddings for {} content-changed documents: {}",
+                        changed_content_doc_ids.len(),
+                        e
+                    );
+                }
+            }
+        }
+
+        let doc_ids_missing_embeddings: Vec<String> = upserted_documents
+            .iter()
+            .filter(|doc| !changed_content_doc_id_set.contains(&doc.id))
+            .map(|doc| doc.id.clone())
+            .collect();
+        if !doc_ids_missing_embeddings.is_empty() {
+            match self
+                .state
+                .embedding_queue
+                .enqueue_batch_missing_current_embeddings(doc_ids_missing_embeddings.clone())
+                .await
+            {
+                Ok(enqueued_ids) => {
+                    debug!(
+                        "Queued {} of {} unchanged/new documents missing embeddings",
+                        enqueued_ids.len(),
+                        doc_ids_missing_embeddings.len()
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        "Failed to batch queue embeddings for {} unchanged/new documents: {}",
+                        doc_ids_missing_embeddings.len(),
+                        e
+                    );
+                }
             }
         }
         debug!(

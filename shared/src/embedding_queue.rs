@@ -156,6 +156,55 @@ impl EmbeddingQueue {
         Ok(ids)
     }
 
+    pub async fn enqueue_batch_missing_current_embeddings(
+        &self,
+        document_ids: Vec<String>,
+    ) -> Result<Vec<String>> {
+        if !self.provider_repo.has_active_provider().await? {
+            return Ok(vec![]);
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let mut ids = Vec::new();
+
+        for document_id in document_ids {
+            let id = Ulid::new().to_string();
+
+            let result = sqlx::query(
+                r#"
+                INSERT INTO embedding_queue (id, document_id)
+                SELECT $1, $2
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM embedding_queue
+                    WHERE document_id = $2 AND status IN ('pending', 'processing')
+                )
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM embeddings e
+                    WHERE e.document_id = $2
+                      AND e.model_name = (
+                          SELECT config->>'model'
+                          FROM embedding_providers
+                          WHERE is_current = TRUE AND is_deleted = FALSE
+                          LIMIT 1
+                      )
+                )
+                "#,
+            )
+            .bind(&id)
+            .bind(&document_id)
+            .execute(&mut *tx)
+            .await?;
+
+            if result.rows_affected() > 0 {
+                ids.push(id);
+            }
+        }
+
+        tx.commit().await?;
+        Ok(ids)
+    }
+
     pub async fn dequeue_batch(&self, batch_size: i32) -> Result<Vec<EmbeddingQueueItem>> {
         let items = sqlx::query_as::<_, EmbeddingQueueItem>(
             r#"

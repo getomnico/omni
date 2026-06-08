@@ -217,6 +217,191 @@ async fn test_event_driven_document_lifecycle() {
 }
 
 #[tokio::test]
+async fn test_unchanged_content_upsert_does_not_requeue_existing_embeddings() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let event_queue = EventQueue::new(fixture.state.db_pool.pool().clone());
+    let repo = DocumentRepository::new(fixture.state.db_pool.pool());
+
+    let processor =
+        QueueProcessor::new(fixture.state.clone()).with_poll_interval(Duration::from_millis(200));
+    let processor_handle = tokio::spawn(async move {
+        let _ = processor.start().await;
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let doc_id = "embedding_idempotency_doc";
+    let content_id = fixture
+        .state
+        .content_storage
+        .store_content(b"stable content", None)
+        .await
+        .unwrap();
+
+    let create_event = ConnectorEvent::DocumentCreated {
+        sync_run_id: "sync_embedding_idempotency".to_string(),
+        source_id: TEST_SOURCE_ID.to_string(),
+        document_id: doc_id.to_string(),
+        content_id: content_id.clone(),
+        metadata: DocumentMetadata {
+            title: Some("Stable Content".to_string()),
+            author: None,
+            created_at: None,
+            updated_at: Some(OffsetDateTime::now_utc()),
+            content_type: None,
+            mime_type: Some("text/plain".to_string()),
+            size: Some("14".to_string()),
+            url: Some("https://example.com/stable.txt".to_string()),
+            path: Some("/stable.txt".to_string()),
+            extra: None,
+        },
+        permissions: DocumentPermissions {
+            public: false,
+            users: vec!["user@example.com".to_string()],
+            groups: vec![],
+        },
+        attributes: None,
+    };
+
+    event_queue
+        .enqueue(TEST_SOURCE_ID, &create_event)
+        .await
+        .unwrap();
+
+    let document =
+        common::wait_for_document_exists(&repo, TEST_SOURCE_ID, doc_id, Duration::from_secs(5))
+            .await
+            .expect("Document should be created");
+    common::wait_for_completed(fixture.state.db_pool.pool(), 1, Duration::from_secs(5)).await;
+
+    sqlx::query("UPDATE embedding_queue SET status = 'completed' WHERE document_id = $1")
+        .bind(&document.id)
+        .execute(fixture.state.db_pool.pool())
+        .await
+        .unwrap();
+    sqlx::query(
+        r#"
+        INSERT INTO embeddings (id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name, dimensions)
+        VALUES ('emb_idempotency_existing', $1, 0, 0, 14, '[0.1,0.2,0.3]'::vector, 'test-model', 3)
+        "#,
+    )
+    .bind(&document.id)
+    .execute(fixture.state.db_pool.pool())
+    .await
+    .unwrap();
+
+    let metadata_only_update = ConnectorEvent::DocumentUpdated {
+        sync_run_id: "sync_embedding_idempotency".to_string(),
+        source_id: TEST_SOURCE_ID.to_string(),
+        document_id: doc_id.to_string(),
+        content_id: content_id.clone(),
+        metadata: DocumentMetadata {
+            title: Some("Stable Content Renamed".to_string()),
+            author: None,
+            created_at: None,
+            updated_at: Some(OffsetDateTime::now_utc()),
+            content_type: None,
+            mime_type: Some("text/plain".to_string()),
+            size: Some("14".to_string()),
+            url: Some("https://example.com/stable-renamed.txt".to_string()),
+            path: Some("/stable-renamed.txt".to_string()),
+            extra: None,
+        },
+        permissions: Some(DocumentPermissions {
+            public: false,
+            users: vec![
+                "user@example.com".to_string(),
+                "other@example.com".to_string(),
+            ],
+            groups: vec![],
+        }),
+        attributes: None,
+    };
+
+    event_queue
+        .enqueue(TEST_SOURCE_ID, &metadata_only_update)
+        .await
+        .unwrap();
+    common::wait_for_document_with_title(
+        &repo,
+        TEST_SOURCE_ID,
+        doc_id,
+        "Stable Content Renamed",
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("Document should be updated");
+    common::wait_for_completed(fixture.state.db_pool.pool(), 2, Duration::from_secs(5)).await;
+
+    let queue_rows_after_metadata_update: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM embedding_queue WHERE document_id = $1")
+            .bind(&document.id)
+            .fetch_one(fixture.state.db_pool.pool())
+            .await
+            .unwrap();
+    assert_eq!(queue_rows_after_metadata_update.0, 1);
+
+    let new_content_id = fixture
+        .state
+        .content_storage
+        .store_content(b"changed content", None)
+        .await
+        .unwrap();
+    let content_update = ConnectorEvent::DocumentUpdated {
+        sync_run_id: "sync_embedding_idempotency".to_string(),
+        source_id: TEST_SOURCE_ID.to_string(),
+        document_id: doc_id.to_string(),
+        content_id: new_content_id,
+        metadata: DocumentMetadata {
+            title: Some("Changed Content".to_string()),
+            author: None,
+            created_at: None,
+            updated_at: Some(OffsetDateTime::now_utc()),
+            content_type: None,
+            mime_type: Some("text/plain".to_string()),
+            size: Some("15".to_string()),
+            url: Some("https://example.com/changed.txt".to_string()),
+            path: Some("/changed.txt".to_string()),
+            extra: None,
+        },
+        permissions: None,
+        attributes: None,
+    };
+
+    event_queue
+        .enqueue(TEST_SOURCE_ID, &content_update)
+        .await
+        .unwrap();
+    common::wait_for_document_with_title(
+        &repo,
+        TEST_SOURCE_ID,
+        doc_id,
+        "Changed Content",
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("Document should be updated with changed content");
+    common::wait_for_completed(fixture.state.db_pool.pool(), 3, Duration::from_secs(5)).await;
+
+    let queue_rows_after_content_update: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM embedding_queue WHERE document_id = $1")
+            .bind(&document.id)
+            .fetch_one(fixture.state.db_pool.pool())
+            .await
+            .unwrap();
+    assert_eq!(queue_rows_after_content_update.0, 2);
+
+    let embeddings_after_content_update: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM embeddings WHERE document_id = $1")
+            .bind(&document.id)
+            .fetch_one(fixture.state.db_pool.pool())
+            .await
+            .unwrap();
+    assert_eq!(embeddings_after_content_update.0, 1);
+
+    processor_handle.abort();
+}
+
+#[tokio::test]
 async fn test_latest_document_event_wins_within_indexer_batch() {
     let fixture = common::setup_test_fixture().await.unwrap();
     let event_queue = EventQueue::new(fixture.state.db_pool.pool().clone());

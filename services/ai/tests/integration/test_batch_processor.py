@@ -3,17 +3,25 @@
 Tests the embedding processor with real database and a mocked embedding provider.
 """
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 import ulid
-from unittest.mock import AsyncMock, MagicMock
 
 from embeddings.batch_processor import EmbeddingBatchProcessor
 from state import AppState
 from tests.helpers import (
-    create_test_user as _create_test_user_full,
-    create_test_source,
+    create_test_document as create_document_record,
+)
+from tests.helpers import (
     create_test_document_with_content as create_test_document,
+)
+from tests.helpers import (
+    create_test_source,
     enqueue_document,
+)
+from tests.helpers import (
+    create_test_user as _create_test_user_full,
 )
 
 
@@ -92,6 +100,138 @@ async def test_online_processes_document_end_to_end(
 
     queue_item = await queue_repo.get_by_id(queue_id)
     assert queue_item.status == "completed"
+
+
+@pytest.mark.integration
+async def test_online_clones_embeddings_for_duplicate_content(
+    db_pool,
+    online_processor,
+    queue_repo,
+    embeddings_repo,
+    mock_embedding_provider,
+):
+    """Same-content documents clone existing embeddings instead of calling provider."""
+    user_id = await create_test_user(db_pool)
+    source_id = await create_test_source(db_pool, user_id)
+    content_id = str(ulid.ULID())
+    donor_doc_id = await create_document_record(
+        db_pool,
+        source_id,
+        "Donor Document",
+        "Duplicate content for cloning.",
+        content_id=content_id,
+        external_id="donor-duplicate-content",
+    )
+    target_doc_id = str(ulid.ULID())
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO documents (id, source_id, external_id, title, content_id, content)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            """,
+            target_doc_id,
+            source_id,
+            "target-duplicate-content",
+            "Target Document",
+            content_id,
+            "Duplicate content for cloning.",
+        )
+
+    await embeddings_repo.bulk_insert(
+        [
+            {
+                "id": str(ulid.ULID()),
+                "document_id": donor_doc_id,
+                "chunk_index": 0,
+                "chunk_start_offset": 0,
+                "chunk_end_offset": 30,
+                "embedding": [0.1, 0.2, 0.3],
+                "model_name": "test-embedding-model",
+                "dimensions": 3,
+            }
+        ]
+    )
+    queue_id = await enqueue_document(db_pool, target_doc_id)
+
+    await online_processor._process_online_batch()
+
+    queue_item = await queue_repo.get_by_id(queue_id)
+    assert queue_item.status == "completed"
+
+    target_embeddings = await embeddings_repo.get_for_document(target_doc_id)
+    assert len(target_embeddings) == 1
+    assert target_embeddings[0].chunk_index == 0
+    assert target_embeddings[0].model_name == "test-embedding-model"
+    mock_embedding_provider.generate_embeddings.assert_not_called()
+
+
+@pytest.mark.integration
+async def test_online_does_not_clone_from_donor_with_unresolved_embedding_work(
+    db_pool,
+    online_processor,
+    queue_repo,
+    embeddings_repo,
+    mock_embedding_provider,
+):
+    """A donor with active embedding queue work may have stale embeddings."""
+    user_id = await create_test_user(db_pool)
+    source_id = await create_test_source(db_pool, user_id)
+    content_id = str(ulid.ULID())
+    donor_doc_id = await create_document_record(
+        db_pool,
+        source_id,
+        "Donor Document",
+        "Duplicate content with stale donor risk.",
+        content_id=content_id,
+        external_id="donor-unresolved-content",
+    )
+    target_doc_id = str(ulid.ULID())
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO documents (id, source_id, external_id, title, content_id, content)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            """,
+            target_doc_id,
+            source_id,
+            "target-unresolved-content",
+            "Target Document",
+            content_id,
+            "Duplicate content with stale donor risk.",
+        )
+        await conn.execute(
+            """
+            INSERT INTO embedding_queue (id, document_id, status)
+            VALUES ($1, $2, 'processing')
+            """,
+            str(ulid.ULID()),
+            donor_doc_id,
+        )
+
+    await embeddings_repo.bulk_insert(
+        [
+            {
+                "id": str(ulid.ULID()),
+                "document_id": donor_doc_id,
+                "chunk_index": 0,
+                "chunk_start_offset": 0,
+                "chunk_end_offset": 42,
+                "embedding": [0.4, 0.5, 0.6],
+                "model_name": "test-embedding-model",
+                "dimensions": 3,
+            }
+        ]
+    )
+    queue_id = await enqueue_document(db_pool, target_doc_id)
+
+    await online_processor._process_online_batch()
+
+    queue_item = await queue_repo.get_by_id(queue_id)
+    assert queue_item.status == "completed"
+    target_embeddings = await embeddings_repo.get_for_document(target_doc_id)
+    assert len(target_embeddings) == 1
+    assert len(target_embeddings[0].embedding) == 1024
+    mock_embedding_provider.generate_embeddings.assert_called_once()
 
 
 @pytest.mark.integration

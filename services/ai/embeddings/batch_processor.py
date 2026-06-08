@@ -13,18 +13,18 @@ from typing import Optional
 import ulid
 
 from config import EMBEDDING_MAX_MODEL_LEN
-
-from . import Chunk
 from db import (
-    get_db_pool,
+    Document,
     DocumentsRepository,
+    EmbeddingQueueItem,
     EmbeddingQueueRepository,
     EmbeddingsRepository,
-    EmbeddingQueueItem,
     QueueStatus,
+    get_db_pool,
 )
 from state import AppState
 
+from . import Chunk
 
 logger = logging.getLogger(__name__)
 
@@ -121,9 +121,18 @@ class EmbeddingBatchProcessor:
 
         logger.info(f"Processing {len(items)} documents via online embedding API")
 
-        for item in items:
+        documents_by_id = await self.documents_repo.get_by_ids(
+            [item.document_id for item in items]
+        )
+        items_to_process = await self._clone_same_content_embeddings(
+            items, documents_by_id
+        )
+
+        for item in items_to_process:
             try:
-                await self._process_single_document(item)
+                await self._process_single_document(
+                    item, documents_by_id.get(item.document_id)
+                )
             except Exception as e:
                 logger.error(
                     f"Failed to process document {item.document_id}: {e}", exc_info=True
@@ -137,7 +146,66 @@ class EmbeddingBatchProcessor:
 
         return True
 
-    async def _process_single_document(self, item: EmbeddingQueueItem):
+    async def _clone_same_content_embeddings(
+        self,
+        items: list[EmbeddingQueueItem],
+        documents_by_id: dict[str, Document],
+    ) -> list[EmbeddingQueueItem]:
+        docs_with_content = [
+            doc for doc in documents_by_id.values() if doc.content_id is not None
+        ]
+        if not docs_with_content:
+            return items
+
+        model_name = self.embedding_provider.get_model_name()
+        donor_by_content_id = await self.documents_repo.find_embedded_content_donors(
+            list(
+                {
+                    doc.content_id
+                    for doc in docs_with_content
+                    if doc.content_id is not None
+                }
+            ),
+            [item.document_id for item in items],
+            model_name,
+        )
+        if not donor_by_content_id:
+            return items
+
+        clone_pairs: list[tuple[str, str]] = []
+        item_by_document_id = {item.document_id: item for item in items}
+        for doc in docs_with_content:
+            donor_id = donor_by_content_id.get(doc.content_id)
+            if donor_id:
+                clone_pairs.append((donor_id, doc.id))
+
+        if not clone_pairs:
+            return items
+
+        clone_counts = await self.embeddings_repo.bulk_clone_for_documents(
+            clone_pairs, model_name
+        )
+        if not clone_counts:
+            return items
+
+        cloned_item_ids = [
+            item_by_document_id[document_id].id for document_id in clone_counts
+        ]
+        await self.queue_repo.mark_completed(cloned_item_ids)
+        self._docs_completed += len(cloned_item_ids)
+        self._embeddings_written += sum(clone_counts.values())
+        logger.info(
+            "Cloned embeddings for %d documents with duplicate content (%d chunks)",
+            len(cloned_item_ids),
+            sum(clone_counts.values()),
+        )
+
+        cloned_document_ids = set(clone_counts.keys())
+        return [item for item in items if item.document_id not in cloned_document_ids]
+
+    async def _process_single_document(
+        self, item: EmbeddingQueueItem, doc: Document | None = None
+    ):
         """Process a single document using the embedding provider"""
         if item.retry_count > 0:
             logger.debug(
@@ -146,7 +214,8 @@ class EmbeddingBatchProcessor:
 
         # Use semaphore to limit concurrent embedding operations and yield more frequently
         async with self._embedding_semaphore:
-            doc = await self.documents_repo.get_by_id(item.document_id)
+            if doc is None:
+                doc = await self.documents_repo.get_by_id(item.document_id)
 
             if not doc or not doc.content_id:
                 logger.warning(
