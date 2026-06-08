@@ -70,6 +70,8 @@ pub struct SyncRequest {
     pub sync_mode: SyncType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_sync_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<JsonValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

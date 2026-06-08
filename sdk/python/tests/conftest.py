@@ -36,6 +36,9 @@ def mock_connector_manager():
         respx_mock.put(path__regex=r"/sdk/source/.*/connector-state").mock(
             return_value=Response(200, json={"status": "ok"})
         )
+        respx_mock.put(path__regex=r"/sdk/sync/.*/checkpoint").mock(
+            return_value=Response(200, json={"status": "ok"})
+        )
 
         yield respx_mock
 

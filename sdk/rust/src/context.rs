@@ -123,7 +123,7 @@ impl SyncContext {
     /// Mark sync as completed. Flushes any buffered events first so the
     /// completion never races ahead of the final events for this sync.
     /// Status flip only — counts come from `increment_scanned`/`updated`,
-    /// connector state from `save_connector_state`.
+    /// checkpoint from `save_checkpoint`.
     pub async fn complete(&self) -> Result<()> {
         self.sdk_client.complete(&self.sync_run_id).await?;
         Ok(())
@@ -156,11 +156,16 @@ impl SyncContext {
     /// Checkpoint state for resumability. Flushes buffered events first —
     /// without this, a crash after checkpointing would lose events that the
     /// connector considered emitted (the next run resumes past them).
-    pub async fn save_connector_state(&self, state: serde_json::Value) -> Result<()> {
+    pub async fn save_checkpoint(&self, checkpoint: serde_json::Value) -> Result<()> {
         self.sdk_client
-            .save_connector_state(&self.source_id, state)
+            .save_checkpoint(&self.sync_run_id, &self.source_id, checkpoint)
             .await?;
         Ok(())
+    }
+
+    #[deprecated(note = "use save_checkpoint")]
+    pub async fn save_connector_state(&self, state: serde_json::Value) -> Result<()> {
+        self.save_checkpoint(state).await
     }
 
     pub async fn get_user_email_for_source(&self) -> Result<String> {

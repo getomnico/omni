@@ -105,7 +105,7 @@ impl SyncManager {
 
         if ctx.is_cancelled() {
             info!("IMAP sync {} was cancelled", sync_run_id);
-            let _ = ctx.save_connector_state(connector_state.to_json()).await;
+            let _ = ctx.save_checkpoint(connector_state.to_json()).await;
             ctx.cancel().await?;
             return Ok(());
         }
@@ -117,12 +117,12 @@ impl SyncManager {
                     source_id, total_scanned, total_processed
                 );
                 ctx.increment_updated(total_processed as i32).await?;
-                ctx.save_connector_state(connector_state.to_json()).await?;
+                ctx.save_checkpoint(connector_state.to_json()).await?;
                 ctx.complete().await?;
                 Ok(())
             }
             Err(e) => {
-                let _ = ctx.save_connector_state(connector_state.to_json()).await;
+                let _ = ctx.save_checkpoint(connector_state.to_json()).await;
                 error!("IMAP sync failed for source {}: {}", source_id, e);
                 Err(e)
             }
@@ -317,8 +317,7 @@ impl SyncManager {
         let mut new_uids: Vec<u32> = if ctx.sync_mode() == SyncType::Full {
             server_uids
         } else {
-            let indexed_uid_set: HashSet<u32> =
-                folder_state.indexed_uids.iter().copied().collect();
+            let indexed_uid_set: HashSet<u32> = folder_state.indexed_uids.iter().copied().collect();
             server_uids
                 .into_iter()
                 .filter(|uid| {
@@ -382,10 +381,7 @@ impl SyncManager {
                                         folder
                                     )));
                                 }
-                                warn!(
-                                    "Skipping UID {} in '{}': {}",
-                                    uid, folder, single_err
-                                );
+                                warn!("Skipping UID {} in '{}': {}", uid, folder, single_err);
                             }
                         }
                     }

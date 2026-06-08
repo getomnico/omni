@@ -1824,10 +1824,9 @@ pub async fn sdk_complete(
 
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
 
-    // Status flip only. Counts come from increment_scanned/updated;
-    // connector state from save_connector_state.
+    // Atomically mark completed and publish this run's checkpoint to the source.
     let updated = sync_run_repo
-        .mark_completed(&sync_run_id)
+        .complete_and_publish_checkpoint(&sync_run_id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to mark completed: {}", e)))?;
     if !updated {
@@ -1999,6 +1998,7 @@ pub async fn sdk_get_source_sync_config(
         config: source.config,
         credentials,
         connector_state: source.connector_state,
+        checkpoint: source.checkpoint,
         source_type: source.source_type,
         user_filter_mode: source.user_filter_mode,
         user_whitelist: source.user_whitelist,
@@ -2130,6 +2130,30 @@ pub async fn sdk_notify_webhook(
         .map_err(|e| ApiError::Internal(format!("Failed to trigger sync: {}", e)))?;
 
     Ok(Json(SdkWebhookResponse { sync_run_id }))
+}
+
+pub async fn sdk_update_checkpoint(
+    State(state): State<AppState>,
+    Path(sync_run_id): Path<String>,
+    Json(checkpoint): Json<serde_json::Value>,
+) -> Result<Json<SdkStatusResponse>, ApiError> {
+    debug!("SDK: Updating checkpoint for sync_run={}", sync_run_id);
+
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+    let updated = sync_run_repo
+        .update_checkpoint(&sync_run_id, checkpoint)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to update checkpoint: {}", e)))?;
+    if !updated {
+        warn!(
+            "SDK: Ignoring stale checkpoint update for non-running sync_run={}",
+            sync_run_id
+        );
+    }
+
+    Ok(Json(SdkStatusResponse {
+        status: "ok".to_string(),
+    }))
 }
 
 // ============================================================================

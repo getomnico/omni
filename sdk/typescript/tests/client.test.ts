@@ -236,7 +236,8 @@ describe('SdkClient', () => {
       const mockData = {
         config: { folder_id: 'abc' },
         credentials: { access_token: 'token' },
-        connector_state: { cursor: 'xyz' },
+        connector_state: { webhook: 'meta' },
+        checkpoint: { cursor: 'xyz' },
       };
 
       server.use(
@@ -309,7 +310,8 @@ describe('SdkClient', () => {
           HttpResponse.json({
             config: { workspaces: ['ws1'] },
             credentials: { token: 'redacted' },
-            connector_state: { cursor: 'abc' },
+            connector_state: { webhook: 'meta' },
+            checkpoint: { cursor: 'abc' },
             source_type: 'linear',
             user_filter_mode: 'whitelist',
             user_whitelist: ['alice@example.com', 'bob@example.com'],
@@ -323,7 +325,8 @@ describe('SdkClient', () => {
 
       expect(cfg.config).toEqual({ workspaces: ['ws1'] });
       expect(cfg.credentials).toEqual({ token: 'redacted' });
-      expect(cfg.connector_state).toEqual({ cursor: 'abc' });
+      expect(cfg.connector_state).toEqual({ webhook: 'meta' });
+      expect(cfg.checkpoint).toEqual({ cursor: 'abc' });
       expect(cfg.source_type).toBe('linear');
       expect(cfg.user_filter_mode).toBe('whitelist');
       expect(cfg.user_whitelist).toEqual(['alice@example.com', 'bob@example.com']);

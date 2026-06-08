@@ -635,6 +635,7 @@ mod tests {
             user_whitelist: None,
             user_blacklist: None,
             connector_state: None,
+            checkpoint: None,
             sync_interval_seconds: interval_seconds,
             created_at: now,
             updated_at: now,
@@ -671,6 +672,7 @@ mod tests {
             documents_processed: 0,
             documents_updated: 0,
             error_message: None,
+            checkpoint: None,
             created_at: now,
             updated_at: now,
         }

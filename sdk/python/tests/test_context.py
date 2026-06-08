@@ -170,10 +170,10 @@ async def test_save_state_persists_and_heartbeats(sdk_client, mock_connector_man
     state_calls = [
         c
         for c in mock_connector_manager.calls
-        if "connector-state" in str(c.request.url)
+        if "checkpoint" in str(c.request.url)
     ]
     assert len(state_calls) == 1
-    assert "source-456" in str(state_calls[0].request.url)
+    assert "sync-123" in str(state_calls[0].request.url)
     assert state_calls[0].request.method == "PUT"
     assert json.loads(state_calls[0].request.content) == {"page": 2, "cursor": "abc"}
 

@@ -351,14 +351,14 @@ impl SyncManager {
                 // checkpoints mid-sync — the inner pass might have made
                 // additional state mutations after the last checkpoint.
                 let state_json = serde_json::to_value(&final_state)?;
-                ctx.save_connector_state(state_json).await?;
+                ctx.save_checkpoint(state_json).await?;
                 ctx.complete().await?;
                 Ok(())
             }
             // Cancelled mid-sync: tell the SDK so the run is marked
             // `cancelled` rather than `failed`. Returning Ok keeps the
             // SDK's default-fail branch from firing. Per-user state was
-            // already checkpointed mid-sync via `ctx.save_connector_state`.
+            // already checkpointed mid-sync via `ctx.save_checkpoint`.
             Ok(None) => {
                 info!("Sync {} was cancelled", sync_run_id);
                 ctx.cancel().await?;
@@ -1047,7 +1047,7 @@ impl SyncManager {
         }
 
         // Push counts to the manager. Note: counts can over-count on resume
-        // since save_connector_state only fires per-user; an in-flight batch
+        // since save_checkpoint only fires per-user; an in-flight batch
         // re-runs after crash. Counts are advisory progress, not exact.
         if scanned > 0 {
             ctx.increment_scanned(scanned as i32).await?;
@@ -1263,7 +1263,7 @@ impl SyncManager {
                             Some(new_page_tokens.clone())
                         },
                     };
-                    ctx.save_connector_state(serde_json::to_value(&checkpoint_state)?)
+                    ctx.save_checkpoint(serde_json::to_value(&checkpoint_state)?)
                         .await
                         .with_context(|| {
                             format!(
@@ -1489,7 +1489,7 @@ impl SyncManager {
                             },
                             drive_page_tokens: drive_page_tokens.clone(),
                         };
-                        ctx.save_connector_state(serde_json::to_value(&checkpoint_state)?)
+                        ctx.save_checkpoint(serde_json::to_value(&checkpoint_state)?)
                             .await
                             .with_context(|| {
                                 format!(

@@ -67,6 +67,10 @@ pub fn create_app(state: AppState) -> Router {
         .route("/sdk/sync/:id/complete", post(handlers::sdk_complete))
         .route("/sdk/sync/:id/fail", post(handlers::sdk_fail))
         .route(
+            "/sdk/sync/:id/checkpoint",
+            put(handlers::sdk_update_checkpoint),
+        )
+        .route(
             "/sdk/sync/:id/scanned",
             post(handlers::sdk_increment_scanned),
         )

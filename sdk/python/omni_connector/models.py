@@ -214,6 +214,7 @@ class SyncRequest(BaseModel):
     sync_run_id: str
     source_id: str
     sync_mode: str
+    checkpoint: dict[str, Any] | None = None
     # Manager's running tally at dispatch time. Zero on a fresh sync;
     # non-zero on resume so the connector can keep counting from there.
     documents_scanned: int = 0
@@ -289,6 +290,7 @@ class SdkSourceSyncData(BaseModel):
     config: dict[str, Any]
     credentials: dict[str, Any]
     connector_state: dict[str, Any] | None = None
+    checkpoint: dict[str, Any] | None = None
     source_type: str | None = None
     user_filter_mode: UserFilterMode = UserFilterMode.ALL
     user_whitelist: list[str] | None = None

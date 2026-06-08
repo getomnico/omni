@@ -64,6 +64,7 @@ impl SyncRunRepository {
             documents_processed: 0,
             documents_updated: 0,
             error_message: None,
+            checkpoint: None,
         })
     }
 
@@ -72,7 +73,7 @@ impl SyncRunRepository {
             r#"
             SELECT id, source_id, sync_type, started_at, completed_at, status, trigger_type,
                    documents_scanned, documents_processed, documents_updated, error_message,
-                   created_at, updated_at
+                   checkpoint, created_at, updated_at
             FROM sync_runs
             WHERE id = $1
             "#,
@@ -86,7 +87,9 @@ impl SyncRunRepository {
 
     /// Flip status to `Completed`. Counters are maintained by
     /// `increment_scanned` / `increment_updated`, so this only touches
-    /// status fields.
+    /// status fields. Prefer [`complete_and_publish_checkpoint`] for normal
+    /// SDK completion so the successful checkpoint is atomically promoted to
+    /// the source.
     pub async fn mark_completed(&self, id: &str) -> Result<bool, DatabaseError> {
         let result = sqlx::query(
             "UPDATE sync_runs
@@ -101,6 +104,72 @@ impl SyncRunRepository {
         .await?;
 
         Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn update_checkpoint(
+        &self,
+        id: &str,
+        checkpoint: serde_json::Value,
+    ) -> Result<bool, DatabaseError> {
+        let result = sqlx::query(
+            "UPDATE sync_runs
+             SET checkpoint = $1,
+                 last_activity_at = CURRENT_TIMESTAMP,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $2 AND status = $3",
+        )
+        .bind(&checkpoint)
+        .bind(id)
+        .bind(SyncStatus::Running)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn complete_and_publish_checkpoint(&self, id: &str) -> Result<bool, DatabaseError> {
+        let mut tx = self.pool.begin().await?;
+
+        let row: Option<(String, Option<serde_json::Value>)> = sqlx::query_as(
+            "SELECT source_id, checkpoint
+             FROM sync_runs
+             WHERE id = $1 AND status = $2
+             FOR UPDATE",
+        )
+        .bind(id)
+        .bind(SyncStatus::Running)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let Some((source_id, checkpoint)) = row else {
+            tx.rollback().await?;
+            return Ok(false);
+        };
+
+        sqlx::query(
+            "UPDATE sync_runs
+             SET status = $1, completed_at = CURRENT_TIMESTAMP,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $2",
+        )
+        .bind(SyncStatus::Completed)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "UPDATE sources
+             SET checkpoint = $1,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $2",
+        )
+        .bind(&checkpoint)
+        .bind(&source_id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(true)
     }
 
     pub async fn mark_failed(&self, id: &str, error: &str) -> Result<bool, DatabaseError> {
@@ -186,7 +255,7 @@ impl SyncRunRepository {
                     r#"
                     SELECT id, source_id, sync_type, started_at, completed_at, status, trigger_type,
                            documents_scanned, documents_processed, documents_updated, error_message,
-                           created_at, updated_at
+                   checkpoint, created_at, updated_at
                     FROM sync_runs
                     WHERE source_id = $1 AND sync_type = $2 AND status = $3
                     ORDER BY completed_at DESC
@@ -204,7 +273,7 @@ impl SyncRunRepository {
                     r#"
                     SELECT id, source_id, sync_type, started_at, completed_at, status, trigger_type,
                            documents_scanned, documents_processed, documents_updated, error_message,
-                           created_at, updated_at
+                   checkpoint, created_at, updated_at
                     FROM sync_runs
                     WHERE source_id = $1 AND status = $2
                     ORDER BY completed_at DESC
@@ -229,7 +298,7 @@ impl SyncRunRepository {
             r#"
             SELECT id, source_id, sync_type, started_at, completed_at, status, trigger_type,
                    documents_scanned, documents_processed, documents_updated, error_message,
-                   created_at, updated_at
+                   checkpoint, created_at, updated_at
             FROM sync_runs
             WHERE source_id = $1 AND status = $2
             ORDER BY created_at DESC
@@ -261,7 +330,7 @@ impl SyncRunRepository {
             r#"
             SELECT id, source_id, sync_type, started_at, completed_at, status, trigger_type,
                    documents_scanned, documents_processed, documents_updated, error_message,
-                   created_at, updated_at
+                   checkpoint, created_at, updated_at
             FROM sync_runs
             WHERE source_id = $1 AND status = $2 AND sync_type::text = ANY($3)
             ORDER BY created_at DESC
@@ -282,7 +351,7 @@ impl SyncRunRepository {
             r#"
             SELECT id, source_id, sync_type, started_at, completed_at, status, trigger_type,
                    documents_scanned, documents_processed, documents_updated, error_message,
-                   created_at, updated_at
+                   checkpoint, created_at, updated_at
             FROM sync_runs
             WHERE status = $1
             ORDER BY created_at DESC
@@ -307,7 +376,7 @@ impl SyncRunRepository {
             r#"
             SELECT id, source_id, sync_type, started_at, completed_at, status, trigger_type,
                    documents_scanned, documents_processed, documents_updated, error_message,
-                   created_at, updated_at
+                   checkpoint, created_at, updated_at
             FROM sync_runs
             WHERE status = $1 AND source_id = ANY($2)
             ORDER BY created_at DESC
@@ -417,7 +486,7 @@ impl SyncRunRepository {
             SELECT DISTINCT ON (source_id)
                    id, source_id, sync_type, started_at, completed_at, status, trigger_type,
                    documents_scanned, documents_processed, documents_updated, error_message,
-                   created_at, updated_at
+                   checkpoint, created_at, updated_at
             FROM sync_runs
             WHERE source_id = ANY($1)
             ORDER BY source_id, started_at DESC
@@ -454,7 +523,7 @@ impl SyncRunRepository {
             r#"
             SELECT id, source_id, sync_type, started_at, completed_at, status, trigger_type,
                    documents_scanned, documents_processed, documents_updated, error_message,
-                   created_at, updated_at
+                   checkpoint, created_at, updated_at
             FROM (
                 SELECT sr.*,
                        ROW_NUMBER() OVER (

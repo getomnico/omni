@@ -404,7 +404,7 @@ class TeamsSyncer:
                     new_tokens[token_key] = new_token
                     new_sync_ts[token_key] = now_iso
 
-                await ctx.save_state(
+                await ctx.save_checkpoint(
                     {
                         "delta_tokens": new_tokens,
                         "last_sync_ts": new_sync_ts,
@@ -921,7 +921,7 @@ class TeamsSyncer:
                 if ok:
                     new_chat_sync_ts[chat_id] = now_iso
 
-                await ctx.save_state(
+                await ctx.save_checkpoint(
                     {
                         **(channel_state or {}),
                         "chat_last_sync_ts": new_chat_sync_ts,

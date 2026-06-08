@@ -75,6 +75,8 @@ pub struct Source {
     pub user_whitelist: Option<JsonValue>,
     pub user_blacklist: Option<JsonValue>,
     pub connector_state: Option<JsonValue>,
+    #[serde(default)]
+    pub checkpoint: Option<JsonValue>,
     pub sync_interval_seconds: Option<i32>,
     #[serde(with = "time::serde::iso8601")]
     pub created_at: OffsetDateTime,
@@ -653,6 +655,8 @@ pub struct SyncRun {
     pub documents_processed: i32,
     pub documents_updated: i32,
     pub error_message: Option<String>,
+    #[serde(default)]
+    pub checkpoint: Option<JsonValue>,
     #[serde(with = "time::serde::iso8601")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::iso8601")]
@@ -668,6 +672,8 @@ pub struct SyncRequest {
     pub sync_mode: SyncType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_sync_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<JsonValue>,
 }
 
 /// Response from connector after receiving a sync request.
@@ -753,6 +759,7 @@ mod tests {
             user_whitelist: whitelist,
             user_blacklist: blacklist,
             connector_state: None,
+            checkpoint: None,
             sync_interval_seconds: None,
             created_at: OffsetDateTime::now_utc(),
             updated_at: OffsetDateTime::now_utc(),

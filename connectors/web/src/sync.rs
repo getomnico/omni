@@ -111,7 +111,7 @@ impl SyncManager {
         let previous_doc_ids: HashSet<String> = prior.pages.keys().cloned().collect();
 
         // In-memory state accumulated during this sync run. On completion it
-        // replaces `prior` and is persisted via `ctx.save_connector_state`.
+        // replaces `prior` and is persisted via `ctx.save_checkpoint`.
         let state: Arc<Mutex<HashMap<String, PageSyncState>>> =
             Arc::new(Mutex::new(prior.pages.clone()));
         let current_doc_ids: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
@@ -210,7 +210,7 @@ impl SyncManager {
             pages: state.lock().await.clone(),
             last_sync_completed_at: Some(chrono::Utc::now().to_rfc3339()),
         };
-        ctx.save_connector_state(serde_json::to_value(&new_state)?)
+        ctx.save_checkpoint(serde_json::to_value(&new_state)?)
             .await?;
         ctx.complete().await?;
         Ok(())

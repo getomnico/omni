@@ -58,7 +58,7 @@ pub async fn run_sync(
 
     if ctx.is_cancelled() {
         info!("Nextcloud sync {} was cancelled", sync_run_id);
-        let _ = ctx.save_connector_state(state.to_json()).await;
+        let _ = ctx.save_checkpoint(state.to_json()).await;
         let _ = ctx.cancel().await;
         return Ok(());
     }
@@ -69,12 +69,12 @@ pub async fn run_sync(
                 "Nextcloud sync completed for source {}: {} scanned, {} processed",
                 source_id, total_scanned, total_processed
             );
-            ctx.save_connector_state(state.to_json()).await?;
+            ctx.save_checkpoint(state.to_json()).await?;
             ctx.complete().await?;
             Ok(())
         }
         Err(e) => {
-            let _ = ctx.save_connector_state(state.to_json()).await;
+            let _ = ctx.save_checkpoint(state.to_json()).await;
             error!("Nextcloud sync failed for source {}: {}", source_id, e);
             Err(e)
         }
@@ -306,7 +306,9 @@ async fn process_file_batch(
 
             // is_update is true only when we have previously indexed this file
             // (etag stored without a "skipped:" prefix).
-            let is_update = state.etags.get(&key)
+            let is_update = state
+                .etags
+                .get(&key)
                 .map(|e| !e.starts_with("skipped:"))
                 .unwrap_or(false);
 

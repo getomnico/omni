@@ -245,10 +245,27 @@ class SdkClient:
 
         return response.json()["content_id"]
 
+    async def update_checkpoint(
+        self, sync_run_id: str, checkpoint: dict[str, Any]
+    ) -> None:
+        """Persist a run-scoped sync checkpoint to the manager."""
+        logger.debug("SDK: Updating checkpoint for sync_run=%s", sync_run_id)
+
+        client = await self._get_client()
+        response = await client.put(
+            f"{self.base_url}/sdk/sync/{sync_run_id}/checkpoint",
+            json=checkpoint,
+        )
+
+        if not response.is_success:
+            raise SdkClientError(
+                f"Failed to update checkpoint: {response.status_code} - {response.text}"
+            )
+
     async def update_connector_state(
         self, source_id: str, state: dict[str, Any]
     ) -> None:
-        """Persist connector state to the manager (used by save_state checkpoints)."""
+        """Persist non-checkpoint connector metadata to the manager."""
         logger.debug("SDK: Updating connector state for source=%s", source_id)
 
         client = await self._get_client()
@@ -306,7 +323,7 @@ class SdkClient:
             "documents_updated": documents_updated,
         }
         if new_state is not None:
-            payload["new_state"] = new_state
+            await self.update_checkpoint(sync_run_id, new_state)
 
         client = await self._get_client()
         response = await client.post(

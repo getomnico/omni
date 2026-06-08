@@ -164,7 +164,7 @@ class RSSConnector(Connector):
             docs_since_checkpoint += 1
 
             if docs_since_checkpoint >= 50:
-                await ctx.save_state({"last_sync_time": current_time.isoformat()})
+                await ctx.save_checkpoint({"last_sync_time": current_time.isoformat()})
                 docs_since_checkpoint = 0
 
         await ctx.complete(new_state={"last_sync_time": current_time.isoformat()})

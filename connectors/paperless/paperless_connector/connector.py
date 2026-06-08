@@ -122,7 +122,7 @@ class PaperlessConnector(Connector):
                     continue
 
                 if docs_since_checkpoint >= CHECKPOINT_INTERVAL:
-                    await ctx.save_state(
+                    await ctx.save_checkpoint(
                         {"last_sync_at": sync_started_at.isoformat()}
                     )
                     docs_since_checkpoint = 0

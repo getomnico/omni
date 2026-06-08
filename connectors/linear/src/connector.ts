@@ -178,7 +178,7 @@ export class LinearConnector extends Connector<LinearSourceConfig, LinearCredent
             await ctx.incrementUpdated(1);
             docsSinceCheckpoint++;
             if (docsSinceCheckpoint >= CHECKPOINT_INTERVAL) {
-              await ctx.saveState({ last_sync_at: new Date().toISOString() });
+              await ctx.saveCheckpoint({ last_sync_at: new Date().toISOString() });
               docsSinceCheckpoint = 0;
             }
           } catch (e) {
@@ -238,7 +238,7 @@ export class LinearConnector extends Connector<LinearSourceConfig, LinearCredent
           }
 
           if (docsSinceCheckpoint >= CHECKPOINT_INTERVAL) {
-            await ctx.saveState({ last_sync_at: new Date().toISOString() });
+            await ctx.saveCheckpoint({ last_sync_at: new Date().toISOString() });
             docsSinceCheckpoint = 0;
           }
         } catch (e) {
@@ -278,7 +278,7 @@ export class LinearConnector extends Connector<LinearSourceConfig, LinearCredent
           await ctx.incrementUpdated(1);
           docsSinceCheckpoint++;
           if (docsSinceCheckpoint >= CHECKPOINT_INTERVAL) {
-            await ctx.saveState({ last_sync_at: new Date().toISOString() });
+            await ctx.saveCheckpoint({ last_sync_at: new Date().toISOString() });
             docsSinceCheckpoint = 0;
           }
         } catch (e) {

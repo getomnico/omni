@@ -271,21 +271,22 @@ export class SyncContext {
    * checkpointing would lose events that the connector considered emitted
    * (the next run resumes past them).
    */
-  async saveState(state: Record<string, unknown>): Promise<void> {
+  async saveCheckpoint(checkpoint: Record<string, unknown>): Promise<void> {
     await this.flush();
-    this._state = state;
-    await this.client.updateConnectorState(this._sourceId, state);
+    this._state = checkpoint;
+    await this.client.updateCheckpoint(this._syncRunId, checkpoint);
     await this.client.heartbeat(this._syncRunId);
+  }
+
+  async saveState(state: Record<string, unknown>): Promise<void> {
+    await this.saveCheckpoint(state);
   }
 
   async complete(newState?: Record<string, unknown>): Promise<void> {
     await this.flush();
-    // sdk_complete is body-less since 7c21fd10 — newState in the /complete
-    // body is silently dropped server-side. Persist via the connector-state
-    // endpoint instead (same path saveState() takes).
     if (newState !== undefined) {
       this._state = newState;
-      await this.client.updateConnectorState(this._sourceId, newState);
+      await this.client.updateCheckpoint(this._syncRunId, newState);
     }
     await this.client.complete(this._syncRunId);
   }

@@ -183,7 +183,7 @@ class SharePointSyncer:
                 )
                 if new_token:
                     delta_tokens[drive.id] = new_token
-                    await ctx.save_state({DRIVE_DELTA_TOKENS_KEY: delta_tokens})
+                    await ctx.save_checkpoint({DRIVE_DELTA_TOKENS_KEY: delta_tokens})
 
             logger.info("[sharepoint] Finished site %s", site.display_name)
 

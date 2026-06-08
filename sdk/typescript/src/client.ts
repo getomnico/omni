@@ -159,6 +159,23 @@ export class SdkClient {
     return data.content_id;
   }
 
+  async updateCheckpoint(
+    syncRunId: string,
+    checkpoint: Record<string, unknown>
+  ): Promise<void> {
+    const response = await this.put(
+      `/sdk/sync/${syncRunId}/checkpoint`,
+      checkpoint
+    );
+    if (!response.ok) {
+      const text = await response.text();
+      throw new SdkClientError(
+        `Failed to update checkpoint: ${response.status} - ${text}`,
+        response.status
+      );
+    }
+  }
+
   async updateConnectorState(
     sourceId: string,
     state: Record<string, unknown>

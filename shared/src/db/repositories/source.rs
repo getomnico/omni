@@ -18,7 +18,7 @@ impl SourceRepository {
             r#"
             SELECT id, name, source_type, config, is_active, is_deleted, scope,
                    user_filter_mode, user_whitelist, user_blacklist,
-                   connector_state, sync_interval_seconds, created_at, updated_at, created_by
+                   connector_state, checkpoint, sync_interval_seconds, created_at, updated_at, created_by
             FROM sources
             WHERE source_type = $1 AND is_deleted = false
             ORDER BY created_at DESC
@@ -36,7 +36,7 @@ impl SourceRepository {
             r#"
             SELECT id, name, source_type, config, is_active, is_deleted, scope,
                    user_filter_mode, user_whitelist, user_blacklist,
-                   connector_state, sync_interval_seconds, created_at, updated_at, created_by
+                   connector_state, checkpoint, sync_interval_seconds, created_at, updated_at, created_by
             FROM sources
             WHERE is_deleted = false
             ORDER BY created_at DESC
@@ -53,7 +53,7 @@ impl SourceRepository {
             r#"
             SELECT id, name, source_type, config, is_active, is_deleted, scope,
                    user_filter_mode, user_whitelist, user_blacklist,
-                   connector_state, sync_interval_seconds, created_at, updated_at, created_by
+                   connector_state, checkpoint, sync_interval_seconds, created_at, updated_at, created_by
             FROM sources
             WHERE is_active = true AND is_deleted = false
             ORDER BY created_at DESC
@@ -70,7 +70,7 @@ impl SourceRepository {
             r#"
             SELECT id, name, source_type, config, is_active, is_deleted, scope,
                    user_filter_mode, user_whitelist, user_blacklist,
-                   connector_state, sync_interval_seconds, created_at, updated_at, created_by
+                   connector_state, checkpoint, sync_interval_seconds, created_at, updated_at, created_by
             FROM sources
             WHERE is_active = false OR is_deleted = true
             ORDER BY created_at DESC
@@ -114,7 +114,7 @@ impl SourceRepository {
             r#"
             SELECT id, name, source_type, config, is_active, is_deleted, scope,
                    user_filter_mode, user_whitelist, user_blacklist,
-                   connector_state, sync_interval_seconds, created_at, updated_at, created_by
+                   connector_state, checkpoint, sync_interval_seconds, created_at, updated_at, created_by
             FROM sources
             WHERE is_active = true AND is_deleted = false
             "#,
@@ -195,7 +195,7 @@ impl Repository<Source, String> for SourceRepository {
             r#"
             SELECT id, name, source_type, config, is_active, is_deleted, scope,
                    user_filter_mode, user_whitelist, user_blacklist,
-                   connector_state, sync_interval_seconds, created_at, updated_at, created_by
+                   connector_state, checkpoint, sync_interval_seconds, created_at, updated_at, created_by
             FROM sources
             WHERE id = $1
             "#,
@@ -212,7 +212,7 @@ impl Repository<Source, String> for SourceRepository {
             r#"
             SELECT id, name, source_type, config, is_active, is_deleted, scope,
                    user_filter_mode, user_whitelist, user_blacklist,
-                   connector_state, sync_interval_seconds, created_at, updated_at, created_by
+                   connector_state, checkpoint, sync_interval_seconds, created_at, updated_at, created_by
             FROM sources
             WHERE is_deleted = false
             ORDER BY created_at DESC
@@ -234,7 +234,7 @@ impl Repository<Source, String> for SourceRepository {
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id, name, source_type, config, is_active, is_deleted, scope,
                       user_filter_mode, user_whitelist, user_blacklist,
-                      connector_state, sync_interval_seconds, created_at, updated_at, created_by
+                      connector_state, checkpoint, sync_interval_seconds, created_at, updated_at, created_by
             "#,
         )
         .bind(&source.id)
@@ -263,7 +263,7 @@ impl Repository<Source, String> for SourceRepository {
             WHERE id = $1
             RETURNING id, name, source_type, config, is_active, is_deleted, scope,
                       user_filter_mode, user_whitelist, user_blacklist,
-                      connector_state, sync_interval_seconds, created_at, updated_at, created_by
+                      connector_state, checkpoint, sync_interval_seconds, created_at, updated_at, created_by
             "#,
         )
         .bind(&id)

@@ -57,6 +57,8 @@ impl WebConnectorTestFixture {
             max_concurrent_syncs_per_type: 3,
             scheduler_interval_seconds: 30,
             stale_sync_timeout_minutes: 10,
+            extraction_concurrency: 2,
+            extraction_retry_after_seconds: 30,
             sync_backoff_base_seconds: 30,
             sync_backoff_max_seconds: 3600,
             sync_max_consecutive_failures: 10,
@@ -79,6 +81,9 @@ impl WebConnectorTestFixture {
         let cm_state = CMAppState {
             db_pool: test_env.db_pool.clone(),
             redis_client,
+            extraction_semaphore: Arc::new(tokio::sync::Semaphore::new(
+                cm_config.extraction_concurrency,
+            )),
             config: cm_config,
             sync_manager: cm_sync_manager,
             content_storage,
@@ -207,7 +212,7 @@ impl WebConnectorTestFixture {
             .await
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         let config = WebSourceConfig::from_json(&source.config)?;
-        let prior_state = match source.connector_state {
+        let prior_state = match source.checkpoint {
             Some(value) => Some(serde_json::from_value::<WebConnectorState>(value)?),
             None => None,
         };
@@ -242,7 +247,7 @@ impl WebConnectorTestFixture {
     /// Get connector state for a source via SDK
     pub async fn get_connector_state(&self, source_id: &str) -> Result<Option<serde_json::Value>> {
         self.sdk_client
-            .get_connector_state(source_id)
+            .get_checkpoint(source_id)
             .await
             .map_err(|e| anyhow::anyhow!("{}", e))
     }

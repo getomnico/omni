@@ -92,7 +92,7 @@ fn thresholds_for(sync_type: SyncType) -> (usize, Option<Duration>) {
 /// Unknown sync_run_ids default to `Incremental` — safe middle ground.
 ///
 /// **Invariant**: any operation that persists a checkpoint or terminates a sync
-/// (`save_connector_state`, `complete`, `fail`) must flush the relevant buffered
+/// (`save_checkpoint`, `complete`, `fail`) must flush the relevant buffered
 /// events first — otherwise a crash after checkpoint would lose those events forever.
 #[derive(Clone)]
 pub struct SdkClient {
@@ -124,6 +124,7 @@ struct StoreContentResponse {
 #[derive(Debug, Deserialize)]
 struct SyncConfigResponse {
     connector_state: Option<serde_json::Value>,
+    checkpoint: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -622,6 +623,23 @@ impl SdkClient {
         Ok(config.connector_state)
     }
 
+    /// Get checkpoint for a source (latest successfully completed sync).
+    pub async fn get_checkpoint(&self, source_id: &str) -> SdkResult<Option<serde_json::Value>> {
+        debug!("SDK: Getting checkpoint for source_id={}", source_id);
+
+        let response = self
+            .client
+            .get(format!(
+                "{}/sdk/source/{}/sync-config",
+                self.base_url, source_id
+            ))
+            .send()
+            .await?;
+        let response = ensure_ok(response, "get_checkpoint").await?;
+        let config: SyncConfigResponse = response.json().await?;
+        Ok(config.checkpoint)
+    }
+
     /// Get credentials for a source
     pub async fn get_credentials(&self, source_id: &str) -> SdkResult<ServiceCredential> {
         debug!("SDK: Getting credentials for source_id={}", source_id);
@@ -725,18 +743,40 @@ impl SdkClient {
         Ok(result.sync_run_id)
     }
 
-    /// Save connector state for a source. **Critical**: buffered events for
-    /// this source are flushed before the checkpoint is persisted. Without
-    /// this, a crash after save_state could lose events that the connector
-    /// already considers emitted (the next run resumes past them).
+    /// Save a run-scoped sync checkpoint. **Critical**: buffered events for
+    /// this sync/source pair are flushed before the checkpoint is persisted.
+    /// Without this, a crash after checkpointing could lose events that the
+    /// connector already considers emitted (the next resume runs past them).
+    pub async fn save_checkpoint(
+        &self,
+        sync_run_id: &str,
+        source_id: &str,
+        checkpoint: serde_json::Value,
+    ) -> SdkResult<()> {
+        debug!("SDK: Saving checkpoint for sync_run={}", sync_run_id);
+
+        self.flush_events(sync_run_id, source_id).await?;
+
+        let response = self
+            .client
+            .put(format!(
+                "{}/sdk/sync/{}/checkpoint",
+                self.base_url, sync_run_id
+            ))
+            .json(&checkpoint)
+            .send()
+            .await?;
+        ensure_ok(response, "save_checkpoint").await?;
+
+        Ok(())
+    }
+
     pub async fn save_connector_state(
         &self,
         source_id: &str,
         state: serde_json::Value,
     ) -> SdkResult<()> {
-        debug!("SDK: Saving connector state for source_id={}", source_id);
-
-        self.flush_source(source_id).await?;
+        debug!("SDK: Saving connector metadata for source_id={}", source_id);
 
         let response = self
             .client

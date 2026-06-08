@@ -182,7 +182,7 @@ impl SyncManager {
         // The SDK server constructs its own SdkClient for the SyncContext, so
         // emit/flush must go through `ctx.sdk_client()` — using a different
         // SdkClient instance would buffer events on a client whose buffer
-        // ctx.complete()/ctx.save_connector_state() never flush, stranding
+        // ctx.complete()/ctx.save_checkpoint() never flush, stranding
         // events at end-of-sync.
         let sync_sdk_client = ctx.sdk_client().clone();
 
@@ -315,7 +315,7 @@ impl SyncManager {
             last_successful_sync_at: Some(sync_start),
             confluence_page_versions: new_page_versions,
         };
-        ctx.save_connector_state(serde_json::to_value(new_state)?)
+        ctx.save_checkpoint(serde_json::to_value(new_state)?)
             .await?;
 
         Ok(Some(total_processed))

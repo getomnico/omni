@@ -71,7 +71,7 @@ class MailSyncer(BaseSyncer):
                 )
                 if new_token:
                     new_tokens[token_key] = new_token
-                    await ctx.save_state({"delta_tokens": new_tokens})
+                    await ctx.save_checkpoint({"delta_tokens": new_tokens})
 
         return {"delta_tokens": new_tokens}
 

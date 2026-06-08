@@ -381,15 +381,14 @@ where
         })?;
     }
 
-    let typed_state =
-        decode_optional::<C::State>(source.connector_state.as_ref(), "connector state").map_err(
-            |error| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    Json(SyncResponse::error(error.to_string())),
-                )
-            },
-        )?;
+    let effective_checkpoint = request.checkpoint.as_ref().or(source.checkpoint.as_ref());
+    let typed_state = decode_optional::<C::State>(effective_checkpoint, "sync checkpoint")
+        .map_err(|error| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(SyncResponse::error(error.to_string())),
+            )
+        })?;
 
     state
         .connector

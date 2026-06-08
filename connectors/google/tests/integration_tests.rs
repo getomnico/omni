@@ -419,6 +419,7 @@ mod drive_buffer_budget_tests {
             user_whitelist: None,
             user_blacklist: None,
             connector_state: None,
+            checkpoint: None,
             sync_interval_seconds: None,
             created_at: now,
             updated_at: now,

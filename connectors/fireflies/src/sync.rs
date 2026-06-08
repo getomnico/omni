@@ -88,7 +88,7 @@ pub async fn run_sync(
     );
 
     let new_state = json!({ "last_sync_time": Utc::now().to_rfc3339() });
-    ctx.save_connector_state(new_state).await?;
+    ctx.save_checkpoint(new_state).await?;
     ctx.complete().await?;
 
     Ok(())

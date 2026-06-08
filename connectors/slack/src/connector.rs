@@ -205,6 +205,7 @@ mod tests {
             user_whitelist: None,
             user_blacklist: None,
             connector_state: None,
+            checkpoint: None,
             sync_interval_seconds: Some(3600),
             created_at: now,
             updated_at: now,

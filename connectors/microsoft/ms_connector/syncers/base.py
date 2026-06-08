@@ -50,7 +50,7 @@ class BaseSyncer(abc.ABC):
     ) -> None:
         """Persist a delta token while preserving the full token map."""
         delta_tokens[token_key] = token
-        await ctx.save_state({"delta_tokens": delta_tokens})
+        await ctx.save_checkpoint({"delta_tokens": delta_tokens})
 
     async def sync(
         self,
@@ -113,7 +113,7 @@ class BaseSyncer(abc.ABC):
             if new_token:
                 await self.save_delta_token(ctx, new_tokens, user_id, new_token)
             else:
-                await ctx.save_state({"delta_tokens": new_tokens})
+                await ctx.save_checkpoint({"delta_tokens": new_tokens})
 
         if attempted > 0 and failed == attempted:
             raise RuntimeError(f"[{self.name}] sync failed for all {attempted} users")

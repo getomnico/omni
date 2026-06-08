@@ -117,22 +117,30 @@ class SeedHelper:
             source_id,
         )
 
-    async def get_connector_state(self, source_id: str) -> Any:
+    async def get_checkpoint(self, source_id: str) -> Any:
         row = await self._pool.fetchrow(
-            "SELECT connector_state FROM sources WHERE id = $1::char(26)",
+            "SELECT checkpoint FROM sources WHERE id = $1::char(26)",
             source_id,
         )
-        if row and row["connector_state"]:
-            return json.loads(row["connector_state"])
+        if row and row["checkpoint"]:
+            return json.loads(row["checkpoint"])
         return None
 
-    async def set_connector_state(self, source_id: str, state: dict[str, Any]) -> None:
-        """Seed a source's connector_state, e.g. to simulate a prior sync run."""
+    async def set_checkpoint(self, source_id: str, checkpoint: dict[str, Any]) -> None:
+        """Seed a source's latest successful sync checkpoint."""
         await self._pool.execute(
-            "UPDATE sources SET connector_state = $1::jsonb WHERE id = $2::char(26)",
-            json.dumps(state),
+            "UPDATE sources SET checkpoint = $1::jsonb WHERE id = $2::char(26)",
+            json.dumps(checkpoint),
             source_id,
         )
+
+    async def get_connector_state(self, source_id: str) -> Any:
+        """Deprecated alias for tests that historically asserted checkpoint state."""
+        return await self.get_checkpoint(source_id)
+
+    async def set_connector_state(self, source_id: str, state: dict[str, Any]) -> None:
+        """Deprecated alias for tests that historically seeded checkpoint state."""
+        await self.set_checkpoint(source_id, state)
 
     async def get_sync_run(self, sync_run_id: str) -> asyncpg.Record | None:
         return await self._pool.fetchrow(

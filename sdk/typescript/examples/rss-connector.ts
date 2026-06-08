@@ -148,7 +148,7 @@ class RSSConnector extends Connector {
       docsSinceCheckpoint++;
 
       if (docsSinceCheckpoint >= 50) {
-        await ctx.saveState({ last_sync_time: currentTime.toISOString() });
+        await ctx.saveCheckpoint({ last_sync_time: currentTime.toISOString() });
         docsSinceCheckpoint = 0;
       }
     }

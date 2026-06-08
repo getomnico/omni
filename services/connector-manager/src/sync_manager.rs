@@ -144,6 +144,7 @@ impl SyncManager {
             source_id: source_id.to_string(),
             sync_mode: effective_sync_type,
             last_sync_at,
+            checkpoint: source.checkpoint.clone(),
         };
 
         let trigger_result = timeout(
@@ -465,6 +466,10 @@ impl SyncManager {
             source_id: source_id.to_string(),
             sync_mode: sync_run.sync_type,
             last_sync_at,
+            checkpoint: sync_run
+                .checkpoint
+                .clone()
+                .or_else(|| source.checkpoint.clone()),
         };
 
         match timeout(
