@@ -11,8 +11,8 @@ mod tests {
         let id = Ulid::new().to_string();
         sqlx::query(
             r#"
-            INSERT INTO embedding_providers (id, name, provider_type, is_current, is_deleted)
-            VALUES ($1, 'test-provider', 'local', TRUE, FALSE)
+            INSERT INTO embedding_providers (id, name, provider_type, config, is_current, is_deleted)
+            VALUES ($1, 'test-provider', 'local', '{"model":"test-model"}', TRUE, FALSE)
             ON CONFLICT DO NOTHING
             "#,
         )
@@ -78,6 +78,87 @@ mod tests {
 
         let batch = queue.dequeue_batch(10).await.unwrap();
         assert_eq!(batch.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_enqueue_batch_missing_current_embeddings_enqueues_multiple_missing_only() {
+        let env = TestEnvironment::new().await.unwrap();
+        let pool = env.db_pool.pool().clone();
+        let queue = EmbeddingQueue::new(pool.clone());
+        insert_active_embedding_provider(&pool).await;
+
+        let doc_with_embedding = create_document(&pool).await;
+        let doc_with_active_queue = create_document(&pool).await;
+        let missing_doc_1 = create_document(&pool).await;
+        let missing_doc_2 = create_document(&pool).await;
+
+        sqlx::query(
+            r#"
+            INSERT INTO embeddings (id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name, dimensions)
+            VALUES ($1, $2, 0, 0, 10, '[0.1,0.2,0.3]'::vector, 'test-model', 3)
+            "#,
+        )
+        .bind(Ulid::new().to_string())
+        .bind(&doc_with_embedding)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        queue
+            .enqueue(doc_with_active_queue.clone())
+            .await
+            .unwrap()
+            .unwrap();
+
+        let queue_ids = queue
+            .enqueue_batch_missing_current_embeddings(vec![
+                doc_with_embedding.clone(),
+                doc_with_active_queue.clone(),
+                missing_doc_1.clone(),
+                missing_doc_2.clone(),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(queue_ids.len(), 2);
+
+        let queued_missing_doc_count: (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(*)
+            FROM embedding_queue
+            WHERE document_id = ANY($1)
+            "#,
+        )
+        .bind(vec![missing_doc_1, missing_doc_2])
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(queued_missing_doc_count.0, 2);
+
+        let skipped_doc_count: (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(*)
+            FROM embedding_queue
+            WHERE document_id = $1
+            "#,
+        )
+        .bind(&doc_with_embedding)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(skipped_doc_count.0, 0);
+
+        let existing_active_queue_count: (i64,) = sqlx::query_as(
+            r#"
+            SELECT COUNT(*)
+            FROM embedding_queue
+            WHERE document_id = $1
+            "#,
+        )
+        .bind(&doc_with_active_queue)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(existing_active_queue_count.0, 1);
     }
 
     #[tokio::test]
