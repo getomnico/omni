@@ -71,6 +71,7 @@
     import * as Card from '$lib/components/ui/card'
     import { SourceType } from '$lib/types'
     import MarkdownMessage from '$lib/components/markdown-message.svelte'
+    import ImapCitationSource from '$lib/components/search-results/imap-citation-source.svelte'
     import { themeStore } from '$lib/themes/store.svelte'
 
     let { data }: PageProps = $props()
@@ -1797,7 +1798,8 @@
                 </div>
             {/if}
             {#if firstText}
-                <div class="bg-secondary text-secondary-foreground w-fit rounded-2xl px-6 py-4 text-sm">
+                <div
+                    class="bg-secondary text-secondary-foreground w-fit rounded-2xl px-6 py-4 text-sm md:text-base">
                     {@html marked.parse(firstText.text)}
                 </div>
             {/if}
@@ -2044,7 +2046,7 @@
                             data-testid={`chat-message-${message.origMessageId}`}
                             class="group mt-8 flex w-full min-w-0 flex-col gap-1">
                             <div
-                                class="prose prose-sm prose-p:my-3 prose-headings:text-foreground prose-p:text-foreground prose-li:text-foreground prose-strong:text-foreground prose-code:text-foreground prose-a:text-primary dark:prose-invert min-w-0 max-w-none overflow-x-auto">
+                                class="prose prose-sm md:prose-base prose-p:my-3 prose-headings:text-foreground prose-p:text-foreground prose-li:text-foreground prose-strong:text-foreground prose-code:text-foreground prose-a:text-primary dark:prose-invert max-w-none min-w-0 overflow-x-auto">
                                 {#key `${message.renderKey}:${messageContentRenderKey(message.content)}`}
                                     <ToolCallsGroup
                                         content={message.content}
