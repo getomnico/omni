@@ -13,14 +13,19 @@ use tracing::{debug, error, info, warn};
 const REDIS_CACHE_KEY: &str = "suggested_questions:v1";
 const CACHE_TTL_SECONDS: u64 = 86400; // 7 days
 const MAX_RETRIES: usize = 5;
-const QUESTION_PROMPT_TEMPLATE: &str = r#"Given the following document excerpt, generate ONE specific question or instruction related to the content.
-If you choose to generate a question, it should be natural, specific, and answerable by the document content. 
-If you choose to generate a command/instruction, it should be something that a person might want to do with the content.
+const QUESTION_PROMPT_TEMPLATE: &str = r#"You are helping generate example search queries for a workplace search tool that indexes company documents, emails, and files.
+
+Given the following document excerpt, generate ONE example search query that an employee might realistically type into a workplace search engine to find information related to this document's topic.
+
+Rules:
+- Write the query from the perspective of someone who does NOT have the document open — they are searching for information
+- Focus on the topic or knowledge area, not on specific metadata like URLs, file paths, modification dates, or technical properties
+- The query should be practical and useful (e.g. "How do we handle customer refunds?", "Onboarding steps for new engineers", "Q3 budget planning process")
+- Avoid questions that are only answerable by looking at a specific file's properties or raw structure
+- Write only the query itself, no quotes, no prefixes like "Question:" or "Query:"
 
 Document excerpt:
-{content}
-
-Generate only the question/instruction, nothing else. Do not include quotes or prefixes like "Question:"."#;
+{content}"#;
 
 pub struct SuggestedQuestionsGenerator {
     redis_client: RedisClient,

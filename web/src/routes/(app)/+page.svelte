@@ -258,7 +258,7 @@
                     <p class="text-muted-foreground text-xs font-medium uppercase">Try asking</p>
                     {#each data.suggestedQuestions as suggestion}
                         <button
-                            class="hover:border-primary/20 hover:bg-muted border-border bg-background text-foreground max-w-screen-md cursor-pointer truncate rounded-full border px-4 py-2 text-xs transition-colors"
+                            class="hover:border-primary/20 hover:bg-muted border-border bg-background text-foreground w-full cursor-pointer rounded-full border px-4 py-2 text-left text-xs transition-colors"
                             onclick={() => selectSuggestion(suggestion.question)}>
                             {suggestion.question}
                         </button>

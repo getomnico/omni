@@ -1797,7 +1797,7 @@
                 </div>
             {/if}
             {#if firstText}
-                <div class="bg-secondary text-secondary-foreground w-fit rounded-2xl px-6 py-4">
+                <div class="bg-secondary text-secondary-foreground w-fit rounded-2xl px-6 py-4 text-sm">
                     {@html marked.parse(firstText.text)}
                 </div>
             {/if}
@@ -2027,14 +2027,14 @@
                         {#if i === lastUserMessageIndex}
                             <div
                                 data-testid={`chat-message-${message.origMessageId}`}
-                                class="group mt-8 flex flex-col items-end"
+                                class="group mt-8 flex w-full min-w-0 flex-col items-end"
                                 bind:this={lastUserMessageRef}>
                                 {@render userMessageContent(message)}
                             </div>
                         {:else}
                             <div
                                 data-testid={`chat-message-${message.origMessageId}`}
-                                class="group mt-8 flex flex-col items-end">
+                                class="group mt-8 flex w-full min-w-0 flex-col items-end">
                                 {@render userMessageContent(message)}
                             </div>
                         {/if}
@@ -2042,9 +2042,9 @@
                         <!-- Assistant Message -->
                         <div
                             data-testid={`chat-message-${message.origMessageId}`}
-                            class="group mt-8 flex flex-col gap-1">
+                            class="group mt-8 flex w-full min-w-0 flex-col gap-1">
                             <div
-                                class="prose prose-p:my-3 prose-headings:text-foreground prose-p:text-foreground prose-li:text-foreground prose-strong:text-foreground prose-code:text-foreground prose-a:text-primary dark:prose-invert max-w-none">
+                                class="prose prose-sm prose-p:my-3 prose-headings:text-foreground prose-p:text-foreground prose-li:text-foreground prose-strong:text-foreground prose-code:text-foreground prose-a:text-primary dark:prose-invert min-w-0 max-w-none overflow-x-auto">
                                 {#key `${message.renderKey}:${messageContentRenderKey(message.content)}`}
                                     <ToolCallsGroup
                                         content={message.content}

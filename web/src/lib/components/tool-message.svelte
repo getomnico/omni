@@ -184,12 +184,12 @@
 {#if toolName === 'search_people'}
     <div
         class={cn(
-            'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
+            'border-border flex w-full min-w-0 cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
         )}>
         <div class="flex w-full items-center justify-between">
-            <div class="flex items-center gap-2">
-                <Users class="h-5 w-5 text-blue-600" />
-                <div class="max-w-screen-md truncate text-sm font-normal">
+            <div class="flex min-w-0 flex-1 items-center gap-2">
+                <Users class="h-5 w-5 shrink-0 text-blue-600" />
+                <div class="min-w-0 truncate text-sm font-normal">
                     {statusIndicator}: {message.toolUse.input[toolInputKey]}
                 </div>
             </div>
@@ -198,12 +198,12 @@
 {:else if toolName === 'read_document'}
     <div
         class={cn(
-            'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
+            'border-border flex w-full min-w-0 cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
         )}>
         <div class="flex w-full items-center justify-between">
-            <div class="flex items-center gap-2">
-                <TextSearch class="h-5 w-5" />
-                <div class="max-w-screen-md truncate text-sm font-normal">
+            <div class="flex min-w-0 flex-1 items-center gap-2">
+                <TextSearch class="h-5 w-5 shrink-0" />
+                <div class="min-w-0 truncate text-sm font-normal">
                     {statusIndicator}: {message.toolUse.input[toolInputKey]}
                 </div>
             </div>
@@ -238,22 +238,22 @@
     {:else}
         <div
             class={cn(
-                'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
+                'border-border flex w-full min-w-0 cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
             )}>
             <div class="flex w-full items-center justify-between">
-                <div class="flex items-center gap-2">
+                <div class="flex min-w-0 flex-1 items-center gap-2">
                     {#if toolName === 'present_artifact'}
-                        <Image class="h-5 w-5 text-violet-600" />
+                        <Image class="h-5 w-5 shrink-0 text-violet-600" />
                     {:else if toolName === 'run_python'}
-                        <FileCode class="h-5 w-5 text-blue-600" />
+                        <FileCode class="h-5 w-5 shrink-0 text-blue-600" />
                     {:else if toolName === 'run_bash'}
-                        <Terminal class="h-5 w-5 text-green-600" />
+                        <Terminal class="h-5 w-5 shrink-0 text-green-600" />
                     {:else if toolName === 'write_file'}
-                        <Pencil class="h-5 w-5 text-amber-600" />
+                        <Pencil class="h-5 w-5 shrink-0 text-amber-600" />
                     {:else}
-                        <FileText class="h-5 w-5" />
+                        <FileText class="h-5 w-5 shrink-0" />
                     {/if}
-                    <div class="max-w-screen-md truncate text-sm font-normal">
+                    <div class="min-w-0 truncate text-sm font-normal">
                         {statusIndicator}: {inputSummary()}
                     </div>
                 </div>
@@ -263,12 +263,12 @@
 {:else if toolName === 'load_skill'}
     <div
         class={cn(
-            'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
+            'border-border flex w-full min-w-0 cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
         )}>
         <div class="flex w-full items-center justify-between">
-            <div class="flex items-center gap-2">
-                <BookOpen class="h-5 w-5 text-indigo-600" />
-                <div class="max-w-screen-md truncate text-sm font-normal">
+            <div class="flex min-w-0 flex-1 items-center gap-2">
+                <BookOpen class="h-5 w-5 shrink-0 text-indigo-600" />
+                <div class="min-w-0 truncate text-sm font-normal">
                     {statusIndicator}: {message.toolUse.input[toolInputKey]}
                 </div>
             </div>
@@ -277,18 +277,18 @@
 {:else if isConnectorAction}
     <div
         class={cn(
-            'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
+            'border-border flex w-full min-w-0 cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
             message.approval && ToolApprovalColors[message.approval.status]?.borderColor,
             message.approval && ToolApprovalColors[message.approval.status]?.bgColor,
         )}>
         <div class="flex w-full items-center justify-between">
-            <div class="flex items-center gap-2">
+            <div class="flex min-w-0 flex-1 items-center gap-2">
                 {#if connectorIconPath}
-                    <img src={connectorIconPath} alt={connectorSourceType} class="!m-0 h-5 w-5" />
+                    <img src={connectorIconPath} alt={connectorSourceType} class="!m-0 h-5 w-5 shrink-0" />
                 {:else}
-                    <Play class="h-5 w-5 text-purple-600" />
+                    <Play class="h-5 w-5 shrink-0 text-purple-600" />
                 {/if}
-                <div class="max-w-screen-md truncate text-sm font-normal">
+                <div class="min-w-0 truncate text-sm font-normal">
                     {statusIndicator}: {connectorDisplayName}
                     {#if inputSummary()}
                         <span class="text-muted-foreground"> ({inputSummary()})</span>
@@ -324,7 +324,7 @@
                     selectedItem === message.toolUse.id && 'bg-card rounded-b-none border-b-0',
                 )}>
                 <div class="flex w-full items-center justify-between">
-                    <div class="flex min-w-0 items-center gap-2">
+                    <div class="flex min-w-0 flex-1 items-center gap-2">
                         {#if sources.length > 0}
                             <div class="flex shrink-0 items-center gap-1">
                                 {#each sources as source}
@@ -340,7 +340,7 @@
                                 {/each}
                             </div>
                         {:else}
-                            <Search class="h-4 w-4" />
+                            <Search class="h-4 w-4 shrink-0" />
                         {/if}
                         <div class="min-w-0 truncate text-sm font-normal">
                             {#if sources.length > 0}
