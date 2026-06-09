@@ -6,6 +6,7 @@ import asyncio
 from transformers import AutoTokenizer
 
 from . import EmbeddingProvider, Chunk
+from .options import resolve_chunk_size
 from processing import Chunker
 
 logger = logging.getLogger(__name__)
@@ -56,7 +57,7 @@ class JinaEmbeddingProvider(EmbeddingProvider):
         self,
         text: str,
         task: str,
-        chunk_size: int,
+        chunk_size: int | None,
         chunking_mode: str,
     ) -> list[Chunk]:
         """Generate embeddings using JINA API with chunking support."""
@@ -64,15 +65,15 @@ class JinaEmbeddingProvider(EmbeddingProvider):
         start_time = time.time()
         api_task = self.TASK_MAP.get(task, task)
 
-        # Cap chunk_size at max_model_len
-        effective_chunk_size = min(chunk_size, self.max_model_len)
-
         try:
             if chunking_mode == "none":
                 embeddings = await self.client.generate_embeddings([text], api_task)
                 chunks = [Chunk((0, len(text)), embeddings[0])]
 
             elif chunking_mode == "sentence":
+                effective_chunk_size = resolve_chunk_size(
+                    chunk_size, self.max_model_len
+                )
                 _, char_spans = await self.chunker.chunk_by_sentences_async(
                     text, effective_chunk_size, self.tokenizer
                 )
@@ -92,6 +93,9 @@ class JinaEmbeddingProvider(EmbeddingProvider):
                     chunks = [Chunk((0, len(text)), embeddings[0])]
 
             elif chunking_mode == "fixed":
+                effective_chunk_size = resolve_chunk_size(
+                    chunk_size, self.max_model_len
+                )
                 _, char_spans = await self.chunker.chunk_by_tokens_async(
                     text, effective_chunk_size, self.tokenizer
                 )
