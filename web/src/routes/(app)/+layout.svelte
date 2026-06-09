@@ -62,10 +62,13 @@
     let isSearching = $state(false)
     let searchTimeout: ReturnType<typeof setTimeout> | undefined
 
+    type PendingChatAction = { type: 'rename'; chat: Chat } | { type: 'delete'; chat: Chat }
+
     let deleteTargetChat = $state<Chat | null>(null)
     let deleteTargetTitle = $state('')
     let renameTargetChat = $state<Chat | null>(null)
     let renameValue = $state('')
+    let pendingChatAction = $state<PendingChatAction | null>(null)
 
     let isEditingHeaderTitle = $state(false)
     let headerTitleValue = $state('')
@@ -172,6 +175,21 @@
     function openRenameDialog(chat: Chat) {
         renameTargetChat = chat
         renameValue = chat.title || ''
+    }
+
+    function runPendingChatAction() {
+        if (!pendingChatAction) return
+
+        const action = pendingChatAction
+        pendingChatAction = null
+
+        if (action.type === 'rename') {
+            openRenameDialog(action.chat)
+            return
+        }
+
+        deleteTargetChat = action.chat
+        deleteTargetTitle = action.chat.title || 'Untitled'
     }
 
     const displayedChats = $derived(searchQuery.trim() ? searchResults : [])
@@ -387,8 +405,8 @@
         <header class={cn('bg-background sticky top-0 z-50 transition-shadow')}>
             <div class="flex h-16 w-full items-center justify-between px-3 sm:px-6">
                 <div class="text-foreground flex h-16 min-w-0 flex-1 items-center">
-                    <SidebarTrigger class="md:hidden mr-1 shrink-0 cursor-pointer size-11" />
-                    <div class="min-w-0 flex-1 overflow-hidden px-2 sm:px-4 text-base font-medium">
+                    <SidebarTrigger class="mr-1 size-11 shrink-0 cursor-pointer md:hidden" />
+                    <div class="min-w-0 flex-1 overflow-hidden px-2 text-base font-medium sm:px-4">
                         {#if page.url.pathname === '/search'}
                             Search
                         {:else if page.url.pathname.startsWith('/chat') && currentChatTitle}
@@ -406,7 +424,7 @@
                                     onblur={() => saveHeaderTitle()} />
                             {:else}
                                 <button
-                                    class="text-foreground block w-full truncate cursor-pointer text-left transition-opacity hover:opacity-70"
+                                    class="text-foreground block w-full cursor-pointer truncate text-left transition-opacity hover:opacity-70"
                                     onclick={() => {
                                         isEditingHeaderTitle = true
                                         headerTitleValue = currentChatTitle || ''
@@ -455,7 +473,10 @@
                 </a>
             {/snippet}
         </SidebarMenuButton>
-        <DropdownMenu.Root>
+        <DropdownMenu.Root
+            onOpenChangeComplete={(open) => {
+                if (!open) runPendingChatAction()
+            }}>
             <DropdownMenu.Trigger>
                 {#snippet child({ props })}
                     <SidebarMenuAction {...props} showOnHover class="cursor-pointer">
@@ -473,7 +494,11 @@
                         <span>Star</span>
                     {/if}
                 </DropdownMenu.Item>
-                <DropdownMenu.Item onSelect={() => openRenameDialog(chat)} class="cursor-pointer">
+                <DropdownMenu.Item
+                    onSelect={() => {
+                        pendingChatAction = { type: 'rename', chat }
+                    }}
+                    class="cursor-pointer">
                     <Pencil class="h-4 w-4" />
                     <span>Rename</span>
                 </DropdownMenu.Item>
@@ -481,8 +506,7 @@
                 <DropdownMenu.Item
                     class="text-destructive focus:text-destructive cursor-pointer"
                     onSelect={() => {
-                        deleteTargetChat = chat
-                        deleteTargetTitle = chat.title || 'Untitled'
+                        pendingChatAction = { type: 'delete', chat }
                     }}>
                     <Trash2 class="h-4 w-4" />
                     <span>Delete</span>
