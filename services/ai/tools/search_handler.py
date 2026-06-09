@@ -6,7 +6,6 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
-
 import redis.asyncio as aioredis
 from pydantic import ValidationError
 from anthropic.types import (
@@ -264,6 +263,10 @@ class SearchToolHandler:
                 is_error=True,
             )
 
+        # Strip the _ref: prefix if the LLM passes the internal reference token as document_id
+        if params.document_id and params.document_id.startswith("_ref:"):
+            params.document_id = params.document_id[len("_ref:"):]
+
         logger.info(
             f"Executing search_documents with query: {params.query}, document_id: {params.document_id}, context: {context}"
         )
@@ -287,18 +290,10 @@ class SearchToolHandler:
                 TextBlockParam(type="text", text=h) for h in result.highlights
             ]
 
-            metadata_blocks = [
-                TextBlockParam(type="text", text=f"[doc_ref: {doc.id}]"),
-                TextBlockParam(type="text", text=f"[Document Name: {doc.title}]"),
-                TextBlockParam(
-                    type="text",
-                    text=f"[Source: {source_type or 'unknown'}]",
-                ),
-            ]
-            if doc.url:
-                metadata_blocks.append(
-                    TextBlockParam(type="text", text=f"[URL: {doc.url}]")
-                )
+            # Connectors may emit a human-readable "doc_source" attribute as a
+            # fallback when no webmail/web URL exists (e.g. IMAP emails).
+            # Format (IMAP): "imap:{account} / {folder} / {YYYY-MM-DD} / {subject}"
+            attr_doc_source: str | None = (doc.attributes or {}).get("doc_source")
 
             # Extract a human-readable date for the LLM. Prefer metadata updated_at
             # (original content date) over created_at, falling back to a unix timestamp
@@ -326,6 +321,44 @@ class SearchToolHandler:
                         date_str = dt.strftime("%Y-%m-%d %H:%M UTC")
                     except (OSError, OverflowError, ValueError):
                         pass
+
+            # Build a human-readable source reference for the LLM.
+            # Priority:
+            #   1. doc_source attribute (e.g. IMAP: "imap:account / folder / date / subject")
+            #   2. URL (e.g. Nextcloud, Google Drive, Jira, …)
+            #   3. Opaque ULID document ID (last resort)
+            # This lets every LLM provider cite the document by a meaningful location
+            # rather than an opaque internal ID, without connector-specific logic here.
+            human_source = attr_doc_source or doc.url
+            if human_source:
+                doc_id_block = TextBlockParam(
+                    type="text", text=f"[Document source: {human_source}]"
+                )
+            else:
+                doc_id_block = None
+
+            # Always emit a [_ref:ULID] block so the LLM can pass it to read_document.
+            # This is an internal tool reference, not for display to the user.
+            # When human_source is set, the doc_id_block shows a human-readable URL/source
+            # and _ref: is the only way the LLM has to find the ULID.
+            # When human_source is None, _ref: is the only block emitted for the ID,
+            # so the prompt rule "use [_ref:ULID] for read_document" works uniformly.
+            ref_block = TextBlockParam(type="text", text=f"[_ref:{doc.id}]")
+
+            metadata_blocks = [
+                *([] if doc_id_block is None else [doc_id_block]),
+                ref_block,
+                TextBlockParam(type="text", text=f"[Document Name: {doc.title}]"),
+                TextBlockParam(
+                    type="text",
+                    text=f"[Source: {source_type or 'unknown'}]",
+                ),
+            ]
+            if doc.url:
+                metadata_blocks.append(
+                    TextBlockParam(type="text", text=f"[URL: {doc.url}]")
+                )
+
             if date_str:
                 metadata_blocks.append(
                     TextBlockParam(type="text", text=f"[Date: {date_str}]")
@@ -344,11 +377,16 @@ class SearchToolHandler:
                     TextBlockParam(type="text", text=f"[Extra: {extra_str}]")
                 )
 
+            # Use doc_source attribute as the citation source when no URL is available.
+            # This is the value shown in Anthropic 【source】 citation markers and
+            # serialised as [title](source) for OpenAI.
+            doc_source = doc.url or attr_doc_source or "<unknown>"
+
             content_blocks.append(
                 SearchResultBlockParam(
                     type="search_result",
                     title=doc.title,
-                    source=doc.url or "<unknown>",
+                    source=doc_source,
                     source_type=source_type,
                     content=[*metadata_blocks, *doc_content_text_blocks],
                     citations=CitationsConfigParam(enabled=True),

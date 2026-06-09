@@ -61,7 +61,7 @@ DOCUMENT_TOOL = {
         "properties": {
             "id": {
                 "type": "string",
-                "description": "The document reference ID — use the doc_ref value from search_documents results",
+                "description": "The document ID. Use the [_ref:ULID] value from search results. Never pass a filename or URL.",
             },
             "name": {
                 "type": "string",
@@ -118,7 +118,10 @@ class DocumentToolHandler:
                 is_error=True,
             )
 
-        document_id = tool_input.get("id")
+        document_id = tool_input.get("id", "")
+        # Strip the _ref: prefix if the LLM passes the raw search result reference token.
+        if document_id and document_id.startswith("_ref:"):
+            document_id = document_id[len("_ref:"):]
         document_name = tool_input.get("name", document_id)
         start_line = tool_input.get("start_line")
         end_line = tool_input.get("end_line")
@@ -156,7 +159,27 @@ class DocumentToolHandler:
             # Determine if this is a binary file
             is_binary = doc.content_type in BINARY_CONTENT_TYPES
 
-            if is_binary and self._connector_manager_url and doc.source_id:
+            # For binary types, connectors often extract text at index time and
+            # store it in content_blobs (with content_type="text/plain"). When
+            # that happens, prefer the stored text over a round-trip binary fetch.
+            # We use the blob's MIME type to distinguish real extracted text
+            # (text/plain) from metadata-only blobs stored for images, videos,
+            # and unextractable archives (which retain their original MIME type).
+            has_extracted_text = False
+            if is_binary and doc.content_id and self._content_storage:
+                try:
+                    meta = await self._content_storage.get_metadata(doc.content_id)
+                    has_extracted_text = bool(
+                        meta.content_type and meta.content_type.startswith("text/")
+                    )
+                except Exception:
+                    logger.debug(
+                        "get_metadata failed for content_id %s, falling back to binary fetch",
+                        doc.content_id,
+                        exc_info=True,
+                    )
+
+            if is_binary and not has_extracted_text and self._connector_manager_url and doc.source_id:
                 return await self._fetch_binary(doc, document_name, context)
             else:
                 return await self._read_text(

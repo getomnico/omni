@@ -36,6 +36,7 @@ const DEFAULT_INCREMENTAL_BATCH_MAX_AGE_SECS: i64 = 60;
 const DEFAULT_REALTIME_BATCH_SIZE: i64 = 1;
 const DEFAULT_REALTIME_BATCH_MAX_AGE_SECS: i64 = 0;
 const DEFAULT_GLOBAL_BATCH_MAX_AGE_SECS: i64 = 300;
+const DEFAULT_BATCH_MAX_BYTES: i64 = 100 * 1024 * 1024;
 const MAX_FILE_EXTENSION_CHARS: usize = 50;
 
 #[derive(Clone)]
@@ -94,12 +95,13 @@ impl BatchingConfig {
     /// Returns the list of sync types whose pending events meet a threshold.
     fn ready_sync_types(
         &self,
-        by_sync_type: &HashMap<SyncType, (i64, i64)>,
+        by_sync_type: &PendingBySyncType,
         _orphan_count: i64,
+        batch_max_bytes: i64,
     ) -> Vec<(SyncType, String)> {
         let mut ready = Vec::new();
 
-        for (sync_type, (count, oldest_age_secs)) in by_sync_type {
+        for (sync_type, metrics) in by_sync_type {
             let (size_threshold, age_threshold) = match sync_type {
                 SyncType::Full => (self.full_batch_size, self.full_max_age_secs),
                 SyncType::Incremental => {
@@ -108,17 +110,28 @@ impl BatchingConfig {
                 SyncType::Realtime => (self.realtime_batch_size, self.realtime_max_age_secs),
             };
 
-            if *count >= size_threshold {
+            if metrics.count >= size_threshold {
                 ready.push((
                     sync_type.clone(),
-                    format!("{} count {} >= {}", sync_type, count, size_threshold),
+                    format!(
+                        "{} count {} >= {}",
+                        sync_type, metrics.count, size_threshold
+                    ),
                 ));
-            } else if *oldest_age_secs >= age_threshold {
+            } else if metrics.size_bytes >= batch_max_bytes {
+                ready.push((
+                    sync_type.clone(),
+                    format!(
+                        "{} pending bytes {} >= {}",
+                        sync_type, metrics.size_bytes, batch_max_bytes
+                    ),
+                ));
+            } else if metrics.oldest_age_secs >= age_threshold {
                 ready.push((
                     sync_type.clone(),
                     format!(
                         "{} age {}s >= {}s",
-                        sync_type, oldest_age_secs, age_threshold
+                        sync_type, metrics.oldest_age_secs, age_threshold
                     ),
                 ));
             }
@@ -127,7 +140,7 @@ impl BatchingConfig {
         // Global safety net: never let events stall longer than this.
         let oldest_any = by_sync_type
             .values()
-            .map(|(_, age)| *age)
+            .map(|metrics| metrics.oldest_age_secs)
             .chain(std::iter::once(0))
             .max()
             .unwrap_or(0);
@@ -149,8 +162,15 @@ impl BatchingConfig {
     }
 }
 
-/// Pending count and oldest age (seconds) for a sync type.
-type PendingBySyncType = HashMap<SyncType, (i64, i64)>;
+/// Pending queue metrics for a sync type.
+#[derive(Debug, Clone, Copy)]
+struct PendingMetrics {
+    count: i64,
+    oldest_age_secs: i64,
+    size_bytes: i64,
+}
+
+type PendingBySyncType = HashMap<SyncType, PendingMetrics>;
 
 fn summarize_pending(summary: &shared::queue::QueueSummary) -> (PendingBySyncType, i64) {
     let mut by_sync_type = PendingBySyncType::new();
@@ -168,7 +188,14 @@ fn summarize_pending(summary: &shared::queue::QueueSummary) -> (PendingBySyncTyp
         match &entry.sync_type {
             None => orphan_count = entry.count,
             Some(st) => {
-                by_sync_type.insert(st.clone(), (entry.count, oldest_age_secs));
+                by_sync_type.insert(
+                    st.clone(),
+                    PendingMetrics {
+                        count: entry.count,
+                        oldest_age_secs,
+                        size_bytes: entry.size_bytes,
+                    },
+                );
             }
         }
     }
@@ -181,6 +208,46 @@ fn env_or<T: std::str::FromStr>(key: &str, default: T) -> T {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
+}
+
+fn env_byte_size_or(key: &str, default: i64) -> i64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| parse_byte_size(&v))
+        .unwrap_or(default)
+}
+
+fn parse_byte_size(value: &str) -> Option<i64> {
+    let normalized: String = value
+        .trim()
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '_')
+        .collect();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    let digit_count = normalized
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .count();
+    if digit_count == 0 {
+        return None;
+    }
+
+    let (number, suffix) = normalized.split_at(digit_count);
+    if !number.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let multiplier = match suffix.to_ascii_uppercase().as_str() {
+        "" | "B" => 1,
+        "K" | "KB" | "KIB" => 1024,
+        "M" | "MB" | "MIB" => 1024 * 1024,
+        "G" | "GB" | "GIB" => 1024 * 1024 * 1024,
+        _ => return None,
+    };
+
+    number.parse::<i64>().ok()?.checked_mul(multiplier)
 }
 
 fn infer_file_extension(url: &str) -> Option<String> {
@@ -254,6 +321,7 @@ pub struct QueueProcessor {
     pub embedding_queue: EmbeddingQueue,
     pub sync_run_repo: SyncRunRepository,
     pub batch_size: i32,
+    pub batch_max_bytes: i64,
     processing_mutex: Arc<Mutex<()>>,
     poll_interval: Duration,
     batching_config: BatchingConfig,
@@ -266,6 +334,7 @@ impl QueueProcessor {
         let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
         let processing_mutex = Arc::new(Mutex::new(()));
         let batch_size = env_or("INDEXER_BATCH_SIZE", 2000);
+        let batch_max_bytes = env_byte_size_or("INDEXER_BATCH_MAX_BYTES", DEFAULT_BATCH_MAX_BYTES);
         let poll_interval_secs = env_or("INDEXER_POLL_INTERVAL_SECS", DEFAULT_POLL_INTERVAL_SECS);
         Self {
             state,
@@ -273,6 +342,7 @@ impl QueueProcessor {
             embedding_queue,
             sync_run_repo,
             batch_size,
+            batch_max_bytes,
             processing_mutex,
             poll_interval: Duration::from_secs(poll_interval_secs),
             batching_config: BatchingConfig::from_env(),
@@ -281,6 +351,11 @@ impl QueueProcessor {
 
     pub fn with_batch_size(mut self, batch_size: i32) -> Self {
         self.batch_size = batch_size;
+        self
+    }
+
+    pub fn with_batch_max_bytes(mut self, batch_max_bytes: i64) -> Self {
+        self.batch_max_bytes = batch_max_bytes;
         self
     }
 
@@ -297,8 +372,8 @@ impl QueueProcessor {
 
     pub async fn start(&self) -> Result<()> {
         info!(
-            "Starting queue processor with batch size: {}",
-            self.batch_size
+            "Starting queue processor with batch size: {}, max bytes: {}",
+            self.batch_size, self.batch_max_bytes
         );
 
         // Recover any stale processing items from previous runs (5 minute timeout)
@@ -349,9 +424,10 @@ impl QueueProcessor {
         let gc_semaphore = Arc::new(Semaphore::new(1));
 
         info!(
-            "Queue processor poll interval: {:?}, batch_size: {}, batching: full={}/{}s incremental={}/{}s realtime={}/{}s global_age={}s",
+            "Queue processor poll interval: {:?}, batch_size: {}, batch_max_bytes: {}, batching: full={}/{}s incremental={}/{}s realtime={}/{}s global_age={}s",
             self.poll_interval,
             self.batch_size,
+            self.batch_max_bytes,
             self.batching_config.full_batch_size,
             self.batching_config.full_max_age_secs,
             self.batching_config.incremental_batch_size,
@@ -467,11 +543,17 @@ impl QueueProcessor {
         // accumulate while full-sync bursts flow through quickly.
         let summary = self.event_queue.get_queue_summary().await?;
         let (by_sync_type, orphan_count) = summarize_pending(&summary);
-        let ready = self
-            .batching_config
-            .ready_sync_types(&by_sync_type, orphan_count);
+        let ready = self.batching_config.ready_sync_types(
+            &by_sync_type,
+            orphan_count,
+            self.batch_max_bytes,
+        );
 
-        let total_pending: i64 = by_sync_type.values().map(|(c, _)| *c).sum::<i64>() + orphan_count;
+        let total_pending: i64 = by_sync_type
+            .values()
+            .map(|metrics| metrics.count)
+            .sum::<i64>()
+            + orphan_count;
         if ready.is_empty() && orphan_count == 0 {
             if total_pending > 0 {
                 debug!(
@@ -490,7 +572,7 @@ impl QueueProcessor {
         while batches_dequeued < MAX_BATCHES_PER_CALL && orphan_count > 0 {
             let events = self
                 .event_queue
-                .dequeue_batch_orphans(self.batch_size)
+                .dequeue_batch_orphans_with_max_bytes(self.batch_size, self.batch_max_bytes)
                 .await?;
             if events.is_empty() {
                 break;
@@ -513,7 +595,11 @@ impl QueueProcessor {
             for _ in 0..remaining {
                 let events = self
                     .event_queue
-                    .dequeue_batch_by_sync_type(self.batch_size, sync_type)
+                    .dequeue_batch_by_sync_type_with_max_bytes(
+                        self.batch_size,
+                        sync_type,
+                        self.batch_max_bytes,
+                    )
                     .await?;
                 if events.is_empty() {
                     break;
@@ -555,7 +641,9 @@ impl QueueProcessor {
 
         let mut total_processed = 0;
 
-        for (sync_run_id, run_events) in by_sync_run {
+        for (sync_run_id, mut run_events) in by_sync_run {
+            run_events.sort_by(|a, b| a.id.cmp(&b.id));
+
             let batch_start_time = std::time::Instant::now();
             let events_clone = run_events.clone();
             let batch = self.group_events_by_type(sync_run_id, run_events).await?;
@@ -695,10 +783,13 @@ impl QueueProcessor {
                     )?;
 
                     let key = format!("{}:{}", source_id, document_id);
-                    upsert_docs
-                        .entry(key)
-                        .and_modify(|(_, event_ids)| event_ids.push(event_id.clone()))
-                        .or_insert_with(|| (document, vec![event_id]));
+                    let mut event_ids = deleted_docs
+                        .remove(&key)
+                        .map(|(_, _, event_ids)| event_ids)
+                        .or_else(|| upsert_docs.remove(&key).map(|(_, event_ids)| event_ids))
+                        .unwrap_or_default();
+                    event_ids.push(event_id);
+                    upsert_docs.insert(key, (document, event_ids));
                 }
                 ConnectorEvent::DocumentUpdated {
                     source_id,
@@ -734,10 +825,13 @@ impl QueueProcessor {
                     }
 
                     let key = format!("{}:{}", source_id, document_id);
-                    upsert_docs
-                        .entry(key)
-                        .and_modify(|(_, event_ids)| event_ids.push(event_id.clone()))
-                        .or_insert_with(|| (document, vec![event_id]));
+                    let mut event_ids = deleted_docs
+                        .remove(&key)
+                        .map(|(_, _, event_ids)| event_ids)
+                        .or_else(|| upsert_docs.remove(&key).map(|(_, event_ids)| event_ids))
+                        .unwrap_or_default();
+                    event_ids.push(event_id);
+                    upsert_docs.insert(key, (document, event_ids));
                 }
                 ConnectorEvent::DocumentDeleted {
                     source_id,
@@ -745,10 +839,13 @@ impl QueueProcessor {
                     ..
                 } => {
                     let key = format!("{}:{}", source_id, document_id);
-                    deleted_docs
-                        .entry(key)
-                        .and_modify(|(_, _, event_ids)| event_ids.push(event_id.clone()))
-                        .or_insert_with(|| (source_id, document_id, vec![event_id]));
+                    let mut event_ids = upsert_docs
+                        .remove(&key)
+                        .map(|(_, event_ids)| event_ids)
+                        .or_else(|| deleted_docs.remove(&key).map(|(_, _, event_ids)| event_ids))
+                        .unwrap_or_default();
+                    event_ids.push(event_id);
+                    deleted_docs.insert(key, (source_id, document_id, event_ids));
                 }
                 ConnectorEvent::GroupMembershipSync {
                     source_id,
@@ -1192,5 +1289,49 @@ impl QueueProcessor {
         }
 
         Ok(successful_event_ids)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shared::queue::{QueueSummary, QueueSummaryEntry};
+
+    #[test]
+    fn test_parse_byte_size_accepts_plain_and_human_suffixes() {
+        assert_eq!(parse_byte_size("104857600"), Some(104857600));
+        assert_eq!(parse_byte_size("100MB"), Some(100 * 1024 * 1024));
+        assert_eq!(parse_byte_size("100m"), Some(100 * 1024 * 1024));
+        assert_eq!(parse_byte_size("2g"), Some(2 * 1024 * 1024 * 1024));
+        assert_eq!(parse_byte_size("1 KiB"), Some(1024));
+        assert_eq!(parse_byte_size("not-bytes"), None);
+    }
+
+    #[test]
+    fn test_summarize_pending_tracks_size_bytes_and_ready_by_bytes() {
+        let summary = QueueSummary {
+            entries: vec![QueueSummaryEntry {
+                sync_type: Some(SyncType::Incremental),
+                status: EventStatus::Pending,
+                count: 2,
+                oldest: Some(chrono::Utc::now()),
+                size_bytes: 150,
+            }],
+        };
+
+        let (by_sync_type, orphan_count) = summarize_pending(&summary);
+        assert_eq!(orphan_count, 0);
+        let metrics = by_sync_type.get(&SyncType::Incremental).unwrap();
+        assert_eq!(metrics.count, 2);
+        assert_eq!(metrics.size_bytes, 150);
+
+        let config = BatchingConfig {
+            incremental_batch_size: 100,
+            incremental_max_age_secs: 3600,
+            ..BatchingConfig::default()
+        };
+        let ready = config.ready_sync_types(&by_sync_type, orphan_count, 100);
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].0, SyncType::Incremental);
+        assert!(ready[0].1.contains("pending bytes 150 >= 100"));
     }
 }

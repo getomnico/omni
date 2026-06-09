@@ -129,6 +129,7 @@ pub struct SdkSourceSyncConfigResponse {
     pub config: JsonValue,
     pub credentials: JsonValue,
     pub connector_state: Option<JsonValue>,
+    pub checkpoint: Option<JsonValue>,
     pub source_type: SourceType,
     pub user_filter_mode: shared::models::UserFilterMode,
     pub user_whitelist: Option<JsonValue>,

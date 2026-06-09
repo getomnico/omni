@@ -1,7 +1,15 @@
-use ulid::Ulid;
+use std::sync::{LazyLock, Mutex};
+use ulid::Generator;
+
+static ULID_GENERATOR: LazyLock<Mutex<Generator>> = LazyLock::new(|| Mutex::new(Generator::new()));
 
 pub fn generate_ulid() -> String {
-    Ulid::new().to_string()
+    ULID_GENERATOR
+        .lock()
+        .expect("ULID generator mutex poisoned")
+        .generate()
+        .expect("monotonic ULID generation overflowed")
+        .to_string()
 }
 
 /// Safely slices a string at the given byte positions, adjusting to char boundaries.
@@ -177,6 +185,16 @@ mod tests {
     #[should_panic(expected = "start")]
     fn test_safe_str_slice_start_greater_than_end_panics() {
         safe_str_slice("hello", 3, 1);
+    }
+
+    #[test]
+    fn test_generate_ulid_is_monotonic() {
+        let mut previous = generate_ulid();
+        for _ in 0..1000 {
+            let current = generate_ulid();
+            assert!(previous < current);
+            previous = current;
+        }
     }
 
     #[test]

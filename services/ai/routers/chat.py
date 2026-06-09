@@ -204,7 +204,7 @@ async def _fetch_sources_from_connector_manager() -> list[Source] | None:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(f"{CONNECTOR_MANAGER_URL.rstrip('/')}/sources")
             resp.raise_for_status()
-            return [Source.from_row(s) for s in resp.json()]
+            return [Source.from_row(s["source"]) for s in resp.json()]
     except Exception as e:
         logger.warning(f"Failed to fetch sources from connector manager: {e}")
         return None

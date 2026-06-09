@@ -58,7 +58,7 @@ pub async fn run_sync(
 
     if ctx.is_cancelled() {
         info!("Nextcloud sync {} was cancelled", sync_run_id);
-        let _ = ctx.save_connector_state(state.to_json()).await;
+        let _ = ctx.save_checkpoint(state.to_json()).await;
         let _ = ctx.cancel().await;
         return Ok(());
     }
@@ -69,12 +69,12 @@ pub async fn run_sync(
                 "Nextcloud sync completed for source {}: {} scanned, {} processed",
                 source_id, total_scanned, total_processed
             );
-            ctx.save_connector_state(state.to_json()).await?;
+            ctx.save_checkpoint(state.to_json()).await?;
             ctx.complete().await?;
             Ok(())
         }
         Err(e) => {
-            let _ = ctx.save_connector_state(state.to_json()).await;
+            let _ = ctx.save_checkpoint(state.to_json()).await;
             error!("Nextcloud sync failed for source {}: {}", source_id, e);
             Err(e)
         }
@@ -96,6 +96,10 @@ async fn execute_sync(
     let mut total_scanned = 0usize;
     let mut total_processed = 0usize;
     let mut current_keys = HashSet::<String>::new();
+    // Keys for files that exist on the server but whose format is not supported for extraction.
+    // Kept separate from current_keys (which drives deletion detection) so that their
+    // "skipped:{etag}" etag entries survive the retain() pruning pass at the end.
+    let mut skipped_server_keys = HashSet::<String>::new();
 
     // TODO: this is not real incremental sync, we do a full PROPFIND every run,
     // and skip based on e-tags. Also, we save state (checkpoint) only at the end.
@@ -122,7 +126,7 @@ async fn execute_sync(
                 current_keys.insert(entry.file_key());
             }
 
-            let (s, p) = process_file_batch(
+            let (s, p, unsupported) = process_file_batch(
                 &file_entries,
                 &client,
                 config,
@@ -134,6 +138,10 @@ async fn execute_sync(
             .await;
             total_scanned += s;
             total_processed += p;
+            for key in unsupported {
+                current_keys.remove(&key);
+                skipped_server_keys.insert(key);
+            }
         }
         Err(_) => {
             info!("Depth: infinity not supported, using paginated directory traversal");
@@ -180,7 +188,7 @@ async fn execute_sync(
                     }
                 }
 
-                let (s, p) = process_file_batch(
+                let (s, p, unsupported) = process_file_batch(
                     &page_files,
                     &client,
                     config,
@@ -192,6 +200,10 @@ async fn execute_sync(
                 .await;
                 total_scanned += s;
                 total_processed += p;
+                for key in unsupported {
+                    current_keys.remove(&key);
+                    skipped_server_keys.insert(key);
+                }
             }
         }
     }
@@ -216,18 +228,32 @@ async fn execute_sync(
             }
         }
 
-        // Remove stale etags
-        state.etags.retain(|k, _| current_keys.contains(k));
-    }
+        // Remove stale etags. Keep etags for:
+        //   - indexed files (current_keys)
+        //   - unsupported-format files that still exist on the server (skipped_server_keys),
+        //     so their "skipped:{etag}" marker is not erased and the file is not
+        //     re-downloaded on every subsequent sync.
+        state.etags.retain(|k, v| {
+            current_keys.contains(k)
+                || (v.starts_with("skipped:") && skipped_server_keys.contains(k))
+        });
 
-    // Persist current file key set
-    state.known_files = current_keys.into_iter().collect();
+        // Only update known_files when the scan completed in full. A cancelled
+        // paginated scan produces a partial current_keys (only directories visited
+        // so far), and persisting that would silently drop unvisited files from
+        // known_files. On the next complete sync, any of those files that were
+        // deleted from Nextcloud during the gap would never appear in deleted_keys
+        // and their documents would linger in the RAG index forever.
+        state.known_files = current_keys.into_iter().collect();
+    }
 
     Ok((total_scanned, total_processed))
 }
 
 /// Process a batch of file entries: check etag, download, extract, store, emit.
-/// Returns (scanned, processed) counts.
+/// Returns (scanned, processed, unsupported_keys) where unsupported_keys are file keys
+/// whose content could not be extracted. The caller must remove these from current_keys
+/// so that already-indexed documents for these files get deletion events.
 async fn process_file_batch(
     entries: &[DavEntry],
     client: &NextcloudClient,
@@ -236,9 +262,10 @@ async fn process_file_batch(
     ctx: &SyncContext,
     user_email: Option<&str>,
     state: &mut NextcloudConnectorState,
-) -> (usize, usize) {
+) -> (usize, usize, Vec<String>) {
     let mut scanned = 0usize;
     let mut processed = 0usize;
+    let mut unsupported_keys = Vec::new();
 
     for batch in entries.chunks(BATCH_SIZE) {
         if ctx.is_cancelled() {
@@ -249,15 +276,41 @@ async fn process_file_batch(
             scanned += 1;
             let key = entry.file_key();
 
-            // Skip unchanged files (compare effective etag — real or synthetic)
+            // Skip unchanged files (compare effective etag — real or synthetic).
+            // Etags prefixed with "skipped:" were stored for unsupported-format files;
+            // strip the prefix before comparing, and re-add to unsupported_keys so they
+            // continue to be excluded from current_keys.
             let effective = entry.effective_etag();
             if let Some(stored) = state.etags.get(&key) {
-                if effective.as_deref() == Some(stored.as_str()) {
+                let (was_skipped, stored_etag) = stored
+                    .strip_prefix("skipped:")
+                    .map(|rest| (true, rest))
+                    .unwrap_or((false, stored.as_str()));
+
+                // When effective is None (server provides no change metadata) treat it
+                // as matching an empty stored_etag. This is the case when we stored
+                // "skipped:" (no suffix) for a file with no etag/last-modified: without
+                // this special case, None == Some("") is always false and the file is
+                // re-downloaded and re-skipped on every sync.
+                let etags_match = match effective.as_deref() {
+                    None => stored_etag.is_empty(),
+                    Some(e) => e == stored_etag,
+                };
+                if etags_match {
+                    if was_skipped {
+                        unsupported_keys.push(key.clone());
+                    }
                     continue;
                 }
             }
 
-            let is_update = state.etags.contains_key(&key);
+            // is_update is true only when we have previously indexed this file
+            // (etag stored without a "skipped:" prefix).
+            let is_update = state
+                .etags
+                .get(&key)
+                .map(|e| !e.starts_with("skipped:"))
+                .unwrap_or(false);
 
             // Enforce file size limit
             let file_size = entry.content_length.or(entry.oc_size).unwrap_or(0);
@@ -277,9 +330,25 @@ async fn process_file_batch(
                 Ok(text) => text,
                 Err(e) => {
                     warn!("Failed to process file '{}': {}", entry.filename(), e);
+                    // Transient failure (download error): keep in current_keys so we don't
+                    // spuriously emit a deletion event. Do not store an etag — retry next sync.
                     continue;
                 }
             };
+
+            if content_text.is_empty() {
+                // Unsupported format: extraction succeeded but returned no text.
+                // Don't index the file. Store a "skipped:" marker etag so we avoid
+                // re-downloading on every sync until the file actually changes.
+                warn!(
+                    "Skipping '{}': unsupported format, no text content could be extracted",
+                    entry.filename()
+                );
+                let marker = format!("skipped:{}", effective.as_deref().unwrap_or(""));
+                state.etags.insert(key.clone(), marker);
+                unsupported_keys.push(key.clone());
+                continue;
+            }
 
             let markdown = entry.to_markdown(username, &config.server_url, &content_text);
 
@@ -317,7 +386,7 @@ async fn process_file_batch(
         let _ = ctx.increment_scanned(batch.len() as i32).await;
     }
 
-    (scanned, processed)
+    (scanned, processed, unsupported_keys)
 }
 
 /// Try to parse a date string as RFC 3339 first, then RFC 2822.
@@ -408,7 +477,7 @@ pub fn build_file_event(
             .or(entry.oc_size)
             .map(|s| s.to_string()),
         url: Some(web_url),
-        path: Some(relative_path),
+        path: Some(relative_path.clone()),
         extra: if extra.is_empty() { None } else { Some(extra) },
     };
 
@@ -419,6 +488,11 @@ pub fn build_file_event(
     };
 
     let mut attributes = HashMap::new();
+
+    // Relative path for display in the chat UI (e.g. "/Documents/report.pdf").
+    // Stored in attributes so it's returned alongside the document in search results
+    // and can be shown as a subtitle under the filename in citations.
+    attributes.insert("path".to_string(), serde_json::json!(relative_path));
 
     // Extract file extension for filtering
     if let Some(ext_pos) = filename.rfind('.') {

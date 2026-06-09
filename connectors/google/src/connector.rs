@@ -4,7 +4,7 @@ use crate::admin::AdminClient;
 use crate::auth::{create_service_auth, get_domain_from_credentials, GoogleAuth};
 use crate::drive::DriveClient;
 use crate::gmail::{MessageFormat, MessagePart};
-use crate::models::{GoogleConnectorState, GoogleDirectoryUser, SearchUsersResponse};
+use crate::models::{GoogleDirectoryUser, GoogleSyncCheckpoint, SearchUsersResponse};
 use crate::sync::SyncManager;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -383,7 +383,7 @@ impl GoogleConnector {
 impl Connector for GoogleConnector {
     type Config = JsonValue;
     type Credentials = JsonValue;
-    type State = GoogleConnectorState;
+    type State = GoogleSyncCheckpoint;
 
     fn name(&self) -> &'static str {
         "google"

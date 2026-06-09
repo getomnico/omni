@@ -48,6 +48,7 @@ class SyncContext:
         sync_mode: SyncMode = SyncMode.INCREMENTAL,
         documents_scanned: int = 0,
         documents_updated: int = 0,
+        is_resume: bool = False,
     ):
         self._client = sdk_client
         self._sync_run_id = sync_run_id
@@ -65,6 +66,7 @@ class SyncContext:
         self._user_whitelist = {e.lower() for e in (user_whitelist or [])}
         self._user_blacklist = {e.lower() for e in (user_blacklist or [])}
         self._sync_mode = sync_mode
+        self._is_resume = is_resume
         self._buffer_size_threshold, self._buffer_time_threshold = _thresholds_for(
             sync_mode
         )
@@ -98,6 +100,14 @@ class SyncContext:
     @property
     def documents_scanned(self) -> int:
         return self._documents_scanned
+
+    @property
+    def sync_mode(self) -> SyncMode:
+        return self._sync_mode
+
+    @property
+    def is_resume(self) -> bool:
+        return self._is_resume
 
     def should_index_user(self, user_email: str) -> bool:
         """Check if a user should be indexed based on filter settings."""
@@ -216,27 +226,34 @@ class SyncContext:
         self._documents_scanned += 1
         await self._client.increment_scanned(self._sync_run_id)
 
-    async def save_state(self, state: dict[str, Any]) -> None:
+    async def save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         """Checkpoint state for resumability. Call periodically for long syncs.
 
-        Persists `state` to the manager so an interrupted sync can resume from
-        this point. Flushes buffered events first — without this, a crash
+        Persists `checkpoint` to the manager so an interrupted sync can resume
+        from this point. Flushes buffered events first — without this, a crash
         right after checkpointing would lose events that the connector
         considered emitted (the next run resumes past them).
         """
         await self.flush()
-        self._state = state
-        await self._client.update_connector_state(self._source_id, state)
+        self._state = checkpoint
+        await self._client.update_checkpoint(self._sync_run_id, checkpoint)
         await self._client.heartbeat(self._sync_run_id)
 
+    async def save_state(self, state: dict[str, Any]) -> None:
+        """Deprecated alias for save_checkpoint."""
+        await self.save_checkpoint(state)
+
     async def complete(self, new_state: dict[str, Any] | None = None) -> None:
-        """Mark sync as successfully completed. Saves final state."""
+        """Mark sync as successfully completed. Saves final checkpoint first."""
         await self.flush()
+        if new_state is not None:
+            self._state = new_state
+            await self._client.update_checkpoint(self._sync_run_id, new_state)
         await self._client.complete(
             self._sync_run_id,
             self._documents_scanned,
             self._documents_emitted,
-            new_state,
+            None,
         )
 
     async def fail(self, error: str) -> None:

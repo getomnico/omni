@@ -130,6 +130,8 @@ export const SyncRequestSchema = z.object({
   sync_run_id: z.string(),
   source_id: z.string(),
   sync_mode: z.string(),
+  checkpoint: z.record(z.unknown()).nullable().default(null),
+  is_resume: z.boolean().default(false),
   // Manager's running tally at dispatch time. Zero on a fresh sync;
   // non-zero on resume so the connector can keep counting from there.
   documents_scanned: z.number().int().default(0),
@@ -297,6 +299,7 @@ export const SdkSourceSyncDataSchema = z.object({
   config: z.record(z.unknown()).default({}),
   credentials: z.record(z.unknown()).default({}),
   connector_state: z.record(z.unknown()).nullable().default(null),
+  checkpoint: z.record(z.unknown()).nullable().default(null),
   source_type: z.string().nullable().default(null),
   user_filter_mode: z
     .enum([UserFilterMode.ALL, UserFilterMode.WHITELIST, UserFilterMode.BLACKLIST])

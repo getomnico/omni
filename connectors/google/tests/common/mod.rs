@@ -12,6 +12,7 @@ use shared::ObjectStorage;
 use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 
 const TEST_SOURCE_ID: &str = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
 
@@ -56,6 +57,8 @@ impl GoogleConnectorTestFixture {
             sync_backoff_base_seconds: 30,
             sync_backoff_max_seconds: 3600,
             sync_max_consecutive_failures: 10,
+            extraction_concurrency: 2,
+            extraction_retry_after_seconds: 1,
         };
 
         let content_storage: Arc<dyn ObjectStorage> =
@@ -69,12 +72,14 @@ impl GoogleConnectorTestFixture {
             redis_client.clone(),
         ));
 
+        let extraction_semaphore = Arc::new(Semaphore::new(config.extraction_concurrency));
         let app_state = AppState {
             db_pool: test_env.db_pool.clone(),
             redis_client,
             config,
             sync_manager: cm_sync_manager,
             content_storage,
+            extraction_semaphore,
         };
 
         let app = create_app(app_state);

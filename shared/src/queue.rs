@@ -1,8 +1,10 @@
+use crate::utils::generate_ulid;
 use anyhow::Result;
 use sqlx::{PgPool, Row};
-use ulid::Ulid;
 
 use crate::models::{ConnectorEvent, ConnectorEventQueueItem, EventStatus, SyncType};
+
+const CONTENT_ID_LENGTH: i32 = 26;
 
 fn event_type_str(event: &ConnectorEvent) -> &'static str {
     match event {
@@ -24,7 +26,7 @@ impl EventQueue {
     }
 
     pub async fn enqueue(&self, source_id: &str, event: &ConnectorEvent) -> Result<String> {
-        let id = Ulid::new().to_string();
+        let id = generate_ulid();
         let event_type = event_type_str(event);
 
         sqlx::query(
@@ -60,7 +62,7 @@ impl EventQueue {
         let mut payloads: Vec<serde_json::Value> = Vec::with_capacity(events.len());
 
         for event in events {
-            ids.push(Ulid::new().to_string());
+            ids.push(generate_ulid());
             sync_run_ids.push(event.sync_run_id().to_string());
             source_ids.push(source_id.to_string());
             event_types.push(event_type_str(event).to_string());
@@ -85,18 +87,43 @@ impl EventQueue {
     }
 
     pub async fn dequeue_batch(&self, batch_size: i32) -> Result<Vec<ConnectorEventQueueItem>> {
-        // Dequeue the oldest N pending events across all sync_runs (ordered by id = ULID,
-        // which is time-sortable). Downstream processing groups by sync_run_id for
-        // progress updates.
+        self.dequeue_batch_with_max_bytes(batch_size, i64::MAX)
+            .await
+    }
+
+    pub async fn dequeue_batch_with_max_bytes(
+        &self,
+        batch_size: i32,
+        max_bytes: i64,
+    ) -> Result<Vec<ConnectorEventQueueItem>> {
+        // Dequeue the oldest pending events across all sync_runs, bounded by both
+        // count and referenced content size. Downstream processing groups by
+        // sync_run_id for progress updates.
         let rows = sqlx::query(
             r#"
-            WITH batch AS (
-                SELECT id
-                FROM connector_events_queue
-                WHERE status = 'pending'
-                ORDER BY id
+            WITH candidates AS (
+                SELECT q.id,
+                       COALESCE(cb.size_bytes, 0) AS content_size_bytes
+                FROM connector_events_queue q
+                LEFT JOIN content_blobs cb ON cb.id = CASE
+                    WHEN length(q.payload->>'content_id') = $3 THEN (q.payload->>'content_id')::char(26)
+                    ELSE NULL
+                END
+                WHERE q.status = 'pending'
+                ORDER BY q.id
                 LIMIT $1
-                FOR UPDATE SKIP LOCKED
+                FOR UPDATE OF q SKIP LOCKED
+            ),
+            ranked AS (
+                SELECT id,
+                       row_number() OVER (ORDER BY id) AS row_num,
+                       SUM(content_size_bytes) OVER (ORDER BY id ROWS UNBOUNDED PRECEDING) AS running_bytes
+                FROM candidates
+            ),
+            batch AS (
+                SELECT id
+                FROM ranked
+                WHERE row_num = 1 OR running_bytes <= $2
             )
             UPDATE connector_events_queue q
             SET status = 'processing',
@@ -118,6 +145,8 @@ impl EventQueue {
             "#,
         )
         .bind(batch_size)
+        .bind(max_bytes)
+        .bind(CONTENT_ID_LENGTH)
         .fetch_all(&self.pool)
         .await?;
 
@@ -129,17 +158,43 @@ impl EventQueue {
         batch_size: i32,
         sync_type: SyncType,
     ) -> Result<Vec<ConnectorEventQueueItem>> {
+        self.dequeue_batch_by_sync_type_with_max_bytes(batch_size, sync_type, i64::MAX)
+            .await
+    }
+
+    pub async fn dequeue_batch_by_sync_type_with_max_bytes(
+        &self,
+        batch_size: i32,
+        sync_type: SyncType,
+        max_bytes: i64,
+    ) -> Result<Vec<ConnectorEventQueueItem>> {
         let rows = sqlx::query(
             r#"
-            WITH batch AS (
-                SELECT q.id
+            WITH candidates AS (
+                SELECT q.id,
+                       COALESCE(cb.size_bytes, 0) AS content_size_bytes
                 FROM connector_events_queue q
                 JOIN sync_runs s ON q.sync_run_id = s.id
+                LEFT JOIN content_blobs cb ON cb.id = CASE
+                    WHEN length(q.payload->>'content_id') = $4 THEN (q.payload->>'content_id')::char(26)
+                    ELSE NULL
+                END
                 WHERE q.status = 'pending'
                 AND s.sync_type = $2
                 ORDER BY q.id
                 LIMIT $1
                 FOR UPDATE OF q SKIP LOCKED
+            ),
+            ranked AS (
+                SELECT id,
+                       row_number() OVER (ORDER BY id) AS row_num,
+                       SUM(content_size_bytes) OVER (ORDER BY id ROWS UNBOUNDED PRECEDING) AS running_bytes
+                FROM candidates
+            ),
+            batch AS (
+                SELECT id
+                FROM ranked
+                WHERE row_num = 1 OR running_bytes <= $3
             )
             UPDATE connector_events_queue q
             SET status = 'processing',
@@ -162,6 +217,8 @@ impl EventQueue {
         )
         .bind(batch_size)
         .bind(sync_type)
+        .bind(max_bytes)
+        .bind(CONTENT_ID_LENGTH)
         .fetch_all(&self.pool)
         .await?;
 
@@ -172,17 +229,42 @@ impl EventQueue {
         &self,
         batch_size: i32,
     ) -> Result<Vec<ConnectorEventQueueItem>> {
+        self.dequeue_batch_orphans_with_max_bytes(batch_size, i64::MAX)
+            .await
+    }
+
+    pub async fn dequeue_batch_orphans_with_max_bytes(
+        &self,
+        batch_size: i32,
+        max_bytes: i64,
+    ) -> Result<Vec<ConnectorEventQueueItem>> {
         let rows = sqlx::query(
             r#"
-            WITH batch AS (
-                SELECT q.id
+            WITH candidates AS (
+                SELECT q.id,
+                       COALESCE(cb.size_bytes, 0) AS content_size_bytes
                 FROM connector_events_queue q
                 LEFT JOIN sync_runs s ON q.sync_run_id = s.id
+                LEFT JOIN content_blobs cb ON cb.id = CASE
+                    WHEN length(q.payload->>'content_id') = $3 THEN (q.payload->>'content_id')::char(26)
+                    ELSE NULL
+                END
                 WHERE q.status = 'pending'
                 AND s.id IS NULL
                 ORDER BY q.id
                 LIMIT $1
                 FOR UPDATE OF q SKIP LOCKED
+            ),
+            ranked AS (
+                SELECT id,
+                       row_number() OVER (ORDER BY id) AS row_num,
+                       SUM(content_size_bytes) OVER (ORDER BY id ROWS UNBOUNDED PRECEDING) AS running_bytes
+                FROM candidates
+            ),
+            batch AS (
+                SELECT id
+                FROM ranked
+                WHERE row_num = 1 OR running_bytes <= $2
             )
             UPDATE connector_events_queue q
             SET status = 'processing',
@@ -204,6 +286,8 @@ impl EventQueue {
             "#,
         )
         .bind(batch_size)
+        .bind(max_bytes)
+        .bind(CONTENT_ID_LENGTH)
         .fetch_all(&self.pool)
         .await?;
 
@@ -381,12 +465,18 @@ impl EventQueue {
                 s.sync_type,
                 q.status,
                 COUNT(*) as count,
-                MIN(q.created_at) as oldest
+                MIN(q.created_at) as oldest,
+                COALESCE(SUM(COALESCE(cb.size_bytes, 0)), 0)::BIGINT as size_bytes
             FROM connector_events_queue q
             LEFT JOIN sync_runs s ON q.sync_run_id = s.id
+            LEFT JOIN content_blobs cb ON cb.id = CASE
+                WHEN length(q.payload->>'content_id') = $1 THEN (q.payload->>'content_id')::char(26)
+                ELSE NULL
+            END
             GROUP BY s.sync_type, q.status
             "#,
         )
+        .bind(CONTENT_ID_LENGTH)
         .fetch_all(&self.pool)
         .await?;
 
@@ -397,6 +487,7 @@ impl EventQueue {
             let status_str: String = row.get("status");
             let count: i64 = row.get("count");
             let oldest: Option<chrono::DateTime<chrono::Utc>> = row.get("oldest");
+            let size_bytes: i64 = row.get("size_bytes");
 
             let sync_type = match sync_type_str.as_deref() {
                 None => None,
@@ -419,6 +510,7 @@ impl EventQueue {
                 status,
                 count,
                 oldest,
+                size_bytes,
             });
         }
 
@@ -580,6 +672,7 @@ pub struct QueueSummaryEntry {
     pub status: EventStatus,
     pub count: i64,
     pub oldest: Option<chrono::DateTime<chrono::Utc>>,
+    pub size_bytes: i64,
 }
 
 #[derive(Debug)]

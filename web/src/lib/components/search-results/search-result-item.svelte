@@ -7,6 +7,7 @@
     import GmailMetadata from './gmail-metadata.svelte'
     import SlackMetadata from './slack-metadata.svelte'
     import JiraMetadata from './jira-metadata.svelte'
+    import ImapCitationSource from './imap-citation-source.svelte'
 
     let { result, sourcesLookup }: { result: SearchResult; sourcesLookup: Map<string, string> } =
         $props()
@@ -153,6 +154,10 @@
             <SlackMetadata {extra} {metadata} />
         {:else if sourceType === SourceType.JIRA}
             <JiraMetadata {attributes} />
+        {:else if sourceType === SourceType.IMAP}
+            <ImapCitationSource source={attributes.doc_source} />
+        {:else if sourceType === SourceType.NEXTCLOUD && attributes.path}
+            <p class="text-muted-foreground/70 mb-1 text-xs">{attributes.path}</p>
         {/if}
 
         <!-- Date + Excerpt/Content -->

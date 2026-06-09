@@ -140,7 +140,7 @@ class ConnectorToolHandler:
                         f"{self._connector_manager_url}/sources"
                     )
                     sources_resp.raise_for_status()
-                    sources = [Source.from_row(s) for s in sources_resp.json()]
+                    sources = [Source.from_row(s["source"]) for s in sources_resp.json()]
 
         except Exception as e:
             logger.error(f"Failed to fetch connector info: {e}")

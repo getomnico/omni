@@ -20,6 +20,10 @@ pub struct RecordedSyncRequest {
     pub sync_mode: String,
     #[serde(default)]
     pub last_sync_at: Option<String>,
+    #[serde(default)]
+    pub checkpoint: Option<JsonValue>,
+    #[serde(default)]
+    pub is_resume: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

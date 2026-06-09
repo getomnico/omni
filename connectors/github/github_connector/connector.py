@@ -291,7 +291,7 @@ class GitHubConnector(Connector):
                     new_repo_states[full_name] = new_state_entry
 
                 if docs_since_checkpoint >= CHECKPOINT_INTERVAL:
-                    await ctx.save_state({"repos": new_repo_states})
+                    await ctx.save_checkpoint({"repos": new_repo_states})
                     docs_since_checkpoint = 0
 
             await ctx.complete(new_state={"repos": new_repo_states})

@@ -583,3 +583,109 @@ test('chat renders a captured stream from a seeded chat fixture', async ({ page 
         await cleanupChat(seeded)
     }
 })
+
+test('stop button during streaming resets state so the input is ready for a new message', async ({
+    page,
+}) => {
+    let seeded: SeededChat | null = null
+    try {
+        seeded = await seedChat()
+        await authenticate(page, seeded)
+
+        await page.route(`**/api/chat/${seeded.chatId}/messages`, async (route) => {
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ messageId: ulid() }),
+            })
+        })
+
+        let resolveStream!: () => void
+        const streamUnblocked = new Promise<void>((resolve) => {
+            resolveStream = resolve
+        })
+        await page.route(`**/api/chat/${seeded.chatId}/stream`, async (route) => {
+            await streamUnblocked
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
+                body: '',
+            })
+        })
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await page.getByRole('main').getByRole('textbox').fill('What tools can you use?')
+        await page.keyboard.press('Enter')
+
+        // Stop button (rounded-full) appears while the stream is pending
+        const stopButton = page.locator('.omni-composer-send.rounded-full')
+        await expect(stopButton).toBeVisible()
+        await stopButton.click()
+        resolveStream()
+
+        // After stopping, the stop button is gone and the input accepts a new message
+        await expect(stopButton).not.toBeVisible()
+        const textbox = page.getByRole('main').getByRole('textbox')
+        await textbox.fill('Follow-up question')
+        await expect(page.locator('.omni-composer-send')).not.toBeDisabled()
+    } finally {
+        await cleanupChat(seeded)
+    }
+})
+
+test('navigating to a different chat while streaming cleans up the stream state', async ({
+    page,
+}) => {
+    let seeded: SeededChat | null = null
+    let chat2Id: string | null = null
+    const sql = postgres(dbConfig)
+    try {
+        seeded = await seedChat()
+        chat2Id = ulid()
+        await sql`
+            INSERT INTO chats (id, user_id, title, is_starred, is_deleted)
+            VALUES (${chat2Id}, ${seeded.userId}, 'Playwright second chat', false, false)
+        `
+        await authenticate(page, seeded)
+
+        await page.route(`**/api/chat/${seeded.chatId}/messages`, async (route) => {
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ messageId: ulid() }),
+            })
+        })
+
+        let resolveStream!: () => void
+        const streamUnblocked = new Promise<void>((resolve) => {
+            resolveStream = resolve
+        })
+        await page.route(`**/api/chat/${seeded.chatId}/stream`, async (route) => {
+            await streamUnblocked
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
+                body: '',
+            })
+        })
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await page.getByRole('main').getByRole('textbox').fill('What tools can you use?')
+        await page.keyboard.press('Enter')
+
+        // Streaming is active on chat 1
+        await expect(page.locator('.omni-composer-send.rounded-full')).toBeVisible()
+
+        // Navigate to chat 2 while streaming is in progress
+        await page.goto(`/chat/${chat2Id}`)
+        resolveStream()
+
+        // Chat 2 must not inherit the streaming state from chat 1
+        await expect(page.locator('.omni-composer-send.rounded-full')).not.toBeVisible()
+        await expect(page.getByRole('main').getByRole('textbox')).toBeEditable()
+    } finally {
+        await sql`DELETE FROM chats WHERE id = ${chat2Id}`.catch(() => {})
+        await sql.end()
+        await cleanupChat(seeded)
+    }
+})

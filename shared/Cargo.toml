@@ -47,6 +47,8 @@ zip = "8.4"
 quick-xml = "0.39"
 pdf_oxide = "0.3"
 htmd = "0.5"
+mail-parser = "0.11"
+msg_parser = "0.3"
 
 # OpenTelemetry
 opentelemetry = { workspace = true }

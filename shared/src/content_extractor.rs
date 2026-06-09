@@ -1,28 +1,82 @@
 use anyhow::{anyhow, Context, Result};
 use calamine::{open_workbook_auto_from_rs, Reader};
 use docx_rs::read_docx;
+use mail_parser::MessageParser;
 use quick_xml::events::Event;
 use quick_xml::Reader as XmlReader;
 use std::io::Cursor;
 use tracing::{debug, warn};
 use zip::ZipArchive;
 
+#[path = "content_extractor_xlsx.rs"]
+mod xlsx_extractor;
+
+const DEFAULT_SPREADSHEET_MAX_EXTRACTED_ROWS: usize = 1000;
+
 /// Extract human-readable text content from raw file bytes based on MIME type.
 ///
 /// When mime_type is `application/octet-stream`, falls back to extension-based
 /// detection using the optional filename.
 pub fn extract_content(data: &[u8], mime_type: &str, filename: Option<&str>) -> Result<String> {
-    let effective_mime = if mime_type == "application/octet-stream" {
+    let effective_mime = effective_mime_type(mime_type, filename);
+
+    if is_spreadsheet_mime(&effective_mime) {
+        return extract_spreadsheet_content_with_row_limit(
+            data,
+            &effective_mime,
+            None,
+            DEFAULT_SPREADSHEET_MAX_EXTRACTED_ROWS,
+        );
+    }
+
+    extract_non_spreadsheet_content(data, &effective_mime)
+}
+
+pub fn extract_spreadsheet_content_with_row_limit(
+    data: &[u8],
+    mime_type: &str,
+    filename: Option<&str>,
+    max_rows: usize,
+) -> Result<String> {
+    let effective_mime = effective_mime_type(mime_type, filename);
+
+    match effective_mime.as_str() {
+        "text/csv" => String::from_utf8(data.to_vec())
+            .or_else(|_| Ok(String::from_utf8_lossy(data).into_owned())),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => {
+            xlsx_extractor::extract_xlsx_text_filtered(data, max_rows)
+        }
+        "application/vnd.ms-excel" => extract_excel_text(data).or_else(|e| {
+            warn!("Failed to extract text from legacy .xls file: {}", e);
+            Ok(String::new())
+        }),
+        _ => extract_non_spreadsheet_content(data, &effective_mime),
+    }
+}
+
+fn effective_mime_type(mime_type: &str, filename: Option<&str>) -> String {
+    if mime_type == "application/octet-stream" {
         filename
             .and_then(mime_from_extension)
             .unwrap_or_else(|| mime_type.to_string())
     } else {
         mime_type.to_string()
-    };
+    }
+}
 
-    match effective_mime.as_str() {
+fn is_spreadsheet_mime(mime_type: &str) -> bool {
+    matches!(
+        mime_type,
+        "text/csv"
+            | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            | "application/vnd.ms-excel"
+    )
+}
+
+fn extract_non_spreadsheet_content(data: &[u8], effective_mime: &str) -> Result<String> {
+    match effective_mime {
         // Plain text formats — pass through as-is
-        "text/plain" | "text/markdown" | "text/csv" => String::from_utf8(data.to_vec())
+        "text/plain" | "text/markdown" => String::from_utf8(data.to_vec())
             .or_else(|_| Ok(String::from_utf8_lossy(data).into_owned())),
 
         "text/html" => {
@@ -38,18 +92,9 @@ pub fn extract_content(data: &[u8], mime_type: &str, filename: Option<&str>) -> 
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
             extract_docx_text(data)
         }
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => {
-            extract_excel_text(data)
-        }
         "application/vnd.openxmlformats-officedocument.presentationml.presentation" => {
             extract_pptx_text(data)
         }
-
-        // Legacy Excel — calamine supports this natively
-        "application/vnd.ms-excel" => extract_excel_text(data).or_else(|e| {
-            warn!("Failed to extract text from legacy .xls file: {}", e);
-            Ok(String::new())
-        }),
 
         // Legacy Word — cannot be parsed with docx_rs (different binary format)
         "application/msword" => {
@@ -62,6 +107,10 @@ pub fn extract_content(data: &[u8], mime_type: &str, filename: Option<&str>) -> 
             debug!("Legacy .ppt format is not supported, skipping");
             Ok(String::new())
         }
+
+        // Email formats — handled natively; Docling does not support these
+        "message/rfc822" => extract_eml_text(data),
+        "application/vnd.ms-outlook" => extract_msg_text(data),
 
         _ => {
             debug!("Unsupported MIME type for extraction: '{}'", effective_mime);
@@ -85,6 +134,8 @@ fn mime_from_extension(filename: &str) -> Option<String> {
         "html" | "htm" => "text/html",
         "csv" => "text/csv",
         "md" | "markdown" => "text/markdown",
+        "eml" => "message/rfc822",
+        "msg" => "application/vnd.ms-outlook",
         _ => return None,
     };
     Some(mime.to_string())
@@ -152,7 +203,10 @@ fn extract_pdf_text(data: &[u8]) -> Result<String> {
 
     match result {
         Ok(Ok(text)) => Ok(text.trim().to_string()),
-        Ok(Err(e)) => Err(anyhow!("Failed to extract text from PDF: {}", e)),
+        Ok(Err(e)) => {
+            warn!("Skipping PDF with unextractable text: {}", e);
+            Ok(String::new())
+        }
         Err(_) => {
             warn!("PDF extraction panicked — likely a malformed PDF");
             Err(anyhow!("PDF extraction panicked due to malformed content"))
@@ -225,6 +279,10 @@ fn extract_table_text(table: &docx_rs::Table, text: &mut String) {
 }
 
 fn extract_excel_text(data: &[u8]) -> Result<String> {
+    extract_excel_text_with_filter(data, false)
+}
+
+fn extract_excel_text_with_filter(data: &[u8], filter_cells: bool) -> Result<String> {
     let cursor = Cursor::new(data);
     let mut workbook =
         open_workbook_auto_from_rs(cursor).context("Failed to open Excel workbook")?;
@@ -236,18 +294,126 @@ fn extract_excel_text(data: &[u8]) -> Result<String> {
         text.push_str(&format!("Sheet: {}\n", sheet_name));
         if let Ok(range) = workbook.worksheet_range(sheet_name) {
             for row in range.rows() {
-                let row_text: Vec<String> = row
-                    .iter()
-                    .map(|cell: &calamine::Data| cell.to_string())
-                    .collect();
-                text.push_str(&row_text.join("\t"));
-                text.push('\n');
+                let row_text: Vec<String> = if filter_cells {
+                    row.iter()
+                        .filter_map(|cell: &calamine::Data| {
+                            let cell_text = cell.to_string();
+                            let trimmed = cell_text.trim();
+                            if is_textual_spreadsheet_cell(trimmed) {
+                                Some(trimmed.to_string())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                } else {
+                    row.iter()
+                        .map(|cell: &calamine::Data| cell.to_string())
+                        .collect()
+                };
+
+                if !filter_cells || !row_text.is_empty() {
+                    text.push_str(&row_text.join("\t"));
+                    text.push('\n');
+                }
             }
         }
         text.push('\n');
     }
 
     Ok(text.trim().to_string())
+}
+
+pub fn is_textual_spreadsheet_cell(cell: &str) -> bool {
+    let trimmed = cell.trim();
+    if trimmed.is_empty() || is_numeric_like_spreadsheet_cell(trimmed) {
+        return false;
+    }
+
+    trimmed.chars().any(char::is_alphabetic)
+}
+
+fn is_numeric_like_spreadsheet_cell(cell: &str) -> bool {
+    let mut normalized = cell.trim().to_string();
+    if normalized.is_empty() {
+        return false;
+    }
+
+    if normalized.starts_with('(') && normalized.ends_with(')') && normalized.len() > 2 {
+        normalized = format!("-{}", &normalized[1..normalized.len() - 1]);
+    }
+
+    normalized.retain(|ch| {
+        !matches!(
+            ch,
+            ',' | '_' | ' ' | '$' | '€' | '£' | '¥' | '₹' | '%' | '+'
+        )
+    });
+
+    !normalized.is_empty() && normalized.parse::<f64>().is_ok()
+}
+
+pub fn filter_extracted_spreadsheet_text(text: &str) -> String {
+    filter_extracted_spreadsheet_text_with_row_limit(text, None)
+}
+
+pub fn filter_extracted_spreadsheet_text_with_row_limit(
+    text: &str,
+    max_rows: Option<usize>,
+) -> String {
+    let mut filtered = String::with_capacity(text.len());
+    let mut rows_written = 0usize;
+
+    for line in text.lines() {
+        if max_rows.is_some_and(|limit| rows_written >= limit) {
+            break;
+        }
+
+        if line.contains('\t') {
+            let cells: Vec<&str> = line
+                .split('\t')
+                .map(str::trim)
+                .filter(|cell| is_textual_spreadsheet_cell(cell))
+                .collect();
+            if !cells.is_empty() {
+                filtered.push_str(&cells.join("\t"));
+                filtered.push('\n');
+                rows_written += 1;
+            }
+        } else if let Some(row) = filter_markdown_table_row(line) {
+            if !row.is_empty() {
+                filtered.push_str(&row);
+                filtered.push('\n');
+                rows_written += 1;
+            }
+        } else if is_textual_spreadsheet_cell(line) {
+            filtered.push_str(line.trim());
+            filtered.push('\n');
+            rows_written += 1;
+        }
+    }
+
+    filtered.trim().to_string()
+}
+
+fn filter_markdown_table_row(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if !trimmed.contains('|') {
+        return None;
+    }
+
+    let cells: Vec<&str> = trimmed
+        .trim_matches('|')
+        .split('|')
+        .map(str::trim)
+        .filter(|cell| is_textual_spreadsheet_cell(cell))
+        .collect();
+
+    if cells.is_empty() {
+        Some(String::new())
+    } else {
+        Some(format!("| {} |", cells.join(" | ")))
+    }
 }
 
 fn extract_pptx_text(data: &[u8]) -> Result<String> {
@@ -327,6 +493,130 @@ fn extract_text_from_pptx_xml(xml_content: &str) -> Result<String> {
     Ok(text.trim().to_string())
 }
 
+/// Format a msg_parser `Person` as "Name <email>" or whichever parts are present.
+fn format_person(p: &msg_parser::Person) -> String {
+    match (!p.name.is_empty(), !p.email.is_empty()) {
+        (true, true) => format!("{} <{}>", p.name, p.email),
+        (false, true) => p.email.clone(),
+        (true, false) => p.name.clone(),
+        _ => String::new(),
+    }
+}
+
+/// Format an address list (name + email) as a human-readable string.
+fn format_mail_parser_address(addr: Option<&mail_parser::Address<'_>>) -> String {
+    match addr {
+        None => String::new(),
+        Some(a) => a
+            .iter()
+            .map(|addr| match (&addr.name, &addr.address) {
+                (Some(name), Some(email)) => format!("{} <{}>", name, email),
+                (None, Some(email)) => email.to_string(),
+                (Some(name), None) => name.to_string(),
+                (None, None) => String::new(),
+            })
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(", "),
+    }
+}
+
+/// Convert an EML (RFC 5322) email to markdown.
+fn extract_eml_text(data: &[u8]) -> Result<String> {
+    let message = MessageParser::default()
+        .parse(data)
+        .ok_or_else(|| anyhow!("Failed to parse EML message"))?;
+
+    let mut md = String::new();
+
+    let subject = message.subject().unwrap_or("(no subject)");
+    md.push_str(&format!("# {}\n\n", subject));
+
+    let from = format_mail_parser_address(message.from());
+    if !from.is_empty() {
+        md.push_str(&format!("**From:** {}\n", from));
+    }
+    let to = format_mail_parser_address(message.to());
+    if !to.is_empty() {
+        md.push_str(&format!("**To:** {}\n", to));
+    }
+    if let Some(cc) = message.cc() {
+        let cc_str = format_mail_parser_address(Some(cc));
+        if !cc_str.is_empty() {
+            md.push_str(&format!("**Cc:** {}\n", cc_str));
+        }
+    }
+    if let Some(date) = message.date() {
+        md.push_str(&format!("**Date:** {}\n", date));
+    }
+
+    md.push_str("\n---\n\n");
+
+    // Prefer plain-text body; fall back to HTML → markdown conversion.
+    if let Some(body) = message.body_text(0) {
+        md.push_str(body.as_ref());
+    } else if let Some(html) = message.body_html(0) {
+        md.push_str(&html_to_markdown(html.as_ref()));
+    }
+
+    Ok(md.trim().to_string())
+}
+
+/// Convert an Outlook MSG file to markdown.
+fn extract_msg_text(data: &[u8]) -> Result<String> {
+    let msg = msg_parser::Outlook::from_slice(data)
+        .map_err(|e| anyhow!("Failed to parse MSG file: {}", e))?;
+
+    let mut md = String::new();
+
+    let subject = if msg.subject.is_empty() {
+        "(no subject)"
+    } else {
+        &msg.subject
+    };
+    md.push_str(&format!("# {}\n\n", subject));
+
+    let sender_str = format_person(&msg.sender);
+    if !sender_str.is_empty() {
+        md.push_str(&format!("**From:** {}\n", sender_str));
+    }
+
+    let to_addrs: Vec<String> = msg
+        .to
+        .iter()
+        .map(format_person)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !to_addrs.is_empty() {
+        md.push_str(&format!("**To:** {}\n", to_addrs.join(", ")));
+    }
+
+    let cc_addrs: Vec<String> = msg
+        .cc
+        .iter()
+        .map(format_person)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !cc_addrs.is_empty() {
+        md.push_str(&format!("**Cc:** {}\n", cc_addrs.join(", ")));
+    }
+
+    if !msg.message_delivery_time.is_empty() {
+        md.push_str(&format!("**Date:** {}\n", msg.message_delivery_time));
+    }
+
+    md.push_str("\n---\n\n");
+
+    // Prefer plain-text body; fall back to HTML → markdown.
+    if !msg.body.is_empty() {
+        md.push_str(&msg.body);
+    } else if !msg.html.is_empty() {
+        md.push_str(&html_to_markdown(&msg.html));
+    }
+
+    Ok(md.trim().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,6 +650,22 @@ mod tests {
         let result = extract_content(data, "text/html", None).unwrap();
         assert!(result.contains("Title"));
         assert!(result.contains("Hello world"));
+    }
+
+    #[test]
+    fn test_invalid_pdf_returns_empty() {
+        let data = concat!(
+            "%PDF-1.4\n",
+            "1 0 obj\n",
+            "<< /Type /Catalog >>\n",
+            "endobj\n",
+            "trailer\n",
+            "<< /Root 1 0 R >>\n",
+            "%%EOF"
+        )
+        .as_bytes();
+        let result = extract_content(data, "application/pdf", Some("bad.pdf")).unwrap();
+        assert!(result.is_empty());
     }
 
     #[test]
@@ -454,15 +760,47 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_xlsx() {
-        let data = create_test_xlsx(&[&["Name", "Age"], &["Alice", "30"]]);
-        let result = extract_content(
-            &data,
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            None,
-        )
-        .unwrap();
-        assert!(result.contains("Name") && result.contains("Alice"));
+    fn test_filter_extracted_spreadsheet_text_handles_tabs_and_markdown_tables() {
+        let input = concat!(
+            "Sheet: Sheet1\n",
+            "Name\tAge\tCost\n",
+            "Alice\t30\t$10.00\n",
+            "123\t456\n",
+            "| Product | Count | Price |\n",
+            "| --- | --- | --- |\n",
+            "| Widget A | 100 | $9.99 |\n",
+            "| 111 | 222 |\n"
+        );
+
+        let filtered = filter_extracted_spreadsheet_text(input);
+
+        assert!(filtered.contains("Sheet: Sheet1"));
+        assert!(filtered.contains("Name\tAge\tCost"));
+        assert!(filtered.contains("Alice"));
+        assert!(filtered.contains("| Product | Count | Price |"));
+        assert!(filtered.contains("| Widget A |"));
+        assert!(!filtered.contains("$10.00"));
+        assert!(!filtered.contains("123\t456"));
+        assert!(!filtered.contains("| 111 | 222 |"));
+    }
+
+    #[test]
+    fn test_filter_extracted_spreadsheet_text_applies_row_limit_after_filtering() {
+        let input = concat!(
+            "Name\tAge\n",
+            "123\t456\n",
+            "Alice\t30\n",
+            "Bob\t40\n",
+            "Carol\t50\n"
+        );
+
+        let filtered = filter_extracted_spreadsheet_text_with_row_limit(input, Some(2));
+
+        assert!(filtered.contains("Name\tAge"));
+        assert!(filtered.contains("Alice"));
+        assert!(!filtered.contains("Bob"));
+        assert!(!filtered.contains("Carol"));
+        assert!(!filtered.contains("123\t456"));
     }
 
     #[test]
@@ -512,80 +850,6 @@ mod tests {
 
     // ── Test helpers ──
 
-    fn create_test_xlsx(rows: &[&[&str]]) -> Vec<u8> {
-        use zip::write::SimpleFileOptions as FileOptions;
-
-        let mut buf = Vec::new();
-        {
-            let cursor = Cursor::new(&mut buf);
-            let mut zip = zip::ZipWriter::new(cursor);
-
-            zip.start_file("[Content_Types].xml", FileOptions::default())
-                .unwrap();
-            write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-</Types>"#).unwrap();
-
-            zip.start_file("_rels/.rels", FileOptions::default())
-                .unwrap();
-            write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
-</Relationships>"#).unwrap();
-
-            zip.start_file("xl/_rels/workbook.xml.rels", FileOptions::default())
-                .unwrap();
-            write!(zip, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-</Relationships>"#).unwrap();
-
-            zip.start_file("xl/workbook.xml", FileOptions::default())
-                .unwrap();
-            write!(
-                zip,
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <sheets>
-    <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
-  </sheets>
-</workbook>"#
-            )
-            .unwrap();
-
-            let mut sheet_xml = String::from(
-                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <sheetData>"#,
-            );
-            for (row_idx, row) in rows.iter().enumerate() {
-                sheet_xml.push_str(&format!("\n    <row r=\"{}\">", row_idx + 1));
-                for (col_idx, cell_val) in row.iter().enumerate() {
-                    let col_letter = (b'A' + col_idx as u8) as char;
-                    sheet_xml.push_str(&format!(
-                        "<c r=\"{}{}\" t=\"inlineStr\"><is><t>{}</t></is></c>",
-                        col_letter,
-                        row_idx + 1,
-                        cell_val
-                    ));
-                }
-                sheet_xml.push_str("</row>");
-            }
-            sheet_xml.push_str("\n  </sheetData>\n</worksheet>");
-
-            zip.start_file("xl/worksheets/sheet1.xml", FileOptions::default())
-                .unwrap();
-            write!(zip, "{}", sheet_xml).unwrap();
-            zip.finish().unwrap();
-        }
-        buf
-    }
-
     fn create_test_pptx(slide_texts: &[&str]) -> Vec<u8> {
         use zip::write::SimpleFileOptions as FileOptions;
 
@@ -614,5 +878,83 @@ mod tests {
             zip.finish().unwrap();
         }
         buf
+    }
+
+    // ── EML tests ──
+
+    static SIMPLE_EML: &[u8] = include_bytes!("testdata/simple.eml");
+
+    #[test]
+    fn test_extract_eml_simple() {
+        let result = extract_content(SIMPLE_EML, "message/rfc822", None).unwrap();
+        assert!(result.contains("test"), "subject missing");
+        assert!(result.contains("andris@kreata.ee"), "from address missing");
+        assert!(
+            result.contains("andris.reinman@gmail.com"),
+            "to address missing"
+        );
+        assert!(result.contains("Hello world!"), "body missing");
+        assert!(result.contains("---"), "markdown separator missing");
+    }
+
+    #[test]
+    fn test_extract_eml_via_extension_fallback() {
+        let result =
+            extract_content(SIMPLE_EML, "application/octet-stream", Some("message.eml")).unwrap();
+        assert!(result.contains("Hello world!"));
+    }
+
+    #[test]
+    fn test_extract_eml_markdown_structure() {
+        let result = extract_content(SIMPLE_EML, "message/rfc822", None).unwrap();
+        assert!(
+            result.starts_with("# "),
+            "should start with markdown heading"
+        );
+        assert!(result.contains("**From:**"), "From header missing");
+        assert!(result.contains("**To:**"), "To header missing");
+        assert!(result.contains("**Date:**"), "Date header missing");
+    }
+
+    #[test]
+    fn test_extract_eml_html_body_fallback() {
+        let eml = b"From: sender@example.com\r\nTo: rcpt@example.com\r\nSubject: HTML only\r\nContent-Type: text/html\r\n\r\n<p>Hello from <b>HTML</b></p>";
+        let result = extract_content(eml, "message/rfc822", None).unwrap();
+        assert!(result.contains("HTML only"), "subject missing");
+        assert!(result.contains("Hello from"), "html body not converted");
+    }
+
+    #[test]
+    fn test_extract_eml_no_subject() {
+        let eml = b"From: sender@example.com\r\nTo: rcpt@example.com\r\n\r\nBody text";
+        let result = extract_content(eml, "message/rfc822", None).unwrap();
+        assert!(result.contains("(no subject)"));
+        assert!(result.contains("Body text"));
+    }
+
+    // ── MSG tests ──
+
+    static SAMPLE_MSG: &[u8] = include_bytes!("testdata/sample.msg");
+
+    #[test]
+    fn test_extract_msg_parses_without_error() {
+        let result = extract_content(SAMPLE_MSG, "application/vnd.ms-outlook", None);
+        assert!(result.is_ok(), "MSG parsing failed: {:?}", result.err());
+        let text = result.unwrap();
+        assert!(!text.is_empty(), "MSG produced empty output");
+        assert!(text.contains("---"), "markdown separator missing");
+    }
+
+    #[test]
+    fn test_extract_msg_markdown_structure() {
+        let text = extract_content(SAMPLE_MSG, "application/vnd.ms-outlook", None).unwrap();
+        assert!(text.starts_with("# "), "should start with markdown heading");
+    }
+
+    #[test]
+    fn test_extract_msg_via_extension_fallback() {
+        let result =
+            extract_content(SAMPLE_MSG, "application/octet-stream", Some("email.msg")).unwrap();
+        assert!(!result.is_empty(), "extension fallback produced no output");
     }
 }

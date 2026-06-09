@@ -225,7 +225,8 @@ async def test_fetch_source_sync_data_returns_typed_model(
             json={
                 "config": {"folder_id": "abc"},
                 "credentials": {"access_token": "token"},
-                "connector_state": {"cursor": "xyz"},
+                "connector_state": {"webhook": "meta"},
+                "checkpoint": {"cursor": "xyz"},
                 "source_type": "one_drive",
                 "user_filter_mode": "whitelist",
                 "user_whitelist": ["alice@example.com"],
@@ -239,7 +240,8 @@ async def test_fetch_source_sync_data_returns_typed_model(
     assert isinstance(result, SdkSourceSyncData)
     assert result.config == {"folder_id": "abc"}
     assert result.credentials == {"access_token": "token"}
-    assert result.connector_state == {"cursor": "xyz"}
+    assert result.connector_state == {"webhook": "meta"}
+    assert result.checkpoint == {"cursor": "xyz"}
     assert result.source_type == "one_drive"
     assert result.user_filter_mode == UserFilterMode.WHITELIST
     assert result.user_whitelist == ["alice@example.com"]

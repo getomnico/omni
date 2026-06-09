@@ -34,10 +34,28 @@ x-logging: &default-logging
     max-file: "10"
     compress: "true"
 
+x-resources-critical: &resources-critical
+  cpu_shares: ${OMNI_CPU_SHARES_CRITICAL:-2048}
+
+x-resources-high: &resources-high
+  cpu_shares: ${OMNI_CPU_SHARES_HIGH:-1024}
+
+x-resources-normal: &resources-normal
+  cpu_shares: ${OMNI_CPU_SHARES_NORMAL:-512}
+
+x-resources-background: &resources-background
+  cpu_shares: ${OMNI_CPU_SHARES_BACKGROUND:-256}
+
+x-resources-connector: &resources-connector
+  cpu_shares: ${OMNI_CPU_SHARES_CONNECTOR:-128}
+
 services:
   postgres:
     image: paradedb/paradedb:0.23.1-pg17
-    shm_size: 4gb
+    <<: *resources-critical
+    cpus: ${OMNI_POSTGRES_CPUS:-1.0}
+    mem_limit: ${OMNI_POSTGRES_MEMORY:-3g}
+    shm_size: ${OMNI_POSTGRES_SHM_SIZE:-2g}
     container_name: omni-postgres
     command:
       - "postgres"
@@ -68,6 +86,9 @@ services:
 
   redis:
     image: redis:7-alpine
+    <<: *resources-normal
+    cpus: ${OMNI_REDIS_CPUS:-0.2}
+    mem_limit: ${OMNI_REDIS_MEMORY:-256m}
     container_name: omni-redis
     command: redis-server --appendonly yes
     volumes:
@@ -83,6 +104,9 @@ services:
 
   migrator:
     image: ghcr.io/getomnico/omni/omni-migrator:${OMNI_VERSION:-latest}
+    <<: *resources-background
+    cpus: ${OMNI_MIGRATOR_CPUS:-0.25}
+    mem_limit: ${OMNI_MIGRATOR_MEMORY:-256m}
     container_name: omni-migrator
     environment:
       <<: *db-config
@@ -97,6 +121,9 @@ services:
   # Core Services
   searcher:
     image: ghcr.io/getomnico/omni/omni-searcher:${OMNI_VERSION:-latest}
+    <<: *resources-high
+    cpus: ${OMNI_SEARCHER_CPUS:-0.5}
+    mem_limit: ${OMNI_SEARCHER_MEMORY:-512m}
     container_name: omni-searcher
     expose:
       - "${SEARCHER_PORT}"
@@ -120,6 +147,9 @@ services:
 
   indexer:
     image: ghcr.io/getomnico/omni/omni-indexer:${OMNI_VERSION:-latest}
+    <<: *resources-background
+    cpus: ${OMNI_INDEXER_CPUS:-0.25}
+    mem_limit: ${OMNI_INDEXER_MEMORY:-512m}
     container_name: omni-indexer
     expose:
       - "${INDEXER_PORT}"
@@ -144,6 +174,9 @@ services:
 
   ai:
     image: ghcr.io/getomnico/omni/omni-ai:${OMNI_VERSION:-latest}
+    <<: *resources-high
+    cpus: ${OMNI_AI_CPUS:-0.75}
+    mem_limit: ${OMNI_AI_MEMORY:-1g}
     container_name: omni-ai
     expose:
       - "${AI_SERVICE_PORT}"
@@ -185,6 +218,9 @@ services:
   # The AI service bridges both networks to reach it.
   sandbox:
     image: ghcr.io/getomnico/omni/omni-sandbox:${OMNI_VERSION:-latest}
+    <<: *resources-background
+    cpus: ${OMNI_SANDBOX_CPUS:-0.5}
+    mem_limit: ${OMNI_SANDBOX_MEMORY:-512m}
     container_name: omni-sandbox
     expose:
       - "${SANDBOX_PORT}"
@@ -197,8 +233,6 @@ services:
       - sandbox_data:/scratch
     networks:
       - sandbox-net
-    mem_limit: 512m
-    cpuset: "0,1"   # Pin to specific cores, e.g. CPU=0,1
     security_opt:
       - no-new-privileges:true
     read_only: true
@@ -218,6 +252,9 @@ services:
   # Connector Manager - Orchestrates all connectors
   connector-manager:
     image: ghcr.io/getomnico/omni/omni-connector-manager:${OMNI_VERSION:-latest}
+    <<: *resources-normal
+    cpus: ${OMNI_CONNECTOR_MANAGER_CPUS:-0.25}
+    mem_limit: ${OMNI_CONNECTOR_MANAGER_MEMORY:-3g}
     container_name: omni-connector-manager
     expose:
       - "${CONNECTOR_MANAGER_PORT}"
@@ -229,6 +266,11 @@ services:
       ENCRYPTION_SALT: ${ENCRYPTION_SALT}
       MAX_CONCURRENT_SYNCS: ${MAX_CONCURRENT_SYNCS:-10}
       MAX_CONCURRENT_SYNCS_PER_TYPE: ${MAX_CONCURRENT_SYNCS_PER_TYPE:-3}
+      EXTRACTION_CONCURRENCY: ${EXTRACTION_CONCURRENCY:-2}
+      EXTRACTION_RETRY_AFTER_SECONDS: ${EXTRACTION_RETRY_AFTER_SECONDS:-30}
+      CONNECTOR_MANAGER_MAX_EXTRACT_INPUT_BYTES: ${CONNECTOR_MANAGER_MAX_EXTRACT_INPUT_BYTES:-52428800}
+      CONNECTOR_MANAGER_MAX_EXTRACTED_TEXT_BYTES: ${CONNECTOR_MANAGER_MAX_EXTRACTED_TEXT_BYTES:-5242880}
+      CONNECTOR_MANAGER_SPREADSHEET_MAX_INDEXED_ROWS: ${CONNECTOR_MANAGER_SPREADSHEET_MAX_INDEXED_ROWS:-1000}
       SCHEDULER_POLL_INTERVAL_SECONDS: ${SCHEDULER_POLL_INTERVAL_SECONDS:-60}
       STALE_SYNC_TIMEOUT_MINUTES: ${STALE_SYNC_TIMEOUT_MINUTES:-10}
     networks:
@@ -247,6 +289,9 @@ services:
   # GPU support: use docker-compose.gpu.yml override for GPU acceleration
   embeddings:
     image: ghcr.io/huggingface/text-embeddings-inference:1.8
+    <<: *resources-background
+    cpus: ${OMNI_EMBEDDINGS_CPUS:-0.75}
+    mem_limit: ${OMNI_EMBEDDINGS_MEMORY:-2g}
     container_name: omni-embeddings
     expose:
       - "${LOCAL_EMBEDDINGS_PORT}"
@@ -279,6 +324,8 @@ services:
   # installed and uncomment the deploy.resources.reservations block below.
   docling:
     image: ghcr.io/getomnico/omni/omni-docling:${OMNI_VERSION:-latest}${DOCLING_DEVICE:+-${DOCLING_DEVICE}}
+    <<: *resources-background
+    cpus: ${DOCLING_CPUS:-0.75}
     container_name: omni-docling
     profiles:
       - docling
@@ -291,7 +338,6 @@ services:
       - docling_models:/root/.cache
     restart: unless-stopped
     mem_limit: ${DOCLING_MEMORY:-2g}
-    cpuset: "${DOCLING_CPUSET}"  # pin to specific cores, e.g. DOCLING_CPUSET=0,1
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:${DOCLING_PORT:-8003}/health"]
       interval: 30s
@@ -311,6 +357,9 @@ services:
   # Connector Services
   google-connector:
     image: ghcr.io/getomnico/omni/omni-google-connector:${OMNI_VERSION:-latest}
+    <<: *resources-connector
+    cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
+    mem_limit: ${OMNI_CONNECTOR_MEMORY:-384m}
     container_name: omni-google-connector
     profiles:
       - google
@@ -323,6 +372,10 @@ services:
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
       CONNECTOR_HOST_NAME: google-connector
       GOOGLE_MAX_AGE_DAYS: ${GOOGLE_MAX_AGE_DAYS:-730}
+      GOOGLE_DRIVE_MAX_DOWNLOAD_BYTES: ${GOOGLE_DRIVE_MAX_DOWNLOAD_BYTES:-52428800}
+      GOOGLE_SHEETS_MAX_INDEXED_ROWS: ${GOOGLE_SHEETS_MAX_INDEXED_ROWS:-1000}
+      GOOGLE_DRIVE_PARALLEL_USERS: ${GOOGLE_DRIVE_PARALLEL_USERS:-3}
+      GOOGLE_WEBHOOK_DEBOUNCE_SECONDS: ${GOOGLE_WEBHOOK_DEBOUNCE_SECONDS:-14400}
       OMNI_DOMAIN: ${OMNI_DOMAIN}
       WEBHOOK_RENEWAL_CHECK_INTERVAL_SECONDS: ${WEBHOOK_RENEWAL_CHECK_INTERVAL_SECONDS:-3600}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
@@ -339,6 +392,9 @@ services:
 
   slack-connector:
     image: ghcr.io/getomnico/omni/omni-slack-connector:${OMNI_VERSION:-latest}
+    <<: *resources-connector
+    cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
+    mem_limit: ${OMNI_CONNECTOR_MEMORY:-384m}
     container_name: omni-slack-connector
     profiles:
       - slack
@@ -361,6 +417,9 @@ services:
 
   atlassian-connector:
     image: ghcr.io/getomnico/omni/omni-atlassian-connector:${OMNI_VERSION:-latest}
+    <<: *resources-connector
+    cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
+    mem_limit: ${OMNI_CONNECTOR_MEMORY:-384m}
     container_name: omni-atlassian-connector
     profiles:
       - atlassian
@@ -384,6 +443,9 @@ services:
 
   web-connector:
     image: ghcr.io/getomnico/omni/omni-web-connector:${OMNI_VERSION:-latest}
+    <<: *resources-connector
+    cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
+    mem_limit: ${OMNI_CONNECTOR_MEMORY:-384m}
     container_name: omni-web-connector
     profiles:
       - web
@@ -407,6 +469,9 @@ services:
 
   github-connector:
     image: ghcr.io/getomnico/omni/omni-github-connector:${OMNI_VERSION:-latest}
+    <<: *resources-connector
+    cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
+    mem_limit: ${OMNI_CONNECTOR_MEMORY:-384m}
     container_name: omni-github-connector
     profiles:
       - github
@@ -427,6 +492,9 @@ services:
 
   notion-connector:
     image: ghcr.io/getomnico/omni/omni-notion-connector:${OMNI_VERSION:-latest}
+    <<: *resources-connector
+    cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
+    mem_limit: ${OMNI_CONNECTOR_MEMORY:-384m}
     container_name: omni-notion-connector
     profiles:
       - notion
@@ -447,6 +515,9 @@ services:
 
   hubspot-connector:
     image: ghcr.io/getomnico/omni/omni-hubspot-connector:${OMNI_VERSION:-latest}
+    <<: *resources-connector
+    cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
+    mem_limit: ${OMNI_CONNECTOR_MEMORY:-384m}
     container_name: omni-hubspot-connector
     profiles:
       - hubspot
@@ -467,6 +538,9 @@ services:
 
   fireflies-connector:
     image: ghcr.io/getomnico/omni/omni-fireflies-connector:${OMNI_VERSION:-latest}
+    <<: *resources-connector
+    cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
+    mem_limit: ${OMNI_CONNECTOR_MEMORY:-384m}
     container_name: omni-fireflies-connector
     profiles:
       - fireflies
@@ -487,6 +561,9 @@ services:
 
   imap-connector:
     image: ghcr.io/getomnico/omni/omni-imap-connector:${OMNI_VERSION:-latest}
+    <<: *resources-connector
+    cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
+    mem_limit: ${OMNI_CONNECTOR_MEMORY:-384m}
     container_name: omni-imap-connector
     profiles:
       - imap
@@ -507,6 +584,9 @@ services:
 
   nextcloud-connector:
     image: ghcr.io/getomnico/omni/omni-nextcloud-connector:${OMNI_VERSION:-latest}
+    <<: *resources-connector
+    cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
+    mem_limit: ${OMNI_CONNECTOR_MEMORY:-384m}
     container_name: omni-nextcloud-connector
     profiles:
       - nextcloud
@@ -527,6 +607,9 @@ services:
 
   paperless-connector:
     image: ghcr.io/getomnico/omni/omni-paperless-connector:${OMNI_VERSION:-latest}
+    <<: *resources-connector
+    cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
+    mem_limit: ${OMNI_CONNECTOR_MEMORY:-384m}
     build:
       context: ..
       dockerfile: connectors/paperless/Dockerfile
@@ -550,6 +633,9 @@ services:
 
   linear-connector:
     image: ghcr.io/getomnico/omni/omni-linear-connector:${OMNI_VERSION:-latest}
+    <<: *resources-connector
+    cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
+    mem_limit: ${OMNI_CONNECTOR_MEMORY:-384m}
     container_name: omni-linear-connector
     profiles:
       - linear
@@ -570,6 +656,9 @@ services:
 
   microsoft-connector:
     image: ghcr.io/getomnico/omni/omni-microsoft-connector:${OMNI_VERSION:-latest}
+    <<: *resources-connector
+    cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
+    mem_limit: ${OMNI_CONNECTOR_MEMORY:-384m}
     container_name: omni-microsoft-connector
     profiles:
       - microsoft
@@ -590,6 +679,9 @@ services:
 
   clickup-connector:
     image: ghcr.io/getomnico/omni/omni-clickup-connector:${OMNI_VERSION:-latest}
+    <<: *resources-connector
+    cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
+    mem_limit: ${OMNI_CONNECTOR_MEMORY:-384m}
     container_name: omni-clickup-connector
     profiles:
       - clickup
@@ -610,6 +702,9 @@ services:
 
   filesystem-connector:
     image: ghcr.io/getomnico/omni/omni-filesystem-connector:${OMNI_VERSION:-latest}
+    <<: *resources-connector
+    cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
+    mem_limit: ${OMNI_CONNECTOR_MEMORY:-384m}
     container_name: omni-filesystem-connector
     profiles:
       - filesystem
@@ -635,6 +730,9 @@ services:
   # Web Application (SvelteKit frontend + backend)
   web:
     image: ghcr.io/getomnico/omni/omni-web:${OMNI_VERSION:-latest}
+    <<: *resources-high
+    cpus: ${OMNI_WEB_CPUS:-0.5}
+    mem_limit: ${OMNI_WEB_MEMORY:-512m}
     container_name: omni-web
     expose:
       - "${WEB_PORT}"
@@ -675,6 +773,9 @@ services:
   # Load Balancer / Reverse Proxy
   caddy:
     image: caddy:2-alpine
+    <<: *resources-high
+    cpus: ${OMNI_CADDY_CPUS:-0.2}
+    mem_limit: ${OMNI_CADDY_MEMORY:-128m}
     container_name: omni-caddy
     ports:
       - "80:80"

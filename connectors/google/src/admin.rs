@@ -5,7 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info};
 
-use omni_connector_sdk::RateLimiter;
+use crate::auth::classify_google_api_retry_error;
+use omni_connector_sdk::{RateLimiter, RetryableError};
 
 const ADMIN_API_BASE: &str = "https://admin.googleapis.com/admin/directory/v1";
 
@@ -111,33 +112,34 @@ impl AdminClient {
                 .bearer_auth(token)
                 .query(&params)
                 .send()
-                .await?;
+                .await
+                .map_err(|e| RetryableError::Transient(e.into()))?;
 
             if !response.status().is_success() {
-                let error_text = response.text().await?;
-                return Err(anyhow!("Failed to search users: {}", error_text));
+                return Err(
+                    classify_google_api_retry_error(response, "Failed to search users").await?,
+                );
             }
 
             debug!("Admin API search response status: {}", response.status());
-            let response_text = response.text().await?;
+            let response_text = response
+                .text()
+                .await
+                .map_err(|e| RetryableError::Transient(e.into()))?;
             debug!("Admin API search raw response: {}", response_text);
 
             serde_json::from_str(&response_text).map_err(|e| {
-                anyhow!(
+                RetryableError::Transient(anyhow!(
                     "Failed to parse Admin API search response: {}. Raw response: {}",
                     e,
                     response_text
-                )
+                ))
             })
         };
 
         match &self.rate_limiter {
-            Some(limiter) => {
-                limiter
-                    .execute_with_retry(|| async { search_users_impl().await.map_err(Into::into) })
-                    .await
-            }
-            None => search_users_impl().await,
+            Some(limiter) => limiter.execute_with_retry(search_users_impl).await,
+            None => search_users_impl().await.map_err(anyhow::Error::from),
         }
     }
 
@@ -196,33 +198,34 @@ impl AdminClient {
                 .bearer_auth(token)
                 .query(&params)
                 .send()
-                .await?;
+                .await
+                .map_err(|e| RetryableError::Transient(e.into()))?;
 
             if !response.status().is_success() {
-                let error_text = response.text().await?;
-                return Err(anyhow!("Failed to list users: {}", error_text));
+                return Err(
+                    classify_google_api_retry_error(response, "Failed to list users").await?,
+                );
             }
 
             debug!("Admin API response status: {}", response.status());
-            let response_text = response.text().await?;
+            let response_text = response
+                .text()
+                .await
+                .map_err(|e| RetryableError::Transient(e.into()))?;
             debug!("Admin API raw response: {}", response_text);
 
             serde_json::from_str(&response_text).map_err(|e| {
-                anyhow!(
+                RetryableError::Transient(anyhow!(
                     "Failed to parse Admin API response: {}. Raw response: {}",
                     e,
                     response_text
-                )
+                ))
             })
         };
 
         match &self.rate_limiter {
-            Some(limiter) => {
-                limiter
-                    .execute_with_retry(|| async { list_users_impl().await.map_err(Into::into) })
-                    .await
-            }
-            None => list_users_impl().await,
+            Some(limiter) => limiter.execute_with_retry(list_users_impl).await,
+            None => list_users_impl().await.map_err(anyhow::Error::from),
         }
     }
 
@@ -271,32 +274,33 @@ impl AdminClient {
                 .bearer_auth(token)
                 .query(&params)
                 .send()
-                .await?;
+                .await
+                .map_err(|e| RetryableError::Transient(e.into()))?;
 
             if !response.status().is_success() {
-                let error_text = response.text().await?;
-                return Err(anyhow!("Failed to list groups: {}", error_text));
+                return Err(
+                    classify_google_api_retry_error(response, "Failed to list groups").await?,
+                );
             }
 
-            let response_text = response.text().await?;
+            let response_text = response
+                .text()
+                .await
+                .map_err(|e| RetryableError::Transient(e.into()))?;
             debug!("Admin API groups response: {}", response_text);
 
             serde_json::from_str(&response_text).map_err(|e| {
-                anyhow!(
+                RetryableError::Transient(anyhow!(
                     "Failed to parse groups response: {}. Raw: {}",
                     e,
                     response_text
-                )
+                ))
             })
         };
 
         match &self.rate_limiter {
-            Some(limiter) => {
-                limiter
-                    .execute_with_retry(|| async { list_groups_impl().await.map_err(Into::into) })
-                    .await
-            }
-            None => list_groups_impl().await,
+            Some(limiter) => limiter.execute_with_retry(list_groups_impl).await,
+            None => list_groups_impl().await.map_err(anyhow::Error::from),
         }
     }
 
@@ -351,35 +355,34 @@ impl AdminClient {
                 .bearer_auth(token)
                 .query(&params)
                 .send()
-                .await?;
+                .await
+                .map_err(|e| RetryableError::Transient(e.into()))?;
 
             if !response.status().is_success() {
-                let error_text = response.text().await?;
-                return Err(anyhow!(
-                    "Failed to list group members for {}: {}",
-                    group_key,
-                    error_text
-                ));
+                return Err(classify_google_api_retry_error(
+                    response,
+                    format!("Failed to list group members for {}", group_key),
+                )
+                .await?);
             }
 
-            let response_text = response.text().await?;
+            let response_text = response
+                .text()
+                .await
+                .map_err(|e| RetryableError::Transient(e.into()))?;
 
             serde_json::from_str(&response_text).map_err(|e| {
-                anyhow!(
+                RetryableError::Transient(anyhow!(
                     "Failed to parse members response: {}. Raw: {}",
                     e,
                     response_text
-                )
+                ))
             })
         };
 
         match &self.rate_limiter {
-            Some(limiter) => {
-                limiter
-                    .execute_with_retry(|| async { list_members_impl().await.map_err(Into::into) })
-                    .await
-            }
-            None => list_members_impl().await,
+            Some(limiter) => limiter.execute_with_retry(list_members_impl).await,
+            None => list_members_impl().await.map_err(anyhow::Error::from),
         }
     }
 }

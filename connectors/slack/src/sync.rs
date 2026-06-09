@@ -206,7 +206,7 @@ impl SyncManager {
                 // Persist completed-channel timestamps before exiting so the
                 // next run doesn't redo the work that completed before cancel.
                 ctx.flush().await?;
-                ctx.save_connector_state(serde_json::to_value(&connector_state)?)
+                ctx.save_checkpoint(serde_json::to_value(&connector_state)?)
                     .await?;
                 ctx.cancel().await?;
                 return Ok(());
@@ -279,7 +279,7 @@ impl SyncManager {
                     match ctx.flush().await {
                         Ok(()) => {
                             if let Err(e) = ctx
-                                .save_connector_state(serde_json::to_value(&connector_state)?)
+                                .save_checkpoint(serde_json::to_value(&connector_state)?)
                                 .await
                             {
                                 warn!(
@@ -314,7 +314,7 @@ impl SyncManager {
         );
 
         ctx.flush().await?;
-        ctx.save_connector_state(serde_json::to_value(&connector_state)?)
+        ctx.save_checkpoint(serde_json::to_value(&connector_state)?)
             .await?;
         ctx.complete().await?;
 
@@ -369,7 +369,7 @@ impl SyncManager {
 
             let mut connector_state: SlackConnectorState = self
                 .sdk_client
-                .get_connector_state(source_id)
+                .get_checkpoint(source_id)
                 .await?
                 .and_then(|state| serde_json::from_value(state).ok())
                 .unwrap_or_default();
@@ -406,7 +406,7 @@ impl SyncManager {
             }
 
             ctx.flush().await?;
-            ctx.save_connector_state(serde_json::to_value(&connector_state)?)
+            ctx.save_checkpoint(serde_json::to_value(&connector_state)?)
                 .await?;
 
             let updated = outcome.published_groups + outcome.published_files;

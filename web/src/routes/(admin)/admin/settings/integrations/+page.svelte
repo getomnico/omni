@@ -304,25 +304,25 @@
                                                         <AlertTriangle class="h-3 w-3" />
                                                         Unhealthy
                                                     </span>
-                                                    {#if sync?.errorMessage}
-                                                        <Popover.Root>
-                                                            <Popover.Trigger
-                                                                class="cursor-pointer border-0 bg-transparent p-0 text-xs font-medium text-red-600 underline-offset-2 hover:underline">
-                                                                View error
-                                                            </Popover.Trigger>
-                                                            <Popover.Content
-                                                                align="start"
-                                                                class="bg-card w-96 max-w-[calc(100vw-2rem)] p-4">
-                                                                <Alert.Root
-                                                                    class="border-0 bg-transparent p-0 text-red-900 dark:text-red-50">
-                                                                    <AlertTriangle
-                                                                        class="h-4 w-4" />
-                                                                    <Alert.Title
-                                                                        >Source unhealthy</Alert.Title>
-                                                                    <Alert.Description>
-                                                                        Scheduled syncs have been
-                                                                        paused after repeated
-                                                                        failures.
+                                                    <Popover.Root>
+                                                        <Popover.Trigger
+                                                            class="cursor-pointer border-0 bg-transparent p-0 text-xs font-medium text-red-600 underline-offset-2 hover:underline">
+                                                            View error
+                                                        </Popover.Trigger>
+                                                        <Popover.Content
+                                                            align="start"
+                                                            class="bg-card w-96 max-w-[calc(100vw-2rem)] p-4">
+                                                            <Alert.Root
+                                                                class="border-0 bg-transparent p-0 text-red-900 dark:text-red-50">
+                                                                <AlertTriangle
+                                                                    class="h-4 w-4" />
+                                                                <Alert.Title
+                                                                    >Source unhealthy</Alert.Title>
+                                                                <Alert.Description>
+                                                                    Scheduled syncs have been
+                                                                    paused after repeated
+                                                                    failures.
+                                                                    {#if sync?.errorMessage}
                                                                         <div class="mt-3 space-y-1">
                                                                             <div
                                                                                 class="text-xs font-medium">
@@ -333,11 +333,11 @@
                                                                                 {sync.errorMessage}
                                                                             </code>
                                                                         </div>
-                                                                    </Alert.Description>
-                                                                </Alert.Root>
-                                                            </Popover.Content>
-                                                        </Popover.Root>
-                                                    {/if}
+                                                                    {/if}
+                                                                </Alert.Description>
+                                                            </Alert.Root>
+                                                        </Popover.Content>
+                                                    </Popover.Root>
                                                 {/if}
                                             </div>
                                             <div

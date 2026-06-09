@@ -39,6 +39,8 @@ impl SlackConnectorTestFixture {
             max_concurrent_syncs_per_type: 3,
             scheduler_interval_seconds: 30,
             stale_sync_timeout_minutes: 10,
+            extraction_concurrency: 2,
+            extraction_retry_after_seconds: 30,
             sync_backoff_base_seconds: 30,
             sync_backoff_max_seconds: 3600,
             sync_max_consecutive_failures: 10,
@@ -58,6 +60,9 @@ impl SlackConnectorTestFixture {
         let cm_state = CMAppState {
             db_pool: test_env.db_pool.clone(),
             redis_client,
+            extraction_semaphore: Arc::new(tokio::sync::Semaphore::new(
+                cm_config.extraction_concurrency,
+            )),
             config: cm_config,
             sync_manager: cm_sync_manager,
             content_storage,
@@ -192,7 +197,7 @@ impl SlackConnectorTestFixture {
     }
 
     pub async fn get_connector_state(&self, source_id: &str) -> Result<Option<serde_json::Value>> {
-        let row = sqlx::query("SELECT connector_state FROM sources WHERE id = $1")
+        let row = sqlx::query("SELECT checkpoint FROM sources WHERE id = $1")
             .bind(source_id)
             .fetch_optional(self.pool())
             .await?;
@@ -200,7 +205,7 @@ impl SlackConnectorTestFixture {
         Ok(row
             .map(|r| {
                 use sqlx::Row;
-                r.get::<Option<serde_json::Value>, _>("connector_state")
+                r.get::<Option<serde_json::Value>, _>("checkpoint")
             })
             .flatten())
     }

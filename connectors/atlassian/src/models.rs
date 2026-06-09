@@ -807,6 +807,10 @@ impl ConfluenceCqlPage {
 pub struct AtlassianConnectorState {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub webhook_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AtlassianSyncCheckpoint {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_successful_sync_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Confluence page version by "{space_id}:{page_id}". Used by full-sync

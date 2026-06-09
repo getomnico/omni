@@ -259,8 +259,8 @@ describe('SyncContext.incrementUpdated', () => {
 });
 
 describe('SyncContext.complete', () => {
-  it('persists newState via updateConnectorState before the status flip', async () => {
-    let stateUpdate: { sourceId: string; body: unknown } | null = null;
+  it('persists newState via updateCheckpoint before the status flip', async () => {
+    let stateUpdate: { syncRunId: string; body: unknown } | null = null;
     let completeCalled = false;
     let completeAfterStateUpdate = false;
 
@@ -269,10 +269,10 @@ describe('SyncContext.complete', () => {
         HttpResponse.json({ success: true })
       ),
       http.put(
-        `${BASE_URL}/sdk/source/:sourceId/connector-state`,
+        `${BASE_URL}/sdk/sync/:syncRunId/checkpoint`,
         async ({ request, params }) => {
           stateUpdate = {
-            sourceId: params.sourceId as string,
+            syncRunId: params.syncRunId as string,
             body: await request.json(),
           };
           return HttpResponse.json({ success: true });
@@ -293,7 +293,7 @@ describe('SyncContext.complete', () => {
     await ctx.complete({ last_sync_at: '2026-04-28T00:00:00Z' });
 
     expect(stateUpdate).toEqual({
-      sourceId: 'source-c',
+      syncRunId: 'sync-c',
       body: { last_sync_at: '2026-04-28T00:00:00Z' },
     });
     expect(completeCalled).toBe(true);
@@ -307,7 +307,7 @@ describe('SyncContext.complete', () => {
       http.post(`${BASE_URL}/sdk/events/batch`, () =>
         HttpResponse.json({ success: true })
       ),
-      http.put(`${BASE_URL}/sdk/source/:sourceId/connector-state`, () => {
+      http.put(`${BASE_URL}/sdk/sync/:syncRunId/checkpoint`, () => {
         stateUpdated = true;
         return HttpResponse.json({ success: true });
       }),

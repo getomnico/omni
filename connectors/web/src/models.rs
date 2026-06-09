@@ -276,7 +276,7 @@ impl PageSyncState {
 }
 
 /// Persistent state for the web connector, stored via
-/// `SyncContext::save_connector_state` and hydrated on the next sync. Replaces
+/// `SyncContext::save_checkpoint` and hydrated on the next sync. Replaces
 /// the previous per-URL Redis cache: change detection, deletion detection, and
 /// all per-page incremental state live here.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

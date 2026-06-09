@@ -153,6 +153,7 @@ fn test_source_json(id: &str, config: JsonValue, connector_state: Option<JsonVal
         "user_whitelist": null,
         "user_blacklist": null,
         "connector_state": connector_state,
+        "checkpoint": connector_state,
         "sync_interval_seconds": null,
         "created_at": "2024-01-01T00:00:00Z",
         "updated_at": "2024-01-01T00:00:00Z",

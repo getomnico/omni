@@ -19,7 +19,9 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tracing::{debug, warn};
 
-use crate::auth::{api_auth_error, execute_with_auth_retry, is_auth_error, ApiResult, GoogleAuth};
+use crate::auth::{
+    classify_google_api_error, execute_with_auth_retry, google_max_retries, ApiResult, GoogleAuth,
+};
 use omni_connector_sdk::RateLimiter;
 
 const GMAIL_API_BASE: &str = "https://gmail.googleapis.com/gmail/v1";
@@ -39,7 +41,7 @@ impl GmailClient {
             .build()
             .expect("Failed to build HTTP client");
 
-        let rate_limiter = Arc::new(RateLimiter::new(200, 5));
+        let rate_limiter = Arc::new(RateLimiter::new(200, google_max_retries()));
         let user_rate_limiters = Arc::new(RwLock::new(HashMap::new()));
         Self {
             client,
@@ -85,7 +87,7 @@ impl GmailClient {
 
         let limiter = rate_limiters
             .entry(user_email.to_string())
-            .or_insert_with(|| Arc::new(RateLimiter::new(25, 5))) // 1500 req/min for each user, 5 retry attempts
+            .or_insert_with(|| Arc::new(RateLimiter::new(25, google_max_retries()))) // 1500 req/min for each user
             .clone();
 
         Ok(limiter)
@@ -152,15 +154,8 @@ impl GmailClient {
                     .await?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Failed to list messages: HTTP {} - {}",
-                        status,
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(response, "Failed to list messages").await;
                 }
 
                 debug!("Gmail API list messages response status: {}", status);
@@ -231,15 +226,8 @@ impl GmailClient {
                     .await?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Failed to list threads: HTTP {} - {}",
-                        status,
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(response, "Failed to list threads").await;
                 }
 
                 debug!("Gmail API list threads response status: {}", status);
@@ -302,16 +290,12 @@ impl GmailClient {
                     })?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Gmail API returned error for message {}: HTTP {} - {}",
-                        message_id,
-                        status,
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(
+                        response,
+                        format!("Gmail API returned error for message {}", message_id),
+                    )
+                    .await;
                 }
 
                 debug!("Gmail API get message response status: {}", status);
@@ -376,16 +360,12 @@ impl GmailClient {
                     })?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Gmail API returned error for thread {}: HTTP {} - {}",
-                        thread_id,
-                        status,
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(
+                        response,
+                        format!("Gmail API returned error for thread {}", thread_id),
+                    )
+                    .await;
                 }
 
                 debug!("Gmail API get thread response status: {}", status);
@@ -469,15 +449,9 @@ impl GmailClient {
                     .context("Failed to send batch request to Gmail API")?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Gmail batch API returned error: HTTP {} - {}",
-                        status,
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(response, "Gmail batch API returned error")
+                        .await;
                 }
 
                 let response_text = response
@@ -630,15 +604,8 @@ impl GmailClient {
                     .await?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Failed to list history: HTTP {} - {}",
-                        status,
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(response, "Failed to list history").await;
                 }
 
                 debug!("Gmail API list history response status: {}", status);
@@ -666,15 +633,8 @@ impl GmailClient {
             let response = self.client.get(&url).bearer_auth(&token).send().await?;
 
             let status = response.status();
-            if is_auth_error(status) {
-                return api_auth_error(response).await;
-            } else if !status.is_success() {
-                let error_text = response.text().await?;
-                return Ok(ApiResult::OtherError(anyhow!(
-                    "Failed to get profile: HTTP {} - {}",
-                    status,
-                    error_text
-                )));
+            if !status.is_success() {
+                return classify_google_api_error(response, "Failed to get profile").await;
             }
 
             let response_text = response.text().await?;
@@ -875,15 +835,12 @@ impl GmailClient {
                     })?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Gmail API attachment download error: HTTP {} - {}",
-                        status,
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(
+                        response,
+                        "Gmail API attachment download error",
+                    )
+                    .await;
                 }
 
                 let body: AttachmentResponse = match response.json().await {

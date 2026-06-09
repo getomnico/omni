@@ -22,6 +22,7 @@
         CircleAlertIcon,
         ExternalLink,
         FileText,
+        Mail,
         Pencil,
         ChevronLeft,
         ChevronRight,
@@ -47,7 +48,6 @@
     import ToolCallsGroup from '$lib/components/tool-calls-group.svelte'
     import { cn } from '$lib/utils'
     import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources'
-    import { page } from '$app/state'
     import * as Tooltip from '$lib/components/ui/tooltip'
     import { type ChatMessage } from '$lib/server/db/schema'
     import type {
@@ -55,6 +55,7 @@
         ContentBlockParam,
     } from '@anthropic-ai/sdk/resources.js'
     import { afterNavigate, invalidate } from '$app/navigation'
+    import { page } from '$app/state'
     import UserInput from '$lib/components/user-input.svelte'
     import UploadChip from '$lib/components/upload-chip.svelte'
     import * as Alert from '$lib/components/ui/alert'
@@ -79,15 +80,32 @@
     onDestroy(() => {
         eventSource?.close()
         eventSource = null
+        activeStreamChatId = null
     })
 
     afterNavigate(() => {
-        chatMessages = [...data.messages]
-        branchSelections = {}
-        activeStreamingMessageId = null
-        editingMessageId = null
-        uploadFilenames = { ...data.uploadFilenames }
-        markChatMessagesChanged()
+        const keepActiveStream = eventSource !== null && activeStreamChatId === data.chat.id
+
+        // Tear down an active stream only when it belongs to a different chat.
+        // On first navigation into a newly-created chat, onMount may have already
+        // opened the EventSource from page.state.stream; closing it here cancels
+        // the browser request before the stream can start.
+        if (!keepActiveStream) {
+            if (eventSource) {
+                eventSource.close()
+                eventSource = null
+            }
+            activeStreamChatId = null
+            isStreaming = false
+            error = null
+            stopThinkingText()
+            chatMessages = [...data.messages]
+            branchSelections = {}
+            activeStreamingMessageId = null
+            editingMessageId = null
+            uploadFilenames = { ...data.uploadFilenames }
+            markChatMessagesChanged()
+        }
     })
 
     let userMessage = $state('')
@@ -152,6 +170,7 @@
     let isStreaming = $state(false)
     let error = $state<string | null>(null)
     let eventSource: EventSource | null = $state(null)
+    let activeStreamChatId: string | null = null
 
     type StreamErrorPayload = { message: string }
 
@@ -380,8 +399,14 @@
         if (eventSource) {
             eventSource.close()
             eventSource = null
+            activeStreamChatId = null
         }
+        // Reset all stream state so the input is immediately ready for a new message.
         isStreaming = false
+        error = null
+        activeStreamingMessageId = null
+        stopThinkingText()
+        refreshProcessedMessages()
         requestAnimationFrame(() => recalcBottomPadding())
         userInputRef?.focus()
     }
@@ -874,7 +899,13 @@
                         processedMessage.content.push({
                             id: processedMessage.content.length,
                             type: 'text',
-                            text: citationTxt ? `${block.text} ${citationTxt}` : block.text,
+                            text: (() => {
+                                // Anthropic inlines 【source】 markers into block.text when
+                                // citations are enabled. Replace them with clean [source] so
+                                // the readable IMAP label is not shown raw with unicode brackets.
+                                const cleaned = block.text.replace(/【([^】]*)】/g, '[$1]')
+                                return citationTxt ? `${cleaned} ${citationTxt}` : cleaned
+                            })(),
                             citations: block.citations ? [...block.citations] : undefined,
                         })
                     } else {
@@ -1047,6 +1078,7 @@
 
     function streamResponse(chatId: string) {
         isStreaming = true
+        activeStreamChatId = chatId
         activeStreamingMessageId = null
         error = null
         startThinkingText()
@@ -1448,6 +1480,7 @@
             userInputRef?.focus()
             eventSource?.close()
             eventSource = null
+            activeStreamChatId = null
 
             if (messageEventsReceived === 0 && !error) {
                 error = 'Failed to generate response. Please try again.'
@@ -1467,10 +1500,14 @@
             userInputRef?.focus()
             eventSource?.close()
             eventSource = null
+            activeStreamChatId = null
         }
 
         const handleConnectionError = () => {
-            if (streamCompleted) return
+            // Guard against treating an intentional stop() as a connection error.
+            // handleStop() sets isStreaming = false before the EventSource fires its
+            // error event, so we can use that as a signal to skip cleanup here.
+            if (streamCompleted || !isStreaming) return
             error =
                 messageEventsReceived > 0
                     ? 'Response stream disconnected before it finished. Please try again.'
@@ -1483,6 +1520,7 @@
             userInputRef?.focus()
             eventSource?.close()
             eventSource = null
+            activeStreamChatId = null
         }
 
         eventSource.addEventListener('stream_error', handleStreamError)
@@ -1913,6 +1951,7 @@
                 {#each citations as citation, idx}
                     {#if citation.type === 'search_result_location'}
                         {@const hasUrl = citation.source?.startsWith('http://') || citation.source?.startsWith('https://')}
+                        {@const isImap = citation.source?.startsWith('imap:')}
                         <svelte:element
                             this={hasUrl ? 'a' : 'div'}
                             href={hasUrl ? citation.source : undefined}
@@ -1921,7 +1960,9 @@
                             rel={hasUrl ? 'noopener noreferrer' : undefined}>
                             <div class="flex items-center gap-1">
                                 <div class="text-muted-foreground text-sm">[{idx}]</div>
-                                {#if getIconFromSearchResult(citation.source)}
+                                {#if isImap}
+                                    <Mail class="text-muted-foreground h-4 w-4 flex-shrink-0" />
+                                {:else if getIconFromSearchResult(citation.source)}
                                     <img
                                         src={getIconFromSearchResult(citation.source)}
                                         alt=""
@@ -1929,9 +1970,12 @@
                                 {:else}
                                     <FileText class="text-muted-foreground h-4 w-4 flex-shrink-0" />
                                 {/if}
-                                <h1 class="text-muted-foreground text-sm font-semibold">
-                                    {citation.title}
-                                </h1>
+                                <div class="flex flex-col gap-0.5">
+                                    <h1 class="text-muted-foreground text-sm font-semibold">
+                                        {citation.title}
+                                    </h1>
+                                    <ImapCitationSource source={citation.source} />
+                                </div>
                             </div>
                         </svelte:element>
                     {/if}
@@ -1952,10 +1996,10 @@
         </div>
         <div
             bind:this={chatContainerRef}
-            class="flex h-full w-full flex-col overflow-y-auto px-4 pt-6">
+            class="flex h-full w-full flex-col overflow-x-hidden overflow-y-auto px-4 pt-6">
             <div
                 bind:this={chatContentRef}
-                class="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-1"
+                class="mx-auto flex w-full max-w-4xl min-w-0 flex-1 flex-col gap-1"
                 style:padding-bottom="{bottomPadding}px">
                 {#if data.agent}
                     <div

@@ -63,6 +63,23 @@ async fn create_running_sync(pool: &sqlx::PgPool, source_id: &str) -> String {
     sync_run.id
 }
 
+async fn set_source_checkpoint(pool: &sqlx::PgPool, checkpoint: serde_json::Value) {
+    sqlx::query("UPDATE sources SET checkpoint = $1 WHERE id = $2")
+        .bind(checkpoint)
+        .bind(TEST_SOURCE_ID)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn get_source_checkpoint(pool: &sqlx::PgPool) -> Option<serde_json::Value> {
+    sqlx::query_scalar("SELECT checkpoint FROM sources WHERE id = $1")
+        .bind(TEST_SOURCE_ID)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
 // ============================================================================
 // 1. test_sync_lifecycle — golden-path end-to-end
 // ============================================================================
@@ -112,15 +129,14 @@ async fn test_sync_lifecycle() {
         .unwrap();
     assert_eq!(run.documents_scanned, 8);
 
-    // Save connector state — its own endpoint, decoupled from complete.
+    // Save run checkpoint — it is promoted to the source on successful complete.
     server
-        .put(&format!("/sdk/source/{}/connector-state", TEST_SOURCE_ID))
+        .put(&format!("/sdk/sync/{}/checkpoint", sync_run_id))
         .json(&json!({"cursor": "abc"}))
         .await
         .assert_status(StatusCode::OK);
 
-    // SDK complete is a status-only flip. Counts come from increment_*;
-    // connector state from save_connector_state.
+    // SDK complete atomically flips status and publishes the checkpoint.
     server
         .post(&format!("/sdk/sync/{}/complete", sync_run_id))
         .await
@@ -136,7 +152,7 @@ async fn test_sync_lifecycle() {
     assert_eq!(run.documents_updated, 0);
 
     let source_row: (Option<serde_json::Value>,) =
-        sqlx::query_as("SELECT connector_state FROM sources WHERE id = $1")
+        sqlx::query_as("SELECT checkpoint FROM sources WHERE id = $1")
             .bind(TEST_SOURCE_ID)
             .fetch_one(pool)
             .await
@@ -820,5 +836,200 @@ async fn test_source_cleanup() {
     assert_eq!(
         source_count, 0,
         "Source row should be deleted after second cleanup call"
+    );
+}
+
+// ============================================================================
+// Checkpoint regression coverage
+// ============================================================================
+#[tokio::test]
+async fn test_initial_sync_request_uses_latest_successful_source_checkpoint() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server(&fixture);
+    let pool = fixture.state.db_pool.pool();
+
+    set_source_checkpoint(pool, json!({"cursor": "last-success"})).await;
+
+    let sync_run_id = trigger_sync(&server).await;
+    let requests = fixture.mock_connector.get_sync_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].sync_run_id, sync_run_id);
+    assert!(!requests[0].is_resume);
+    assert_eq!(
+        requests[0].checkpoint.as_ref().unwrap()["cursor"].as_str(),
+        Some("last-success")
+    );
+}
+
+#[tokio::test]
+async fn test_full_sync_resume_prefers_run_checkpoint_over_source_checkpoint() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server(&fixture);
+    let pool = fixture.state.db_pool.pool();
+
+    set_source_checkpoint(pool, json!({"cursor": "previous-success"})).await;
+    let sync_run_id = trigger_sync(&server).await;
+
+    server
+        .put(&format!("/sdk/sync/{}/checkpoint", sync_run_id))
+        .json(&json!({"cursor": "current-run"}))
+        .await
+        .assert_status(StatusCode::OK);
+
+    fixture.mock_connector.restart().await.unwrap();
+    fixture
+        .state
+        .sync_manager
+        .monitor_running_syncs()
+        .await
+        .unwrap();
+
+    let requests = fixture.mock_connector.get_sync_requests();
+    assert_eq!(requests.len(), 2, "expected resume /sync call");
+    assert!(requests[1].is_resume);
+    assert_eq!(
+        requests[1].checkpoint.as_ref().unwrap()["cursor"].as_str(),
+        Some("current-run")
+    );
+}
+
+#[tokio::test]
+async fn test_resume_falls_back_to_source_checkpoint_before_first_run_checkpoint() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server(&fixture);
+    let pool = fixture.state.db_pool.pool();
+
+    set_source_checkpoint(pool, json!({"cursor": "last-success"})).await;
+    let sync_run_id = trigger_sync(&server).await;
+
+    fixture.mock_connector.restart().await.unwrap();
+    fixture
+        .state
+        .sync_manager
+        .monitor_running_syncs()
+        .await
+        .unwrap();
+
+    let requests = fixture.mock_connector.get_sync_requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].sync_run_id, sync_run_id);
+    assert!(requests[1].is_resume);
+    assert_eq!(
+        requests[1].checkpoint.as_ref().unwrap()["cursor"].as_str(),
+        Some("last-success")
+    );
+}
+
+#[tokio::test]
+async fn test_failed_or_cancelled_run_checkpoint_is_not_promoted() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server(&fixture);
+    let pool = fixture.state.db_pool.pool();
+
+    set_source_checkpoint(pool, json!({"cursor": "previous-success"})).await;
+    let sync_run_id = trigger_sync(&server).await;
+
+    server
+        .put(&format!("/sdk/sync/{}/checkpoint", sync_run_id))
+        .json(&json!({"cursor": "failed-run"}))
+        .await
+        .assert_status(StatusCode::OK);
+    server
+        .post(&format!("/sdk/sync/{}/fail", sync_run_id))
+        .json(&json!({"error": "boom"}))
+        .await
+        .assert_status(StatusCode::OK);
+
+    let checkpoint = get_source_checkpoint(pool).await.unwrap();
+    assert_eq!(checkpoint["cursor"].as_str(), Some("previous-success"));
+}
+
+#[tokio::test]
+async fn test_completion_promotes_checkpoint_and_preserves_connector_metadata() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server(&fixture);
+    let pool = fixture.state.db_pool.pool();
+
+    sqlx::query("UPDATE sources SET connector_state = $1 WHERE id = $2")
+        .bind(json!({"webhook_id": "wh-1"}))
+        .bind(TEST_SOURCE_ID)
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let sync_run_id = trigger_sync(&server).await;
+    let before: time::OffsetDateTime =
+        sqlx::query_scalar("SELECT updated_at FROM sources WHERE id = $1")
+            .bind(TEST_SOURCE_ID)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+
+    server
+        .put(&format!("/sdk/sync/{}/checkpoint", sync_run_id))
+        .json(&json!({"cursor": "completed"}))
+        .await
+        .assert_status(StatusCode::OK);
+    server
+        .post(&format!("/sdk/sync/{}/complete", sync_run_id))
+        .await
+        .assert_status(StatusCode::OK);
+
+    let row: (
+        Option<serde_json::Value>,
+        Option<serde_json::Value>,
+        time::OffsetDateTime,
+    ) = sqlx::query_as("SELECT checkpoint, connector_state, updated_at FROM sources WHERE id = $1")
+        .bind(TEST_SOURCE_ID)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(row.0.unwrap()["cursor"].as_str(), Some("completed"));
+    assert_eq!(row.1.unwrap()["webhook_id"].as_str(), Some("wh-1"));
+    assert!(row.2 >= before);
+}
+
+#[tokio::test]
+async fn test_incremental_after_failed_sync_starts_from_previous_successful_checkpoint() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server(&fixture);
+    let pool = fixture.state.db_pool.pool();
+    let sync_run_repo = SyncRunRepository::new(pool);
+
+    let completed = sync_run_repo
+        .create(TEST_SOURCE_ID, SyncType::Full, "manual")
+        .await
+        .unwrap();
+    sync_run_repo
+        .update_checkpoint(&completed.id, json!({"cursor": "successful"}))
+        .await
+        .unwrap();
+    sync_run_repo
+        .complete_and_publish_checkpoint(&completed.id)
+        .await
+        .unwrap();
+
+    let failed = sync_run_repo
+        .create(TEST_SOURCE_ID, SyncType::Incremental, "manual")
+        .await
+        .unwrap();
+    sync_run_repo
+        .update_checkpoint(&failed.id, json!({"cursor": "failed"}))
+        .await
+        .unwrap();
+    sync_run_repo.mark_failed(&failed.id, "boom").await.unwrap();
+
+    let resp = server
+        .post("/sync")
+        .json(&json!({"source_id": TEST_SOURCE_ID, "sync_mode": "incremental"}))
+        .await;
+    resp.assert_status(StatusCode::OK);
+
+    let requests = fixture.mock_connector.get_sync_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].sync_mode, "incremental");
+    assert_eq!(
+        requests[0].checkpoint.as_ref().unwrap()["cursor"].as_str(),
+        Some("successful")
     );
 }

@@ -13,7 +13,7 @@ use tracing::info;
 
 use crate::auth::{AtlassianCredentials, AuthManager};
 use crate::client::{AtlassianApi, AtlassianClient};
-use crate::models::AtlassianConnectorState;
+use crate::models::AtlassianSyncCheckpoint;
 use crate::sync::SyncManager;
 
 pub struct AtlassianConnector {
@@ -30,7 +30,7 @@ impl AtlassianConnector {
 impl Connector for AtlassianConnector {
     type Config = JsonValue;
     type Credentials = JsonValue;
-    type State = AtlassianConnectorState;
+    type State = AtlassianSyncCheckpoint;
 
     fn name(&self) -> &'static str {
         "atlassian"

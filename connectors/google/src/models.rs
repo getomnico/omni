@@ -37,6 +37,10 @@ pub struct GoogleConnectorState {
     pub webhook_channel_id: Option<String>,
     pub webhook_resource_id: Option<String>,
     pub webhook_expires_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GoogleSyncCheckpoint {
     pub gmail_history_ids: Option<HashMap<String, String>>,
     pub drive_page_tokens: Option<HashMap<String, String>>,
 }
@@ -157,14 +161,7 @@ impl GmailThreadAttributes {
 }
 
 impl GoogleDriveFile {
-    pub fn to_connector_event(
-        &self,
-        sync_run_id: &str,
-        source_id: &str,
-        content_id: &str,
-        path: Option<String>,
-        oauth_user_email: Option<&str>,
-    ) -> ConnectorEvent {
+    pub fn to_document_permissions(&self, oauth_user_email: Option<&str>) -> DocumentPermissions {
         let mut is_public = false;
         let mut users = Vec::new();
         let mut groups = Vec::new();
@@ -214,6 +211,21 @@ impl GoogleDriveFile {
             }
         }
 
+        DocumentPermissions {
+            public: is_public,
+            users,
+            groups,
+        }
+    }
+
+    pub fn to_connector_event(
+        &self,
+        sync_run_id: &str,
+        source_id: &str,
+        content_id: &str,
+        path: Option<String>,
+        oauth_user_email: Option<&str>,
+    ) -> ConnectorEvent {
         let mut extra = HashMap::new();
         extra.insert("file_id".to_string(), json!(self.id));
         extra.insert("shared".to_string(), json!(self.shared.unwrap_or(false)));
@@ -249,11 +261,7 @@ impl GoogleDriveFile {
             extra: Some(extra),
         };
 
-        let permissions = DocumentPermissions {
-            public: is_public,
-            users,
-            groups,
-        };
+        let permissions = self.to_document_permissions(oauth_user_email);
 
         let attributes = HashMap::new();
 

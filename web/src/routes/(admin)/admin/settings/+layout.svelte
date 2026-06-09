@@ -1,5 +1,6 @@
 <script lang="ts">
     import * as Sidebar from '$lib/components/ui/sidebar'
+    import SidebarNavigationClose from '$lib/components/sidebar-navigation-close.svelte'
     import type { Snippet } from 'svelte'
     import { cn } from '$lib/utils'
     import { page } from '$app/state'
@@ -30,7 +31,8 @@
 </script>
 
 <Sidebar.Provider>
-    <Sidebar.Root variant="floating" collapsible="none" class="h-svh shrink-0 border-r">
+    <SidebarNavigationClose />
+    <Sidebar.Root variant="floating" collapsible="offcanvas" class="h-svh shrink-0 border-r">
         <Sidebar.Header class="flex justify-start">
             <Button
                 variant="ghost"
@@ -188,11 +190,14 @@
                 isAdmin={data.user.role === 'admin'}
                 memoryEnabled={data.memoryEnabled} />
         </Sidebar.Footer>
-        <Sidebar.Rail />
     </Sidebar.Root>
 
     <!-- Main content area -->
     <div class="flex max-h-[100svh] min-h-screen w-full flex-col">
+        <header class="bg-background sticky top-0 z-50 flex h-14 items-center border-b px-4 md:hidden">
+            <Sidebar.Trigger class="cursor-pointer size-11" />
+            <span class="ml-2 text-sm font-medium">Admin Settings</span>
+        </header>
         <main class="min-h-0 flex-1">
             {@render children()}
         </main>

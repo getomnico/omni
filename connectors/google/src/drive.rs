@@ -1,18 +1,21 @@
 use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
+use std::env;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tracing::{debug, warn};
 
 use std::collections::HashMap;
 
-use crate::auth::{api_auth_error, execute_with_auth_retry, is_auth_error, ApiResult, GoogleAuth};
+use crate::auth::{
+    classify_google_api_error, execute_with_auth_retry, google_max_retries, ApiResult, GoogleAuth,
+};
 use crate::models::{
     DriveChangesResponse, GoogleDriveFile, GooglePresentation, WebhookChannel,
     WebhookChannelResponse,
 };
-use omni_connector_sdk::RateLimiter;
+use omni_connector_sdk::{RateLimiter, RetryableError};
 
 /// Content returned by `get_file_content`. Text formats are already extracted;
 /// binary formats carry raw bytes for extraction via the SDK.
@@ -29,15 +32,92 @@ const DRIVE_API_BASE: &str = "https://www.googleapis.com/drive/v3";
 const DOCS_API_BASE: &str = "https://docs.googleapis.com/v1";
 const SHEETS_API_BASE: &str = "https://sheets.googleapis.com/v4";
 const SLIDES_API_BASE: &str = "https://slides.googleapis.com/v1";
+const DEFAULT_GOOGLE_SHEETS_MAX_INDEXED_ROWS: usize = 1000;
+const DEFAULT_GOOGLE_DRIVE_MAX_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024;
+
+fn drive_api_base() -> String {
+    env::var("GOOGLE_DRIVE_API_BASE").unwrap_or_else(|_| DRIVE_API_BASE.to_string())
+}
+
+fn google_sheets_max_indexed_rows() -> usize {
+    env::var("GOOGLE_SHEETS_MAX_INDEXED_ROWS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|rows| *rows > 0)
+        .unwrap_or(DEFAULT_GOOGLE_SHEETS_MAX_INDEXED_ROWS)
+}
+
+fn google_drive_max_download_bytes() -> usize {
+    env::var("GOOGLE_DRIVE_MAX_DOWNLOAD_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|bytes| *bytes > 0)
+        .unwrap_or(DEFAULT_GOOGLE_DRIVE_MAX_DOWNLOAD_BYTES)
+}
+
+async fn read_response_bytes_limited(
+    mut response: reqwest::Response,
+    file_id: &str,
+    max_bytes: usize,
+) -> Result<ApiResult<Vec<u8>>> {
+    if let Some(content_length) = response.headers().get(reqwest::header::CONTENT_LENGTH) {
+        if let Ok(length_str) = content_length.to_str() {
+            if let Ok(length) = length_str.parse::<usize>() {
+                if length > max_bytes {
+                    warn!(
+                        "Skipping oversized Drive file {} ({} bytes > {} byte download limit)",
+                        file_id, length, max_bytes
+                    );
+                    return Ok(ApiResult::OtherError(anyhow!(
+                        "File too large ({} bytes), skipping content download",
+                        length
+                    )));
+                }
+            }
+        }
+    }
+
+    let mut data = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .with_context(|| format!("Failed to read content for file {}", file_id))?
+    {
+        if data.len().saturating_add(chunk.len()) > max_bytes {
+            warn!(
+                "Skipping oversized Drive file {} while streaming (exceeded {} byte download limit)",
+                file_id, max_bytes
+            );
+            return Ok(ApiResult::OtherError(anyhow!(
+                "File too large (exceeded {} bytes), skipping content download",
+                max_bytes
+            )));
+        }
+        data.extend_from_slice(&chunk);
+    }
+
+    Ok(ApiResult::Success(data))
+}
+
+fn escape_sheet_name_for_a1(sheet_name: &str) -> String {
+    sheet_name.replace('\'', "''")
+}
+
+fn encode_a1_range_for_url(range: &str) -> String {
+    urlencoding::encode(range).into_owned()
+}
 
 #[derive(Clone)]
 pub struct DriveClient {
     client: Client,
     // This rate limiter is for Drive APIs (rate limit: 12k req/min)
     rate_limiter: Arc<RateLimiter>,
-    // These rate limiters, one per user, are for Docs/Sheets etc. APIs,
-    // which have a rate limit per user of 300 req/min
+    // These rate limiters, one per user, are for Docs/Slides APIs,
+    // which have a rate limit per user of 300 req/min.
     user_rate_limiters: Arc<RwLock<HashMap<String, Arc<RateLimiter>>>>,
+    // Sheets has a lower per-user read quota (60 req/min). Keep it separate
+    // from Docs/Slides so spreadsheet crawls cannot overrun the Sheets quota.
+    user_sheets_rate_limiters: Arc<RwLock<HashMap<String, Arc<RateLimiter>>>>,
 }
 
 impl DriveClient {
@@ -51,13 +131,15 @@ impl DriveClient {
             .build()
             .expect("Failed to build HTTP client");
 
-        let rate_limiter = Arc::new(RateLimiter::new(200, 5)); // 12000 req/min
+        let rate_limiter = Arc::new(RateLimiter::new(200, google_max_retries())); // 12000 req/min
         let user_rate_limiters = Arc::new(RwLock::new(HashMap::new()));
+        let user_sheets_rate_limiters = Arc::new(RwLock::new(HashMap::new()));
 
         Self {
             client,
             rate_limiter,
             user_rate_limiters,
+            user_sheets_rate_limiters,
         }
     }
 
@@ -75,6 +157,7 @@ impl DriveClient {
             client,
             rate_limiter,
             user_rate_limiters: Arc::new(RwLock::new(HashMap::new())),
+            user_sheets_rate_limiters: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -92,7 +175,7 @@ impl DriveClient {
             let page_token = page_token.clone();
             let created_after = created_after.clone();
             async move {
-            let url = format!("{}/files", DRIVE_API_BASE);
+            let url = format!("{}/files", drive_api_base().as_str());
 
             // Build the query filter
             let mut query_parts = vec!["trashed=false".to_string()];
@@ -127,30 +210,23 @@ impl DriveClient {
             let status = response.status();
             debug!("Drive list_files response status: {}", status);
 
-            if is_auth_error(status) {
-                return api_auth_error(response).await;
-            } else if !status.is_success() {
-                let error_text = match response.text().await {
-                    Ok(text) => text,
-                    Err(e) => format!("(failed to read error body: {})", e),
-                };
-                warn!(
-                    "Drive list_files failed: user={} status={} body={}",
-                    user_email, status, error_text
-                );
-                return Ok(ApiResult::OtherError(anyhow!("Failed to list files: HTTP {} - {}", status, error_text)));
+            if !status.is_success() {
+                return classify_google_api_error(response, "Failed to list files").await;
             }
 
             let response_text = response.text().await?;
             debug!("Drive API raw response: {}", response_text);
 
-            let parsed_response = serde_json::from_str(&response_text).map_err(|e| {
-                anyhow!(
-                    "Failed to parse Drive API response: {}. Raw response: {}",
-                    e,
-                    response_text
-                )
-            })?;
+            let parsed_response = match serde_json::from_str(&response_text) {
+                Ok(parsed_response) => parsed_response,
+                Err(e) => {
+                    return Ok(ApiResult::OtherError(anyhow!(
+                        "Failed to parse Drive API response: {}. Raw response: {}",
+                        e,
+                        response_text
+                    )));
+                }
+            };
 
             Ok(ApiResult::Success(parsed_response))
             }
@@ -176,12 +252,15 @@ impl DriveClient {
                 .get_google_slides_content(auth, user_email, &file.id)
                 .await
                 .map(FileContent::Text),
-            "text/plain" | "text/html" | "text/csv" => self
+            "text/plain" | "text/html" => self
                 .download_file_content(auth, user_email, &file.id)
                 .await
                 .map(FileContent::Text),
-            // Binary document formats — return raw bytes for extraction via SDK
+            // Binary and structured document formats — return raw bytes for extraction via SDK.
+            // CSV goes through connector-manager extraction so spreadsheet filtering/truncation
+            // is centralized with XLS/XLSX handling.
             "application/pdf"
+            | "text/csv"
             | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
@@ -223,7 +302,35 @@ impl DriveClient {
 
         let limiter = rate_limiters
             .entry(user_email.to_string())
-            .or_insert_with(|| Arc::new(RateLimiter::new(5, 5))) // 300 req/min for each user, 5 retry attempts
+            .or_insert_with(|| Arc::new(RateLimiter::new(5, google_max_retries()))) // 300 req/min for each user
+            .clone();
+
+        Ok(limiter)
+    }
+
+    fn get_or_create_user_sheets_rate_limiter(&self, user_email: &str) -> Result<Arc<RateLimiter>> {
+        {
+            let rate_limiters = self.user_sheets_rate_limiters.read().map_err(|e| {
+                anyhow!(
+                    "Failed to acquire read lock on user Sheets rate limiters: {:?}",
+                    e
+                )
+            })?;
+            if let Some(limiter) = rate_limiters.get(user_email) {
+                return Ok(Arc::clone(limiter));
+            }
+        }
+
+        let mut rate_limiters = self.user_sheets_rate_limiters.write().map_err(|e| {
+            anyhow!(
+                "Failed to acquire write lock on user Sheets rate limiters: {:?}",
+                e
+            )
+        })?;
+
+        let limiter = rate_limiters
+            .entry(user_email.to_string())
+            .or_insert_with(|| Arc::new(RateLimiter::new(1, google_max_retries())))
             .clone();
 
         Ok(limiter)
@@ -237,7 +344,63 @@ impl DriveClient {
             )
         })?;
         rate_limiters.remove(user_email);
+        drop(rate_limiters);
+
+        let mut sheets_rate_limiters = self.user_sheets_rate_limiters.write().map_err(|e| {
+            anyhow!(
+                "Failed to acquire write lock on user Sheets rate limiters: {:?}",
+                e
+            )
+        })?;
+        sheets_rate_limiters.remove(user_email);
         Ok(())
+    }
+
+    async fn send_sheets_get_with_retry(
+        &self,
+        rate_limiter: Arc<RateLimiter>,
+        token: &str,
+        url: &str,
+        context: String,
+    ) -> Result<ApiResult<reqwest::Response>> {
+        let token = token.to_string();
+        let url = url.to_string();
+        let context_for_error = context.clone();
+        let result = rate_limiter
+            .execute_with_retry(|| {
+                let client = self.client.clone();
+                let token = token.clone();
+                let url = url.clone();
+                let context = context.clone();
+
+                async move {
+                    let response = client
+                        .get(&url)
+                        .bearer_auth(&token)
+                        .send()
+                        .await
+                        .map_err(|e| RetryableError::Transient(anyhow!(e)))?;
+
+                    let status = response.status();
+                    if !status.is_success() {
+                        return match classify_google_api_error(response, context)
+                            .await
+                            .map_err(RetryableError::Transient)?
+                        {
+                            ApiResult::RetryableError(e) => Err(e),
+                            other => Ok(other),
+                        };
+                    }
+
+                    Ok(ApiResult::Success(response))
+                }
+            })
+            .await;
+
+        match result {
+            Ok(api_result) => Ok(api_result),
+            Err(e) => Ok(ApiResult::OtherError(e.context(context_for_error))),
+        }
     }
 
     async fn get_google_doc_content(
@@ -269,16 +432,12 @@ impl DriveClient {
                     })?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Google Docs API returned error for file {}: HTTP {} - {}",
-                        file_id,
-                        status,
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(
+                        response,
+                        format!("Google Docs API returned error for file {}", file_id),
+                    )
+                    .await;
                 }
 
                 debug!("Google Docs API response status: {}", status);
@@ -287,13 +446,17 @@ impl DriveClient {
                     .await
                     .context("Failed to read response body from Google Docs API")?;
 
-                let doc: GoogleDocument =
-                    serde_json::from_str(&response_text).with_context(|| {
-                        format!(
-                            "Failed to parse Google Docs API response for file {}. Raw response: {}",
-                            file_id, response_text
-                        )
-                    })?;
+                let doc: GoogleDocument = match serde_json::from_str(&response_text) {
+                    Ok(doc) => doc,
+                    Err(e) => {
+                        return Ok(ApiResult::OtherError(anyhow!(
+                            "Failed to parse Google Docs API response for file {}: {}. Raw response: {}",
+                            file_id,
+                            e,
+                            response_text
+                        )));
+                    }
+                };
 
                 Ok(ApiResult::Success(extract_text_from_document(&doc)))
             }
@@ -309,53 +472,104 @@ impl DriveClient {
     ) -> Result<String> {
         let file_id = file_id.to_string();
 
-        let rate_limiter = self.get_or_create_user_rate_limiter(user_email)?;
+        let rate_limiter = self.get_or_create_user_sheets_rate_limiter(user_email)?;
         execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
             let file_id = file_id.clone();
+            let rate_limiter = rate_limiter.clone();
             async move {
                 let url = format!("{}/spreadsheets/{}", SHEETS_API_BASE, &file_id);
 
-                let response = self.client.get(&url).bearer_auth(&token).send().await?;
+                let response = match self
+                    .send_sheets_get_with_retry(
+                        rate_limiter.clone(),
+                        &token,
+                        &url,
+                        format!("Failed to get spreadsheet metadata for {}", file_id),
+                    )
+                    .await?
+                {
+                    ApiResult::Success(response) => response,
+                    ApiResult::AuthError(e) => return Ok(ApiResult::AuthError(e)),
+                    ApiResult::RetryableError(e) => return Ok(ApiResult::RetryableError(e)),
+                    ApiResult::OtherError(e) => return Ok(ApiResult::OtherError(e)),
+                };
 
-                let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Failed to get spreadsheet metadata: {}",
-                        error_text
-                    )));
-                }
-
-                let sheet: GoogleSpreadsheet = response.json().await?;
+                let sheet: GoogleSpreadsheet = match response.json().await {
+                    Ok(sheet) => sheet,
+                    Err(e) => {
+                        return Ok(ApiResult::OtherError(anyhow!(
+                            "Failed to parse spreadsheet metadata for {}: {}",
+                            file_id,
+                            e
+                        )));
+                    }
+                };
                 let mut content = String::new();
+                let max_indexed_rows = google_sheets_max_indexed_rows();
 
                 for sheet_info in &sheet.sheets {
                     let sheet_name = &sheet_info.properties.title;
-                    let range = format!("'{}'", sheet_name);
+                    let sheet_rows = sheet_info
+                        .properties
+                        .grid_properties
+                        .as_ref()
+                        .and_then(|properties| properties.row_count)
+                        .unwrap_or(max_indexed_rows);
+                    let rows_to_fetch = sheet_rows.min(max_indexed_rows);
+                    if rows_to_fetch == 0 {
+                        continue;
+                    }
+                    let truncated = sheet_rows > rows_to_fetch;
 
+                    let escaped_sheet_name = escape_sheet_name_for_a1(sheet_name);
+                    let range = format!("'{}'!1:{}", escaped_sheet_name, rows_to_fetch);
+
+                    let encoded_range = encode_a1_range_for_url(&range);
                     let values_url = format!(
                         "{}/spreadsheets/{}/values/{}",
-                        SHEETS_API_BASE, &file_id, range
+                        SHEETS_API_BASE, &file_id, encoded_range
                     );
 
-                    let values_response = self
-                        .client
-                        .get(&values_url)
-                        .bearer_auth(&token)
-                        .send()
-                        .await?;
+                    let values_response = match self
+                        .send_sheets_get_with_retry(
+                            rate_limiter.clone(),
+                            &token,
+                            &values_url,
+                            format!(
+                                "Failed to get spreadsheet values for {} sheet {}",
+                                file_id, sheet_name
+                            ),
+                        )
+                        .await?
+                    {
+                        ApiResult::Success(response) => response,
+                        ApiResult::AuthError(e) => return Ok(ApiResult::AuthError(e)),
+                        ApiResult::RetryableError(e) => return Ok(ApiResult::RetryableError(e)),
+                        ApiResult::OtherError(e) => return Ok(ApiResult::OtherError(e)),
+                    };
 
-                    if values_response.status().is_success() {
-                        if let Ok(values) = values_response.json::<ValueRange>().await {
-                            content.push_str(&format!("Sheet: {}\n", sheet_name));
-                            for row in values.values.unwrap_or_default() {
-                                content.push_str(&row.join("\t"));
-                                content.push('\n');
-                            }
-                            content.push('\n');
+                    let values = match values_response.json::<ValueRange>().await {
+                        Ok(values) => values,
+                        Err(e) => {
+                            return Ok(ApiResult::OtherError(anyhow!(
+                                "Failed to parse spreadsheet values for {} sheet {}: {}",
+                                file_id,
+                                sheet_name,
+                                e
+                            )));
                         }
+                    };
+                    append_filtered_spreadsheet_sheet(
+                        &mut content,
+                        sheet_name,
+                        values.values.unwrap_or_default(),
+                    );
+
+                    if truncated {
+                        content.push_str(&format!(
+                            "Sheet {} truncated to first {} rows for indexing.\n\n",
+                            sheet_name, max_indexed_rows
+                        ));
                     }
                 }
 
@@ -382,27 +596,28 @@ impl DriveClient {
                 let response = self.client.get(&url).bearer_auth(&token).send().await?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Failed to get presentation content: {}",
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(
+                        response,
+                        format!("Failed to get presentation content for {}", file_id),
+                    )
+                    .await;
                 }
 
                 debug!("Google Slides API response status: {}", status);
                 let response_text = response.text().await?;
 
-                let presentation: GooglePresentation = serde_json::from_str(&response_text)
-                    .map_err(|e| {
-                        anyhow!(
-                            "Failed to parse Google Slides API response: {}. Raw response: {}",
+                let presentation: GooglePresentation = match serde_json::from_str(&response_text) {
+                    Ok(presentation) => presentation,
+                    Err(e) => {
+                        return Ok(ApiResult::OtherError(anyhow!(
+                            "Failed to parse Google Slides API response for file {}: {}. Raw response: {}",
+                            file_id,
                             e,
                             response_text
-                        )
-                    })?;
+                        )));
+                    }
+                };
 
                 Ok(ApiResult::Success(extract_text_from_presentation(
                     &presentation,
@@ -424,7 +639,7 @@ impl DriveClient {
         execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
             let file_id = file_id.clone();
             async move {
-                let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, &file_id);
+                let url = format!("{}/files/{}?alt=media", drive_api_base().as_str(), &file_id);
 
                 debug!(
                     "Downloading file: {} (user={}, url={})",
@@ -439,26 +654,28 @@ impl DriveClient {
                     .with_context(|| format!("Failed to send request for file {}", file_id))?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    warn!(
-                        "Drive download_file_content failed: user={} file_id={} status={} body={}",
-                        user_email, file_id, status, error_text
-                    );
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Failed to download file {}: HTTP {} - {}",
-                        file_id,
-                        status,
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(
+                        response,
+                        format!("Failed to download file {}", file_id),
+                    )
+                    .await;
                 }
 
-                let content = response
-                    .text()
-                    .await
-                    .with_context(|| format!("Failed to read file content for {}", file_id))?;
+                let max_bytes = google_drive_max_download_bytes();
+                let bytes = match read_response_bytes_limited(response, &file_id, max_bytes).await?
+                {
+                    ApiResult::Success(bytes) => bytes,
+                    ApiResult::AuthError(e) => return Ok(ApiResult::AuthError(e)),
+                    ApiResult::RetryableError(e) => return Ok(ApiResult::RetryableError(e)),
+                    ApiResult::OtherError(e) => return Ok(ApiResult::OtherError(e)),
+                };
+                let content = String::from_utf8(bytes).with_context(|| {
+                    format!(
+                        "Downloaded file content for {} was not valid UTF-8",
+                        file_id
+                    )
+                })?;
 
                 Ok(ApiResult::Success(content))
             }
@@ -480,7 +697,7 @@ impl DriveClient {
             async move {
                 let url = format!(
                     "{}/files/{}?fields=id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents",
-                    DRIVE_API_BASE, &file_id
+                    drive_api_base().as_str(), &file_id
                 );
 
                 debug!("Getting file metadata: {} (user={}, url={})", file_id, user_email, url);
@@ -493,20 +710,12 @@ impl DriveClient {
                     .with_context(|| format!("Failed to get metadata for file {}", file_id))?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    warn!(
-                        "Drive get_file_metadata failed: user={} file_id={} status={} body={}",
-                        user_email, file_id, status, error_text
-                    );
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Failed to get file metadata {}: HTTP {} - {}",
-                        file_id,
-                        status,
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(
+                        response,
+                        format!("Failed to get file metadata {}", file_id),
+                    )
+                    .await;
                 }
 
                 let file: GoogleDriveFile = response.json().await.with_context(|| {
@@ -536,7 +745,9 @@ impl DriveClient {
             async move {
                 let url = format!(
                     "{}/files/{}/export?mimeType={}",
-                    DRIVE_API_BASE, &file_id, &export_mime_type
+                    drive_api_base().as_str(),
+                    &file_id,
+                    &export_mime_type
                 );
 
                 debug!(
@@ -552,27 +763,26 @@ impl DriveClient {
                     .with_context(|| format!("Failed to export file {}", file_id))?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    warn!(
-                        "Drive export_file failed: user={} file_id={} export_mime={} status={} body={}",
-                        user_email, file_id, export_mime_type, status, error_text
-                    );
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Failed to export file {}: HTTP {} - {}",
-                        file_id,
-                        status,
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(
+                        response,
+                        format!("Failed to export file {}", file_id),
+                    )
+                    .await;
                 }
 
-                let bytes = response.bytes().await.with_context(|| {
-                    format!("Failed to read export content for file {}", file_id)
-                })?;
-
-                Ok(ApiResult::Success(bytes.to_vec()))
+                match read_response_bytes_limited(
+                    response,
+                    &file_id,
+                    google_drive_max_download_bytes(),
+                )
+                .await?
+                {
+                    ApiResult::Success(bytes) => Ok(ApiResult::Success(bytes)),
+                    ApiResult::AuthError(e) => Ok(ApiResult::AuthError(e)),
+                    ApiResult::RetryableError(e) => Ok(ApiResult::RetryableError(e)),
+                    ApiResult::OtherError(e) => Ok(ApiResult::OtherError(e)),
+                }
             }
         })
         .await
@@ -590,7 +800,7 @@ impl DriveClient {
         execute_with_auth_retry(auth, user_email, rate_limiter.clone(), |token| {
             let file_id = file_id.clone();
             async move {
-                let url = format!("{}/files/{}?alt=media", DRIVE_API_BASE, &file_id);
+                let url = format!("{}/files/{}?alt=media", drive_api_base().as_str(), &file_id);
 
                 debug!(
                     "Downloading binary file: {} (user={}, url={})",
@@ -605,52 +815,26 @@ impl DriveClient {
                     .with_context(|| format!("Failed to send request for file {}", file_id))?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    warn!(
-                        "Drive download_binary_file failed: user={} file_id={} status={} body={}",
-                        user_email, file_id, status, error_text
-                    );
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Failed to download file {}: HTTP {} - {}",
-                        file_id,
-                        status,
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(
+                        response,
+                        format!("Failed to download file {}", file_id),
+                    )
+                    .await;
                 }
 
-                // Skip files over 100 MB to prevent OOM
-                const MAX_FILE_SIZE_MB: f64 = 100.0;
-                if let Some(content_length) =
-                    response.headers().get(reqwest::header::CONTENT_LENGTH)
+                match read_response_bytes_limited(
+                    response,
+                    &file_id,
+                    google_drive_max_download_bytes(),
+                )
+                .await?
                 {
-                    if let Ok(length_str) = content_length.to_str() {
-                        if let Ok(length) = length_str.parse::<u64>() {
-                            let mb = length as f64 / (1024.0 * 1024.0);
-                            if mb > MAX_FILE_SIZE_MB {
-                                warn!(
-                                    "Skipping oversized file {} ({:.1} MB > {:.0} MB limit)",
-                                    file_id, mb, MAX_FILE_SIZE_MB
-                                );
-                                return Ok(ApiResult::OtherError(anyhow!(
-                                    "File too large ({:.1} MB), skipping",
-                                    mb
-                                )));
-                            }
-                            if mb > 50.0 {
-                                warn!("Large office document detected ({}): {:.1} MB", file_id, mb);
-                            }
-                        }
-                    }
+                    ApiResult::Success(bytes) => Ok(ApiResult::Success(bytes)),
+                    ApiResult::AuthError(e) => Ok(ApiResult::AuthError(e)),
+                    ApiResult::RetryableError(e) => Ok(ApiResult::RetryableError(e)),
+                    ApiResult::OtherError(e) => Ok(ApiResult::OtherError(e)),
                 }
-
-                let binary_content = response.bytes().await.with_context(|| {
-                    format!("Failed to read binary content for file {}", file_id)
-                })?;
-
-                Ok(ApiResult::Success(binary_content.to_vec()))
             }
         })
         .await
@@ -662,7 +846,7 @@ impl DriveClient {
         webhook_channel: &WebhookChannel,
         page_token: &str,
     ) -> Result<WebhookChannelResponse> {
-        let url = format!("{}/changes/watch", DRIVE_API_BASE);
+        let url = format!("{}/changes/watch", drive_api_base().as_str());
 
         let params = vec![
             ("pageToken", page_token),
@@ -703,7 +887,7 @@ impl DriveClient {
         channel_id: &str,
         resource_id: &str,
     ) -> Result<()> {
-        let url = format!("{}/channels/stop", DRIVE_API_BASE);
+        let url = format!("{}/channels/stop", drive_api_base().as_str());
 
         let stop_request = serde_json::json!({
             "id": channel_id,
@@ -728,7 +912,7 @@ impl DriveClient {
     }
 
     pub async fn get_start_page_token(&self, token: &str) -> Result<String> {
-        let url = format!("{}/changes/startPageToken", DRIVE_API_BASE);
+        let url = format!("{}/changes/startPageToken", drive_api_base().as_str());
 
         let params = vec![("supportsAllDrives", "true")];
 
@@ -753,6 +937,44 @@ impl DriveClient {
         Ok(start_page_token.to_string())
     }
 
+    pub async fn get_start_page_token_for_user(
+        &self,
+        auth: &GoogleAuth,
+        user_email: &str,
+    ) -> Result<String> {
+        execute_with_auth_retry(
+            auth,
+            user_email,
+            self.rate_limiter.clone(),
+            |token| async move {
+                let url = format!("{}/changes/startPageToken", drive_api_base().as_str());
+                let params = vec![("supportsAllDrives", "true")];
+
+                let response = self
+                    .client
+                    .get(&url)
+                    .bearer_auth(&token)
+                    .query(&params)
+                    .send()
+                    .await?;
+
+                if !response.status().is_success() {
+                    return classify_google_api_error(response, "Failed to get start page token")
+                        .await;
+                }
+
+                let response_json: serde_json::Value = response.json().await?;
+                let start_page_token = response_json["startPageToken"]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("Missing startPageToken in response"))?
+                    .to_string();
+
+                Ok(ApiResult::Success(start_page_token))
+            },
+        )
+        .await
+    }
+
     pub async fn get_folder_metadata(
         &self,
         auth: &GoogleAuth,
@@ -764,7 +986,7 @@ impl DriveClient {
         execute_with_auth_retry(auth, user_email, self.rate_limiter.clone(), |token| {
             let folder_id = folder_id.clone();
             async move {
-                let url = format!("{}/files/{}", DRIVE_API_BASE, folder_id);
+                let url = format!("{}/files/{}", drive_api_base().as_str(), folder_id);
 
                 let params = vec![
                     ("fields", "id,name,parents,mimeType"),
@@ -780,15 +1002,12 @@ impl DriveClient {
                     .await?;
 
                 let status = response.status();
-                if is_auth_error(status) {
-                    return api_auth_error(response).await;
-                } else if !status.is_success() {
-                    let error_text = response.text().await?;
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Failed to get folder metadata for {}: {}",
-                        folder_id,
-                        error_text
-                    )));
+                if !status.is_success() {
+                    return classify_google_api_error(
+                        response,
+                        format!("Failed to get folder metadata for {}", folder_id),
+                    )
+                    .await;
                 }
 
                 let response_text = response.text().await?;
@@ -814,7 +1033,7 @@ impl DriveClient {
         token: &str,
         page_token: &str,
     ) -> Result<DriveChangesResponse> {
-        let url = format!("{}/changes", DRIVE_API_BASE);
+        let url = format!("{}/changes", drive_api_base().as_str());
 
         let params = vec![
             ("pageToken", page_token),
@@ -983,11 +1202,78 @@ struct Sheet {
 #[derive(Debug, Deserialize)]
 struct SheetProperties {
     title: String,
+    #[serde(rename = "gridProperties")]
+    grid_properties: Option<GridProperties>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GridProperties {
+    #[serde(rename = "rowCount")]
+    row_count: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ValueRange {
     values: Option<Vec<Vec<String>>>,
+}
+
+fn is_textual_spreadsheet_cell(cell: &str) -> bool {
+    let trimmed = cell.trim();
+    if trimmed.is_empty() || is_numeric_like_spreadsheet_cell(trimmed) {
+        return false;
+    }
+
+    trimmed.chars().any(char::is_alphabetic)
+}
+
+fn is_numeric_like_spreadsheet_cell(cell: &str) -> bool {
+    let mut normalized = cell.trim().to_string();
+    if normalized.is_empty() {
+        return false;
+    }
+
+    if normalized.starts_with('(') && normalized.ends_with(')') && normalized.len() > 2 {
+        normalized = format!("-{}", &normalized[1..normalized.len() - 1]);
+    }
+
+    normalized.retain(|ch| {
+        !matches!(
+            ch,
+            ',' | '_' | ' ' | '$' | '€' | '£' | '¥' | '₹' | '%' | '+'
+        )
+    });
+
+    !normalized.is_empty() && normalized.parse::<f64>().is_ok()
+}
+
+fn append_filtered_spreadsheet_sheet<I, R, C>(content: &mut String, sheet_name: &str, rows: I)
+where
+    I: IntoIterator<Item = R>,
+    R: IntoIterator<Item = C>,
+    C: AsRef<str>,
+{
+    content.push_str(&format!("Sheet: {}\n", sheet_name));
+
+    for row in rows {
+        let row_text: Vec<String> = row
+            .into_iter()
+            .filter_map(|cell| {
+                let trimmed = cell.as_ref().trim();
+                if is_textual_spreadsheet_cell(trimmed) {
+                    Some(trimmed.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if !row_text.is_empty() {
+            content.push_str(&row_text.join("\t"));
+            content.push('\n');
+        }
+    }
+
+    content.push('\n');
 }
 
 fn extract_text_from_presentation(presentation: &GooglePresentation) -> String {
@@ -1035,4 +1321,122 @@ fn extract_text_from_presentation(presentation: &GooglePresentation) -> String {
     }
 
     text.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spreadsheet_cell_textual_heuristic_filters_non_textual_values() {
+        let non_textual = [
+            "",
+            "   ",
+            "123",
+            "-123",
+            "+123",
+            "3.1415",
+            "-3.1415",
+            "1,234,567",
+            "$99.00",
+            "€1,234.56",
+            "12%",
+            "(123)",
+            "2024-01-31",
+            "1.2e6",
+            "1,234e5",
+            "---",
+            "***",
+        ];
+
+        for cell in non_textual {
+            assert!(
+                !is_textual_spreadsheet_cell(cell),
+                "expected non-textual cell to be filtered: {cell:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn spreadsheet_cell_textual_heuristic_keeps_text_bearing_values() {
+        let textual = [
+            "Invoice 123",
+            "Q4 revenue",
+            "SKU123",
+            "customer@example.com",
+            "hello",
+            "東京",
+            "مرحبا",
+            "строка 12",
+        ];
+
+        for cell in textual {
+            assert!(
+                is_textual_spreadsheet_cell(cell),
+                "expected text-bearing cell to be kept: {cell:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn filtered_spreadsheet_formatter_skips_numeric_only_rows() {
+        let rows = vec![
+            vec!["123".to_string(), "456".to_string()],
+            vec![
+                "Invoice".to_string(),
+                "123".to_string(),
+                "$10.00".to_string(),
+            ],
+            vec!["Q4 revenue".to_string(), "12%".to_string()],
+            vec!["   ".to_string(), "---".to_string()],
+            vec!["東京".to_string(), "2024-01-31".to_string()],
+        ];
+        let mut content = String::new();
+
+        append_filtered_spreadsheet_sheet(&mut content, "Budget", rows);
+
+        assert_eq!(content, "Sheet: Budget\nInvoice\nQ4 revenue\n東京\n\n");
+    }
+
+    #[test]
+    fn spreadsheet_metadata_reads_sheet_row_count() {
+        let sheet: GoogleSpreadsheet = serde_json::from_str(
+            r#"{
+                "sheets": [
+                    {
+                        "properties": {
+                            "title": "Data",
+                            "gridProperties": { "rowCount": 1500 }
+                        }
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            sheet.sheets[0]
+                .properties
+                .grid_properties
+                .as_ref()
+                .and_then(|properties| properties.row_count),
+            Some(1500)
+        );
+    }
+
+    #[test]
+    fn sheet_name_escape_doubles_single_quotes_for_a1_ranges() {
+        assert_eq!(escape_sheet_name_for_a1("Bob's Sheet"), "Bob''s Sheet");
+    }
+
+    #[test]
+    fn a1_range_url_encoding_preserves_special_sheet_name_chars() {
+        let escaped_sheet_name = escape_sheet_name_for_a1("Bob's Gaming/Casino Disney+");
+        let range = format!("'{}'!1:1000", escaped_sheet_name);
+
+        assert_eq!(
+            encode_a1_range_for_url(&range),
+            "%27Bob%27%27s%20Gaming%2FCasino%20Disney%2B%27%211%3A1000"
+        );
+    }
 }

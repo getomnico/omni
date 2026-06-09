@@ -197,7 +197,7 @@ class ClickUpConnector(Connector):
                 }
 
                 if docs_since_checkpoint >= CHECKPOINT_INTERVAL:
-                    await ctx.save_state({"workspaces": new_workspace_states})
+                    await ctx.save_checkpoint({"workspaces": new_workspace_states})
                     docs_since_checkpoint = 0
 
             await ctx.complete(new_state={"workspaces": new_workspace_states})

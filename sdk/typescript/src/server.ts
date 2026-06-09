@@ -99,6 +99,8 @@ export function createServer(connector: Connector): Express {
       sync_mode: syncModeStr,
       documents_scanned: documentsScanned,
       documents_updated: documentsUpdated,
+      checkpoint: requestCheckpoint,
+      is_resume: isResume,
     } = parseResult.data;
 
     const isValidSyncMode = (Object.values(SyncMode) as string[]).includes(syncModeStr);
@@ -140,11 +142,12 @@ export function createServer(connector: Connector): Express {
       getSdkClient(),
       syncRunId,
       sourceId,
-      sourceData.connector_state ?? undefined,
+      (requestCheckpoint ?? sourceData.checkpoint) ?? undefined,
       syncMode,
       documentsScanned,
       documentsUpdated,
       {
+        isResume,
         sourceType: sourceData.source_type,
         userFilterMode: sourceData.user_filter_mode,
         userWhitelist: sourceData.user_whitelist,
@@ -158,7 +161,7 @@ export function createServer(connector: Connector): Express {
         await connector.sync(
           sourceData.config,
           sourceData.credentials,
-          sourceData.connector_state,
+          (requestCheckpoint ?? sourceData.checkpoint),
           ctx
         );
       } catch (error) {

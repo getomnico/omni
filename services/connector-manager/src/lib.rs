@@ -23,6 +23,7 @@ use shared::{
 use std::net::SocketAddr;
 use std::sync::Arc;
 use sync_manager::SyncManager;
+use tokio::sync::Semaphore;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
@@ -34,6 +35,7 @@ pub struct AppState {
     pub config: ConnectorManagerConfig,
     pub sync_manager: Arc<SyncManager>,
     pub content_storage: Arc<dyn ObjectStorage>,
+    pub extraction_semaphore: Arc<Semaphore>,
 }
 
 pub fn create_app(state: AppState) -> Router {
@@ -64,6 +66,10 @@ pub fn create_app(state: AppState) -> Router {
         .route("/sdk/sync/:id/heartbeat", post(handlers::sdk_heartbeat))
         .route("/sdk/sync/:id/complete", post(handlers::sdk_complete))
         .route("/sdk/sync/:id/fail", post(handlers::sdk_fail))
+        .route(
+            "/sdk/sync/:id/checkpoint",
+            put(handlers::sdk_update_checkpoint),
+        )
         .route(
             "/sdk/sync/:id/scanned",
             post(handlers::sdk_increment_scanned),
@@ -150,6 +156,7 @@ pub async fn run_server() -> AnyhowResult<()> {
         config: config.clone(),
         sync_manager: sync_manager.clone(),
         content_storage,
+        extraction_semaphore: Arc::new(Semaphore::new(config.extraction_concurrency)),
     };
 
     // Reconcile any sync_runs left in 'running' state from a previous

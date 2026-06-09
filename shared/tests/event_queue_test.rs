@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions, EventStatus};
+    use shared::models::{
+        ConnectorEvent, DocumentMetadata, DocumentPermissions, EventStatus, SyncType,
+    };
     use shared::queue::EventQueue;
     use shared::test_environment::TestEnvironment;
 
@@ -20,6 +22,58 @@ mod tests {
             },
             attributes: None,
         }
+    }
+
+    fn make_event_with_content(
+        sync_run_id: &str,
+        doc_id: &str,
+        content_id: String,
+    ) -> ConnectorEvent {
+        ConnectorEvent::DocumentCreated {
+            sync_run_id: sync_run_id.to_string(),
+            source_id: TEST_SOURCE_ID.to_string(),
+            document_id: doc_id.to_string(),
+            content_id,
+            metadata: DocumentMetadata::default(),
+            permissions: DocumentPermissions {
+                public: false,
+                users: vec!["user1".to_string()],
+                groups: vec![],
+            },
+            attributes: None,
+        }
+    }
+
+    async fn insert_sized_content(pool: &sqlx::PgPool, size_bytes: i64) -> String {
+        let content_id = ulid::Ulid::new().to_string();
+        sqlx::query(
+            r#"
+            INSERT INTO content_blobs (id, content, size_bytes, storage_backend)
+            VALUES ($1, $2, $3, 'postgres')
+            "#,
+        )
+        .bind(&content_id)
+        .bind(Vec::<u8>::new())
+        .bind(size_bytes)
+        .execute(pool)
+        .await
+        .unwrap();
+        content_id
+    }
+
+    async fn insert_sync_run(pool: &sqlx::PgPool, run_id: &str, sync_type: &str) {
+        sqlx::query(
+            r#"
+            INSERT INTO sync_runs (id, source_id, sync_type, status, started_at, completed_at, created_at, updated_at)
+            VALUES ($1, $2, $3, 'completed', NOW(), NOW(), NOW(), NOW())
+            "#,
+        )
+        .bind(run_id)
+        .bind(TEST_SOURCE_ID)
+        .bind(sync_type)
+        .execute(pool)
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -352,6 +406,142 @@ mod tests {
         // Re-running should return empty — claimed rows are now `processing`.
         let again = queue.dequeue_batch_orphans(10).await.unwrap();
         assert!(again.is_empty());
+    }
+
+    // Integration coverage for EventQueue::dequeue_batch_with_max_bytes.
+    // TestEnvironment starts a real ParadeDB/Postgres testcontainer.
+    #[tokio::test]
+    async fn test_dequeue_batch_with_max_bytes_keeps_tiny_docs_count_limited() {
+        let env = TestEnvironment::new().await.unwrap();
+        let pool = env.db_pool.pool().clone();
+        let queue = EventQueue::new(pool.clone());
+
+        for i in 0..3 {
+            let content_id = insert_sized_content(&pool, 1).await;
+            let event = make_event_with_content("run-1", &format!("tiny-doc-{}", i), content_id);
+            queue.enqueue(TEST_SOURCE_ID, &event).await.unwrap();
+        }
+
+        let batch = queue.dequeue_batch_with_max_bytes(2, 100).await.unwrap();
+        assert_eq!(batch.len(), 2);
+        assert_eq!(queue.get_pending_count().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_dequeue_batch_with_max_bytes_stops_at_byte_budget() {
+        let env = TestEnvironment::new().await.unwrap();
+        let pool = env.db_pool.pool().clone();
+        let queue = EventQueue::new(pool.clone());
+
+        for i in 0..3 {
+            let content_id = insert_sized_content(&pool, 20).await;
+            let event = make_event_with_content("run-1", &format!("medium-doc-{}", i), content_id);
+            queue.enqueue(TEST_SOURCE_ID, &event).await.unwrap();
+        }
+
+        let batch = queue.dequeue_batch_with_max_bytes(10, 45).await.unwrap();
+        assert_eq!(batch.len(), 2);
+        assert_eq!(queue.get_pending_count().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_dequeue_batch_with_max_bytes_allows_one_oversized_doc() {
+        let env = TestEnvironment::new().await.unwrap();
+        let pool = env.db_pool.pool().clone();
+        let queue = EventQueue::new(pool.clone());
+
+        let oversized_id = insert_sized_content(&pool, 280).await;
+        let oversized = make_event_with_content("run-1", "oversized-doc", oversized_id);
+        queue.enqueue(TEST_SOURCE_ID, &oversized).await.unwrap();
+
+        let small_id = insert_sized_content(&pool, 1).await;
+        let small = make_event_with_content("run-1", "small-doc", small_id);
+        queue.enqueue(TEST_SOURCE_ID, &small).await.unwrap();
+
+        let batch = queue.dequeue_batch_with_max_bytes(10, 100).await.unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].payload["document_id"], "oversized-doc");
+        assert_eq!(queue.get_pending_count().await.unwrap(), 1);
+
+        let next = queue.dequeue_batch_with_max_bytes(10, 100).await.unwrap();
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].payload["document_id"], "small-doc");
+    }
+
+    #[tokio::test]
+    async fn test_dequeue_batch_by_sync_type_with_max_bytes_routes_and_limits() {
+        let env = TestEnvironment::new().await.unwrap();
+        let pool = env.db_pool.pool().clone();
+        let queue = EventQueue::new(pool.clone());
+
+        let full_run = ulid::Ulid::new().to_string();
+        let inc_run = ulid::Ulid::new().to_string();
+        insert_sync_run(&pool, &full_run, "full").await;
+        insert_sync_run(&pool, &inc_run, "incremental").await;
+
+        for i in 0..2 {
+            let content_id = insert_sized_content(&pool, 60).await;
+            let event = make_event_with_content(&full_run, &format!("full-doc-{}", i), content_id);
+            queue.enqueue(TEST_SOURCE_ID, &event).await.unwrap();
+        }
+        let inc_content_id = insert_sized_content(&pool, 10).await;
+        let inc_event = make_event_with_content(&inc_run, "inc-doc", inc_content_id);
+        queue.enqueue(TEST_SOURCE_ID, &inc_event).await.unwrap();
+
+        let full_batch = queue
+            .dequeue_batch_by_sync_type_with_max_bytes(10, SyncType::Full, 100)
+            .await
+            .unwrap();
+        assert_eq!(full_batch.len(), 1);
+        assert_eq!(full_batch[0].sync_run_id, full_run);
+
+        let inc_batch = queue
+            .dequeue_batch_by_sync_type_with_max_bytes(10, SyncType::Incremental, 100)
+            .await
+            .unwrap();
+        assert_eq!(inc_batch.len(), 1);
+        assert_eq!(inc_batch[0].sync_run_id, inc_run);
+    }
+
+    #[tokio::test]
+    async fn test_dequeue_batch_orphans_with_max_bytes_limits_orphans() {
+        let env = TestEnvironment::new().await.unwrap();
+        let pool = env.db_pool.pool().clone();
+        let queue = EventQueue::new(pool.clone());
+
+        for i in 0..2 {
+            let content_id = insert_sized_content(&pool, 70).await;
+            let event =
+                make_event_with_content("missing-run", &format!("orphan-doc-{}", i), content_id);
+            queue.enqueue(TEST_SOURCE_ID, &event).await.unwrap();
+        }
+
+        let batch = queue
+            .dequeue_batch_orphans_with_max_bytes(10, 100)
+            .await
+            .unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(queue.get_pending_count().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_queue_summary_reports_pending_size_bytes() {
+        let env = TestEnvironment::new().await.unwrap();
+        let pool = env.db_pool.pool().clone();
+        let queue = EventQueue::new(pool.clone());
+
+        let content_id = insert_sized_content(&pool, 42).await;
+        let event = make_event_with_content("missing-run", "sized-doc", content_id);
+        queue.enqueue(TEST_SOURCE_ID, &event).await.unwrap();
+
+        let summary = queue.get_queue_summary().await.unwrap();
+        let pending_orphan = summary
+            .entries
+            .iter()
+            .find(|entry| entry.sync_type.is_none() && entry.status == EventStatus::Pending)
+            .unwrap();
+        assert_eq!(pending_orphan.count, 1);
+        assert_eq!(pending_orphan.size_bytes, 42);
     }
 
     /// Companion: `dequeue_batch_by_sync_type` must continue to work for

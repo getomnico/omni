@@ -12,6 +12,7 @@ pub struct SyncContext {
     source_id: String,
     source_type: SourceType,
     sync_mode: SyncType,
+    is_resume: bool,
     cancelled: Arc<AtomicBool>,
 }
 
@@ -24,12 +25,33 @@ impl SyncContext {
         sync_mode: SyncType,
         cancelled: Arc<AtomicBool>,
     ) -> Self {
+        Self::new_with_resume(
+            sdk_client,
+            sync_run_id,
+            source_id,
+            source_type,
+            sync_mode,
+            false,
+            cancelled,
+        )
+    }
+
+    pub fn new_with_resume(
+        sdk_client: SdkClient,
+        sync_run_id: String,
+        source_id: String,
+        source_type: SourceType,
+        sync_mode: SyncType,
+        is_resume: bool,
+        cancelled: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             sdk_client,
             sync_run_id,
             source_id,
             source_type,
             sync_mode,
+            is_resume,
             cancelled,
         }
     }
@@ -52,6 +74,10 @@ impl SyncContext {
 
     pub fn sync_mode(&self) -> SyncType {
         self.sync_mode
+    }
+
+    pub fn is_resume(&self) -> bool {
+        self.is_resume
     }
 
     pub fn is_cancelled(&self) -> bool {
@@ -123,7 +149,7 @@ impl SyncContext {
     /// Mark sync as completed. Flushes any buffered events first so the
     /// completion never races ahead of the final events for this sync.
     /// Status flip only — counts come from `increment_scanned`/`updated`,
-    /// connector state from `save_connector_state`.
+    /// checkpoint from `save_checkpoint`.
     pub async fn complete(&self) -> Result<()> {
         self.sdk_client.complete(&self.sync_run_id).await?;
         Ok(())
@@ -156,11 +182,16 @@ impl SyncContext {
     /// Checkpoint state for resumability. Flushes buffered events first —
     /// without this, a crash after checkpointing would lose events that the
     /// connector considered emitted (the next run resumes past them).
-    pub async fn save_connector_state(&self, state: serde_json::Value) -> Result<()> {
+    pub async fn save_checkpoint(&self, checkpoint: serde_json::Value) -> Result<()> {
         self.sdk_client
-            .save_connector_state(&self.source_id, state)
+            .save_checkpoint(&self.sync_run_id, &self.source_id, checkpoint)
             .await?;
         Ok(())
+    }
+
+    #[deprecated(note = "use save_checkpoint")]
+    pub async fn save_connector_state(&self, state: serde_json::Value) -> Result<()> {
+        self.save_checkpoint(state).await
     }
 
     pub async fn get_user_email_for_source(&self) -> Result<String> {

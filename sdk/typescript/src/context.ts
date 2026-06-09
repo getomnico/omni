@@ -31,6 +31,7 @@ export class SyncContext {
   private _documentsScanned = 0;
   private readonly _contentStorage: ContentStorage;
   private readonly _syncMode: SyncMode;
+  private readonly _isResume: boolean;
   private readonly bufferSizeThreshold: number;
   private readonly bufferTimeThresholdMs: number | null;
   private eventBuffer: ConnectorEventPayload[] = [];
@@ -49,6 +50,7 @@ export class SyncContext {
     documentsScanned = 0,
     documentsUpdated = 0,
     options?: {
+      isResume?: boolean;
       sourceType?: string | null;
       userFilterMode?: UserFilterMode;
       userWhitelist?: string[] | null;
@@ -62,6 +64,7 @@ export class SyncContext {
     this.abortController = new AbortController();
     this._contentStorage = new ContentStorage(client, syncRunId);
     this._syncMode = syncMode;
+    this._isResume = options?.isResume ?? false;
     const thresholds = thresholdsFor(syncMode);
     this.bufferSizeThreshold = thresholds.size;
     this.bufferTimeThresholdMs = thresholds.timeMs;
@@ -116,7 +119,11 @@ export class SyncContext {
   get syncMode(): SyncMode {
     return this._syncMode;
   }
-  
+
+  get isResume(): boolean {
+    return this._isResume;
+  }
+
   get sourceType(): string | null {
     return this._sourceType;
   }
@@ -271,21 +278,22 @@ export class SyncContext {
    * checkpointing would lose events that the connector considered emitted
    * (the next run resumes past them).
    */
-  async saveState(state: Record<string, unknown>): Promise<void> {
+  async saveCheckpoint(checkpoint: Record<string, unknown>): Promise<void> {
     await this.flush();
-    this._state = state;
-    await this.client.updateConnectorState(this._sourceId, state);
+    this._state = checkpoint;
+    await this.client.updateCheckpoint(this._syncRunId, checkpoint);
     await this.client.heartbeat(this._syncRunId);
+  }
+
+  async saveState(state: Record<string, unknown>): Promise<void> {
+    await this.saveCheckpoint(state);
   }
 
   async complete(newState?: Record<string, unknown>): Promise<void> {
     await this.flush();
-    // sdk_complete is body-less since 7c21fd10 — newState in the /complete
-    // body is silently dropped server-side. Persist via the connector-state
-    // endpoint instead (same path saveState() takes).
     if (newState !== undefined) {
       this._state = newState;
-      await this.client.updateConnectorState(this._sourceId, newState);
+      await this.client.updateCheckpoint(this._syncRunId, newState);
     }
     await this.client.complete(this._syncRunId);
   }

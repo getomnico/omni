@@ -294,7 +294,7 @@ class NotionConnector(Connector):
                     await ctx.emit_error(eid, str(e))
 
                 if docs_emitted >= CHECKPOINT_INTERVAL:
-                    await ctx.save_state({})
+                    await ctx.save_checkpoint({})
                     docs_emitted = 0
 
             if not response.get("has_more"):
@@ -303,7 +303,7 @@ class NotionConnector(Connector):
 
         now = datetime.now(UTC).isoformat()
         # save_state actually persists; complete()'s new_state is dropped by CM.
-        await ctx.save_state({"last_sync_at": now})
+        await ctx.save_checkpoint({"last_sync_at": now})
         await ctx.complete()
         logger.info(
             "Full sync completed: %d scanned, %d emitted",
@@ -364,7 +364,7 @@ class NotionConnector(Connector):
                     await ctx.emit_error(eid, str(e))
 
                 if docs_emitted >= CHECKPOINT_INTERVAL:
-                    await ctx.save_state({"last_sync_at": last_sync_at})
+                    await ctx.save_checkpoint({"last_sync_at": last_sync_at})
                     docs_emitted = 0
 
             if found_old or not response.get("has_more"):
@@ -403,7 +403,7 @@ class NotionConnector(Connector):
             cursor = response.get("next_cursor")
 
         now = datetime.now(UTC).isoformat()
-        await ctx.save_state({"last_sync_at": now})
+        await ctx.save_checkpoint({"last_sync_at": now})
         await ctx.complete()
         logger.info(
             "Incremental sync completed: %d scanned, %d emitted",
@@ -523,7 +523,7 @@ class NotionConnector(Connector):
                     await ctx.emit_error(eid, str(e))
 
                 if docs_emitted >= CHECKPOINT_INTERVAL:
-                    await ctx.save_state({})
+                    await ctx.save_checkpoint({})
                     docs_emitted = 0
 
             if not response.get("has_more"):

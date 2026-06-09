@@ -11,6 +11,7 @@ use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
 use shared::ObjectStorage;
 use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 pub const TEST_SOURCE_ID: &str = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
 
@@ -40,6 +41,8 @@ pub async fn setup_test_fixture() -> Result<TestFixture> {
         max_concurrent_syncs_per_type: 3,
         scheduler_interval_seconds: 600,
         stale_sync_timeout_minutes: 1,
+        extraction_concurrency: 2,
+        extraction_retry_after_seconds: 30,
         sync_backoff_base_seconds: 30,
         sync_backoff_max_seconds: 3600,
         sync_max_consecutive_failures: 10,
@@ -85,6 +88,7 @@ pub async fn setup_test_fixture() -> Result<TestFixture> {
     let app_state = AppState {
         db_pool: test_env.db_pool.clone(),
         redis_client,
+        extraction_semaphore: Arc::new(Semaphore::new(config.extraction_concurrency)),
         config,
         sync_manager,
         content_storage,
