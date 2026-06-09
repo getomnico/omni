@@ -1994,10 +1994,10 @@
         </div>
         <div
             bind:this={chatContainerRef}
-            class="flex h-full w-full flex-col overflow-y-auto px-4 pt-6">
+            class="flex h-full w-full flex-col overflow-x-hidden overflow-y-auto px-4 pt-6">
             <div
                 bind:this={chatContentRef}
-                class="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-1"
+                class="mx-auto flex w-full max-w-4xl min-w-0 flex-1 flex-col gap-1"
                 style:padding-bottom="{bottomPadding}px">
                 {#if data.agent}
                     <div

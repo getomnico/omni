@@ -147,7 +147,7 @@
     <title>Search Results - Omni</title>
 </svelte:head>
 
-<div class="mt-4 px-8 pb-24">
+<div class="mt-4 px-4 pb-24 sm:px-8">
     <!-- Search Header -->
     <div class="mb-8">
         <div class="mb-4 flex items-center gap-4">
@@ -167,7 +167,7 @@
         </div>
 
         {#if data.searchResults}
-            <div class="px-6 text-sm text-gray-600">
+            <div class="px-2 text-sm text-gray-600 sm:px-6">
                 Found {data.searchResults.total_count >= MAX_COUNTED_RESULTS
                     ? `${MAX_COUNTED_RESULTS.toLocaleString()}+`
                     : data.searchResults.total_count.toLocaleString()} results in
@@ -247,7 +247,7 @@
             }} />
     {/if}
 
-    <div class="flex gap-6 px-6">
+    <div class="flex flex-col gap-4 md:flex-row md:gap-6 md:px-6">
         <!-- Search Results -->
         <div class="min-w-0 flex-1">
             {#if data.searchResults}
@@ -357,7 +357,7 @@
 
         <!-- Source Facets Sidebar -->
         {#if data.searchResults && sourceFacet}
-            <div class="w-80">
+            <div class="w-full md:w-80 md:shrink-0">
                 <div class="">
                     <div class="mb-4 flex items-center justify-between">
                         <h3 class="flex flex-1 items-center gap-2 px-4 text-base font-semibold">

@@ -320,13 +320,13 @@
         <Accordion.Item value={message.toolUse.id}>
             <Accordion.Trigger
                 class={cn(
-                    'border-border flex cursor-pointer items-center justify-between border px-3 py-3 text-sm hover:no-underline',
+                    'border-border flex w-full min-w-0 cursor-pointer items-center justify-between border px-3 py-3 text-sm hover:no-underline',
                     selectedItem === message.toolUse.id && 'bg-card rounded-b-none border-b-0',
                 )}>
                 <div class="flex w-full items-center justify-between">
-                    <div class="flex items-center gap-2">
+                    <div class="flex min-w-0 items-center gap-2">
                         {#if sources.length > 0}
-                            <div class="flex items-center gap-1">
+                            <div class="flex shrink-0 items-center gap-1">
                                 {#each sources as source}
                                     {#if getSourceIconPath(source)}
                                         <img
@@ -342,7 +342,7 @@
                         {:else}
                             <Search class="h-4 w-4" />
                         {/if}
-                        <div class="max-w-screen-md truncate text-sm font-normal">
+                        <div class="min-w-0 truncate text-sm font-normal">
                             {#if sources.length > 0}
                                 {statusIndicator}
                                 {sources
@@ -366,7 +366,7 @@
                     <div class="px-4 py-2">
                         <div class="flex flex-col gap-2">
                             {#each message.toolResult.content as result}
-                                <div class="flex items-center gap-2">
+                                <div class="flex min-w-0 items-center gap-2">
                                     {#if getSearchResultIconPath(result)}
                                         <img
                                             src={getSearchResultIconPath(result)}
@@ -381,12 +381,11 @@
                                             href={result.source.split('#')[0]}
                                             target="_blank"
                                             rel="noopener noreferrer"
-                                            class="block max-w-screen-sm overflow-hidden font-normal text-ellipsis whitespace-nowrap no-underline hover:underline">
+                                            class="block min-w-0 flex-1 truncate font-normal no-underline hover:underline">
                                             {result.title}
                                         </a>
                                     {:else}
-                                        <span
-                                            class="block max-w-screen-sm overflow-hidden text-ellipsis whitespace-nowrap font-normal">
+                                        <span class="block min-w-0 flex-1 truncate font-normal">
                                             {result.title}
                                         </span>
                                     {/if}

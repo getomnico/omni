@@ -43,6 +43,7 @@
     import { page } from '$app/state'
     import { invalidate, invalidateAll, goto, afterNavigate } from '$app/navigation'
     import SidebarUserMenu from '$lib/components/sidebar-user-menu.svelte'
+    import SidebarNavigationClose from '$lib/components/sidebar-navigation-close.svelte'
     import type { Chat } from '$lib/server/db/schema'
 
     import { themeStore } from '$lib/themes/store.svelte'
@@ -231,6 +232,7 @@
 </Dialog.Root>
 
 <SidebarProvider>
+    <SidebarNavigationClose />
     <!-- Chat History Sidebar -->
     <Sidebar collapsible="icon" variant="sidebar">
         <SidebarHeader class="h-16">
@@ -383,9 +385,10 @@
     <!-- Main content area -->
     <div class="flex max-h-[100vh] w-full min-w-0 flex-1 flex-col">
         <header class={cn('bg-background sticky top-0 z-50 transition-shadow')}>
-            <div class="flex h-16 w-full items-center justify-between px-6">
-                <div class="text-foreground flex h-16 flex-1 items-center">
-                    <div class="min-w-0 flex-1 px-4 text-base font-medium">
+            <div class="flex h-16 w-full items-center justify-between px-3 sm:px-6">
+                <div class="text-foreground flex h-16 min-w-0 flex-1 items-center">
+                    <SidebarTrigger class="md:hidden mr-1 shrink-0 cursor-pointer size-11" />
+                    <div class="min-w-0 flex-1 overflow-hidden px-2 sm:px-4 text-base font-medium">
                         {#if page.url.pathname === '/search'}
                             Search
                         {:else if page.url.pathname.startsWith('/chat') && currentChatTitle}
@@ -403,7 +406,7 @@
                                     onblur={() => saveHeaderTitle()} />
                             {:else}
                                 <button
-                                    class="text-foreground cursor-pointer text-left transition-opacity hover:opacity-70"
+                                    class="text-foreground block w-full truncate cursor-pointer text-left transition-opacity hover:opacity-70"
                                     onclick={() => {
                                         isEditingHeaderTitle = true
                                         headerTitleValue = currentChatTitle || ''
