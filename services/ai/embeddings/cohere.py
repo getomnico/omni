@@ -4,6 +4,7 @@ import time
 import cohere
 
 from . import EmbeddingProvider, Chunk
+from .options import resolve_chunk_size
 from processing import Chunker
 
 logger = logging.getLogger(__name__)
@@ -80,12 +81,11 @@ class CohereEmbeddingProvider(EmbeddingProvider):
         self,
         text: str,
         task: str,
-        chunk_size: int,
+        chunk_size: int | None,
         chunking_mode: str,
     ) -> list[Chunk]:
         start_time = time.time()
 
-        max_chars = min(chunk_size, self.max_model_len) * self.CHARS_PER_TOKEN
         cohere_task = self._map_task(task)
 
         try:
@@ -94,6 +94,10 @@ class CohereEmbeddingProvider(EmbeddingProvider):
                 chunks = [Chunk((0, len(text)), embeddings[0])]
 
             elif chunking_mode == "sentence":
+                max_chars = (
+                    resolve_chunk_size(chunk_size, self.max_model_len)
+                    * self.CHARS_PER_TOKEN
+                )
                 char_spans = Chunker.chunk_sentences_by_chars(text, max_chars)
                 chunk_texts = [text[start:end] for start, end in char_spans]
 
@@ -104,6 +108,10 @@ class CohereEmbeddingProvider(EmbeddingProvider):
                 ]
 
             elif chunking_mode == "fixed":
+                max_chars = (
+                    resolve_chunk_size(chunk_size, self.max_model_len)
+                    * self.CHARS_PER_TOKEN
+                )
                 char_spans = Chunker.chunk_by_chars(text, max_chars)
                 chunk_texts = [text[start:end] for start, end in char_spans]
 

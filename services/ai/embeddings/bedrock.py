@@ -5,6 +5,7 @@ import boto3
 import json
 
 from . import EmbeddingProvider, Chunk
+from .options import resolve_chunk_size
 from processing import Chunker
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
         self,
         text: str,
         task: str,
-        chunk_size: int,
+        chunk_size: int | None,
         chunking_mode: str,
     ) -> list[Chunk]:
         """
@@ -58,16 +59,12 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
         self,
         text: str,
         task: str,
-        chunk_size: int,
+        chunk_size: int | None,
         chunking_mode: str,
     ) -> list[Chunk]:
         """Generate embeddings using AWS Bedrock with chunking support."""
 
         start_time = time.time()
-
-        # Cap chunk_size at max_model_len and convert to chars
-        effective_chunk_size = min(chunk_size, self.max_model_len)
-        max_chars = effective_chunk_size * self.CHARS_PER_TOKEN
 
         try:
             if chunking_mode == "none":
@@ -75,6 +72,10 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
                 chunks = [Chunk((0, len(text)), embeddings[0])]
 
             elif chunking_mode == "sentence":
+                max_chars = (
+                    resolve_chunk_size(chunk_size, self.max_model_len)
+                    * self.CHARS_PER_TOKEN
+                )
                 char_spans = Chunker.chunk_sentences_by_chars(text, max_chars)
 
                 chunk_texts = [text[start:end] for start, end in char_spans]
@@ -90,6 +91,10 @@ class BedrockEmbeddingProvider(EmbeddingProvider):
                     chunks = [Chunk((0, len(text)), embeddings[0])]
 
             elif chunking_mode == "fixed":
+                max_chars = (
+                    resolve_chunk_size(chunk_size, self.max_model_len)
+                    * self.CHARS_PER_TOKEN
+                )
                 char_spans = Chunker.chunk_by_chars(text, max_chars)
 
                 chunk_texts = [text[start:end] for start, end in char_spans]

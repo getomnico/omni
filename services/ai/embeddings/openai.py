@@ -4,6 +4,7 @@ import httpx
 import asyncio
 
 from . import EmbeddingProvider, Chunk
+from .options import resolve_chunk_size
 from processing import Chunker
 
 logger = logging.getLogger(__name__)
@@ -73,12 +74,6 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
         start_time = time.time()
 
-        # Convert token-based sizes to chars for char-based chunking
-        if chunk_size:
-            max_chars = chunk_size * CHARS_PER_TOKEN
-            if self.max_model_len:
-                max_chars = min(max_chars, self.max_model_len * CHARS_PER_TOKEN)
-
         try:
             if chunking_mode == "none":
                 t0 = time.monotonic()
@@ -89,6 +84,10 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
                 chunks = [Chunk((0, len(text)), embeddings[0])]
 
             elif chunking_mode == "sentence":
+                max_chars = (
+                    resolve_chunk_size(chunk_size, self.max_model_len)
+                    * CHARS_PER_TOKEN
+                )
                 char_spans = Chunker.chunk_sentences_by_chars(text, max_chars)
                 chunk_texts = [text[start:end] for start, end in char_spans]
 
@@ -103,6 +102,10 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
                 ]
 
             elif chunking_mode == "fixed":
+                max_chars = (
+                    resolve_chunk_size(chunk_size, self.max_model_len)
+                    * CHARS_PER_TOKEN
+                )
                 char_spans = Chunker.chunk_by_chars(text, max_chars)
                 chunk_texts = [text[start:end] for start, end in char_spans]
 
