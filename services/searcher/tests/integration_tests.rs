@@ -201,6 +201,13 @@ async fn test_fulltext_search() -> Result<()> {
             assert!(count > 0, "Facet count should be positive, got {}", count);
         }
     }
+    for result in response["results"].as_array().unwrap() {
+        assert_eq!(
+            result["source_type"].as_str(),
+            Some("local_files"),
+            "Fulltext results should include source_type populated by the search query"
+        );
+    }
 
     // Query 5: phrase ranking — "blue square nda"
     // BlueSquare NDA should rank first (phrase match on "blue square" in title & content).
@@ -404,6 +411,21 @@ async fn test_search_with_limit() -> Result<()> {
     assert_eq!(status, StatusCode::OK);
     let page2_titles = result_titles(&page2_response);
 
+    let total_count = page1_response["total_count"].as_i64().unwrap();
+    let (status, last_page_response) = fixture
+        .search_with_body(json!({
+            "query": "square",
+            "mode": "fulltext",
+            "limit": 2,
+            "offset": total_count
+        }))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !last_page_response["has_more"].as_bool().unwrap_or(true),
+        "Page starting at total_count should have has_more=false"
+    );
+
     // No overlapping titles between pages
     for title in &page1_titles {
         assert!(
@@ -414,6 +436,127 @@ async fn test_search_with_limit() -> Result<()> {
             page2_titles
         );
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_include_facets_false_preserves_total_count() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let _doc_ids = fixture.seed_search_data().await?;
+
+    let (status, response) = fixture
+        .search_with_body(json!({
+            "query": "square",
+            "mode": "fulltext",
+            "limit": 2,
+            "offset": 0,
+            "include_facets": false
+        }))
+        .await?;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        response.get("facets").is_none(),
+        "facets should be omitted when include_facets=false: {:?}",
+        response
+    );
+    assert!(
+        response["total_count"].as_i64().unwrap() > 0,
+        "total_count should still be populated when facets are disabled"
+    );
+    assert_eq!(
+        response["has_more"].as_bool().unwrap(),
+        response["total_count"].as_i64().unwrap() > 2,
+        "has_more should use offset + limit < total_count"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_unfiltered_facets_with_source_type_filter() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    let content_storage = shared::ContentStorage::new(pool.clone());
+
+    let google_source_id = Ulid::new().to_string();
+    sqlx::query(
+        r#"
+        INSERT INTO sources (id, name, source_type, config, created_by, created_at, updated_at)
+        VALUES ($1, 'Google Facet Test Source', 'google_drive', '{}', '01JGF7V3E0Y2R1X8P5Q7W9T4N6', NOW(), NOW())
+        "#,
+    )
+    .bind(&google_source_id)
+    .execute(pool)
+    .await?;
+
+    for (source_id, external_id, title) in [
+        (
+            "01JGF7V3E0Y2R1X8P5Q7W9T4N7".to_string(),
+            "facetglobal_local",
+            "Local Facetglobal Plan",
+        ),
+        (
+            google_source_id,
+            "facetglobal_google",
+            "Google Facetglobal Plan",
+        ),
+    ] {
+        let doc_id = Ulid::new().to_string();
+        let content = "facetglobal roadmap planning document for source facet tests";
+        let content_id = content_storage.store_text(content.to_string()).await?;
+        sqlx::query(
+            r#"
+            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, content, metadata, permissions, attributes, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, 'document', $6, '{}', '{"public": true, "users": [], "groups": []}', '{}', NOW(), NOW())
+            "#,
+        )
+        .bind(&doc_id)
+        .bind(&source_id)
+        .bind(external_id)
+        .bind(title)
+        .bind(&content_id)
+        .bind(content)
+        .execute(pool)
+        .await?;
+    }
+
+    let (status, response) = fixture
+        .search_with_body(json!({
+            "query": "facetglobal",
+            "mode": "fulltext",
+            "source_types": ["local_files"],
+            "limit": 10
+        }))
+        .await?;
+
+    assert_eq!(status, StatusCode::OK);
+    let results = response["results"].as_array().unwrap();
+    assert_eq!(
+        results.len(),
+        1,
+        "source filter should limit hits to local_files"
+    );
+    assert_eq!(results[0]["source_type"].as_str(), Some("local_files"));
+
+    let source_facet = response["facets"]
+        .as_array()
+        .expect("Expected unfiltered facets")
+        .iter()
+        .find(|facet| facet["name"].as_str() == Some("source_type"))
+        .expect("Expected source_type facet");
+    let facet_values: Vec<&str> = source_facet["values"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|value| value["value"].as_str())
+        .collect();
+    assert!(
+        facet_values.contains(&"local_files") && facet_values.contains(&"google_drive"),
+        "source_type facets should remain unfiltered by active source filter: {:?}",
+        facet_values
+    );
 
     Ok(())
 }

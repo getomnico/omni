@@ -238,7 +238,6 @@ impl SearchEngine {
 
         let repo = DocumentRepository::new(self.db_pool.pool());
         let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
-        let limit = request.limit();
 
         // Empty query is allowed ONLY if some narrowing filter will scope the
         // result set. Otherwise `filter_only_search` would scan the entire
@@ -273,15 +272,33 @@ impl SearchEngine {
             all_source_ids.clone()
         };
 
+        let tantivy_query = search_repo.build_query_text(&request.query).await?;
+
         let search_future = async {
             let start_ts = Instant::now();
             let res = match request.search_mode() {
                 SearchMode::Fulltext => {
-                    self.fulltext_search(&search_repo, &request, &filtered_source_ids, &user_groups)
-                        .await
+                    self.fulltext_search(
+                        &search_repo,
+                        &request,
+                        &filtered_source_ids,
+                        &user_groups,
+                        tantivy_query.as_deref(),
+                    )
+                    .await
                 }
-                SearchMode::Semantic => self.semantic_search(&request).await,
-                SearchMode::Hybrid => self.hybrid_search(&request, &user_groups).await,
+                SearchMode::Semantic => {
+                    let results = self.semantic_search(&request).await?;
+                    let total_count = results.len() as i64;
+                    Ok((results, total_count))
+                }
+                SearchMode::Hybrid => {
+                    let results = self
+                        .hybrid_search(&request, &user_groups, tantivy_query.as_deref())
+                        .await?;
+                    let total_count = results.len() as i64;
+                    Ok((results, total_count))
+                }
             };
 
             debug!("Search future completed in: {:?}", start_ts.elapsed());
@@ -293,8 +310,9 @@ impl SearchEngine {
             if request.include_facets() {
                 let start_ts = Instant::now();
                 let facets = search_repo
-                    .get_facet_counts(
+                    .get_facet_counts_with_query_text(
                         &request.query,
+                        tantivy_query.as_deref(),
                         &all_source_ids,
                         None,
                         None,
@@ -316,40 +334,8 @@ impl SearchEngine {
             }
         };
 
-        // Filtered facets: used only for total_count (pagination)
-        let filtered_facets_future = async {
-            if request.include_facets() {
-                let start_ts = Instant::now();
-                let facets = search_repo
-                    .get_facet_counts(
-                        &request.query,
-                        &filtered_source_ids,
-                        request.content_types.as_deref(),
-                        request.attribute_filters.as_ref(),
-                        request.user_email().map(|e| e.as_str()),
-                        &user_groups,
-                        request.date_filter.as_ref(),
-                        request.person_filters.as_deref(),
-                    )
-                    .await
-                    .unwrap_or_else(|e| {
-                        info!("Failed to get filtered facet counts: {}", e);
-                        vec![]
-                    });
-
-                debug!("Filtered facets fetched in {:?}", start_ts.elapsed());
-                facets
-            } else {
-                vec![]
-            }
-        };
-
-        let (search_result, facets, filtered_facets) = tokio::join!(
-            search_future,
-            unfiltered_facets_future,
-            filtered_facets_future
-        );
-        let mut results = search_result?;
+        let (search_result, facets) = tokio::join!(search_future, unfiltered_facets_future);
+        let (mut results, total_count) = search_result?;
 
         // Apply source boost for implicit source words (e.g. "standup slack")
         if !parsed.boosted_source_types.is_empty() {
@@ -410,16 +396,13 @@ impl SearchEngine {
         self.populate_fulltext_highlights(&search_repo, &request.query, &mut results)
             .await?;
 
-        let total_count: i64 = filtered_facets
-            .iter()
-            .flat_map(|f| f.values.iter().filter_map(|fv| fv.count))
-            .sum::<i64>()
-            .saturating_sub(dedup_removed as i64)
-            .max(0);
-        let has_more = total_count >= limit;
+        let total_count = total_count.saturating_sub(dedup_removed as i64).max(0);
+        let has_more = request.offset() + request.limit() < total_count;
         let query_time = start_time.elapsed().as_millis() as u64;
 
-        self.populate_source_types(&mut results).await?;
+        if !matches!(request.search_mode(), SearchMode::Fulltext) {
+            self.populate_source_types(&mut results).await?;
+        }
 
         // Build active_filters from merged request state
         let active_filters = build_active_filters(&request);
@@ -497,7 +480,8 @@ impl SearchEngine {
         request: &SearchRequest,
         source_ids: &[String],
         user_groups: &[String],
-    ) -> Result<Vec<SearchResult>> {
+        tantivy_query: Option<&str>,
+    ) -> Result<(Vec<SearchResult>, i64)> {
         let start_time = Instant::now();
         let content_types = request.content_types.as_deref();
         let attribute_filters = request.attribute_filters.as_ref();
@@ -506,6 +490,7 @@ impl SearchEngine {
         let search_hits = repo
             .search(
                 &request.query,
+                tantivy_query,
                 source_ids,
                 content_types,
                 attribute_filters,
@@ -520,6 +505,7 @@ impl SearchEngine {
                 self.config.recency_half_life_days,
             )
             .await?;
+        let (search_hits, total_count) = search_hits;
 
         let mut results = Vec::new();
 
@@ -544,24 +530,16 @@ impl SearchEngine {
                 highlights,
                 match_type: "fulltext".to_string(),
                 content: None,
-                source_type: None,
+                source_type: search_hit.source_type,
                 also_in: Vec::new(),
             });
-        }
-
-        const MIN_SCORE_RATIO: f32 = 0.15;
-        if let Some(max_score) = results.first().map(|r| r.score) {
-            if max_score > 0.0 {
-                let threshold = max_score * MIN_SCORE_RATIO;
-                results.retain(|r| r.score >= threshold);
-            }
         }
 
         info!(
             "Fulltext search completed in {}ms",
             start_time.elapsed().as_millis()
         );
-        Ok(results)
+        Ok((results, total_count))
     }
 
     async fn semantic_search(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
@@ -858,7 +836,10 @@ impl SearchEngine {
         let results = if !request.query.trim().is_empty() {
             // Query provided: do hybrid search within document
             info!("Query provided, hybrid search within document");
-            self.hybrid_search(request, &user_groups).await?
+            let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
+            let tantivy_query = search_repo.build_query_text(&request.query).await?;
+            self.hybrid_search(request, &user_groups, tantivy_query.as_deref())
+                .await?
         } else {
             info!(
                 "No query provided, returning first 500 lines from document ID {}",
@@ -1047,6 +1028,7 @@ impl SearchEngine {
         &self,
         request: &SearchRequest,
         user_groups: &[String],
+        tantivy_query: Option<&str>,
     ) -> Result<Vec<SearchResult>> {
         info!("Performing hybrid search for query: '{}'", request.query);
         let start_time = Instant::now();
@@ -1056,7 +1038,13 @@ impl SearchEngine {
         let source_ids = doc_repo
             .fetch_active_source_ids(request.source_types.as_deref())
             .await?;
-        let fts_future = self.fulltext_search(&search_repo, request, &source_ids, user_groups);
+        let fts_future = self.fulltext_search(
+            &search_repo,
+            request,
+            &source_ids,
+            user_groups,
+            tantivy_query,
+        );
 
         // Apply timeout to semantic search
         let semantic_future = tokio::time::timeout(
@@ -1065,7 +1053,7 @@ impl SearchEngine {
         );
 
         let (fts_results, semantic_results) = tokio::join!(fts_future, semantic_future);
-        let fts_results = fts_results?;
+        let (fts_results, _fts_total_count) = fts_results?;
 
         // Handle semantic search timeout gracefully
         let semantic_results = match semantic_results {
@@ -1113,7 +1101,7 @@ impl SearchEngine {
                     highlights: result.highlights,
                     match_type: "fulltext".to_string(),
                     content: result.content,
-                    source_type: None,
+                    source_type: result.source_type,
                     also_in: Vec::new(),
                 },
             );
@@ -1400,8 +1388,15 @@ impl SearchEngine {
         let source_ids = doc_repo
             .fetch_active_source_ids(request.source_types.as_deref())
             .await?;
-        let fts_results = self
-            .fulltext_search(&search_repo, request, &source_ids, &user_groups)
+        let tantivy_query = search_repo.build_query_text(&request.query).await?;
+        let (fts_results, _fts_total_count) = self
+            .fulltext_search(
+                &search_repo,
+                request,
+                &source_ids,
+                &user_groups,
+                tantivy_query.as_deref(),
+            )
             .await?;
 
         // Get semantic search results enhanced with expanded context for RAG
