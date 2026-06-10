@@ -475,6 +475,79 @@ async fn test_include_facets_false_preserves_total_count() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_total_count_matches_relevance_filtered_fulltext_results() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    let content_storage = shared::ContentStorage::new(pool.clone());
+    let source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
+
+    let high_doc_id = Ulid::new().to_string();
+    let high_content = "paginationalpha paginationbeta paginationgamma paginationdelta paginationneedle. paginationalpha paginationbeta paginationgamma paginationdelta paginationneedle.";
+    let high_content_id = content_storage.store_text(high_content.to_string()).await?;
+    sqlx::query(
+        r#"
+        INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, content, metadata, permissions, attributes, created_at, updated_at)
+        VALUES ($1, $2, 'pagination_relevance_high', 'PaginationAlpha PaginationBeta PaginationGamma PaginationDelta PaginationNeedle', $3, 'document', $4, '{}', '{"public": true, "users": [], "groups": []}', '{}', NOW(), NOW())
+        "#,
+    )
+    .bind(&high_doc_id)
+    .bind(source_id)
+    .bind(&high_content_id)
+    .bind(high_content)
+    .execute(pool)
+    .await?;
+
+    for idx in 0..30 {
+        let doc_id = Ulid::new().to_string();
+        let content = format!("paginationneedle weak match filler document number {idx}");
+        let content_id = content_storage.store_text(content.clone()).await?;
+        sqlx::query(
+            r#"
+            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, content, metadata, permissions, attributes, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, 'document', $6, '{}', '{"public": true, "users": [], "groups": []}', '{}', NOW(), NOW())
+            "#,
+        )
+        .bind(&doc_id)
+        .bind(source_id)
+        .bind(format!("pagination_relevance_low_{idx}"))
+        .bind(format!("Weak PaginationNeedle Match {idx}"))
+        .bind(&content_id)
+        .bind(content)
+        .execute(pool)
+        .await?;
+    }
+
+    let (status, response) = fixture
+        .search_with_body(json!({
+            "query": "paginationalpha paginationbeta paginationgamma paginationdelta paginationneedle",
+            "mode": "fulltext",
+            "limit": 10,
+            "offset": 0,
+            "include_facets": false
+        }))
+        .await?;
+
+    assert_eq!(status, StatusCode::OK);
+    let titles = result_titles(&response);
+    assert_eq!(
+        titles,
+        vec!["PaginationAlpha PaginationBeta PaginationGamma PaginationDelta PaginationNeedle"],
+        "Weak one-term matches should be filtered from displayed results"
+    );
+    assert_eq!(
+        response["total_count"].as_i64().unwrap(),
+        titles.len() as i64,
+        "total_count should be counted after the same relevance filter as displayed hits"
+    );
+    assert!(
+        !response["has_more"].as_bool().unwrap(),
+        "Pagination should not advertise more pages after low relevance matches are filtered"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_unfiltered_facets_with_source_type_filter() -> Result<()> {
     let fixture = SearcherTestFixture::new().await?;
     let pool = fixture.test_env.db_pool.pool();
