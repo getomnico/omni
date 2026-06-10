@@ -1196,6 +1196,123 @@ async fn test_search_domain_wide_access() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn test_search_permissions_do_not_match_tokenized_email_parts() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+
+    insert_group_test_document(
+        pool,
+        "exact-email-permission-doc",
+        "Synthetic Exact Access Document",
+        "synthetic access document exact email permission",
+        DocumentPermissions {
+            public: false,
+            users: vec!["alex.search@example.test".into()],
+            groups: vec![],
+        },
+    )
+    .await;
+
+    insert_group_test_document(
+        pool,
+        "split-token-permission-doc",
+        "Synthetic Split Token Document",
+        "synthetic access document wrong domain split tokens",
+        DocumentPermissions {
+            public: false,
+            users: vec!["alex.search@other.test".into(), "casey@example.test".into()],
+            groups: vec![],
+        },
+    )
+    .await;
+
+    let (status, body) = fixture
+        .search_with_user(
+            "synthetic access document",
+            Some("fulltext"),
+            Some(10),
+            Some("alex.search@example.test"),
+        )
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+
+    let titles: Vec<&str> = body["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|result| result["document"]["title"].as_str().unwrap())
+        .collect();
+
+    assert!(titles.contains(&"Synthetic Exact Access Document"));
+    assert!(
+        !titles.contains(&"Synthetic Split Token Document"),
+        "permission filtering must not match a document just because one user shares the localpart and another shares the domain"
+    );
+
+    let (status, body) = fixture
+        .search_with_user(
+            "synthetic access document",
+            Some("fulltext"),
+            Some(10),
+            Some("alex"),
+        )
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let results = body["results"].as_array().unwrap();
+    assert!(
+        results.is_empty(),
+        "permission filtering must not match a tokenized fragment of an email address"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_search_respects_group_permissions_with_special_characters() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    let group_email = "slack-channel:T_TEST:C_TEST_CHANNEL";
+
+    insert_group_test_document(
+        pool,
+        "special-group-doc-1",
+        "Synthetic Channel Access Notes",
+        "synthetic channel access notes for special character group permission",
+        DocumentPermissions {
+            public: false,
+            users: vec![],
+            groups: vec![group_email.into()],
+        },
+    )
+    .await;
+
+    let group_repo = GroupRepository::new(pool);
+    let group = group_repo
+        .upsert_group(TEST_SOURCE_ID, group_email, Some("Synthetic Channel"), None)
+        .await?;
+    group_repo
+        .sync_group_members(&group.id, &["channel-member@example.com".into()])
+        .await?;
+
+    let (status, body) = fixture
+        .search_with_user(
+            "synthetic channel access notes",
+            Some("fulltext"),
+            Some(10),
+            Some("channel-member@example.com"),
+        )
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let results = body["results"].as_array().unwrap();
+    assert!(
+        !results.is_empty(),
+        "group values containing ':' should be queryable through indexed permissions"
+    );
+
+    Ok(())
+}
+
 // ============================================================================
 // Multilingual Search Tests
 // ============================================================================

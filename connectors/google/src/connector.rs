@@ -560,9 +560,9 @@ mod tests {
 
     #[test]
     fn round_trips_simple_msgid() {
-        let id = build_attachment_doc_id("CABc123@mail.gmail.com", "report.pdf", 12345);
+        let id = build_attachment_doc_id("CABc123@mail.example.test", "report.pdf", 12345);
         let parsed = parse_attachment_doc_id(&id).unwrap();
-        assert_eq!(parsed.rfc822_msgid, "CABc123@mail.gmail.com");
+        assert_eq!(parsed.rfc822_msgid, "CABc123@mail.example.test");
         assert_eq!(parsed.filename, "report.pdf");
         assert_eq!(parsed.size, 12345);
     }
@@ -573,21 +573,20 @@ mod tests {
         // filenames may contain colons, slashes, unicode, parens.
         let cases = [
             (
-                "MA0P287MB3036D91CF4E25D0F29D4941BF3262@MA0P287MB3036.INDP287.PROD.OUTLOOK.COM",
+                "MA0P287MB3036D91CF4E25D0F29D4941BF3262@mailbox.example.test",
                 "weird:name.pdf",
             ),
             (
-                "0108019cd78ca34a-33533383-c422+42e2-9016-0632c1a2f408-000000@ap-southeast-2.amazonses.com",
+                "0108019cd78ca34a-33533383-c422+42e2-9016-0632c1a2f408-000000@mailer.example.test",
                 "path/with slashes.docx",
             ),
             (
-                "<unique-id+tag=value@example.com>".trim_start_matches('<').trim_end_matches('>'),
+                "<unique-id+tag=value@example.com>"
+                    .trim_start_matches('<')
+                    .trim_end_matches('>'),
                 "résumé final.pdf",
             ),
-            (
-                "abc.def.ghi@example.com",
-                "name with spaces (1).pdf",
-            ),
+            ("abc.def.ghi@example.com", "name with spaces (1).pdf"),
         ];
         for (msgid, filename) in cases {
             let id = build_attachment_doc_id(msgid, filename, 42);
@@ -600,19 +599,20 @@ mod tests {
 
     #[test]
     fn rejects_missing_att_marker() {
-        assert!(parse_attachment_doc_id("CABc123@mail.gmail.com:report.pdf:1234").is_err());
+        assert!(parse_attachment_doc_id("CABc123@mail.example.test:report.pdf:1234").is_err());
     }
 
     #[test]
     fn rejects_too_few_segments() {
         // Missing filename:size after :att:
-        assert!(parse_attachment_doc_id("CABc123%40mail.gmail.com:att:report.pdf").is_err());
+        assert!(parse_attachment_doc_id("CABc123%40mail.example.test:att:report.pdf").is_err());
     }
 
     #[test]
     fn rejects_non_numeric_size() {
         assert!(
-            parse_attachment_doc_id("CABc123%40mail.gmail.com:att:report.pdf:notanumber").is_err()
+            parse_attachment_doc_id("CABc123%40mail.example.test:att:report.pdf:notanumber")
+                .is_err()
         );
     }
 
@@ -621,8 +621,8 @@ mod tests {
         // Empty rfc822_msgid
         assert!(parse_attachment_doc_id(":att:report.pdf:1234").is_err());
         // Empty filename
-        assert!(parse_attachment_doc_id("CABc123%40mail.gmail.com:att::1234").is_err());
+        assert!(parse_attachment_doc_id("CABc123%40mail.example.test:att::1234").is_err());
         // Empty size
-        assert!(parse_attachment_doc_id("CABc123%40mail.gmail.com:att:report.pdf:").is_err());
+        assert!(parse_attachment_doc_id("CABc123%40mail.example.test:att:report.pdf:").is_err());
     }
 }

@@ -637,33 +637,37 @@ impl DocumentRepository {
 /// Generate SQL condition to check if user has permission to access document.
 /// Checks: public access, direct user access, domain-wide access, and group membership.
 ///
-/// Uses JSONB operators (`@>`, `?`) for exact matching instead of BM25 `@@@`
-/// because BM25 tokenizes emails (e.g. "alice@example.com" → ["alice", "example", "com"]),
-/// causing false positives when different addresses share tokens.
+/// Uses ParadeDB fielded queries so permission checks are evaluated by the
+/// BM25 index instead of as JSONB heap filters. The permissions field must be
+/// indexed with the literal tokenizer; otherwise ACL values such as emails can
+/// be tokenized into partial matches.
 pub fn generate_permission_filter(user_email: &str, user_groups: &[String]) -> String {
-    let escaped_email = user_email.replace('\'', "''");
-
-    let mut conditions = vec![
-        "permissions @> '{\"public\": true}'::jsonb".to_string(),
-        format!("permissions->'users' ? '{}'", escaped_email),
+    let mut terms = vec![
+        "public:true".to_string(),
+        format!("users:{}", quote_permission_query_value(user_email)),
     ];
 
-    // Domain-wide access: exact JSON containment check to avoid BM25 tokenizer
-    // splitting email addresses (e.g. "engineering@example.com" matching "example.com")
     if let Some(domain) = user_email.split('@').nth(1) {
         if !domain.is_empty() {
-            let escaped_domain = domain.replace('\'', "''");
-            conditions.push(format!("permissions->'groups' ? '{}'", escaped_domain));
+            terms.push(format!("groups:{}", quote_permission_query_value(domain)));
         }
     }
 
-    // Group membership: match each group the user belongs to
     for group_email in user_groups {
-        let escaped_group = group_email.replace('\'', "''");
-        conditions.push(format!("permissions->'groups' ? '{}'", escaped_group));
+        terms.push(format!(
+            "groups:{}",
+            quote_permission_query_value(group_email)
+        ));
     }
 
-    format!("({})", conditions.join(" OR "))
+    format!(
+        "permissions @@@ '{}'",
+        terms.join(" OR ").replace('\'', "''")
+    )
+}
+
+fn quote_permission_query_value(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// Convert a JSON value to a string suitable for ParadeDB term queries

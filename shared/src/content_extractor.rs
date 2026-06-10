@@ -888,9 +888,12 @@ mod tests {
     fn test_extract_eml_simple() {
         let result = extract_content(SIMPLE_EML, "message/rfc822", None).unwrap();
         assert!(result.contains("test"), "subject missing");
-        assert!(result.contains("andris@kreata.ee"), "from address missing");
         assert!(
-            result.contains("andris.reinman@gmail.com"),
+            result.contains("sender@example.test"),
+            "from address missing"
+        );
+        assert!(
+            result.contains("recipient@example.test"),
             "to address missing"
         );
         assert!(result.contains("Hello world!"), "body missing");
