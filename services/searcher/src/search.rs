@@ -407,6 +407,9 @@ impl SearchEngine {
             request.limit() as usize,
         );
 
+        self.populate_fulltext_highlights(&search_repo, &request.query, &mut results)
+            .await?;
+
         let total_count: i64 = filtered_facets
             .iter()
             .flat_map(|f| f.values.iter().filter_map(|fv| fv.count))
@@ -456,6 +459,36 @@ impl SearchEngine {
         }
 
         Ok(response)
+    }
+
+    async fn populate_fulltext_highlights(
+        &self,
+        repo: &SearchDocumentRepository,
+        query: &str,
+        results: &mut [SearchResult],
+    ) -> Result<()> {
+        if query.trim().is_empty() {
+            return Ok(());
+        }
+
+        let document_ids: Vec<String> = results
+            .iter()
+            .filter(|result| matches!(result.match_type.as_str(), "fulltext" | "hybrid"))
+            .map(|result| result.document.id.clone())
+            .collect();
+
+        if document_ids.is_empty() {
+            return Ok(());
+        }
+
+        let highlights = repo.fetch_highlights(&document_ids, query).await?;
+        for result in results.iter_mut() {
+            if let Some(snippets) = highlights.get(&result.document.id) {
+                result.highlights = snippets.clone();
+            }
+        }
+
+        Ok(())
     }
 
     async fn fulltext_search(

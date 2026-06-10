@@ -91,8 +91,8 @@ impl SearchDocumentRepository {
 
         let tantivy_query = build_tantivy_query(&terms, query);
 
-        // Bind params: $1 = tantivy query string, $2 = original query (for snippets), then filters
-        let mut param_idx = 3;
+        // Bind params: $1 = tantivy query string, then filters
+        let mut param_idx = 2;
 
         let mut filters = Vec::new();
         build_common_filters(
@@ -131,8 +131,8 @@ impl SearchDocumentRepository {
             format!(" AND {}", filters.join(" AND "))
         };
 
-        // Bind order: $1=tantivy_query, $2=original_query, filters...,
-        // candidate_limit, limit, offset, recency_weight, recency_half_life
+        // Bind order: $1=tantivy_query, filters..., candidate_limit, limit,
+        // offset, recency_weight, recency_half_life
         let candidate_limit_idx = param_idx;
         let limit_idx = param_idx + 1;
         let offset_idx = param_idx + 2;
@@ -169,10 +169,7 @@ impl SearchDocumentRepository {
                    d.source_id, d.external_id, d.title, d.content_id, d.content_type,
                    d.file_size, d.file_extension, d.url,
                    d.metadata, d.permissions, d.attributes, d.created_at, d.updated_at, d.last_indexed_at,
-                   ARRAY[ts_headline('english', d.content,
-                       plainto_tsquery('english', $2),
-                       'StartSel=**, StopSel=**, MaxFragments=3, MaxWords=30, MinWords=10'
-                   )] as content_snippets
+                   NULL::text[] as content_snippets
             FROM ranked r
             JOIN documents d ON d.id = r.id
             ORDER BY r.score DESC"#,
@@ -184,9 +181,7 @@ impl SearchDocumentRepository {
         );
         debug!("Full search query: {}", full_query);
 
-        let mut query_builder = sqlx::query_as::<_, SearchHit>(&full_query)
-            .bind(&tantivy_query)
-            .bind(query);
+        let mut query_builder = sqlx::query_as::<_, SearchHit>(&full_query).bind(&tantivy_query);
 
         query_builder = query_builder.bind(source_ids);
 
@@ -299,6 +294,47 @@ impl SearchDocumentRepository {
 
         let results = query_builder.fetch_all(&self.pool).await?;
         Ok(results)
+    }
+
+    pub async fn fetch_highlights(
+        &self,
+        document_ids: &[String],
+        query: &str,
+    ) -> Result<HashMap<String, Vec<String>>, DatabaseError> {
+        if document_ids.is_empty() || query.trim().is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let rows: Vec<(String, Option<Vec<String>>)> = sqlx::query_as(
+            r#"
+            SELECT id,
+                   ARRAY[ts_headline('english', content,
+                       plainto_tsquery('english', $2),
+                       'StartSel=**, StopSel=**, MaxFragments=3, MaxWords=30, MinWords=10'
+                   )] as content_snippets
+            FROM documents
+            WHERE id = ANY($1)
+            "#,
+        )
+        .bind(document_ids)
+        .bind(query)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .filter_map(|(id, snippets)| {
+                let snippets = snippets?
+                    .into_iter()
+                    .filter(|snippet| !snippet.is_empty())
+                    .collect::<Vec<String>>();
+                if snippets.is_empty() {
+                    None
+                } else {
+                    Some((id, snippets))
+                }
+            })
+            .collect())
     }
 
     pub async fn get_facet_counts(
