@@ -3,6 +3,8 @@ import type { PageServerLoad, Actions } from './$types'
 import { requireAdmin } from '$lib/server/authHelpers'
 import { getSourceById, updateSourceById } from '$lib/server/db/sources'
 import { getConfig } from '$lib/server/config'
+import { decryptConfig } from '$lib/server/crypto/encryption'
+import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
 import { SourceType } from '$lib/types'
 
 export const load: PageServerLoad = async ({ params, locals }) => {
@@ -41,12 +43,64 @@ export const actions: Actions = {
 
         const formData = await request.formData()
         const isActive = formData.has('enabled')
+        const botToken = ((formData.get('botToken') as string | null) ?? '').trim()
+        const appToken = ((formData.get('appToken') as string | null) ?? '').trim()
+
+        if (botToken && !botToken.startsWith('xoxb-')) {
+            throw error(400, 'Bot token must start with xoxb-')
+        }
+
+        if (appToken && !appToken.startsWith('xapp-')) {
+            throw error(400, 'App-Level Token must start with xapp-')
+        }
+
+        const credentialUpdates: Record<string, string> = {}
+        if (botToken) {
+            credentialUpdates.bot_token = botToken
+        }
+        if (appToken) {
+            credentialUpdates.app_token = appToken
+        }
+
+        let mergedCredentials: Record<string, unknown> | null = null
+        if (Object.keys(credentialUpdates).length > 0) {
+            const existingCredentials = await serviceCredentialsRepository.getOrgCredsBySourceId(
+                source.id,
+            )
+
+            if (!existingCredentials) {
+                throw error(404, 'No Slack credentials exist for this source')
+            }
+
+            try {
+                mergedCredentials = {
+                    ...decryptConfig(existingCredentials.credentials),
+                    ...credentialUpdates,
+                }
+            } catch (err) {
+                console.error(`Failed to decrypt Slack credentials for source ${source.id}:`, err)
+                throw error(500, 'Failed to read existing Slack credentials')
+            }
+        }
 
         try {
             await updateSourceById(source.id, {
                 isActive,
                 config: source.config || {},
             })
+
+            if (mergedCredentials) {
+                const updatedCredentials = await serviceCredentialsRepository.updateBySourceId(
+                    source.id,
+                    {
+                        credentials: mergedCredentials,
+                    },
+                )
+
+                if (!updatedCredentials) {
+                    throw new Error('Failed to update Slack credentials')
+                }
+            }
 
             if (isActive) {
                 const connectorManagerUrl = getConfig().services.connectorManagerUrl
