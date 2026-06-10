@@ -192,7 +192,7 @@
             </div>
 
             {#if selectedInterval === 'custom'}
-                <div class="grid gap-3 sm:grid-cols-[1fr_12rem]">
+                <div class="flex flex-col gap-3 sm:flex-row">
                     <div class="space-y-2">
                         <Label for="custom-sync-interval-value">Custom interval</Label>
                         <Input
@@ -202,6 +202,7 @@
                             pattern="[0-9]*"
                             disabled={isSaving}
                             bind:value={customValue}
+                            class="sm:w-32"
                             aria-invalid={Boolean(validationMessage)} />
                     </div>
                     <div class="space-y-2">
