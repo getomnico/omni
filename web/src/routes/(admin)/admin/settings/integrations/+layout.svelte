@@ -44,7 +44,7 @@
                         <Card.Title>Delete Source</Card.Title>
                         <Card.Description>
                             Permanently delete this source and all its synced data, credentials, and
-                            sync history.
+                            sync history
                         </Card.Description>
                     </div>
                     <Button

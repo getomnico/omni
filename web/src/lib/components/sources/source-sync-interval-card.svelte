@@ -38,10 +38,12 @@
         { value: 'days', label: 'Days' },
     ]
 
-    const currentIntervalLabel = $derived(formatSyncInterval(syncIntervalSeconds))
+    const selectedSeconds = $derived(getSelectedSeconds())
     const selectedIntervalLabel = $derived(
         selectedInterval === 'custom'
-            ? 'Custom'
+            ? selectedSeconds
+                ? `Custom: ${formatSyncInterval(selectedSeconds)}`
+                : 'Custom'
             : SYNC_INTERVAL_PRESETS.find((option) => option.value === selectedInterval)?.label ||
                   'Select interval',
     )
@@ -49,7 +51,6 @@
         unitOptions.find((option) => option.value === customUnit)?.label || 'Unit',
     )
     const validationMessage = $derived(getValidationMessage())
-    const selectedSeconds = $derived(getSelectedSeconds())
     const hasChanges = $derived(
         selectedSeconds !== null &&
             (syncIntervalSeconds === null || selectedSeconds !== syncIntervalSeconds),
@@ -157,10 +158,7 @@
 <Card.Root>
     <Card.Header>
         <Card.Title>Sync Interval</Card.Title>
-        <Card.Description>
-            Current schedule: <span class="text-foreground font-medium"
-                >{currentIntervalLabel}</span>
-        </Card.Description>
+        <Card.Description>Choose how often Omni should sync this source</Card.Description>
     </Card.Header>
     <form
         onsubmit={(event) => {
@@ -236,10 +234,6 @@
 
             {#if validationMessage || errorMessage}
                 <p class="text-destructive text-sm">{errorMessage || validationMessage}</p>
-            {:else if selectedSeconds}
-                <p class="text-muted-foreground text-sm">
-                    New schedule: {formatSyncInterval(selectedSeconds)}.
-                </p>
             {/if}
         </Card.Content>
         <Card.Footer class="mt-4 flex justify-end border-t">
