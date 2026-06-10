@@ -86,6 +86,8 @@
             // Trigger initial sync
             const syncResponse = await fetch(`/api/sources/${source.id}/sync`, {
                 method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({}),
             })
 
             if (!syncResponse.ok) {

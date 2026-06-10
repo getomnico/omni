@@ -60,6 +60,8 @@ export const POST: RequestHandler = async ({ request, locals, fetch }) => {
         try {
             const syncResponse = await fetch(`/api/sources/${sourceId}/sync`, {
                 method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({}),
             })
 
             if (!syncResponse.ok) {
@@ -177,6 +179,8 @@ export const PATCH: RequestHandler = async ({ request, locals, fetch }) => {
             try {
                 const syncResponse = await fetch(`/api/sources/${sourceId}/sync`, {
                     method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({}),
                 })
                 if (!syncResponse.ok) {
                     console.warn(

@@ -3,7 +3,30 @@ import type { RequestHandler } from './$types'
 import { getConfig } from '$lib/server/config'
 import { logger } from '$lib/server/logger'
 
-export const POST: RequestHandler = async ({ params, fetch }) => {
+type SyncMode = 'incremental' | 'full'
+
+async function getSyncMode(request: Request): Promise<SyncMode> {
+    const body = await request.json().catch(() => {
+        throw error(400, 'Expected JSON request body')
+    })
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        throw error(400, 'Expected JSON object request body')
+    }
+
+    const mode = (body as { sync_mode?: unknown }).sync_mode ?? 'incremental'
+
+    if (mode !== 'incremental' && mode !== 'full') {
+        throw error(400, 'sync_mode must be "incremental" or "full"')
+    }
+
+    return mode
+}
+
+function getSyncModeLabel(mode: SyncMode) {
+    return mode === 'full' ? 'Full sync' : 'Incremental sync'
+}
+
+export const POST: RequestHandler = async ({ params, request, fetch }) => {
     const { sourceId } = params
 
     if (!sourceId) {
@@ -11,12 +34,20 @@ export const POST: RequestHandler = async ({ params, fetch }) => {
     }
 
     try {
+        const mode = await getSyncMode(request)
         const config = getConfig()
         const connectorManagerUrl = config.services.connectorManagerUrl
 
-        // Call connector-manager's sync endpoint
-        const syncResponse = await fetch(`${connectorManagerUrl}/sync/${sourceId}`, {
+        // Call connector-manager's mode-aware sync endpoint. Defaults to incremental.
+        const syncResponse = await fetch(`${connectorManagerUrl}/sync`, {
             method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+                source_id: sourceId,
+                sync_mode: mode,
+            }),
         })
 
         if (!syncResponse.ok) {
@@ -31,6 +62,7 @@ export const POST: RequestHandler = async ({ params, fetch }) => {
             logger.error(`Sync failed for source ${sourceId}`, {
                 error: errorMessage,
                 status: syncResponse.status,
+                syncMode: mode,
             })
             throw error(syncResponse.status, errorMessage)
         }
@@ -39,8 +71,9 @@ export const POST: RequestHandler = async ({ params, fetch }) => {
 
         return json({
             success: true,
-            message: 'Sync triggered successfully',
+            message: `${getSyncModeLabel(mode)} triggered successfully`,
             sourceId,
+            syncMode: mode,
             result: syncResult,
         })
     } catch (err) {

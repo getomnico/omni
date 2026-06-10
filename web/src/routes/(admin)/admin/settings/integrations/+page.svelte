@@ -8,6 +8,8 @@
         CardFooter,
     } from '$lib/components/ui/card'
     import { Button } from '$lib/components/ui/button'
+    import * as ButtonGroup from '$lib/components/ui/button-group/index.js'
+    import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js'
     import * as Popover from '$lib/components/ui/popover'
     import * as Alert from '$lib/components/ui/alert'
     import * as Tabs from '$lib/components/ui/tabs'
@@ -30,6 +32,7 @@
     import {
         AlertTriangle,
         Check,
+        ChevronDown,
         Cloud,
         Copy,
         Globe,
@@ -120,15 +123,24 @@
         }
     })
 
-    async function handleSync(sourceId: string) {
+    type SyncMode = 'incremental' | 'full'
+
+    async function handleSync(sourceId: string, mode: SyncMode = 'incremental') {
         try {
             const response = await fetch(`/api/sources/${sourceId}/sync`, {
                 method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                },
+                body: JSON.stringify({ sync_mode: mode }),
             })
             if (!response.ok) {
-                toast.error('Failed to trigger sync')
+                const body = await response.json().catch(() => null)
+                toast.error(body?.message || 'Failed to trigger sync')
             } else {
-                toast.success('Sync triggered successfully')
+                toast.success(
+                    `${mode === 'full' ? 'Full sync' : 'Incremental sync'} triggered successfully`,
+                )
                 await invalidateAll()
             }
         } catch (error) {
@@ -269,6 +281,7 @@
                                 {@const noun = getSourceNoun(source.sourceType as SourceType)}
                                 {@const sync = latestSyncRuns.get(source.id)}
                                 {@const health = sourceHealth.get(source.id)}
+                                {@const isSyncRunning = normalizeStatus(sync?.status) === 'running'}
                                 <div
                                     class="bg-card flex items-center justify-between gap-4 rounded-lg border px-4 py-3">
                                     <div class="flex flex-1 items-start gap-3">
@@ -314,14 +327,12 @@
                                                             class="bg-card w-96 max-w-[calc(100vw-2rem)] p-4">
                                                             <Alert.Root
                                                                 class="border-0 bg-transparent p-0 text-red-900 dark:text-red-50">
-                                                                <AlertTriangle
-                                                                    class="h-4 w-4" />
+                                                                <AlertTriangle class="h-4 w-4" />
                                                                 <Alert.Title
                                                                     >Source unhealthy</Alert.Title>
                                                                 <Alert.Description>
-                                                                    Scheduled syncs have been
-                                                                    paused after repeated
-                                                                    failures.
+                                                                    Scheduled syncs have been paused
+                                                                    after repeated failures.
                                                                     {#if sync?.errorMessage}
                                                                         <div class="mt-3 space-y-1">
                                                                             <div
@@ -379,16 +390,65 @@
                                     </div>
                                     <div class="flex gap-2">
                                         {#if source.isActive}
-                                            <Button
-                                                variant="default"
-                                                size="sm"
-                                                class="cursor-pointer"
-                                                disabled={normalizeStatus(
-                                                    latestSyncRuns.get(source.id)?.status,
-                                                ) === 'running'}
-                                                onclick={() => handleSync(source.id)}>
-                                                Sync
-                                            </Button>
+                                            <ButtonGroup.Root>
+                                                <Button
+                                                    variant="default"
+                                                    size="sm"
+                                                    class="cursor-pointer"
+                                                    disabled={isSyncRunning}
+                                                    onclick={() => handleSync(source.id)}>
+                                                    Sync
+                                                </Button>
+                                                <DropdownMenu.Root>
+                                                    <DropdownMenu.Trigger>
+                                                        {#snippet child({ props })}
+                                                            <Button
+                                                                {...props}
+                                                                variant="default"
+                                                                size="sm"
+                                                                class="cursor-pointer px-2"
+                                                                disabled={isSyncRunning}
+                                                                aria-label="Choose sync mode">
+                                                                <ChevronDown class="h-4 w-4" />
+                                                            </Button>
+                                                        {/snippet}
+                                                    </DropdownMenu.Trigger>
+                                                    <DropdownMenu.Content align="end" class="w-56">
+                                                        <DropdownMenu.Item
+                                                            disabled={isSyncRunning}
+                                                            onSelect={() =>
+                                                                handleSync(
+                                                                    source.id,
+                                                                    'incremental',
+                                                                )}
+                                                            class="cursor-pointer items-start">
+                                                            <Check
+                                                                class="mt-0.5 h-4 w-4 text-green-600" />
+                                                            <div class="flex flex-col gap-0.5">
+                                                                <span>Run incremental sync</span>
+                                                                <span
+                                                                    class="text-muted-foreground text-xs">
+                                                                    Default / recommended
+                                                                </span>
+                                                            </div>
+                                                        </DropdownMenu.Item>
+                                                        <DropdownMenu.Item
+                                                            disabled={isSyncRunning}
+                                                            onSelect={() =>
+                                                                handleSync(source.id, 'full')}
+                                                            class="cursor-pointer items-start">
+                                                            <div class="h-4 w-4 shrink-0"></div>
+                                                            <div class="flex flex-col gap-0.5">
+                                                                <span>Run full sync</span>
+                                                                <span
+                                                                    class="text-muted-foreground text-xs">
+                                                                    Re-scan all data
+                                                                </span>
+                                                            </div>
+                                                        </DropdownMenu.Item>
+                                                    </DropdownMenu.Content>
+                                                </DropdownMenu.Root>
+                                            </ButtonGroup.Root>
                                         {/if}
                                         <Button
                                             variant="ghost"
