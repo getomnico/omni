@@ -293,11 +293,8 @@ impl SearchEngine {
                     Ok((results, total_count))
                 }
                 SearchMode::Hybrid => {
-                    let results = self
-                        .hybrid_search(&request, &user_groups, tantivy_query.as_deref())
-                        .await?;
-                    let total_count = results.len() as i64;
-                    Ok((results, total_count))
+                    self.hybrid_search(&request, &user_groups, tantivy_query.as_deref())
+                        .await
                 }
             };
 
@@ -838,8 +835,10 @@ impl SearchEngine {
             info!("Query provided, hybrid search within document");
             let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
             let tantivy_query = search_repo.build_query_text(&request.query).await?;
-            self.hybrid_search(request, &user_groups, tantivy_query.as_deref())
-                .await?
+            let (results, _total_count) = self
+                .hybrid_search(request, &user_groups, tantivy_query.as_deref())
+                .await?;
+            results
         } else {
             info!(
                 "No query provided, returning first 500 lines from document ID {}",
@@ -1029,7 +1028,7 @@ impl SearchEngine {
         request: &SearchRequest,
         user_groups: &[String],
         tantivy_query: Option<&str>,
-    ) -> Result<Vec<SearchResult>> {
+    ) -> Result<(Vec<SearchResult>, i64)> {
         info!("Performing hybrid search for query: '{}'", request.query);
         let start_time = Instant::now();
 
@@ -1053,7 +1052,7 @@ impl SearchEngine {
         );
 
         let (fts_results, semantic_results) = tokio::join!(fts_future, semantic_future);
-        let (fts_results, _fts_total_count) = fts_results?;
+        let (fts_results, fts_total_count) = fts_results?;
 
         // Handle semantic search timeout gracefully
         let semantic_results = match semantic_results {
@@ -1155,7 +1154,7 @@ impl SearchEngine {
             "Hybrid search completed in {}ms",
             start_time.elapsed().as_millis()
         );
-        Ok(final_results)
+        Ok((final_results, fts_total_count))
     }
 
     /// Deduplicate search results that share the same `external_id`.

@@ -365,6 +365,33 @@ async fn test_hybrid_search() -> Result<()> {
     );
     assert_scores_descending(&response);
 
+    let (status, page1_response) = fixture
+        .search_with_body(json!({
+            "query": "search",
+            "mode": "hybrid",
+            "limit": 2,
+            "offset": 0,
+            "include_facets": false
+        }))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, page2_response) = fixture
+        .search_with_body(json!({
+            "query": "search",
+            "mode": "hybrid",
+            "limit": 2,
+            "offset": 2,
+            "include_facets": false
+        }))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        page1_response["total_count"].as_i64(),
+        page2_response["total_count"].as_i64(),
+        "Hybrid total_count should not grow with offset-dependent overfetch"
+    );
+
     Ok(())
 }
 
