@@ -177,7 +177,7 @@
                         selectedInterval = value
                         errorMessage = ''
                     }}>
-                    <Select.Trigger id="sync-interval-preset" class="w-full cursor-pointer">
+                    <Select.Trigger id="sync-interval-preset" class="w-full cursor-pointer sm:w-72">
                         {selectedIntervalLabel}
                     </Select.Trigger>
                     <Select.Content>
