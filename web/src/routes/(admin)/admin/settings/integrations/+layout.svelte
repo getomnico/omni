@@ -1,5 +1,6 @@
 <script lang="ts">
     import SourceSyncHealth from '$lib/components/sources/source-sync-health.svelte'
+    import SourceSyncIntervalCard from '$lib/components/sources/source-sync-interval-card.svelte'
     import SyncRunHistory from '$lib/components/sources/sync-run-history.svelte'
     import { Button } from '$lib/components/ui/button'
     import * as Card from '$lib/components/ui/card'
@@ -30,6 +31,10 @@
             <SourceSyncHealth health={data.health} syncRuns={data.syncRuns} />
 
             {@render children()}
+
+            <SourceSyncIntervalCard
+                sourceId={data.source.id}
+                syncIntervalSeconds={data.source.syncIntervalSeconds} />
 
             <SyncRunHistory runs={data.syncRuns} />
 
