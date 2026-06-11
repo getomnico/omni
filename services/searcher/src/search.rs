@@ -388,9 +388,9 @@ impl SearchEngine {
         let has_more = request.offset() + request.limit() < total_count;
         let query_time = start_time.elapsed().as_millis() as u64;
 
-        if !matches!(request.search_mode(), SearchMode::Fulltext) {
-            // FTS results will have source_type pre-populated, but results from other modes won't
-            // We populate them here
+        if !matches!(request.search_mode(), SearchMode::Fulltext)
+            && results.iter().any(|result| result.source_type.is_none())
+        {
             self.populate_source_types(&mut results).await?;
         }
 
@@ -1154,6 +1154,8 @@ impl SearchEngine {
             })
             .collect();
         final_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+        self.populate_source_types(&mut final_results).await?;
+        final_results = Self::deduplicate_ranked_results_by_external_id(final_results);
 
         final_results = final_results
             .into_iter()
@@ -1166,6 +1168,24 @@ impl SearchEngine {
             start_time.elapsed().as_millis()
         );
         Ok((final_results, fts_total_count))
+    }
+
+    /// Collapse an already-ranked result list by the same generic dedupe key
+    /// used by SQL search: `(source_type, external_id)`. Hybrid search needs
+    /// this final pass because FTS and semantic search dedupe independently and
+    /// can choose different physical rows for the same logical document.
+    fn deduplicate_ranked_results_by_external_id(results: Vec<SearchResult>) -> Vec<SearchResult> {
+        let mut seen = std::collections::HashSet::new();
+        results
+            .into_iter()
+            .filter(|result| {
+                let source_type = result
+                    .source_type
+                    .as_ref()
+                    .expect("source_type is populated before hybrid dedupe");
+                seen.insert((source_type.clone(), result.document.external_id.clone()))
+            })
+            .collect()
     }
 
     fn generate_cache_key(&self, request: &SearchRequest) -> String {

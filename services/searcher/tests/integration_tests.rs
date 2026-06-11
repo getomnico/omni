@@ -22,6 +22,16 @@ fn result_titles(response: &Value) -> Vec<String> {
         .collect()
 }
 
+/// Extract result document IDs from a search response in order.
+fn result_document_ids(response: &Value) -> Vec<String> {
+    response["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["document"]["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
 /// Assert that scores in results are positive and in descending order.
 fn assert_scores_descending(response: &Value) {
     let results = response["results"].as_array().unwrap();
@@ -390,6 +400,111 @@ async fn test_hybrid_search() -> Result<()> {
         page1_response["total_count"].as_i64(),
         page2_response["total_count"].as_i64(),
         "Hybrid total_count should not grow with offset-dependent overfetch"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_hybrid_pagination_matches_fused_ranking() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let _doc_ids = fixture.seed_search_data().await?;
+
+    let base_body = |limit: i64, offset: i64| {
+        json!({
+            "query": "search",
+            "mode": "hybrid",
+            "limit": limit,
+            "offset": offset,
+            "include_facets": false
+        })
+    };
+
+    let (status, first_four) = fixture.search_with_body(base_body(4, 0)).await?;
+    assert_eq!(status, StatusCode::OK);
+    let first_four_ids = result_document_ids(&first_four);
+    assert!(
+        first_four_ids.len() >= 4,
+        "Expected at least 4 hybrid results for pagination test, got: {:?}",
+        result_titles(&first_four)
+    );
+
+    let (status, page_one) = fixture.search_with_body(base_body(2, 0)).await?;
+    assert_eq!(status, StatusCode::OK);
+    let (status, page_two) = fixture.search_with_body(base_body(2, 2)).await?;
+    assert_eq!(status, StatusCode::OK);
+
+    let mut combined_page_ids = result_document_ids(&page_one);
+    combined_page_ids.extend(result_document_ids(&page_two));
+    assert_eq!(
+        combined_page_ids, first_four_ids,
+        "Hybrid pages should be slices of the same fused RRF ranking"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_hybrid_dedupes_after_retrievers_pick_different_duplicates() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    let first_source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
+    let second_source_id = Ulid::new().to_string();
+    let query = "hybridcrossdedupneedle";
+    let external_id = "hybrid-cross-retriever-duplicate";
+
+    sqlx::query(
+        r#"
+        INSERT INTO sources (id, name, source_type, config, created_by, created_at, updated_at)
+        VALUES ($1, 'Second Hybrid Dedup Source', 'local_files', '{}', '01JGF7V3E0Y2R1X8P5Q7W9T4N6', NOW(), NOW())
+        "#,
+    )
+    .bind(&second_source_id)
+    .execute(pool)
+    .await?;
+
+    insert_public_document_with_embedding(
+        pool,
+        first_source_id,
+        external_id,
+        "HybridCrossDedupNeedle Keyword Winner",
+        "hybridcrossdedupneedle hybridcrossdedupneedle hybridcrossdedupneedle",
+        "unrelated embedding text",
+        "2026-01-01T00:00:00Z",
+    )
+    .await?;
+    insert_public_document_with_embedding(
+        pool,
+        &second_source_id,
+        external_id,
+        "Semantic Duplicate Winner",
+        "semantic-only duplicate content",
+        query,
+        "2026-01-02T00:00:00Z",
+    )
+    .await?;
+
+    let (status, response) = fixture
+        .search_with_body(json!({
+            "query": query,
+            "mode": "hybrid",
+            "limit": 10,
+            "include_facets": false
+        }))
+        .await?;
+
+    assert_eq!(status, StatusCode::OK);
+    let duplicate_results: Vec<&Value> = response["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|result| result["document"]["external_id"].as_str() == Some(external_id))
+        .collect();
+    assert_eq!(
+        duplicate_results.len(),
+        1,
+        "Hybrid should collapse duplicates even when FTS and semantic choose different physical rows: {:?}",
+        result_titles(&response)
     );
 
     Ok(())
@@ -1379,6 +1494,52 @@ async fn test_special_characters_in_queries() -> Result<()> {
 // ============================================================================
 // Group Permission Tests
 // ============================================================================
+
+async fn insert_public_document_with_embedding(
+    pool: &sqlx::PgPool,
+    source_id: &str,
+    external_id: &str,
+    title: &str,
+    content: &str,
+    embedding_text: &str,
+    updated_at: &str,
+) -> Result<String> {
+    let doc_id = Ulid::new().to_string();
+    let content_storage = shared::ContentStorage::new(pool.clone());
+    let content_id = content_storage.store_text(content.to_string()).await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, content, metadata, permissions, attributes, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, 'document', $6, jsonb_build_object('updated_at', $7::text), '{"public": true, "users": [], "groups": []}', '{}', $7::timestamptz, $7::timestamptz)
+        "#,
+    )
+    .bind(&doc_id)
+    .bind(source_id)
+    .bind(external_id)
+    .bind(title)
+    .bind(&content_id)
+    .bind(content)
+    .bind(updated_at)
+    .execute(pool)
+    .await?;
+
+    let embedding = shared::test_environment::generate_test_embedding(embedding_text);
+    sqlx::query(
+        r#"
+        INSERT INTO embeddings (id, document_id, chunk_index, chunk_start_offset, chunk_end_offset, embedding, model_name, dimensions, created_at)
+        VALUES ($1, $2, 0, 0, $3, $4, 'test-model', 1024, NOW())
+        "#,
+    )
+    .bind(Ulid::new().to_string())
+    .bind(&doc_id)
+    .bind(content.len() as i32)
+    .bind(&embedding)
+    .execute(pool)
+    .await?;
+
+    Ok(doc_id)
+}
 
 const TEST_SOURCE_ID: &str = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
 
