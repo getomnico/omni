@@ -575,6 +575,107 @@ async fn test_total_count_matches_relevance_filtered_fulltext_results() -> Resul
 }
 
 #[tokio::test]
+async fn test_fulltext_dedupes_by_source_type_and_external_id() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    let content_storage = shared::ContentStorage::new(pool.clone());
+    let default_local_source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
+    let second_local_source_id = Ulid::new().to_string();
+    let google_source_id = Ulid::new().to_string();
+
+    for (source_id, name, source_type) in [
+        (
+            &second_local_source_id,
+            "Second Local Dedup Source",
+            "local_files",
+        ),
+        (&google_source_id, "Google Dedup Source", "google_drive"),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO sources (id, name, source_type, config, created_by, created_at, updated_at)
+            VALUES ($1, $2, $3, '{}', '01JGF7V3E0Y2R1X8P5Q7W9T4N6', NOW(), NOW())
+            "#,
+        )
+        .bind(source_id)
+        .bind(name)
+        .bind(source_type)
+        .execute(pool)
+        .await?;
+    }
+
+    for (source_id, title, updated_at) in [
+        (
+            default_local_source_id,
+            "TypeDedupeAlpha Local Older",
+            "2026-01-01T00:00:00Z",
+        ),
+        (
+            second_local_source_id.as_str(),
+            "TypeDedupeAlpha Local Newer",
+            "2026-01-02T00:00:00Z",
+        ),
+        (
+            google_source_id.as_str(),
+            "TypeDedupeAlpha Google Same External",
+            "2026-01-03T00:00:00Z",
+        ),
+    ] {
+        let doc_id = Ulid::new().to_string();
+        let content = format!("typededupealpha shared dedupe content for {title}");
+        let content_id = content_storage.store_text(content.clone()).await?;
+        sqlx::query(
+            r#"
+            INSERT INTO documents (id, source_id, external_id, title, content_id, content_type, content, metadata, permissions, attributes, created_at, updated_at)
+            VALUES ($1, $2, 'typededupealpha-shared', $3, $4, 'document', $5, jsonb_build_object('updated_at', $6::text), '{"public": true, "users": [], "groups": []}', '{}', $6::timestamptz, $6::timestamptz)
+            "#,
+        )
+        .bind(&doc_id)
+        .bind(source_id)
+        .bind(title)
+        .bind(&content_id)
+        .bind(content)
+        .bind(updated_at)
+        .execute(pool)
+        .await?;
+    }
+
+    let (status, response) = fixture
+        .search_with_body(json!({
+            "query": "typededupealpha",
+            "mode": "fulltext",
+            "limit": 10,
+            "include_facets": false
+        }))
+        .await?;
+
+    assert_eq!(status, StatusCode::OK);
+    let results = response["results"].as_array().unwrap();
+    assert_eq!(
+        response["total_count"].as_i64().unwrap(),
+        2,
+        "same source_type/external_id duplicates should count once, but different source types should remain separate"
+    );
+    assert_eq!(results.len(), 2);
+
+    let titles = result_titles(&response);
+    assert!(
+        titles.contains(&"TypeDedupeAlpha Local Newer".to_string()),
+        "newer local duplicate should win within the local_files/external_id group: {titles:?}"
+    );
+    assert!(
+        titles.contains(&"TypeDedupeAlpha Google Same External".to_string()),
+        "same external_id in a different source type should not be deduped: {titles:?}"
+    );
+    assert!(
+        !titles.contains(&"TypeDedupeAlpha Local Older".to_string()),
+        "older local duplicate should be collapsed: {titles:?}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_unfiltered_facets_with_source_type_filter() -> Result<()> {
     let fixture = SearcherTestFixture::new().await?;
     let pool = fixture.test_env.db_pool.pool();

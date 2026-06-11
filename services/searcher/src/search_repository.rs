@@ -221,12 +221,32 @@ impl SearchDocumentRepository {
                 CROSS JOIN max_score ms
                 WHERE ms.value <= 0 OR sc.score >= (ms.value * ${min_score_ratio_idx}::real)
             ),
+            deduped_candidates AS MATERIALIZED (
+                SELECT id, score
+                FROM (
+                    SELECT rc.id, rc.score,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY s.source_type, d.external_id
+                               ORDER BY rc.score DESC,
+                                        COALESCE(
+                                            CASE WHEN d.metadata->>'updated_at' IS NOT NULL
+                                                 AND pg_input_is_valid(d.metadata->>'updated_at', 'timestamptz')
+                                            THEN (d.metadata->>'updated_at')::timestamptz END,
+                                            d.updated_at) DESC,
+                                        d.id
+                           ) AS dedupe_rank
+                    FROM relevant_candidates rc
+                    JOIN documents d ON d.id = rc.id
+                    JOIN sources s ON s.id = d.source_id AND NOT s.is_deleted
+                ) ranked_candidates
+                WHERE dedupe_rank = 1
+            ),
             total AS (
-                SELECT COUNT(*)::bigint AS total_count FROM relevant_candidates
+                SELECT COUNT(*)::bigint AS total_count FROM deduped_candidates
             ),
             ranked AS (
-                SELECT rc.id, rc.score
-                FROM relevant_candidates rc
+                SELECT dc.id, dc.score
+                FROM deduped_candidates dc
                 ORDER BY score DESC
                 LIMIT ${limit_idx} OFFSET ${offset_idx}
             ),
@@ -353,13 +373,32 @@ impl SearchDocumentRepository {
                 JOIN sources s ON s.id = d.source_id AND NOT s.is_deleted
                 {filter_where}
             ),
+            deduped_scope AS MATERIALIZED (
+                SELECT id
+                FROM (
+                    SELECT fs.id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY s.source_type, d.external_id
+                               ORDER BY COALESCE(
+                                            CASE WHEN d.metadata->>'updated_at' IS NOT NULL
+                                                 AND pg_input_is_valid(d.metadata->>'updated_at', 'timestamptz')
+                                            THEN (d.metadata->>'updated_at')::timestamptz END,
+                                            d.updated_at) DESC,
+                                        d.id
+                           ) AS dedupe_rank
+                    FROM filtered_scope fs
+                    JOIN documents d ON d.id = fs.id
+                    JOIN sources s ON s.id = d.source_id AND NOT s.is_deleted
+                ) ranked_scope
+                WHERE dedupe_rank = 1
+            ),
             total AS (
-                SELECT COUNT(*)::bigint AS total_count FROM filtered_scope
+                SELECT COUNT(*)::bigint AS total_count FROM deduped_scope
             ),
             ranked AS (
-                SELECT fs.id
-                FROM filtered_scope fs
-                JOIN documents d ON d.id = fs.id
+                SELECT ds.id
+                FROM deduped_scope ds
+                JOIN documents d ON d.id = ds.id
                 ORDER BY COALESCE(
                     CASE WHEN d.metadata->>'updated_at' IS NOT NULL
                          AND pg_input_is_valid(d.metadata->>'updated_at', 'timestamptz')

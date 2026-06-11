@@ -1,5 +1,5 @@
 use crate::models::{
-    AlsoIn, RecentSearchesResponse, SearchMode, SearchRequest, SearchResponse, SearchResult,
+    RecentSearchesResponse, SearchMode, SearchRequest, SearchResponse, SearchResult,
 };
 use crate::operator_registry::OperatorRegistry;
 use crate::query_parser;
@@ -19,7 +19,6 @@ use shared::{
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -284,11 +283,15 @@ impl SearchEngine {
                         &filtered_source_ids,
                         &user_groups,
                         tantivy_query.as_deref(),
+                        request.limit(),
+                        request.offset(),
                     )
                     .await
                 }
                 SearchMode::Semantic => {
-                    let results = self.semantic_search(&request).await?;
+                    let results = self
+                        .semantic_search(&request, request.limit(), request.offset())
+                        .await?;
                     let total_count = results.len() as i64;
                     Ok((results, total_count))
                 }
@@ -379,21 +382,9 @@ impl SearchEngine {
             results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
         }
 
-        // Deduplicate cross-source results sharing the same external_id.
-        // IMAP email threads from different accounts but the same mailing list
-        // produce identical external_ids (source_id is not part of the ID).
-        // Keep the highest-scoring result per group; apply offset+limit after
-        // dedup so duplicates are consistent across pages.
-        let (mut results, dedup_removed) = Self::deduplicate_cross_source(
-            results,
-            request.offset() as usize,
-            request.limit() as usize,
-        );
-
         self.populate_fulltext_highlights(&search_repo, &request.query, &mut results)
             .await?;
 
-        let total_count = total_count.saturating_sub(dedup_removed as i64).max(0);
         let has_more = request.offset() + request.limit() < total_count;
         let query_time = start_time.elapsed().as_millis() as u64;
 
@@ -478,6 +469,8 @@ impl SearchEngine {
         source_ids: &[String],
         user_groups: &[String],
         tantivy_query: Option<&str>,
+        limit: i64,
+        offset: i64,
     ) -> Result<(Vec<SearchResult>, i64)> {
         let start_time = Instant::now();
         let content_types = request.content_types.as_deref();
@@ -491,8 +484,8 @@ impl SearchEngine {
                 source_ids,
                 content_types,
                 attribute_filters,
-                request.dedup_fetch_limit(),
-                0,
+                limit,
+                offset,
                 request.user_email().map(|e| e.as_str()),
                 user_groups,
                 request.document_id.as_deref(),
@@ -539,7 +532,12 @@ impl SearchEngine {
         Ok((results, total_count))
     }
 
-    async fn semantic_search(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
+    async fn semantic_search(
+        &self,
+        request: &SearchRequest,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<SearchResult>> {
         let start_time = Instant::now();
         info!("Performing semantic search for query: '{}'", request.query);
 
@@ -559,8 +557,8 @@ impl SearchEngine {
                 query_embedding,
                 sources,
                 content_types,
-                request.dedup_fetch_limit(),
-                0,
+                limit,
+                offset,
                 request.user_email().map(|e| e.as_str()),
                 request.document_id.as_deref(),
                 self.config.recency_boost_weight,
@@ -1037,18 +1035,21 @@ impl SearchEngine {
         let source_ids = doc_repo
             .fetch_active_source_ids(request.source_types.as_deref())
             .await?;
+        let candidate_limit = request.offset() + request.limit();
         let fts_future = self.fulltext_search(
             &search_repo,
             request,
             &source_ids,
             user_groups,
             tantivy_query,
+            candidate_limit,
+            0,
         );
 
         // Apply timeout to semantic search
         let semantic_future = tokio::time::timeout(
             Duration::from_millis(self.config.semantic_search_timeout_ms),
-            self.semantic_search(request),
+            self.semantic_search(request, candidate_limit, 0),
         );
 
         let (fts_results, semantic_results) = tokio::join!(fts_future, semantic_future);
@@ -1146,117 +1147,17 @@ impl SearchEngine {
             .collect();
         final_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
 
-        if final_results.len() > request.dedup_fetch_limit() as usize {
-            final_results.truncate(request.dedup_fetch_limit() as usize);
-        }
+        final_results = final_results
+            .into_iter()
+            .skip(request.offset() as usize)
+            .take(request.limit() as usize)
+            .collect();
 
         info!(
             "Hybrid search completed in {}ms",
             start_time.elapsed().as_millis()
         );
         Ok((final_results, fts_total_count))
-    }
-
-    /// Deduplicate search results that share the same `external_id`.
-    ///
-    /// IMAP email threads from different accounts but the same mailing list
-    /// produce identical `external_id` values (source_id is not baked in).
-    /// Only results whose `external_id` starts with a known dedup-eligible
-    /// prefix participate; all others pass through unchanged.
-    ///
-    /// The highest-scoring result per group is kept (tiebreaker: `updated_at`).
-    /// Collapsed duplicates are recorded in `also_in` on the winner.
-    /// Permissions are NOT mutated — the SQL layer already filters by the
-    /// requesting user's access.
-    ///
-    /// Pagination (`offset` / `limit`) is applied **after** dedup so that
-    /// cross-page results are consistent (no duplicates across pages).
-    fn deduplicate_cross_source(
-        results: Vec<SearchResult>,
-        offset: usize,
-        limit: usize,
-    ) -> (Vec<SearchResult>, usize) {
-        // Group indices by external_id for dedup-eligible results only.
-        let mut dedup_groups: HashMap<String, Vec<usize>> = HashMap::new();
-        for (idx, result) in results.iter().enumerate() {
-            if result.document.external_id.starts_with("imap-thread:") {
-                dedup_groups
-                    .entry(result.document.external_id.clone())
-                    .or_default()
-                    .push(idx);
-            }
-        }
-
-        // Fast path: nothing to deduplicate
-        if dedup_groups.values().all(|indices| indices.len() <= 1) {
-            let mut results = results;
-            let end = results.len().min(offset + limit);
-            let start = offset.min(end);
-            return (results.drain(start..end).collect(), 0);
-        }
-
-        // Map from best_idx -> list of AlsoIn entries for its collapsed duplicates
-        let mut also_in_map: HashMap<usize, Vec<AlsoIn>> = HashMap::new();
-        let mut remove_indices: HashSet<usize> = HashSet::new();
-
-        for indices in dedup_groups.values() {
-            if indices.len() <= 1 {
-                continue;
-            }
-
-            // Find the best result: highest score, then most recently updated
-            let best_idx = *indices
-                .iter()
-                .max_by(|&&a, &&b| {
-                    let score_cmp = results[a]
-                        .score
-                        .partial_cmp(&results[b].score)
-                        .unwrap_or(Ordering::Equal);
-                    if score_cmp != Ordering::Equal {
-                        return score_cmp;
-                    }
-                    results[a]
-                        .document
-                        .updated_at
-                        .cmp(&results[b].document.updated_at)
-                })
-                .expect("indices is non-empty");
-
-            let entries = also_in_map.entry(best_idx).or_default();
-            for &idx in indices {
-                if idx != best_idx {
-                    entries.push(AlsoIn {
-                        source_id: results[idx].document.source_id.clone(),
-                        document_id: results[idx].document.id.clone(),
-                        score: results[idx].score,
-                    });
-                    remove_indices.insert(idx);
-                }
-            }
-        }
-
-        let deduped: Vec<SearchResult> = results
-            .into_iter()
-            .enumerate()
-            .filter(|(idx, _)| !remove_indices.contains(idx))
-            .map(|(idx, mut result)| {
-                if let Some(entries) = also_in_map.remove(&idx) {
-                    result.also_in = entries;
-                }
-                result
-            })
-            .skip(offset)
-            .take(limit)
-            .collect();
-
-        debug!(
-            "Cross-source dedup removed {} duplicates, returning {} results (offset={})",
-            remove_indices.len(),
-            deduped.len(),
-            offset,
-        );
-
-        (deduped, remove_indices.len())
     }
 
     fn generate_cache_key(&self, request: &SearchRequest) -> String {
@@ -1395,6 +1296,8 @@ impl SearchEngine {
                 &source_ids,
                 &user_groups,
                 tantivy_query.as_deref(),
+                request.limit(),
+                request.offset(),
             )
             .await?;
 

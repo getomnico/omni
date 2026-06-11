@@ -221,21 +221,48 @@ impl EmbeddingRepository {
                     e.chunk_start_offset,
                     e.chunk_end_offset,
                     e.chunk_index,
+                    d.external_id,
                     d.updated_at as doc_updated_at,
-                    d.metadata as doc_metadata
+                    d.metadata as doc_metadata,
+                    s.source_type
                 FROM embeddings e
                 JOIN documents d ON e.document_id = d.id
+                JOIN sources s ON s.id = d.source_id AND NOT s.is_deleted
                 {where_clause}
                 ORDER BY e.embedding <=> $1
                 LIMIT ($2 + $3) * 3
+            ),
+            scored_candidates AS (
+                SELECT
+                    c.document_id,
+                    c.distance / {recency_expr} as distance,
+                    c.chunk_start_offset,
+                    c.chunk_end_offset,
+                    c.chunk_index,
+                    c.external_id,
+                    c.doc_updated_at,
+                    c.source_type
+                FROM candidates c
+            ),
+            deduped_candidates AS (
+                SELECT document_id, distance, chunk_start_offset, chunk_end_offset, chunk_index
+                FROM (
+                    SELECT sc.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY sc.source_type, sc.external_id
+                               ORDER BY sc.distance ASC, sc.doc_updated_at DESC, sc.document_id, sc.chunk_index
+                           ) AS dedupe_rank
+                    FROM scored_candidates sc
+                ) ranked_candidates
+                WHERE dedupe_rank = 1
             )
             SELECT
-                c.document_id,
-                c.distance / {recency_expr} as distance,
-                c.chunk_start_offset,
-                c.chunk_end_offset,
-                c.chunk_index
-            FROM candidates c
+                dc.document_id,
+                dc.distance,
+                dc.chunk_start_offset,
+                dc.chunk_end_offset,
+                dc.chunk_index
+            FROM deduped_candidates dc
             ORDER BY distance
             LIMIT $2 OFFSET $3
             "#,
