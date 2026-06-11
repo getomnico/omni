@@ -16,6 +16,7 @@
     let qualityPreset = $state(data.qualityPreset)
     let isSubmitting = $state(false)
     let isPresetSubmitting = $state(false)
+    let pendingDoclingEnabled = $state<boolean | null>(null)
     let enableFormRef = $state<HTMLFormElement | null>(null)
     let presetFormRef = $state<HTMLFormElement | null>(null)
 
@@ -77,14 +78,16 @@
                                 action="?/updateDocling"
                                 bind:this={enableFormRef}
                                 use:enhance={({ formData }) => {
-                                    if (doclingEnabled) {
-                                        formData.set('enabled', 'true')
-                                    } else {
-                                        formData.delete('enabled')
-                                    }
+                                    formData.set(
+                                        'enabled',
+                                        (pendingDoclingEnabled ?? doclingEnabled)
+                                            ? 'true'
+                                            : 'false',
+                                    )
                                     isSubmitting = true
                                     return async ({ result, update }) => {
                                         isSubmitting = false
+                                        pendingDoclingEnabled = null
                                         await update()
                                         if (result.type === 'success') {
                                             toast.success(result.data?.message || 'Setting updated')
@@ -97,11 +100,10 @@
                                     }
                                 }}>
                                 <Switch
-                                    name="enabled"
-                                    value="true"
                                     checked={doclingEnabled}
                                     disabled={isSubmitting}
                                     onCheckedChange={(checked) => {
+                                        pendingDoclingEnabled = checked
                                         doclingEnabled = checked
                                         enableFormRef?.requestSubmit()
                                     }}
