@@ -389,6 +389,8 @@ impl SearchEngine {
         let query_time = start_time.elapsed().as_millis() as u64;
 
         if !matches!(request.search_mode(), SearchMode::Fulltext) {
+            // FTS results will have source_type pre-populated, but results from other modes won't
+            // We populate them here
             self.populate_source_types(&mut results).await?;
         }
 
@@ -462,6 +464,12 @@ impl SearchEngine {
         Ok(())
     }
 
+    /// Run fulltext search for a specific fetch window.
+    ///
+    /// `fetch_limit`/`fetch_offset` are intentionally separate from
+    /// `SearchRequest::limit`/`offset`: direct fulltext search uses the request
+    /// window, while hybrid search fetches from offset 0 with enough candidates
+    /// to apply RRF before final pagination.
     async fn fulltext_search(
         &self,
         repo: &SearchDocumentRepository,
@@ -469,8 +477,8 @@ impl SearchEngine {
         source_ids: &[String],
         user_groups: &[String],
         tantivy_query: Option<&str>,
-        limit: i64,
-        offset: i64,
+        fetch_limit: i64,
+        fetch_offset: i64,
     ) -> Result<(Vec<SearchResult>, i64)> {
         let start_time = Instant::now();
         let content_types = request.content_types.as_deref();
@@ -484,8 +492,8 @@ impl SearchEngine {
                 source_ids,
                 content_types,
                 attribute_filters,
-                limit,
-                offset,
+                fetch_limit,
+                fetch_offset,
                 request.user_email().map(|e| e.as_str()),
                 user_groups,
                 request.document_id.as_deref(),
