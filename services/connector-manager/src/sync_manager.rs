@@ -18,6 +18,7 @@ use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
 const MAX_RESUME_ATTEMPTS: usize = 3;
+const MISSING_MANIFEST_GRACE_OBSERVATIONS: usize = 2;
 const CONNECTOR_TRIGGER_TIMEOUT: Duration = Duration::from_secs(150);
 
 #[derive(Clone)]
@@ -31,6 +32,10 @@ pub struct SyncManager {
     /// sync transitions out of `running`. Bounds resume churn for chronically
     /// crashing connectors without needing schema changes.
     resume_attempts: Arc<DashMap<String, usize>>,
+    /// Consecutive monitor observations where the source type has no Redis
+    /// connector manifest. A short grace window prevents a transient heartbeat
+    /// miss from immediately being counted as a lost sync.
+    missing_manifest_observations: Arc<DashMap<String, usize>>,
 }
 
 impl SyncManager {
@@ -46,6 +51,7 @@ impl SyncManager {
             connector_client: ConnectorClient::new(),
             sync_run_repo: SyncRunRepository::new(db_pool.pool()),
             resume_attempts: Arc::new(DashMap::new()),
+            missing_manifest_observations: Arc::new(DashMap::new()),
         }
     }
 
@@ -232,6 +238,7 @@ impl SyncManager {
         }
 
         self.resume_attempts.remove(sync_run_id);
+        self.missing_manifest_observations.remove(sync_run_id);
         info!("Sync {} cancelled", sync_run_id);
         Ok(())
     }
@@ -318,24 +325,48 @@ impl SyncManager {
                 None => continue,
             };
 
-            let connector_url =
-                match get_connector_url_for_source(&self.redis_client, source.source_type).await {
-                    Some(url) => url,
-                    None => {
-                        // Connector isn't registered in Redis — either it's
-                        // down long enough for the 90s TTL to have expired,
-                        // or it never came up. Treat as a lost sync so we
-                        // count attempts and eventually mark the row failed
-                        // (instead of waiting for the 60-min stale timeout).
+            let connector_url = match get_connector_url_for_source(
+                &self.redis_client,
+                source.source_type,
+            )
+            .await
+            {
+                Some(url) => {
+                    self.missing_manifest_observations.remove(&sync_run.id);
+                    url
+                }
+                None => {
+                    let observations = {
+                        let mut entry = self
+                            .missing_manifest_observations
+                            .entry(sync_run.id.clone())
+                            .or_insert(0);
+                        *entry += 1;
+                        *entry
+                    };
+
+                    if observations < MISSING_MANIFEST_GRACE_OBSERVATIONS {
                         warn!(
-                        "No registered connector for sync {} (source_type={:?}); treating as lost",
-                        sync_run.id, source.source_type
-                    );
-                        self.handle_lost_sync(&sync_run.id, &sync_run.source_id)
-                            .await;
+                                "No registered connector for sync {} (source_type={:?}); deferring lost-sync handling for grace observation {}/{}",
+                                sync_run.id,
+                                source.source_type,
+                                observations,
+                                MISSING_MANIFEST_GRACE_OBSERVATIONS,
+                            );
                         continue;
                     }
-                };
+
+                    warn!(
+                            "No registered connector for sync {} (source_type={:?}) after {} observations; treating as lost",
+                            sync_run.id,
+                            source.source_type,
+                            observations,
+                        );
+                    self.handle_lost_sync(&sync_run.id, &sync_run.source_id)
+                        .await;
+                    continue;
+                }
+            };
 
             match self
                 .connector_client
@@ -408,6 +439,7 @@ impl SyncManager {
                 error!("Failed to mark sync {} as failed: {}", sync_run_id, e);
             }
             self.resume_attempts.remove(sync_run_id);
+            self.missing_manifest_observations.remove(sync_run_id);
             return;
         }
 
@@ -650,6 +682,7 @@ impl SyncManager {
         }
 
         self.resume_attempts.remove(sync_run_id);
+        self.missing_manifest_observations.remove(sync_run_id);
         Ok(())
     }
 
@@ -660,6 +693,7 @@ impl SyncManager {
             .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
 
         self.resume_attempts.remove(sync_run_id);
+        self.missing_manifest_observations.remove(sync_run_id);
         Ok(())
     }
 }

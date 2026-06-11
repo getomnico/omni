@@ -962,7 +962,7 @@ impl IntoResponse for ApiError {
 // Connector Registration
 // ============================================================================
 
-const REGISTRATION_TTL_SECONDS: u64 = 90;
+const REGISTRATION_TTL_SECONDS: u64 = 300;
 const UNSUPPORTED_TOP_LEVEL_ACTION_SCHEMA_KEYWORDS: &[&str] = &["anyOf", "oneOf", "allOf"];
 const UNSUPPORTED_ACTION_SCHEMA_KEYWORDS: &[&str] = &[
     "$ref",
@@ -1191,42 +1191,131 @@ pub async fn get_sync_modes_for_source(
 const VALID_DOCLING_PRESETS: &[&str] = &["fast", "balanced", "quality"];
 const DEFAULT_DOCLING_PRESET: &str = "balanced";
 
-/// Read both the Docling `enabled` flag and quality preset from Redis in a
-/// single multiplexed connection. Invalid/unknown preset values fall back to
-/// `balanced` with a warning so a corrupted setting can't silently break
-/// conversion (it would otherwise surface as a Docling 400 → built-in
-/// fallback, invisible to the admin).
-async fn get_docling_settings(redis_client: &redis::Client) -> (bool, String) {
-    let mut conn = match redis_client.get_multiplexed_async_connection().await {
-        Ok(c) => c,
+async fn get_global_configuration_value(
+    pool: &sqlx::PgPool,
+    key: &str,
+) -> Option<serde_json::Value> {
+    match sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT value FROM configuration WHERE scope = 'global' AND key = $1 LIMIT 1",
+    )
+    .bind(key)
+    .fetch_optional(pool)
+    .await
+    {
+        Ok(value) => value,
         Err(e) => {
-            warn!("Failed to connect to Redis for docling settings: {}", e);
-            return (false, DEFAULT_DOCLING_PRESET.to_string());
+            warn!("Failed to read global configuration key '{}': {}", key, e);
+            None
         }
-    };
+    }
+}
 
-    let values: Vec<Option<String>> = conn
-        .hget(
-            REDIS_SYSTEM_SETTINGS_KEY,
-            &["docling_enabled", "docling_quality_preset"],
-        )
-        .await
-        .unwrap_or_else(|e| {
-            warn!("Failed to read docling settings from Redis: {}", e);
-            vec![None, None]
-        });
+async fn set_global_configuration_value(pool: &sqlx::PgPool, key: &str, value: serde_json::Value) {
+    if let Err(e) = sqlx::query(
+        r#"
+        INSERT INTO configuration (scope, user_id, key, value)
+        VALUES ('global', NULL, $1, $2)
+        ON CONFLICT (key) WHERE scope = 'global'
+        DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+        "#,
+    )
+    .bind(key)
+    .bind(value)
+    .execute(pool)
+    .await
+    {
+        warn!(
+            "Failed to backfill global configuration key '{}': {}",
+            key, e
+        );
+    }
+}
 
-    let enabled = values
-        .first()
-        .and_then(|v| v.as_deref())
-        .map(|s| s == "true")
-        .unwrap_or(false);
+fn parse_docling_enabled(value: Option<&serde_json::Value>) -> Option<bool> {
+    let value = value?;
+    value
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .or_else(|| value.as_bool())
+        .or_else(|| value.as_str().map(|s| s == "true"))
+}
 
-    let preset = match values.get(1).and_then(|v| v.as_deref()) {
+fn parse_docling_preset(value: Option<&serde_json::Value>) -> Option<String> {
+    let value = value?;
+    let preset = value
+        .get("preset")
+        .and_then(|v| v.as_str())
+        .or_else(|| value.as_str())?;
+    Some(preset.to_string())
+}
+
+/// Read both the Docling `enabled` flag and quality preset from Postgres
+/// `configuration` (scope='global'). Redis is used only as a compatibility
+/// backfill for older installations that still have `system:settings` values.
+async fn get_docling_settings(redis_client: &redis::Client, pool: &sqlx::PgPool) -> (bool, String) {
+    let enabled_config = get_global_configuration_value(pool, "docling_enabled").await;
+    let preset_config = get_global_configuration_value(pool, "docling_quality_preset").await;
+
+    let mut enabled = parse_docling_enabled(enabled_config.as_ref());
+    let mut preset = parse_docling_preset(preset_config.as_ref());
+
+    if enabled.is_none() || preset.is_none() {
+        match redis_client.get_multiplexed_async_connection().await {
+            Ok(mut conn) => {
+                let values: Vec<Option<String>> = conn
+                    .hget(
+                        REDIS_SYSTEM_SETTINGS_KEY,
+                        &["docling_enabled", "docling_quality_preset"],
+                    )
+                    .await
+                    .unwrap_or_else(|e| {
+                        warn!("Failed to read legacy docling settings from Redis: {}", e);
+                        vec![None, None]
+                    });
+
+                if enabled.is_none() {
+                    let redis_enabled = values
+                        .first()
+                        .and_then(|v| v.as_deref())
+                        .map(|s| s == "true")
+                        .unwrap_or(false);
+                    set_global_configuration_value(
+                        pool,
+                        "docling_enabled",
+                        json!({ "enabled": redis_enabled }),
+                    )
+                    .await;
+                    enabled = Some(redis_enabled);
+                }
+
+                if preset.is_none() {
+                    let redis_preset = values
+                        .get(1)
+                        .and_then(|v| v.as_deref())
+                        .unwrap_or(DEFAULT_DOCLING_PRESET)
+                        .to_string();
+                    set_global_configuration_value(
+                        pool,
+                        "docling_quality_preset",
+                        json!({ "preset": redis_preset }),
+                    )
+                    .await;
+                    preset = Some(redis_preset);
+                }
+            }
+            Err(e) => warn!(
+                "Failed to connect to Redis for legacy docling settings: {}",
+                e
+            ),
+        }
+    }
+
+    let enabled = enabled.unwrap_or(false);
+    let preset = match preset.as_deref() {
         Some(p) if VALID_DOCLING_PRESETS.contains(&p) => p.to_string(),
         Some(p) => {
             warn!(
-                "Invalid docling preset '{}' in Redis; falling back to '{}'.",
+                "Invalid docling preset '{}' in configuration; falling back to '{}'.",
                 p, DEFAULT_DOCLING_PRESET
             );
             DEFAULT_DOCLING_PRESET.to_string()
@@ -1523,6 +1612,49 @@ async fn extract_content_blocking(
     .map_err(|e| ApiError::Internal(format!("Content extraction failed: {}", e)))
 }
 
+fn is_pdf_extraction_target(mime_type: &str, filename: Option<&str>) -> bool {
+    matches!(mime_type, "application/pdf" | "application/x-pdf")
+        || (mime_type == "application/octet-stream" && has_extension(filename, "pdf"))
+}
+
+async fn extract_content_or_pdf_failure_marker(
+    data: Vec<u8>,
+    mime_type: String,
+    filename: Option<String>,
+    sync_run_id: &str,
+    source_id: Option<&str>,
+) -> Result<String, ApiError> {
+    let is_pdf = is_pdf_extraction_target(&mime_type, filename.as_deref());
+    match extract_content_blocking(data, mime_type.clone(), filename.clone()).await {
+        Ok(text) if is_pdf && text.trim().is_empty() => {
+            warn!(
+                "PDF text extraction produced no text; sync_run_id={}, source_id={:?}, filename={:?}, mime_type={}",
+                sync_run_id,
+                source_id,
+                filename,
+                mime_type,
+            );
+            Ok("[Text extraction failed for this PDF. The document was skipped for extracted-text indexing because no text could be extracted.]".to_string())
+        }
+        Ok(text) => Ok(text),
+        Err(e) if is_pdf => {
+            warn!(
+                "PDF text extraction failed; sync_run_id={}, source_id={:?}, filename={:?}, mime_type={}, reason={}",
+                sync_run_id,
+                source_id,
+                filename,
+                mime_type,
+                e,
+            );
+            Ok(format!(
+                "[Text extraction failed for this PDF. The document was skipped for extracted-text indexing. Reason: {}]",
+                e
+            ))
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Parse common multipart fields used by both extract-content and extract-text.
 async fn parse_extract_multipart(
     mut multipart: axum::extract::Multipart,
@@ -1592,6 +1724,9 @@ async fn parse_extract_multipart(
 /// Extract text from binary data using Docling (if enabled) or the built-in extractor.
 async fn do_extract_text(
     redis_client: &redis::Client,
+    pool: &sqlx::PgPool,
+    sync_run_id: &str,
+    source_id: Option<&str>,
     mime_type: String,
     filename: Option<String>,
     data: Vec<u8>,
@@ -1601,7 +1736,7 @@ async fn do_extract_text(
         || (mime_type == "application/octet-stream"
             && is_docling_supported_extension(filename.as_deref()));
     let (docling_enabled, preset) = if docling_candidate {
-        get_docling_settings(redis_client).await
+        get_docling_settings(redis_client, pool).await
     } else {
         (false, DEFAULT_DOCLING_PRESET.to_string())
     };
@@ -1646,11 +1781,25 @@ async fn do_extract_text(
                 "Using built-in document content extraction for file {:?}",
                 filename
             );
-            extract_content_blocking(data, mime_type.clone(), filename.clone()).await?
+            extract_content_or_pdf_failure_marker(
+                data,
+                mime_type.clone(),
+                filename.clone(),
+                sync_run_id,
+                source_id,
+            )
+            .await?
         }
     } else {
         debug!("Using built-in document content extraction for file {:?} (docling_enabled={}, docling_candidate={})", filename, docling_enabled, docling_candidate);
-        extract_content_blocking(data, mime_type.clone(), filename.clone()).await?
+        extract_content_or_pdf_failure_marker(
+            data,
+            mime_type.clone(),
+            filename.clone(),
+            sync_run_id,
+            source_id,
+        )
+        .await?
     };
 
     let processed_text = if is_spreadsheet {
@@ -1686,8 +1835,18 @@ pub async fn sdk_extract_content(
         fields.data.len()
     );
 
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+    let source_id = sync_run_repo
+        .find_by_id(&fields.sync_run_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to load sync run: {}", e)))?
+        .map(|sync_run| sync_run.source_id);
+
     let extracted_text = do_extract_text(
         &state.redis_client,
+        state.db_pool.pool(),
+        &fields.sync_run_id,
+        source_id.as_deref(),
         fields.mime_type.clone(),
         fields.filename.clone(),
         fields.data,
@@ -1711,7 +1870,6 @@ pub async fn sdk_extract_content(
         .map_err(|e| ApiError::Internal(format!("Failed to store content: {}", e)))?;
 
     // Update heartbeat
-    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
     sync_run_repo
         .update_activity(&fields.sync_run_id)
         .await
@@ -1735,8 +1893,18 @@ pub async fn sdk_extract_text(
         fields.data.len()
     );
 
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+    let source_id = sync_run_repo
+        .find_by_id(&fields.sync_run_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to load sync run: {}", e)))?
+        .map(|sync_run| sync_run.source_id);
+
     let extracted_text = do_extract_text(
         &state.redis_client,
+        state.db_pool.pool(),
+        &fields.sync_run_id,
+        source_id.as_deref(),
         fields.mime_type.clone(),
         fields.filename.clone(),
         fields.data,
@@ -1746,7 +1914,6 @@ pub async fn sdk_extract_text(
     let text = utils::normalize_whitespace(&extracted_text);
 
     // Update heartbeat
-    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
     sync_run_repo
         .update_activity(&fields.sync_run_id)
         .await
@@ -2319,6 +2486,22 @@ mod tests {
         let manifest = manifest_with_action_schema(json!({}));
 
         assert!(validate_connector_manifest_action_schemas(&manifest).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_malformed_pdf_extraction_returns_failure_marker() {
+        let data = b"%PDF-1.4\nmalformed body\n%%EOF".to_vec();
+        let text = extract_content_or_pdf_failure_marker(
+            data,
+            "application/pdf".to_string(),
+            Some("bad.pdf".to_string()),
+            "sync-test",
+            Some("source-test"),
+        )
+        .await
+        .expect("malformed PDF should be handled predictably");
+
+        assert!(text.contains("Text extraction failed for this PDF"));
     }
 
     #[test]
