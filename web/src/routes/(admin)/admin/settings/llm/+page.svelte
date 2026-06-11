@@ -351,15 +351,21 @@
                                         <div
                                             class="flex min-h-8 items-center justify-between rounded-md px-1">
                                             <div class="flex items-center gap-2.5">
-                                                <span
-                                                    class={cn(
-                                                        'block h-2.5 w-2.5 shrink-0 rounded-full',
-                                                        model.isDefault
-                                                            ? 'bg-amber-400'
-                                                            : model.isSecondary
-                                                              ? 'bg-blue-500'
-                                                              : 'bg-muted-foreground/40',
-                                                    )}></span>
+                                                {#if model.isDefault && model.isSecondary}
+                                                    <span
+                                                        class="block h-2.5 w-2.5 shrink-0 rounded-full bg-gradient-to-r from-amber-400 to-blue-500"
+                                                    ></span>
+                                                {:else}
+                                                    <span
+                                                        class={cn(
+                                                            'block h-2.5 w-2.5 shrink-0 rounded-full',
+                                                            model.isDefault
+                                                                ? 'bg-amber-400'
+                                                                : model.isSecondary
+                                                                  ? 'bg-blue-500'
+                                                                  : 'bg-muted-foreground/40',
+                                                        )}></span>
+                                                {/if}
 
                                                 <div class="flex items-baseline gap-2">
                                                     <span class="text-sm font-medium">
@@ -370,7 +376,8 @@
                                                             class="text-xs font-medium text-amber-600 dark:text-amber-400">
                                                             Default
                                                         </span>
-                                                    {:else if model.isSecondary}
+                                                    {/if}
+                                                    {#if model.isSecondary}
                                                         <span
                                                             class="text-xs font-medium text-blue-600 dark:text-blue-400">
                                                             Secondary
