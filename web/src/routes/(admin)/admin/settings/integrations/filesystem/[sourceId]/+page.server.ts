@@ -42,16 +42,27 @@ export const actions: Actions = {
         const formData = await request.formData()
 
         const isActive = formData.has('filesystemEnabled')
+
+        if (!isActive) {
+            try {
+                await updateSourceById(source.id, { isActive: false })
+            } catch (err) {
+                console.error('Failed to disable Filesystem source:', err)
+                throw error(500, 'Failed to save configuration')
+            }
+            throw redirect(303, '/admin/settings/integrations?success=filesystem_configured')
+        }
+
         const basePath = (formData.get('basePath') as string) || ''
         const fileExtensions = formData.getAll('fileExtensions') as string[]
         const excludePatterns = formData.getAll('excludePatterns') as string[]
         const maxFileSizeMb = parseInt(formData.get('maxFileSizeMb') as string) || 10
 
-        if (isActive && !basePath.trim()) {
+        if (!basePath.trim()) {
             throw error(400, 'Base path is required when filesystem indexing is enabled')
         }
 
-        if (isActive && !basePath.startsWith('/')) {
+        if (!basePath.startsWith('/')) {
             throw error(400, 'Base path must be an absolute path (starting with /)')
         }
 

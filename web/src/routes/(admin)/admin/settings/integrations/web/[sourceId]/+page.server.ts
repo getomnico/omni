@@ -42,6 +42,17 @@ export const actions: Actions = {
         const formData = await request.formData()
 
         const isActive = formData.has('webEnabled')
+
+        if (!isActive) {
+            try {
+                await updateSourceById(source.id, { isActive: false })
+            } catch (err) {
+                console.error('Failed to disable Web crawler source:', err)
+                throw error(500, 'Failed to save configuration')
+            }
+            throw redirect(303, '/admin/settings/integrations?success=web_configured')
+        }
+
         const rootUrl = (formData.get('rootUrl') as string) || ''
         const maxDepth = parseInt(formData.get('maxDepth') as string) || 10
         const maxPages = parseInt(formData.get('maxPages') as string) || 10000
@@ -50,7 +61,7 @@ export const actions: Actions = {
         const blacklistPatterns = formData.getAll('blacklistPatterns') as string[]
         const userAgent = (formData.get('userAgent') as string) || null
 
-        if (isActive && !rootUrl.trim()) {
+        if (!rootUrl.trim()) {
             throw error(400, 'Root URL is required when web crawler is enabled')
         }
 
