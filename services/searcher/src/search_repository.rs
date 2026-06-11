@@ -221,6 +221,10 @@ impl SearchDocumentRepository {
                 CROSS JOIN max_score ms
                 WHERE ms.value <= 0 OR sc.score >= (ms.value * ${min_score_ratio_idx}::real)
             ),
+            -- Dedupe by (source_type, external_id), not source_id. Connectors may emit
+            -- the same logical document from multiple sources of the same type (for
+            -- example two IMAP accounts seeing the same thread), but external_id is
+            -- only considered canonical within a connector/source-type namespace.
             deduped_candidates AS MATERIALIZED (
                 SELECT id, score
                 FROM (
@@ -373,6 +377,10 @@ impl SearchDocumentRepository {
                 JOIN sources s ON s.id = d.source_id AND NOT s.is_deleted
                 {filter_where}
             ),
+            -- Dedupe by (source_type, external_id), not source_id. Connectors may emit
+            -- the same logical document from multiple sources of the same type, but
+            -- external_id is only considered canonical within a connector/source-type
+            -- namespace, so different source types with matching IDs remain distinct.
             deduped_scope AS MATERIALIZED (
                 SELECT id
                 FROM (
