@@ -8,6 +8,7 @@
     import RemoveSourceDialog from './remove-source-dialog.svelte'
     import type { Snippet } from 'svelte'
     import type { LayoutData } from './$types.js'
+    import { page } from '$app/state'
 
     interface Props {
         data: LayoutData
@@ -36,7 +37,7 @@
                 sourceId={data.source.id}
                 syncIntervalSeconds={data.source.syncIntervalSeconds} />
 
-            <SyncRunHistory runs={data.syncRuns} />
+            <SyncRunHistory runs={data.syncRuns} timeZone={page.data.user?.timezone} />
 
             <Card.Root>
                 <Card.Content class="flex items-center justify-between">

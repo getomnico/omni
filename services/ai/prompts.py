@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 SOURCE_DISPLAY_NAMES = {
     "google_drive": "Google Drive",
@@ -29,7 +30,7 @@ SOURCE_DISPLAY_NAMES = {
 
 SYSTEM_PROMPT_TEMPLATE = """You are Omni AI, a workplace agent that helps employees find information and complete tasks across their connected apps.
 
-Current date and time: {current_datetime} (UTC)
+Current date and time: {current_datetime}
 {user_line}
 Connected apps: {connected_apps}
 {actions_section}
@@ -91,7 +92,7 @@ Execute this task now using the tools available to you.
 Do not ask questions — use your best judgment.
 When done, provide a brief summary of what you did and the outcomes.
 
-Current date and time: {current_datetime} (UTC)
+Current date and time: {current_datetime}
 {user_line}
 Connected apps: {connected_apps}
 {actions_section}
@@ -117,7 +118,7 @@ Your schedule: {agent_schedule_type} — {agent_schedule_value}
 
 {run_history_section}
 
-Current date and time: {current_datetime} (UTC)
+Current date and time: {current_datetime}
 {user_line}
 Connected apps: {connected_apps}
 
@@ -180,10 +181,24 @@ def _format_trusted_memory_block(memories: list[str], heading: str) -> str:
     return f"\n\n## {heading}\n{_build_memory_bullets(memories)}"
 
 
-def _format_datetime(dt: datetime | None = None) -> str:
+def _resolve_zone(timezone: str | None) -> ZoneInfo:
+    if not timezone:
+        return ZoneInfo("UTC")
+    try:
+        return ZoneInfo(timezone)
+    except ZoneInfoNotFoundError:
+        return ZoneInfo("UTC")
+
+
+def _format_datetime(dt: datetime | None = None, timezone: str | None = None) -> str:
+    zone = _resolve_zone(timezone)
     if dt is None:
         dt = datetime.now(UTC)
-    return dt.strftime("%A, %B %d, %Y %H:%M UTC")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    local_dt = dt.astimezone(zone)
+    zone_label = getattr(zone, "key", "UTC")
+    return local_dt.strftime(f"%A, %B %d, %Y %H:%M {zone_label}")
 
 
 def _format_user_line(
@@ -208,6 +223,7 @@ def build_agent_system_prompt(
     user_name: str | None = None,
     user_email: str | None = None,
     memories: list[str] | None = None,
+    user_timezone: str | None = None,
 ) -> str:
     """Build system prompt for a background agent.
 
@@ -246,7 +262,7 @@ def build_agent_system_prompt(
 
     base_prompt = AGENT_SYSTEM_PROMPT_TEMPLATE.format(
         instructions=agent.instructions,
-        current_datetime=_format_datetime(),
+        current_datetime=_format_datetime(timezone=user_timezone),
         user_line=user_line,
         connected_apps=connected_apps,
         actions_section=actions_section,
@@ -265,6 +281,7 @@ def build_chat_system_prompt(
     user_name: str | None = None,
     user_email: str | None = None,
     memories: list[str] | None = None,
+    user_timezone: str | None = None,
 ) -> str:
     """Build system prompt from active sources and connector actions.
 
@@ -311,7 +328,7 @@ def build_chat_system_prompt(
     user_line = _format_user_line(user_name, user_email)
 
     base_prompt = SYSTEM_PROMPT_TEMPLATE.format(
-        current_datetime=_format_datetime(),
+        current_datetime=_format_datetime(timezone=user_timezone),
         user_line=user_line,
         connected_apps=connected_apps,
         actions_section=actions_section,
@@ -389,7 +406,9 @@ def _format_execution_log(execution_log: list[dict], max_chars: int = 5000) -> s
     return "\n".join(lines) if lines else "  (no tool activity)"
 
 
-def format_run_history(runs: list, max_detailed: int = 3) -> str:
+def format_run_history(
+    runs: list, max_detailed: int = 3, timezone: str | None = None
+) -> str:
     """Format agent run history for injection into the system prompt.
 
     Args:
@@ -409,13 +428,9 @@ def format_run_history(runs: list, max_detailed: int = 3) -> str:
     sections.append(f"## Agent Run History ({len(runs)} most recent runs)\n")
 
     for i, run in enumerate(runs):
-        started = (
-            run.started_at.strftime("%Y-%m-%d %H:%M UTC") if run.started_at else "N/A"
-        )
+        started = _format_datetime(run.started_at, timezone) if run.started_at else "N/A"
         completed = (
-            run.completed_at.strftime("%Y-%m-%d %H:%M UTC")
-            if run.completed_at
-            else "N/A"
+            _format_datetime(run.completed_at, timezone) if run.completed_at else "N/A"
         )
 
         header = f"### Run {i+1} — {started}"
@@ -448,6 +463,7 @@ def build_agent_chat_system_prompt(
     user_name: str | None = None,
     user_email: str | None = None,
     memories: list[str] | None = None,
+    user_timezone: str | None = None,
 ) -> str:
     """Build system prompt for an interactive chat session with an agent."""
     seen = set()
@@ -461,7 +477,7 @@ def build_agent_chat_system_prompt(
 
     connected_apps = ", ".join(display_names) if display_names else "None"
     user_line = _format_user_line(user_name, user_email)
-    run_history_section = format_run_history(runs)
+    run_history_section = format_run_history(runs, timezone=user_timezone)
 
     prompt = AGENT_CHAT_SYSTEM_PROMPT_TEMPLATE.format(
         agent_name=agent.name,
@@ -469,7 +485,7 @@ def build_agent_chat_system_prompt(
         agent_schedule_type=agent.schedule_type,
         agent_schedule_value=agent.schedule_value,
         run_history_section=run_history_section,
-        current_datetime=_format_datetime(),
+        current_datetime=_format_datetime(timezone=user_timezone),
         user_line=user_line,
         connected_apps=connected_apps,
     )

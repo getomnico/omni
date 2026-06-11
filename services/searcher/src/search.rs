@@ -170,6 +170,7 @@ impl SearchEngine {
             &request.query,
             &self.person_repo as &dyn query_parser::PersonLookup,
             &self.operator_registry,
+            request.user_timezone.as_deref(),
         )
         .await;
         info!("Parsed query: {:?}", parsed);
@@ -1364,13 +1365,16 @@ impl SearchEngine {
         Ok(combined_results)
     }
 
-    /// Generate cache key for AI answers based on query only
-    pub fn generate_ai_cache_key(&self, query: &str) -> String {
+    /// Generate cache key for AI answers based on query and timezone-sensitive context.
+    pub fn generate_ai_cache_key(&self, request: &SearchRequest) -> String {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
         let mut hasher = DefaultHasher::new();
-        query.trim().to_lowercase().hash(&mut hasher);
+        request.query.trim().to_lowercase().hash(&mut hasher);
+        if let Some(timezone) = &request.user_timezone {
+            timezone.hash(&mut hasher);
+        }
         format!("ai_answer:{:x}", hasher.finish())
     }
 

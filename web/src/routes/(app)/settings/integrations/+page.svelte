@@ -184,7 +184,10 @@
                                             {:else if isFailed}
                                                 Last sync failed
                                             {:else}
-                                                Last sync: {formatDate(sync?.completedAt ?? null)}
+                                                Last sync: {formatDate(
+                                                    sync?.completedAt ?? null,
+                                                    data.user.timezone,
+                                                )}
                                             {/if}
                                         </div>
                                     </div>

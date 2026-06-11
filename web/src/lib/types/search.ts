@@ -107,6 +107,7 @@ export interface SearchRequest {
     offset?: number
     mode?: 'fulltext' | 'semantic' | 'hybrid'
     user_id?: string
+    user_timezone?: string | null
 }
 
 export interface RecentSearchesResponse {

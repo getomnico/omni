@@ -373,6 +373,7 @@
                                                     <span
                                                         >Last sync: {formatDate(
                                                             sync?.completedAt ?? null,
+                                                            page.data.user?.timezone,
                                                         )}</span>
                                                 {/if}
                                                 {#if !sync || normalizeStatus(sync.status) !== 'running'}
@@ -584,7 +585,7 @@
                                         {/if}
                                     </div>
                                     <div class="text-muted-foreground">
-                                        {formatDate(provider.updatedAt)}
+                                        {formatDate(provider.updatedAt, page.data.user?.timezone)}
                                     </div>
                                     <div class="text-right">
                                         <Button

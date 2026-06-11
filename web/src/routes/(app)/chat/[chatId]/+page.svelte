@@ -73,6 +73,7 @@
     import MarkdownMessage from '$lib/components/markdown-message.svelte'
     import ImapCitationSource from '$lib/components/search-results/imap-citation-source.svelte'
     import { themeStore } from '$lib/themes/store.svelte'
+    import { formatChatTimestamp } from '$lib/utils/datetime'
 
     let { data }: PageProps = $props()
     let chatMessages = $state<ChatMessage[]>([...data.messages])
@@ -1691,18 +1692,7 @@
     }
 
     function formatMessageTimestamp(date: Date): string {
-        const now = new Date()
-        const isToday =
-            date.getDate() === now.getDate() &&
-            date.getMonth() === now.getMonth() &&
-            date.getFullYear() === now.getFullYear()
-
-        if (isToday) {
-            return date
-                .toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
-                .toLowerCase()
-        }
-        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+        return formatChatTimestamp(date, data.user.timezone)
     }
 
     function extractDomain(url: string): string {
@@ -1952,7 +1942,9 @@
             <div class="flex flex-wrap gap-1">
                 {#each citations as citation, idx}
                     {#if citation.type === 'search_result_location'}
-                        {@const hasUrl = citation.source?.startsWith('http://') || citation.source?.startsWith('https://')}
+                        {@const hasUrl =
+                            citation.source?.startsWith('http://') ||
+                            citation.source?.startsWith('https://')}
                         {@const isImap = citation.source?.startsWith('imap:')}
                         <svelte:element
                             this={hasUrl ? 'a' : 'div'}

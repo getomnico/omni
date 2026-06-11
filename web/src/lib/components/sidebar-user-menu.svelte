@@ -1,7 +1,8 @@
 <script lang="ts">
+    import { goto } from '$app/navigation'
     import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js'
     import * as Avatar from '$lib/components/ui/avatar'
-    import { LogOut, Settings, Plug, Brain } from '@lucide/svelte'
+    import { LogOut, Settings, Plug, Brain, User } from '@lucide/svelte'
 
     interface Props {
         email: string
@@ -43,32 +44,24 @@
     </DropdownMenu.Trigger>
     <DropdownMenu.Content side="top" align="start" class="w-[15rem]">
         {#if isAdmin}
-            <DropdownMenu.Item class="cursor-pointer">
-                {#snippet child({ props })}
-                    <a href="/admin/settings" {...props}>
-                        <Settings class="h-4 w-4" />
-                        <span>Settings</span>
-                    </a>
-                {/snippet}
+            <DropdownMenu.Item class="cursor-pointer" onclick={() => goto('/admin/settings')}>
+                <Settings class="h-4 w-4" />
+                <span>Settings</span>
             </DropdownMenu.Item>
             <DropdownMenu.Separator />
         {/if}
-        <DropdownMenu.Item class="cursor-pointer">
-            {#snippet child({ props })}
-                <a href="/settings/integrations" {...props}>
-                    <Plug class="h-4 w-4" />
-                    <span>My Integrations</span>
-                </a>
-            {/snippet}
+        <DropdownMenu.Item class="cursor-pointer" onclick={() => goto('/settings/profile')}>
+            <User class="h-4 w-4" />
+            <span>Profile</span>
+        </DropdownMenu.Item>
+        <DropdownMenu.Item class="cursor-pointer" onclick={() => goto('/settings/integrations')}>
+            <Plug class="h-4 w-4" />
+            <span>My Integrations</span>
         </DropdownMenu.Item>
         {#if memoryEnabled}
-            <DropdownMenu.Item class="cursor-pointer">
-                {#snippet child({ props })}
-                    <a href="/settings/memory" {...props}>
-                        <Brain class="h-4 w-4" />
-                        <span>Memories</span>
-                    </a>
-                {/snippet}
+            <DropdownMenu.Item class="cursor-pointer" onclick={() => goto('/settings/memory')}>
+                <Brain class="h-4 w-4" />
+                <span>Memories</span>
             </DropdownMenu.Item>
         {/if}
         <DropdownMenu.Separator />

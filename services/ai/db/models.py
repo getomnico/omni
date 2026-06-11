@@ -16,6 +16,7 @@ class User:
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    timezone: str | None = None
 
     @classmethod
     def from_row(cls, row: dict) -> "User":
@@ -27,6 +28,7 @@ class User:
             is_active=row["is_active"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            timezone=row.get("timezone"),
         )
 
 

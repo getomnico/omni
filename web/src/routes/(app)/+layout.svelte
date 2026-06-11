@@ -38,7 +38,7 @@
         X,
         Bot,
     } from '@lucide/svelte'
-    import type { Snippet } from 'svelte'
+    import { onMount, type Snippet } from 'svelte'
     import { cn } from '$lib/utils'
     import { page } from '$app/state'
     import { invalidate, invalidateAll, goto, afterNavigate } from '$app/navigation'
@@ -194,6 +194,33 @@
 
     const displayedChats = $derived(searchQuery.trim() ? searchResults : [])
     const showSearchResults = $derived(searchQuery.trim().length > 0)
+
+    async function saveDetectedTimezoneIfMissing() {
+        if (data.user.timezone) return
+
+        const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+        if (!timezone) return
+
+        const sessionKey = `omni-timezone-detected:${data.user.id}:${timezone}`
+        if (sessionStorage.getItem(sessionKey) === 'attempted') return
+        sessionStorage.setItem(sessionKey, 'attempted')
+
+        const response = await fetch('/api/user/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ timezone }),
+        })
+
+        if (response.ok) {
+            await invalidateAll()
+        }
+    }
+
+    onMount(() => {
+        saveDetectedTimezoneIfMissing().catch(() => {
+            // Timezone auto-detection is best-effort; users can still set it manually.
+        })
+    })
 
     $effect(() => {
         applyTheme(themeStore.current)

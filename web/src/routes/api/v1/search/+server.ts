@@ -42,13 +42,11 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
     const rawQuery = typeof body.query === 'string' ? body.query : ''
     const hasNonEmptyInput = rawQuery.trim().length > 0
     const hasNarrowingFilter =
-        !!attributeFilters ||
-        (Array.isArray(body.source_types) && body.source_types.length > 0)
+        !!attributeFilters || (Array.isArray(body.source_types) && body.source_types.length > 0)
     if (!hasNonEmptyInput && !hasNarrowingFilter) {
         return json(
             {
-                error:
-                    'query is required (or provide source_types / attribute_filters for filtered browsing)',
+                error: 'query is required (or provide source_types / attribute_filters for filtered browsing)',
             },
             { status: 400 },
         )
@@ -65,7 +63,13 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
             // Intersect: only allow sources that are both requested AND permitted
             sourceTypes = sourceTypes.filter((s: string) => allowedSources.includes(s))
             if (sourceTypes.length === 0) {
-                return json({ results: [], total_count: 0, query_time_ms: 0, has_more: false, query })
+                return json({
+                    results: [],
+                    total_count: 0,
+                    query_time_ms: 0,
+                    has_more: false,
+                    query,
+                })
             }
         } else {
             // No explicit filter — restrict to allowed sources
@@ -86,10 +90,9 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
         include_facets: typeof body.include_facets === 'boolean' ? body.include_facets : undefined,
         // 'admin' scope: omit user_email → searcher skips permission filter → all docs
         // 'user'/'public' scope (or cookie auth): real user identity → user's permitted docs
-        user_email:
-            locals.apiKeyScope === 'admin' ? undefined : locals.user.email,
-        user_id:
-            locals.apiKeyScope === 'admin' ? undefined : locals.user.id,
+        user_email: locals.apiKeyScope === 'admin' ? undefined : locals.user.email,
+        user_id: locals.apiKeyScope === 'admin' ? undefined : locals.user.id,
+        user_timezone: locals.apiKeyScope === 'admin' ? undefined : locals.user.timezone,
     }
 
     logger.debug('Agent search request', { query: queryData.query, mode: queryData.mode })

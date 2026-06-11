@@ -21,6 +21,7 @@ class SearchRequest(BaseModel):
     mode: str = "hybrid"
     user_id: Optional[str] = None
     user_email: Optional[str] = None
+    user_timezone: Optional[str] = None
     is_generated_query: Optional[bool] = None
     original_user_query: Optional[str] = None
     document_id: Optional[str] = None
@@ -114,6 +115,7 @@ class SearcherClient:
                 "mode": request.mode,
                 "user_id": request.user_id,
                 "user_email": request.user_email,
+                "user_timezone": request.user_timezone,
                 "is_generated_query": request.is_generated_query,
                 "original_user_query": request.original_user_query,
                 "document_id": request.document_id,

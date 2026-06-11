@@ -29,7 +29,7 @@ class UsersRepository:
         query = """
             INSERT INTO users (id, email, password_hash, full_name, role)
             VALUES ($1, $2, $3, $4, $5)
-            RETURNING id, email, full_name, role, is_active, created_at, updated_at
+            RETURNING id, email, full_name, role, is_active, created_at, updated_at, NULL::text AS timezone
         """
 
         async with pool.acquire() as conn:
@@ -42,8 +42,14 @@ class UsersRepository:
     async def find_by_id(self, user_id: str) -> User | None:
         pool = await self._get_pool()
         query = """
-            SELECT id, email, full_name, role, is_active, created_at, updated_at
-            FROM users WHERE id = $1
+            SELECT u.id, u.email, u.full_name, u.role, u.is_active, u.created_at, u.updated_at,
+                   c.value->>'value' AS timezone
+            FROM users u
+            LEFT JOIN configuration c
+                ON c.scope = 'user'
+               AND c.user_id = u.id
+               AND c.key = 'timezone'
+            WHERE u.id = $1
         """
         async with pool.acquire() as conn:
             row = await conn.fetchrow(query, user_id)

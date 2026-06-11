@@ -8,8 +8,13 @@
     import SlackMetadata from './slack-metadata.svelte'
     import JiraMetadata from './jira-metadata.svelte'
     import ImapCitationSource from './imap-citation-source.svelte'
+    import { formatDate } from '$lib/utils/datetime'
 
-    let { result, sourcesLookup }: { result: SearchResult; sourcesLookup: Map<string, string> } =
+    let {
+        result,
+        sourcesLookup,
+        timeZone,
+    }: { result: SearchResult; sourcesLookup: Map<string, string>; timeZone?: string | null } =
         $props()
 
     let sourceType = $derived(sourcesLookup.get(result.document.source_id))
@@ -23,17 +28,9 @@
         return { iconPath, useFileText: !iconPath }
     })
 
-    function formatDate(dateStr: string) {
-        const d = new Date(dateStr)
-        const day = d.getDate()
-        const month = d.toLocaleString('en-US', { month: 'short' })
-        const year = d.getFullYear()
-        return `${day} ${month} ${year}`
-    }
-
     function getDisplayDate(): string {
         const metadataDate = metadata?.updated_at || metadata?.created_at
-        return formatDate(metadataDate || result.document.updated_at)
+        return formatDate(metadataDate || result.document.updated_at, timeZone)
     }
 
     function truncateContent(content: string, maxLength: number = 200) {

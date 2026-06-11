@@ -4,6 +4,7 @@
     import { ArrowLeft } from '@lucide/svelte'
     import ToolMessage from '$lib/components/tool-message.svelte'
     import type { ToolMessageContent } from '$lib/types/message'
+    import { formatDateTime } from '$lib/utils/datetime'
     import type { PageData } from './$types.js'
 
     let { data }: { data: PageData } = $props()
@@ -110,7 +111,7 @@
 
     function formatDate(date: Date | string | null): string {
         if (!date) return '—'
-        return new Date(date).toLocaleString()
+        return formatDateTime(date, data.user.timezone)
     }
 
     function statusColor(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {

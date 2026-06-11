@@ -10,6 +10,7 @@
     import { Label } from '$lib/components/ui/label'
     import { Badge } from '$lib/components/ui/badge'
     import { toast } from 'svelte-sonner'
+    import { formatDate as formatDateOnly } from '$lib/utils/datetime'
     import type { PageData, ActionData } from './$types'
     import { Plus, Pencil, Key, Power, Trash2, Search } from '@lucide/svelte'
 
@@ -41,7 +42,7 @@
 
     function formatDate(date: Date | null) {
         if (!date) return 'N/A'
-        return new Date(date).toLocaleDateString()
+        return formatDateOnly(date, data.user.timezone)
     }
 
     function openCreateDialog() {

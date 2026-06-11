@@ -1,7 +1,8 @@
 import { error, redirect, fail } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
 import { getConfig } from '$lib/server/config'
-import { deleteUser, getGlobal, setUser } from '$lib/server/db/configuration'
+import { getGlobal } from '$lib/server/db/configuration'
+import { deleteUserMemoryMode, setUserMemoryMode } from '$lib/server/db/userConfiguration'
 import { getCurrentProvider } from '$lib/server/db/embedding-providers'
 import type { PageServerLoad, Actions } from './$types'
 
@@ -91,9 +92,9 @@ export const actions: Actions = {
 
         try {
             if (mode === '') {
-                await deleteUser(locals.user.id, 'memory_mode')
+                await deleteUserMemoryMode(locals.user.id)
             } else {
-                await setUser(locals.user.id, 'memory_mode', { value: mode })
+                await setUserMemoryMode(locals.user.id, mode as 'off' | 'chat' | 'full')
             }
             return { success: true }
         } catch (err) {

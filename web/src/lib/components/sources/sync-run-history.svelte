@@ -11,7 +11,7 @@
     import { Info } from '@lucide/svelte'
     import * as Tooltip from '$lib/components/ui/tooltip'
 
-    let { runs = [] }: { runs?: SyncRun[] } = $props()
+    let { runs = [], timeZone = null }: { runs?: SyncRun[]; timeZone?: string | null } = $props()
 </script>
 
 <Card.Root class="Root">
@@ -83,7 +83,7 @@
                                                 </Badge>
                                             </td>
                                             <td class="py-2 pr-4 whitespace-nowrap">
-                                                {formatSyncRunDate(run.startedAt)}
+                                                {formatSyncRunDate(run.startedAt, timeZone)}
                                             </td>
                                             <td class="py-2 pr-4 whitespace-nowrap">
                                                 {formatSyncRunDuration(

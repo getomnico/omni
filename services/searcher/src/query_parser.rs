@@ -1,5 +1,7 @@
 use crate::operator_registry::OperatorRegistry;
 use async_trait::async_trait;
+use chrono::{Datelike, LocalResult, NaiveDate, TimeZone};
+use chrono_tz::Tz;
 use regex::Regex;
 use serde_json::Value as JsonValue;
 use shared::db::repositories::PersonRepository;
@@ -38,15 +40,35 @@ pub async fn parse(
     query: &str,
     person_lookup: &dyn PersonLookup,
     operator_registry: &OperatorRegistry,
+    user_timezone: Option<&str>,
+) -> ParsedQuery {
+    parse_with_now(
+        query,
+        person_lookup,
+        operator_registry,
+        user_timezone,
+        OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+async fn parse_with_now(
+    query: &str,
+    person_lookup: &dyn PersonLookup,
+    operator_registry: &OperatorRegistry,
+    user_timezone: Option<&str>,
+    now_utc: OffsetDateTime,
 ) -> ParsedQuery {
     let mut result = ParsedQuery::default();
     let mut remaining = query.to_string();
 
     // Phase 1: Extract explicit operators
-    remaining = extract_operators(&remaining, &mut result, operator_registry).await;
+    let timezone = resolve_timezone(user_timezone);
+
+    remaining = extract_operators(&remaining, &mut result, operator_registry, timezone).await;
 
     // Phase 2: Extract natural language date patterns
-    remaining = extract_natural_dates(&remaining, &mut result);
+    remaining = extract_natural_dates(&remaining, &mut result, timezone, now_utc);
 
     // Phase 3: Extract natural language patterns (from/by/in)
     remaining = extract_natural_patterns(&remaining, &mut result, person_lookup).await;
@@ -64,6 +86,7 @@ async fn extract_operators(
     query: &str,
     result: &mut ParsedQuery,
     operator_registry: &OperatorRegistry,
+    timezone: Tz,
 ) -> String {
     let re = match operator_registry.operator_regex().await {
         Some(re) => re,
@@ -102,7 +125,7 @@ async fn extract_operators(
                 apply_type_filter(&value, &mut result.content_types);
             }
             "before" => {
-                if let Some(dt) = parse_date_value(&value, true) {
+                if let Some(dt) = parse_date_value(&value, true, timezone) {
                     result
                         .date_filter
                         .get_or_insert(DateFilter {
@@ -113,7 +136,7 @@ async fn extract_operators(
                 }
             }
             "after" => {
-                if let Some(dt) = parse_date_value(&value, false) {
+                if let Some(dt) = parse_date_value(&value, false, timezone) {
                     result
                         .date_filter
                         .get_or_insert(DateFilter {
@@ -139,59 +162,92 @@ async fn extract_operators(
     remaining
 }
 
-fn extract_natural_dates(query: &str, result: &mut ParsedQuery) -> String {
-    let mut remaining = query.to_string();
-    let now = OffsetDateTime::now_utc();
+fn resolve_timezone(user_timezone: Option<&str>) -> Tz {
+    user_timezone
+        .and_then(|tz| tz.parse::<Tz>().ok())
+        .unwrap_or(chrono_tz::UTC)
+}
 
-    let patterns: &[(
-        &str,
-        Box<dyn Fn(OffsetDateTime) -> (Option<OffsetDateTime>, Option<OffsetDateTime>)>,
-    )] = &[
+fn chrono_to_offset_datetime(dt: chrono::DateTime<chrono::Utc>) -> Option<OffsetDateTime> {
+    OffsetDateTime::from_unix_timestamp(dt.timestamp()).ok()
+}
+
+fn offset_datetime_to_chrono_utc(dt: OffsetDateTime) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::from_timestamp(dt.unix_timestamp(), 0)
+}
+
+fn local_datetime_to_utc(
+    date: NaiveDate,
+    hour: u32,
+    minute: u32,
+    second: u32,
+    timezone: Tz,
+) -> Option<OffsetDateTime> {
+    let naive = date.and_hms_opt(hour, minute, second)?;
+    let local_dt = match timezone.from_local_datetime(&naive) {
+        LocalResult::Single(dt) => dt,
+        LocalResult::Ambiguous(earliest, _) => earliest,
+        LocalResult::None => timezone.from_utc_datetime(&naive),
+    };
+    chrono_to_offset_datetime(local_dt.with_timezone(&chrono::Utc))
+}
+
+fn local_midnight_to_utc(date: NaiveDate, timezone: Tz) -> Option<OffsetDateTime> {
+    local_datetime_to_utc(date, 0, 0, 0, timezone)
+}
+
+fn time_date_to_naive_date(date: time::Date) -> Option<NaiveDate> {
+    NaiveDate::from_ymd_opt(
+        date.year(),
+        u8::from(date.month()) as u32,
+        date.day() as u32,
+    )
+}
+
+fn extract_natural_dates(
+    query: &str,
+    result: &mut ParsedQuery,
+    timezone: Tz,
+    now: OffsetDateTime,
+) -> String {
+    let mut remaining = query.to_string();
+    let local_now = offset_datetime_to_chrono_utc(now)
+        .map(|dt| dt.with_timezone(&timezone))
+        .unwrap_or_else(|| chrono::Utc::now().with_timezone(&timezone));
+    let today = local_now.date_naive();
+    let this_week_start =
+        today - chrono::Duration::days(local_now.weekday().num_days_from_monday() as i64);
+    let yesterday = today - chrono::Duration::days(1);
+
+    let patterns = vec![
         (
             r"(?i)\blast\s+week\b",
-            Box::new(|now| {
-                let after = now - time::Duration::days(7);
-                (Some(after), None)
-            }),
+            (Some(now - time::Duration::days(7)), None),
         ),
         (
             r"(?i)\blast\s+month\b",
-            Box::new(|now| {
-                let after = now - time::Duration::days(30);
-                (Some(after), None)
-            }),
+            (Some(now - time::Duration::days(30)), None),
         ),
         (
             r"(?i)\bthis\s+week\b",
-            Box::new(|now| {
-                let weekday = now.weekday().number_days_from_monday();
-                let after = now - time::Duration::days(weekday as i64);
-                let after = after.replace_time(time::Time::MIDNIGHT);
-                (Some(after), None)
-            }),
+            (local_midnight_to_utc(this_week_start, timezone), None),
         ),
         (
             r"(?i)\byesterday\b",
-            Box::new(|now| {
-                let yesterday = now - time::Duration::days(1);
-                let start = yesterday.replace_time(time::Time::MIDNIGHT);
-                let end = start + time::Duration::days(1);
-                (Some(start), Some(end))
-            }),
+            (
+                local_midnight_to_utc(yesterday, timezone),
+                local_midnight_to_utc(today, timezone),
+            ),
         ),
         (
             r"(?i)\btoday\b",
-            Box::new(|now| {
-                let start = now.replace_time(time::Time::MIDNIGHT);
-                (Some(start), None)
-            }),
+            (local_midnight_to_utc(today, timezone), None),
         ),
     ];
 
-    for (pattern, compute) in patterns {
+    for (pattern, (after, before)) in patterns {
         let re = Regex::new(pattern).unwrap();
         if let Some(m) = re.find(&remaining) {
-            let (after, before) = compute(now);
             let df = result.date_filter.get_or_insert(DateFilter {
                 after: None,
                 before: None,
@@ -328,7 +384,7 @@ fn merge_attribute_filter(filters: &mut HashMap<String, AttributeFilter>, key: &
     }
 }
 
-fn parse_date_value(value: &str, is_before: bool) -> Option<OffsetDateTime> {
+fn parse_date_value(value: &str, is_before: bool, timezone: Tz) -> Option<OffsetDateTime> {
     use time::format_description;
 
     // Full date: 2024-06-01
@@ -336,12 +392,12 @@ fn parse_date_value(value: &str, is_before: bool) -> Option<OffsetDateTime> {
         value,
         &format_description::parse("[year]-[month]-[day]").unwrap(),
     ) {
-        let dt = date.with_time(if is_before {
-            time::Time::from_hms(23, 59, 59).unwrap()
+        let date = time_date_to_naive_date(date)?;
+        return if is_before {
+            local_datetime_to_utc(date, 23, 59, 59, timezone)
         } else {
-            time::Time::MIDNIGHT
-        });
-        return Some(dt.assume_utc());
+            local_midnight_to_utc(date, timezone)
+        };
     }
 
     // Year-month: 2024-06
@@ -360,13 +416,11 @@ fn parse_date_value(value: &str, is_before: bool) -> Option<OffsetDateTime> {
                     .unwrap()
             };
             let last_day = next_month - time::Duration::days(1);
-            return Some(
-                last_day
-                    .with_time(time::Time::from_hms(23, 59, 59).unwrap())
-                    .assume_utc(),
-            );
+            let last_day = time_date_to_naive_date(last_day)?;
+            return local_datetime_to_utc(last_day, 23, 59, 59, timezone);
         } else {
-            return Some(date.with_time(time::Time::MIDNIGHT).assume_utc());
+            let date = time_date_to_naive_date(date)?;
+            return local_midnight_to_utc(date, timezone);
         }
     }
 
@@ -375,13 +429,12 @@ fn parse_date_value(value: &str, is_before: bool) -> Option<OffsetDateTime> {
         if let Ok(year) = value.parse::<i32>() {
             if is_before {
                 let date = time::Date::from_calendar_date(year, time::Month::December, 31).unwrap();
-                return Some(
-                    date.with_time(time::Time::from_hms(23, 59, 59).unwrap())
-                        .assume_utc(),
-                );
+                let date = time_date_to_naive_date(date)?;
+                return local_datetime_to_utc(date, 23, 59, 59, timezone);
             } else {
                 let date = time::Date::from_calendar_date(year, time::Month::January, 1).unwrap();
-                return Some(date.with_time(time::Time::MIDNIGHT).assume_utc());
+                let date = time_date_to_naive_date(date)?;
+                return local_midnight_to_utc(date, timezone);
             }
         }
     }
@@ -465,21 +518,50 @@ mod tests {
         let registry = default_registry();
         tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(parse(query, &lookup, &registry))
+            .block_on(parse(query, &lookup, &registry, None))
     }
 
     fn test_parse_with_lookup(query: &str, lookup: &dyn PersonLookup) -> ParsedQuery {
         let registry = default_registry();
         tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(parse(query, lookup, &registry))
+            .block_on(parse(query, lookup, &registry, None))
     }
 
     fn test_parse_with_registry(query: &str, registry: &OperatorRegistry) -> ParsedQuery {
         let lookup = empty_lookup();
         tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(parse(query, &lookup, registry))
+            .block_on(parse(query, &lookup, registry, None))
+    }
+
+    fn test_parse_with_timezone(query: &str, timezone: &str) -> ParsedQuery {
+        let lookup = empty_lookup();
+        let registry = default_registry();
+        tokio::runtime::Runtime::new().unwrap().block_on(parse(
+            query,
+            &lookup,
+            &registry,
+            Some(timezone),
+        ))
+    }
+
+    fn test_parse_with_timezone_and_now(
+        query: &str,
+        timezone: &str,
+        now_utc: OffsetDateTime,
+    ) -> ParsedQuery {
+        let lookup = empty_lookup();
+        let registry = default_registry();
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(parse_with_now(
+                query,
+                &lookup,
+                &registry,
+                Some(timezone),
+                now_utc,
+            ))
     }
 
     #[test]
@@ -583,6 +665,67 @@ mod tests {
         assert_eq!(after.year(), 2024);
         assert_eq!(after.month(), time::Month::January);
         assert_eq!(after.day(), 1);
+    }
+
+    #[test]
+    fn test_after_date_operator_uses_user_timezone_boundary() {
+        let parsed = test_parse_with_timezone("after:2024-01-01 report", "America/New_York");
+        let after = parsed.date_filter.unwrap().after.unwrap();
+        assert_eq!(after.year(), 2024);
+        assert_eq!(after.month(), time::Month::January);
+        assert_eq!(after.day(), 1);
+        assert_eq!(after.hour(), 5);
+        assert_eq!(after.minute(), 0);
+    }
+
+    #[test]
+    fn test_before_date_operator_uses_user_timezone_boundary() {
+        let parsed = test_parse_with_timezone("before:2024-01-01 report", "America/New_York");
+        let before = parsed.date_filter.unwrap().before.unwrap();
+        assert_eq!(before.year(), 2024);
+        assert_eq!(before.month(), time::Month::January);
+        assert_eq!(before.day(), 2);
+        assert_eq!(before.hour(), 4);
+        assert_eq!(before.minute(), 59);
+        assert_eq!(before.second(), 59);
+    }
+
+    #[test]
+    fn test_invalid_timezone_falls_back_to_utc_for_date_operators() {
+        let parsed = test_parse_with_timezone("after:2024-01-01 report", "Not/AZone");
+        let after = parsed.date_filter.unwrap().after.unwrap();
+        assert_eq!(after.year(), 2024);
+        assert_eq!(after.month(), time::Month::January);
+        assert_eq!(after.day(), 1);
+        assert_eq!(after.hour(), 0);
+    }
+
+    #[test]
+    fn test_today_uses_injected_clock_and_user_timezone() {
+        let now = time::macros::datetime!(2024-01-02 06:00 UTC);
+        let parsed = test_parse_with_timezone_and_now("emails today", "America/New_York", now);
+        let after = parsed.date_filter.unwrap().after.unwrap();
+        assert_eq!(after.year(), 2024);
+        assert_eq!(after.month(), time::Month::January);
+        assert_eq!(after.day(), 2);
+        assert_eq!(after.hour(), 5);
+    }
+
+    #[test]
+    fn test_yesterday_uses_injected_clock_and_user_timezone() {
+        let now = time::macros::datetime!(2024-01-02 06:00 UTC);
+        let parsed = test_parse_with_timezone_and_now("emails yesterday", "America/New_York", now);
+        let df = parsed.date_filter.unwrap();
+        let after = df.after.unwrap();
+        let before = df.before.unwrap();
+        assert_eq!(after.year(), 2024);
+        assert_eq!(after.month(), time::Month::January);
+        assert_eq!(after.day(), 1);
+        assert_eq!(after.hour(), 5);
+        assert_eq!(before.year(), 2024);
+        assert_eq!(before.month(), time::Month::January);
+        assert_eq!(before.day(), 2);
+        assert_eq!(before.hour(), 5);
     }
 
     #[test]

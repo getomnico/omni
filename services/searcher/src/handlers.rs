@@ -204,7 +204,7 @@ pub async fn ai_answer(
     .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Generate cache key for AI answer
-    let cache_key = search_engine.generate_ai_cache_key(&request.query);
+    let cache_key = search_engine.generate_ai_cache_key(&request);
 
     // Try to get cached AI response first
     if let Ok(mut conn) = state.redis_client.get_multiplexed_async_connection().await {

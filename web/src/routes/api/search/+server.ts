@@ -28,6 +28,7 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
         mode: searchRequest.mode || 'fulltext',
         user_email: locals.user?.email,
         user_id: locals.user?.id,
+        user_timezone: locals.user?.timezone,
     }
 
     logger.debug('Sending search request to searcher service', {

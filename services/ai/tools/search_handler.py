@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import redis.asyncio as aioredis
 from pydantic import ValidationError
 from anthropic.types import (
@@ -48,6 +49,24 @@ TYPE_VALID_VALUES = [
 _MAX_DISPLAYED_VALUES = 20
 _OPERATOR_VALUES_CACHE_KEY = "search:operator_values"
 _OPERATOR_VALUES_CACHE_TTL = 300  # 5 minutes
+
+
+def _resolve_zone(user_timezone: str | None) -> ZoneInfo:
+    if not user_timezone:
+        return ZoneInfo("UTC")
+    try:
+        return ZoneInfo(user_timezone)
+    except ZoneInfoNotFoundError:
+        return ZoneInfo("UTC")
+
+
+def _format_search_date(dt: datetime, user_timezone: str | None) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    zone = _resolve_zone(user_timezone)
+    local_dt = dt.astimezone(zone)
+    zone_label = getattr(zone, "key", "UTC")
+    return local_dt.strftime(f"%Y-%m-%d %H:%M {zone_label}")
 
 # In-memory cache so the hot path (every LLM call) is a timestamp check, not a Redis round-trip.
 _operator_values_mem: dict[str, list[str]] = {}
@@ -280,6 +299,7 @@ class SearchToolHandler:
             search_user_id,
             search_user_email,
             context.original_user_query,
+            context.user_timezone,
         )
 
         content_blocks: list = []
@@ -306,9 +326,7 @@ class SearchToolHandler:
                 if raw_date and isinstance(raw_date, str):
                     try:
                         dt = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
-                        # Normalize to UTC so the label is always correct
-                        dt = dt.astimezone(timezone.utc)
-                        date_str = dt.strftime("%Y-%m-%d %H:%M UTC")
+                        date_str = _format_search_date(dt, context.user_timezone)
                     except (ValueError, AttributeError):
                         date_str = raw_date
             if not date_str and doc.attributes:
@@ -318,7 +336,7 @@ class SearchToolHandler:
                 if raw_ts and isinstance(raw_ts, (int, float)):
                     try:
                         dt = datetime.fromtimestamp(raw_ts, tz=timezone.utc)
-                        date_str = dt.strftime("%Y-%m-%d %H:%M UTC")
+                        date_str = _format_search_date(dt, context.user_timezone)
                     except (OSError, OverflowError, ValueError):
                         pass
 
@@ -402,6 +420,7 @@ async def _execute_search_tool(
     user_id: str,
     user_email: str | None = None,
     original_user_query: str | None = None,
+    user_timezone: str | None = None,
 ) -> list[SearchResult]:
     """Execute search_documents tool by calling omni-searcher."""
     search_request = SearchRequest(
@@ -414,6 +433,7 @@ async def _execute_search_tool(
         user_email=user_email,
         is_generated_query=True,
         original_user_query=original_user_query,
+        user_timezone=user_timezone,
         include_facets=False,
         ignore_typos=True,
     )

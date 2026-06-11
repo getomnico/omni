@@ -254,7 +254,10 @@
                 {#if data.searchResults.results.length > 0}
                     <div class="space-y-8">
                         {#each data.searchResults.results as result}
-                            <SearchResultItem {result} {sourcesLookup} />
+                            <SearchResultItem
+                                {result}
+                                {sourcesLookup}
+                                timeZone={$page.data.user?.timezone} />
                         {/each}
                     </div>
 

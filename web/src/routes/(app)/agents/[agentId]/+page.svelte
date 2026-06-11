@@ -11,6 +11,7 @@
     import * as Select from '$lib/components/ui/select/index.js'
     import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js'
     import { formatProviderName } from '$lib/utils/providers.js'
+    import { formatDateTime } from '$lib/utils/datetime'
     import type { PageData } from './$types.js'
 
     let { data }: { data: PageData } = $props()
@@ -82,7 +83,7 @@
 
     function formatDate(date: Date | string | null): string {
         if (!date) return '—'
-        return new Date(date).toLocaleString()
+        return formatDateTime(date, data.user.timezone)
     }
 
     function statusColor(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
