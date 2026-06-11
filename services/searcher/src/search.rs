@@ -290,7 +290,7 @@ impl SearchEngine {
                 }
                 SearchMode::Semantic => {
                     let results = self
-                        .semantic_search(&request, request.limit(), request.offset())
+                        .semantic_search(&request, &user_groups, request.limit(), request.offset())
                         .await?;
                     let total_count = results.len() as i64;
                     Ok((results, total_count))
@@ -543,6 +543,7 @@ impl SearchEngine {
     async fn semantic_search(
         &self,
         request: &SearchRequest,
+        user_groups: &[String],
         limit: i64,
         offset: i64,
     ) -> Result<Vec<SearchResult>> {
@@ -551,7 +552,7 @@ impl SearchEngine {
 
         let query_embedding = self.generate_query_embedding(&request.query).await?;
 
-        let embedding_repo = EmbeddingRepository::new(self.db_pool.pool());
+        let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
         let doc_repo = DocumentRepository::new(self.db_pool.pool());
 
         let sources = request.source_types.as_deref();
@@ -560,7 +561,7 @@ impl SearchEngine {
         // Recency boost is applied in SQL (inside find_similar_with_filters)
         // by over-fetching candidates and re-ranking with an exponential decay
         // factor, consistent with how FTS handles recency in search_repository.
-        let chunk_results = embedding_repo
+        let chunk_results = search_repo
             .find_similar_with_filters(
                 query_embedding,
                 sources,
@@ -568,6 +569,7 @@ impl SearchEngine {
                 limit,
                 offset,
                 request.user_email().map(|e| e.as_str()),
+                user_groups,
                 request.document_id.as_deref(),
                 self.config.recency_boost_weight,
                 self.config.recency_half_life_days,
@@ -913,6 +915,7 @@ impl SearchEngine {
     async fn get_enhanced_semantic_results_for_rag(
         &self,
         request: &SearchRequest,
+        user_groups: &[String],
     ) -> Result<Vec<SearchResult>> {
         let start_time = Instant::now();
         info!(
@@ -921,6 +924,7 @@ impl SearchEngine {
         );
 
         let query_embedding = self.generate_query_embedding(&request.query).await?;
+        let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
         let embedding_repo = EmbeddingRepository::new(self.db_pool.pool());
         let doc_repo = DocumentRepository::new(self.db_pool.pool());
 
@@ -928,7 +932,7 @@ impl SearchEngine {
         let content_types = request.content_types.as_deref();
 
         // Recency boost is applied in SQL (see find_similar_with_filters).
-        let chunk_results = embedding_repo
+        let chunk_results = search_repo
             .find_similar_with_filters(
                 query_embedding,
                 sources,
@@ -936,6 +940,7 @@ impl SearchEngine {
                 request.limit(),
                 request.offset(),
                 request.user_email().map(|e| e.as_str()),
+                user_groups,
                 None,
                 self.config.recency_boost_weight,
                 self.config.recency_half_life_days,
@@ -1057,7 +1062,7 @@ impl SearchEngine {
         // Apply timeout to semantic search
         let semantic_future = tokio::time::timeout(
             Duration::from_millis(self.config.semantic_search_timeout_ms),
-            self.semantic_search(request, candidate_limit, 0),
+            self.semantic_search(request, user_groups, candidate_limit, 0),
         );
 
         let (fts_results, semantic_results) = tokio::join!(fts_future, semantic_future);
@@ -1330,7 +1335,9 @@ impl SearchEngine {
             .await?;
 
         // Get semantic search results enhanced with expanded context for RAG
-        let semantic_results = self.get_enhanced_semantic_results_for_rag(request).await?;
+        let semantic_results = self
+            .get_enhanced_semantic_results_for_rag(request, &user_groups)
+            .await?;
 
         // Combine semantic and fulltext context
         let mut combined_results = Vec::new();

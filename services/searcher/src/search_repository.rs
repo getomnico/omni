@@ -1,8 +1,10 @@
+use pgvector::Vector;
 use serde_json::Value as JsonValue;
 use shared::{
     db::error::DatabaseError,
     db::repositories::document,
-    models::{AttributeFilter, DateFilter, Document, Facet, FacetValue},
+    models::{AttributeFilter, ChunkResult, DateFilter, Document, Facet, FacetValue},
+    SourceType,
 };
 use sqlx::{postgres::PgRow, FromRow, PgPool, Row};
 use std::collections::{HashMap, HashSet};
@@ -498,6 +500,179 @@ impl SearchDocumentRepository {
                 }
             })
             .collect())
+    }
+
+    pub async fn find_similar_with_filters(
+        &self,
+        embedding: Vec<f32>,
+        source_types: Option<&[SourceType]>,
+        content_types: Option<&[String]>,
+        limit: i64,
+        offset: i64,
+        user_email: Option<&str>,
+        user_groups: &[String],
+        document_id: Option<&str>,
+        recency_boost_weight: f32,
+        recency_half_life_days: f32,
+    ) -> Result<Vec<ChunkResult>, DatabaseError> {
+        let dims = embedding.len() as i16;
+        let vector = Vector::from(embedding);
+
+        let mut where_conditions = Vec::new();
+
+        // Filter to matching dimensions so the partial HNSW index is used
+        where_conditions.push(format!("e.dimensions = ${}", 4));
+
+        // Fixed bind slots: $1=vector, $2=limit, $3=offset, $4=dims,
+        // $5=recency_boost_weight, $6=recency_half_life_days.
+        // Dynamic filters (document_id, source_types, content_types) start at $7.
+        let mut bind_index = 7;
+
+        // Filter by the current active embedding model via subquery
+        where_conditions.push(
+            "e.model_name = (SELECT config->>'model' FROM embedding_providers WHERE is_current = TRUE AND is_deleted = FALSE LIMIT 1)"
+                .to_string(),
+        );
+
+        if document_id.is_some() {
+            where_conditions.push(format!("e.document_id = ${}", bind_index));
+            bind_index += 1;
+        }
+
+        if let Some(src) = source_types {
+            if !src.is_empty() {
+                where_conditions.push(format!(
+                    "d.source_id IN (SELECT id FROM sources WHERE source_type = ANY(${}))",
+                    bind_index
+                ));
+                bind_index += 1;
+            }
+        }
+
+        if let Some(ct) = content_types {
+            if !ct.is_empty() {
+                where_conditions.push(format!("d.content_type = ANY(${})", bind_index));
+            }
+        }
+
+        if let Some(email) = user_email {
+            where_conditions.push(generate_permission_filter(email, user_groups));
+        }
+
+        let where_clause = format!("WHERE {}", where_conditions.join(" AND "));
+
+        // Recency-boosted vector search (mirrors the FTS approach).
+        // First materialize top vector candidates, then rerank by recency and
+        // dedupe by the same `(source_type, external_id)` key used for FTS.
+        let recency_expr = format!(
+            "(1.0 + $5::double precision * EXP(\
+                -EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - COALESCE(\
+                    CASE WHEN c.doc_metadata->>'updated_at' IS NOT NULL \
+                         AND pg_input_is_valid(c.doc_metadata->>'updated_at', 'timestamptz') \
+                    THEN (c.doc_metadata->>'updated_at')::timestamptz END, \
+                    c.doc_updated_at))) \
+                / (86400.0 * $6::double precision)))::real"
+        );
+
+        let query_str = format!(
+            r#"
+            WITH candidates AS MATERIALIZED (
+                SELECT
+                    e.document_id,
+                    e.embedding <=> $1 as distance,
+                    e.chunk_start_offset,
+                    e.chunk_end_offset,
+                    e.chunk_index,
+                    d.external_id,
+                    d.updated_at as doc_updated_at,
+                    d.metadata as doc_metadata,
+                    s.source_type
+                FROM embeddings e
+                JOIN documents d ON e.document_id = d.id
+                JOIN sources s ON s.id = d.source_id AND NOT s.is_deleted
+                {where_clause}
+                ORDER BY e.embedding <=> $1
+                LIMIT ($2 + $3) * 3
+            ),
+            scored_candidates AS (
+                SELECT
+                    c.document_id,
+                    c.distance / {recency_expr} as distance,
+                    c.chunk_start_offset,
+                    c.chunk_end_offset,
+                    c.chunk_index,
+                    c.external_id,
+                    c.doc_updated_at,
+                    c.source_type
+                FROM candidates c
+            ),
+            deduped_candidates AS (
+                SELECT document_id, distance, chunk_start_offset, chunk_end_offset, chunk_index
+                FROM (
+                    SELECT sc.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY sc.source_type, sc.external_id
+                               ORDER BY sc.distance ASC, sc.doc_updated_at DESC, sc.document_id, sc.chunk_index
+                           ) AS dedupe_rank
+                    FROM scored_candidates sc
+                ) ranked_candidates
+                WHERE dedupe_rank = 1
+            )
+            SELECT
+                dc.document_id,
+                dc.distance,
+                dc.chunk_start_offset,
+                dc.chunk_end_offset,
+                dc.chunk_index
+            FROM deduped_candidates dc
+            ORDER BY distance
+            LIMIT $2 OFFSET $3
+            "#,
+            where_clause = where_clause,
+            recency_expr = recency_expr,
+        );
+
+        let mut query = sqlx::query(&query_str)
+            .bind(&vector)
+            .bind(limit)
+            .bind(offset)
+            .bind(dims)
+            .bind(recency_boost_weight as f64)
+            .bind(recency_half_life_days as f64);
+
+        if let Some(doc_id) = document_id {
+            query = query.bind(doc_id);
+        }
+
+        if let Some(src) = source_types {
+            if !src.is_empty() {
+                query = query.bind(src);
+            }
+        }
+
+        if let Some(ct) = content_types {
+            if !ct.is_empty() {
+                query = query.bind(ct);
+            }
+        }
+
+        let results = query.fetch_all(&self.pool).await?;
+        let chunk_results = results
+            .into_iter()
+            .map(|row| {
+                let distance: Option<f64> = row.get("distance");
+                let similarity = (1.0 - distance.unwrap_or(1.0)) as f32;
+                ChunkResult {
+                    document_id: row.get("document_id"),
+                    similarity_score: similarity,
+                    chunk_start_offset: row.get("chunk_start_offset"),
+                    chunk_end_offset: row.get("chunk_end_offset"),
+                    chunk_index: row.get("chunk_index"),
+                }
+            })
+            .collect();
+
+        Ok(chunk_results)
     }
 
     pub async fn get_facet_counts(
