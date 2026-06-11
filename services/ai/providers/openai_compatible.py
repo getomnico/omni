@@ -47,7 +47,7 @@ from anthropic.types import (
 from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic.types.raw_message_delta_event import Delta
 
-from . import LLMProvider, LLMProviderStreamError, TokenUsage
+from . import LLMProvider, LLMProviderEmptyResponseError, LLMProviderStreamError, TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -473,12 +473,23 @@ class OpenAICompatibleProvider(LLMProvider):
                     output_tokens=response.usage.completion_tokens or 0,
                 )
 
-            content = response.choices[0].message.content
+            choices = getattr(response, "choices", None) or []
+            if not choices:
+                raise LLMProviderEmptyResponseError(
+                    "OpenAI-compatible endpoint returned no choices"
+                )
+
+            message = getattr(choices[0], "message", None)
+            content = getattr(message, "content", None) if message else None
             if not content:
-                raise Exception("Empty response from OpenAI-compatible endpoint")
+                raise LLMProviderEmptyResponseError(
+                    "OpenAI-compatible endpoint returned an empty message"
+                )
 
             return content, usage
 
+        except LLMProviderEmptyResponseError:
+            raise
         except Exception as e:
             raise Exception(
                 f"Failed to generate response from OpenAI-compatible endpoint: {e}"

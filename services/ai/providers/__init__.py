@@ -30,6 +30,10 @@ class LLMProviderStreamError(LLMProviderError):
     """Raised when a provider fails while streaming a response."""
 
 
+class LLMProviderEmptyResponseError(LLMProviderError):
+    """Raised when a provider returns no usable text for a non-streaming response."""
+
+
 class LLMProvider(ABC):
     """Abstract base class for LLM providers.
 
