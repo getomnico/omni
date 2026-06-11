@@ -4,12 +4,30 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from embeddings import create_embedding_provider
 from embeddings.bedrock import BedrockEmbeddingProvider
 from embeddings.cohere import CohereEmbeddingProvider
 from embeddings.jina import JinaEmbeddingProvider
 from embeddings.openai import OpenAIEmbeddingProvider
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.asyncio
+async def test_openai_embedding_provider_uses_custom_api_url():
+    provider = create_embedding_provider(
+        "openai",
+        api_key="sk-test",
+        model="text-embedding-3-small",
+        api_url="https://embeddings.example.test/v1/",
+    )
+
+    try:
+        assert isinstance(provider, OpenAIEmbeddingProvider)
+        assert provider.base_url == "https://embeddings.example.test/v1"
+        assert provider.client.embeddings_url == "https://embeddings.example.test/v1/embeddings"
+    finally:
+        await provider.client.close()
 
 
 class _SyncEmbeddingClient:

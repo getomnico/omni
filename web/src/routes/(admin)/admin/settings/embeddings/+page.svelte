@@ -73,13 +73,13 @@
     const providerDefaults: Record<EmbeddingProviderType, { model: string; apiUrl: string }> = {
         local: { model: 'nomic-ai/nomic-embed-text-v1.5', apiUrl: 'http://embeddings:8001/v1' },
         jina: { model: 'jina-embeddings-v3', apiUrl: 'https://api.jina.ai/v1/embeddings' },
-        openai: { model: 'text-embedding-3-small', apiUrl: '' },
+        openai: { model: 'text-embedding-3-small', apiUrl: 'https://api.openai.com/v1' },
         cohere: { model: 'embed-v4.0', apiUrl: 'https://api.cohere.com/v2/embed' },
         bedrock: { model: 'amazon.titan-embed-text-v2:0', apiUrl: '' },
     }
 
     const showApiKey = (p: EmbeddingProviderType) => ['jina', 'openai', 'cohere'].includes(p)
-    const showApiUrl = (p: EmbeddingProviderType) => ['local', 'jina', 'cohere'].includes(p)
+    const showApiUrl = (p: EmbeddingProviderType) => ['local', 'jina', 'openai', 'cohere'].includes(p)
     const showDimensions = (p: EmbeddingProviderType) => ['openai', 'cohere'].includes(p)
 
     const providerMeta: Record<
@@ -211,9 +211,9 @@
                                             variant="secondary"
                                             class="border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-400">
                                             <span
-                                                class="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-green-500"
+                                                class="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-slate-500"
                                             ></span>
-                                            Connected
+                                            Configured
                                         </Badge>
                                         {#if provider.isCurrent}
                                             <Badge variant="default">Current</Badge>
@@ -425,7 +425,8 @@
                     {#if showApiUrl(formState.providerType)}
                         <div class="space-y-2">
                             <Label for="apiUrl">
-                                API URL {formState.providerType === 'local' ? '*' : ''}
+                                {formState.providerType === 'openai' ? 'Base URL' : 'API URL'}
+                                {formState.providerType === 'local' ? ' *' : ' (optional)'}
                             </Label>
                             <Input
                                 id="apiUrl"

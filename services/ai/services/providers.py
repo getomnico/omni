@@ -182,6 +182,7 @@ async def _init_embedding_provider(app_state: AppState) -> None:
             "openai",
             api_key=embedding_config.api_key,
             model=embedding_config.model,
+            api_url=embedding_config.api_url,
             dimensions=embedding_config.dimensions,
             max_model_len=max_model_len,
         )

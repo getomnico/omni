@@ -71,6 +71,7 @@ def create_embedding_provider(provider_type: str, **kwargs) -> EmbeddingProvider
             For 'openai':
                 - api_key: OpenAI API key
                 - model: OpenAI model name (e.g., 'text-embedding-3-small')
+                - api_url/base_url: Optional OpenAI-compatible base URL
                 - dimensions: Optional embedding dimensions
             For 'local':
                 - base_url: Local embedding server URL (e.g., 'http://embeddings:8001/v1')
@@ -111,11 +112,12 @@ def create_embedding_provider(provider_type: str, **kwargs) -> EmbeddingProvider
         if not api_key:
             raise ValueError("api_key is required for OpenAI provider")
         model = kwargs.get("model", "text-embedding-3-small")
+        base_url = kwargs.get("api_url") or kwargs.get("base_url") or "https://api.openai.com/v1"
         dimensions = kwargs.get("dimensions", 1024)
         return OpenAIEmbeddingProvider(
             api_key=api_key,
             model=model,
-            base_url="https://api.openai.com/v1",
+            base_url=base_url,
             dimensions=dimensions,
         )
 

@@ -29,6 +29,92 @@ function stripSecrets(config: Record<string, unknown>): Record<string, unknown> 
     return rest
 }
 
+function normalizeBaseUrl(url: string): string {
+    return url.replace(/\/+$/, '')
+}
+
+async function postJson(url: string, headers: Record<string, string>, body: unknown): Promise<void> {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 10_000)
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+            signal: controller.signal,
+        })
+        if (!response.ok) {
+            const text = await response.text().catch(() => '')
+            throw new Error(`${response.status} ${response.statusText}${text ? ` - ${text}` : ''}`)
+        }
+    } finally {
+        clearTimeout(timeout)
+    }
+}
+
+async function testEmbeddingProviderConnection(
+    providerType: EmbeddingProviderType,
+    config: EmbeddingProviderConfig,
+): Promise<string | null> {
+    try {
+        if (providerType === 'openai' || providerType === 'local') {
+            const baseUrl = normalizeBaseUrl(
+                config.apiUrl ||
+                    (providerType === 'openai'
+                        ? 'https://api.openai.com/v1'
+                        : 'http://embeddings:8001/v1'),
+            )
+            const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+            if (providerType === 'openai') {
+                headers.Authorization = `Bearer ${config.apiKey}`
+            }
+            const body: Record<string, unknown> = {
+                model: config.model,
+                input: ['connection test'],
+            }
+            if (providerType === 'openai' && config.dimensions) body.dimensions = config.dimensions
+            await postJson(`${baseUrl}/embeddings`, headers, body)
+            return null
+        }
+
+        if (providerType === 'jina') {
+            await postJson(
+                config.apiUrl || 'https://api.jina.ai/v1/embeddings',
+                {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${config.apiKey}`,
+                },
+                { model: config.model, input: ['connection test'] },
+            )
+            return null
+        }
+
+        if (providerType === 'cohere') {
+            await postJson(
+                config.apiUrl || 'https://api.cohere.com/v2/embed',
+                {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${config.apiKey}`,
+                },
+                {
+                    model: config.model,
+                    input_type: 'search_query',
+                    embedding_types: ['float'],
+                    texts: ['connection test'],
+                    ...(config.dimensions ? { output_dimension: config.dimensions } : {}),
+                },
+            )
+            return null
+        }
+
+        // Bedrock uses ambient IAM credentials/region in the AI service; web
+        // cannot reliably validate it here without duplicating that stack.
+        return null
+    } catch (err) {
+        return err instanceof Error ? err.message : 'Unknown connection error'
+    }
+}
+
 export const load: PageServerLoad = async ({ locals }) => {
     requireAdmin(locals)
 
@@ -59,6 +145,9 @@ export const actions: Actions = {
         const config = parseConfig(formData, providerType)
         const validation = validateConfig(providerType, config)
         if (validation) return fail(400, { error: validation })
+
+        const connectionError = await testEmbeddingProviderConnection(providerType, config)
+        if (connectionError) return fail(400, { error: `Connection failed: ${connectionError}` })
 
         const name = PROVIDER_LABELS[providerType] || providerType
 
@@ -97,6 +186,9 @@ export const actions: Actions = {
 
         const validation = validateConfig(providerType, config, true)
         if (validation) return fail(400, { error: validation })
+
+        const connectionError = await testEmbeddingProviderConnection(providerType, config)
+        if (connectionError) return fail(400, { error: `Connection failed: ${connectionError}` })
 
         try {
             await updateProvider(id, { config })
