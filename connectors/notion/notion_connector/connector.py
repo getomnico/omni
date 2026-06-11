@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi.responses import JSONResponse, Response
-from omni_connector import ActionDefinition, ActionResponse, Connector, SyncContext
+from omni_connector import ActionDefinition, ActionResponse, Connector, SyncContext, SyncMode
 
 from .client import AuthenticationError, ForbiddenError, NotionClient, NotionError
 from .config import CHECKPOINT_INTERVAL, RATE_LIMIT_DELAY
@@ -149,7 +149,7 @@ class NotionConnector(Connector):
         state = state or {}
 
         try:
-            if state.get("last_sync_at"):
+            if ctx.sync_mode == SyncMode.INCREMENTAL and state.get("last_sync_at"):
                 await self._incremental_sync(client, state, permission_group, ctx)
             else:
                 await self._full_sync(client, permission_group, ctx)
@@ -222,6 +222,7 @@ class NotionConnector(Connector):
         ctx: SyncContext,
     ) -> None:
         """Full sync: index all accessible data sources and pages."""
+        sync_started_at = datetime.now(UTC).isoformat()
         docs_emitted = 0
         data_source_entry_ids: set[str] = set()
 
@@ -251,6 +252,10 @@ class NotionConnector(Connector):
                         client, ds_id, permission_group, ctx, docs_emitted
                     )
                     data_source_entry_ids.update(entries)
+
+                    if docs_emitted >= CHECKPOINT_INTERVAL:
+                        await ctx.save_checkpoint(ctx.state)
+                        docs_emitted = 0
                 except NotionError as e:
                     logger.error("Error syncing data source %s: %s", ds_id, e)
                     await ctx.emit_error(f"notion:data_source:{ds_id}", str(e))
@@ -294,17 +299,14 @@ class NotionConnector(Connector):
                     await ctx.emit_error(eid, str(e))
 
                 if docs_emitted >= CHECKPOINT_INTERVAL:
-                    await ctx.save_checkpoint({})
+                    await ctx.save_checkpoint(ctx.state)
                     docs_emitted = 0
 
             if not response.get("has_more"):
                 break
             cursor = response.get("next_cursor")
 
-        now = datetime.now(UTC).isoformat()
-        # save_state actually persists; complete()'s new_state is dropped by CM.
-        await ctx.save_checkpoint({"last_sync_at": now})
-        await ctx.complete()
+        await ctx.complete(new_state={"last_sync_at": sync_started_at})
         logger.info(
             "Full sync completed: %d scanned, %d emitted",
             ctx.documents_scanned,
@@ -320,6 +322,7 @@ class NotionConnector(Connector):
     ) -> None:
         """Incremental sync: re-index pages/data sources modified since last sync."""
         last_sync_at = state["last_sync_at"]
+        sync_started_at = datetime.now(UTC).isoformat()
         docs_emitted = 0
 
         # Pages: search returns most-recently-edited first; stop once we cross
@@ -398,13 +401,15 @@ class NotionConnector(Connector):
                     logger.warning("Error processing data source %s: %s", ds_id, e)
                     await ctx.emit_error(f"notion:data_source:{ds_id}", str(e))
 
+                if docs_emitted >= CHECKPOINT_INTERVAL:
+                    await ctx.save_checkpoint({"last_sync_at": last_sync_at})
+                    docs_emitted = 0
+
             if found_old or not response.get("has_more"):
                 break
             cursor = response.get("next_cursor")
 
-        now = datetime.now(UTC).isoformat()
-        await ctx.save_checkpoint({"last_sync_at": now})
-        await ctx.complete()
+        await ctx.complete(new_state={"last_sync_at": sync_started_at})
         logger.info(
             "Incremental sync completed: %d scanned, %d emitted",
             ctx.documents_scanned,
@@ -523,7 +528,7 @@ class NotionConnector(Connector):
                     await ctx.emit_error(eid, str(e))
 
                 if docs_emitted >= CHECKPOINT_INTERVAL:
-                    await ctx.save_checkpoint({})
+                    await ctx.save_checkpoint(ctx.state)
                     docs_emitted = 0
 
             if not response.get("has_more"):

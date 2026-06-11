@@ -11,6 +11,7 @@ pytestmark = pytest.mark.integration
 DS_ID = "ds-00000000-0000-0000-0000-000000000001"
 ENTRY_PAGE_ID = "pg-00000000-0000-0000-0000-000000000001"
 STANDALONE_PAGE_ID = "pg-00000000-0000-0000-0000-000000000002"
+OLD_FULL_SYNC_PAGE_ID = "pg-00000000-0000-0000-0000-fullsyncold"
 
 
 async def test_full_sync_indexes_pages_and_data_sources(
@@ -150,3 +151,38 @@ async def test_full_sync_indexes_pages_and_data_sources(
     assert (
         row["documents_scanned"] >= 3
     ), f"Expected >=3 documents_scanned, got {row['documents_scanned']}"
+
+
+async def test_full_sync_honors_requested_mode_when_state_exists(
+    harness, seed, source_id, mock_notion_api, cm_client: httpx.AsyncClient
+):
+    """A requested full sync must not be demoted to incremental by connector state."""
+    cutoff = "2024-06-01T00:00:00.000Z"
+    await seed.set_connector_state(source_id, {"last_sync_at": cutoff})
+
+    mock_notion_api.add_page(
+        OLD_FULL_SYNC_PAGE_ID,
+        "Old Page Included By Full Sync",
+        [_block_payload("blk-full-old", "paragraph", "old full-sync content")],
+        last_edited_time="2024-01-01T00:00:00.000Z",
+    )
+
+    resp = await cm_client.post(
+        "/sync",
+        json={"source_id": source_id, "sync_type": "full"},
+    )
+    assert resp.status_code == 200, resp.text
+    sync_run_id = resp.json()["sync_run_id"]
+
+    row = await wait_for_sync(harness.db_pool, sync_run_id, timeout=30)
+    assert (
+        row["status"] == "completed"
+    ), f"status={row['status']}, error={row.get('error_message')}"
+
+    events = await get_events(harness.db_pool, source_id)
+    doc_ids = {
+        e["payload"]["document_id"]
+        for e in events
+        if e["event_type"] == "document_created"
+    }
+    assert f"notion:page:{OLD_FULL_SYNC_PAGE_ID}" in doc_ids
