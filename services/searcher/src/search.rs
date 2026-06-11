@@ -310,7 +310,7 @@ impl SearchEngine {
             if request.include_facets() {
                 let start_ts = Instant::now();
                 let facets = search_repo
-                    .get_facet_counts_with_query_text(
+                    .get_facet_counts(
                         &request.query,
                         tantivy_query.as_deref(),
                         &all_source_ids,

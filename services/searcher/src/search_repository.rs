@@ -503,32 +503,6 @@ impl SearchDocumentRepository {
     pub async fn get_facet_counts(
         &self,
         query: &str,
-        source_ids: &[String],
-        content_types: Option<&[String]>,
-        attribute_filters: Option<&HashMap<String, AttributeFilter>>,
-        user_email: Option<&str>,
-        user_groups: &[String],
-        date_filter: Option<&DateFilter>,
-        person_filters: Option<&[String]>,
-    ) -> Result<Vec<Facet>, DatabaseError> {
-        let tantivy_query = self.build_query_text(query).await?;
-        self.get_facet_counts_with_query_text(
-            query,
-            tantivy_query.as_deref(),
-            source_ids,
-            content_types,
-            attribute_filters,
-            user_email,
-            user_groups,
-            date_filter,
-            person_filters,
-        )
-        .await
-    }
-
-    pub async fn get_facet_counts_with_query_text(
-        &self,
-        query: &str,
         tantivy_query: Option<&str>,
         source_ids: &[String],
         content_types: Option<&[String]>,
@@ -581,13 +555,9 @@ impl SearchDocumentRepository {
             return Ok(rows_to_facets(rows));
         }
 
-        let owned_tantivy_query;
-        let tantivy_query = if let Some(tq) = tantivy_query {
-            tq
-        } else {
-            owned_tantivy_query = self.build_query_text(query).await?.unwrap_or_default();
-            &owned_tantivy_query
-        };
+        let tantivy_query = tantivy_query.ok_or_else(|| {
+            DatabaseError::InvalidInput("tantivy query is required for facet counts".to_string())
+        })?;
 
         // Bind params: $1 = tantivy query string, then filters
         let mut param_idx = 2;
