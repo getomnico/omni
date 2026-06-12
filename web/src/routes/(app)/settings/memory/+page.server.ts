@@ -1,7 +1,11 @@
 import { error, redirect, fail } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
 import { getConfig } from '$lib/server/config'
-import { getGlobal } from '$lib/server/db/configuration'
+import {
+    GLOBAL_CONFIGURATION_KEYS,
+    getTypedGlobal,
+    type MemoryMode,
+} from '$lib/server/db/configuration'
 import { deleteUserMemoryMode, setUserMemoryMode } from '$lib/server/db/userConfiguration'
 import { getCurrentProvider } from '$lib/server/db/embedding-providers'
 import type { PageServerLoad, Actions } from './$types'
@@ -10,16 +14,22 @@ function requireMemoryEnabled() {
     if (env.MEMORY_ENABLED !== 'true') throw error(404)
 }
 
-const MODE_RANK: Record<string, number> = { off: 0, chat: 1, full: 2 }
-const VALID_MODES = ['off', 'chat', 'full', '']
+const MODE_RANK: Record<MemoryMode, number> = { off: 0, chat: 1, full: 2 }
+const VALID_MODES = ['off', 'chat', 'full', ''] as const
 
 type StoredMemory = { id: string; memory: string; created_at?: string }
 
-function isAllowed(candidate: string, ceiling: string): boolean {
+function isMemoryMode(mode: string): mode is MemoryMode {
+    return mode === 'off' || mode === 'chat' || mode === 'full'
+}
+
+function isSubmittedMode(mode: string): mode is MemoryMode | '' {
+    return VALID_MODES.includes(mode as (typeof VALID_MODES)[number])
+}
+
+function isAllowed(candidate: MemoryMode | '', ceiling: MemoryMode): boolean {
     if (candidate === '') return true
-    const c = MODE_RANK[candidate]
-    const max = MODE_RANK[ceiling] ?? 0
-    return c !== undefined && c <= max
+    return MODE_RANK[candidate] <= MODE_RANK[ceiling]
 }
 
 async function fetchMemories(userId: string): Promise<StoredMemory[]> {
@@ -44,11 +54,11 @@ export const load: PageServerLoad = async ({ locals }) => {
     requireMemoryEnabled()
 
     const [orgDefaultConfig, embedder, memories] = await Promise.all([
-        getGlobal('memory_mode_default'),
+        getTypedGlobal(GLOBAL_CONFIGURATION_KEYS.MEMORY_MODE_DEFAULT),
         getCurrentProvider(),
         fetchMemories(locals.user.id),
     ])
-    const orgDefault = (orgDefaultConfig?.value as string) ?? 'off'
+    const orgDefault = orgDefaultConfig?.value ?? 'off'
 
     return {
         currentMode: locals.user.memoryMode ?? null,
@@ -68,15 +78,15 @@ export const actions: Actions = {
         const formData = await request.formData()
         const mode = formData.get('mode') as string
 
-        if (!VALID_MODES.includes(mode)) {
+        if (!isSubmittedMode(mode)) {
             return fail(400, { error: 'Invalid memory mode' })
         }
 
         const [orgDefaultConfig, embedder] = await Promise.all([
-            getGlobal('memory_mode_default'),
+            getTypedGlobal(GLOBAL_CONFIGURATION_KEYS.MEMORY_MODE_DEFAULT),
             getCurrentProvider(),
         ])
-        const orgDefault = (orgDefaultConfig?.value as string) ?? 'off'
+        const orgDefault = orgDefaultConfig?.value ?? 'off'
 
         if (!embedder && mode !== 'off' && mode !== '') {
             return fail(400, {
@@ -94,7 +104,10 @@ export const actions: Actions = {
             if (mode === '') {
                 await deleteUserMemoryMode(locals.user.id)
             } else {
-                await setUserMemoryMode(locals.user.id, mode as 'off' | 'chat' | 'full')
+                if (!isMemoryMode(mode)) {
+                    return fail(400, { error: 'Invalid memory mode' })
+                }
+                await setUserMemoryMode(locals.user.id, mode)
             }
             return { success: true }
         } catch (err) {

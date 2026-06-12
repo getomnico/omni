@@ -1,24 +1,18 @@
-import { getGlobal, setGlobal } from './db/configuration'
+import {
+    GLOBAL_CONFIGURATION_KEYS,
+    getTypedGlobal,
+    setTypedGlobal,
+    type DoclingQualityPreset,
+} from './db/configuration'
 import { getRedisClient } from './redis'
 
 const SYSTEM_FLAGS_KEY = 'system:flags'
-const SYSTEM_SETTINGS_KEY = 'system:settings'
-const DOCLING_ENABLED_KEY = 'docling_enabled'
-const DOCLING_QUALITY_PRESET_KEY = 'docling_quality_preset'
-const DEFAULT_DOCLING_QUALITY_PRESET = 'balanced'
+const DOCLING_ENABLED_KEY = GLOBAL_CONFIGURATION_KEYS.DOCLING_ENABLED
+const DOCLING_QUALITY_PRESET_KEY = GLOBAL_CONFIGURATION_KEYS.DOCLING_QUALITY_PRESET
+const DEFAULT_DOCLING_QUALITY_PRESET: DoclingQualityPreset = 'balanced'
 
-function booleanFromConfig(value: Record<string, unknown> | null, field: string): boolean | null {
-    if (!value) return null
-    const raw = value[field]
-    if (typeof raw === 'boolean') return raw
-    if (typeof raw === 'string') return raw === 'true'
-    return null
-}
-
-function stringFromConfig(value: Record<string, unknown> | null, field: string): string | null {
-    if (!value) return null
-    const raw = value[field]
-    return typeof raw === 'string' && raw.length > 0 ? raw : null
+function isDoclingQualityPreset(preset: string): preset is DoclingQualityPreset {
+    return preset === 'fast' || preset === 'balanced' || preset === 'quality'
 }
 
 export class SystemFlags {
@@ -72,8 +66,7 @@ export class SystemFlags {
 
 /**
  * System settings that can be configured via the admin UI.
- * The source of truth is the global-scope `configuration` table. Redis is
- * retained only as a temporary compatibility/backfill path for older installs.
+ * The source of truth is the global-scope `configuration` table.
  */
 export class SystemSettings {
     private static memoryCache: Map<string, string> = new Map()
@@ -86,21 +79,9 @@ export class SystemSettings {
             return this.memoryCache.get(DOCLING_ENABLED_KEY) === 'true'
         }
 
-        const config = await getGlobal(DOCLING_ENABLED_KEY)
-        const configured = booleanFromConfig(config, 'enabled')
-        if (configured !== null) {
-            this.memoryCache.set(DOCLING_ENABLED_KEY, configured ? 'true' : 'false')
-            return configured
-        }
-
-        // Compatibility/backfill from the old Redis hash.
-        const redis = await getRedisClient()
-        const value = await redis.hGet(SYSTEM_SETTINGS_KEY, DOCLING_ENABLED_KEY)
-        const enabled = value === 'true'
-        await setGlobal(DOCLING_ENABLED_KEY, { enabled })
-
+        const config = await getTypedGlobal(DOCLING_ENABLED_KEY)
+        const enabled = config?.enabled ?? false
         this.memoryCache.set(DOCLING_ENABLED_KEY, enabled ? 'true' : 'false')
-
         return enabled
     }
 
@@ -108,12 +89,7 @@ export class SystemSettings {
      * Set whether Docling-based document conversion is enabled.
      */
     static async setDoclingEnabled(enabled: boolean): Promise<void> {
-        await setGlobal(DOCLING_ENABLED_KEY, { enabled })
-
-        // Best-effort compatibility cache for older services during rollout.
-        const redis = await getRedisClient()
-        await redis.hSet(SYSTEM_SETTINGS_KEY, DOCLING_ENABLED_KEY, enabled ? 'true' : 'false')
-
+        await setTypedGlobal(DOCLING_ENABLED_KEY, { enabled })
         this.memoryCache.set(DOCLING_ENABLED_KEY, enabled ? 'true' : 'false')
     }
 
@@ -125,21 +101,9 @@ export class SystemSettings {
             return this.memoryCache.get(DOCLING_QUALITY_PRESET_KEY)!
         }
 
-        const config = await getGlobal(DOCLING_QUALITY_PRESET_KEY)
-        const configured = stringFromConfig(config, 'preset')
-        if (configured) {
-            this.memoryCache.set(DOCLING_QUALITY_PRESET_KEY, configured)
-            return configured
-        }
-
-        // Compatibility/backfill from the old Redis hash.
-        const redis = await getRedisClient()
-        const value = await redis.hGet(SYSTEM_SETTINGS_KEY, DOCLING_QUALITY_PRESET_KEY)
-        const preset = value ?? DEFAULT_DOCLING_QUALITY_PRESET
-        await setGlobal(DOCLING_QUALITY_PRESET_KEY, { preset })
-
+        const config = await getTypedGlobal(DOCLING_QUALITY_PRESET_KEY)
+        const preset = config?.preset ?? DEFAULT_DOCLING_QUALITY_PRESET
         this.memoryCache.set(DOCLING_QUALITY_PRESET_KEY, preset)
-
         return preset
     }
 
@@ -147,12 +111,11 @@ export class SystemSettings {
      * Set the Docling quality preset.
      */
     static async setDoclingQualityPreset(preset: string): Promise<void> {
-        await setGlobal(DOCLING_QUALITY_PRESET_KEY, { preset })
+        if (!isDoclingQualityPreset(preset)) {
+            throw new Error(`Invalid Docling quality preset: ${preset}`)
+        }
 
-        // Best-effort compatibility cache for older services during rollout.
-        const redis = await getRedisClient()
-        await redis.hSet(SYSTEM_SETTINGS_KEY, DOCLING_QUALITY_PRESET_KEY, preset)
-
+        await setTypedGlobal(DOCLING_QUALITY_PRESET_KEY, { preset })
         this.memoryCache.set(DOCLING_QUALITY_PRESET_KEY, preset)
     }
 

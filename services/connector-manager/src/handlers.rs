@@ -20,7 +20,6 @@ use futures::stream::Stream;
 use redis::AsyncCommands;
 use serde_json::json;
 use shared::clients::docling::{DoclingClient, DoclingError};
-use shared::constants::REDIS_SYSTEM_SETTINGS_KEY;
 use shared::db::repositories::SyncRunRepository;
 use shared::models::{
     ActionMode, ConnectorManifest, SearchOperator, ServiceProvider, Source, SourceType, SyncRun,
@@ -1188,142 +1187,117 @@ pub async fn get_sync_modes_for_source(
     Vec::new()
 }
 
-const VALID_DOCLING_PRESETS: &[&str] = &["fast", "balanced", "quality"];
+const DOCLING_ENABLED_KEY: &str = "docling_enabled";
+const DOCLING_QUALITY_PRESET_KEY: &str = "docling_quality_preset";
 const DEFAULT_DOCLING_PRESET: &str = "balanced";
 
-async fn get_global_configuration_value(
+#[derive(Debug, Clone, serde::Deserialize)]
+struct DoclingEnabledConfiguration {
+    enabled: bool,
+}
+
+impl Default for DoclingEnabledConfiguration {
+    fn default() -> Self {
+        Self { enabled: false }
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum DoclingQualityPreset {
+    Fast,
+    Balanced,
+    Quality,
+}
+
+impl DoclingQualityPreset {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Balanced => "balanced",
+            Self::Quality => "quality",
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct DoclingQualityPresetConfiguration {
+    preset: DoclingQualityPreset,
+}
+
+impl Default for DoclingQualityPresetConfiguration {
+    fn default() -> Self {
+        Self {
+            preset: DoclingQualityPreset::Balanced,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GlobalScopedConfiguration {
+    docling_enabled: DoclingEnabledConfiguration,
+    docling_quality_preset: DoclingQualityPresetConfiguration,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default)]
+struct UserScopedConfiguration {}
+
+async fn get_typed_global_configuration<T>(
     pool: &sqlx::PgPool,
     key: &str,
-) -> Option<serde_json::Value> {
-    match sqlx::query_scalar::<_, serde_json::Value>(
+) -> Result<Option<T>, ApiError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let value = sqlx::query_scalar::<_, serde_json::Value>(
         "SELECT value FROM configuration WHERE scope = 'global' AND key = $1 LIMIT 1",
     )
     .bind(key)
     .fetch_optional(pool)
     .await
-    {
-        Ok(value) => value,
-        Err(e) => {
-            warn!("Failed to read global configuration key '{}': {}", key, e);
-            None
-        }
-    }
-}
-
-async fn set_global_configuration_value(pool: &sqlx::PgPool, key: &str, value: serde_json::Value) {
-    if let Err(e) = sqlx::query(
-        r#"
-        INSERT INTO configuration (scope, user_id, key, value)
-        VALUES ('global', NULL, $1, $2)
-        ON CONFLICT (key) WHERE scope = 'global'
-        DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-        "#,
-    )
-    .bind(key)
-    .bind(value)
-    .execute(pool)
-    .await
-    {
-        warn!(
-            "Failed to backfill global configuration key '{}': {}",
+    .map_err(|e| {
+        ApiError::Internal(format!(
+            "Failed to read global configuration key '{}': {}",
             key, e
-        );
-    }
-}
+        ))
+    })?;
 
-fn parse_docling_enabled(value: Option<&serde_json::Value>) -> Option<bool> {
-    let value = value?;
     value
-        .get("enabled")
-        .and_then(|v| v.as_bool())
-        .or_else(|| value.as_bool())
-        .or_else(|| value.as_str().map(|s| s == "true"))
+        .map(|value| {
+            serde_json::from_value::<T>(value).map_err(|e| {
+                ApiError::Internal(format!(
+                    "Invalid global configuration value for '{}': {}",
+                    key, e
+                ))
+            })
+        })
+        .transpose()
 }
 
-fn parse_docling_preset(value: Option<&serde_json::Value>) -> Option<String> {
-    let value = value?;
-    let preset = value
-        .get("preset")
-        .and_then(|v| v.as_str())
-        .or_else(|| value.as_str())?;
-    Some(preset.to_string())
+async fn get_global_scoped_configuration(
+    pool: &sqlx::PgPool,
+) -> Result<GlobalScopedConfiguration, ApiError> {
+    Ok(GlobalScopedConfiguration {
+        docling_enabled: get_typed_global_configuration(pool, DOCLING_ENABLED_KEY)
+            .await?
+            .unwrap_or_default(),
+        docling_quality_preset: get_typed_global_configuration(pool, DOCLING_QUALITY_PRESET_KEY)
+            .await?
+            .unwrap_or_default(),
+    })
 }
 
-/// Read both the Docling `enabled` flag and quality preset from Postgres
-/// `configuration` (scope='global'). Redis is used only as a compatibility
-/// backfill for older installations that still have `system:settings` values.
-async fn get_docling_settings(redis_client: &redis::Client, pool: &sqlx::PgPool) -> (bool, String) {
-    let enabled_config = get_global_configuration_value(pool, "docling_enabled").await;
-    let preset_config = get_global_configuration_value(pool, "docling_quality_preset").await;
-
-    let mut enabled = parse_docling_enabled(enabled_config.as_ref());
-    let mut preset = parse_docling_preset(preset_config.as_ref());
-
-    if enabled.is_none() || preset.is_none() {
-        match redis_client.get_multiplexed_async_connection().await {
-            Ok(mut conn) => {
-                let values: Vec<Option<String>> = conn
-                    .hget(
-                        REDIS_SYSTEM_SETTINGS_KEY,
-                        &["docling_enabled", "docling_quality_preset"],
-                    )
-                    .await
-                    .unwrap_or_else(|e| {
-                        warn!("Failed to read legacy docling settings from Redis: {}", e);
-                        vec![None, None]
-                    });
-
-                if enabled.is_none() {
-                    let redis_enabled = values
-                        .first()
-                        .and_then(|v| v.as_deref())
-                        .map(|s| s == "true")
-                        .unwrap_or(false);
-                    set_global_configuration_value(
-                        pool,
-                        "docling_enabled",
-                        json!({ "enabled": redis_enabled }),
-                    )
-                    .await;
-                    enabled = Some(redis_enabled);
-                }
-
-                if preset.is_none() {
-                    let redis_preset = values
-                        .get(1)
-                        .and_then(|v| v.as_deref())
-                        .unwrap_or(DEFAULT_DOCLING_PRESET)
-                        .to_string();
-                    set_global_configuration_value(
-                        pool,
-                        "docling_quality_preset",
-                        json!({ "preset": redis_preset }),
-                    )
-                    .await;
-                    preset = Some(redis_preset);
-                }
-            }
-            Err(e) => warn!(
-                "Failed to connect to Redis for legacy docling settings: {}",
-                e
-            ),
-        }
-    }
-
-    let enabled = enabled.unwrap_or(false);
-    let preset = match preset.as_deref() {
-        Some(p) if VALID_DOCLING_PRESETS.contains(&p) => p.to_string(),
-        Some(p) => {
-            warn!(
-                "Invalid docling preset '{}' in configuration; falling back to '{}'.",
-                p, DEFAULT_DOCLING_PRESET
-            );
-            DEFAULT_DOCLING_PRESET.to_string()
-        }
-        None => DEFAULT_DOCLING_PRESET.to_string(),
-    };
-
-    (enabled, preset)
+async fn get_docling_settings(pool: &sqlx::PgPool) -> Result<(bool, String), ApiError> {
+    let configuration = get_global_scoped_configuration(pool).await?;
+    Ok((
+        configuration.docling_enabled.enabled,
+        configuration
+            .docling_quality_preset
+            .preset
+            .as_str()
+            .to_string(),
+    ))
 }
 
 /// MIME types that Docling can process.
@@ -1723,7 +1697,6 @@ async fn parse_extract_multipart(
 
 /// Extract text from binary data using Docling (if enabled) or the built-in extractor.
 async fn do_extract_text(
-    redis_client: &redis::Client,
     pool: &sqlx::PgPool,
     sync_run_id: &str,
     source_id: Option<&str>,
@@ -1736,7 +1709,7 @@ async fn do_extract_text(
         || (mime_type == "application/octet-stream"
             && is_docling_supported_extension(filename.as_deref()));
     let (docling_enabled, preset) = if docling_candidate {
-        get_docling_settings(redis_client, pool).await
+        get_docling_settings(pool).await?
     } else {
         (false, DEFAULT_DOCLING_PRESET.to_string())
     };
@@ -1843,7 +1816,6 @@ pub async fn sdk_extract_content(
         .map(|sync_run| sync_run.source_id);
 
     let extracted_text = do_extract_text(
-        &state.redis_client,
         state.db_pool.pool(),
         &fields.sync_run_id,
         source_id.as_deref(),
@@ -1901,7 +1873,6 @@ pub async fn sdk_extract_text(
         .map(|sync_run| sync_run.source_id);
 
     let extracted_text = do_extract_text(
-        &state.redis_client,
         state.db_pool.pool(),
         &fields.sync_run_id,
         source_id.as_deref(),
