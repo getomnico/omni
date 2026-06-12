@@ -38,8 +38,8 @@ from config import (
 )
 from db import ChatsRepository, MessagesRepository
 from db.documents import DocumentsRepository
-from db.models import Chat, Source, UserConfiguration
 from db.configuration import ConfigurationRepository
+from db.models import Chat, Source, UserConfiguration
 from db.uploads import UploadsRepository
 from db.usage import UsageRepository
 from db.users import UsersRepository
@@ -51,8 +51,9 @@ from memory import (
     user_key,
 )
 from prompts import build_agent_chat_system_prompt, build_chat_system_prompt
-from providers import LLMProvider, LLMProviderEmptyResponseError, LLMProviderStreamError
+from providers import LLMProvider, LLMProviderStreamError
 from services.compaction import ConversationCompactor
+from services.title_generation import generate_title_for_conversation
 from services.usage import UsageContext, UsagePurpose, UsageTracker, track_usage
 from state import AppState
 from tools import (
@@ -71,37 +72,6 @@ from tools.skill_handler import SkillHandler
 
 router = APIRouter(tags=["chat"])
 logger = logging.getLogger(__name__)
-
-TITLE_GENERATION_SYSTEM_PROMPT = """You are a helpful assistant that generates concise, descriptive titles for chat conversations.
-Based on the first message(s) of a conversation, generate a title that is:
-- 3-7 words long
-- Descriptive and specific
-- Written in title case
-- Does not include quotes or special formatting
-
-Just respond with the title text, nothing else."""
-
-TITLE_GENERATION_EMPTY_RESPONSE_PROMPT = "You did not provide a title. Please provide a concise 3-6 word chat title only, without quotes or punctuation."
-TITLE_GENERATION_EMPTY_RETRIES = 2
-
-
-def _clean_generated_title(title: str) -> str:
-    cleaned = title.strip().strip('"').strip("'").strip()
-    cleaned = cleaned.rstrip(".!?:;,").strip()
-    if len(cleaned) > 100:
-        cleaned = cleaned[:97] + "..."
-    return cleaned
-
-
-def _fallback_chat_title(conversation_text: str) -> str:
-    first_line = conversation_text.strip().splitlines()[0] if conversation_text.strip() else ""
-    if first_line.lower().startswith("user:"):
-        first_line = first_line.split(":", 1)[1]
-    words = [w.strip("\"'.,!?;:()[]{}") for w in first_line.split()]
-    words = [w for w in words if w]
-    if not words:
-        return "Untitled"
-    return " ".join(words[:6])[:100] or "Untitled"
 
 
 def _chat_error_message(exc: Exception) -> str:
@@ -1362,46 +1332,14 @@ async def generate_chat_title(
         logger.info(f"Extracted conversation text ({len(conversation_text)} chars)")
         logger.debug(f"Conversation text: {conversation_text[:200]}...")
 
-        # Generate title using LLM. Some OpenAI-compatible endpoints can return
-        # an empty assistant message; ask for a correction a couple of times
-        # before falling back to a deterministic safe title.
-        base_prompt = f"{TITLE_GENERATION_SYSTEM_PROMPT}\n\nConversation:\n{conversation_text}\n\nTitle:"
-        prompt = base_prompt
-        title = ""
-        title_usage = None
+        title_result = await generate_title_for_conversation(
+            llm_provider,
+            conversation_text,
+            chat_id,
+        )
+        title = title_result.title
 
-        for attempt in range(TITLE_GENERATION_EMPTY_RETRIES + 1):
-            try:
-                generated_title, usage = await llm_provider.generate_response(
-                    prompt=prompt,
-                    max_tokens=20,
-                    temperature=0.7,
-                    top_p=0.9,
-                )
-                candidate = _clean_generated_title(generated_title)
-                if candidate:
-                    title = candidate
-                    title_usage = usage
-                    break
-                logger.warning(
-                    "Title generation returned empty text for chat %s (attempt %s/%s)",
-                    chat_id,
-                    attempt + 1,
-                    TITLE_GENERATION_EMPTY_RETRIES + 1,
-                )
-            except LLMProviderEmptyResponseError as e:
-                logger.warning(
-                    "Title generation returned empty provider response for chat %s (attempt %s/%s): %s",
-                    chat_id,
-                    attempt + 1,
-                    TITLE_GENERATION_EMPTY_RETRIES + 1,
-                    e,
-                )
-
-            if attempt < TITLE_GENERATION_EMPTY_RETRIES:
-                prompt = f"{base_prompt}\n\n{TITLE_GENERATION_EMPTY_RESPONSE_PROMPT}\n\nTitle:"
-
-        if title_usage is not None:
+        if title_result.usage is not None:
             track_usage(
                 UsageRepository(),
                 UsageContext(
@@ -1412,15 +1350,11 @@ async def generate_chat_title(
                     purpose=UsagePurpose.TITLE_GENERATION,
                     chat_id=chat_id,
                 ),
-                input_tokens=title_usage.input_tokens,
-                output_tokens=title_usage.output_tokens,
-                cache_read_tokens=title_usage.cache_read_tokens,
-                cache_creation_tokens=title_usage.cache_creation_tokens,
+                input_tokens=title_result.usage.input_tokens,
+                output_tokens=title_result.usage.output_tokens,
+                cache_read_tokens=title_result.usage.cache_read_tokens,
+                cache_creation_tokens=title_result.usage.cache_creation_tokens,
             )
-
-        if not title:
-            title = _fallback_chat_title(conversation_text)
-            logger.warning("Falling back to deterministic title for chat %s: %s", chat_id, title)
 
         logger.info(f"Generated title: {title}")
 
