@@ -243,31 +243,32 @@ def _build_toolsets_section(
     *toolsets* available rather than every individual action schema. The model
     uses `tool_search` to find candidate tools and `load_tool` / `load_tool_set`
     to admit tools into the conversation; once loaded, tools persist for the rest
-    of the chat.
+    of the chat. `loaded_source_ids` is accepted for caller compatibility but not
+    rendered: exact `load_tool` may load only one tool from a source, so source-
+    level loaded markers would be misleading.
     """
     if not toolsets:
         return ""
 
-    loaded = loaded_source_ids or set()
     lines = [
         "",
-        "# Loadable connector toolsets (not currently callable)",
+        "# Loadable connector toolsets",
         (
-            "The connector actions below are NOT in your current tool list. They are "
-            'only loadable candidates. Use `tool_search("keywords")` to find candidate '
-            "tool names, then `load_tool(tool_name=...)` for the exact tools you need. "
-            'Use `load_tool_set(source_type="gmail")` only when you need every tool for '
-            "a source. Loaded tools persist for the rest of this conversation."
+            "The connector toolsets below list additional connector actions you can "
+            "load into this conversation. Some tools from a listed source may already "
+            'be callable; always check your current tool list before loading. Use `tool_search("keywords")` '
+            "to find candidate tool names, then `load_tool(tool_name=...)` for the exact "
+            'tools you need. Use `load_tool_set(source_type="gmail")` only when you need '
+            "every tool for a source. Loaded tools persist for the rest of this conversation."
         ),
     ]
     for ts in toolsets:
         source_type = ts["source_type"]
         display = SOURCE_DISPLAY_NAMES.get(source_type, source_type)
         sample = ", ".join(ts.get("sample_tool_names") or []) or "—"
-        loaded_marker = " [LOADED]" if ts["source_id"] in loaded else ""
         lines.append(
             f"- {source_type} (source_id={ts['source_id']}): {display} · "
-            f"{ts['source_name']} · {ts['tool_count']} tools (e.g. {sample}){loaded_marker}"
+            f"{ts['source_name']} · {ts['tool_count']} tools (e.g. {sample})"
         )
     return "\n".join(lines)
 

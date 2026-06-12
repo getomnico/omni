@@ -22,6 +22,7 @@ _TOOL_NAMES = {"skill_search", "load_skill"}
 _SKILL_FILENAME = "SKILL.md"
 _DEFAULT_LIMIT = 10
 _MAX_LIMIT = 25
+_CAPABILITY_UPSERT_BATCH_SIZE = 500
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
@@ -247,9 +248,14 @@ class SkillHandler:
                     },
                 )
             )
-        await self._searcher_client.upsert_capabilities(
-            CapabilitiesUpsertRequest(capabilities=capabilities)
-        )
+        for start in range(0, len(capabilities), _CAPABILITY_UPSERT_BATCH_SIZE):
+            await self._searcher_client.upsert_capabilities(
+                CapabilitiesUpsertRequest(
+                    capabilities=capabilities[
+                        start : start + _CAPABILITY_UPSERT_BATCH_SIZE
+                    ]
+                )
+            )
 
     @staticmethod
     def _title(skill_id: str, content: str) -> str:

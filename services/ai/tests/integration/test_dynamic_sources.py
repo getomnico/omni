@@ -10,9 +10,7 @@ Uses existing db_pool/redis fixtures from conftest.py.
 
 import json
 import subprocess
-import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -251,30 +249,42 @@ def _make_chat(user_id: str) -> Chat:
     )
 
 
-class _HealthyConnectorHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/health":
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"OK")
-            return
-        self.send_response(404)
-        self.end_headers()
-
-    def log_message(self, format, *args):
-        return
-
-
 @pytest.fixture
 def healthy_connector_url():
-    server = ThreadingHTTPServer(("0.0.0.0", 0), _HealthyConnectorHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield f"http://host.docker.internal:{server.server_port}"
-    finally:
-        server.shutdown()
-        thread.join(timeout=5)
+    script = (
+        "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+        "class Handler(BaseHTTPRequestHandler):\n"
+        "    def do_GET(self):\n"
+        "        self.send_response(200)\n"
+        "        self.end_headers()\n"
+        "        self.wfile.write(b'OK')\n"
+        "    def log_message(self, *args):\n"
+        "        pass\n"
+        "HTTPServer(('0.0.0.0', 8080), Handler).serve_forever()\n"
+    )
+    container = (
+        DockerContainer("python:3.12-alpine")
+        .with_exposed_ports(8080)
+        .with_command(["python", "-c", script])
+    )
+    with container:
+        host = container.get_container_host_ip()
+        port = container.get_exposed_port(8080)
+        for _ in range(30):
+            try:
+                resp = httpx.get(f"http://{host}:{port}/health", timeout=1.0)
+                if resp.status_code == 200:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.5)
+        else:
+            pytest.fail("healthy connector test container did not start")
+
+        wrapped = container.get_wrapped_container()
+        wrapped.reload()
+        ip_address = wrapped.attrs["NetworkSettings"]["IPAddress"]
+        yield f"http://{ip_address}:8080"
 
 
 # ---------------------------------------------------------------------------
@@ -522,7 +532,13 @@ async def test_connector_actions_from_connector_manager_are_loadable(
         "resources": [],
         "oauth": None,
     }
-    await redis_client.setex("connector:manifest:gmail_test", 600, json.dumps(manifest))
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        register_resp = await client.post(
+            f"{connector_manager_url}/sdk/register", json=manifest
+        )
+        if register_resp.is_error:
+            pytest.fail(register_resp.text)
+        register_resp.raise_for_status()
 
     try:
         app = _make_app()

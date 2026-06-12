@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 _TOOL_NAMES = {"tool_search", "load_tool", "load_tool_set"}
 _DEFAULT_LIMIT = 10
 _MAX_LIMIT = 25
+_CAPABILITY_UPSERT_BATCH_SIZE = 500
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 OnLoad = Callable[[set[str]], Awaitable[None]]
 
@@ -242,9 +243,14 @@ class MetaToolHandler:
             if publish_key in self._published_capability_keys:
                 return
             try:
-                await self._searcher_client.upsert_capabilities(
-                    CapabilitiesUpsertRequest(capabilities=capabilities)
-                )
+                for start in range(0, len(capabilities), _CAPABILITY_UPSERT_BATCH_SIZE):
+                    await self._searcher_client.upsert_capabilities(
+                        CapabilitiesUpsertRequest(
+                            capabilities=capabilities[
+                                start : start + _CAPABILITY_UPSERT_BATCH_SIZE
+                            ]
+                        )
+                    )
             except Exception as e:
                 logger.warning(f"Failed to publish connector tool capabilities: {e}")
                 return

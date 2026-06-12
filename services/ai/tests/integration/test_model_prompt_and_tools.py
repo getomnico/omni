@@ -136,7 +136,9 @@ async def chat_ids(db_pool) -> tuple[str, str, str]:
 
 
 @pytest.fixture
-async def connector_state(db_pool, redis_client, healthy_connector_url, chat_ids):
+async def connector_state(
+    db_pool, redis_client, healthy_connector_url, connector_manager_url, chat_ids
+):
     _, user_id, _ = chat_ids
     async with db_pool.acquire() as conn:
         await conn.execute("DELETE FROM sources WHERE id = $1", SOURCE_ID)
@@ -185,7 +187,11 @@ async def connector_state(db_pool, redis_client, healthy_connector_url, chat_ids
         "resources": [],
         "oauth": None,
     }
-    await redis_client.setex("connector:manifest:gmail_test", 600, json.dumps(manifest))
+    async with AsyncClient(timeout=10.0) as client:
+        register_resp = await client.post(
+            f"{connector_manager_url}/sdk/register", json=manifest
+        )
+        register_resp.raise_for_status()
     try:
         yield
     finally:
@@ -261,8 +267,8 @@ async def test_initial_chat_turn_sends_loadable_toolsets_but_no_connector_tools(
     assert "gmail__list_threads" not in names
 
     prompt = _system_prompt(llm.calls[0])
-    assert "# Loadable connector toolsets (not currently callable)" in prompt
-    assert "The connector actions below are NOT in your current tool list" in prompt
+    assert "# Loadable connector toolsets" in prompt
+    assert "The connector toolsets below list additional connector actions" in prompt
     assert "gmail (source_id=" in prompt
     assert "Work Gmail" in prompt
     assert "[LOADED]" not in prompt
@@ -409,4 +415,4 @@ async def test_resumed_chat_reconstructs_loaded_tools_from_successful_history_on
     prompt = _system_prompt(llm.calls[0])
     assert "gmail (source_id=" in prompt
     assert "Work Gmail" in prompt
-    assert "[LOADED]" in prompt
+    assert "[LOADED]" not in prompt

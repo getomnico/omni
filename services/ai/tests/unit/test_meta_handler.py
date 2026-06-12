@@ -154,6 +154,26 @@ async def test_publish_tool_capabilities_skips_unchanged_refresh(actions):
 
 
 @pytest.mark.asyncio
+async def test_publish_tool_capabilities_chunks_large_batches():
+    many_actions = [
+        _make_action(
+            f"src-{idx}",
+            f"source_{idx}",
+            "do_work",
+            f"Do work {idx}.",
+        )
+        for idx in range(501)
+    ]
+    handler = _make_handler(many_actions)
+    searcher = _FakeSearcherClient()
+    meta = MetaToolHandler(handler, set(), lambda _: None, searcher_client=searcher)
+
+    await meta.publish_tool_capabilities()
+
+    assert [len(call.capabilities) for call in searcher.upserts] == [500, 1]
+
+
+@pytest.mark.asyncio
 async def test_tool_search_no_matches_returns_no_load(actions):
     handler = _make_handler(actions)
     loaded: set[str] = set()
