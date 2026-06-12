@@ -1,3 +1,4 @@
+use crate::models::UserConfiguration;
 use crate::operator_registry::OperatorRegistry;
 use async_trait::async_trait;
 use chrono::{Datelike, LocalResult, NaiveDate, TimeZone};
@@ -40,13 +41,13 @@ pub async fn parse(
     query: &str,
     person_lookup: &dyn PersonLookup,
     operator_registry: &OperatorRegistry,
-    user_timezone: Option<&str>,
+    user_configuration: &UserConfiguration,
 ) -> ParsedQuery {
     parse_with_now(
         query,
         person_lookup,
         operator_registry,
-        user_timezone,
+        user_configuration,
         OffsetDateTime::now_utc(),
     )
     .await
@@ -56,14 +57,14 @@ async fn parse_with_now(
     query: &str,
     person_lookup: &dyn PersonLookup,
     operator_registry: &OperatorRegistry,
-    user_timezone: Option<&str>,
+    user_configuration: &UserConfiguration,
     now_utc: OffsetDateTime,
 ) -> ParsedQuery {
     let mut result = ParsedQuery::default();
     let mut remaining = query.to_string();
 
     // Phase 1: Extract explicit operators
-    let timezone = resolve_timezone(user_timezone);
+    let timezone = resolve_timezone(user_configuration);
 
     remaining = extract_operators(&remaining, &mut result, operator_registry, timezone).await;
 
@@ -162,8 +163,9 @@ async fn extract_operators(
     remaining
 }
 
-fn resolve_timezone(user_timezone: Option<&str>) -> Tz {
-    user_timezone
+fn resolve_timezone(user_configuration: &UserConfiguration) -> Tz {
+    user_configuration
+        .timezone()
         .and_then(|tz| tz.parse::<Tz>().ok())
         .unwrap_or(chrono_tz::UTC)
 }
@@ -516,33 +518,48 @@ mod tests {
     fn test_parse(query: &str) -> ParsedQuery {
         let lookup = empty_lookup();
         let registry = default_registry();
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(parse(query, &lookup, &registry, None))
+        let user_configuration = UserConfiguration::default();
+        tokio::runtime::Runtime::new().unwrap().block_on(parse(
+            query,
+            &lookup,
+            &registry,
+            &user_configuration,
+        ))
     }
 
     fn test_parse_with_lookup(query: &str, lookup: &dyn PersonLookup) -> ParsedQuery {
         let registry = default_registry();
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(parse(query, lookup, &registry, None))
+        let user_configuration = UserConfiguration::default();
+        tokio::runtime::Runtime::new().unwrap().block_on(parse(
+            query,
+            lookup,
+            &registry,
+            &user_configuration,
+        ))
     }
 
     fn test_parse_with_registry(query: &str, registry: &OperatorRegistry) -> ParsedQuery {
         let lookup = empty_lookup();
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(parse(query, &lookup, registry, None))
+        let user_configuration = UserConfiguration::default();
+        tokio::runtime::Runtime::new().unwrap().block_on(parse(
+            query,
+            &lookup,
+            registry,
+            &user_configuration,
+        ))
     }
 
     fn test_parse_with_timezone(query: &str, timezone: &str) -> ParsedQuery {
         let lookup = empty_lookup();
         let registry = default_registry();
+        let user_configuration = UserConfiguration {
+            timezone: Some(timezone.to_string()),
+        };
         tokio::runtime::Runtime::new().unwrap().block_on(parse(
             query,
             &lookup,
             &registry,
-            Some(timezone),
+            &user_configuration,
         ))
     }
 
@@ -553,13 +570,16 @@ mod tests {
     ) -> ParsedQuery {
         let lookup = empty_lookup();
         let registry = default_registry();
+        let user_configuration = UserConfiguration {
+            timezone: Some(timezone.to_string()),
+        };
         tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(parse_with_now(
                 query,
                 &lookup,
                 &registry,
-                Some(timezone),
+                &user_configuration,
                 now_utc,
             ))
     }

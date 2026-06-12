@@ -38,7 +38,7 @@ from config import (
 )
 from db import ChatsRepository, MessagesRepository
 from db.documents import DocumentsRepository
-from db.models import Chat, Source
+from db.models import Chat, Source, UserConfiguration
 from db.configuration import ConfigurationRepository
 from db.uploads import UploadsRepository
 from db.usage import UsageRepository
@@ -529,7 +529,7 @@ async def stream_chat(
 
         user_email = chat_user.email
         user_name = chat_user.full_name
-        user_timezone = chat_user.timezone
+        user_configuration = chat_user.configuration
 
         # Handle auto_start: inject ephemeral message when no messages exist
         if not chat_messages:
@@ -597,7 +597,7 @@ async def stream_chat(
             user_name=user_name,
             user_email=user_email,
             memories=memories if memories else None,
-            user_timezone=user_timezone,
+            user_configuration=user_configuration,
         )
 
         # Build messages, injecting ephemeral start message if needed
@@ -614,7 +614,7 @@ async def stream_chat(
         tool_skip_perm = False
         user_email: str | None = None
         user_name: str | None = None
-        user_timezone: str | None = None
+        user_configuration = UserConfiguration()
         is_admin = False
         if chat.user_id:
             users_repo = UsersRepository()
@@ -622,7 +622,7 @@ async def stream_chat(
             if user:
                 user_email = user.email
                 user_name = user.full_name
-                user_timezone = user.timezone
+                user_configuration = user.configuration
                 is_admin = user.role == "admin"
 
         if not chat_messages:
@@ -688,7 +688,7 @@ async def stream_chat(
             user_name=user_name,
             user_email=user_email,
             memories=memories if memories else None,
-            user_timezone=user_timezone,
+            user_configuration=user_configuration,
         )
 
         messages: list[MessageParam] = [
@@ -770,7 +770,7 @@ async def stream_chat(
                     chat_id=chat_id,
                     user_id=tool_user_id,
                     user_email=user_email,
-                    user_timezone=user_timezone,
+                    user_configuration=user_configuration,
                     skip_permission_check=tool_skip_perm,
                 )
                 result = await registry.execute(
@@ -839,7 +839,7 @@ async def stream_chat(
                     chat_id=chat_id,
                     user_id=tool_user_id,
                     user_email=user_email,
-                    user_timezone=user_timezone,
+                    user_configuration=user_configuration,
                     skip_permission_check=tool_skip_perm,
                 )
 
@@ -937,7 +937,7 @@ async def stream_chat(
                 chat_id=chat_id,
                 user_id=tool_user_id,
                 user_email=user_email,
-                user_timezone=user_timezone,
+                user_configuration=user_configuration,
                 original_user_query=original_user_query,
                 skip_permission_check=tool_skip_perm,
             )

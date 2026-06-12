@@ -1,3 +1,7 @@
+import type { UserConfiguration, UserMemoryMode } from '$lib/types/userConfiguration'
+
+export type { UserConfiguration, UserMemoryMode } from '$lib/types/userConfiguration'
+
 export const DEFAULT_TIMEZONE = 'UTC'
 
 export const USER_CONFIGURATION_KEYS = {
@@ -7,13 +11,6 @@ export const USER_CONFIGURATION_KEYS = {
 
 export type UserConfigurationKey =
     (typeof USER_CONFIGURATION_KEYS)[keyof typeof USER_CONFIGURATION_KEYS]
-
-export type UserMemoryMode = 'off' | 'chat' | 'full'
-
-export interface UserConfiguration {
-    memoryMode: UserMemoryMode | null
-    timezone: string | null
-}
 
 const USER_MEMORY_MODES = new Set<UserMemoryMode>(['off', 'chat', 'full'])
 

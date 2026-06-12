@@ -1,6 +1,9 @@
+import type { UserConfiguration } from '$lib/types/userConfiguration'
+
 const DEFAULT_TIMEZONE = 'UTC'
 
 export type DateInput = Date | string | number | null | undefined
+export type TimeZoneInput = string | null | undefined | UserConfiguration
 
 function toDate(value: DateInput): Date | null {
     if (value === null || value === undefined) return null
@@ -8,17 +11,23 @@ function toDate(value: DateInput): Date | null {
     return Number.isNaN(date.getTime()) ? null : date
 }
 
-function safeTimeZone(timeZone: string | null | undefined): string {
-    if (!timeZone) return DEFAULT_TIMEZONE
+function extractTimeZone(timeZone: TimeZoneInput): string | null | undefined {
+    if (typeof timeZone === 'object' && timeZone !== null) return timeZone.timezone
+    return timeZone
+}
+
+function safeTimeZone(timeZone: TimeZoneInput): string {
+    const value = extractTimeZone(timeZone)
+    if (!value) return DEFAULT_TIMEZONE
     try {
-        new Intl.DateTimeFormat('en-US', { timeZone }).format(new Date())
-        return timeZone
+        new Intl.DateTimeFormat('en-US', { timeZone: value }).format(new Date())
+        return value
     } catch {
         return DEFAULT_TIMEZONE
     }
 }
 
-export function formatDate(value: DateInput, timeZone?: string | null): string {
+export function formatDate(value: DateInput, timeZone?: TimeZoneInput): string {
     const date = toDate(value)
     if (!date) return '-'
     return new Intl.DateTimeFormat('en-US', {
@@ -29,7 +38,7 @@ export function formatDate(value: DateInput, timeZone?: string | null): string {
     }).format(date)
 }
 
-export function formatDateTime(value: DateInput, timeZone?: string | null): string {
+export function formatDateTime(value: DateInput, timeZone?: TimeZoneInput): string {
     const date = toDate(value)
     if (!date) return '-'
     return new Intl.DateTimeFormat('en-US', {
@@ -42,7 +51,7 @@ export function formatDateTime(value: DateInput, timeZone?: string | null): stri
     }).format(date)
 }
 
-export function formatTime(value: DateInput, timeZone?: string | null): string {
+export function formatTime(value: DateInput, timeZone?: TimeZoneInput): string {
     const date = toDate(value)
     if (!date) return '-'
     return new Intl.DateTimeFormat('en-US', {
@@ -66,7 +75,7 @@ function calendarDayKey(value: Date, timeZone: string): string {
     return `${get('year')}-${get('month')}-${get('day')}`
 }
 
-export function formatChatTimestamp(value: DateInput, timeZone?: string | null): string {
+export function formatChatTimestamp(value: DateInput, timeZone?: TimeZoneInput): string {
     const date = toDate(value)
     if (!date) return ''
 

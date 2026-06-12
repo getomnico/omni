@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use shared::{
     models::{AttributeFilter, DateFilter, Document, Facet},
     SourceType,
@@ -11,6 +12,62 @@ pub enum SearchMode {
     Fulltext,
     Semantic,
     Hybrid,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize, Hash, PartialEq, Eq)]
+pub struct UserConfiguration {
+    pub timezone: Option<String>,
+}
+
+impl UserConfiguration {
+    pub fn from_rows<I>(rows: I) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = (String, JsonValue)>,
+    {
+        let mut configuration = Self::default();
+
+        for (key, value) in rows {
+            if key.as_str() == "timezone" {
+                let timezone = extract_string_value(&value, &["timezone"])
+                    .map_err(|message| format!("Invalid timezone configuration: {message}"))?;
+                if let Some(timezone) = timezone {
+                    timezone
+                        .parse::<chrono_tz::Tz>()
+                        .map_err(|_| format!("Invalid timezone configuration: {timezone}"))?;
+                    configuration.timezone = Some(timezone);
+                }
+            }
+        }
+
+        Ok(configuration)
+    }
+
+    pub fn timezone(&self) -> Option<&str> {
+        self.timezone
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+    }
+}
+
+fn extract_string_value(
+    value: &JsonValue,
+    alternate_keys: &[&str],
+) -> Result<Option<String>, String> {
+    match value {
+        JsonValue::Null => Ok(None),
+        JsonValue::String(value) => Ok(Some(value.clone())),
+        JsonValue::Object(map) => {
+            for key in std::iter::once("value").chain(alternate_keys.iter().copied()) {
+                match map.get(key) {
+                    Some(JsonValue::String(value)) => return Ok(Some(value.clone())),
+                    Some(JsonValue::Null) | None => {}
+                    Some(_) => return Err(format!("{key} must be a string")),
+                }
+            }
+            Ok(None)
+        }
+        _ => Err("value must be a string or object".to_string()),
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -31,7 +88,8 @@ pub struct SearchRequest {
     pub include_facets: Option<bool>,
     pub user_email: Option<String>,
     pub user_id: Option<String>,
-    pub user_timezone: Option<String>,
+    #[serde(default)]
+    pub user_configuration: UserConfiguration,
     pub is_generated_query: Option<bool>,
     pub original_user_query: Option<String>,
     pub document_id: Option<String>,

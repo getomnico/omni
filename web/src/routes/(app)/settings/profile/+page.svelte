@@ -61,17 +61,7 @@
     const selectedModelLabel = $derived(
         preferredModel?.displayName ?? defaultModel?.displayName ?? 'System default',
     )
-    const previewDate = $derived.by(() => {
-        try {
-            return new Intl.DateTimeFormat('en-US', {
-                dateStyle: 'full',
-                timeStyle: 'short',
-                timeZone: timezone || data.timezone,
-            }).format(new Date())
-        } catch {
-            return 'Enter a valid timezone to preview local time.'
-        }
-    })
+    const currentThemeLabel = $derived(themeStore.current.colorScheme === 'dark' ? 'Dark' : 'Light')
 
     function closeTimezoneAndFocusTrigger() {
         timezoneOpen = false
@@ -184,7 +174,6 @@
                                 </Command.Root>
                             </Popover.Content>
                         </Popover.Root>
-                        <p class="text-muted-foreground text-sm">Current preview: {previewDate}</p>
                     </div>
 
                     {#if !data.timezoneSaved}
@@ -237,9 +226,6 @@
                             class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                             <div>
                                 <Label for="preferred-model">Preferred chat model</Label>
-                                <p class="text-muted-foreground mt-1 text-sm">
-                                    Current default: {selectedModelLabel}
-                                </p>
                             </div>
                             <Select.Root
                                 type="single"
@@ -280,7 +266,7 @@
                         <div>
                             <p class="text-sm font-medium">Appearance</p>
                             <p class="text-muted-foreground mt-1 text-sm">
-                                Current theme: {themeStore.current.name}
+                                Current theme: {currentThemeLabel}
                             </p>
                         </div>
                         <ThemePicker />

@@ -196,7 +196,7 @@
     const showSearchResults = $derived(searchQuery.trim().length > 0)
 
     async function saveDetectedTimezoneIfMissing() {
-        if (data.user.timezone) return
+        if (data.user.configuration.timezone) return
 
         const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
         if (!timezone) return

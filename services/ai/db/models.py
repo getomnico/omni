@@ -1,10 +1,38 @@
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from crypto import decrypt_config
+
+
+def _extract_string_value(raw: Any, alternate_keys: list[str] | None = None) -> str | None:
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, dict):
+        for key in ["value", *(alternate_keys or [])]:
+            value = raw.get(key)
+            if isinstance(value, str):
+                return value
+    return None
+
+
+@dataclass(frozen=True)
+class UserConfiguration:
+    timezone: str | None = None
+
+    @classmethod
+    def from_rows(cls, rows: list[dict[str, Any]]) -> "UserConfiguration":
+        values = {row["key"]: row.get("value") for row in rows}
+        timezone = _extract_string_value(values.get("timezone"), ["timezone"])
+        if timezone:
+            try:
+                ZoneInfo(timezone)
+            except ZoneInfoNotFoundError as exc:
+                raise ValueError(f"Invalid user timezone configuration: {timezone}") from exc
+        return cls(timezone=timezone)
 
 
 @dataclass
@@ -16,7 +44,11 @@ class User:
     is_active: bool
     created_at: datetime
     updated_at: datetime
-    timezone: str | None = None
+    configuration: UserConfiguration = field(default_factory=UserConfiguration)
+
+    @property
+    def timezone(self) -> str | None:
+        return self.configuration.timezone
 
     @classmethod
     def from_row(cls, row: dict) -> "User":
@@ -28,7 +60,7 @@ class User:
             is_active=row["is_active"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
-            timezone=row.get("timezone"),
+            configuration=row.get("configuration") or UserConfiguration(),
         )
 
 

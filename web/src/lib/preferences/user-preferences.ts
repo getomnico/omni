@@ -10,7 +10,7 @@ export interface UserPreferences {
 export const DEFAULT_PREFERENCES: UserPreferences = {
     inputMode: 'chat',
     preferredModelId: null,
-    theme: 'bright',
+    theme: 'light',
     themeColorScheme: 'light',
 }
 

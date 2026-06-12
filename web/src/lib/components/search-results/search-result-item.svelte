@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { page } from '$app/state'
     import { SourceType } from '$lib/types'
     import type { SearchResult } from '$lib/types/search'
     import { getDocumentIconPath } from '$lib/utils/icons'
@@ -10,11 +11,7 @@
     import ImapCitationSource from './imap-citation-source.svelte'
     import { formatDate } from '$lib/utils/datetime'
 
-    let {
-        result,
-        sourcesLookup,
-        timeZone,
-    }: { result: SearchResult; sourcesLookup: Map<string, string>; timeZone?: string | null } =
+    let { result, sourcesLookup }: { result: SearchResult; sourcesLookup: Map<string, string> } =
         $props()
 
     let sourceType = $derived(sourcesLookup.get(result.document.source_id))
@@ -30,7 +27,7 @@
 
     function getDisplayDate(): string {
         const metadataDate = metadata?.updated_at || metadata?.created_at
-        return formatDate(metadataDate || result.document.updated_at, timeZone)
+        return formatDate(metadataDate || result.document.updated_at, page.data.user?.configuration)
     }
 
     function truncateContent(content: string, maxLength: number = 200) {
@@ -112,7 +109,7 @@
     }
 
     function renderHighlight(text: string): string {
-        return marked.parseInline(text.replaceAll('\n', ' '))
+        return marked.parseInline(text.replaceAll('\n', ' '), { async: false }) as string
     }
 </script>
 

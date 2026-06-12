@@ -37,7 +37,7 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
                 mode: 'hybrid', // Always use hybrid for AI answers
                 user_email: locals.user?.email,
                 user_id: locals.user?.id,
-                user_timezone: locals.user?.timezone,
+                user_configuration: locals.user?.configuration,
             }),
         })
 

@@ -15,6 +15,10 @@ class PreferencesStorage {
             const stored = localStorage.getItem(STORAGE_KEY)
             if (stored) {
                 const parsed = JSON.parse(stored) as Partial<UserPreferences>
+                if (parsed.theme === 'bright') {
+                    parsed.theme = 'light'
+                    parsed.themeColorScheme = 'light'
+                }
                 this.preferences = { ...DEFAULT_PREFERENCES, ...parsed }
             }
         } catch (error) {

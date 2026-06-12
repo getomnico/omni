@@ -6,6 +6,8 @@ import { db } from '$lib/server/db'
 import * as table from '$lib/server/db/schema'
 import { ulid } from 'ulid'
 import { createLogger } from '$lib/server/logger.js'
+import { getUserConfiguration } from '$lib/server/db/userConfiguration.js'
+import type { UserConfiguration, UserMemoryMode } from '$lib/types/userConfiguration'
 
 const API_KEY_PREFIX = 'omni_'
 const MAX_KEYS_PER_USER = 25
@@ -28,7 +30,7 @@ export async function validateApiKey(key: string): Promise<{
     user: Pick<
         typeof table.user.$inferSelect,
         'id' | 'email' | 'role' | 'isActive' | 'mustChangePassword'
-    > & { memoryMode: string | null }
+    > & { configuration: UserConfiguration; memoryMode: UserMemoryMode | null }
     allowedSources: string[] | null
     scope: 'public' | 'user' | 'admin'
 } | null> {
@@ -91,18 +93,20 @@ export async function validateApiKey(key: string): Promise<{
         | 'public'
         | 'user'
         | 'admin'
+    const configuration = await getUserConfiguration(result.user.id)
     const user = {
         ...result.user,
-        memoryMode: extractMemoryMode(result.user.memoryMode),
+        configuration,
+        memoryMode: configuration.memoryMode ?? extractMemoryMode(result.user.memoryMode),
     }
     return { user, allowedSources, scope }
 }
 
-function extractMemoryMode(raw: unknown): string | null {
-    if (typeof raw === 'string') return raw
+function extractMemoryMode(raw: unknown): UserMemoryMode | null {
+    if (raw === 'off' || raw === 'chat' || raw === 'full') return raw
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
         const v = (raw as Record<string, unknown>).value ?? (raw as Record<string, unknown>).mode
-        if (typeof v === 'string') return v
+        if (v === 'off' || v === 'chat' || v === 'full') return v
     }
     return null
 }

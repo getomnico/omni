@@ -186,7 +186,7 @@
                                             {:else}
                                                 Last sync: {formatDate(
                                                     sync?.completedAt ?? null,
-                                                    data.user.timezone,
+                                                    data.user.configuration,
                                                 )}
                                             {/if}
                                         </div>

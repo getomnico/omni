@@ -24,7 +24,7 @@ from config import (
     SANDBOX_URL,
 )
 from db.documents import DocumentsRepository
-from db.models import Source
+from db.models import UserConfiguration, Source
 from db.configuration import ConfigurationRepository
 from db.usage import UsageRepository
 from db.users import UsersRepository
@@ -217,7 +217,7 @@ async def _run_agent_loop(
     is_org_agent = agent.agent_type == "org"
     agent_user_email: str | None = None
     agent_user_name: str | None = None
-    agent_user_timezone: str | None = None
+    agent_user_configuration = UserConfiguration()
     agent_user = None
     if agent.user_id:
         users_repo = UsersRepository()
@@ -225,7 +225,7 @@ async def _run_agent_loop(
         if agent_user:
             agent_user_email = agent_user.email
             agent_user_name = agent_user.full_name
-            agent_user_timezone = agent_user.timezone
+            agent_user_configuration = agent_user.configuration
 
     # Memory: resolve effective mode and fetch prior-run memories. Both
     # personal and org agents share the `agent:<id>` namespace; the
@@ -261,7 +261,7 @@ async def _run_agent_loop(
         user_name=agent_user_name if not is_org_agent else None,
         user_email=agent_user_email if not is_org_agent else None,
         memories=memories if memories else None,
-        user_timezone=agent_user_timezone,
+        user_configuration=agent_user_configuration,
     )
 
     # Initialize conversation with a single trigger message
@@ -274,7 +274,7 @@ async def _run_agent_loop(
         chat_id=run.id,
         user_id=None if is_org_agent else agent.user_id,
         user_email=agent_user_email,
-        user_timezone=agent_user_timezone,
+        user_configuration=agent_user_configuration,
         skip_permission_check=is_org_agent,
     )
 

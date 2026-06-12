@@ -90,8 +90,8 @@ export async function validateSessionToken(token: string) {
     const userConfiguration = await getUserConfiguration(userResult.id)
     const user = {
         ...userResult,
+        configuration: userConfiguration,
         memoryMode: userConfiguration.memoryMode,
-        timezone: userConfiguration.timezone,
     }
     return { session, user }
 }

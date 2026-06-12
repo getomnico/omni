@@ -92,7 +92,7 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
         // 'user'/'public' scope (or cookie auth): real user identity → user's permitted docs
         user_email: locals.apiKeyScope === 'admin' ? undefined : locals.user.email,
         user_id: locals.apiKeyScope === 'admin' ? undefined : locals.user.id,
-        user_timezone: locals.apiKeyScope === 'admin' ? undefined : locals.user.timezone,
+        user_configuration: locals.apiKeyScope === 'admin' ? undefined : locals.user.configuration,
     }
 
     logger.debug('Agent search request', { query: queryData.query, mode: queryData.mode })

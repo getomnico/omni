@@ -21,8 +21,8 @@ export const load: PageServerLoad = async ({ locals }) => {
 
     return {
         user: locals.user,
-        timezone: locals.user.timezone ?? DEFAULT_TIMEZONE,
-        timezoneSaved: locals.user.timezone !== null,
+        timezone: locals.user.configuration.timezone ?? DEFAULT_TIMEZONE,
+        timezoneSaved: locals.user.configuration.timezone !== null,
         canChangePassword: !!dbUser?.passwordHash,
         memoryEnabled: env.MEMORY_ENABLED === 'true',
         models: allModels.map((model) => ({
@@ -53,7 +53,7 @@ export const actions: Actions = {
 
         try {
             const savedTimezone = await setUserTimezone(locals.user.id, timezone)
-            locals.user.timezone = savedTimezone
+            locals.user.configuration.timezone = savedTimezone
             return { success: true, timezone: savedTimezone }
         } catch (error) {
             locals.logger.error('Failed to save timezone setting', error as Error, {

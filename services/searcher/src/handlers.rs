@@ -1,7 +1,7 @@
 use crate::models::{
     AttributeValuesResponse, PeopleSearchResponse, PersonResult, RecentSearchesRequest,
     SearchRequest, SuggestedQuestionsRequest, SuggestedQuestionsResponse, TypeaheadQuery,
-    TypeaheadResponse,
+    TypeaheadResponse, UserConfiguration,
 };
 use crate::search::SearchEngine;
 use crate::search_repository::SearchDocumentRepository;
@@ -19,6 +19,7 @@ use redis::AsyncCommands;
 use serde_json::{json, Value};
 use shared::{PersonRepository, Repository, UserRepository};
 use sqlx::types::time::OffsetDateTime;
+use sqlx::Row;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -96,6 +97,39 @@ where
     }
 }
 
+async fn hydrate_user_configuration(
+    state: &AppState,
+    request: &mut SearchRequest,
+) -> SearcherResult<()> {
+    let Some(user_id) = request
+        .user_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(());
+    };
+
+    let rows =
+        sqlx::query("SELECT key, value FROM configuration WHERE scope = 'user' AND user_id = $1")
+            .bind(user_id)
+            .fetch_all(state.db_pool.pool())
+            .await?;
+
+    let configuration_rows = rows
+        .into_iter()
+        .map(|row| {
+            let key: String = row.try_get("key")?;
+            let value: Value = row.try_get("value")?;
+            Ok((key, value))
+        })
+        .collect::<std::result::Result<Vec<_>, sqlx::Error>>()?;
+
+    request.user_configuration =
+        UserConfiguration::from_rows(configuration_rows).map_err(SearcherError::BadRequest)?;
+
+    Ok(())
+}
+
 pub async fn health_check(State(state): State<AppState>) -> SearcherResult<Json<Value>> {
     sqlx::query("SELECT 1")
         .execute(state.db_pool.pool())
@@ -120,9 +154,10 @@ pub async fn health_check(State(state): State<AppState>) -> SearcherResult<Json<
 
 pub async fn search(
     State(state): State<AppState>,
-    Json(request): Json<SearchRequest>,
+    Json(mut request): Json<SearchRequest>,
 ) -> SearcherResult<Json<Value>> {
     info!("Received search request: {:?}", request);
+    hydrate_user_configuration(&state, &mut request).await?;
 
     let search_engine = SearchEngine::new(
         state.db_pool,
@@ -189,9 +224,12 @@ pub async fn recent_searches(
 
 pub async fn ai_answer(
     State(state): State<AppState>,
-    Json(request): Json<SearchRequest>,
+    Json(mut request): Json<SearchRequest>,
 ) -> Result<axum::response::Response<Body>, axum::http::StatusCode> {
     info!("Received AI answer request: {:?}", request);
+    hydrate_user_configuration(&state, &mut request)
+        .await
+        .map_err(|_| axum::http::StatusCode::BAD_REQUEST)?;
 
     let search_engine = SearchEngine::new(
         state.db_pool.clone(),

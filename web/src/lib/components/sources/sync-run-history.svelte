@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { page } from '$app/state'
     import * as Card from '$lib/components/ui/card'
     import * as Accordion from '$lib/components/ui/accordion'
     import { Badge } from '$lib/components/ui/badge'
@@ -11,7 +12,7 @@
     import { Info } from '@lucide/svelte'
     import * as Tooltip from '$lib/components/ui/tooltip'
 
-    let { runs = [], timeZone = null }: { runs?: SyncRun[]; timeZone?: string | null } = $props()
+    let { runs = [] }: { runs?: SyncRun[] } = $props()
 </script>
 
 <Card.Root class="Root">
@@ -83,7 +84,10 @@
                                                 </Badge>
                                             </td>
                                             <td class="py-2 pr-4 whitespace-nowrap">
-                                                {formatSyncRunDate(run.startedAt, timeZone)}
+                                                {formatSyncRunDate(
+                                                    run.startedAt,
+                                                    page.data.user?.configuration,
+                                                )}
                                             </td>
                                             <td class="py-2 pr-4 whitespace-nowrap">
                                                 {formatSyncRunDuration(

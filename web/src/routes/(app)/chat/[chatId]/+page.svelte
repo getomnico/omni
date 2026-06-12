@@ -1692,7 +1692,7 @@
     }
 
     function formatMessageTimestamp(date: Date): string {
-        return formatChatTimestamp(date, data.user.timezone)
+        return formatChatTimestamp(date, data.user.configuration)
     }
 
     function extractDomain(url: string): string {

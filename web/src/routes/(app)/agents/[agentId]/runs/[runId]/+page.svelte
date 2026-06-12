@@ -111,7 +111,7 @@
 
     function formatDate(date: Date | string | null): string {
         if (!date) return '—'
-        return formatDateTime(date, data.user.timezone)
+        return formatDateTime(date, data.user.configuration)
     }
 
     function statusColor(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {

@@ -42,7 +42,7 @@
 
     function formatDate(date: Date | null) {
         if (!date) return 'N/A'
-        return formatDateOnly(date, data.user.timezone)
+        return formatDateOnly(date, data.user.configuration)
     }
 
     function openCreateDialog() {

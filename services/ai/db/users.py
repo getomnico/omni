@@ -3,7 +3,7 @@ from asyncpg import Pool
 from ulid import ULID
 
 from .connection import get_db_pool
-from .models import User
+from .models import User, UserConfiguration
 
 
 class UsersRepository:
@@ -29,7 +29,7 @@ class UsersRepository:
         query = """
             INSERT INTO users (id, email, password_hash, full_name, role)
             VALUES ($1, $2, $3, $4, $5)
-            RETURNING id, email, full_name, role, is_active, created_at, updated_at, NULL::text AS timezone
+            RETURNING id, email, full_name, role, is_active, created_at, updated_at
         """
 
         async with pool.acquire() as conn:
@@ -41,18 +41,24 @@ class UsersRepository:
 
     async def find_by_id(self, user_id: str) -> User | None:
         pool = await self._get_pool()
-        query = """
-            SELECT u.id, u.email, u.full_name, u.role, u.is_active, u.created_at, u.updated_at,
-                   c.value->>'value' AS timezone
-            FROM users u
-            LEFT JOIN configuration c
-                ON c.scope = 'user'
-               AND c.user_id = u.id
-               AND c.key = 'timezone'
-            WHERE u.id = $1
+        user_query = """
+            SELECT id, email, full_name, role, is_active, created_at, updated_at
+            FROM users
+            WHERE id = $1
+        """
+        configuration_query = """
+            SELECT key, value
+            FROM configuration
+            WHERE scope = 'user' AND user_id = $1
         """
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(query, user_id)
-        if row:
-            return User.from_row(dict(row))
-        return None
+            row = await conn.fetchrow(user_query, user_id)
+            if not row:
+                return None
+            configuration_rows = await conn.fetch(configuration_query, user_id)
+
+        user_row = dict(row)
+        user_row["configuration"] = UserConfiguration.from_rows(
+            [dict(config_row) for config_row in configuration_rows]
+        )
+        return User.from_row(user_row)

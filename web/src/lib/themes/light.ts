@@ -1,11 +1,11 @@
-// web/src/lib/themes/bright.ts
+// web/src/lib/themes/light.ts
 import type { Theme } from './types'
 import omniLogoLight from '$lib/images/icons/omni-logo-256.png'
 import omniLogoDark from '$lib/images/icons/omni-logo-dark-256.png'
 
-export const bright: Theme = {
-    id: 'bright',
-    name: 'Bright',
+export const light: Theme = {
+    id: 'light',
+    name: 'Light',
     colorScheme: 'light',
     omniLogoLight,
     omniLogoDark,
