@@ -28,7 +28,7 @@ impl UserConfiguration {
 
         for (key, value) in rows {
             if key.as_str() == "timezone" {
-                let timezone = extract_string_value(&value, &["timezone"])
+                let timezone = extract_string_value(&value)
                     .map_err(|message| format!("Invalid timezone configuration: {message}"))?;
                 if let Some(timezone) = timezone {
                     timezone
@@ -49,23 +49,15 @@ impl UserConfiguration {
     }
 }
 
-fn extract_string_value(
-    value: &JsonValue,
-    alternate_keys: &[&str],
-) -> Result<Option<String>, String> {
+fn extract_string_value(value: &JsonValue) -> Result<Option<String>, String> {
     match value {
         JsonValue::Null => Ok(None),
         JsonValue::String(value) => Ok(Some(value.clone())),
-        JsonValue::Object(map) => {
-            for key in std::iter::once("value").chain(alternate_keys.iter().copied()) {
-                match map.get(key) {
-                    Some(JsonValue::String(value)) => return Ok(Some(value.clone())),
-                    Some(JsonValue::Null) | None => {}
-                    Some(_) => return Err(format!("{key} must be a string")),
-                }
-            }
-            Ok(None)
-        }
+        JsonValue::Object(map) => match map.get("value") {
+            Some(JsonValue::String(value)) => Ok(Some(value.clone())),
+            Some(JsonValue::Null) | None => Ok(None),
+            Some(_) => Err("value must be a string".to_string()),
+        },
         _ => Err("value must be a string or object".to_string()),
     }
 }

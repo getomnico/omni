@@ -217,7 +217,7 @@ async def _run_agent_loop(
     is_org_agent = agent.agent_type == "org"
     agent_user_email: str | None = None
     agent_user_name: str | None = None
-    agent_user_configuration = UserConfiguration()
+    agent_user_configuration: UserConfiguration | None = None
     agent_user = None
     if agent.user_id:
         users_repo = UsersRepository()

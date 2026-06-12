@@ -614,7 +614,7 @@ async def stream_chat(
         tool_skip_perm = False
         user_email: str | None = None
         user_name: str | None = None
-        user_configuration = UserConfiguration()
+        user_configuration: UserConfiguration | None = None
         is_admin = False
         if chat.user_id:
             users_repo = UsersRepository()

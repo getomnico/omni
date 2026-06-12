@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from anthropic.types import ToolParam
@@ -21,7 +21,7 @@ class ToolContext:
     chat_id: str
     user_id: str | None
     user_email: str | None = None
-    user_configuration: UserConfiguration = field(default_factory=UserConfiguration)
+    user_configuration: UserConfiguration | None = None
     original_user_query: str | None = None
     skip_permission_check: bool = False
 

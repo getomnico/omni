@@ -17,9 +17,8 @@ use axum::{
 use futures_util::Stream;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
-use shared::{PersonRepository, Repository, UserRepository};
+use shared::{ConfigurationRepository, PersonRepository, Repository, UserRepository};
 use sqlx::types::time::OffsetDateTime;
-use sqlx::Row;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -109,20 +108,11 @@ async fn hydrate_user_configuration(
         return Ok(());
     };
 
-    let rows =
-        sqlx::query("SELECT key, value FROM configuration WHERE scope = 'user' AND user_id = $1")
-            .bind(user_id)
-            .fetch_all(state.db_pool.pool())
-            .await?;
-
-    let configuration_rows = rows
-        .into_iter()
-        .map(|row| {
-            let key: String = row.try_get("key")?;
-            let value: Value = row.try_get("value")?;
-            Ok((key, value))
-        })
-        .collect::<std::result::Result<Vec<_>, sqlx::Error>>()?;
+    let configuration_repo = ConfigurationRepository::new(state.db_pool.pool());
+    let configuration_rows = configuration_repo
+        .find_user_configuration_rows(user_id)
+        .await
+        .map_err(|error| SearcherError::Internal(anyhow!(error)))?;
 
     request.user_configuration =
         UserConfiguration::from_rows(configuration_rows).map_err(SearcherError::BadRequest)?;

@@ -417,7 +417,7 @@ async def _execute_search_tool(
         user_email=user_email,
         is_generated_query=True,
         original_user_query=original_user_query,
-        user_configuration=user_configuration or UserConfiguration(),
+        user_configuration=user_configuration,
         include_facets=False,
         ignore_typos=True,
     )

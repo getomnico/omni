@@ -1,5 +1,5 @@
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any
@@ -8,14 +8,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from crypto import decrypt_config
 
 
-def _extract_string_value(raw: Any, alternate_keys: list[str] | None = None) -> str | None:
+def _read_configuration_string(raw: Any) -> str | None:
     if isinstance(raw, str):
         return raw
     if isinstance(raw, dict):
-        for key in ["value", *(alternate_keys or [])]:
-            value = raw.get(key)
-            if isinstance(value, str):
-                return value
+        value = raw.get("value")
+        if isinstance(value, str):
+            return value
     return None
 
 
@@ -24,9 +23,16 @@ class UserConfiguration:
     timezone: str | None = None
 
     @classmethod
-    def from_rows(cls, rows: list[dict[str, Any]]) -> "UserConfiguration":
+    def from_rows(cls, rows: list[dict[str, Any]]) -> "UserConfiguration | None":
+        if not rows:
+            return None
+
         values = {row["key"]: row.get("value") for row in rows}
-        timezone = _extract_string_value(values.get("timezone"), ["timezone"])
+        timezone = (
+            _read_configuration_string(values["timezone"])
+            if "timezone" in values
+            else None
+        )
         if timezone:
             try:
                 ZoneInfo(timezone)
@@ -44,11 +50,11 @@ class User:
     is_active: bool
     created_at: datetime
     updated_at: datetime
-    configuration: UserConfiguration = field(default_factory=UserConfiguration)
+    configuration: UserConfiguration | None = None
 
     @property
     def timezone(self) -> str | None:
-        return self.configuration.timezone
+        return self.configuration.timezone if self.configuration else None
 
     @classmethod
     def from_row(cls, row: dict) -> "User":
@@ -60,7 +66,7 @@ class User:
             is_active=row["is_active"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
-            configuration=row.get("configuration") or UserConfiguration(),
+            configuration=row.get("configuration"),
         )
 
 
