@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value as JsonValue;
 use shared::{
     models::{AttributeFilter, DateFilter, Document, Facet},
@@ -62,6 +62,13 @@ fn extract_string_value(value: &JsonValue) -> Result<Option<String>, String> {
     }
 }
 
+fn deserialize_user_configuration<'de, D>(deserializer: D) -> Result<UserConfiguration, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<UserConfiguration>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct SearchRequest {
     pub query: String,
@@ -80,7 +87,7 @@ pub struct SearchRequest {
     pub include_facets: Option<bool>,
     pub user_email: Option<String>,
     pub user_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_user_configuration")]
     pub user_configuration: UserConfiguration,
     pub is_generated_query: Option<bool>,
     pub original_user_query: Option<String>,
@@ -310,5 +317,16 @@ mod tests {
 
         let mode: SearchMode = serde_json::from_str("\"fulltext\"").unwrap();
         assert!(matches!(mode, SearchMode::Fulltext));
+    }
+
+    #[test]
+    fn search_request_accepts_null_user_configuration() {
+        let request: SearchRequest = serde_json::from_value(serde_json::json!({
+            "query": "status update",
+            "user_configuration": null,
+        }))
+        .unwrap();
+
+        assert_eq!(request.user_configuration, UserConfiguration::default());
     }
 }

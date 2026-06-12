@@ -11,7 +11,7 @@ impl ConfigurationRepository {
         Self { pool: pool.clone() }
     }
 
-    pub async fn find_user_configuration_rows(
+    pub async fn get_user_config(
         &self,
         user_id: &str,
     ) -> Result<Vec<(String, JsonValue)>, DatabaseError> {

@@ -110,7 +110,7 @@ async fn hydrate_user_configuration(
 
     let configuration_repo = ConfigurationRepository::new(state.db_pool.pool());
     let configuration_rows = configuration_repo
-        .find_user_configuration_rows(user_id)
+        .get_user_config(user_id)
         .await
         .map_err(|error| SearcherError::Internal(anyhow!(error)))?;
 
