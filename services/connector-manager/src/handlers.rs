@@ -1591,7 +1591,7 @@ fn is_pdf_extraction_target(mime_type: &str, filename: Option<&str>) -> bool {
         || (mime_type == "application/octet-stream" && has_extension(filename, "pdf"))
 }
 
-async fn extract_content_or_pdf_failure_marker(
+async fn extract_content(
     data: Vec<u8>,
     mime_type: String,
     filename: Option<String>,
@@ -1754,7 +1754,7 @@ async fn do_extract_text(
                 "Using built-in document content extraction for file {:?}",
                 filename
             );
-            extract_content_or_pdf_failure_marker(
+            extract_content(
                 data,
                 mime_type.clone(),
                 filename.clone(),
@@ -1765,7 +1765,7 @@ async fn do_extract_text(
         }
     } else {
         debug!("Using built-in document content extraction for file {:?} (docling_enabled={}, docling_candidate={})", filename, docling_enabled, docling_candidate);
-        extract_content_or_pdf_failure_marker(
+        extract_content(
             data,
             mime_type.clone(),
             filename.clone(),
@@ -2462,7 +2462,7 @@ mod tests {
     #[tokio::test]
     async fn test_malformed_pdf_extraction_returns_failure_marker() {
         let data = b"%PDF-1.4\nmalformed body\n%%EOF".to_vec();
-        let text = extract_content_or_pdf_failure_marker(
+        let text = extract_content(
             data,
             "application/pdf".to_string(),
             Some("bad.pdf".to_string()),
