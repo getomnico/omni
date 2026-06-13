@@ -60,22 +60,33 @@ class GlobalConfiguration:
         )
 
 
-def _read_configuration_string(raw: Any, *alternate_keys: str) -> str | None:
-    if isinstance(raw, str):
+def _decode_configuration_value(raw: Any) -> Any:
+    if not isinstance(raw, str):
         return raw
-    if isinstance(raw, dict):
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+
+
+def _read_configuration_string(raw: Any, *alternate_keys: str) -> str | None:
+    decoded = _decode_configuration_value(raw)
+    if isinstance(decoded, str):
+        return decoded
+    if isinstance(decoded, dict):
         for key in ("value", *alternate_keys):
-            value = raw.get(key)
+            value = decoded.get(key)
             if isinstance(value, str):
                 return value
     return None
 
 
 def _read_configuration_bool(raw: Any) -> bool | None:
-    if isinstance(raw, bool):
-        return raw
-    if isinstance(raw, dict):
-        value = raw.get("enabled")
+    decoded = _decode_configuration_value(raw)
+    if isinstance(decoded, bool):
+        return decoded
+    if isinstance(decoded, dict):
+        value = decoded.get("enabled")
         if isinstance(value, bool):
             return value
     return None
