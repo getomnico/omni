@@ -2,7 +2,7 @@ import { json } from '@sveltejs/kit'
 import { z } from 'zod'
 import type { RequestHandler } from './$types'
 import { normalizeTimezone, setUserTimezone } from '$lib/server/db/userConfiguration.js'
-import type { UserConfiguration } from '$lib/types/userConfiguration'
+import type { UserConfiguration } from '$lib/types/configuration'
 
 const userSettingsUpdateSchema = z
     .object({

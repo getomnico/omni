@@ -29,6 +29,7 @@ axum = { workspace = true }
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 base64 = "0.22"
 chrono = { workspace = true }
+chrono-tz = { workspace = true }
 governor = "0.6"
 nonzero_ext = "0.3"
 rand = "0.8"

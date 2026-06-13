@@ -1,4 +1,4 @@
-import type { UserConfiguration } from '$lib/types/userConfiguration'
+import type { UserConfiguration } from '$lib/types/configuration'
 
 export interface DocumentMetadata {
     title?: string

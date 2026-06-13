@@ -1,4 +1,4 @@
-import type { UserConfiguration } from '$lib/types/userConfiguration'
+import type { UserConfiguration } from '$lib/types/configuration'
 
 const DEFAULT_TIMEZONE = 'UTC'
 

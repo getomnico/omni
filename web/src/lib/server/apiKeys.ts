@@ -7,7 +7,7 @@ import * as table from '$lib/server/db/schema'
 import { ulid } from 'ulid'
 import { createLogger } from '$lib/server/logger.js'
 import { getUserConfiguration } from '$lib/server/db/userConfiguration.js'
-import type { UserConfiguration, UserMemoryMode } from '$lib/types/userConfiguration'
+import type { UserConfiguration, UserMemoryMode } from '$lib/types/configuration'
 
 const API_KEY_PREFIX = 'omni_'
 const MAX_KEYS_PER_USER = 25

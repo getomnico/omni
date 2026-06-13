@@ -28,7 +28,7 @@ from db.models import UserConfiguration, Source
 from db.configuration import ConfigurationRepository
 from db.usage import UsageRepository
 from db.users import UsersRepository
-from memory import MemoryMode, agent_key, parse_org_default, resolve_memory_mode
+from memory import MemoryMode, agent_key, resolve_memory_mode
 from prompts import build_agent_system_prompt
 from providers import LLMProvider
 from services.compaction import ConversationCompactor
@@ -236,14 +236,11 @@ async def _run_agent_loop(
     memories: list[str] = []
     if memory_provider is not None:
         config_repo = ConfigurationRepository()
-        org_default = parse_org_default(
-            await config_repo.get_global("memory_mode_default")
-        )
+        org_default = (await config_repo.get_global_configuration()).memory_mode_default
         if is_org_agent:
             effective_mode = org_default
-        elif agent_user is not None:
-            user_memory_mode = await config_repo.get_user_memory_mode(agent_user.id)
-            effective_mode = resolve_memory_mode(user_memory_mode, org_default)
+        elif agent_user_configuration is not None:
+            effective_mode = resolve_memory_mode(agent_user_configuration.memory_mode, org_default)
         memory_namespace = agent_key(agent.id)
 
         if effective_mode == MemoryMode.FULL and agent.instructions:

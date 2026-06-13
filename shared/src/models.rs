@@ -224,6 +224,217 @@ pub enum AuthType {
     OAuth,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfigurationMemoryMode {
+    Off,
+    Chat,
+    Full,
+}
+
+impl ConfigurationMemoryMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Chat => "chat",
+            Self::Full => "full",
+        }
+    }
+}
+
+impl Default for ConfigurationMemoryMode {
+    fn default() -> Self {
+        Self::Off
+    }
+}
+
+impl TryFrom<&str> for ConfigurationMemoryMode {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "off" => Ok(Self::Off),
+            "chat" => Ok(Self::Chat),
+            "full" => Ok(Self::Full),
+            _ => Err(format!("Invalid memory mode: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum DoclingQualityPreset {
+    Fast,
+    Balanced,
+    Quality,
+}
+
+impl DoclingQualityPreset {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Balanced => "balanced",
+            Self::Quality => "quality",
+        }
+    }
+}
+
+impl Default for DoclingQualityPreset {
+    fn default() -> Self {
+        Self::Balanced
+    }
+}
+
+impl TryFrom<&str> for DoclingQualityPreset {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "fast" => Ok(Self::Fast),
+            "balanced" => Ok(Self::Balanced),
+            "quality" => Ok(Self::Quality),
+            _ => Err(format!("Invalid Docling quality preset: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalConfiguration {
+    pub docling_enabled: bool,
+    pub docling_quality_preset: DoclingQualityPreset,
+    pub memory_mode_default: ConfigurationMemoryMode,
+    pub memory_llm_id: Option<String>,
+}
+
+impl Default for GlobalConfiguration {
+    fn default() -> Self {
+        Self {
+            docling_enabled: false,
+            docling_quality_preset: DoclingQualityPreset::Balanced,
+            memory_mode_default: ConfigurationMemoryMode::Off,
+            memory_llm_id: None,
+        }
+    }
+}
+
+impl GlobalConfiguration {
+    pub fn from_rows<I>(rows: I) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = (String, JsonValue)>,
+    {
+        let mut configuration = Self::default();
+
+        for (key, value) in rows {
+            match key.as_str() {
+                "docling_enabled" => {
+                    configuration.docling_enabled = extract_bool_config_value(&value, "enabled")?
+                        .ok_or_else(|| {
+                        "docling_enabled.enabled must be a boolean".to_string()
+                    })?;
+                }
+                "docling_quality_preset" => {
+                    let preset = extract_string_config_value(&value, &["preset"])?
+                        .ok_or_else(|| "docling_quality_preset.preset is required".to_string())?;
+                    configuration.docling_quality_preset =
+                        DoclingQualityPreset::try_from(preset.as_str())?;
+                }
+                "memory_mode_default" => {
+                    let mode = extract_string_config_value(&value, &["mode"])?
+                        .ok_or_else(|| "memory_mode_default.value is required".to_string())?;
+                    configuration.memory_mode_default =
+                        ConfigurationMemoryMode::try_from(mode.as_str())?;
+                }
+                "memory_llm_id" => {
+                    configuration.memory_llm_id = extract_string_config_value(&value, &[])?;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(configuration)
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct UserConfiguration {
+    pub memory_mode: Option<ConfigurationMemoryMode>,
+    pub timezone: Option<String>,
+}
+
+impl UserConfiguration {
+    pub fn from_rows<I>(rows: I) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = (String, JsonValue)>,
+    {
+        let mut configuration = Self::default();
+
+        for (key, value) in rows {
+            match key.as_str() {
+                "memory_mode" => {
+                    if let Some(mode) = extract_string_config_value(&value, &["mode"])? {
+                        configuration.memory_mode =
+                            Some(ConfigurationMemoryMode::try_from(mode.as_str())?);
+                    }
+                }
+                "timezone" => {
+                    if let Some(timezone) = extract_string_config_value(&value, &["timezone"])? {
+                        timezone
+                            .parse::<chrono_tz::Tz>()
+                            .map_err(|_| format!("Invalid timezone configuration: {timezone}"))?;
+                        configuration.timezone = Some(timezone);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(configuration)
+    }
+
+    pub fn timezone(&self) -> Option<&str> {
+        self.timezone
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+    }
+}
+
+fn extract_string_config_value(
+    value: &JsonValue,
+    alternate_keys: &[&str],
+) -> Result<Option<String>, String> {
+    match value {
+        JsonValue::Null => Ok(None),
+        JsonValue::String(value) => Ok(Some(value.clone())),
+        JsonValue::Object(map) => {
+            let keys = std::iter::once("value").chain(alternate_keys.iter().copied());
+            for key in keys {
+                match map.get(key) {
+                    Some(JsonValue::String(value)) => return Ok(Some(value.clone())),
+                    Some(JsonValue::Null) | None => {}
+                    Some(_) => return Err(format!("{key} must be a string")),
+                }
+            }
+            Ok(None)
+        }
+        _ => Err("value must be a string or object".to_string()),
+    }
+}
+
+fn extract_bool_config_value(value: &JsonValue, key: &str) -> Result<Option<bool>, String> {
+    match value {
+        JsonValue::Null => Ok(None),
+        JsonValue::Bool(value) => Ok(Some(*value)),
+        JsonValue::Object(map) => match map.get(key) {
+            Some(JsonValue::Bool(value)) => Ok(Some(*value)),
+            Some(JsonValue::Null) | None => Ok(None),
+            Some(_) => Err(format!("{key} must be a boolean")),
+        },
+        _ => Err("value must be a boolean or object".to_string()),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ServiceCredential {
     pub id: String,

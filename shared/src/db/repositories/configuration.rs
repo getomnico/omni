@@ -11,6 +11,21 @@ impl ConfigurationRepository {
         Self { pool: pool.clone() }
     }
 
+    pub async fn get_global_config(&self) -> Result<Vec<(String, JsonValue)>, DatabaseError> {
+        let rows = sqlx::query("SELECT key, value FROM configuration WHERE scope = 'global'")
+            .fetch_all(&self.pool)
+            .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                let key: String = row.try_get("key")?;
+                let value: JsonValue = row.try_get("value")?;
+                Ok((key, value))
+            })
+            .collect::<Result<Vec<_>, sqlx::Error>>()
+            .map_err(DatabaseError::from)
+    }
+
     pub async fn get_user_config(
         &self,
         user_id: &str,

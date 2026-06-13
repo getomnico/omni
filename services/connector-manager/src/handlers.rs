@@ -20,10 +20,10 @@ use futures::stream::Stream;
 use redis::AsyncCommands;
 use serde_json::json;
 use shared::clients::docling::{DoclingClient, DoclingError};
-use shared::db::repositories::SyncRunRepository;
+use shared::db::repositories::{ConfigurationRepository, SyncRunRepository};
 use shared::models::{
-    ActionMode, ConnectorManifest, SearchOperator, ServiceProvider, Source, SourceType, SyncRun,
-    SyncType,
+    ActionMode, ConnectorManifest, GlobalConfiguration, SearchOperator, ServiceProvider, Source,
+    SourceType, SyncRun, SyncType,
 };
 use shared::queue::EventQueue;
 use shared::utils;
@@ -1187,116 +1187,25 @@ pub async fn get_sync_modes_for_source(
     Vec::new()
 }
 
-const DOCLING_ENABLED_KEY: &str = "docling_enabled";
-const DOCLING_QUALITY_PRESET_KEY: &str = "docling_quality_preset";
 const DEFAULT_DOCLING_PRESET: &str = "balanced";
-
-#[derive(Debug, Clone, serde::Deserialize)]
-struct DoclingEnabledConfiguration {
-    enabled: bool,
-}
-
-impl Default for DoclingEnabledConfiguration {
-    fn default() -> Self {
-        Self { enabled: false }
-    }
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum DoclingQualityPreset {
-    Fast,
-    Balanced,
-    Quality,
-}
-
-impl DoclingQualityPreset {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Fast => "fast",
-            Self::Balanced => "balanced",
-            Self::Quality => "quality",
-        }
-    }
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-struct DoclingQualityPresetConfiguration {
-    preset: DoclingQualityPreset,
-}
-
-impl Default for DoclingQualityPresetConfiguration {
-    fn default() -> Self {
-        Self {
-            preset: DoclingQualityPreset::Balanced,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct GlobalScopedConfiguration {
-    docling_enabled: DoclingEnabledConfiguration,
-    docling_quality_preset: DoclingQualityPresetConfiguration,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Default)]
-struct UserScopedConfiguration {}
-
-async fn get_typed_global_configuration<T>(
-    pool: &sqlx::PgPool,
-    key: &str,
-) -> Result<Option<T>, ApiError>
-where
-    T: serde::de::DeserializeOwned,
-{
-    let value = sqlx::query_scalar::<_, serde_json::Value>(
-        "SELECT value FROM configuration WHERE scope = 'global' AND key = $1 LIMIT 1",
-    )
-    .bind(key)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| {
-        ApiError::Internal(format!(
-            "Failed to read global configuration key '{}': {}",
-            key, e
-        ))
-    })?;
-
-    value
-        .map(|value| {
-            serde_json::from_value::<T>(value).map_err(|e| {
-                ApiError::Internal(format!(
-                    "Invalid global configuration value for '{}': {}",
-                    key, e
-                ))
-            })
-        })
-        .transpose()
-}
 
 async fn get_global_scoped_configuration(
     pool: &sqlx::PgPool,
-) -> Result<GlobalScopedConfiguration, ApiError> {
-    Ok(GlobalScopedConfiguration {
-        docling_enabled: get_typed_global_configuration(pool, DOCLING_ENABLED_KEY)
-            .await?
-            .unwrap_or_default(),
-        docling_quality_preset: get_typed_global_configuration(pool, DOCLING_QUALITY_PRESET_KEY)
-            .await?
-            .unwrap_or_default(),
-    })
+) -> Result<GlobalConfiguration, ApiError> {
+    let rows = ConfigurationRepository::new(pool)
+        .get_global_config()
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to read global configuration: {}", e)))?;
+
+    GlobalConfiguration::from_rows(rows)
+        .map_err(|e| ApiError::Internal(format!("Invalid global configuration value: {}", e)))
 }
 
 async fn get_docling_settings(pool: &sqlx::PgPool) -> Result<(bool, String), ApiError> {
     let configuration = get_global_scoped_configuration(pool).await?;
     Ok((
-        configuration.docling_enabled.enabled,
-        configuration
-            .docling_quality_preset
-            .preset
-            .as_str()
-            .to_string(),
+        configuration.docling_enabled,
+        configuration.docling_quality_preset.as_str().to_string(),
     ))
 }
 

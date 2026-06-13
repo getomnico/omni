@@ -6,20 +6,84 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from crypto import decrypt_config
+from memory import MemoryMode
 
 
-def _read_configuration_string(raw: Any) -> str | None:
+class DoclingQualityPreset(str, Enum):
+    FAST = "fast"
+    BALANCED = "balanced"
+    QUALITY = "quality"
+
+
+@dataclass(frozen=True)
+class GlobalConfiguration:
+    docling_enabled: bool = False
+    docling_quality_preset: DoclingQualityPreset = DoclingQualityPreset.BALANCED
+    memory_mode_default: MemoryMode = MemoryMode.OFF
+    memory_llm_id: str | None = None
+
+    @classmethod
+    def from_rows(cls, rows: list[dict[str, Any]]) -> "GlobalConfiguration":
+        values = {row["key"]: row.get("value") for row in rows}
+
+        docling_enabled = _read_configuration_bool(values.get("docling_enabled"))
+        raw_preset = _read_configuration_string(
+            values.get("docling_quality_preset"), "preset"
+        )
+        raw_memory_mode = _read_configuration_string(
+            values.get("memory_mode_default"), "mode"
+        )
+        memory_llm_id = _read_configuration_string(values.get("memory_llm_id"))
+
+        try:
+            docling_quality_preset = (
+                DoclingQualityPreset(raw_preset)
+                if raw_preset
+                else DoclingQualityPreset.BALANCED
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid docling_quality_preset configuration: {raw_preset}"
+            ) from exc
+
+        memory_mode_default = MemoryMode.parse(raw_memory_mode)
+        if raw_memory_mode and memory_mode_default is None:
+            raise ValueError(
+                f"Invalid memory_mode_default configuration: {raw_memory_mode}"
+            )
+
+        return cls(
+            docling_enabled=docling_enabled if docling_enabled is not None else False,
+            docling_quality_preset=docling_quality_preset,
+            memory_mode_default=memory_mode_default or MemoryMode.OFF,
+            memory_llm_id=memory_llm_id,
+        )
+
+
+def _read_configuration_string(raw: Any, *alternate_keys: str) -> str | None:
     if isinstance(raw, str):
         return raw
     if isinstance(raw, dict):
-        value = raw.get("value")
-        if isinstance(value, str):
+        for key in ("value", *alternate_keys):
+            value = raw.get(key)
+            if isinstance(value, str):
+                return value
+    return None
+
+
+def _read_configuration_bool(raw: Any) -> bool | None:
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, dict):
+        value = raw.get("enabled")
+        if isinstance(value, bool):
             return value
     return None
 
 
 @dataclass(frozen=True)
 class UserConfiguration:
+    memory_mode: MemoryMode | None = None
     timezone: str | None = None
 
     @classmethod
@@ -29,7 +93,7 @@ class UserConfiguration:
 
         values = {row["key"]: row.get("value") for row in rows}
         timezone = (
-            _read_configuration_string(values["timezone"])
+            _read_configuration_string(values["timezone"], "timezone")
             if "timezone" in values
             else None
         )
@@ -38,7 +102,17 @@ class UserConfiguration:
                 ZoneInfo(timezone)
             except ZoneInfoNotFoundError as exc:
                 raise ValueError(f"Invalid user timezone configuration: {timezone}") from exc
-        return cls(timezone=timezone)
+
+        raw_memory_mode = (
+            _read_configuration_string(values["memory_mode"], "mode")
+            if "memory_mode" in values
+            else None
+        )
+        memory_mode = MemoryMode.parse(raw_memory_mode)
+        if raw_memory_mode and memory_mode is None:
+            raise ValueError(f"Invalid user memory_mode configuration: {raw_memory_mode}")
+
+        return cls(memory_mode=memory_mode, timezone=timezone)
 
 
 @dataclass

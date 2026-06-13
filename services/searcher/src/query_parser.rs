@@ -1,4 +1,3 @@
-use crate::models::UserConfiguration;
 use crate::operator_registry::OperatorRegistry;
 use async_trait::async_trait;
 use chrono::{Datelike, LocalResult, NaiveDate, TimeZone};
@@ -6,6 +5,7 @@ use chrono_tz::Tz;
 use regex::Regex;
 use serde_json::Value as JsonValue;
 use shared::db::repositories::PersonRepository;
+use shared::models::UserConfiguration;
 use shared::models::{AttributeFilter, DateFilter};
 use shared::SourceType;
 use std::collections::HashMap;
@@ -554,6 +554,7 @@ mod tests {
         let registry = default_registry();
         let user_configuration = UserConfiguration {
             timezone: Some(timezone.to_string()),
+            ..Default::default()
         };
         tokio::runtime::Runtime::new().unwrap().block_on(parse(
             query,
@@ -572,6 +573,7 @@ mod tests {
         let registry = default_registry();
         let user_configuration = UserConfiguration {
             timezone: Some(timezone.to_string()),
+            ..Default::default()
         };
         tokio::runtime::Runtime::new()
             .unwrap()

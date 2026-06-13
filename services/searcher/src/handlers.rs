@@ -1,7 +1,7 @@
 use crate::models::{
     AttributeValuesResponse, PeopleSearchResponse, PersonResult, RecentSearchesRequest,
     SearchRequest, SuggestedQuestionsRequest, SuggestedQuestionsResponse, TypeaheadQuery,
-    TypeaheadResponse, UserConfiguration,
+    TypeaheadResponse,
 };
 use crate::search::SearchEngine;
 use crate::search_repository::SearchDocumentRepository;
@@ -17,7 +17,10 @@ use axum::{
 use futures_util::Stream;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
-use shared::{ConfigurationRepository, PersonRepository, Repository, UserRepository};
+use shared::{
+    models::UserConfiguration, ConfigurationRepository, PersonRepository, Repository,
+    UserRepository,
+};
 use sqlx::types::time::OffsetDateTime;
 use std::pin::Pin;
 use std::sync::Arc;

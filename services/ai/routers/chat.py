@@ -46,7 +46,6 @@ from db.users import UsersRepository
 from memory import (
     MemoryMode,
     agent_key,
-    parse_org_default,
     resolve_memory_mode,
     user_key,
 )
@@ -552,14 +551,11 @@ async def stream_chat(
         memories = []
         if memory_provider is not None:
             config_repo = ConfigurationRepository()
-            org_default = parse_org_default(
-                await config_repo.get_global("memory_mode_default")
-            )
+            org_default = (await config_repo.get_global_configuration()).memory_mode_default
             if is_org_agent:
                 effective_mode = org_default
-            elif chat_user is not None:
-                user_memory_mode = await config_repo.get_user_memory_mode(chat_user.id)
-                effective_mode = resolve_memory_mode(user_memory_mode, org_default)
+            elif user_configuration is not None:
+                effective_mode = resolve_memory_mode(user_configuration.memory_mode, org_default)
             memory_namespace = agent_key(agent.id)
             if effective_mode >= MemoryMode.CHAT and chat_messages:
                 last_user_text = ""
@@ -642,14 +638,8 @@ async def stream_chat(
         if memory_provider is not None and chat.user_id:
             memory_write_key = user_key(chat.user_id)
             config_repo = ConfigurationRepository()
-            user_memory_mode = (
-                await config_repo.get_user_memory_mode(user.id)
-                if user is not None
-                else None
-            )
-            org_default = parse_org_default(
-                await config_repo.get_global("memory_mode_default")
-            )
+            org_default = (await config_repo.get_global_configuration()).memory_mode_default
+            user_memory_mode = user_configuration.memory_mode if user_configuration else None
             effective_mode = resolve_memory_mode(user_memory_mode, org_default)
             if effective_mode >= MemoryMode.CHAT:
                 last_user_text = ""

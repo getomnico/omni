@@ -1,7 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::Value as JsonValue;
 use shared::{
-    models::{AttributeFilter, DateFilter, Document, Facet},
+    models::{AttributeFilter, DateFilter, Document, Facet, UserConfiguration},
     SourceType,
 };
 use std::collections::HashMap;
@@ -12,54 +11,6 @@ pub enum SearchMode {
     Fulltext,
     Semantic,
     Hybrid,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize, Hash, PartialEq, Eq)]
-pub struct UserConfiguration {
-    pub timezone: Option<String>,
-}
-
-impl UserConfiguration {
-    pub fn from_rows<I>(rows: I) -> Result<Self, String>
-    where
-        I: IntoIterator<Item = (String, JsonValue)>,
-    {
-        let mut configuration = Self::default();
-
-        for (key, value) in rows {
-            if key.as_str() == "timezone" {
-                let timezone = extract_string_value(&value)
-                    .map_err(|message| format!("Invalid timezone configuration: {message}"))?;
-                if let Some(timezone) = timezone {
-                    timezone
-                        .parse::<chrono_tz::Tz>()
-                        .map_err(|_| format!("Invalid timezone configuration: {timezone}"))?;
-                    configuration.timezone = Some(timezone);
-                }
-            }
-        }
-
-        Ok(configuration)
-    }
-
-    pub fn timezone(&self) -> Option<&str> {
-        self.timezone
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-    }
-}
-
-fn extract_string_value(value: &JsonValue) -> Result<Option<String>, String> {
-    match value {
-        JsonValue::Null => Ok(None),
-        JsonValue::String(value) => Ok(Some(value.clone())),
-        JsonValue::Object(map) => match map.get("value") {
-            Some(JsonValue::String(value)) => Ok(Some(value.clone())),
-            Some(JsonValue::Null) | None => Ok(None),
-            Some(_) => Err("value must be a string".to_string()),
-        },
-        _ => Err("value must be a string or object".to_string()),
-    }
 }
 
 fn deserialize_user_configuration<'de, D>(deserializer: D) -> Result<UserConfiguration, D::Error>

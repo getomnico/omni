@@ -1,6 +1,6 @@
-import type { UserConfiguration, UserMemoryMode } from '$lib/types/userConfiguration'
+import type { UserConfiguration, UserMemoryMode } from '$lib/types/configuration'
 
-export type { UserConfiguration, UserMemoryMode } from '$lib/types/userConfiguration'
+export type { UserConfiguration, UserMemoryMode } from '$lib/types/configuration'
 
 export const DEFAULT_TIMEZONE = 'UTC'
 

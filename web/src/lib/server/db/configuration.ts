@@ -1,10 +1,14 @@
 import { and, eq, sql } from 'drizzle-orm'
 import { db } from './index'
+import type {
+    DoclingQualityPreset,
+    GlobalConfiguration,
+    MemoryMode,
+} from '$lib/types/configuration'
 import { configuration } from './schema'
 
 export type ConfigurationValue = Record<string, unknown>
-export type DoclingQualityPreset = 'fast' | 'balanced' | 'quality'
-export type MemoryMode = 'off' | 'chat' | 'full'
+export type { DoclingQualityPreset, MemoryMode } from '$lib/types/configuration'
 
 export const GLOBAL_CONFIGURATION_KEYS = {
     DOCLING_ENABLED: 'docling_enabled',
@@ -13,16 +17,24 @@ export const GLOBAL_CONFIGURATION_KEYS = {
     MEMORY_LLM_ID: 'memory_llm_id',
 } as const
 
-export interface GlobalScopedConfiguration {
-    docling_enabled: { enabled: boolean }
-    docling_quality_preset: { preset: DoclingQualityPreset }
-    memory_mode_default: { value: MemoryMode }
-    memory_llm_id: { value: string }
+interface GlobalConfigurationValueByKey {
+    docling_enabled: { enabled: GlobalConfiguration['doclingEnabled'] }
+    docling_quality_preset: { preset: GlobalConfiguration['doclingQualityPreset'] }
+    memory_mode_default: { value: GlobalConfiguration['memoryModeDefault'] }
+    memory_llm_id: { value: GlobalConfiguration['memoryLlmId'] }
 }
 
-export type GlobalConfigurationKey = keyof GlobalScopedConfiguration
-const VALID_DOCLING_PRESETS = new Set<DoclingQualityPreset>(['fast', 'balanced', 'quality'])
-const VALID_MEMORY_MODES = new Set<MemoryMode>(['off', 'chat', 'full'])
+export type GlobalConfigurationKey = keyof GlobalConfigurationValueByKey
+const VALID_DOCLING_PRESETS = new Set<GlobalConfiguration['doclingQualityPreset']>([
+    'fast',
+    'balanced',
+    'quality',
+])
+const VALID_MEMORY_MODES = new Set<GlobalConfiguration['memoryModeDefault']>([
+    'off',
+    'chat',
+    'full',
+])
 
 function configurationShapeError(scope: 'global' | 'user', key: string, message: string): Error {
     return new Error(`Invalid ${scope} configuration value for "${key}": ${message}`)
@@ -53,6 +65,15 @@ function expectString(scope: 'global' | 'user', key: string, value: unknown): st
     return value
 }
 
+function expectNullableString(
+    scope: 'global' | 'user',
+    key: string,
+    value: unknown,
+): string | null {
+    if (value === null) return null
+    return expectString(scope, key, value)
+}
+
 function expectDoclingPreset(key: string, value: unknown): DoclingQualityPreset {
     const preset = expectString('global', key, value)
     if (!VALID_DOCLING_PRESETS.has(preset as DoclingQualityPreset)) {
@@ -72,26 +93,26 @@ function expectMemoryMode(scope: 'global' | 'user', key: string, value: unknown)
 function parseGlobalConfigurationValue<K extends GlobalConfigurationKey>(
     key: K,
     value: unknown,
-): GlobalScopedConfiguration[K] {
+): GlobalConfigurationValueByKey[K] {
     const record = expectRecord('global', key, value)
 
     switch (key) {
         case GLOBAL_CONFIGURATION_KEYS.DOCLING_ENABLED:
             return {
                 enabled: expectBoolean('global', key, record.enabled),
-            } as GlobalScopedConfiguration[K]
+            } as GlobalConfigurationValueByKey[K]
         case GLOBAL_CONFIGURATION_KEYS.DOCLING_QUALITY_PRESET:
             return {
                 preset: expectDoclingPreset(key, record.preset),
-            } as GlobalScopedConfiguration[K]
+            } as GlobalConfigurationValueByKey[K]
         case GLOBAL_CONFIGURATION_KEYS.MEMORY_MODE_DEFAULT:
             return {
                 value: expectMemoryMode('global', key, record.value),
-            } as GlobalScopedConfiguration[K]
+            } as GlobalConfigurationValueByKey[K]
         case GLOBAL_CONFIGURATION_KEYS.MEMORY_LLM_ID:
             return {
-                value: expectString('global', key, record.value),
-            } as GlobalScopedConfiguration[K]
+                value: expectNullableString('global', key, record.value),
+            } as GlobalConfigurationValueByKey[K]
     }
 }
 
@@ -116,7 +137,7 @@ export async function getGlobal(key: string): Promise<ConfigurationValue | null>
  */
 export async function getTypedGlobal<K extends GlobalConfigurationKey>(
     key: K,
-): Promise<GlobalScopedConfiguration[K] | null> {
+): Promise<GlobalConfigurationValueByKey[K] | null> {
     const value = await getGlobal(key)
     return value === null ? null : parseGlobalConfigurationValue(key, value)
 }
@@ -159,7 +180,7 @@ export async function setGlobal(key: string, value: ConfigurationValue): Promise
  */
 export async function setTypedGlobal<K extends GlobalConfigurationKey>(
     key: K,
-    value: GlobalScopedConfiguration[K],
+    value: GlobalConfigurationValueByKey[K],
 ): Promise<void> {
     const parsed = parseGlobalConfigurationValue(key, value)
     await setGlobal(key, asConfigurationValue(parsed))
