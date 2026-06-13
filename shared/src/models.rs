@@ -4,6 +4,7 @@ use serde_json::Value as JsonValue;
 use sqlx::types::time::OffsetDateTime;
 use sqlx::FromRow;
 use std::collections::HashMap;
+use tracing::warn;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
 #[sqlx(type_name = "varchar", rename_all = "lowercase")]
@@ -356,6 +357,178 @@ impl GlobalConfiguration {
     }
 }
 
+fn normalize_timezone_config_value(timezone: &str) -> Option<String> {
+    let candidate = timezone.trim();
+    if candidate.is_empty() {
+        return None;
+    }
+
+    let canonical = iana_timezone_alias(candidate).unwrap_or(candidate);
+    if canonical.parse::<chrono_tz::Tz>().is_ok() {
+        Some(canonical.to_string())
+    } else {
+        warn!(timezone = %timezone, "Ignoring invalid user timezone configuration");
+        None
+    }
+}
+
+fn iana_timezone_alias(timezone: &str) -> Option<&'static str> {
+    match timezone.to_ascii_lowercase().as_str() {
+        "africa/asmera" => Some("Africa/Asmara"),
+        "africa/timbuktu" => Some("Africa/Bamako"),
+        "america/argentina/comodrivadavia" => Some("America/Argentina/Catamarca"),
+        "america/atka" => Some("America/Adak"),
+        "america/buenos_aires" => Some("America/Argentina/Buenos_Aires"),
+        "america/catamarca" => Some("America/Argentina/Catamarca"),
+        "america/coral_harbour" => Some("America/Atikokan"),
+        "america/cordoba" => Some("America/Argentina/Cordoba"),
+        "america/ensenada" => Some("America/Tijuana"),
+        "america/fort_wayne" => Some("America/Indiana/Indianapolis"),
+        "america/godthab" => Some("America/Nuuk"),
+        "america/indianapolis" => Some("America/Indiana/Indianapolis"),
+        "america/jujuy" => Some("America/Argentina/Jujuy"),
+        "america/knox_in" => Some("America/Indiana/Knox"),
+        "america/kralendijk" => Some("America/Curacao"),
+        "america/louisville" => Some("America/Kentucky/Louisville"),
+        "america/lower_princes" => Some("America/Curacao"),
+        "america/marigot" => Some("America/Port_of_Spain"),
+        "america/mendoza" => Some("America/Argentina/Mendoza"),
+        "america/montreal" => Some("America/Toronto"),
+        "america/nipigon" => Some("America/Toronto"),
+        "america/pangnirtung" => Some("America/Iqaluit"),
+        "america/porto_acre" => Some("America/Rio_Branco"),
+        "america/rainy_river" => Some("America/Winnipeg"),
+        "america/rosario" => Some("America/Argentina/Cordoba"),
+        "america/santa_isabel" => Some("America/Tijuana"),
+        "america/shiprock" => Some("America/Denver"),
+        "america/st_barthelemy" => Some("America/Port_of_Spain"),
+        "america/thunder_bay" => Some("America/Toronto"),
+        "america/virgin" => Some("America/St_Thomas"),
+        "america/yellowknife" => Some("America/Edmonton"),
+        "antarctica/south_pole" => Some("Antarctica/McMurdo"),
+        "arctic/longyearbyen" => Some("Europe/Oslo"),
+        "asia/ashkhabad" => Some("Asia/Ashgabat"),
+        "asia/calcutta" => Some("Asia/Kolkata"),
+        "asia/choibalsan" => Some("Asia/Ulaanbaatar"),
+        "asia/chongqing" => Some("Asia/Shanghai"),
+        "asia/chungking" => Some("Asia/Shanghai"),
+        "asia/dacca" => Some("Asia/Dhaka"),
+        "asia/harbin" => Some("Asia/Shanghai"),
+        "asia/istanbul" => Some("Europe/Istanbul"),
+        "asia/kashgar" => Some("Asia/Urumqi"),
+        "asia/katmandu" => Some("Asia/Kathmandu"),
+        "asia/macao" => Some("Asia/Macau"),
+        "asia/rangoon" => Some("Asia/Yangon"),
+        "asia/saigon" => Some("Asia/Ho_Chi_Minh"),
+        "asia/tel_aviv" => Some("Asia/Jerusalem"),
+        "asia/thimbu" => Some("Asia/Thimphu"),
+        "asia/ujung_pandang" => Some("Asia/Makassar"),
+        "asia/ulan_bator" => Some("Asia/Ulaanbaatar"),
+        "atlantic/faeroe" => Some("Atlantic/Faroe"),
+        "atlantic/jan_mayen" => Some("Europe/Oslo"),
+        "australia/act" => Some("Australia/Sydney"),
+        "australia/canberra" => Some("Australia/Sydney"),
+        "australia/currie" => Some("Australia/Hobart"),
+        "australia/lhi" => Some("Australia/Lord_Howe"),
+        "australia/north" => Some("Australia/Darwin"),
+        "australia/nsw" => Some("Australia/Sydney"),
+        "australia/queensland" => Some("Australia/Brisbane"),
+        "australia/south" => Some("Australia/Adelaide"),
+        "australia/tasmania" => Some("Australia/Hobart"),
+        "australia/victoria" => Some("Australia/Melbourne"),
+        "australia/west" => Some("Australia/Perth"),
+        "australia/yancowinna" => Some("Australia/Broken_Hill"),
+        "brazil/acre" => Some("America/Rio_Branco"),
+        "brazil/denoronha" => Some("America/Noronha"),
+        "brazil/east" => Some("America/Sao_Paulo"),
+        "brazil/west" => Some("America/Manaus"),
+        "canada/atlantic" => Some("America/Halifax"),
+        "canada/central" => Some("America/Winnipeg"),
+        "canada/eastern" => Some("America/Toronto"),
+        "canada/mountain" => Some("America/Edmonton"),
+        "canada/newfoundland" => Some("America/St_Johns"),
+        "canada/pacific" => Some("America/Vancouver"),
+        "canada/saskatchewan" => Some("America/Regina"),
+        "canada/yukon" => Some("America/Whitehorse"),
+        "chile/continental" => Some("America/Santiago"),
+        "chile/easterisland" => Some("Pacific/Easter"),
+        "cuba" => Some("America/Havana"),
+        "egypt" => Some("Africa/Cairo"),
+        "eire" => Some("Europe/Dublin"),
+        "etc/gmt+0" => Some("Etc/GMT"),
+        "etc/gmt-0" => Some("Etc/GMT"),
+        "etc/gmt0" => Some("Etc/GMT"),
+        "etc/greenwich" => Some("Etc/GMT"),
+        "etc/uct" => Some("Etc/UTC"),
+        "etc/universal" => Some("Etc/UTC"),
+        "etc/zulu" => Some("Etc/UTC"),
+        "europe/belfast" => Some("Europe/London"),
+        "europe/bratislava" => Some("Europe/Prague"),
+        "europe/busingen" => Some("Europe/Zurich"),
+        "europe/kiev" => Some("Europe/Kyiv"),
+        "europe/mariehamn" => Some("Europe/Helsinki"),
+        "europe/nicosia" => Some("Asia/Nicosia"),
+        "europe/podgorica" => Some("Europe/Belgrade"),
+        "europe/san_marino" => Some("Europe/Rome"),
+        "europe/tiraspol" => Some("Europe/Chisinau"),
+        "europe/uzhgorod" => Some("Europe/Kyiv"),
+        "europe/vatican" => Some("Europe/Rome"),
+        "europe/zaporozhye" => Some("Europe/Kyiv"),
+        "gb" => Some("Europe/London"),
+        "gb-eire" => Some("Europe/London"),
+        "gmt" => Some("Etc/GMT"),
+        "gmt+0" => Some("Etc/GMT"),
+        "gmt-0" => Some("Etc/GMT"),
+        "gmt0" => Some("Etc/GMT"),
+        "greenwich" => Some("Etc/GMT"),
+        "hongkong" => Some("Asia/Hong_Kong"),
+        "iceland" => Some("Atlantic/Reykjavik"),
+        "iran" => Some("Asia/Tehran"),
+        "israel" => Some("Asia/Jerusalem"),
+        "jamaica" => Some("America/Jamaica"),
+        "japan" => Some("Asia/Tokyo"),
+        "kwajalein" => Some("Pacific/Kwajalein"),
+        "libya" => Some("Africa/Tripoli"),
+        "mexico/bajanorte" => Some("America/Tijuana"),
+        "mexico/bajasur" => Some("America/Mazatlan"),
+        "mexico/general" => Some("America/Mexico_City"),
+        "navajo" => Some("America/Denver"),
+        "nz" => Some("Pacific/Auckland"),
+        "nz-chat" => Some("Pacific/Chatham"),
+        "pacific/enderbury" => Some("Pacific/Kanton"),
+        "pacific/johnston" => Some("Pacific/Honolulu"),
+        "pacific/ponape" => Some("Pacific/Pohnpei"),
+        "pacific/samoa" => Some("Pacific/Pago_Pago"),
+        "pacific/truk" => Some("Pacific/Chuuk"),
+        "pacific/yap" => Some("Pacific/Chuuk"),
+        "poland" => Some("Europe/Warsaw"),
+        "portugal" => Some("Europe/Lisbon"),
+        "prc" => Some("Asia/Shanghai"),
+        "roc" => Some("Asia/Taipei"),
+        "rok" => Some("Asia/Seoul"),
+        "singapore" => Some("Asia/Singapore"),
+        "turkey" => Some("Europe/Istanbul"),
+        "uct" => Some("Etc/UTC"),
+        "universal" => Some("Etc/UTC"),
+        "us/alaska" => Some("America/Anchorage"),
+        "us/aleutian" => Some("America/Adak"),
+        "us/arizona" => Some("America/Phoenix"),
+        "us/central" => Some("America/Chicago"),
+        "us/east-indiana" => Some("America/Indiana/Indianapolis"),
+        "us/eastern" => Some("America/New_York"),
+        "us/hawaii" => Some("Pacific/Honolulu"),
+        "us/indiana-starke" => Some("America/Indiana/Knox"),
+        "us/michigan" => Some("America/Detroit"),
+        "us/mountain" => Some("America/Denver"),
+        "us/pacific" => Some("America/Los_Angeles"),
+        "us/samoa" => Some("Pacific/Pago_Pago"),
+        "utc" => Some("UTC"),
+        "w-su" => Some("Europe/Moscow"),
+        "zulu" => Some("Etc/UTC"),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct UserConfiguration {
@@ -380,10 +553,7 @@ impl UserConfiguration {
                 }
                 "timezone" => {
                     if let Some(timezone) = extract_string_config_value(&value, &["timezone"])? {
-                        timezone
-                            .parse::<chrono_tz::Tz>()
-                            .map_err(|_| format!("Invalid timezone configuration: {timezone}"))?;
-                        configuration.timezone = Some(timezone);
+                        configuration.timezone = normalize_timezone_config_value(&timezone);
                     }
                 }
                 _ => {}
@@ -978,6 +1148,28 @@ mod tests {
             updated_at: OffsetDateTime::now_utc(),
             created_by: "admin".to_string(),
         }
+    }
+
+    #[test]
+    fn test_user_configuration_normalizes_timezone_aliases() {
+        let configuration = UserConfiguration::from_rows(vec![(
+            "timezone".to_string(),
+            json!({ "value": "Asia/Calcutta" }),
+        )])
+        .unwrap();
+
+        assert_eq!(configuration.timezone.as_deref(), Some("Asia/Kolkata"));
+    }
+
+    #[test]
+    fn test_user_configuration_ignores_invalid_timezone() {
+        let configuration = UserConfiguration::from_rows(vec![(
+            "timezone".to_string(),
+            json!({ "value": "Not/AZone" }),
+        )])
+        .unwrap();
+
+        assert_eq!(configuration.timezone, None);
     }
 
     #[test]

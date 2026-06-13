@@ -28,6 +28,14 @@ class TestUserConfiguration:
         assert configuration is not None
         assert configuration.timezone == "Asia/Kolkata"
 
+    def test_from_rows_ignores_invalid_timezone(self):
+        configuration = UserConfiguration.from_rows(
+            [{"key": "timezone", "value": '{"value": "Not/AZone"}'}]
+        )
+
+        assert configuration is not None
+        assert configuration.timezone is None
+
 
 @pytest.mark.unit
 class TestGlobalConfiguration:
