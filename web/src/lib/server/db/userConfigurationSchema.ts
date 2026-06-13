@@ -13,6 +13,9 @@ export type UserConfigurationKey =
     (typeof USER_CONFIGURATION_KEYS)[keyof typeof USER_CONFIGURATION_KEYS]
 
 const USER_MEMORY_MODES = new Set<UserMemoryMode>(['off', 'chat', 'full'])
+const TIMEZONE_ALIASES: Record<string, string> = {
+    'Asia/Calcutta': 'Asia/Kolkata',
+}
 
 function extractStringValue(raw: unknown, alternateKeys: string[] = []): string | null {
     if (typeof raw === 'string') return raw
@@ -32,7 +35,10 @@ export function normalizeTimezone(timezone: string): string | null {
     if (!candidate) return null
 
     try {
-        return new Intl.DateTimeFormat('en-US', { timeZone: candidate }).resolvedOptions().timeZone
+        const resolved = new Intl.DateTimeFormat('en-US', {
+            timeZone: candidate,
+        }).resolvedOptions().timeZone
+        return TIMEZONE_ALIASES[resolved] ?? resolved
     } catch {
         return null
     }

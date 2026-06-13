@@ -4,6 +4,7 @@
     import { invalidateAll } from '$app/navigation'
     import ChevronsUpDownIcon from '@lucide/svelte/icons/chevrons-up-down'
     import { tick } from 'svelte'
+    import { toast } from 'svelte-sonner'
     import ThemePicker from '$lib/components/theme-picker.svelte'
     import { Badge } from '$lib/components/ui/badge'
     import { Button } from '$lib/components/ui/button'
@@ -129,10 +130,18 @@
                     class="space-y-4"
                     use:enhance={() => {
                         isSubmitting = true
-                        return async ({ update }) => {
+                        return async ({ result, update }) => {
                             isSubmitting = false
                             await update()
-                            await invalidateAll()
+                            if (result.type === 'success') {
+                                toast.success('Timezone saved')
+                                await invalidateAll()
+                            } else if (result.type === 'failure') {
+                                const error = result.data?.error
+                                toast.error(
+                                    typeof error === 'string' ? error : 'Failed to save timezone',
+                                )
+                            }
                         }
                     }}>
                     <div class="space-y-2">
@@ -185,10 +194,6 @@
 
                     {#if form?.error}
                         <p class="text-sm text-red-500">{form.error}</p>
-                    {/if}
-
-                    {#if form?.success}
-                        <p class="text-muted-foreground text-sm">Timezone saved.</p>
                     {/if}
 
                     <Button type="submit" disabled={isSubmitting} class="cursor-pointer">

@@ -15,6 +15,17 @@ class DoclingQualityPreset(str, Enum):
     QUALITY = "quality"
 
 
+TIMEZONE_ALIASES = {
+    "Asia/Calcutta": "Asia/Kolkata",
+}
+
+
+def _normalize_timezone(timezone: str) -> str:
+    candidate = TIMEZONE_ALIASES.get(timezone, timezone)
+    ZoneInfo(candidate)
+    return candidate
+
+
 @dataclass(frozen=True)
 class GlobalConfiguration:
     docling_enabled: bool = False
@@ -110,7 +121,7 @@ class UserConfiguration:
         )
         if timezone:
             try:
-                ZoneInfo(timezone)
+                timezone = _normalize_timezone(timezone)
             except ZoneInfoNotFoundError as exc:
                 raise ValueError(f"Invalid user timezone configuration: {timezone}") from exc
 

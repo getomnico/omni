@@ -20,6 +20,14 @@ class TestUserConfiguration:
         assert configuration.timezone == "Asia/Bahrain"
         assert configuration.memory_mode == MemoryMode.CHAT
 
+    def test_from_rows_normalizes_legacy_timezone_aliases(self):
+        configuration = UserConfiguration.from_rows(
+            [{"key": "timezone", "value": '{"value": "Asia/Calcutta"}'}]
+        )
+
+        assert configuration is not None
+        assert configuration.timezone == "Asia/Kolkata"
+
 
 @pytest.mark.unit
 class TestGlobalConfiguration:
