@@ -399,6 +399,14 @@ pub fn get_scopes_for_source_type(source_type: SourceType) -> Vec<String> {
         SourceType::Gmail => {
             scopes.push("https://www.googleapis.com/auth/gmail.readonly".to_string());
         }
+        SourceType::GoogleChat => {
+            scopes.push("https://www.googleapis.com/auth/chat.spaces.readonly".to_string());
+            scopes.push("https://www.googleapis.com/auth/chat.memberships.readonly".to_string());
+            scopes.push(
+                "https://www.googleapis.com/auth/chat.admin.memberships.readonly".to_string(),
+            );
+            scopes.push("https://www.googleapis.com/auth/chat.messages.readonly".to_string());
+        }
         _ => {
             scopes.push("https://www.googleapis.com/auth/drive.readonly".to_string());
             scopes.push("https://www.googleapis.com/auth/gmail.readonly".to_string());
@@ -416,6 +424,13 @@ pub fn get_oauth_scopes_for_source_type(source_type: SourceType) -> Vec<String> 
         }
         SourceType::Gmail => {
             vec!["https://www.googleapis.com/auth/gmail.readonly".to_string()]
+        }
+        SourceType::GoogleChat => {
+            vec![
+                "https://www.googleapis.com/auth/chat.spaces.readonly".to_string(),
+                "https://www.googleapis.com/auth/chat.memberships.readonly".to_string(),
+                "https://www.googleapis.com/auth/chat.messages.readonly".to_string(),
+            ]
         }
         _ => {
             vec![

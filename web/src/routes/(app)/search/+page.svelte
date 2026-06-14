@@ -46,6 +46,7 @@
     const sourceDisplayNames: Record<string, string> = {
         google_drive: 'Google Drive',
         gmail: 'Gmail',
+        google_chat: 'Google Chat',
         confluence: 'Confluence',
         jira: 'JIRA',
         slack: 'Slack',

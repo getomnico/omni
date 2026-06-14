@@ -87,13 +87,47 @@ Four methods for storing/extracting content, all go through the connector-manage
 # State Management
 
 - Read previous state at sync start (passed as parameter)
-- **Checkpoint periodically** during long syncs (`save_state()` — also sends heartbeat to prevent timeout)
-- Save final state with `complete(new_state)`
+- **Checkpoint periodically** during long syncs (`save_state()` / `save_checkpoint()` — also sends heartbeat to prevent timeout)
+- Save final state with `complete(new_state)` / final checkpoint promotion
 - **Poll `is_cancelled()` in loops** — stop gracefully if cancelled
 - Call `increment_scanned()` for progress tracking
 - Check `should_index_user(email)` to respect whitelist/blacklist
 
 Common pattern: store a cursor or timestamp (e.g., `{"last_sync_at": "2024-..."}`) for incremental syncs.
+
+## Sync Modes, Resume, and Checkpointing
+
+For every connector, explicitly decide and document whether each mode is supported:
+
+- **Full sync** — crawl all in-scope containers/items. For long crawls, checkpoint after each completed durable unit (user, folder, channel/space, page token, etc.) so resume can skip completed work without skipping unfinished work.
+- **Incremental sync** — prefer provider-native change cursors/events. If only timestamp filtering exists, use an overlap window and idempotent upserts/deletes to tolerate clock skew and late updates. Store enough state to resume in the middle of a page and to recover when a provider cursor expires.
+- **Realtime sync** — only claim realtime support when provider webhooks/events can be renewed, verified, replayed/caught up after outages, and reconciled with periodic incremental/full repair. Store webhook/subscription IDs, expirations, and last processed event times in source-level connector state.
+
+Checkpoint design:
+
+- Separate **source-level durable state** (provider cursors, webhook subscriptions, final watermarks) from **per-run resume state** (currently processed container/page/user, partial page token, completed unit set).
+- Save checkpoints after every completed unit and before/after long page loops where safe.
+- Never advance a cursor/watermark before all items covered by it have been emitted and flushed.
+- On cancel, persist completed work and mark the run cancelled rather than failed.
+- On resume, only skip units proven complete by checkpoint state; unfinished units must be reprocessed idempotently.
+
+## Permissions and Inheritance
+
+- Model the provider's authorization semantics before choosing document granularity.
+- Identify whether permissions are item-level, container-inherited, user-mailbox-owned, or group-derived.
+- Emit `permissions.users` and `permissions.groups` using stable identifiers already understood by Omni's permission filter.
+- If permissions inherit from a parent container, store the parent/container ID in document metadata/attributes and update affected child documents when membership changes.
+- If the provider supports group principals, reuse existing group membership sync where possible; otherwise add group sync events or resolve groups safely.
+- Be conservative with private/DM/personal content. Prefer allowlists and opt-in handling until ACL semantics are proven.
+
+## Document Modeling, Threads, and Attachments
+
+- Use stable provider IDs for `external_id`; avoid per-crawl/user-local IDs unless the source truly has user-local objects.
+- Decide document granularity deliberately: single message/item, thread, daily channel batch, file attachment, etc. The choice affects dedupe, incremental sync, permissions, snippets, and retrieval.
+- Preserve parent references in metadata/attributes (`container_id`, `thread_id`, `parent_message_id`, `attachment_id`) so agents can navigate from search hits to the original context.
+- For threaded systems, decide whether to index each message separately, group by thread, or re-emit the full thread on changes. Implement incremental sync accordingly.
+- For attachments, distinguish linked provider files from uploaded blobs. Prefer extracting/storing attachment content as its own document when it is independently useful, and include a back-reference to the parent message/thread/document.
+- For unsupported/oversized/private attachments, emit metadata-only documents or attachment pointers rather than silently dropping them.
 
 # Frontend Changes
 

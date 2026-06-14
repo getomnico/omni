@@ -168,6 +168,7 @@ pub struct Embedding {
 pub enum SourceType {
     GoogleDrive,
     Gmail,
+    GoogleChat,
     Confluence,
     Jira,
     Slack,

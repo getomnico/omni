@@ -1,6 +1,7 @@
 export enum SourceType {
     GOOGLE_DRIVE = 'google_drive',
     GMAIL = 'gmail',
+    GOOGLE_CHAT = 'google_chat',
     CONFLUENCE = 'confluence',
     JIRA = 'jira',
     SLACK = 'slack',
@@ -73,6 +74,11 @@ export interface GmailSourceConfig {
     // Future: label_filters, date_range_filters, etc.
 }
 
+export interface GoogleChatSourceConfig {
+    space_allowlist?: string[]
+    include_group_chats?: boolean
+}
+
 export interface FilesystemSourceConfig {
     base_path: string
     file_extensions?: string[]
@@ -133,6 +139,7 @@ export interface NextcloudSourceConfig {
 export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.GOOGLE_DRIVE]: 1800,
     [SourceType.GMAIL]: 1800,
+    [SourceType.GOOGLE_CHAT]: 1800,
     [SourceType.SLACK]: 1800,
     [SourceType.OUTLOOK]: 1800,
     [SourceType.ONE_DRIVE]: 1800,

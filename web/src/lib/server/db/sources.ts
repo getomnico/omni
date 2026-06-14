@@ -66,7 +66,7 @@ export async function getGoogleSources(): Promise<Source[]> {
         .from(sources)
         .where(
             and(
-                inArray(sources.sourceType, ['google_drive', 'gmail']),
+                inArray(sources.sourceType, ['google_drive', 'gmail', 'google_chat']),
                 eq(sources.isDeleted, false),
             ),
         )
@@ -78,7 +78,7 @@ export async function getActiveGoogleSources(): Promise<Source[]> {
         .from(sources)
         .where(
             and(
-                inArray(sources.sourceType, ['google_drive', 'gmail']),
+                inArray(sources.sourceType, ['google_drive', 'gmail', 'google_chat']),
                 eq(sources.isActive, true),
                 eq(sources.isDeleted, false),
             ),

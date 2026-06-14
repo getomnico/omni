@@ -6,6 +6,7 @@ import googleDocsIcon from '$lib/images/icons/google-docs.svg'
 import googleSheetsIcon from '$lib/images/icons/google-sheets.svg'
 import googleSlidesIcon from '$lib/images/icons/google-slides.svg'
 import gmailIcon from '$lib/images/icons/gmail.svg'
+import googleChatIcon from '$lib/images/icons/google-chat.svg'
 import slackIcon from '$lib/images/icons/slack.svg'
 import atlassianIcon from '$lib/images/icons/atlassian.svg'
 import confluenceIcon from '$lib/images/icons/confluence.svg'
@@ -50,6 +51,7 @@ const GOOGLE_SLIDES_MIMETYPES = [
 const SOURCE_TYPE_ICONS: Record<string, string> = {
     [SourceType.GOOGLE_DRIVE]: googleDriveIcon,
     [SourceType.GMAIL]: gmailIcon,
+    [SourceType.GOOGLE_CHAT]: googleChatIcon,
     [SourceType.SLACK]: slackIcon,
     [SourceType.CONFLUENCE]: confluenceIcon,
     [SourceType.JIRA]: jiraIcon,
@@ -144,6 +146,7 @@ export function inferSourceFromUrl(url: string): SourceType | null {
     if (urlLower.includes('slides.google.com')) return SourceType.GOOGLE_DRIVE
     if (urlLower.includes('mail.google.com') || urlLower.includes('gmail.com'))
         return SourceType.GMAIL
+    if (urlLower.includes('chat.google.com')) return SourceType.GOOGLE_CHAT
     if (urlLower.includes('slack.com')) return SourceType.SLACK
     if (urlLower.includes('atlassian.net/spaces')) return SourceType.CONFLUENCE
     if (urlLower.includes('atlassian.net/jira')) return SourceType.JIRA
@@ -195,6 +198,7 @@ export function getSourceDisplayName(sourceType: SourceType) {
     const sourceDisplayNames: Record<string, string> = {
         [SourceType.GOOGLE_DRIVE]: 'Google Drive',
         [SourceType.GMAIL]: 'Gmail',
+        [SourceType.GOOGLE_CHAT]: 'Google Chat',
         [SourceType.CONFLUENCE]: 'Confluence',
         [SourceType.JIRA]: 'Jira',
         [SourceType.SLACK]: 'Slack',

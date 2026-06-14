@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::admin::AdminClient;
-use crate::auth::{GoogleAuth, create_service_auth, get_domain_from_credentials};
+use crate::auth::{create_service_auth, get_domain_from_credentials};
 use crate::drive::DriveClient;
 use crate::gmail::{MessageFormat, MessagePart};
 use crate::models::{GoogleDirectoryUser, GoogleSyncCheckpoint, SearchUsersResponse};
@@ -398,11 +398,15 @@ impl Connector for GoogleConnector {
     }
 
     fn description(&self) -> Option<String> {
-        Some("Connect to Google Drive, Docs, Gmail, and more".to_string())
+        Some("Connect to Google Drive, Docs, Gmail, Google Chat, and more".to_string())
     }
 
     fn source_types(&self) -> Vec<SourceType> {
-        vec![SourceType::GoogleDrive, SourceType::Gmail]
+        vec![
+            SourceType::GoogleDrive,
+            SourceType::Gmail,
+            SourceType::GoogleChat,
+        ]
     }
 
     fn sync_modes(&self) -> Vec<SyncType> {
@@ -443,8 +447,48 @@ impl Connector for GoogleConnector {
                     },
                     "required": []
                 }),
-                source_types: vec![SourceType::GoogleDrive],
+                source_types: vec![SourceType::GoogleDrive, SourceType::GoogleChat],
                 admin_only: true,
+            },
+            ActionDefinition {
+                name: "fetch_chat_message".to_string(),
+                description: "Fetch a Google Chat message from the source as fallback/fresh context.".to_string(),
+                mode: omni_connector_sdk::ActionMode::Read,
+                input_schema: json!({
+                    "type": "object",
+                    "properties": { "message_name": { "type": "string", "description": "Google Chat message resource name (spaces/{space}/messages/{message})" } },
+                    "required": ["message_name"]
+                }),
+                source_types: vec![SourceType::GoogleChat],
+                admin_only: false,
+            },
+            ActionDefinition {
+                name: "fetch_chat_thread".to_string(),
+                description: "Fetch messages in a Google Chat thread from the source as fallback context.".to_string(),
+                mode: omni_connector_sdk::ActionMode::Read,
+                input_schema: json!({
+                    "type": "object",
+                    "properties": { "thread_name": { "type": "string", "description": "Google Chat thread resource name (spaces/{space}/threads/{thread})" } },
+                    "required": ["thread_name"]
+                }),
+                source_types: vec![SourceType::GoogleChat],
+                admin_only: false,
+            },
+            ActionDefinition {
+                name: "fetch_chat_context".to_string(),
+                description: "Fetch live Google Chat messages around an anchor message as fallback context.".to_string(),
+                mode: omni_connector_sdk::ActionMode::Read,
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "message_name": { "type": "string" },
+                        "before_count": { "type": "integer", "default": 20 },
+                        "after_count": { "type": "integer", "default": 20 }
+                    },
+                    "required": ["message_name"]
+                }),
+                source_types: vec![SourceType::GoogleChat],
+                admin_only: false,
             },
         ]
     }
@@ -464,6 +508,16 @@ impl Connector for GoogleConnector {
             SearchOperator {
                 operator: "label".to_string(),
                 attribute_key: "labels".to_string(),
+                value_type: "text".to_string(),
+            },
+            SearchOperator {
+                operator: "space".to_string(),
+                attribute_key: "space".to_string(),
+                value_type: "text".to_string(),
+            },
+            SearchOperator {
+                operator: "thread".to_string(),
+                attribute_key: "threads".to_string(),
                 value_type: "text".to_string(),
             },
         ]
@@ -539,6 +593,12 @@ impl Connector for GoogleConnector {
         match action {
             "fetch_file" => self.execute_fetch_file(params, &creds).await,
             "search_users" => self.execute_search_users(params, &creds).await,
+            "fetch_chat_message" | "fetch_chat_thread" | "fetch_chat_context" => Ok(
+                ActionResponse::failure(
+                    "Google Chat live context actions are registered but not yet implemented; use indexed segment documents for context.".to_string(),
+                )
+                .into_response(),
+            ),
             _ => {
                 use axum::http::StatusCode;
                 Ok(ActionResponse::not_supported(action)

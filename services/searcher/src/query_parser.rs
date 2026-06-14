@@ -335,6 +335,7 @@ fn resolve_source_alias(alias: &str) -> Option<SourceType> {
     match alias.to_lowercase().as_str() {
         "drive" | "gdrive" | "google_drive" => Some(SourceType::GoogleDrive),
         "gmail" | "email" | "mail" => Some(SourceType::Gmail),
+        "google_chat" | "gchat" | "chat" => Some(SourceType::GoogleChat),
         "slack" => Some(SourceType::Slack),
         "confluence" | "wiki" => Some(SourceType::Confluence),
         "jira" => Some(SourceType::Jira),

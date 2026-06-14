@@ -43,6 +43,48 @@ pub struct GoogleConnectorState {
 pub struct GoogleSyncCheckpoint {
     pub gmail_history_ids: Option<HashMap<String, String>>,
     pub drive_page_tokens: Option<HashMap<String, String>>,
+    pub chat: Option<GoogleChatCheckpoint>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GoogleChatCheckpoint {
+    #[serde(default)]
+    pub spaces: HashMap<String, GoogleChatSpaceCheckpoint>,
+    pub last_space_discovery_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GoogleChatSpaceCheckpoint {
+    pub space_name: String,
+    pub space_id: String,
+    pub space_type: String,
+    pub display_name: Option<String>,
+    pub reader_email: Option<String>,
+    pub last_full_sync_at: Option<String>,
+    pub last_message_create_time: Option<String>,
+    pub last_event_time: Option<String>,
+    pub last_acl_sync_at: Option<String>,
+    #[serde(default)]
+    pub segments: Vec<GoogleChatSegmentCheckpoint>,
+    #[serde(default)]
+    pub full_in_progress: bool,
+    pub full_resume_after_time: Option<String>,
+    pub incremental_event_page_token: Option<String>,
+    #[serde(default)]
+    pub incremental_in_progress: bool,
+    pub pending_event_watermark: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoogleChatSegmentCheckpoint {
+    pub external_id: String,
+    pub start_message_name: String,
+    pub end_message_name: String,
+    pub start_time: String,
+    pub end_time: String,
+    pub message_count: u32,
+    pub text_bytes: u32,
+    pub finalized: bool,
 }
 
 #[derive(Debug, Clone)]

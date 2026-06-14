@@ -250,20 +250,477 @@ async fn emit_metadata_only_drive_event(
 use crate::admin::AdminClient;
 use crate::auth::{GoogleAuth, OAuthAuth, google_max_retries};
 use crate::cache::LruFolderCache;
+use crate::chat::{ChatClient, GoogleChatMessage, GoogleChatSpace, GoogleChatSpaceType};
 use crate::connector::build_attachment_doc_id;
 use crate::drive::{DriveClient, FileContent};
 use crate::gmail::{BatchThreadResult, ExtractedAttachment, GmailClient, MessageFormat};
 use crate::models::{
-    AttachmentPointer, GmailThread, GoogleConnectorState, GoogleSyncCheckpoint, UserFile,
-    WebhookChannel, WebhookChannelResponse, WebhookNotification, mime_type_to_content_type,
+    AttachmentPointer, GmailThread, GoogleChatSegmentCheckpoint, GoogleChatSpaceCheckpoint,
+    GoogleConnectorState, GoogleSyncCheckpoint, UserFile, WebhookChannel, WebhookChannelResponse,
+    WebhookNotification, mime_type_to_content_type,
 };
 use omni_connector_sdk::RateLimiter;
 use omni_connector_sdk::SdkClient;
 use omni_connector_sdk::{
-    AuthType, ConnectorEvent, DocumentMetadata, DocumentPermissions, ServiceCredential,
-    ServiceProvider, Source, SourceType, SyncType,
+    AuthType, ConnectorEvent, DocumentAttributes, DocumentMetadata, DocumentPermissions,
+    ServiceCredential, ServiceProvider, Source, SourceType, SyncType,
 };
 use serde_json::json;
+
+const GOOGLE_CHAT_DEAD_TIME_SECONDS: i64 = 45 * 60;
+const GOOGLE_CHAT_MAX_SEGMENT_MESSAGES: usize = 100;
+const GOOGLE_CHAT_MAX_SEGMENT_BYTES: usize = 100 * 1024;
+const GOOGLE_CHAT_MAX_MESSAGE_BYTES: usize = 16 * 1024;
+const GOOGLE_CHAT_MAX_SEGMENT_SPAN_SECONDS: i64 = 12 * 60 * 60;
+
+#[derive(Debug, Clone)]
+struct GoogleChatSegmentAttachmentRef {
+    name: String,
+    content_name: Option<String>,
+    content_type: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct GoogleChatSegmentMessage {
+    name: String,
+    sender: String,
+    sender_email: Option<String>,
+    create_time: OffsetDateTime,
+    update_time: Option<OffsetDateTime>,
+    text: String,
+    thread_name: Option<String>,
+    thread_reply: bool,
+    truncated: bool,
+    attachments: Vec<GoogleChatSegmentAttachmentRef>,
+}
+
+#[derive(Debug, Clone)]
+struct GoogleChatSegment {
+    external_id: String,
+    space_name: String,
+    space_id: String,
+    space_display_name: Option<String>,
+    messages: Vec<GoogleChatSegmentMessage>,
+    truncated_message_names: Vec<String>,
+    attachment_external_ids: Vec<String>,
+}
+
+impl GoogleChatSegment {
+    fn render_content(&self) -> String {
+        let start = self
+            .messages
+            .first()
+            .map(|m| m.create_time.to_string())
+            .unwrap_or_default();
+        let end = self
+            .messages
+            .last()
+            .map(|m| m.create_time.to_string())
+            .unwrap_or_default();
+        let mut out = format!(
+            "Space: {}\nConversation segment: {} → {}\nMessages: {}\n\n",
+            self.space_display_name
+                .as_deref()
+                .unwrap_or(&self.space_name),
+            start,
+            end,
+            self.messages.len()
+        );
+        for msg in &self.messages {
+            let reply_marker = if msg.thread_reply {
+                " (thread reply)"
+            } else {
+                ""
+            };
+            out.push_str(&format!(
+                "[{}] {}{}:\n",
+                msg.create_time, msg.sender, reply_marker
+            ));
+            out.push_str(&msg.text);
+            if msg.truncated {
+                out.push_str("\n[message truncated]");
+            }
+            if !msg.attachments.is_empty() {
+                out.push_str("\nAttachments:\n");
+                for attachment in &msg.attachments {
+                    out.push_str(&format!(
+                        "- {}\n",
+                        attachment
+                            .content_name
+                            .as_deref()
+                            .unwrap_or(&attachment.name)
+                    ));
+                }
+            }
+            out.push_str("\n\n");
+        }
+        out
+    }
+
+    fn metadata(&self) -> DocumentMetadata {
+        let start = self.messages.first().map(|m| m.create_time);
+        let end = self.messages.last().map(|m| m.create_time);
+        let updated = self
+            .messages
+            .iter()
+            .filter_map(|m| m.update_time.or(Some(m.create_time)))
+            .max();
+        let mut extra = HashMap::new();
+        extra.insert("space_name".to_string(), json!(self.space_name));
+        extra.insert("space_id".to_string(), json!(self.space_id));
+        extra.insert(
+            "space_display_name".to_string(),
+            json!(self.space_display_name),
+        );
+        extra.insert("segment_external_id".to_string(), json!(self.external_id));
+        if let Some(first) = self.messages.first() {
+            extra.insert("segment_start_message_name".to_string(), json!(first.name));
+            extra.insert(
+                "segment_start_time".to_string(),
+                json!(first.create_time.to_string()),
+            );
+        }
+        if let Some(last) = self.messages.last() {
+            extra.insert("segment_end_message_name".to_string(), json!(last.name));
+            extra.insert(
+                "segment_end_time".to_string(),
+                json!(last.create_time.to_string()),
+            );
+        }
+        extra.insert("message_count".to_string(), json!(self.messages.len()));
+        extra.insert(
+            "message_names".to_string(),
+            json!(self
+                .messages
+                .iter()
+                .map(|m| m.name.clone())
+                .collect::<Vec<_>>()),
+        );
+        extra.insert("thread_names".to_string(), json!(self.thread_names()));
+        extra.insert(
+            "participant_emails".to_string(),
+            json!(self.participant_emails()),
+        );
+        extra.insert(
+            "attachment_external_ids".to_string(),
+            json!(self.attachment_external_ids),
+        );
+        extra.insert(
+            "truncated_message_names".to_string(),
+            json!(self.truncated_message_names),
+        );
+        extra.insert(
+            "is_truncated".to_string(),
+            json!(!self.truncated_message_names.is_empty()),
+        );
+
+        DocumentMetadata {
+            title: Some(format!(
+                "{}: conversation from {} to {}",
+                self.space_display_name
+                    .as_deref()
+                    .unwrap_or(&self.space_name),
+                start.map(|t| t.to_string()).unwrap_or_default(),
+                end.map(|t| t.to_string()).unwrap_or_default()
+            )),
+            author: None,
+            created_at: start,
+            updated_at: updated,
+            content_type: Some("chat".to_string()),
+            mime_type: Some("application/x-google-chat-segment".to_string()),
+            size: None,
+            url: None,
+            path: Some(format!(
+                "/Google Chat/{}",
+                self.space_display_name
+                    .as_deref()
+                    .unwrap_or(&self.space_name)
+            )),
+            extra: Some(extra),
+        }
+    }
+
+    fn attributes(&self) -> DocumentAttributes {
+        let mut attrs = HashMap::new();
+        attrs.insert(
+            "space".to_string(),
+            json!(self
+                .space_display_name
+                .as_deref()
+                .unwrap_or(&self.space_name)),
+        );
+        attrs.insert("space_id".to_string(), json!(self.space_name));
+        attrs.insert("threads".to_string(), json!(self.thread_names()));
+        attrs.insert("participants".to_string(), json!(self.participant_emails()));
+        attrs.insert("sender".to_string(), json!(self.participant_emails()));
+        attrs.insert(
+            "has_attachments".to_string(),
+            json!(!self.attachment_external_ids.is_empty()),
+        );
+        if let Some(first) = self.messages.first() {
+            attrs.insert(
+                "date".to_string(),
+                json!(format!(
+                    "{:04}-{:02}-{:02}",
+                    first.create_time.year(),
+                    first.create_time.month() as u8,
+                    first.create_time.day()
+                )),
+            );
+        }
+        attrs
+    }
+
+    fn to_checkpoint(&self) -> GoogleChatSegmentCheckpoint {
+        let first = self.messages.first().expect("segment has first message");
+        let last = self.messages.last().expect("segment has last message");
+        GoogleChatSegmentCheckpoint {
+            external_id: self.external_id.clone(),
+            start_message_name: first.name.clone(),
+            end_message_name: last.name.clone(),
+            start_time: first.create_time.to_string(),
+            end_time: last.create_time.to_string(),
+            message_count: self.messages.len() as u32,
+            text_bytes: self.render_content().len() as u32,
+            finalized: true,
+        }
+    }
+
+    fn thread_names(&self) -> Vec<String> {
+        let mut values: Vec<String> = self
+            .messages
+            .iter()
+            .filter_map(|m| m.thread_name.clone())
+            .collect();
+        values.sort();
+        values.dedup();
+        values
+    }
+
+    fn participant_emails(&self) -> Vec<String> {
+        let mut values: Vec<String> = self
+            .messages
+            .iter()
+            .filter_map(|m| m.sender_email.clone())
+            .collect();
+        values.sort();
+        values.dedup();
+        values
+    }
+}
+
+struct GoogleChatSegmentBuilder {
+    space_name: String,
+    space_id: String,
+    space_display_name: Option<String>,
+    current: Vec<GoogleChatSegmentMessage>,
+    truncated_message_names: Vec<String>,
+    attachment_external_ids: Vec<String>,
+    current_bytes: usize,
+}
+
+impl GoogleChatSegmentBuilder {
+    fn new(space: &GoogleChatSpace) -> Self {
+        Self {
+            space_name: space.name.clone(),
+            space_id: chat_space_id(&space.name).to_string(),
+            space_display_name: space.display_name.clone(),
+            current: Vec::new(),
+            truncated_message_names: Vec::new(),
+            attachment_external_ids: Vec::new(),
+            current_bytes: 0,
+        }
+    }
+
+    fn push(&mut self, message: GoogleChatMessage) -> Result<Vec<GoogleChatSegment>> {
+        if message.private_message_viewer.is_some() {
+            return Ok(Vec::new());
+        }
+        if message.delete_time.is_some()
+            && message.text.is_none()
+            && message.formatted_text.is_none()
+        {
+            return Ok(Vec::new());
+        }
+        let msg = self.convert_message(message)?;
+        let mut ready = Vec::new();
+        if !self.current.is_empty() && self.should_split_before(&msg) {
+            if let Some(segment) = self.take_segment()? {
+                ready.push(segment);
+            }
+        }
+        self.current_bytes += msg.text.len();
+        if msg.truncated {
+            self.truncated_message_names.push(msg.name.clone());
+        }
+        for attachment in &msg.attachments {
+            self.attachment_external_ids
+                .push(attachment_external_id(&attachment.name));
+        }
+        self.current.push(msg);
+        Ok(ready)
+    }
+
+    fn finish(&mut self) -> Result<Option<GoogleChatSegment>> {
+        self.take_segment()
+    }
+
+    fn should_split_before(&self, next: &GoogleChatSegmentMessage) -> bool {
+        let first = self.current.first().expect("current non-empty");
+        let last = self.current.last().expect("current non-empty");
+        let gap = next.create_time - last.create_time;
+        let span = next.create_time - first.create_time;
+        gap.whole_seconds() > GOOGLE_CHAT_DEAD_TIME_SECONDS
+            || span.whole_seconds() > GOOGLE_CHAT_MAX_SEGMENT_SPAN_SECONDS
+            || self.current.len() >= GOOGLE_CHAT_MAX_SEGMENT_MESSAGES
+            || self.current_bytes + next.text.len() > GOOGLE_CHAT_MAX_SEGMENT_BYTES
+    }
+
+    fn take_segment(&mut self) -> Result<Option<GoogleChatSegment>> {
+        if self.current.is_empty() {
+            return Ok(None);
+        }
+        let first = self.current.first().expect("segment first");
+        let external_id = segment_external_id(&self.space_id, &first.name);
+        let segment = GoogleChatSegment {
+            external_id,
+            space_name: self.space_name.clone(),
+            space_id: self.space_id.clone(),
+            space_display_name: self.space_display_name.clone(),
+            messages: std::mem::take(&mut self.current),
+            truncated_message_names: std::mem::take(&mut self.truncated_message_names),
+            attachment_external_ids: {
+                let mut ids = std::mem::take(&mut self.attachment_external_ids);
+                ids.sort();
+                ids.dedup();
+                ids
+            },
+        };
+        self.current_bytes = 0;
+        Ok(Some(segment))
+    }
+
+    fn convert_message(&self, message: GoogleChatMessage) -> Result<GoogleChatSegmentMessage> {
+        let create_time = parse_google_time(message.create_time.as_deref())
+            .with_context(|| format!("Chat message {} missing/invalid createTime", message.name))?;
+        let update_time = parse_google_time(message.last_update_time.as_deref());
+        let sender = message
+            .sender
+            .as_ref()
+            .and_then(|u| u.display_name.clone())
+            .unwrap_or_else(|| {
+                message
+                    .sender
+                    .as_ref()
+                    .map(|u| u.name.clone())
+                    .unwrap_or_else(|| "Unknown".to_string())
+            });
+        let sender_email = message
+            .sender
+            .as_ref()
+            .and_then(|u| u.name.strip_prefix("users/").map(|v| v.to_lowercase()))
+            .filter(|v| v.contains('@'));
+        let raw_text = message.formatted_text.or(message.text).unwrap_or_default();
+        let (text, truncated) = truncate_message(raw_text, GOOGLE_CHAT_MAX_MESSAGE_BYTES);
+        let attachments = message
+            .attachment
+            .into_iter()
+            .map(|a| GoogleChatSegmentAttachmentRef {
+                name: a.name,
+                content_name: a.content_name,
+                content_type: a.content_type,
+            })
+            .collect();
+        Ok(GoogleChatSegmentMessage {
+            name: message.name,
+            sender,
+            sender_email,
+            create_time,
+            update_time,
+            text,
+            thread_name: message.thread.and_then(|t| t.name),
+            thread_reply: message.thread_reply.unwrap_or(false),
+            truncated,
+            attachments,
+        })
+    }
+}
+
+fn parse_google_time(value: Option<&str>) -> Option<OffsetDateTime> {
+    value.and_then(|value| {
+        OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
+    })
+}
+
+fn truncate_message(mut text: String, max_bytes: usize) -> (String, bool) {
+    if text.len() <= max_bytes {
+        return (text, false);
+    }
+    let mut end = max_bytes.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    (text, true)
+}
+
+fn chat_space_id(space_name: &str) -> &str {
+    space_name.strip_prefix("spaces/").unwrap_or(space_name)
+}
+
+fn chat_message_id(message_name: &str) -> &str {
+    message_name.rsplit('/').next().unwrap_or(message_name)
+}
+
+fn segment_external_id(space_id: &str, start_message_name: &str) -> String {
+    format!(
+        "google_chat_segment:{}:{}",
+        space_id,
+        chat_message_id(start_message_name)
+    )
+}
+
+fn attachment_external_id(attachment_name: &str) -> String {
+    format!("google_chat_attachment:{}", attachment_name)
+}
+
+fn chat_space_group_id(space_name: &str) -> String {
+    format!("google-chat-space:{}", chat_space_id(space_name))
+}
+
+fn chat_user_email(user_name: &str, user_id_to_email: &HashMap<String, String>) -> Option<String> {
+    let id = user_name
+        .strip_prefix("users/")
+        .unwrap_or(user_name)
+        .to_lowercase();
+    if id.contains('@') {
+        Some(id)
+    } else {
+        user_id_to_email.get(&id).cloned()
+    }
+}
+
+fn chat_event_watermark_expired(value: Option<&str>) -> bool {
+    let Some(time) = parse_google_time(value) else {
+        return true;
+    };
+    (OffsetDateTime::now_utc() - time).whole_days() >= 27
+}
+
+fn chat_space_allowed(source: &Source, space: &GoogleChatSpace) -> bool {
+    let Some(config) = source.config.as_object() else {
+        return true;
+    };
+    if let Some(allowlist) = config.get("space_allowlist").and_then(|v| v.as_array()) {
+        if allowlist.is_empty() {
+            return true;
+        }
+        return allowlist.iter().filter_map(|v| v.as_str()).any(|allowed| {
+            allowed == space.name || space.display_name.as_deref() == Some(allowed)
+        });
+    }
+    true
+}
 
 pub struct WebhookDebounce {
     pub last_received: Instant,
@@ -274,6 +731,7 @@ pub struct WebhookDebounce {
 pub struct SyncManager {
     drive_client: DriveClient,
     gmail_client: GmailClient,
+    chat_client: ChatClient,
     admin_client: Arc<AdminClient>,
     // TODO: Remove this one we wire in the webhook codepath to use SyncContext as well
     pub sdk_client: SdkClient,
@@ -305,7 +763,8 @@ impl SyncManager {
 
         let rate_limiter = Arc::new(RateLimiter::new(api_rate_limit, max_retries));
         let drive_client = DriveClient::with_rate_limiter(rate_limiter.clone());
-        let gmail_client = GmailClient::with_rate_limiter(rate_limiter);
+        let gmail_client = GmailClient::with_rate_limiter(rate_limiter.clone());
+        let chat_client = ChatClient::with_rate_limiter(rate_limiter);
 
         let debounce_duration_ms = google_webhook_debounce_duration_ms();
         info!(
@@ -316,6 +775,7 @@ impl SyncManager {
         Self {
             drive_client,
             gmail_client,
+            chat_client,
             admin_client,
             sdk_client,
             folder_cache: LruFolderCache::new(10_000),
@@ -419,6 +879,17 @@ impl SyncManager {
             }
             SourceType::Gmail => {
                 self.sync_gmail_source_internal(
+                    source,
+                    service_creds,
+                    sync_type,
+                    existing_state,
+                    known_groups,
+                    ctx,
+                )
+                .await
+            }
+            SourceType::GoogleChat => {
+                self.sync_google_chat_source_internal(
                     source,
                     service_creds,
                     sync_type,
@@ -1130,6 +1601,7 @@ impl SyncManager {
         let is_incremental = matches!(sync_type, SyncType::Incremental);
 
         let gmail_history_ids = existing_state.gmail_history_ids.clone();
+        let chat_checkpoint = existing_state.chat.clone();
         let old_page_tokens = existing_state.drive_page_tokens.unwrap_or_default();
         let can_resume_full = sync_type == SyncType::Full && ctx.is_resume();
         let mut new_page_tokens: HashMap<String, String> = if can_resume_full {
@@ -1285,6 +1757,7 @@ impl SyncManager {
                         } else {
                             Some(new_page_tokens.clone())
                         },
+                        chat: chat_checkpoint.clone(),
                     };
                     ctx.save_checkpoint(serde_json::to_value(&checkpoint_state)?)
                         .await
@@ -1324,6 +1797,7 @@ impl SyncManager {
             } else {
                 Some(new_page_tokens)
             },
+            chat: chat_checkpoint,
         })
     }
 
@@ -1378,6 +1852,7 @@ impl SyncManager {
         let is_incremental = matches!(sync_type, SyncType::Incremental);
 
         let drive_page_tokens = existing_state.drive_page_tokens.clone();
+        let chat_checkpoint = existing_state.chat.clone();
         let old_history_ids = existing_state.gmail_history_ids.unwrap_or_default();
         let can_resume_full = sync_type == SyncType::Full && ctx.is_resume();
         let mut new_history_ids: HashMap<String, String> = if can_resume_full {
@@ -1514,6 +1989,7 @@ impl SyncManager {
                                 Some(new_history_ids.clone())
                             },
                             drive_page_tokens: drive_page_tokens.clone(),
+                            chat: chat_checkpoint.clone(),
                         };
                         ctx.save_checkpoint(serde_json::to_value(&checkpoint_state)?)
                             .await
@@ -1548,7 +2024,525 @@ impl SyncManager {
                 Some(new_history_ids)
             },
             drive_page_tokens,
+            chat: chat_checkpoint,
         })
+    }
+
+    async fn sync_google_chat_source_internal(
+        &self,
+        source: &Source,
+        service_creds: &ServiceCredential,
+        sync_type: SyncType,
+        existing_state: GoogleSyncCheckpoint,
+        _known_groups: HashSet<String>,
+        ctx: &SyncContext,
+    ) -> Result<GoogleSyncCheckpoint> {
+        let service_auth = Arc::new(
+            self.create_auth(service_creds, SourceType::GoogleChat)
+                .await?,
+        );
+        if service_auth.is_oauth() {
+            return Err(anyhow!(
+                "Google Chat sync currently requires a service account with domain-wide delegation"
+            ));
+        }
+
+        let domain = crate::auth::get_domain_from_credentials(service_creds)?;
+        let admin_email = ctx.get_user_email_for_source().await.map_err(|e| {
+            anyhow!(
+                "Failed to get source creator/admin email for Google Chat source {}: {}",
+                source.id,
+                e
+            )
+        })?;
+        let admin_access_token =
+            service_auth
+                .get_access_token(&admin_email)
+                .await
+                .map_err(|e| {
+                    anyhow!(
+                        "Failed to get access token for admin {}: {}",
+                        admin_email,
+                        e
+                    )
+                })?;
+        let all_users = self
+            .admin_client
+            .list_all_users(&admin_access_token, &domain)
+            .await?;
+        let mut user_id_to_email: HashMap<String, String> = HashMap::new();
+        let user_emails: Vec<String> = all_users
+            .into_iter()
+            .filter(|user| source.should_index_user(&user.primary_email))
+            .map(|user| {
+                user_id_to_email.insert(user.id.clone(), user.primary_email.to_lowercase());
+                user_id_to_email.insert(
+                    user.primary_email.to_lowercase(),
+                    user.primary_email.to_lowercase(),
+                );
+                user.primary_email
+            })
+            .collect();
+
+        let mut chat_checkpoint = existing_state.chat.unwrap_or_default();
+        let discovered = self
+            .discover_chat_spaces(&service_auth, &user_emails, source, ctx)
+            .await?;
+        chat_checkpoint.last_space_discovery_at = Some(OffsetDateTime::now_utc().to_string());
+
+        for (space_name, (space, reader_email)) in discovered {
+            if ctx.is_cancelled() {
+                break;
+            }
+
+            let mut space_checkpoint =
+                chat_checkpoint
+                    .spaces
+                    .remove(&space_name)
+                    .unwrap_or_else(|| GoogleChatSpaceCheckpoint {
+                        space_name: space.name.clone(),
+                        space_id: chat_space_id(&space.name).to_string(),
+                        space_type: format!("{:?}", space.space_type),
+                        display_name: space.display_name.clone(),
+                        reader_email: Some(reader_email.clone()),
+                        ..Default::default()
+                    });
+            space_checkpoint.display_name =
+                space.display_name.clone().or(space_checkpoint.display_name);
+            space_checkpoint.reader_email = Some(reader_email.clone());
+
+            self.sync_chat_space_acl(
+                source,
+                ctx,
+                &service_auth,
+                &admin_email,
+                &space,
+                &user_id_to_email,
+                &mut space_checkpoint,
+            )
+            .await?;
+
+            if sync_type == SyncType::Incremental
+                && space_checkpoint.last_event_time.is_some()
+                && !chat_event_watermark_expired(space_checkpoint.last_event_time.as_deref())
+            {
+                match self
+                    .sync_chat_space_incremental(
+                        source,
+                        ctx,
+                        &service_auth,
+                        &reader_email,
+                        &space,
+                        &mut space_checkpoint,
+                    )
+                    .await
+                {
+                    Ok(()) => {}
+                    Err(e) => {
+                        warn!("Incremental Google Chat sync failed for {}: {}. Falling back to full-space sync.", space.name, e);
+                        self.sync_chat_space_full(
+                            source,
+                            ctx,
+                            &service_auth,
+                            &reader_email,
+                            &space,
+                            &mut space_checkpoint,
+                        )
+                        .await?;
+                    }
+                }
+            } else {
+                self.sync_chat_space_full(
+                    source,
+                    ctx,
+                    &service_auth,
+                    &reader_email,
+                    &space,
+                    &mut space_checkpoint,
+                )
+                .await?;
+            }
+
+            chat_checkpoint
+                .spaces
+                .insert(space_name.clone(), space_checkpoint);
+            let checkpoint_state = GoogleSyncCheckpoint {
+                gmail_history_ids: existing_state.gmail_history_ids.clone(),
+                drive_page_tokens: existing_state.drive_page_tokens.clone(),
+                chat: Some(chat_checkpoint.clone()),
+            };
+            ctx.save_checkpoint(serde_json::to_value(&checkpoint_state)?)
+                .await?;
+        }
+
+        Ok(GoogleSyncCheckpoint {
+            gmail_history_ids: existing_state.gmail_history_ids,
+            drive_page_tokens: existing_state.drive_page_tokens,
+            chat: Some(chat_checkpoint),
+        })
+    }
+
+    async fn discover_chat_spaces(
+        &self,
+        service_auth: &Arc<GoogleAuth>,
+        user_emails: &[String],
+        source: &Source,
+        ctx: &SyncContext,
+    ) -> Result<HashMap<String, (GoogleChatSpace, String)>> {
+        let mut spaces: HashMap<String, (GoogleChatSpace, String)> = HashMap::new();
+        for user_email in user_emails {
+            if ctx.is_cancelled() {
+                break;
+            }
+            let mut page_token: Option<String> = None;
+            loop {
+                let response = match self
+                    .chat_client
+                    .list_spaces_for_user(service_auth, user_email, page_token.as_deref())
+                    .await
+                {
+                    Ok(response) => response,
+                    Err(e) => {
+                        warn!(
+                            "Failed to list Google Chat spaces for {}: {}",
+                            user_email, e
+                        );
+                        break;
+                    }
+                };
+                for space in response.spaces {
+                    if space.space_type != GoogleChatSpaceType::Space {
+                        continue;
+                    }
+                    if !chat_space_allowed(source, &space) {
+                        continue;
+                    }
+                    spaces
+                        .entry(space.name.clone())
+                        .or_insert((space, user_email.clone()));
+                }
+                page_token = response.next_page_token;
+                if page_token.is_none() {
+                    break;
+                }
+            }
+        }
+        info!("Discovered {} Google Chat named spaces", spaces.len());
+        Ok(spaces)
+    }
+
+    async fn sync_chat_space_acl(
+        &self,
+        source: &Source,
+        ctx: &SyncContext,
+        service_auth: &Arc<GoogleAuth>,
+        admin_email: &str,
+        space: &GoogleChatSpace,
+        user_id_to_email: &HashMap<String, String>,
+        checkpoint: &mut GoogleChatSpaceCheckpoint,
+    ) -> Result<()> {
+        let mut members: HashSet<String> = HashSet::new();
+        let mut page_token: Option<String> = None;
+        loop {
+            let response = self
+                .chat_client
+                .list_members(
+                    service_auth,
+                    admin_email,
+                    &space.name,
+                    page_token.as_deref(),
+                    true,
+                    true,
+                )
+                .await?;
+            for membership in response.memberships {
+                if membership.state.as_deref() != Some("JOINED") {
+                    continue;
+                }
+                if let Some(member) = membership.member {
+                    if member.user_type == Some(crate::chat::GoogleChatUserType::Human) {
+                        if let Some(email) = chat_user_email(&member.name, user_id_to_email) {
+                            if source.should_index_user(&email) {
+                                members.insert(email);
+                            }
+                        }
+                    }
+                }
+            }
+            page_token = response.next_page_token;
+            if page_token.is_none() {
+                break;
+            }
+        }
+
+        let mut member_emails: Vec<String> = members.into_iter().collect();
+        member_emails.sort();
+        let event = ConnectorEvent::GroupMembershipSync {
+            sync_run_id: ctx.sync_run_id().to_string(),
+            source_id: source.id.clone(),
+            group_email: chat_space_group_id(&space.name),
+            group_name: space
+                .display_name
+                .as_ref()
+                .map(|name| format!("Google Chat: {}", name)),
+            member_emails,
+        };
+        ctx.emit_event(event).await?;
+        checkpoint.last_acl_sync_at = Some(OffsetDateTime::now_utc().to_string());
+        Ok(())
+    }
+
+    async fn sync_chat_space_full(
+        &self,
+        source: &Source,
+        ctx: &SyncContext,
+        service_auth: &Arc<GoogleAuth>,
+        reader_email: &str,
+        space: &GoogleChatSpace,
+        checkpoint: &mut GoogleChatSpaceCheckpoint,
+    ) -> Result<()> {
+        checkpoint.full_in_progress = true;
+        let mut builder = GoogleChatSegmentBuilder::new(space);
+        let old_segments: HashSet<String> = checkpoint
+            .segments
+            .iter()
+            .map(|s| s.external_id.clone())
+            .collect();
+        let mut new_segments: Vec<GoogleChatSegmentCheckpoint> = Vec::new();
+        let mut emitted_segments: HashSet<String> = HashSet::new();
+        let mut page_token: Option<String> = None;
+        let (drive_cutoff, _gmail_cutoff) = self.get_cutoff_date()?;
+        let filter = format!("createTime > \"{}\"", drive_cutoff);
+
+        loop {
+            if ctx.is_cancelled() {
+                break;
+            }
+            let response = self
+                .chat_client
+                .list_messages(
+                    service_auth,
+                    reader_email,
+                    &space.name,
+                    page_token.as_deref(),
+                    Some(&filter),
+                    Some("ASC"),
+                    true,
+                )
+                .await?;
+            for message in response.messages {
+                let ready = builder.push(message)?;
+                for segment in ready {
+                    let checkpoint_entry = self.emit_chat_segment(source, ctx, &segment).await?;
+                    checkpoint.full_resume_after_time = Some(checkpoint_entry.end_time.clone());
+                    emitted_segments.insert(checkpoint_entry.external_id.clone());
+                    new_segments.push(checkpoint_entry);
+                }
+            }
+            page_token = response.next_page_token;
+            if page_token.is_none() {
+                break;
+            }
+        }
+
+        if let Some(segment) = builder.finish()? {
+            let checkpoint_entry = self.emit_chat_segment(source, ctx, &segment).await?;
+            checkpoint.full_resume_after_time = Some(checkpoint_entry.end_time.clone());
+            emitted_segments.insert(checkpoint_entry.external_id.clone());
+            new_segments.push(checkpoint_entry);
+        }
+
+        for stale in old_segments.difference(&emitted_segments) {
+            ctx.emit_event(ConnectorEvent::DocumentDeleted {
+                sync_run_id: ctx.sync_run_id().to_string(),
+                source_id: source.id.clone(),
+                document_id: stale.clone(),
+            })
+            .await?;
+        }
+
+        checkpoint.segments = new_segments;
+        checkpoint.full_in_progress = false;
+        checkpoint.full_resume_after_time = None;
+        checkpoint.last_full_sync_at = Some(OffsetDateTime::now_utc().to_string());
+        checkpoint.last_message_create_time =
+            checkpoint.segments.last().map(|s| s.end_time.clone());
+        checkpoint
+            .last_event_time
+            .get_or_insert_with(|| OffsetDateTime::now_utc().to_string());
+        Ok(())
+    }
+
+    async fn sync_chat_space_incremental(
+        &self,
+        source: &Source,
+        ctx: &SyncContext,
+        service_auth: &Arc<GoogleAuth>,
+        reader_email: &str,
+        space: &GoogleChatSpace,
+        checkpoint: &mut GoogleChatSpaceCheckpoint,
+    ) -> Result<()> {
+        checkpoint.incremental_in_progress = true;
+        let last_event = checkpoint
+            .last_event_time
+            .clone()
+            .ok_or_else(|| anyhow!("Missing Google Chat event watermark for {}", space.name))?;
+        let filter = format!(
+            "startTime=\"{}\" AND (eventTypes:\"google.workspace.chat.message.v1.created\" OR eventTypes:\"google.workspace.chat.message.v1.updated\" OR eventTypes:\"google.workspace.chat.message.v1.deleted\" OR eventTypes:\"google.workspace.chat.membership.v1.created\" OR eventTypes:\"google.workspace.chat.membership.v1.updated\" OR eventTypes:\"google.workspace.chat.membership.v1.deleted\")",
+            last_event
+        );
+        let mut touched = false;
+        let mut page_token = checkpoint.incremental_event_page_token.clone();
+        let mut latest_event_time = last_event.clone();
+        loop {
+            let response = self
+                .chat_client
+                .list_space_events(
+                    service_auth,
+                    reader_email,
+                    &space.name,
+                    page_token.as_deref(),
+                    &filter,
+                )
+                .await?;
+            if !response.space_events.is_empty() {
+                touched = true;
+            }
+            for event in &response.space_events {
+                latest_event_time = event.event_time.clone();
+            }
+            page_token = response.next_page_token;
+            checkpoint.incremental_event_page_token = page_token.clone();
+            checkpoint.pending_event_watermark = Some(latest_event_time.clone());
+            if page_token.is_none() {
+                break;
+            }
+        }
+        if touched {
+            self.sync_chat_space_full(source, ctx, service_auth, reader_email, space, checkpoint)
+                .await?;
+        }
+        checkpoint.last_event_time = Some(latest_event_time);
+        checkpoint.pending_event_watermark = None;
+        checkpoint.incremental_event_page_token = None;
+        checkpoint.incremental_in_progress = false;
+        Ok(())
+    }
+
+    async fn emit_chat_segment(
+        &self,
+        source: &Source,
+        ctx: &SyncContext,
+        segment: &GoogleChatSegment,
+    ) -> Result<GoogleChatSegmentCheckpoint> {
+        let content = segment.render_content();
+        let content_id = ctx.store_content(&content).await?;
+        let metadata = segment.metadata();
+        let permissions = DocumentPermissions {
+            public: false,
+            users: vec![],
+            groups: vec![chat_space_group_id(&segment.space_name)],
+        };
+        let attributes = Some(segment.attributes());
+        ctx.emit_event(ConnectorEvent::DocumentCreated {
+            sync_run_id: ctx.sync_run_id().to_string(),
+            source_id: source.id.clone(),
+            document_id: segment.external_id.clone(),
+            content_id,
+            metadata,
+            permissions: permissions.clone(),
+            attributes,
+        })
+        .await?;
+
+        let mut attachment_count = 0;
+        for message in &segment.messages {
+            for attachment in &message.attachments {
+                self.emit_chat_attachment_metadata(
+                    source,
+                    ctx,
+                    segment,
+                    message,
+                    attachment,
+                    permissions.clone(),
+                )
+                .await?;
+                attachment_count += 1;
+            }
+        }
+
+        ctx.increment_scanned(segment.messages.len() as i32).await?;
+        ctx.increment_updated(1 + attachment_count).await?;
+        Ok(segment.to_checkpoint())
+    }
+
+    async fn emit_chat_attachment_metadata(
+        &self,
+        source: &Source,
+        ctx: &SyncContext,
+        segment: &GoogleChatSegment,
+        message: &GoogleChatSegmentMessage,
+        attachment: &GoogleChatSegmentAttachmentRef,
+        permissions: DocumentPermissions,
+    ) -> Result<()> {
+        let document_id = attachment_external_id(&attachment.name);
+        let title = attachment
+            .content_name
+            .clone()
+            .unwrap_or_else(|| attachment.name.clone());
+        let content = format!(
+            "Attachment: {}\nAttached to Google Chat message: {}\nParent segment: {}\nSpace: {}\nSender: {}\nMessage excerpt: {}\n\nAttachment content extraction for Google Chat is not yet available in this connector build.\n",
+            title,
+            message.name,
+            segment.external_id,
+            segment.space_display_name.as_deref().unwrap_or(&segment.space_name),
+            message.sender,
+            message.text.chars().take(500).collect::<String>()
+        );
+        let content_id = ctx.store_content(&content).await?;
+        let mut extra = HashMap::new();
+        extra.insert(
+            "parent_segment_external_id".to_string(),
+            json!(segment.external_id),
+        );
+        extra.insert("parent_message_name".to_string(), json!(message.name));
+        extra.insert("space_name".to_string(), json!(segment.space_name));
+        extra.insert(
+            "space_display_name".to_string(),
+            json!(segment.space_display_name),
+        );
+        extra.insert("attachment_name".to_string(), json!(attachment.name));
+        extra.insert("content_name".to_string(), json!(attachment.content_name));
+        extra.insert("content_type".to_string(), json!(attachment.content_type));
+        let metadata = DocumentMetadata {
+            title: Some(title),
+            author: Some(message.sender.clone()),
+            created_at: Some(message.create_time),
+            updated_at: message.update_time.or(Some(message.create_time)),
+            content_type: Some("attachment".to_string()),
+            mime_type: attachment.content_type.clone(),
+            size: None,
+            url: None,
+            path: Some(format!(
+                "/Google Chat/{}/attachments",
+                segment
+                    .space_display_name
+                    .as_deref()
+                    .unwrap_or(&segment.space_name)
+            )),
+            extra: Some(extra),
+        };
+        ctx.emit_event(ConnectorEvent::DocumentCreated {
+            sync_run_id: ctx.sync_run_id().to_string(),
+            source_id: source.id.clone(),
+            document_id,
+            content_id,
+            metadata,
+            permissions,
+            attributes: None,
+        })
+        .await?;
+        Ok(())
     }
 
     fn should_index_file(&self, file: &crate::models::GoogleDriveFile) -> bool {
@@ -2865,6 +3859,66 @@ mod tests {
         assert!(merged.public);
         assert_eq!(merged.users, vec!["alice@example.com", "bob@example.com"]);
         assert_eq!(merged.groups, vec!["team@example.com", "eng@example.com"]);
+    }
+
+    #[test]
+    fn google_chat_segment_ids_use_existing_external_id_space() {
+        assert_eq!(
+            segment_external_id("AAAA", "spaces/AAAA/messages/MMMM"),
+            "google_chat_segment:AAAA:MMMM"
+        );
+        assert_eq!(chat_space_group_id("spaces/AAAA"), "google-chat-space:AAAA");
+    }
+
+    #[test]
+    fn google_chat_segment_builder_splits_on_dead_time_and_truncates_message() {
+        let space = GoogleChatSpace {
+            name: "spaces/AAAA".to_string(),
+            space_type: GoogleChatSpaceType::Space,
+            display_name: Some("Engineering".to_string()),
+            space_uri: None,
+        };
+        let mut builder = GoogleChatSegmentBuilder::new(&space);
+        let first = GoogleChatMessage {
+            name: "spaces/AAAA/messages/M1".to_string(),
+            sender: None,
+            create_time: Some("2026-06-14T10:00:00Z".to_string()),
+            last_update_time: None,
+            delete_time: None,
+            text: Some("hello".to_string()),
+            formatted_text: None,
+            thread: None,
+            thread_reply: None,
+            attachment: vec![],
+            private_message_viewer: None,
+            quoted_message_metadata: None,
+        };
+        assert!(builder.push(first).unwrap().is_empty());
+
+        let long_text = "x".repeat(GOOGLE_CHAT_MAX_MESSAGE_BYTES + 10);
+        let second = GoogleChatMessage {
+            name: "spaces/AAAA/messages/M2".to_string(),
+            sender: None,
+            create_time: Some("2026-06-14T11:00:01Z".to_string()),
+            last_update_time: None,
+            delete_time: None,
+            text: Some(long_text),
+            formatted_text: None,
+            thread: None,
+            thread_reply: None,
+            attachment: vec![],
+            private_message_viewer: None,
+            quoted_message_metadata: None,
+        };
+        let ready = builder.push(second).unwrap();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].messages.len(), 1);
+        let final_segment = builder.finish().unwrap().unwrap();
+        assert_eq!(
+            final_segment.truncated_message_names,
+            vec!["spaces/AAAA/messages/M2"]
+        );
+        assert!(final_segment.messages[0].text.len() <= GOOGLE_CHAT_MAX_MESSAGE_BYTES);
     }
 
     #[tokio::test]

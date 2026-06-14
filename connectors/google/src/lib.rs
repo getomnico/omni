@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod auth;
 pub mod cache;
+pub mod chat;
 pub mod config;
 pub mod connector;
 pub mod drive;

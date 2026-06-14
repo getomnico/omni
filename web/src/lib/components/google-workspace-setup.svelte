@@ -8,6 +8,7 @@
     import { goto } from '$app/navigation'
     import googleDriveLogo from '$lib/images/icons/google-drive.svg'
     import gmailLogo from '$lib/images/icons/gmail.svg'
+    import googleChatLogo from '$lib/images/icons/google-chat.svg'
     import GoogleServiceAccountForm from '$lib/components/google-service-account-form.svelte'
 
     interface Props {
@@ -24,12 +25,13 @@
     let domain = $state('')
     let connectDrive = $state(true)
     let connectGmail = $state(true)
+    let connectChat = $state(false)
     let isSubmitting = $state(false)
 
     async function handleSubmit() {
         isSubmitting = true
         try {
-            if (!connectDrive && !connectGmail) {
+            if (!connectDrive && !connectGmail && !connectChat) {
                 throw new Error('Please select at least one service to connect')
             }
 
@@ -131,6 +133,42 @@
                 }
             }
 
+            if (connectChat) {
+                const chatSourceResponse = await fetch('/api/sources', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        scope: 'org',
+                        name: 'Google Chat',
+                        sourceType: 'google_chat',
+                        config,
+                    }),
+                })
+
+                if (!chatSourceResponse.ok) {
+                    throw new Error('Failed to create Google Chat source')
+                }
+
+                const chatSource = await chatSourceResponse.json()
+
+                const chatCredentialsResponse = await fetch('/api/service-credentials', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sourceId: chatSource.id,
+                        provider: provider,
+                        authType: authType,
+                        principalEmail: principalEmail || null,
+                        credentials: credentials,
+                        config,
+                    }),
+                })
+
+                if (!chatCredentialsResponse.ok) {
+                    throw new Error('Failed to create Google Chat service credentials')
+                }
+            }
+
             toast.success('Google Workspace connected successfully!')
 
             // Reset form
@@ -159,6 +197,7 @@
         domain = ''
         connectDrive = true
         connectGmail = true
+        connectChat = false
         if (onCancel) {
             onCancel()
         }
@@ -170,15 +209,15 @@
         <Dialog.Header>
             <Dialog.Title>Connect Google Workspace</Dialog.Title>
             <Dialog.Description>
-                Set up org-wide Google Drive and Gmail sync using a Google service account with
-                domain-wide delegation.
+                Set up org-wide Google Drive, Gmail, and Google Chat sync using a Google service
+                account with domain-wide delegation.
             </Dialog.Description>
         </Dialog.Header>
 
         <div class="space-y-4">
             <div class="space-y-2">
                 <Label>Services to connect</Label>
-                <div class="flex gap-4">
+                <div class="grid gap-4 sm:grid-cols-3">
                     <label
                         class="hover:bg-muted/50 flex flex-1 cursor-pointer items-center gap-3 rounded-lg border p-3">
                         <Checkbox bind:checked={connectDrive} />
@@ -190,6 +229,12 @@
                         <Checkbox bind:checked={connectGmail} />
                         <img src={gmailLogo} alt="Gmail" class="h-5 w-5" />
                         <span class="font-medium">Gmail</span>
+                    </label>
+                    <label
+                        class="hover:bg-muted/50 flex flex-1 cursor-pointer items-center gap-3 rounded-lg border p-3">
+                        <Checkbox bind:checked={connectChat} />
+                        <img src={googleChatLogo} alt="Google Chat" class="h-5 w-5" />
+                        <span class="font-medium">Google Chat</span>
                     </label>
                 </div>
             </div>
