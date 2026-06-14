@@ -1,5 +1,16 @@
 import { browser } from '$app/environment'
-import { DEFAULT_PREFERENCES, STORAGE_KEY, type UserPreferences } from './user-preferences'
+import {
+    DEFAULT_PREFERENCES,
+    STORAGE_KEY,
+    type ThemePreference,
+    type UserPreferences,
+} from './user-preferences'
+
+function normalizeThemePreference(theme: unknown): ThemePreference | undefined {
+    if (theme === 'bright') return 'light'
+    if (theme === 'light' || theme === 'dark' || theme === 'system') return theme
+    return undefined
+}
 
 class PreferencesStorage {
     private preferences = $state<UserPreferences>(DEFAULT_PREFERENCES)
@@ -15,11 +26,14 @@ class PreferencesStorage {
             const stored = localStorage.getItem(STORAGE_KEY)
             if (stored) {
                 const parsed = JSON.parse(stored) as Partial<UserPreferences>
-                if (parsed.theme === 'bright') {
-                    parsed.theme = 'light'
-                    parsed.themeColorScheme = 'light'
+                const theme = normalizeThemePreference(parsed.theme)
+                this.preferences = {
+                    ...DEFAULT_PREFERENCES,
+                    ...parsed,
+                    theme: theme ?? DEFAULT_PREFERENCES.theme,
                 }
-                this.preferences = { ...DEFAULT_PREFERENCES, ...parsed }
+                if (theme === 'light') this.preferences.themeColorScheme = 'light'
+                if (theme === 'dark') this.preferences.themeColorScheme = 'dark'
             }
         } catch (error) {
             console.warn('Failed to load user preferences from localStorage:', error)

@@ -16,11 +16,21 @@
                         prefs.theme = 'light'
                     }
                     if (prefs.theme) {
-                        document.documentElement.setAttribute('data-theme', prefs.theme)
-                        // themeColorScheme was added later; fall back to theme-id check for migration
-                        var isDark = prefs.themeColorScheme
-                            ? prefs.themeColorScheme === 'dark'
-                            : prefs.theme !== 'light'
+                        var effectiveTheme = prefs.theme
+                        if (prefs.theme === 'system') {
+                            effectiveTheme = window.matchMedia('(prefers-color-scheme: dark)')
+                                .matches
+                                ? 'dark'
+                                : 'light'
+                        }
+                        document.documentElement.setAttribute('data-theme', effectiveTheme)
+                        // themeColorScheme was added later; fall back to effective theme-id check for migration
+                        var isDark =
+                            prefs.theme === 'system'
+                                ? effectiveTheme === 'dark'
+                                : prefs.themeColorScheme
+                                  ? prefs.themeColorScheme === 'dark'
+                                  : effectiveTheme === 'dark'
                         if (isDark) {
                             document.documentElement.classList.add('dark')
                         }
