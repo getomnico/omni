@@ -1,5 +1,6 @@
 <script lang="ts">
-    import Palette from '@lucide/svelte/icons/palette'
+    import Moon from '@lucide/svelte/icons/moon'
+    import Sun from '@lucide/svelte/icons/sun'
     import { Button } from '$lib/components/ui/button'
     import { themeStore } from '$lib/themes/store.svelte'
     import { themes } from '$lib/themes/registry'
@@ -11,6 +12,11 @@
     } from '$lib/components/ui/tooltip'
 
     let { class: className = '' }: { class?: string } = $props()
+
+    function nextTheme() {
+        const idx = themes.findIndex((t) => t.id === themeStore.current.id)
+        return themes[(idx + 1) % themes.length]
+    }
 </script>
 
 <TooltipProvider delayDuration={300}>
@@ -19,19 +25,19 @@
             <Button
                 variant="ghost"
                 size="icon"
-                title="Switch theme"
-                aria-label="Switch theme"
+                title={`Switch to ${nextTheme().name} theme`}
+                aria-label={`Switch to ${nextTheme().name} theme`}
                 class="cursor-pointer {className}"
-                onclick={() => {
-                    const idx = themes.findIndex((t) => t.id === themeStore.current.id)
-                    themeStore.set(themes[(idx + 1) % themes.length].id)
-                }}
-            >
-                <Palette class="h-4 w-4" />
+                onclick={() => themeStore.set(nextTheme().id)}>
+                {#if themeStore.current.id === 'dark'}
+                    <Sun class="h-4 w-4" />
+                {:else}
+                    <Moon class="h-4 w-4" />
+                {/if}
             </Button>
         </TooltipTrigger>
         <TooltipContent>
-            <p>Switch theme</p>
+            <p>Switch to {nextTheme().name} theme</p>
         </TooltipContent>
     </Tooltip>
 </TooltipProvider>
