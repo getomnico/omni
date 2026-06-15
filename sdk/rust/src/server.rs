@@ -9,7 +9,7 @@ use crate::models::{
 use anyhow::{Context, Result};
 use axum::{
     Router,
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::StatusCode,
     middleware,
     response::{IntoResponse, Json, Response},
@@ -171,6 +171,7 @@ where
         .route("/prompt", post(get_prompt::<C>));
 
     router
+        .layer(DefaultBodyLimit::disable())
         .layer(
             ServiceBuilder::new()
                 .layer(middleware::from_fn(telemetry::middleware::trace_layer))

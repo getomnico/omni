@@ -48,6 +48,27 @@ impl SourceRepository {
         Ok(sources)
     }
 
+    /// Like `find_all_sources` but skips `connector_state` and `checkpoint`,
+    /// which can be tens of MB per source. Use this for list/overview endpoints
+    /// that strip those fields before responding.
+    pub async fn find_all_sources_without_state(&self) -> Result<Vec<Source>, DatabaseError> {
+        let sources = sqlx::query_as::<_, Source>(
+            r#"
+            SELECT id, name, source_type, config, is_active, is_deleted, scope,
+                   user_filter_mode, user_whitelist, user_blacklist,
+                   NULL::jsonb AS connector_state, NULL::jsonb AS checkpoint,
+                   sync_interval_seconds, created_at, updated_at, created_by
+            FROM sources
+            WHERE is_deleted = false
+            ORDER BY created_at DESC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(sources)
+    }
+
     pub async fn find_active_sources(&self) -> Result<Vec<Source>, DatabaseError> {
         let sources = sqlx::query_as::<_, Source>(
             r#"

@@ -523,9 +523,11 @@ impl SyncRunRepository {
             r#"
             SELECT id, source_id, sync_type, started_at, completed_at, status, trigger_type,
                    documents_scanned, documents_processed, documents_updated, error_message,
-                   checkpoint, created_at, updated_at
+                   NULL::jsonb AS checkpoint, created_at, updated_at
             FROM (
-                SELECT sr.*,
+                SELECT sr.id, sr.source_id, sr.sync_type, sr.started_at, sr.completed_at,
+                       sr.status, sr.trigger_type, sr.documents_scanned, sr.documents_processed,
+                       sr.documents_updated, sr.error_message, sr.created_at, sr.updated_at,
                        ROW_NUMBER() OVER (
                            PARTITION BY source_id
                            ORDER BY started_at DESC, created_at DESC

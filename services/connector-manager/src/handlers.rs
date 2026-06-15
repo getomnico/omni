@@ -231,7 +231,7 @@ pub async fn list_sources(
 ) -> Result<Json<Vec<SourceSyncOverview>>, ApiError> {
     let source_repo = SourceRepository::new(state.db_pool.pool());
     let sources = source_repo
-        .find_all_sources()
+        .find_all_sources_without_state()
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
@@ -299,11 +299,19 @@ async fn build_source_sync_overviews(
                 } else {
                     SourceHealth::Healthy
                 };
-            let sync_runs = sync_runs.into_iter().take(10).collect();
+            let sync_runs: Vec<SyncRun> = sync_runs
+                .into_iter()
+                .take(10)
+                .map(|run| SyncRun { checkpoint: None, ..run })
+                .collect();
 
             SourceSyncOverview {
                 sync_runs,
-                source,
+                source: Source {
+                    connector_state: None,
+                    checkpoint: None,
+                    ..source
+                },
                 health,
             }
         })
