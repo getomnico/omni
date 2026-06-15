@@ -27,6 +27,24 @@ pub(crate) fn permits_for_bytes(bytes: usize) -> u32 {
     bytes.div_ceil(GOOGLE_BUFFER_PERMIT_UNIT) as u32
 }
 
+fn is_google_api_service_disabled_message(message: &str) -> bool {
+    let message = message.to_lowercase();
+    message.contains("service_disabled")
+        || (message.contains("has not been used in project") && message.contains("disabled"))
+}
+
+fn is_google_api_service_disabled_error(error: &anyhow::Error) -> bool {
+    is_google_api_service_disabled_message(&format!("{:#}", error))
+}
+
+fn google_api_service_disabled_error(api_name: &str, error: &anyhow::Error) -> anyhow::Error {
+    anyhow!(
+        "{} API is disabled or has not been enabled in the Google Cloud project used by this service account. Enable the API in Google Cloud Console, wait for propagation, then retry. Original error: {:#}",
+        api_name,
+        error
+    )
+}
+
 fn file_content_len(content: &FileContent) -> usize {
     match content {
         FileContent::Text(text) => text.len(),
@@ -1618,7 +1636,9 @@ impl SyncManager {
 
         let mut total_scanned = 0;
         let mut total_updated = 0;
+        let mut successful_users = 0;
         let mut errors = 0;
+        let mut last_error: Option<String> = None;
         let content_cache = Arc::new(DriveContentCache::default());
         let parallel_users = google_drive_parallel_users();
         info!("Processing Drive users with concurrency {}", parallel_users);
@@ -1739,6 +1759,7 @@ impl SyncManager {
         while let Some((cur_user_email, result)) = user_results.next().await {
             match result {
                 Ok((scanned, updated, page_token)) => {
+                    successful_users += 1;
                     total_scanned += scanned;
                     total_updated += updated;
                     info!(
@@ -1769,7 +1790,14 @@ impl SyncManager {
                         })?;
                 }
                 Err(e) => {
-                    error!("Failed to process Drive for user {}: {}", cur_user_email, e);
+                    if is_google_api_service_disabled_error(&e) {
+                        return Err(google_api_service_disabled_error("Google Drive", &e));
+                    }
+                    error!(
+                        "Failed to process Drive for user {}: {:#}",
+                        cur_user_email, e
+                    );
+                    last_error = Some(format!("{:#}", e));
                     errors += 1;
                 }
             }
@@ -1779,6 +1807,14 @@ impl SyncManager {
             "User processing complete. Total: {} scanned, {} updated, {} errors",
             total_scanned, total_updated, errors
         );
+
+        if !ctx.is_cancelled() && successful_users == 0 && errors > 0 {
+            return Err(anyhow!(
+                "Google Drive sync failed for all {} indexed users; last error: {}",
+                errors,
+                last_error.unwrap_or_else(|| "unknown error".to_string())
+            ));
+        }
 
         info!(
             "Sync completed for source {}: {} scanned, {} updated",
@@ -1872,6 +1908,9 @@ impl SyncManager {
 
         let mut total_processed = 0;
         let mut total_updated = 0;
+        let mut successful_users = 0;
+        let mut failed_users = 0;
+        let mut last_error: Option<String> = None;
 
         for cur_user_email in &user_emails {
             if ctx.is_cancelled() {
@@ -1948,6 +1987,7 @@ impl SyncManager {
 
                     let user_succeeded = match result {
                         Ok((processed, updated)) => {
+                            successful_users += 1;
                             total_processed += processed;
                             total_updated += updated;
                             info!(
@@ -1957,7 +1997,15 @@ impl SyncManager {
                             true
                         }
                         Err(e) => {
-                            error!("Failed to process Gmail for user {}: {}", cur_user_email, e);
+                            if is_google_api_service_disabled_error(&e) {
+                                return Err(google_api_service_disabled_error("Gmail", &e));
+                            }
+                            error!(
+                                "Failed to process Gmail for user {}: {:#}",
+                                cur_user_email, e
+                            );
+                            failed_users += 1;
+                            last_error = Some(format!("{:#}", e));
                             false
                         }
                     };
@@ -2002,12 +2050,25 @@ impl SyncManager {
                     }
                 }
                 Err(e) => {
+                    if is_google_api_service_disabled_error(&e) {
+                        return Err(google_api_service_disabled_error("Gmail", &e));
+                    }
                     warn!(
-                        "Failed to get access token for user {}: {}. This user may not have Gmail access.",
+                        "Failed to get access token for user {}: {:#}. This user may not have Gmail access.",
                         cur_user_email, e
                     );
+                    failed_users += 1;
+                    last_error = Some(format!("{:#}", e));
                 }
             }
+        }
+
+        if !ctx.is_cancelled() && successful_users == 0 && failed_users > 0 {
+            return Err(anyhow!(
+                "Gmail sync failed for all {} indexed users; last error: {}",
+                failed_users,
+                last_error.unwrap_or_else(|| "unknown error".to_string())
+            ));
         }
 
         info!(
@@ -2190,19 +2251,29 @@ impl SyncManager {
         ctx: &SyncContext,
     ) -> Result<HashMap<String, (GoogleChatSpace, String)>> {
         let mut spaces: HashMap<String, (GoogleChatSpace, String)> = HashMap::new();
+        let mut successful_users = 0usize;
+        let mut failed_users = 0usize;
+        let mut last_error: Option<String> = None;
+
         for user_email in user_emails {
             if ctx.is_cancelled() {
                 break;
             }
             let mut page_token: Option<String> = None;
+            let mut user_had_successful_page = false;
             loop {
                 let response = match self
                     .chat_client
                     .list_spaces_for_user(service_auth, user_email, page_token.as_deref())
                     .await
                 {
-                    Ok(response) => response,
+                    Ok(response) => {
+                        user_had_successful_page = true;
+                        response
+                    }
                     Err(e) => {
+                        failed_users += 1;
+                        last_error = Some(e.to_string());
                         warn!(
                             "Failed to list Google Chat spaces for {}: {}",
                             user_email, e
@@ -2226,8 +2297,32 @@ impl SyncManager {
                     break;
                 }
             }
+            if user_had_successful_page {
+                successful_users += 1;
+            }
         }
-        info!("Discovered {} Google Chat named spaces", spaces.len());
+
+        if !ctx.is_cancelled() && successful_users == 0 && failed_users > 0 {
+            let last_error = last_error.unwrap_or_else(|| "unknown error".to_string());
+            if is_google_api_service_disabled_message(&last_error) {
+                return Err(anyhow!(
+                    "Google Chat API is disabled or has not been enabled in the Google Cloud project used by this service account. Enable the API in Google Cloud Console, wait for propagation, then retry. Original error: {}",
+                    last_error
+                ));
+            }
+            return Err(anyhow!(
+                "Failed to discover Google Chat spaces for all {} indexed users; last error: {}",
+                failed_users,
+                last_error
+            ));
+        }
+
+        info!(
+            "Discovered {} Google Chat named spaces ({} users succeeded, {} users failed)",
+            spaces.len(),
+            successful_users,
+            failed_users
+        );
         Ok(spaces)
     }
 
