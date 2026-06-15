@@ -21,6 +21,19 @@ export class UserRepository {
     }
 
     /**
+     * Check if any admin users exist in the system (lightweight check)
+     */
+    async hasAnyAdminUsers(): Promise<boolean> {
+        const [firstAdmin] = await this.db
+            .select({ id: user.id })
+            .from(user)
+            .where(eq(user.role, 'admin'))
+            .limit(1)
+
+        return !!firstAdmin
+    }
+
+    /**
      * Get total count of users
      */
     async getUserCount(): Promise<number> {

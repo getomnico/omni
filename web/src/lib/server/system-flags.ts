@@ -4,6 +4,7 @@ import {
     setTypedGlobal,
     type DoclingQualityPreset,
 } from './db/configuration'
+import { userRepository } from './db/users'
 import { getRedisClient } from './redis'
 
 const SYSTEM_FLAGS_KEY = 'system:flags'
@@ -22,20 +23,32 @@ export class SystemFlags {
      * Check if the system has been initialized (first admin created)
      */
     static async isInitialized(): Promise<boolean> {
-        // Check memory cache first
-        if (this.memoryCache.has('initialized')) {
-            return this.memoryCache.get('initialized')!
+        // A cached true is safe to trust. Do not trust cached false indefinitely: Redis may
+        // have been cleared while Postgres still contains users (for example in dev), and
+        // first-run setup should never be shown once accounts exist.
+        if (this.memoryCache.get('initialized') === true) {
+            return true
         }
 
-        // Check Redis
         const redis = await getRedisClient()
         const value = await redis.hGet(SYSTEM_FLAGS_KEY, 'initialized')
-        const initialized = value === 'true'
+        if (value === 'true') {
+            this.memoryCache.set('initialized', true)
+            return true
+        }
 
-        // Cache in memory
-        this.memoryCache.set('initialized', initialized)
+        // Backstop the Redis flag with the database source of truth. If an admin exists,
+        // repair the Redis flag and consider the system initialized.
+        const hasAdminUsers = await userRepository.hasAnyAdminUsers()
 
-        return initialized
+        if (hasAdminUsers) {
+            await redis.hSet(SYSTEM_FLAGS_KEY, 'initialized', 'true')
+            this.memoryCache.set('initialized', true)
+            return true
+        }
+
+        this.memoryCache.set('initialized', false)
+        return false
     }
 
     /**
