@@ -9,6 +9,7 @@ import type { PageServerLoad } from './$types'
 const CONNECTOR_DISPLAY_ORDER: string[] = [
     // Productivity suites
     'google',
+    'google_ads',
     'microsoft',
     'atlassian',
     // Communication

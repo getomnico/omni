@@ -25,6 +25,8 @@ export type OAuthFlow =
     /// Source admin/personal connect: triggers source creation or attaches
     /// per-user creds to an existing org source.
     | { type: 'connect_source'; sourceTypes: string[]; returnTo?: string }
+    /// Admin attaches org-wide read/sync creds to a specific org source.
+    | { type: 'org_source'; sourceId: string; returnTo?: string }
     /// User attaches per-user write creds to a specific org source.
     | { type: 'user_write'; sourceId: string; returnTo?: string }
 
@@ -110,26 +112,13 @@ function scopesForFlow(
 
 /// Build the authorization URL for a given flow.
 export async function generateAuthUrl(args: {
-    flow: OAuthFlow
+    flow: Extract<OAuthFlow, { type: 'connect_source' }>
     userId: string
 }): Promise<{ url: string; requiredScopes: string[] }> {
     const { flow, userId } = args
+    const sourceType = flow.sourceTypes[0]
 
-    // Pick the manifest based on the source_type(s) involved in this flow.
-    const sourceType = flow.type === 'user_write' ? null : flow.sourceTypes[0]
-    if (!sourceType && flow.type === 'user_write') {
-        throw new Error('user_write flow requires a source')
-    }
-
-    let manifestConfig: OAuthManifestConfig | null
-    if (flow.type === 'user_write') {
-        // Need to look up source's source_type first — caller already did this
-        // but we don't pass it through to keep the API tight; do it here.
-        throw new Error('user_write flow must be started via generateAuthUrlForSource')
-    } else {
-        manifestConfig = await getOAuthManifestForSourceType(flow.sourceTypes[0])
-    }
-
+    const manifestConfig = await getOAuthManifestForSourceType(sourceType)
     if (!manifestConfig) {
         throw new Error(`No OAuth manifest for source_type=${sourceType}`)
     }
@@ -149,6 +138,48 @@ export async function generateAuthUrl(args: {
         manifestConfig.provider,
         callbackUrl(),
         userId,
+        {
+            flow,
+            provider: manifestConfig.provider,
+            requiredScopes,
+            strictScopeCheck: false,
+        },
+    )
+
+    return {
+        url: buildAuthUrl(manifestConfig, creds, requiredScopes, stateToken),
+        requiredScopes,
+    }
+}
+
+/// Variant for an admin org-source OAuth flow where the source has already
+/// been created with provider-specific setup config.
+export async function generateAuthUrlForOrgSource(args: {
+    sourceId: string
+    sourceType: string
+    userId: string
+    returnTo?: string
+}): Promise<{ url: string; requiredScopes: string[] }> {
+    const manifestConfig = await getOAuthManifestForSourceType(args.sourceType)
+    if (!manifestConfig) {
+        throw new Error(`No OAuth manifest for source_type=${args.sourceType}`)
+    }
+    const creds = await loadClientCreds(manifestConfig.provider)
+    if (!creds) {
+        throw new Error(`OAuth client not configured for provider=${manifestConfig.provider}`)
+    }
+
+    const requiredScopes = scopesForFlow(manifestConfig, [args.sourceType], 'read')
+    const flow: OAuthFlow = {
+        type: 'org_source',
+        sourceId: args.sourceId,
+        returnTo: args.returnTo,
+    }
+
+    const { stateToken } = await OAuthStateManager.createState(
+        manifestConfig.provider,
+        callbackUrl(),
+        args.userId,
         {
             flow,
             provider: manifestConfig.provider,
@@ -246,6 +277,7 @@ export interface ExchangeResult {
     state: ManifestOAuthState
     config: OAuthManifestConfig
     principalEmail: string
+    clientCreds: ClientCreds
 }
 
 /// Exchange an authorization code for tokens, validate state, fetch
@@ -312,7 +344,7 @@ export async function exchangeCodeAndIdentify(
         throw new Error(`userinfo response missing field "${config.userinfo_email_field}"`)
     }
 
-    return { tokens, state, config, principalEmail: email }
+    return { tokens, state, config, principalEmail: email, clientCreds: creds }
 }
 
 function extractEmailFromUserinfo(profile: unknown, emailField: string): string | null {

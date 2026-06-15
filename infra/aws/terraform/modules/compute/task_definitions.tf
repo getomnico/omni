@@ -612,6 +612,50 @@ resource "aws_ecs_task_definition" "hubspot_connector" {
   })
 }
 
+# Google Ads Connector Task Definition
+resource "aws_ecs_task_definition" "google_ads_connector" {
+  count = contains(var.enabled_connectors, "google_ads") ? 1 : 0
+
+  family                   = "omni-${var.customer_name}-google-ads-connector"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = var.task_cpu
+  memory                   = var.task_memory
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name      = "omni-google_ads-connector"
+    image     = "ghcr.io/${var.github_org}/omni/omni-google_ads-connector:latest"
+    essential = true
+
+    portMappings = [{
+      containerPort = 4016
+      protocol      = "tcp"
+    }]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = var.log_group_name
+        "awslogs-region"        = var.region
+        "awslogs-stream-prefix" = "google-ads-connector"
+      }
+    }
+
+    environment = concat(local.connector_base_environment, [
+      { name = "PORT", value = "4016" },
+      { name = "CONNECTOR_HOST_NAME", value = "google-ads-connector" }
+    ])
+
+    secrets = []
+  }])
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-google-ads-connector"
+  })
+}
+
 # Microsoft Connector Task Definition
 resource "aws_ecs_task_definition" "microsoft_connector" {
   count = contains(var.enabled_connectors, "microsoft") ? 1 : 0

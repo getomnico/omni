@@ -1,0 +1,148 @@
+import pytest
+from omni_connector import SyncMode
+
+from google_ads_connector.connector import (
+    GoogleAdsConnector,
+    rows_to_csv,
+    validate_gaql_for_action,
+)
+
+
+class FakeStorage:
+    def __init__(self):
+        self.saved = []
+
+    async def save(self, content, content_type):
+        self.saved.append((content, content_type))
+        return f"content-{len(self.saved)}"
+
+
+class FakeContext:
+    def __init__(self, sync_mode=SyncMode.FULL, is_resume=False):
+        self.sync_mode = sync_mode
+        self.is_resume = is_resume
+        self.content_storage = FakeStorage()
+        self.docs = []
+        self.errors = []
+        self.checkpoints = []
+        self.completed = None
+        self.failed = None
+        self.documents_scanned = 0
+        self.documents_emitted = 0
+
+    def is_cancelled(self):
+        return False
+
+    async def increment_scanned(self):
+        self.documents_scanned += 1
+
+    async def emit(self, doc):
+        self.docs.append(doc)
+        self.documents_emitted += 1
+
+    async def emit_error(self, external_id, error):
+        self.errors.append((external_id, error))
+
+    async def save_checkpoint(self, checkpoint):
+        self.checkpoints.append(checkpoint)
+
+    async def complete(self, new_state=None):
+        self.completed = new_state or {}
+
+    async def fail(self, error):
+        self.failed = error
+
+
+@pytest.mark.asyncio
+async def test_full_sync_with_mock_data():
+    connector = GoogleAdsConnector()
+    ctx = FakeContext()
+    source_config = {
+        "customer_ids": ["1"],
+        "entity_types": ["campaign"],
+        "mock_data": {
+            "customers": {
+                "1": {
+                    "campaign": [
+                        {
+                            "campaign": {
+                                "id": "123",
+                                "name": "Brand",
+                                "resource_name": "customers/1/campaigns/123",
+                                "status": "ENABLED",
+                            },
+                            "metrics": {"clicks": 5},
+                        }
+                    ]
+                }
+            }
+        },
+    }
+    credentials = {"developer_token": "dev", "access_token": "access"}
+
+    await connector.sync(source_config, credentials, None, ctx)
+
+    assert ctx.failed is None
+    assert len(ctx.docs) == 1
+    assert ctx.docs[0].external_id == "google_ads:1:campaign:123"
+    assert "metrics" not in ctx.docs[0].metadata.extra["google_ads"]["raw"]
+    assert ctx.checkpoints
+    assert ctx.completed["last_successful_full_sync_at"]
+
+
+@pytest.mark.asyncio
+async def test_incremental_sync_uses_change_status_and_refetches():
+    connector = GoogleAdsConnector()
+    ctx = FakeContext(sync_mode=SyncMode.INCREMENTAL)
+    source_config = {
+        "customer_ids": ["1"],
+        "entity_types": ["campaign"],
+        "mock_data": {
+            "customers": {
+                "1": {
+                    "change_status": [{"change_status": {"resource_type": "campaign"}}],
+                    "campaign": [
+                        {
+                            "campaign": {
+                                "id": "123",
+                                "name": "Brand",
+                                "resource_name": "customers/1/campaigns/123",
+                                "status": "ENABLED",
+                            }
+                        }
+                    ],
+                }
+            }
+        },
+    }
+
+    await connector.sync(
+        source_config,
+        {"developer_token": "dev", "access_token": "access"},
+        {"last_successful_sync_at": "2025-01-01T00:00:00Z"},
+        ctx,
+    )
+
+    assert ctx.failed is None
+    assert len(ctx.docs) == 1
+    assert ctx.completed["last_successful_incremental_sync_at"]
+
+
+def test_manifest_fields_and_oauth_config():
+    connector = GoogleAdsConnector()
+    oauth = connector.oauth_config()
+
+    assert connector.name == "google_ads"
+    assert connector.display_name == "Google Ads"
+    assert connector.source_types == ["google_ads"]
+    assert connector.sync_modes == ["full", "incremental"]
+    assert oauth.provider == "google_ads"
+    assert "https://www.googleapis.com/auth/adwords" in oauth.scopes["google_ads"].read
+
+
+def test_gaql_validation_and_csv_export():
+    assert validate_gaql_for_action("SELECT campaign.id FROM campaign") is None
+    assert validate_gaql_for_action("DELETE FROM campaign")
+    csv_text = rows_to_csv([{"campaign": {"id": "1"}, "metrics": {"clicks": 2}}])
+    assert "campaign.id" in csv_text
+    assert "metrics.clicks" not in csv_text

@@ -197,6 +197,25 @@ resource "aws_service_discovery_service" "hubspot_connector" {
   }
 }
 
+resource "aws_service_discovery_service" "google_ads_connector" {
+  count = contains(var.enabled_connectors, "google_ads") ? 1 : 0
+
+  name = "google-ads-connector"
+
+  dns_config {
+    namespace_id = var.service_discovery_namespace_id
+
+    dns_records {
+      ttl  = 300
+      type = "A"
+    }
+  }
+
+  health_check_custom_config {
+    failure_threshold = 1
+  }
+}
+
 resource "aws_service_discovery_service" "microsoft_connector" {
   count = contains(var.enabled_connectors, "microsoft") ? 1 : 0
 

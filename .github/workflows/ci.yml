@@ -34,6 +34,7 @@ jobs:
       filesystem-connector: ${{ steps.filter.outputs.filesystem-connector }}
       fireflies-connector: ${{ steps.filter.outputs.fireflies-connector }}
       hubspot-connector: ${{ steps.filter.outputs.hubspot-connector }}
+      google-ads-connector: ${{ steps.filter.outputs.google-ads-connector }}
       imap-connector: ${{ steps.filter.outputs.imap-connector }}
       notion-connector: ${{ steps.filter.outputs.notion-connector }}
       web-connector: ${{ steps.filter.outputs.web-connector }}
@@ -166,6 +167,11 @@ jobs:
               - '.github/workflows/build-connector.yml'
             microsoft-connector:
               - 'connectors/microsoft/**'
+              - 'sdk/python/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-connector.yml'
+            google-ads-connector:
+              - 'connectors/google_ads/**'
               - 'sdk/python/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/build-connector.yml'
@@ -440,6 +446,15 @@ jobs:
       connector-type: python
     secrets: inherit
 
+  build-google-ads-connector:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.is-tag != 'true' && needs.detect-changes.outputs.google-ads-connector == 'true'
+    uses: ./.github/workflows/build-connector.yml
+    with:
+      connector-name: google_ads
+      connector-type: python
+    secrets: inherit
+
   build-microsoft-connector:
     needs: detect-changes
     if: needs.detect-changes.outputs.is-tag != 'true' && needs.detect-changes.outputs.microsoft-connector == 'true'
@@ -572,6 +587,8 @@ jobs:
           - connector-name: hubspot
             connector-type: python
           - connector-name: microsoft
+            connector-type: python
+          - connector-name: google_ads
             connector-type: python
           - connector-name: notion
             connector-type: python

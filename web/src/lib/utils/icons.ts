@@ -1,6 +1,8 @@
 import { SourceType } from '$lib/types'
 
 // Import icons as modules for proper Vite handling
+import googleIcon from '$lib/images/icons/google.svg'
+import googleAdsIcon from '$lib/images/icons/google-ads.svg'
 import googleDriveIcon from '$lib/images/icons/google-drive.svg'
 import googleDocsIcon from '$lib/images/icons/google-docs.svg'
 import googleSheetsIcon from '$lib/images/icons/google-sheets.svg'
@@ -69,6 +71,7 @@ const SOURCE_TYPE_ICONS: Record<string, string> = {
     [SourceType.PAPERLESS_NGX]: paperlessIcon,
     [SourceType.NEXTCLOUD]: nextcloudIcon,
     [SourceType.IMAP]: imapIcon,
+    [SourceType.GOOGLE_ADS]: googleAdsIcon,
 }
 
 // Get icon based on source type and content type
@@ -140,6 +143,7 @@ export function inferSourceFromUrl(url: string): SourceType | null {
 
     const urlLower = url.toLowerCase()
 
+    if (urlLower.includes('ads.google.com')) return SourceType.GOOGLE_ADS
     if (urlLower.includes('docs.google.com')) return SourceType.GOOGLE_DRIVE
     if (urlLower.includes('drive.google.com')) return SourceType.GOOGLE_DRIVE
     if (urlLower.includes('sheets.google.com')) return SourceType.GOOGLE_DRIVE
@@ -218,6 +222,7 @@ export function getSourceDisplayName(sourceType: SourceType) {
         [SourceType.IMAP]: 'IMAP',
         [SourceType.NEXTCLOUD]: 'Nextcloud',
         [SourceType.PAPERLESS_NGX]: 'Paperless-ngx',
+        [SourceType.GOOGLE_ADS]: 'Google Ads',
     }
 
     return sourceDisplayNames[sourceType]

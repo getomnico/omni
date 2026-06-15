@@ -9,8 +9,15 @@ export const POST: RequestHandler = async ({ request, locals, fetch }) => {
         throw error(401, 'Unauthorized')
     }
 
-    const { sourceId, provider, authType, principalEmail, credentials, config } =
-        await request.json()
+    const {
+        sourceId,
+        provider,
+        authType,
+        principalEmail,
+        credentials,
+        config,
+        triggerSync = true,
+    } = await request.json()
 
     if (!sourceId || !provider || !authType || !credentials) {
         throw error(400, 'Missing required fields')
@@ -57,21 +64,23 @@ export const POST: RequestHandler = async ({ request, locals, fetch }) => {
                       config: config || {},
                   })
 
-        try {
-            const syncResponse = await fetch(`/api/sources/${sourceId}/sync`, {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({}),
-            })
+        if (triggerSync) {
+            try {
+                const syncResponse = await fetch(`/api/sources/${sourceId}/sync`, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({}),
+                })
 
-            if (!syncResponse.ok) {
-                console.warn(
-                    `Failed to trigger initial sync for source ${sourceId}:`,
-                    await syncResponse.text(),
-                )
+                if (!syncResponse.ok) {
+                    console.warn(
+                        `Failed to trigger initial sync for source ${sourceId}:`,
+                        await syncResponse.text(),
+                    )
+                }
+            } catch (syncError) {
+                console.warn(`Error triggering initial sync for source ${sourceId}:`, syncError)
             }
-        } catch (syncError) {
-            console.warn(`Error triggering initial sync for source ${sourceId}:`, syncError)
         }
 
         return json({

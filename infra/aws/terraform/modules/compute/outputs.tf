@@ -83,6 +83,11 @@ output "hubspot_connector_service_name" {
   value       = try(aws_ecs_service.hubspot_connector[0].name, null)
 }
 
+output "google_ads_connector_service_name" {
+  description = "Google Ads connector service name"
+  value       = try(aws_ecs_service.google_ads_connector[0].name, null)
+}
+
 output "microsoft_connector_service_name" {
   description = "Microsoft connector service name"
   value       = try(aws_ecs_service.microsoft_connector[0].name, null)

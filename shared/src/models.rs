@@ -1,8 +1,8 @@
 use pgvector::Vector;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use sqlx::FromRow;
 use sqlx::types::time::OffsetDateTime;
+use sqlx::FromRow;
 use std::collections::HashMap;
 use tracing::warn;
 
@@ -189,6 +189,7 @@ pub enum SourceType {
     Linear,
     PaperlessNgx,
     Nextcloud,
+    GoogleAds,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -210,6 +211,9 @@ pub enum ServiceProvider {
     #[serde(rename = "paperless_ngx")]
     PaperlessNgx,
     Nextcloud,
+    #[sqlx(rename = "google_ads")]
+    #[serde(rename = "google_ads")]
+    GoogleAds,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]

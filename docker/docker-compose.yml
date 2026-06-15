@@ -536,6 +536,29 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
+  google-ads-connector:
+    image: ghcr.io/getomnico/omni/omni-google_ads-connector:${OMNI_VERSION:-latest}
+    <<: *resources-connector
+    cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
+    mem_limit: ${OMNI_CONNECTOR_MEMORY:-384m}
+    container_name: omni-google_ads-connector
+    profiles:
+      - google_ads
+    expose:
+      - "${GOOGLE_ADS_CONNECTOR_PORT}"
+    environment:
+      <<: *otel-config
+      PORT: ${GOOGLE_ADS_CONNECTOR_PORT}
+      CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      CONNECTOR_HOST_NAME: google-ads-connector
+    networks:
+      - omni-network
+    depends_on:
+      connector-manager:
+        condition: service_started
+    restart: unless-stopped
+    logging: *default-logging
+
   fireflies-connector:
     image: ghcr.io/getomnico/omni/omni-fireflies-connector:${OMNI_VERSION:-latest}
     <<: *resources-connector

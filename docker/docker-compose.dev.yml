@@ -163,6 +163,12 @@ services:
       context: ..
       dockerfile: connectors/hubspot/Dockerfile
 
+  google-ads-connector:
+    image: omni-google_ads-connector:dev
+    build:
+      context: ..
+      dockerfile: connectors/google_ads/Dockerfile
+
   fireflies-connector:
     image: omni-fireflies-connector:dev
     build:

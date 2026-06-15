@@ -4,10 +4,10 @@ use chrono::{Datelike, LocalResult, NaiveDate, TimeZone};
 use chrono_tz::Tz;
 use regex::Regex;
 use serde_json::Value as JsonValue;
-use shared::SourceType;
 use shared::db::repositories::PersonRepository;
 use shared::models::UserConfiguration;
 use shared::models::{AttributeFilter, DateFilter};
+use shared::SourceType;
 use std::collections::HashMap;
 use time::OffsetDateTime;
 
@@ -336,6 +336,7 @@ fn resolve_source_alias(alias: &str) -> Option<SourceType> {
         "drive" | "gdrive" | "google_drive" => Some(SourceType::GoogleDrive),
         "gmail" | "email" | "mail" => Some(SourceType::Gmail),
         "google_chat" | "gchat" | "chat" => Some(SourceType::GoogleChat),
+        "google_ads" | "googleads" | "ads" => Some(SourceType::GoogleAds),
         "slack" => Some(SourceType::Slack),
         "confluence" | "wiki" => Some(SourceType::Confluence),
         "jira" => Some(SourceType::Jira),
@@ -621,6 +622,15 @@ mod tests {
     }
 
     #[test]
+    fn test_in_operator_google_ads_aliases() {
+        for alias in &["google_ads", "googleads", "ads"] {
+            let parsed = test_parse(&format!("in:{} campaign", alias));
+            assert_eq!(parsed.cleaned_query, "campaign");
+            assert_eq!(parsed.source_types, vec![SourceType::GoogleAds]);
+        }
+    }
+
+    #[test]
     fn test_type_operator() {
         let parsed = test_parse("type:spreadsheet budget");
         assert_eq!(parsed.cleaned_query, "budget");
@@ -894,6 +904,9 @@ mod tests {
             ("gmail", SourceType::Gmail),
             ("email", SourceType::Gmail),
             ("mail", SourceType::Gmail),
+            ("google_ads", SourceType::GoogleAds),
+            ("googleads", SourceType::GoogleAds),
+            ("ads", SourceType::GoogleAds),
             ("slack", SourceType::Slack),
             ("confluence", SourceType::Confluence),
             ("wiki", SourceType::Confluence),

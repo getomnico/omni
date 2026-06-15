@@ -8,7 +8,7 @@ locals {
   service_url = { for name in [
     "web", "searcher", "indexer", "ai", "connector-mgr",
     "google-conn", "slack-conn", "atlassian-conn", "web-conn",
-    "github-conn", "hubspot-conn", "microsoft-conn", "notion-conn", "fireflies-conn",
+    "github-conn", "hubspot-conn", "google-ads-conn", "microsoft-conn", "notion-conn", "fireflies-conn",
     "imap-conn", "clickup-conn", "linear-conn", "filesystem-conn", "nextcloud-conn", "paperless-conn",
   ] : name => "https://omni-${var.customer_name}-${name}-${local.project_number}.${var.region}.run.app" }
 
@@ -51,6 +51,7 @@ locals {
     slack      = { port = 4002, image = "omni-slack-connector", extra_env = { SLACK_MAX_AGE_DAYS = var.slack_max_age_days } }
     github     = { port = 4005, image = "omni-github-connector", extra_env = {} }
     hubspot    = { port = 4006, image = "omni-hubspot-connector", extra_env = {} }
+    google_ads = { port = 4016, image = "omni-google_ads-connector", extra_env = {} }
     microsoft  = { port = 4007, image = "omni-microsoft-connector", extra_env = {} }
     notion     = { port = 4008, image = "omni-notion-connector", extra_env = {} }
     fireflies  = { port = 4009, image = "omni-fireflies-connector", extra_env = {} }
@@ -753,7 +754,7 @@ resource "google_cloud_run_v2_service_iam_member" "web_connector_invoker" {
 resource "google_cloud_run_v2_service" "connectors" {
   for_each = local.simple_connectors
 
-  name     = "omni-${var.customer_name}-${each.key}-conn"
+  name     = "omni-${var.customer_name}-${replace(each.key, "_", "-")}-conn"
   location = var.region
   ingress  = "INGRESS_TRAFFIC_INTERNAL_ONLY"
 
@@ -787,7 +788,7 @@ resource "google_cloud_run_v2_service" "connectors" {
       dynamic "env" {
         for_each = merge(local.otel_env, each.value.extra_env, {
           PORT                  = tostring(each.value.port)
-          CONNECTOR_HOST_NAME   = "${each.key}-connector"
+          CONNECTOR_HOST_NAME   = "${replace(each.key, "_", "-")}-connector"
           CONNECTOR_MANAGER_URL = local.service_url["connector-mgr"]
         })
         content {

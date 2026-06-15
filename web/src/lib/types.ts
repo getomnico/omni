@@ -21,6 +21,7 @@ export enum SourceType {
     LINEAR = 'linear',
     PAPERLESS_NGX = 'paperless_ngx',
     NEXTCLOUD = 'nextcloud',
+    GOOGLE_ADS = 'google_ads',
 }
 
 export enum ServiceProvider {
@@ -37,6 +38,7 @@ export enum ServiceProvider {
     NOTION = 'notion',
     PAPERLESS_NGX = 'paperless_ngx',
     NEXTCLOUD = 'nextcloud',
+    GOOGLE_ADS = 'google_ads',
 }
 
 export enum AuthType {
@@ -136,6 +138,13 @@ export interface NextcloudSourceConfig {
     sync_enabled: boolean
 }
 
+export interface GoogleAdsSourceConfig {
+    customer_ids: string[]
+    login_customer_id?: string
+    entity_types?: string[]
+    sync_enabled?: boolean
+}
+
 export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.GOOGLE_DRIVE]: 1800,
     [SourceType.GMAIL]: 1800,
@@ -159,6 +168,7 @@ export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.CLICKUP]: 3600,
     [SourceType.PAPERLESS_NGX]: 3600,
     [SourceType.NEXTCLOUD]: 3600,
+    [SourceType.GOOGLE_ADS]: 3600,
 }
 
 export const EMBEDDING_PROVIDER_TYPES = ['local', 'jina', 'openai', 'cohere', 'bedrock'] as const

@@ -285,7 +285,7 @@ variable "vpc_cidr" {
 }
 
 variable "enabled_connectors" {
-  description = "List of connectors to deploy (e.g. [\"google\", \"slack\", \"web\"])"
+  description = "List of connectors to deploy (e.g. [\"google\", \"google_ads\", \"slack\", \"web\"])"
   type        = list(string)
   default     = ["web"]
 }

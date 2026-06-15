@@ -15,6 +15,7 @@
     import * as Tabs from '$lib/components/ui/tabs'
     import type { PageProps } from './$types'
     import googleLogo from '$lib/images/icons/google.svg'
+    import googleAdsLogo from '$lib/images/icons/google-ads.svg'
     import slackLogo from '$lib/images/icons/slack.svg'
     import atlassianLogo from '$lib/images/icons/atlassian.svg'
     import hubspotLogo from '$lib/images/icons/hubspot.svg'
@@ -42,6 +43,7 @@
     } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import GoogleWorkspaceSetup from '$lib/components/google-workspace-setup.svelte'
+    import GoogleAdsConnectorSetup from '$lib/components/google-ads-connector-setup.svelte'
     import AtlassianConnectorSetup from '$lib/components/atlassian-connector-setup.svelte'
     import SlackConnectorSetup from '$lib/components/slack-connector-setup.svelte'
     import HubspotConnectorSetup from '$lib/components/hubspot-connector-setup.svelte'
@@ -84,6 +86,11 @@
     let activeTab = $state(page.url.searchParams.get('tab') === 'oauth' ? 'oauth' : 'sources')
     let activeOAuthProvider = $state<OAuthProvider | null>(null)
     let redirectUriCopied = $state(false)
+    const googleAdsOAuthConfigured = $derived(
+        data.oauthProviders.some(
+            (provider) => provider.provider === 'google_ads' && provider.configured,
+        ),
+    )
     let copyResetTimer: ReturnType<typeof setTimeout> | null = null
 
     $effect(() => {
@@ -185,6 +192,7 @@
 
     const integrationIcons: Record<string, string> = {
         google: googleLogo,
+        google_ads: googleAdsLogo,
         slack: slackLogo,
         atlassian: atlassianLogo,
         hubspot: hubspotLogo,
@@ -205,6 +213,7 @@
         fireflies: firefliesLogo,
         github: githubLogo,
         google: googleLogo,
+        google_ads: googleAdsLogo,
         hubspot: hubspotLogo,
         linear: linearLogo,
         microsoft: microsoftLogo,
@@ -642,6 +651,12 @@
 
 <GoogleWorkspaceSetup
     open={activeSetup === 'google'}
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
+
+<GoogleAdsConnectorSetup
+    open={activeSetup === 'google_ads'}
+    oauthConfigured={googleAdsOAuthConfigured}
     onSuccess={handleSetupSuccess}
     onCancel={closeSetup} />
 

@@ -3,6 +3,7 @@ import type { RequestHandler } from './$types'
 import { getSourceById } from '$lib/server/db/sources'
 import {
     generateAuthUrl,
+    generateAuthUrlForOrgSource,
     generateAuthUrlForUserWrite,
     isProviderConfigured,
     getOAuthManifestForSourceType,
@@ -10,6 +11,7 @@ import {
 
 /// Unified OAuth start route. Two flows, disambiguated by query params:
 ///   ?source_types=google_drive,gmail          → connect_source flow
+///   ?org_source_id=01J...                     → admin org-source credential flow
 ///   ?source_id=01J...                         → user_write flow
 /// Optional `return_to` is preserved through the callback for UI return links.
 export const GET: RequestHandler = async ({ url, locals }) => {
@@ -18,8 +20,39 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     }
 
     const sourceId = url.searchParams.get('source_id')
+    const orgSourceId = url.searchParams.get('org_source_id')
     const sourceTypesParam = url.searchParams.get('source_types')
     const returnTo = url.searchParams.get('return_to') ?? undefined
+
+    if (orgSourceId) {
+        if (locals.user.role !== 'admin') {
+            throw error(403, 'Admin access required')
+        }
+        const source = await getSourceById(orgSourceId)
+        if (!source || source.isDeleted) throw error(404, 'Source not found')
+        if (source.scope !== 'org') {
+            throw error(400, 'Org OAuth attaches to org-wide sources only.')
+        }
+
+        const config = await getOAuthManifestForSourceType(source.sourceType)
+        if (!config) {
+            throw error(501, `OAuth is not implemented for source_type=${source.sourceType} yet.`)
+        }
+        if (!(await isProviderConfigured(config.provider))) {
+            throw error(
+                412,
+                `OAuth client for ${config.provider} is not configured. Add it under Admin → Settings → Integrations → OAuth Apps.`,
+            )
+        }
+
+        const { url: authUrl } = await generateAuthUrlForOrgSource({
+            sourceId: orgSourceId,
+            sourceType: source.sourceType,
+            userId: locals.user.id,
+            returnTo,
+        })
+        throw redirect(302, authUrl)
+    }
 
     if (sourceId) {
         const source = await getSourceById(sourceId)
@@ -76,5 +109,5 @@ export const GET: RequestHandler = async ({ url, locals }) => {
         throw redirect(302, authUrl)
     }
 
-    throw error(400, 'Either source_id or source_types must be provided')
+    throw error(400, 'Either source_id, org_source_id, or source_types must be provided')
 }

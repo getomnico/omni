@@ -46,6 +46,7 @@ const sourceNouns: Record<string, string> = {
     [SourceType.GITHUB]: 'documents',
     [SourceType.PAPERLESS_NGX]: 'documents',
     [SourceType.NEXTCLOUD]: 'files',
+    [SourceType.GOOGLE_ADS]: 'records',
 }
 
 export function getSourceNoun(sourceType: SourceType): string {

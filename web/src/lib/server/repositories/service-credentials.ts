@@ -70,6 +70,7 @@ export class ServiceCredentialsRepository {
         principalEmail: string | null
         credentials: Record<string, unknown>
         config: Record<string, unknown>
+        expiresAt?: Date | null
     }): Promise<ServiceCredential> {
         await db
             .delete(serviceCredentials)
@@ -91,6 +92,7 @@ export class ServiceCredentialsRepository {
                 principalEmail: data.principalEmail,
                 credentials: encryptConfig(data.credentials),
                 config: data.config,
+                expiresAt: data.expiresAt ?? null,
             })
             .returning()
 
