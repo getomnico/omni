@@ -51,7 +51,7 @@ x-resources-connector: &resources-connector
 
 services:
   postgres:
-    image: paradedb/paradedb:0.23.1-pg17
+    image: paradedb/paradedb:0.24.0-pg17
     <<: *resources-critical
     cpus: ${OMNI_POSTGRES_CPUS:-1.0}
     mem_limit: ${OMNI_POSTGRES_MEMORY:-3g}

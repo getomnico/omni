@@ -11,7 +11,7 @@ let sql: ReturnType<typeof postgres>
 let db: PostgresJsDatabase<typeof schema>
 
 export async function startTestDb(): Promise<PostgresJsDatabase<typeof schema>> {
-    container = await new PostgreSqlContainer('paradedb/paradedb:0.20.6-pg17').start()
+    container = await new PostgreSqlContainer('paradedb/paradedb:0.24.0-pg17').start()
 
     sql = postgres(container.getConnectionUri(), { max: 5 })
     db = drizzle(sql, { schema })

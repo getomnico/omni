@@ -5,12 +5,12 @@ use anyhow::Result;
 use redis::Client as RedisClient;
 use sqlx::PgPool;
 use testcontainers::{
-    ContainerAsync, GenericImage, ImageExt,
     core::{ContainerPort, WaitFor},
     runners::AsyncRunner,
+    ContainerAsync, GenericImage, ImageExt,
 };
 use testcontainers_modules::{localstack::LocalStack, redis::Redis};
-use tokio::time::{Duration, sleep};
+use tokio::time::{sleep, Duration};
 
 use crate::{
     config::{DatabaseConfig, RedisConfig},
@@ -35,7 +35,7 @@ impl TestEnvironment {
         tracing_subscriber::fmt::try_init().ok();
 
         // Start PostgreSQL with pgvector and pg_bm25 extensions (ParadeDB image)
-        let postgres_image = GenericImage::new("paradedb/paradedb", "0.23.1-pg17")
+        let postgres_image = GenericImage::new("paradedb/paradedb", "0.24.0-pg17")
             .with_wait_for(WaitFor::message_on_stderr(
                 "database system is ready to accept connections",
             ))
@@ -220,9 +220,9 @@ impl MockAIServer {
     /// Start the mock AI server
     pub async fn start() -> Result<Self> {
         use axum::{
-            Router,
             response::Json,
             routing::{get, post},
+            Router,
         };
         use serde::{Deserialize, Serialize};
         use tokio::net::TcpListener;

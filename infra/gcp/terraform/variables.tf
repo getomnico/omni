@@ -64,7 +64,7 @@ variable "paradedb_disk_size_gb" {
 variable "paradedb_container_image" {
   description = "Docker image for ParadeDB"
   type        = string
-  default     = "paradedb/paradedb:0.20.6-pg17"
+  default     = "paradedb/paradedb:0.24.0-pg17"
 }
 
 variable "redis_tier" {
