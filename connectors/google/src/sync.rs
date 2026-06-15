@@ -2421,7 +2421,7 @@ impl SyncManager {
                     &space.name,
                     page_token.as_deref(),
                     Some(&filter),
-                    Some("ASC"),
+                    Some("createTime asc"),
                     true,
                 )
                 .await?;
