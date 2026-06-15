@@ -6,14 +6,14 @@ use crate::drive::DriveClient;
 use crate::gmail::{MessageFormat, MessagePart};
 use crate::models::{GoogleDirectoryUser, GoogleSyncCheckpoint, SearchUsersResponse};
 use crate::sync::SyncManager;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
     ActionDefinition, ActionResponse, Connector, OAuthManifestConfig, OAuthScopeSet,
     SearchOperator, ServiceCredential, Source, SourceType, SyncContext, SyncType,
 };
-use serde_json::{Value as JsonValue, json};
+use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
 use tracing::debug;
 
@@ -450,46 +450,6 @@ impl Connector for GoogleConnector {
                 source_types: vec![SourceType::GoogleDrive, SourceType::GoogleChat],
                 admin_only: true,
             },
-            ActionDefinition {
-                name: "fetch_chat_message".to_string(),
-                description: "Fetch a Google Chat message from the source as fallback/fresh context.".to_string(),
-                mode: omni_connector_sdk::ActionMode::Read,
-                input_schema: json!({
-                    "type": "object",
-                    "properties": { "message_name": { "type": "string", "description": "Google Chat message resource name (spaces/{space}/messages/{message})" } },
-                    "required": ["message_name"]
-                }),
-                source_types: vec![SourceType::GoogleChat],
-                admin_only: false,
-            },
-            ActionDefinition {
-                name: "fetch_chat_thread".to_string(),
-                description: "Fetch messages in a Google Chat thread from the source as fallback context.".to_string(),
-                mode: omni_connector_sdk::ActionMode::Read,
-                input_schema: json!({
-                    "type": "object",
-                    "properties": { "thread_name": { "type": "string", "description": "Google Chat thread resource name (spaces/{space}/threads/{thread})" } },
-                    "required": ["thread_name"]
-                }),
-                source_types: vec![SourceType::GoogleChat],
-                admin_only: false,
-            },
-            ActionDefinition {
-                name: "fetch_chat_context".to_string(),
-                description: "Fetch live Google Chat messages around an anchor message as fallback context.".to_string(),
-                mode: omni_connector_sdk::ActionMode::Read,
-                input_schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "message_name": { "type": "string" },
-                        "before_count": { "type": "integer", "default": 20 },
-                        "after_count": { "type": "integer", "default": 20 }
-                    },
-                    "required": ["message_name"]
-                }),
-                source_types: vec![SourceType::GoogleChat],
-                admin_only: false,
-            },
         ]
     }
 
@@ -593,12 +553,6 @@ impl Connector for GoogleConnector {
         match action {
             "fetch_file" => self.execute_fetch_file(params, &creds).await,
             "search_users" => self.execute_search_users(params, &creds).await,
-            "fetch_chat_message" | "fetch_chat_thread" | "fetch_chat_context" => Ok(
-                ActionResponse::failure(
-                    "Google Chat live context actions are registered but not yet implemented; use indexed segment documents for context.".to_string(),
-                )
-                .into_response(),
-            ),
             _ => {
                 use axum::http::StatusCode;
                 Ok(ActionResponse::not_supported(action)

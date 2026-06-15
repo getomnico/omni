@@ -1,11 +1,11 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use dashmap::DashMap;
-use futures::{StreamExt, stream};
+use futures::{stream, StreamExt};
 use omni_connector_sdk::SyncContext;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use time::{self, OffsetDateTime};
 use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
@@ -266,16 +266,19 @@ async fn emit_metadata_only_drive_event(
 }
 
 use crate::admin::AdminClient;
-use crate::auth::{GoogleAuth, OAuthAuth, google_max_retries};
+use crate::auth::{google_max_retries, GoogleAuth, OAuthAuth};
 use crate::cache::LruFolderCache;
-use crate::chat::{ChatClient, GoogleChatMessage, GoogleChatSpace, GoogleChatSpaceType};
+use crate::chat::{
+    ChatClient, GoogleChatAttachmentSource, GoogleChatMessage, GoogleChatSpace,
+    GoogleChatSpaceEvent, GoogleChatSpaceType,
+};
 use crate::connector::build_attachment_doc_id;
 use crate::drive::{DriveClient, FileContent};
 use crate::gmail::{BatchThreadResult, ExtractedAttachment, GmailClient, MessageFormat};
 use crate::models::{
-    AttachmentPointer, GmailThread, GoogleChatSegmentCheckpoint, GoogleChatSpaceCheckpoint,
-    GoogleConnectorState, GoogleSyncCheckpoint, UserFile, WebhookChannel, WebhookChannelResponse,
-    WebhookNotification, mime_type_to_content_type,
+    mime_type_to_content_type, AttachmentPointer, GmailThread, GoogleChatSegmentCheckpoint,
+    GoogleChatSpaceCheckpoint, GoogleConnectorState, GoogleSyncCheckpoint, UserFile,
+    WebhookChannel, WebhookChannelResponse, WebhookNotification,
 };
 use omni_connector_sdk::RateLimiter;
 use omni_connector_sdk::SdkClient;
@@ -290,12 +293,45 @@ const GOOGLE_CHAT_MAX_SEGMENT_MESSAGES: usize = 100;
 const GOOGLE_CHAT_MAX_SEGMENT_BYTES: usize = 100 * 1024;
 const GOOGLE_CHAT_MAX_MESSAGE_BYTES: usize = 16 * 1024;
 const GOOGLE_CHAT_MAX_SEGMENT_SPAN_SECONDS: i64 = 12 * 60 * 60;
+const GOOGLE_CHAT_MAX_TARGETED_INCREMENTAL_WINDOWS: usize = 20;
 
 #[derive(Debug, Clone)]
 struct GoogleChatSegmentAttachmentRef {
     name: String,
     content_name: Option<String>,
     content_type: Option<String>,
+    source: Option<GoogleChatAttachmentSource>,
+    resource_name: Option<String>,
+    drive_file_id: Option<String>,
+}
+
+struct GoogleChatAttachmentStoredContent {
+    content_id: String,
+    content_extracted: bool,
+    extraction_error: Option<String>,
+    source_url: Option<String>,
+    size: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct GoogleChatRebuildWindow {
+    start: OffsetDateTime,
+    end: OffsetDateTime,
+    stale_segment_ids: HashSet<String>,
+}
+
+#[derive(Debug, Clone)]
+struct GoogleChatSegmentBounds {
+    external_id: String,
+    start: OffsetDateTime,
+    end: OffsetDateTime,
+}
+
+#[derive(Debug, Clone)]
+struct GoogleChatIncrementalChanges {
+    affected_times: Vec<OffsetDateTime>,
+    requires_full_rebuild: bool,
+    latest_event_time: String,
 }
 
 #[derive(Debug, Clone)]
@@ -647,6 +683,9 @@ impl GoogleChatSegmentBuilder {
                 name: a.name,
                 content_name: a.content_name,
                 content_type: a.content_type,
+                source: a.source,
+                resource_name: a.attachment_data_ref.and_then(|r| r.resource_name),
+                drive_file_id: a.drive_data_ref.map(|r| r.drive_file_id),
             })
             .collect();
         Ok(GoogleChatSegmentMessage {
@@ -680,6 +719,65 @@ fn truncate_message(mut text: String, max_bytes: usize) -> (String, bool) {
     }
     text.truncate(end);
     (text, true)
+}
+
+fn chat_event_message_create_time(event: &GoogleChatSpaceEvent) -> Option<OffsetDateTime> {
+    let create_time = event
+        .message_created
+        .as_ref()
+        .or(event.message_updated.as_ref())
+        .or(event.message_deleted.as_ref())?
+        .message
+        .create_time
+        .as_deref()?;
+    parse_google_time(Some(create_time))
+}
+
+fn chat_segment_bounds(segment: &GoogleChatSegmentCheckpoint) -> Result<GoogleChatSegmentBounds> {
+    let start = parse_google_time(Some(&segment.start_time)).ok_or_else(|| {
+        anyhow!(
+            "Invalid Google Chat segment start time for {}: {}",
+            segment.external_id,
+            segment.start_time
+        )
+    })?;
+    let end = parse_google_time(Some(&segment.end_time)).ok_or_else(|| {
+        anyhow!(
+            "Invalid Google Chat segment end time for {}: {}",
+            segment.external_id,
+            segment.end_time
+        )
+    })?;
+    Ok(GoogleChatSegmentBounds {
+        external_id: segment.external_id.clone(),
+        start,
+        end,
+    })
+}
+
+fn merge_chat_rebuild_windows(
+    mut windows: Vec<GoogleChatRebuildWindow>,
+    max_gap: time::Duration,
+) -> Vec<GoogleChatRebuildWindow> {
+    windows.sort_by_key(|window| window.start);
+    let mut merged: Vec<GoogleChatRebuildWindow> = Vec::new();
+    for window in windows {
+        let Some(last) = merged.last_mut() else {
+            merged.push(window);
+            continue;
+        };
+        if window.start <= last.end + max_gap {
+            last.end = std::cmp::max(last.end, window.end);
+            last.stale_segment_ids.extend(window.stale_segment_ids);
+        } else {
+            merged.push(window);
+        }
+    }
+    merged
+}
+
+fn sort_chat_segment_checkpoints(segments: &mut [GoogleChatSegmentCheckpoint]) {
+    segments.sort_by_key(|segment| parse_google_time(Some(&segment.start_time)));
 }
 
 fn chat_space_id(space_name: &str) -> &str {
@@ -2107,6 +2205,10 @@ impl SyncManager {
                 "Google Chat sync currently requires a service account with domain-wide delegation"
             ));
         }
+        let drive_auth = Arc::new(
+            self.create_auth(service_creds, SourceType::GoogleDrive)
+                .await?,
+        );
 
         let domain = crate::auth::get_domain_from_credentials(service_creds)?;
         let admin_email = ctx.get_user_email_for_source().await.map_err(|e| {
@@ -2192,6 +2294,7 @@ impl SyncManager {
                         source,
                         ctx,
                         &service_auth,
+                        &drive_auth,
                         &reader_email,
                         &space,
                         &mut space_checkpoint,
@@ -2200,11 +2303,15 @@ impl SyncManager {
                 {
                     Ok(()) => {}
                     Err(e) => {
-                        warn!("Incremental Google Chat sync failed for {}: {}. Falling back to full-space sync.", space.name, e);
+                        warn!(
+                            "Incremental Google Chat sync failed for {}: {}. Falling back to full-space sync.",
+                            space.name, e
+                        );
                         self.sync_chat_space_full(
                             source,
                             ctx,
                             &service_auth,
+                            &drive_auth,
                             &reader_email,
                             &space,
                             &mut space_checkpoint,
@@ -2217,6 +2324,7 @@ impl SyncManager {
                     source,
                     ctx,
                     &service_auth,
+                    &drive_auth,
                     &reader_email,
                     &space,
                     &mut space_checkpoint,
@@ -2392,6 +2500,7 @@ impl SyncManager {
         source: &Source,
         ctx: &SyncContext,
         service_auth: &Arc<GoogleAuth>,
+        drive_auth: &Arc<GoogleAuth>,
         reader_email: &str,
         space: &GoogleChatSpace,
         checkpoint: &mut GoogleChatSpaceCheckpoint,
@@ -2428,7 +2537,16 @@ impl SyncManager {
             for message in response.messages {
                 let ready = builder.push(message)?;
                 for segment in ready {
-                    let checkpoint_entry = self.emit_chat_segment(source, ctx, &segment).await?;
+                    let checkpoint_entry = self
+                        .emit_chat_segment(
+                            source,
+                            ctx,
+                            service_auth,
+                            drive_auth,
+                            reader_email,
+                            &segment,
+                        )
+                        .await?;
                     checkpoint.full_resume_after_time = Some(checkpoint_entry.end_time.clone());
                     emitted_segments.insert(checkpoint_entry.external_id.clone());
                     new_segments.push(checkpoint_entry);
@@ -2441,7 +2559,16 @@ impl SyncManager {
         }
 
         if let Some(segment) = builder.finish()? {
-            let checkpoint_entry = self.emit_chat_segment(source, ctx, &segment).await?;
+            let checkpoint_entry = self
+                .emit_chat_segment(
+                    source,
+                    ctx,
+                    service_auth,
+                    drive_auth,
+                    reader_email,
+                    &segment,
+                )
+                .await?;
             checkpoint.full_resume_after_time = Some(checkpoint_entry.end_time.clone());
             emitted_segments.insert(checkpoint_entry.external_id.clone());
             new_segments.push(checkpoint_entry);
@@ -2473,6 +2600,7 @@ impl SyncManager {
         source: &Source,
         ctx: &SyncContext,
         service_auth: &Arc<GoogleAuth>,
+        drive_auth: &Arc<GoogleAuth>,
         reader_email: &str,
         space: &GoogleChatSpace,
         checkpoint: &mut GoogleChatSpaceCheckpoint,
@@ -2486,9 +2614,12 @@ impl SyncManager {
             "startTime=\"{}\" AND (eventTypes:\"google.workspace.chat.message.v1.created\" OR eventTypes:\"google.workspace.chat.message.v1.updated\" OR eventTypes:\"google.workspace.chat.message.v1.deleted\" OR eventTypes:\"google.workspace.chat.membership.v1.created\" OR eventTypes:\"google.workspace.chat.membership.v1.updated\" OR eventTypes:\"google.workspace.chat.membership.v1.deleted\")",
             last_event
         );
-        let mut touched = false;
+        let mut changes = GoogleChatIncrementalChanges {
+            affected_times: Vec::new(),
+            requires_full_rebuild: false,
+            latest_event_time: last_event.clone(),
+        };
         let mut page_token = checkpoint.incremental_event_page_token.clone();
-        let mut latest_event_time = last_event.clone();
         loop {
             let response = self
                 .chat_client
@@ -2500,34 +2631,233 @@ impl SyncManager {
                     &filter,
                 )
                 .await?;
-            if !response.space_events.is_empty() {
-                touched = true;
-            }
-            for event in &response.space_events {
-                latest_event_time = event.event_time.clone();
-            }
+            self.collect_chat_incremental_changes(&response.space_events, &mut changes);
             page_token = response.next_page_token;
             checkpoint.incremental_event_page_token = page_token.clone();
-            checkpoint.pending_event_watermark = Some(latest_event_time.clone());
+            checkpoint.pending_event_watermark = Some(changes.latest_event_time.clone());
             if page_token.is_none() {
                 break;
             }
         }
-        if touched {
-            self.sync_chat_space_full(source, ctx, service_auth, reader_email, space, checkpoint)
-                .await?;
+        if changes.requires_full_rebuild {
+            self.sync_chat_space_full(
+                source,
+                ctx,
+                service_auth,
+                drive_auth,
+                reader_email,
+                space,
+                checkpoint,
+            )
+            .await?;
+        } else if !changes.affected_times.is_empty() {
+            self.rebuild_chat_affected_segments(
+                source,
+                ctx,
+                service_auth,
+                drive_auth,
+                reader_email,
+                space,
+                checkpoint,
+                &changes.affected_times,
+            )
+            .await?;
         }
-        checkpoint.last_event_time = Some(latest_event_time);
+        checkpoint.last_event_time = Some(changes.latest_event_time);
         checkpoint.pending_event_watermark = None;
         checkpoint.incremental_event_page_token = None;
         checkpoint.incremental_in_progress = false;
         Ok(())
     }
 
+    fn collect_chat_incremental_changes(
+        &self,
+        events: &[GoogleChatSpaceEvent],
+        changes: &mut GoogleChatIncrementalChanges,
+    ) {
+        for event in events {
+            changes.latest_event_time = event.event_time.clone();
+            let message_event = event.message_created.is_some()
+                || event.message_updated.is_some()
+                || event.message_deleted.is_some();
+            if !message_event {
+                continue;
+            }
+            if let Some(create_time) = chat_event_message_create_time(event) {
+                changes.affected_times.push(create_time);
+            } else {
+                changes.requires_full_rebuild = true;
+            }
+        }
+    }
+
+    async fn rebuild_chat_affected_segments(
+        &self,
+        source: &Source,
+        ctx: &SyncContext,
+        service_auth: &Arc<GoogleAuth>,
+        drive_auth: &Arc<GoogleAuth>,
+        reader_email: &str,
+        space: &GoogleChatSpace,
+        checkpoint: &mut GoogleChatSpaceCheckpoint,
+        affected_times: &[OffsetDateTime],
+    ) -> Result<()> {
+        let windows = self.build_chat_rebuild_windows(checkpoint, affected_times)?;
+        if windows.len() > GOOGLE_CHAT_MAX_TARGETED_INCREMENTAL_WINDOWS {
+            return Err(anyhow!(
+                "Google Chat incremental sync touched {} conversation windows; falling back to full-space rebuild",
+                windows.len()
+            ));
+        }
+
+        let (drive_cutoff, _gmail_cutoff) = self.get_cutoff_date()?;
+        let cutoff = parse_google_time(Some(&drive_cutoff))
+            .ok_or_else(|| anyhow!("Invalid Google Chat cutoff time: {}", drive_cutoff))?;
+        let mut rebuilt_segments: Vec<GoogleChatSegmentCheckpoint> = Vec::new();
+        let mut stale_segment_ids: HashSet<String> = HashSet::new();
+        let mut emitted_segment_ids: HashSet<String> = HashSet::new();
+
+        for window in windows {
+            stale_segment_ids.extend(window.stale_segment_ids.iter().cloned());
+            let fetch_start = std::cmp::max(window.start - time::Duration::seconds(1), cutoff);
+            let fetch_end = window.end + time::Duration::seconds(1);
+            if fetch_end <= fetch_start {
+                continue;
+            }
+            let filter = format!(
+                "createTime > \"{}\" AND createTime < \"{}\"",
+                fetch_start, fetch_end
+            );
+            let mut builder = GoogleChatSegmentBuilder::new(space);
+            let mut page_token: Option<String> = None;
+            loop {
+                if ctx.is_cancelled() {
+                    break;
+                }
+                let response = self
+                    .chat_client
+                    .list_messages(
+                        service_auth,
+                        reader_email,
+                        &space.name,
+                        page_token.as_deref(),
+                        Some(&filter),
+                        Some("createTime asc"),
+                        true,
+                    )
+                    .await?;
+                for message in response.messages {
+                    let ready = builder.push(message)?;
+                    for segment in ready {
+                        let checkpoint_entry = self
+                            .emit_chat_segment(
+                                source,
+                                ctx,
+                                service_auth,
+                                drive_auth,
+                                reader_email,
+                                &segment,
+                            )
+                            .await?;
+                        emitted_segment_ids.insert(checkpoint_entry.external_id.clone());
+                        rebuilt_segments.push(checkpoint_entry);
+                    }
+                }
+                page_token = response.next_page_token;
+                if page_token.is_none() {
+                    break;
+                }
+            }
+            if let Some(segment) = builder.finish()? {
+                let checkpoint_entry = self
+                    .emit_chat_segment(
+                        source,
+                        ctx,
+                        service_auth,
+                        drive_auth,
+                        reader_email,
+                        &segment,
+                    )
+                    .await?;
+                emitted_segment_ids.insert(checkpoint_entry.external_id.clone());
+                rebuilt_segments.push(checkpoint_entry);
+            }
+        }
+
+        for stale in stale_segment_ids.difference(&emitted_segment_ids) {
+            ctx.emit_event(ConnectorEvent::DocumentDeleted {
+                sync_run_id: ctx.sync_run_id().to_string(),
+                source_id: source.id.clone(),
+                document_id: stale.clone(),
+            })
+            .await?;
+        }
+
+        let mut merged_segments: Vec<GoogleChatSegmentCheckpoint> = checkpoint
+            .segments
+            .iter()
+            .filter(|segment| !stale_segment_ids.contains(&segment.external_id))
+            .cloned()
+            .collect();
+        merged_segments.extend(rebuilt_segments);
+        sort_chat_segment_checkpoints(&mut merged_segments);
+        checkpoint.segments = merged_segments;
+        checkpoint.last_message_create_time =
+            checkpoint.segments.last().map(|s| s.end_time.clone());
+        Ok(())
+    }
+
+    fn build_chat_rebuild_windows(
+        &self,
+        checkpoint: &GoogleChatSpaceCheckpoint,
+        affected_times: &[OffsetDateTime],
+    ) -> Result<Vec<GoogleChatRebuildWindow>> {
+        let mut bounds: Vec<GoogleChatSegmentBounds> = checkpoint
+            .segments
+            .iter()
+            .map(chat_segment_bounds)
+            .collect::<Result<Vec<_>>>()?;
+        bounds.sort_by_key(|bound| bound.start);
+
+        let dead_time = time::Duration::seconds(GOOGLE_CHAT_DEAD_TIME_SECONDS);
+        let mut windows = Vec::new();
+        for affected_time in affected_times {
+            let mut start = *affected_time;
+            let mut end = *affected_time;
+            let mut stale_segment_ids: HashSet<String> = HashSet::new();
+            let mut changed = true;
+            while changed {
+                changed = false;
+                for bound in &bounds {
+                    if stale_segment_ids.contains(&bound.external_id) {
+                        continue;
+                    }
+                    if bound.end >= start - dead_time && bound.start <= end + dead_time {
+                        start = std::cmp::min(start, bound.start);
+                        end = std::cmp::max(end, bound.end);
+                        stale_segment_ids.insert(bound.external_id.clone());
+                        changed = true;
+                    }
+                }
+            }
+
+            windows.push(GoogleChatRebuildWindow {
+                start,
+                end,
+                stale_segment_ids,
+            });
+        }
+
+        Ok(merge_chat_rebuild_windows(windows, dead_time))
+    }
+
     async fn emit_chat_segment(
         &self,
         source: &Source,
         ctx: &SyncContext,
+        service_auth: &Arc<GoogleAuth>,
+        drive_auth: &Arc<GoogleAuth>,
+        reader_email: &str,
         segment: &GoogleChatSegment,
     ) -> Result<GoogleChatSegmentCheckpoint> {
         let content = segment.render_content();
@@ -2556,6 +2886,9 @@ impl SyncManager {
                 self.emit_chat_attachment_metadata(
                     source,
                     ctx,
+                    service_auth,
+                    drive_auth,
+                    reader_email,
                     segment,
                     message,
                     attachment,
@@ -2575,6 +2908,9 @@ impl SyncManager {
         &self,
         source: &Source,
         ctx: &SyncContext,
+        service_auth: &Arc<GoogleAuth>,
+        drive_auth: &Arc<GoogleAuth>,
+        reader_email: &str,
         segment: &GoogleChatSegment,
         message: &GoogleChatSegmentMessage,
         attachment: &GoogleChatSegmentAttachmentRef,
@@ -2585,16 +2921,18 @@ impl SyncManager {
             .content_name
             .clone()
             .unwrap_or_else(|| attachment.name.clone());
-        let content = format!(
-            "Attachment: {}\nAttached to Google Chat message: {}\nParent segment: {}\nSpace: {}\nSender: {}\nMessage excerpt: {}\n\nAttachment content extraction for Google Chat is not yet available in this connector build.\n",
-            title,
-            message.name,
-            segment.external_id,
-            segment.space_display_name.as_deref().unwrap_or(&segment.space_name),
-            message.sender,
-            message.text.chars().take(500).collect::<String>()
-        );
-        let content_id = ctx.store_content(&content).await?;
+        let stored_content = self
+            .store_chat_attachment_content(
+                ctx,
+                service_auth,
+                drive_auth,
+                reader_email,
+                segment,
+                message,
+                attachment,
+                &title,
+            )
+            .await?;
         let mut extra = HashMap::new();
         extra.insert(
             "parent_segment_external_id".to_string(),
@@ -2609,6 +2947,17 @@ impl SyncManager {
         extra.insert("attachment_name".to_string(), json!(attachment.name));
         extra.insert("content_name".to_string(), json!(attachment.content_name));
         extra.insert("content_type".to_string(), json!(attachment.content_type));
+        extra.insert("attachment_source".to_string(), json!(attachment.source));
+        extra.insert("resource_name".to_string(), json!(attachment.resource_name));
+        extra.insert("drive_file_id".to_string(), json!(attachment.drive_file_id));
+        extra.insert(
+            "content_extracted".to_string(),
+            json!(stored_content.content_extracted),
+        );
+        extra.insert(
+            "extraction_error".to_string(),
+            json!(stored_content.extraction_error),
+        );
         let metadata = DocumentMetadata {
             title: Some(title),
             author: Some(message.sender.clone()),
@@ -2616,8 +2965,8 @@ impl SyncManager {
             updated_at: message.update_time.or(Some(message.create_time)),
             content_type: Some("attachment".to_string()),
             mime_type: attachment.content_type.clone(),
-            size: None,
-            url: None,
+            size: stored_content.size,
+            url: stored_content.source_url,
             path: Some(format!(
                 "/Google Chat/{}/attachments",
                 segment
@@ -2631,13 +2980,165 @@ impl SyncManager {
             sync_run_id: ctx.sync_run_id().to_string(),
             source_id: source.id.clone(),
             document_id,
-            content_id,
+            content_id: stored_content.content_id,
             metadata,
             permissions,
             attributes: None,
         })
         .await?;
         Ok(())
+    }
+
+    async fn store_chat_attachment_content(
+        &self,
+        ctx: &SyncContext,
+        service_auth: &Arc<GoogleAuth>,
+        drive_auth: &Arc<GoogleAuth>,
+        reader_email: &str,
+        segment: &GoogleChatSegment,
+        message: &GoogleChatSegmentMessage,
+        attachment: &GoogleChatSegmentAttachmentRef,
+        title: &str,
+    ) -> Result<GoogleChatAttachmentStoredContent> {
+        match self
+            .extract_and_store_chat_attachment_content(
+                ctx,
+                service_auth,
+                drive_auth,
+                reader_email,
+                attachment,
+            )
+            .await
+        {
+            Ok(content) => Ok(content),
+            Err(e) => {
+                warn!(
+                    "Failed to extract Google Chat attachment {}: {:#}; indexing metadata fallback",
+                    attachment.name, e
+                );
+                let extraction_error = format!("{:#}", e);
+                let fallback = format!(
+                    "Attachment: {}\nAttached to Google Chat message: {}\nParent segment: {}\nSpace: {}\nSender: {}\nMessage excerpt: {}\n\nAttachment content extraction failed: {}\n",
+                    title,
+                    message.name,
+                    segment.external_id,
+                    segment
+                        .space_display_name
+                        .as_deref()
+                        .unwrap_or(&segment.space_name),
+                    message.sender,
+                    message.text.chars().take(500).collect::<String>(),
+                    extraction_error
+                );
+                let content_id = ctx.store_content(&fallback).await?;
+                Ok(GoogleChatAttachmentStoredContent {
+                    content_id,
+                    content_extracted: false,
+                    extraction_error: Some(extraction_error),
+                    source_url: None,
+                    size: None,
+                })
+            }
+        }
+    }
+
+    async fn extract_and_store_chat_attachment_content(
+        &self,
+        ctx: &SyncContext,
+        service_auth: &Arc<GoogleAuth>,
+        drive_auth: &Arc<GoogleAuth>,
+        reader_email: &str,
+        attachment: &GoogleChatSegmentAttachmentRef,
+    ) -> Result<GoogleChatAttachmentStoredContent> {
+        if let Some(resource_name) = attachment.resource_name.as_deref() {
+            let data = self
+                .chat_client
+                .download_uploaded_attachment(service_auth, reader_email, resource_name)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to download uploaded Chat attachment {}",
+                        attachment.name
+                    )
+                })?;
+            let size = data.len() as u64;
+            let mime_type = attachment
+                .content_type
+                .as_deref()
+                .unwrap_or("application/octet-stream");
+            let content_id = ctx
+                .extract_and_store_content(data, mime_type, attachment.content_name.as_deref())
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to extract uploaded Chat attachment {}",
+                        attachment.name
+                    )
+                })?;
+            return Ok(GoogleChatAttachmentStoredContent {
+                content_id,
+                content_extracted: true,
+                extraction_error: None,
+                source_url: None,
+                size: Some(size.to_string()),
+            });
+        }
+
+        if let Some(drive_file_id) = attachment.drive_file_id.as_deref() {
+            let file = self
+                .drive_client
+                .get_file_metadata(drive_auth, reader_email, drive_file_id)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to get Drive metadata for Chat attachment {}",
+                        attachment.name
+                    )
+                })?;
+            let source_url = file.web_view_link.clone();
+            let size = file.size.clone();
+            let content = self
+                .drive_client
+                .get_file_content(drive_auth, reader_email, &file)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to download Drive file for Chat attachment {}",
+                        attachment.name
+                    )
+                })?;
+            let content_id = match content {
+                FileContent::Text(text) => {
+                    if text.trim().is_empty() {
+                        return Err(anyhow!(
+                            "Drive Chat attachment {} has no extractable text",
+                            attachment.name
+                        ));
+                    }
+                    ctx.store_content(&text).await?
+                }
+                FileContent::Binary {
+                    data,
+                    mime_type,
+                    filename,
+                } => {
+                    ctx.extract_and_store_content(data, &mime_type, Some(&filename))
+                        .await?
+                }
+            };
+            return Ok(GoogleChatAttachmentStoredContent {
+                content_id,
+                content_extracted: true,
+                extraction_error: None,
+                source_url,
+                size,
+            });
+        }
+
+        Err(anyhow!(
+            "Chat attachment {} has neither uploaded content nor Drive file reference",
+            attachment.name
+        ))
     }
 
     fn should_index_file(&self, file: &crate::models::GoogleDriveFile) -> bool {
