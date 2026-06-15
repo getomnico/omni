@@ -1,8 +1,8 @@
 use crate::datasets::{Dataset, DatasetLoader, Document, Query, RelevantDoc};
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::stream::{self};
 use futures::Stream;
+use futures::stream::{self};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -171,14 +171,46 @@ impl CustomDataset {
 
         // Enterprise document templates by domain
         let document_templates = vec![
-            ("Meeting Notes", "google_drive", "Weekly team meeting discussing project progress, action items, and next steps."),
-            ("Project Specification", "confluence", "Detailed technical specification for the new product feature including requirements and timeline."),
-            ("Code Review", "github", "Pull request review comments and discussion about implementation changes."),
-            ("Sales Report", "slack", "Monthly sales performance review with charts and analysis."),
-            ("User Manual", "google_drive", "Complete user guide for the product including setup and troubleshooting."),
-            ("Budget Planning", "confluence", "Quarterly budget allocation and expense planning document."),
-            ("API Documentation", "github", "REST API documentation with endpoints, parameters, and examples."),
-            ("Team Announcement", "slack", "Important company-wide announcement about organizational changes."),
+            (
+                "Meeting Notes",
+                "google_drive",
+                "Weekly team meeting discussing project progress, action items, and next steps.",
+            ),
+            (
+                "Project Specification",
+                "confluence",
+                "Detailed technical specification for the new product feature including requirements and timeline.",
+            ),
+            (
+                "Code Review",
+                "github",
+                "Pull request review comments and discussion about implementation changes.",
+            ),
+            (
+                "Sales Report",
+                "slack",
+                "Monthly sales performance review with charts and analysis.",
+            ),
+            (
+                "User Manual",
+                "google_drive",
+                "Complete user guide for the product including setup and troubleshooting.",
+            ),
+            (
+                "Budget Planning",
+                "confluence",
+                "Quarterly budget allocation and expense planning document.",
+            ),
+            (
+                "API Documentation",
+                "github",
+                "REST API documentation with endpoints, parameters, and examples.",
+            ),
+            (
+                "Team Announcement",
+                "slack",
+                "Important company-wide announcement about organizational changes.",
+            ),
         ];
 
         for i in 0..self.num_synthetic_queries * 3 {
@@ -314,14 +346,46 @@ impl DatasetLoader for CustomDataset {
                     }
 
                     let document_templates = vec![
-                        ("Meeting Notes", "google_drive", "Weekly team meeting discussing project progress, action items, and next steps."),
-                        ("Project Specification", "confluence", "Detailed technical specification for the new product feature including requirements and timeline."),
-                        ("Code Review", "github", "Pull request review comments and discussion about implementation changes."),
-                        ("Sales Report", "slack", "Monthly sales performance review with charts and analysis."),
-                        ("User Manual", "google_drive", "Complete user guide for the product including setup and troubleshooting."),
-                        ("Budget Planning", "confluence", "Quarterly budget allocation and expense planning document."),
-                        ("API Documentation", "github", "REST API documentation with endpoints, parameters, and examples."),
-                        ("Team Announcement", "slack", "Important company-wide announcement about organizational changes."),
+                        (
+                            "Meeting Notes",
+                            "google_drive",
+                            "Weekly team meeting discussing project progress, action items, and next steps.",
+                        ),
+                        (
+                            "Project Specification",
+                            "confluence",
+                            "Detailed technical specification for the new product feature including requirements and timeline.",
+                        ),
+                        (
+                            "Code Review",
+                            "github",
+                            "Pull request review comments and discussion about implementation changes.",
+                        ),
+                        (
+                            "Sales Report",
+                            "slack",
+                            "Monthly sales performance review with charts and analysis.",
+                        ),
+                        (
+                            "User Manual",
+                            "google_drive",
+                            "Complete user guide for the product including setup and troubleshooting.",
+                        ),
+                        (
+                            "Budget Planning",
+                            "confluence",
+                            "Quarterly budget allocation and expense planning document.",
+                        ),
+                        (
+                            "API Documentation",
+                            "github",
+                            "REST API documentation with endpoints, parameters, and examples.",
+                        ),
+                        (
+                            "Team Announcement",
+                            "slack",
+                            "Important company-wide announcement about organizational changes.",
+                        ),
                     ];
 
                     let template_index = index % document_templates.len();
@@ -364,7 +428,10 @@ impl DatasetLoader for CustomDataset {
                         let content = match fs::read_to_string(&documents_file) {
                             Ok(content) => content,
                             Err(e) => {
-                                return Err(anyhow::anyhow!("Failed to read documents file: {}", e))
+                                return Err(anyhow::anyhow!(
+                                    "Failed to read documents file: {}",
+                                    e
+                                ));
                             }
                         };
 
@@ -374,7 +441,7 @@ impl DatasetLoader for CustomDataset {
                                 return Err(anyhow::anyhow!(
                                     "Failed to parse documents JSON: {}",
                                     e
-                                ))
+                                ));
                             }
                         };
 
@@ -488,14 +555,14 @@ impl DatasetLoader for CustomDataset {
                         let content = match fs::read_to_string(&queries_file) {
                             Ok(content) => content,
                             Err(e) => {
-                                return Err(anyhow::anyhow!("Failed to read queries file: {}", e))
+                                return Err(anyhow::anyhow!("Failed to read queries file: {}", e));
                             }
                         };
 
                         let queries: Vec<Query> = match serde_json::from_str(&content) {
                             Ok(queries) => queries,
                             Err(e) => {
-                                return Err(anyhow::anyhow!("Failed to parse queries JSON: {}", e))
+                                return Err(anyhow::anyhow!("Failed to parse queries JSON: {}", e));
                             }
                         };
 

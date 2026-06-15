@@ -4,10 +4,10 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::State,
-    http::{header::HeaderMap, StatusCode},
-    routing::post,
     Router,
+    extract::State,
+    http::{StatusCode, header::HeaderMap},
+    routing::post,
 };
 use tracing::{debug, error, info, warn};
 

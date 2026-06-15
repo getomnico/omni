@@ -1,6 +1,6 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::{Duration, Utc};
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use omni_connector_sdk::RateLimiter;
 use omni_connector_sdk::{RetryableError, ServiceCredential, SourceType};
 use reqwest::header::{HeaderMap, RETRY_AFTER};

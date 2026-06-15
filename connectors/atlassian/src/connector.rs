@@ -8,7 +8,7 @@ use omni_connector_sdk::{
     ActionDefinition, ActionMode, ActionResponse, Connector, SearchOperator, ServiceCredential,
     Source, SourceType, SyncContext, SyncType,
 };
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use tracing::info;
 
 use crate::auth::{AtlassianCredentials, AuthManager};

@@ -237,14 +237,18 @@ mod tests {
         let source = source();
         let creds = credentials(json!({ "bot_token": "xoxb-test" }));
 
-        assert!(connector
-            .validate_sync_request(&source, Some(&creds), SyncType::Realtime)
-            .await
-            .is_err());
-        assert!(connector
-            .validate_sync_request(&source, Some(&creds), SyncType::Full)
-            .await
-            .is_ok());
+        assert!(
+            connector
+                .validate_sync_request(&source, Some(&creds), SyncType::Realtime)
+                .await
+                .is_err()
+        );
+        assert!(
+            connector
+                .validate_sync_request(&source, Some(&creds), SyncType::Full)
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]

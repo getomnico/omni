@@ -1,16 +1,16 @@
 use anyhow::Result;
-use opentelemetry::{global, trace::TracerProvider as _, KeyValue};
+use opentelemetry::{KeyValue, global, trace::TracerProvider as _};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
-    trace::{RandomIdGenerator, Sampler, TracerProvider},
     Resource,
+    trace::{RandomIdGenerator, Sampler, TracerProvider},
 };
 use opentelemetry_semantic_conventions::{
-    resource::{SERVICE_NAME, SERVICE_VERSION},
     SCHEMA_URL,
+    resource::{SERVICE_NAME, SERVICE_VERSION},
 };
 use std::time::Duration;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 pub struct TelemetryConfig {
     pub service_name: String,
@@ -115,9 +115,8 @@ pub async fn shutdown_telemetry() {
 pub mod middleware {
     use axum::{extract::Request, http::HeaderMap, middleware::Next, response::Response};
     use opentelemetry::{
-        global,
+        Context, global,
         trace::{SpanKind, TraceContextExt, Tracer},
-        Context,
     };
     use opentelemetry_http::{HeaderExtractor, HeaderInjector};
     use tracing::{Instrument, Span};

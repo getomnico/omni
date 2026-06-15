@@ -8,9 +8,9 @@ use tracing::{error, info, warn};
 use crate::client::ImapSession;
 use crate::config::{ImapAccountConfig, ImapCredentials};
 use crate::models::{
-    build_thread_connector_event, generate_thread_content, make_thread_document_id,
-    parse_raw_email, resolve_new_email_thread_root, resolve_thread_root, FolderSyncState,
-    ImapConnectorState, ParsedEmail,
+    FolderSyncState, ImapConnectorState, ParsedEmail, build_thread_connector_event,
+    generate_thread_content, make_thread_document_id, parse_raw_email,
+    resolve_new_email_thread_root, resolve_thread_root,
 };
 
 const FETCH_BATCH_SIZE: usize = 50;
@@ -651,14 +651,17 @@ impl SyncManager {
                             user_email,
                             true, // always an update
                         );
-                        if let Err(e) = ctx.emit_event(event).await {
-                            warn!(
-                                "Failed to emit DocumentUpdated for flag-changed thread \
+                        match ctx.emit_event(event).await {
+                            Err(e) => {
+                                warn!(
+                                    "Failed to emit DocumentUpdated for flag-changed thread \
                                  '{}' in '{}': {}",
-                                thread_root, folder, e
-                            );
-                        } else {
-                            processed += 1;
+                                    thread_root, folder, e
+                                );
+                            }
+                            _ => {
+                                processed += 1;
+                            }
                         }
                     }
                 }

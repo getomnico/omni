@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use async_imap::types::Fetch;
 use async_imap::Client;
+use async_imap::types::Fetch;
 use futures::StreamExt;
 use tokio_native_tls::TlsStream;
 use tracing::{debug, info, warn};

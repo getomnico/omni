@@ -1,14 +1,14 @@
 use anyhow::Result;
 use axum::{
+    Router,
     body::Body,
     http::{Method, Request, StatusCode},
-    Router,
 };
 use omni_searcher::{
-    create_app, operator_registry::OperatorRegistry,
-    suggested_questions::SuggestedQuestionsGenerator, typeahead::TitleIndex, AppState,
+    AppState, create_app, operator_registry::OperatorRegistry,
+    suggested_questions::SuggestedQuestionsGenerator, typeahead::TitleIndex,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
 use shared::test_utils::create_test_documents_with_embeddings;

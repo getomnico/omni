@@ -3,13 +3,13 @@ pub mod mock_connector;
 use anyhow::Result;
 use mock_connector::MockConnector;
 use omni_connector_manager::{
-    config::ConnectorManagerConfig, create_app, sync_manager::SyncManager, AppState,
+    AppState, config::ConnectorManagerConfig, create_app, sync_manager::SyncManager,
 };
 use redis::{AsyncCommands, Client as RedisClient};
+use shared::ObjectStorage;
 use shared::models::{ConnectorManifest, SourceType, SyncType};
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
-use shared::ObjectStorage;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
@@ -24,11 +24,15 @@ pub struct TestFixture {
 }
 
 pub async fn setup_test_fixture() -> Result<TestFixture> {
-    std::env::set_var(
-        "ENCRYPTION_KEY",
-        "test_master_key_that_is_long_enough_32_chars",
-    );
-    std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars");
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe {
+        std::env::set_var(
+            "ENCRYPTION_KEY",
+            "test_master_key_that_is_long_enough_32_chars",
+        )
+    };
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars") };
 
     let test_env = TestEnvironment::new().await?;
     let mock_connector = MockConnector::start().await?;

@@ -3,16 +3,16 @@ mod mock_slack;
 
 use common::SlackConnectorTestFixture;
 use mock_slack::{
-    make_test_channel_members, make_test_channels, make_test_messages, make_test_users,
-    MockSlackServer, MockSlackState,
+    MockSlackServer, MockSlackState, make_test_channel_members, make_test_channels,
+    make_test_messages, make_test_users,
 };
 use omni_connector_sdk::SyncContext;
 use omni_slack_connector::models::{SlackConnectorState, SlackMessage};
 use omni_slack_connector::sync::SyncManager;
 use shared::models::{SourceType, SyncType};
 use sqlx::Row;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 /// Use a fixed base timestamp (2025-01-15 12:00:00 UTC) so all messages
 /// fall on the same calendar day.

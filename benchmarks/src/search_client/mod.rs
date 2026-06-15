@@ -92,6 +92,7 @@ pub fn create_search_request(query: String, search_mode: SearchMode) -> SearchRe
         include_facets: Some(false),
         user_email: None,
         user_id: None,
+        user_configuration: Default::default(),
         is_generated_query: None,
         original_user_query: None,
         document_id: None,

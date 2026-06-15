@@ -4,10 +4,10 @@ use chrono::{Datelike, LocalResult, NaiveDate, TimeZone};
 use chrono_tz::Tz;
 use regex::Regex;
 use serde_json::Value as JsonValue;
+use shared::SourceType;
 use shared::db::repositories::PersonRepository;
 use shared::models::UserConfiguration;
 use shared::models::{AttributeFilter, DateFilter};
-use shared::SourceType;
 use std::collections::HashMap;
 use time::OffsetDateTime;
 
@@ -377,7 +377,7 @@ fn merge_attribute_filter(filters: &mut HashMap<String, AttributeFilter>, key: &
             let existing_clone = existing.clone();
             *filters.get_mut(key).unwrap() = AttributeFilter::AnyOf(vec![existing_clone, json_val]);
         }
-        Some(AttributeFilter::AnyOf(ref mut values)) => {
+        Some(AttributeFilter::AnyOf(values)) => {
             values.push(json_val);
         }
         _ => {

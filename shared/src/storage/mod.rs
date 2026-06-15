@@ -76,7 +76,7 @@ pub trait ObjectStorage: Send + Sync {
 
     /// Get content metadata without loading the content itself
     async fn get_content_metadata(&self, content_id: &str)
-        -> Result<ContentMetadata, StorageError>;
+    -> Result<ContentMetadata, StorageError>;
 
     /// Find content by SHA256 hash (for deduplication)
     async fn find_by_hash(&self, sha256_hash: &str) -> Result<Option<String>, StorageError>;

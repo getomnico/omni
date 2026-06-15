@@ -1,9 +1,9 @@
 use anyhow::Result;
 use dotenvy::dotenv;
-use omni_connector_sdk::telemetry::{self, TelemetryConfig};
 use omni_connector_sdk::SdkClient;
 use omni_connector_sdk::SourceType;
-use omni_connector_sdk::{serve_with_extra_routes, ServerConfig};
+use omni_connector_sdk::telemetry::{self, TelemetryConfig};
+use omni_connector_sdk::{ServerConfig, serve_with_extra_routes};
 use std::sync::Arc;
 use std::time::Duration;
 use time::OffsetDateTime;

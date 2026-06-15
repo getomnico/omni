@@ -4,8 +4,8 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use omni_connector_manager::{
-    config::ConnectorManagerConfig, create_app as create_cm_app,
-    sync_manager::SyncManager as CMSyncManager, AppState as CMAppState,
+    AppState as CMAppState, config::ConnectorManagerConfig, create_app as create_cm_app,
+    sync_manager::SyncManager as CMSyncManager,
 };
 use omni_connector_sdk::{SdkClient, SyncContext};
 use omni_web_connector::config::WebSourceConfig;
@@ -30,13 +30,19 @@ pub struct WebConnectorTestFixture {
 impl WebConnectorTestFixture {
     /// Create a new test fixture with all dependencies including connector-manager
     pub async fn new() -> Result<Self> {
-        std::env::set_var(
-            "ENCRYPTION_KEY",
-            "test_master_key_that_is_long_enough_32_chars",
-        );
-        std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars");
-        std::env::set_var("CONNECTOR_HOST_NAME", "localhost");
-        std::env::set_var("PORT", "0");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe {
+            std::env::set_var(
+                "ENCRYPTION_KEY",
+                "test_master_key_that_is_long_enough_32_chars",
+            )
+        };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("CONNECTOR_HOST_NAME", "localhost") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("PORT", "0") };
 
         let test_env = TestEnvironment::new().await?;
 

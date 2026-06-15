@@ -184,11 +184,13 @@ async fn test_sync_trigger_guards() {
         .await;
     resp.assert_status(StatusCode::BAD_REQUEST);
     let body: serde_json::Value = resp.json();
-    assert!(body["error"]
-        .as_str()
-        .unwrap()
-        .to_lowercase()
-        .contains("inactive"));
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("inactive")
+    );
 
     // Already running → 409
     let resp = server
@@ -203,11 +205,13 @@ async fn test_sync_trigger_guards() {
         .await;
     resp.assert_status(StatusCode::CONFLICT);
     let body: serde_json::Value = resp.json();
-    assert!(body["error"]
-        .as_str()
-        .unwrap()
-        .to_lowercase()
-        .contains("already running"));
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("already running")
+    );
 
     // Concurrency limit (max_concurrent_syncs=2)
     let source2 = seed_source(pool, "local_files", true).await;
@@ -220,11 +224,13 @@ async fn test_sync_trigger_guards() {
         .await;
     resp.assert_status(StatusCode::CONFLICT);
     let body: serde_json::Value = resp.json();
-    assert!(body["error"]
-        .as_str()
-        .unwrap()
-        .to_lowercase()
-        .contains("concurrency"));
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("concurrency")
+    );
 
     // Mock connector received exactly 1 sync request
     let requests = fixture.mock_connector.get_sync_requests();
@@ -319,11 +325,13 @@ async fn test_cancel_sync() {
     let resp = server2.post(&format!("/sync/{}/cancel", sync_run_id)).await;
     resp.assert_status(StatusCode::BAD_REQUEST);
     let body: serde_json::Value = resp.json();
-    assert!(body["error"]
-        .as_str()
-        .unwrap()
-        .to_lowercase()
-        .contains("not running"));
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("not running")
+    );
 }
 
 // ============================================================================

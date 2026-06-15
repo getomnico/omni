@@ -2,10 +2,10 @@ mod common;
 
 use axum::http::StatusCode;
 use axum_test::TestServer;
-use common::fixtures::{create_document_request, update_document_request};
 use common::TEST_SOURCE_ID;
+use common::fixtures::{create_document_request, update_document_request};
 use omni_indexer::{BulkDocumentOperation, BulkDocumentRequest, QueueProcessor};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shared::db::repositories::{DocumentRepository, GroupRepository, PersonRepository};
 use shared::models::{ConnectorEvent, Document, DocumentMetadata, DocumentPermissions};
 use shared::queue::EventQueue;

@@ -1,19 +1,19 @@
 use std::sync::Arc;
 
 use crate::admin::AdminClient;
-use crate::auth::{create_service_auth, get_domain_from_credentials, GoogleAuth};
+use crate::auth::{GoogleAuth, create_service_auth, get_domain_from_credentials};
 use crate::drive::DriveClient;
 use crate::gmail::{MessageFormat, MessagePart};
 use crate::models::{GoogleDirectoryUser, GoogleSyncCheckpoint, SearchUsersResponse};
 use crate::sync::SyncManager;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
     ActionDefinition, ActionResponse, Connector, OAuthManifestConfig, OAuthScopeSet,
     SearchOperator, ServiceCredential, Source, SourceType, SyncContext, SyncType,
 };
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use std::collections::HashMap;
 use tracing::debug;
 
@@ -533,7 +533,7 @@ impl Connector for GoogleConnector {
                 return Ok(ActionResponse::failure(
                     "Google action requires credentials".to_string(),
                 )
-                .into_response())
+                .into_response());
             }
         };
         match action {

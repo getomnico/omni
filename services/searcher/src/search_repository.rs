@@ -1,12 +1,12 @@
 use pgvector::Vector;
 use serde_json::Value as JsonValue;
 use shared::{
+    SourceType,
     db::error::DatabaseError,
     db::repositories::document,
     models::{AttributeFilter, ChunkResult, DateFilter, Document, Facet, FacetValue},
-    SourceType,
 };
-use sqlx::{postgres::PgRow, FromRow, PgPool, Row};
+use sqlx::{FromRow, PgPool, Row, postgres::PgRow};
 use std::collections::{HashMap, HashSet};
 use tracing::debug;
 

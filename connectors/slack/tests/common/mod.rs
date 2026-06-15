@@ -1,7 +1,7 @@
 use anyhow::Result;
 use omni_connector_manager::{
-    config::ConnectorManagerConfig, create_app as create_cm_app,
-    sync_manager::SyncManager as CMSyncManager, AppState as CMAppState,
+    AppState as CMAppState, config::ConnectorManagerConfig, create_app as create_cm_app,
+    sync_manager::SyncManager as CMSyncManager,
 };
 use omni_connector_sdk::SdkClient;
 use shared::db::repositories::SyncRunRepository;
@@ -23,11 +23,13 @@ impl SlackConnectorTestFixture {
             .install_default()
             .ok();
 
-        std::env::set_var(
-            "ENCRYPTION_KEY",
-            "test_master_key_that_is_long_enough_32_chars",
-        );
-        std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars");
+        unsafe {
+            std::env::set_var(
+                "ENCRYPTION_KEY",
+                "test_master_key_that_is_long_enough_32_chars",
+            );
+            std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars");
+        }
 
         let test_env = TestEnvironment::new().await?;
 

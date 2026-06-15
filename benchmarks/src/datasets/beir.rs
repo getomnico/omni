@@ -1,8 +1,8 @@
 use crate::datasets::{Dataset, DatasetLoader, Document, Query, RelevantDoc};
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::stream::{self};
 use futures::Stream;
+use futures::stream::{self};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -422,7 +422,7 @@ impl BeirDataset {
             Err(e) => {
                 return Box::pin(stream::once(async move {
                     Err(anyhow::anyhow!("Failed to load qrels: {}", e))
-                }))
+                }));
             }
         };
 
@@ -505,7 +505,7 @@ impl BeirDataset {
                             }
                         }
                         Err(e) => {
-                            return Err(anyhow::anyhow!("Failed to read queries file: {}", e))
+                            return Err(anyhow::anyhow!("Failed to read queries file: {}", e));
                         }
                     }
                 }

@@ -1,7 +1,7 @@
 use super::{ContentMetadata, ObjectStorage, StorageError};
 use crate::utils::generate_ulid;
 use async_trait::async_trait;
-use aws_sdk_s3::{error::SdkError, primitives::ByteStream, Client as S3Client};
+use aws_sdk_s3::{Client as S3Client, error::SdkError, primitives::ByteStream};
 use bytes::Bytes;
 use futures_util::future;
 use sha2::{Digest, Sha256};

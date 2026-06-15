@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
 use omni_connector_sdk::{DocumentPermissions, SdkClient, SyncContext};

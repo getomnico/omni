@@ -9,16 +9,16 @@ pub mod sync_manager;
 
 use anyhow::Result as AnyhowResult;
 use axum::{
+    Router,
     extract::DefaultBodyLimit,
     middleware,
     routing::{get, post, put},
-    Router,
 };
 use config::ConnectorManagerConfig;
 use redis::Client as RedisClient;
 use shared::{
-    telemetry::{self, TelemetryConfig},
     DatabasePool, ObjectStorage,
+    telemetry::{self, TelemetryConfig},
 };
 use std::net::SocketAddr;
 use std::sync::Arc;

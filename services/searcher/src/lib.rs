@@ -9,14 +9,13 @@ pub mod typeahead;
 
 use anyhow::Result as AnyhowResult;
 use axum::{
-    middleware,
+    Router, middleware,
     routing::{get, post},
-    Router,
 };
 use redis::Client as RedisClient;
 use shared::{
-    telemetry::{self, TelemetryConfig},
     AIClient, DatabasePool, ObjectStorage, SearcherConfig, StorageFactory,
+    telemetry::{self, TelemetryConfig},
 };
 use std::net::SocketAddr;
 use std::sync::Arc;

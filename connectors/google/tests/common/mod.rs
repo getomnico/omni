@@ -1,14 +1,14 @@
 use anyhow::Result;
-use omni_connector_manager::{config::ConnectorManagerConfig, create_app, AppState};
+use omni_connector_manager::{AppState, config::ConnectorManagerConfig, create_app};
 use omni_connector_sdk::{Connector, SdkClient};
 use omni_google_connector::connector::GoogleConnector;
 use omni_google_connector::routes;
 use omni_google_connector::sync::SyncManager;
+use shared::ObjectStorage;
 use shared::db::repositories::SyncRunRepository;
 use shared::models::SyncType;
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
-use shared::ObjectStorage;
 use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -27,11 +27,15 @@ pub struct GoogleConnectorTestFixture {
 impl GoogleConnectorTestFixture {
     /// Create a new test fixture with all dependencies
     pub async fn new() -> Result<Self> {
-        std::env::set_var(
-            "ENCRYPTION_KEY",
-            "test_master_key_that_is_long_enough_32_chars",
-        );
-        std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe {
+            std::env::set_var(
+                "ENCRYPTION_KEY",
+                "test_master_key_that_is_long_enough_32_chars",
+            )
+        };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars") };
 
         let test_env = TestEnvironment::new().await?;
         seed_google_drive_source(test_env.db_pool.pool()).await?;

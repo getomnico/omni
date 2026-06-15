@@ -556,23 +556,33 @@ mod tests {
         let pool = env.db_pool.pool().clone();
         let queue = EventQueue::new(pool.clone());
 
-        // Insert two sync_runs with different sync_types.
+        // Insert two sync_runs with different sync_types. Only one scheduled
+        // sync can be running for a source at a time, but routing is based on
+        // the sync_run type, not on whether the run is still active.
         let full_run = ulid::Ulid::new().to_string();
         let inc_run = ulid::Ulid::new().to_string();
-        for (id, sync_type) in [(&full_run, "full"), (&inc_run, "incremental")] {
-            sqlx::query(
-                r#"
-                INSERT INTO sync_runs (id, source_id, sync_type, status, started_at, created_at, updated_at)
-                VALUES ($1, $2, $3, 'running', NOW(), NOW(), NOW())
-                "#,
-            )
-            .bind(id)
-            .bind(TEST_SOURCE_ID)
-            .bind(sync_type)
-            .execute(&pool)
-            .await
-            .unwrap();
-        }
+        sqlx::query(
+            r#"
+            INSERT INTO sync_runs (id, source_id, sync_type, status, started_at, completed_at, created_at, updated_at)
+            VALUES ($1, $2, 'full', 'completed', NOW(), NOW(), NOW(), NOW())
+            "#,
+        )
+        .bind(&full_run)
+        .bind(TEST_SOURCE_ID)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"
+            INSERT INTO sync_runs (id, source_id, sync_type, status, started_at, created_at, updated_at)
+            VALUES ($1, $2, 'incremental', 'running', NOW(), NOW(), NOW())
+            "#,
+        )
+        .bind(&inc_run)
+        .bind(TEST_SOURCE_ID)
+        .execute(&pool)
+        .await
+        .unwrap();
 
         // Two events under the full sync_run, one under incremental.
         for i in 0..2 {

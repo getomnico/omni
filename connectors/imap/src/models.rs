@@ -294,10 +294,12 @@ pub fn build_thread_connector_event(
     extra.insert("message_count".to_string(), json!(sorted_messages.len()));
     extra.insert(
         "imap_uids".to_string(),
-        json!(sorted_messages
-            .iter()
-            .map(|message| message.imap_uid)
-            .collect::<Vec<_>>()),
+        json!(
+            sorted_messages
+                .iter()
+                .map(|message| message.imap_uid)
+                .collect::<Vec<_>>()
+        ),
     );
     extra.insert("message_ids".to_string(), json!(message_ids));
     extra.insert("account".to_string(), json!(account_display_name));
@@ -359,9 +361,8 @@ pub fn build_thread_connector_event(
         // Format: imap:{account} / {folder} / {YYYY-MM-DD} / {subject}
         // The "imap:" prefix lets generic code detect these without connector-specific logic.
         let ref_date = updated_at.or(created_at);
-        let date_part = ref_date.map(|dt| {
-            format!("{:04}-{:02}-{:02}", dt.year(), dt.month() as u8, dt.day())
-        });
+        let date_part =
+            ref_date.map(|dt| format!("{:04}-{:02}-{:02}", dt.year(), dt.month() as u8, dt.day()));
         // Include subject only when it is not the placeholder sentinel.
         let subject_part = if title != NO_SUBJECT_PLACEHOLDER {
             Some(title.as_str())

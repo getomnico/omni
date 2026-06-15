@@ -1,8 +1,8 @@
 mod common;
 
-use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use serde_json::{json, Value};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use serde_json::{Value, json};
 
 use common::SandboxTestFixture;
 

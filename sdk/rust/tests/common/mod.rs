@@ -20,18 +20,18 @@ use std::time::Duration;
 use anyhow::Result;
 use async_trait::async_trait;
 use axum::{
+    Router,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Json},
     routing::{get, post, put},
-    Router,
 };
 use omni_connector_sdk::SdkClient;
 use omni_connector_sdk::{
-    models::ActionResponse, Connector, ServiceCredential, Source, SourceType, SyncContext,
+    Connector, ServiceCredential, Source, SourceType, SyncContext, models::ActionResponse,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 

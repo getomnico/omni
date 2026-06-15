@@ -6,19 +6,19 @@ use crate::query_parser;
 use crate::search_repository::SearchDocumentRepository;
 use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
+use shared::SourceType;
 use shared::db::repositories::{
     DocumentRepository, EmbeddingRepository, GroupRepository, PersonRepository, SourceRepository,
 };
 use shared::models::{ChunkResult, Document, Facet, FacetValue};
 use shared::utils::safe_str_slice;
-use shared::SourceType;
 use shared::{
     AIClient, DatabasePool, ObjectStorage, Repository, SearcherConfig, StorageFactory,
     UserRepository,
 };
 use std::cmp::Ordering;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -129,7 +129,10 @@ impl SearchEngine {
         let user_repo = UserRepository::new(self.db_pool.pool());
         let mut request = match (&request.user_id, &request.user_email) {
             (Some(user_id), None) => {
-                info!("Search request has user_id but no email, fetching email from DB for user ID: {}", user_id);
+                info!(
+                    "Search request has user_id but no email, fetching email from DB for user ID: {}",
+                    user_id
+                );
                 let res = user_repo.find_by_id(user_id.clone()).await;
                 info!("Fetched user: {:?}", res);
                 if let Ok(Some(user)) = res {
@@ -718,7 +721,10 @@ impl SearchEngine {
                             request.document_content_end_line,
                         ) {
                             (Some(start_line), Some(end_line)) => {
-                                debug!("Start ({}) and end ({}) line numbers are specified, returning these specific lines.", start_line, end_line);
+                                debug!(
+                                    "Start ({}) and end ({}) line numbers are specified, returning these specific lines.",
+                                    start_line, end_line
+                                );
 
                                 // Validate line numbers (1-indexed from user perspective)
                                 if start_line < 1 || end_line < start_line {

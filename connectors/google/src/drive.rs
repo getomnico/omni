@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use reqwest::Client;
 use serde::Deserialize;
 use std::env;
@@ -9,7 +9,7 @@ use tracing::{debug, warn};
 use std::collections::HashMap;
 
 use crate::auth::{
-    classify_google_api_error, execute_with_auth_retry, google_max_retries, ApiResult, GoogleAuth,
+    ApiResult, GoogleAuth, classify_google_api_error, execute_with_auth_retry, google_max_retries,
 };
 use crate::models::{
     DriveChangesResponse, GoogleDriveFile, GooglePresentation, WebhookChannel,
@@ -1040,7 +1040,10 @@ impl DriveClient {
             ("includeItemsFromAllDrives", "true"),
             ("supportsAllDrives", "true"),
             ("includeRemoved", "true"),
-            ("fields", "nextPageToken,changes(changeType,removed,file(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,permissions(id,type,emailAddress,role),owners(emailAddress)),fileId,time)"),
+            (
+                "fields",
+                "nextPageToken,changes(changeType,removed,file(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,permissions(id,type,emailAddress,role),owners(emailAddress)),fileId,time)",
+            ),
         ];
 
         let response = self

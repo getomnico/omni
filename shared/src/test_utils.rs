@@ -6,7 +6,7 @@ use redis::Client as RedisClient;
 use serde_json::json;
 use sqlx::PgPool;
 use std::env;
-use tokio::time::{sleep, timeout, Duration};
+use tokio::time::{Duration, sleep, timeout};
 use ulid::Ulid;
 use uuid::Uuid;
 
@@ -86,26 +86,29 @@ impl Drop for BaseTestFixture {
         }
 
         // Try to spawn cleanup task if we have a tokio runtime available
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let cleanup_db_name = db_name.clone();
-            let cleanup_base_url = base_url.clone();
-            // Spawn and detach the cleanup task - it will run in the background
-            let _ = handle.spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await; // Give test time to finish
-                if let Err(e) =
-                    cleanup_test_database_by_name(&cleanup_base_url, &cleanup_db_name).await
-                {
-                    eprintln!(
-                        "Warning: Failed to cleanup test database {}: {:?}",
-                        cleanup_db_name, e
-                    );
-                }
-            });
-        } else {
-            eprintln!(
-                "Warning: No tokio runtime available, database {} may not be cleaned up",
-                db_name
-            );
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                let cleanup_db_name = db_name.clone();
+                let cleanup_base_url = base_url.clone();
+                // Spawn and detach the cleanup task - it will run in the background
+                let _ = handle.spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await; // Give test time to finish
+                    if let Err(e) =
+                        cleanup_test_database_by_name(&cleanup_base_url, &cleanup_db_name).await
+                    {
+                        eprintln!(
+                            "Warning: Failed to cleanup test database {}: {:?}",
+                            cleanup_db_name, e
+                        );
+                    }
+                });
+            }
+            _ => {
+                eprintln!(
+                    "Warning: No tokio runtime available, database {} may not be cleaned up",
+                    db_name
+                );
+            }
         }
     }
 }
@@ -128,7 +131,8 @@ async fn setup_test_database_internal() -> Result<(DatabasePool, String)> {
         .await?;
 
     let test_db_url = format!("{}/{}", base_url_without_db, test_db_name);
-    env::set_var("DATABASE_URL", &test_db_url);
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { env::set_var("DATABASE_URL", &test_db_url) };
 
     let db_pool = DatabasePool::new(&test_db_url).await?;
 
@@ -177,7 +181,7 @@ async fn seed_test_data(pool: &PgPool) -> Result<()> {
     sqlx::query(
         r#"
         INSERT INTO sources (id, name, source_type, config, created_by, created_at, updated_at)
-        VALUES ($1, 'Test Source', 'test', '{}', $2, NOW(), NOW())
+        VALUES ($1, 'Test Source', 'local_files', '{}', $2, NOW(), NOW())
         ON CONFLICT (id) DO NOTHING
         "#,
     )

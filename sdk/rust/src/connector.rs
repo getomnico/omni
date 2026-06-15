@@ -9,8 +9,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use axum::response::Response;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use shared::models::{
     ActionDefinition, ConnectorManifest, SearchOperator, ServiceCredential, Source, SourceType,

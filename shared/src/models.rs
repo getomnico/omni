@@ -1,8 +1,8 @@
 use pgvector::Vector;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use sqlx::types::time::OffsetDateTime;
 use sqlx::FromRow;
+use sqlx::types::time::OffsetDateTime;
 use std::collections::HashMap;
 use tracing::warn;
 

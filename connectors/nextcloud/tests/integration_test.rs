@@ -600,11 +600,13 @@ fn test_build_file_event_no_file_id() {
             assert!(document_id.starts_with("nextcloud:src-1:"));
             assert!(!document_id.contains("None"));
             // URL falls back to href-based URL (no file_id)
-            assert!(metadata
-                .url
-                .as_ref()
-                .unwrap()
-                .contains("/remote.php/dav/files/bob/readme.md"));
+            assert!(
+                metadata
+                    .url
+                    .as_ref()
+                    .unwrap()
+                    .contains("/remote.php/dav/files/bob/readme.md")
+            );
         }
         _ => panic!("Expected DocumentCreated"),
     }

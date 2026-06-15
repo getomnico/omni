@@ -1273,9 +1273,11 @@ mod tests {
         match event {
             ConnectorEvent::DocumentCreated { permissions, .. } => {
                 assert!(permissions.users.contains(&"owner@example.com".to_string()));
-                assert!(permissions
-                    .users
-                    .contains(&"viewer@example.com".to_string()));
+                assert!(
+                    permissions
+                        .users
+                        .contains(&"viewer@example.com".to_string())
+                );
                 assert_eq!(permissions.users.len(), 2);
             }
             _ => panic!("Expected DocumentCreated event"),
@@ -1445,9 +1447,11 @@ mod tests {
             ConnectorEvent::DocumentCreated { permissions, .. } => {
                 assert!(permissions.users.contains(&"alice@example.com".to_string()));
                 assert!(permissions.users.contains(&"owner@example.com".to_string()));
-                assert!(permissions
-                    .users
-                    .contains(&"sender@example.com".to_string()));
+                assert!(
+                    permissions
+                        .users
+                        .contains(&"sender@example.com".to_string())
+                );
             }
             _ => panic!("Expected DocumentCreated event"),
         }

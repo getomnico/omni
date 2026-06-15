@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use omni_connector_sdk::{ConfluenceSourceConfig, JiraSourceConfig, ServiceProvider};
 use omni_connector_sdk::{

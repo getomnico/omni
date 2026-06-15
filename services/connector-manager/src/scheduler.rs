@@ -16,7 +16,7 @@ use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use time::{Duration as TimeDuration, OffsetDateTime};
-use tokio::time::{interval, sleep, timeout, Duration};
+use tokio::time::{Duration, interval, sleep, timeout};
 use tracing::{debug, error, info, warn};
 
 const SCHEDULER_PHASE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -318,7 +318,11 @@ impl Scheduler {
             source.source_type,
             consecutive_failures,
             last_failure_at,
-            backoff_seconds(consecutive_failures, self.config.sync_backoff_base_seconds, self.config.sync_backoff_max_seconds)
+            backoff_seconds(
+                consecutive_failures,
+                self.config.sync_backoff_base_seconds,
+                self.config.sync_backoff_max_seconds
+            )
         );
         true
     }

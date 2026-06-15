@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use futures::stream::Stream;
 use omni_connector_sdk::{RateLimiter, RetryableError};

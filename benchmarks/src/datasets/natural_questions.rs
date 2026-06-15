@@ -3,10 +3,10 @@ use crate::datasets::{Dataset, DatasetLoader, Document, Query, RelevantDoc};
 use crate::prepare_nq;
 use anyhow::Result;
 use async_trait::async_trait;
-use futures::stream::{self};
 use futures::Stream;
 #[cfg(test)]
 use futures::StreamExt;
+use futures::stream::{self};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::fs::{self, File};

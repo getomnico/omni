@@ -4,8 +4,25 @@ mod tests {
     use shared::db::repositories::EmbeddingRepository;
     use shared::models::Embedding;
     use shared::test_utils::BaseTestFixture;
-    use sqlx::types::time::OffsetDateTime;
+    use sqlx::{PgPool, types::time::OffsetDateTime};
     use ulid::Ulid;
+
+    const TEST_SOURCE_ID: &str = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
+
+    async fn create_document(pool: &PgPool, doc_id: &str) {
+        sqlx::query(
+            r#"
+            INSERT INTO documents (id, source_id, external_id, title, content, metadata, permissions, attributes, created_at, updated_at)
+            VALUES ($1, $2, $3, 'Test Doc', 'content', '{}', '{"users":["u1"]}', '{}', NOW(), NOW())
+            "#,
+        )
+        .bind(doc_id)
+        .bind(TEST_SOURCE_ID)
+        .bind(format!("ext-{}", doc_id))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
 
     #[tokio::test]
     async fn test_bulk_create_single_document() {
@@ -14,6 +31,7 @@ mod tests {
 
         // Create embeddings for a single document
         let document_id = Ulid::new().to_string();
+        create_document(fixture.db_pool().pool(), &document_id).await;
         let embeddings = vec![
             Embedding {
                 id: Ulid::new().to_string(),
@@ -58,6 +76,9 @@ mod tests {
         let doc1_id = Ulid::new().to_string();
         let doc2_id = Ulid::new().to_string();
         let doc3_id = Ulid::new().to_string();
+        for doc_id in [&doc1_id, &doc2_id, &doc3_id] {
+            create_document(fixture.db_pool().pool(), doc_id).await;
+        }
 
         let embeddings = vec![
             // Document 1 - 2 chunks
@@ -151,6 +172,7 @@ mod tests {
         let repo = EmbeddingRepository::new(fixture.db_pool().pool());
 
         let document_id = Ulid::new().to_string();
+        create_document(fixture.db_pool().pool(), &document_id).await;
         let embedding_id = Ulid::new().to_string();
 
         // Create initial embedding
@@ -216,6 +238,7 @@ mod tests {
 
         for doc_idx in 0..num_docs {
             let document_id = Ulid::new().to_string();
+            create_document(fixture.db_pool().pool(), &document_id).await;
 
             for chunk_idx in 0..chunks_per_doc {
                 embeddings.push(Embedding {
@@ -259,6 +282,9 @@ mod tests {
         let doc1_id = Ulid::new().to_string();
         let doc2_id = Ulid::new().to_string();
         let doc3_id = Ulid::new().to_string();
+        for doc_id in [&doc1_id, &doc2_id, &doc3_id] {
+            create_document(fixture.db_pool().pool(), doc_id).await;
+        }
 
         let embeddings = vec![
             // Document 1 - 2 chunks

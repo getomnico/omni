@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use omni_connector_sdk::mcp_adapter::{HttpMcpServer, McpAdapter, McpServer, StdioMcpServer};
 use omni_connector_sdk::ActionMode;
+use omni_connector_sdk::mcp_adapter::{HttpMcpServer, McpAdapter, McpServer, StdioMcpServer};
 
 fn fixture_path() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -113,10 +113,12 @@ async fn stdio_lists_resources_and_prompts() {
         .unwrap();
     assert_eq!(prompts.len(), 1);
     assert_eq!(prompts[0].name, "summarize");
-    assert!(prompts[0]
-        .arguments
-        .iter()
-        .any(|a| a.name == "text" && a.required));
+    assert!(
+        prompts[0]
+            .arguments
+            .iter()
+            .any(|a| a.name == "text" && a.required)
+    );
 }
 
 #[tokio::test]
@@ -132,10 +134,12 @@ async fn stdio_executes_tool() {
         .await;
     assert_eq!(response.status, "success");
     let result = response.result.expect("result");
-    assert!(result["content"]
-        .as_str()
-        .unwrap()
-        .contains("Hello, World!"));
+    assert!(
+        result["content"]
+            .as_str()
+            .unwrap()
+            .contains("Hello, World!")
+    );
 }
 
 #[tokio::test]
@@ -159,10 +163,12 @@ async fn stdio_reads_resource_and_prompt() {
         .unwrap();
     let messages = prompt["messages"].as_array().unwrap();
     assert!(!messages.is_empty());
-    assert!(messages[0]["content"]["text"]
-        .as_str()
-        .unwrap()
-        .contains("hello world"));
+    assert!(
+        messages[0]["content"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("hello world")
+    );
 }
 
 #[tokio::test]
@@ -204,13 +210,15 @@ async fn http_lists_tools_and_executes() {
         )
         .await;
     assert_eq!(response.status, "success");
-    assert!(response
-        .result
-        .unwrap()
-        .get("content")
-        .and_then(|v| v.as_str())
-        .unwrap()
-        .contains("Hello, Remote!"));
+    assert!(
+        response
+            .result
+            .unwrap()
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .contains("Hello, Remote!")
+    );
 }
 
 #[tokio::test]
@@ -231,19 +239,25 @@ async fn http_caches_after_discover() {
 #[tokio::test]
 async fn no_auth_no_cache_returns_empty() {
     let adapter = McpAdapter::new(McpServer::Stdio(stdio_server()));
-    assert!(adapter
-        .get_action_definitions(None, None)
-        .await
-        .unwrap()
-        .is_empty());
-    assert!(adapter
-        .get_resource_definitions(None, None)
-        .await
-        .unwrap()
-        .is_empty());
-    assert!(adapter
-        .get_prompt_definitions(None, None)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        adapter
+            .get_action_definitions(None, None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        adapter
+            .get_resource_definitions(None, None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        adapter
+            .get_prompt_definitions(None, None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }

@@ -14,7 +14,7 @@ use nix::libc;
 
 #[cfg(target_os = "linux")]
 use landlock::{
-    path_beneath_rules, Access, AccessFs, Ruleset, RulesetAttr, RulesetCreatedAttr, ABI,
+    ABI, Access, AccessFs, Ruleset, RulesetAttr, RulesetCreatedAttr, path_beneath_rules,
 };
 
 fn main() {
@@ -83,10 +83,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // 3. Set up environment and exec
     std::env::set_current_dir(chat_dir)?;
-    std::env::set_var("HOME", chat_dir);
-    std::env::set_var("TMPDIR", "/tmp");
-    std::env::set_var("PATH", "/usr/local/bin:/usr/bin:/bin");
-    std::env::set_var("PYTHONDONTWRITEBYTECODE", "1");
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("HOME", chat_dir) };
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("TMPDIR", "/tmp") };
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("PATH", "/usr/local/bin:/usr/bin:/bin") };
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("PYTHONDONTWRITEBYTECODE", "1") };
 
     // 4. execvp
     let program = CString::new(command[0].as_str())?;

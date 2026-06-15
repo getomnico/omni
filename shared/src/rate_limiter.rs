@@ -1,9 +1,9 @@
 use anyhow::Result;
 use governor::{Quota, RateLimiter as GovernorRateLimiter};
-use rand::{thread_rng, Rng};
+use rand::{Rng, thread_rng};
 use std::num::NonZeroU32;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use std::time::Instant;
 use tokio::time::sleep;
@@ -246,10 +246,12 @@ mod tests {
             .await;
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("persistent failure"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("persistent failure")
+        );
         // 1 initial attempt + 2 retries = 3 total attempts
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
     }

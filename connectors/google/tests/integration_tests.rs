@@ -197,21 +197,21 @@ async fn test_webhook_debounce_retains_unexpired() -> Result<()> {
 mod drive_buffer_budget_tests {
     use anyhow::Result;
     use axum::{
+        Router,
         extract::{Path, Query, State},
         response::Json,
         routing::{get, post, put},
-        Router,
     };
     use omni_connector_sdk::{
         AuthType, SdkClient, ServiceCredential, ServiceProvider, Source, SourceType, SyncContext,
         SyncType,
     };
     use omni_google_connector::{admin::AdminClient, sync::SyncManager};
-    use serde_json::{json, Value as JsonValue};
+    use serde_json::{Value as JsonValue, json};
     use shared::models::{SourceScope, UserFilterMode};
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use time::OffsetDateTime;
     use tokio::net::TcpListener;
 
@@ -455,10 +455,13 @@ mod drive_buffer_budget_tests {
         let _env_guard = DRIVE_ENV_LOCK.lock().await;
         let (drive_base_url, drive_state) = spawn_mock_drive().await?;
         let previous_drive_base = std::env::var("GOOGLE_DRIVE_API_BASE").ok();
-        std::env::set_var(
-            "GOOGLE_DRIVE_API_BASE",
-            format!("{}/drive/v3", drive_base_url),
-        );
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe {
+            std::env::set_var(
+                "GOOGLE_DRIVE_API_BASE",
+                format!("{}/drive/v3", drive_base_url),
+            )
+        };
 
         let cm_url = spawn_mock_connector_manager().await?;
         let sdk_client = SdkClient::new(&cm_url);
@@ -479,9 +482,11 @@ mod drive_buffer_budget_tests {
             .await;
 
         if let Some(value) = previous_drive_base {
-            std::env::set_var("GOOGLE_DRIVE_API_BASE", value);
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("GOOGLE_DRIVE_API_BASE", value) };
         } else {
-            std::env::remove_var("GOOGLE_DRIVE_API_BASE");
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::remove_var("GOOGLE_DRIVE_API_BASE") };
         }
 
         sync_result?;

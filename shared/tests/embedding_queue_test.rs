@@ -311,6 +311,10 @@ mod tests {
         let env = TestEnvironment::new().await.unwrap();
         let pool = env.db_pool.pool().clone();
         let queue = EmbeddingQueue::new(pool.clone());
+        sqlx::query("UPDATE embedding_providers SET is_current = FALSE")
+            .execute(&pool)
+            .await
+            .unwrap();
 
         let doc_id = create_document(&pool).await;
 

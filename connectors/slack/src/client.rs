@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use omni_connector_sdk::{RateLimiter, RetryableError};
 use reqwest::Client;
 use serde::Deserialize;

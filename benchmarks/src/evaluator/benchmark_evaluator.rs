@@ -5,7 +5,7 @@ use crate::evaluator::metrics::{
     BenchmarkConfigSummary, BenchmarkResult, EvaluationMetrics, LatencyCalculator,
     LatencyMeasurement, MetricsCalculator, QueryResult, RelevantDocument, RetrievedDocument,
 };
-use crate::search_client::{create_search_request, with_limit, with_offset, OmniSearchClient};
+use crate::search_client::{OmniSearchClient, create_search_request, with_limit, with_offset};
 use anyhow::Result;
 use chrono::Utc;
 use futures::stream::{self, StreamExt};

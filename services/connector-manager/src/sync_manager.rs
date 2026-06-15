@@ -12,8 +12,8 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
@@ -347,21 +347,19 @@ impl SyncManager {
 
                     if observations < MISSING_MANIFEST_GRACE_OBSERVATIONS {
                         warn!(
-                                "No registered connector for sync {} (source_type={:?}); deferring lost-sync handling for grace observation {}/{}",
-                                sync_run.id,
-                                source.source_type,
-                                observations,
-                                MISSING_MANIFEST_GRACE_OBSERVATIONS,
-                            );
+                            "No registered connector for sync {} (source_type={:?}); deferring lost-sync handling for grace observation {}/{}",
+                            sync_run.id,
+                            source.source_type,
+                            observations,
+                            MISSING_MANIFEST_GRACE_OBSERVATIONS,
+                        );
                         continue;
                     }
 
                     warn!(
-                            "No registered connector for sync {} (source_type={:?}) after {} observations; treating as lost",
-                            sync_run.id,
-                            source.source_type,
-                            observations,
-                        );
+                        "No registered connector for sync {} (source_type={:?}) after {} observations; treating as lost",
+                        sync_run.id, source.source_type, observations,
+                    );
                     self.handle_lost_sync(&sync_run.id, &sync_run.source_id)
                         .await;
                     continue;

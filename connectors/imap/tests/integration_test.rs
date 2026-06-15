@@ -6,9 +6,8 @@
 //! in a real sync.
 
 use omni_imap_connector::models::{
-    build_thread_connector_event, generate_thread_content, make_thread_document_id,
-    parse_raw_email, resolve_new_email_thread_root, resolve_thread_root, FolderSyncState,
-    ImapConnectorState,
+    FolderSyncState, ImapConnectorState, build_thread_connector_event, generate_thread_content,
+    make_thread_document_id, parse_raw_email, resolve_new_email_thread_root, resolve_thread_root,
 };
 use shared::models::ConnectorEvent;
 use std::collections::HashMap;

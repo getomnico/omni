@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use omni_connector_sdk::{Connector, ServiceCredential, Source, SourceType, SyncContext, SyncType};
 use serde::{Deserialize, Serialize};

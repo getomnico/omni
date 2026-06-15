@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use axum::response::Response;
@@ -6,7 +6,7 @@ use omni_connector_sdk::{
     ActionDefinition, ActionResponse, Connector, SearchOperator, ServiceCredential, Source,
     SourceType, SyncContext, SyncType,
 };
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use std::sync::Arc;
 
 use crate::client::ImapSession;
@@ -168,7 +168,7 @@ impl Connector for ImapConnector {
                         return Ok(ActionResponse::failure(
                             "IMAP action requires credentials".to_string(),
                         )
-                        .into_response())
+                        .into_response());
                     }
                 };
                 let typed_creds: ImapCredentials = match serde_json::from_value(creds.credentials)

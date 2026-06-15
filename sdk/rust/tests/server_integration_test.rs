@@ -4,13 +4,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
-use axum::{http::StatusCode, routing, Router};
+use axum::{Router, http::StatusCode, routing};
 use axum_test::{TestServer, TestServerConfig};
 use common::{GetSourceBehavior, MockConnectorManager, SyncBehavior, TestConnector};
 use omni_connector_sdk::{
-    create_router, Connector, ServiceCredential, Source, SourceType, SyncContext,
+    Connector, ServiceCredential, Source, SourceType, SyncContext, create_router,
 };
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use tokio::sync::Notify;
 
 const CONNECTOR_URL: &str = "http://test-connector";
@@ -679,9 +679,11 @@ async fn t15_action_exception_returns_500() -> Result<()> {
     assert_eq!(resp.status_code(), 500);
     let body: serde_json::Value = resp.json();
     assert_eq!(body["status"], "error");
-    assert!(body["error"]
-        .as_str()
-        .unwrap()
-        .contains("intentional action panic"));
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("intentional action panic")
+    );
     Ok(())
 }

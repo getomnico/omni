@@ -5,12 +5,12 @@ use anyhow::Result;
 use redis::Client as RedisClient;
 use sqlx::PgPool;
 use testcontainers::{
+    ContainerAsync, GenericImage, ImageExt,
     core::{ContainerPort, WaitFor},
     runners::AsyncRunner,
-    ContainerAsync, GenericImage, ImageExt,
 };
 use testcontainers_modules::{localstack::LocalStack, redis::Redis};
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 use crate::{
     config::{DatabaseConfig, RedisConfig},
@@ -220,9 +220,9 @@ impl MockAIServer {
     /// Start the mock AI server
     pub async fn start() -> Result<Self> {
         use axum::{
+            Router,
             response::Json,
             routing::{get, post},
-            Router,
         };
         use serde::{Deserialize, Serialize};
         use tokio::net::TcpListener;

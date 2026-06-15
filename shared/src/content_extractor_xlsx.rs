@@ -1,6 +1,6 @@
-use anyhow::{anyhow, Context, Result};
-use quick_xml::events::Event;
+use anyhow::{Context, Result, anyhow};
 use quick_xml::Reader as XmlReader;
+use quick_xml::events::Event;
 use std::io::{BufReader, Cursor};
 use zip::ZipArchive;
 
@@ -306,7 +306,7 @@ fn read_xlsx_sheet_rows(
                     "Error reading XLSX worksheet {}: {}",
                     sheet_path,
                     e
-                ))
+                ));
             }
             _ => {}
         }

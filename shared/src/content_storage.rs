@@ -320,8 +320,8 @@ mod tests {
             .await
             .unwrap();
 
-        // They should have different IDs but same hash
-        assert_ne!(content_id1, content_id2);
+        // Identical content should reuse the existing content-addressed blob.
+        assert_eq!(content_id1, content_id2);
 
         let metadata1 = content_storage
             .get_content_metadata(&content_id1)

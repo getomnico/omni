@@ -2,8 +2,8 @@ mod common;
 
 use anyhow::Result;
 use common::{
-    count_queued_events, get_queued_events, get_queued_events_by_type, setup_test_fixture,
-    TEST_CLOUD_ID, TEST_DOMAIN, TEST_SA_TOKEN,
+    TEST_CLOUD_ID, TEST_DOMAIN, TEST_SA_TOKEN, count_queued_events, get_queued_events,
+    get_queued_events_by_type, setup_test_fixture,
 };
 use omni_atlassian_connector::models::{
     AtlassianWebhookEvent, AtlassianWebhookIssue, AtlassianWebhookIssueFields,
@@ -22,8 +22,8 @@ use omni_atlassian_connector::{
 };
 use omni_connector_sdk::{SourceType, SyncContext, SyncType};
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use time::OffsetDateTime;
 
 const SOURCE_ID: &str = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
@@ -323,6 +323,7 @@ async fn test_confluence_full_sync_ignores_saved_page_versions() -> Result<()> {
     fixture.sdk_client.flush_all().await?;
     let events_after_first = count_queued_events(&fixture.pool).await?;
     assert_eq!(events_after_first, 2);
+    fixture.sdk_client.complete(&sync_run_id).await?;
 
     // A later full sync must ignore saved page versions and process all pages again.
     let second_processor = ConfluenceProcessor::with_page_versions(
@@ -449,10 +450,12 @@ async fn test_jira_full_sync_creates_events() -> Result<()> {
     for event in &events {
         assert_eq!(event["type"], "document_created");
         assert_eq!(event["source_id"], SOURCE_ID);
-        assert!(event["document_id"]
-            .as_str()
-            .unwrap()
-            .starts_with("jira_issue_PROJ_"));
+        assert!(
+            event["document_id"]
+                .as_str()
+                .unwrap()
+                .starts_with("jira_issue_PROJ_")
+        );
     }
 
     // Verify mock calls

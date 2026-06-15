@@ -1,7 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use shared::{
-    models::{AttributeFilter, DateFilter, Document, Facet, UserConfiguration},
     SourceType,
+    models::{AttributeFilter, DateFilter, Document, Facet, UserConfiguration},
 };
 use std::collections::HashMap;
 

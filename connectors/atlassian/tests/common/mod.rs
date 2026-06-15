@@ -2,16 +2,16 @@ pub mod mock_atlassian;
 
 use anyhow::Result;
 use mock_atlassian::MockAtlassianApi;
-use omni_connector_manager::{config::ConnectorManagerConfig, create_app, AppState};
+use omni_connector_manager::{AppState, config::ConnectorManagerConfig, create_app};
 use omni_connector_sdk::SdkClient;
 use redis::AsyncCommands;
+use shared::ObjectStorage;
 use shared::db::repositories::service_credentials::ServiceCredentialsRepo;
 use shared::models::{
     AuthType, ConnectorManifest, ServiceCredential, ServiceProvider, SourceType, SyncType,
 };
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
-use shared::ObjectStorage;
 use sqlx::PgPool;
 use std::sync::Arc;
 use time::OffsetDateTime;
@@ -32,13 +32,19 @@ pub struct TestFixture {
 }
 
 pub async fn setup_test_fixture(source_type: SourceType) -> Result<TestFixture> {
-    std::env::set_var(
-        "ENCRYPTION_KEY",
-        "test_master_key_that_is_long_enough_32_chars",
-    );
-    std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars");
-    std::env::set_var("CONNECTOR_HOST_NAME", "localhost");
-    std::env::set_var("PORT", "0");
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe {
+        std::env::set_var(
+            "ENCRYPTION_KEY",
+            "test_master_key_that_is_long_enough_32_chars",
+        )
+    };
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars") };
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("CONNECTOR_HOST_NAME", "localhost") };
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("PORT", "0") };
 
     let test_env = TestEnvironment::new().await?;
 

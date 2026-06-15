@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
@@ -6,10 +6,16 @@ use omni_connector_sdk::{
     SyncContext, SyncType,
 };
 use serde::Deserialize;
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 
 fn guess_mime_type(filename: &str) -> &'static str {
-    match filename.rsplit('.').next().unwrap_or("").to_lowercase().as_str() {
+    match filename
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_lowercase()
+        .as_str()
+    {
         // Office Open XML
         "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -209,9 +215,7 @@ impl Connector for NextcloudConnector {
                     key
                 } else {
                     // Numeric oc:fileid — resolve to path via PROPFIND meta endpoint.
-                    client
-                        .get_href_by_file_id(&config.server_url, &key)
-                        .await?
+                    client.get_href_by_file_id(&config.server_url, &key).await?
                 };
 
                 // build_download_url handles both relative paths and absolute URLs

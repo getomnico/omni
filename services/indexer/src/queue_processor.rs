@@ -1,5 +1,5 @@
-use crate::people_extractor;
 use crate::AppState;
+use crate::people_extractor;
 use anyhow::{Context, Result};
 use shared::db::repositories::{
     DocumentRepository, GroupRepository, PersonRepository, SyncRunRepository,
@@ -14,7 +14,7 @@ use shared::storage::gc::{ContentBlobGC, GCConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
-use tokio::time::{interval, Duration, MissedTickBehavior};
+use tokio::time::{Duration, MissedTickBehavior, interval};
 use tracing::{debug, error, info, warn};
 
 // Default poll interval for draining the queue. Overridable via INDEXER_POLL_INTERVAL_SECS.
@@ -656,8 +656,16 @@ impl QueueProcessor {
                 "Sync-run batch contains: {} upsert, {} deleted documents ({} upsert events, {} deleted events)",
                 batch.documents_upsert.len(),
                 batch.documents_deleted.len(),
-                batch.documents_upsert.iter().map(|(_, event_ids)| event_ids.len()).sum::<usize>(),
-                batch.documents_deleted.iter().map(|(_, _, event_ids)| event_ids.len()).sum::<usize>()
+                batch
+                    .documents_upsert
+                    .iter()
+                    .map(|(_, event_ids)| event_ids.len())
+                    .sum::<usize>(),
+                batch
+                    .documents_deleted
+                    .iter()
+                    .map(|(_, _, event_ids)| event_ids.len())
+                    .sum::<usize>()
             );
 
             let batch_sync_run_id = batch.sync_run_id.clone();
@@ -719,7 +727,8 @@ impl QueueProcessor {
                         batch_result.successful_event_ids.len(),
                         batch_result.failed_events.len(),
                         batch_duration,
-                        batch_result.successful_event_ids.len() as f64 / batch_duration.as_secs_f64()
+                        batch_result.successful_event_ids.len() as f64
+                            / batch_duration.as_secs_f64()
                     );
                 }
                 Err(e) => {

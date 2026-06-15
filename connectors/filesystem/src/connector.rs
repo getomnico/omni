@@ -1,11 +1,11 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use omni_connector_sdk::{
     ActionDefinition, ActionResponse, Connector, ServiceCredential, Source, SourceType,
     SyncContext, SyncType,
 };
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 
 use crate::models::FileSystemConfig;
 use crate::{sync, watcher};

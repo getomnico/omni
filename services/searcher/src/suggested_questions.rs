@@ -1,6 +1,6 @@
 use crate::models::{SuggestedQuestion, SuggestedQuestionsResponse};
 use crate::{Result as SearcherResult, SearcherError};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use dashmap::DashSet;
 use futures_util::StreamExt;
 use redis::AsyncCommands;
@@ -68,7 +68,9 @@ impl SuggestedQuestionsGenerator {
         }
 
         // Check for existing in-flight suggested question generation tasks
-        info!("Cache miss for suggested questions, checking for in-flight generations for this user before proceeding.");
+        info!(
+            "Cache miss for suggested questions, checking for in-flight generations for this user before proceeding."
+        );
         if self.in_flight.contains(user_email) {
             info!(
                 "Suggested questions generation already in progress for user {}",
@@ -100,7 +102,10 @@ impl SuggestedQuestionsGenerator {
                     .await
                     {
                         Ok(count) => {
-                            info!("Successfully generated and cached {} suggested questions for user {}", count, user_email);
+                            info!(
+                                "Successfully generated and cached {} suggested questions for user {}",
+                                count, user_email
+                            );
                             // Remove the user from the in-flight map to allow future requests to go through
                             in_flight.remove(&user_email);
                         }

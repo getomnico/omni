@@ -6,7 +6,7 @@ use axum::{
     http::{Method, Request, StatusCode},
 };
 use common::SearcherTestFixture;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shared::db::repositories::{GroupRepository, PersonRepository, PersonUpsert};
 use shared::models::DocumentPermissions;
 use tower::ServiceExt;

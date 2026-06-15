@@ -1,6 +1,6 @@
-use anyhow::{anyhow, Context, Result};
-use base64::engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD};
+use anyhow::{Context, Result, anyhow};
 use base64::Engine;
+use base64::engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD};
 
 /// Decode a Gmail base64url payload, accepting both padded and unpadded forms.
 /// The Gmail API is inconsistent — bodies whose decoded length isn't a multiple
@@ -20,7 +20,7 @@ use std::time::Duration;
 use tracing::{debug, warn};
 
 use crate::auth::{
-    classify_google_api_error, execute_with_auth_retry, google_max_retries, ApiResult, GoogleAuth,
+    ApiResult, GoogleAuth, classify_google_api_error, execute_with_auth_retry, google_max_retries,
 };
 use omni_connector_sdk::RateLimiter;
 
@@ -1113,8 +1113,8 @@ fn mime_type_from_extension(filename: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::decode_gmail_base64;
-    use base64::engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD};
     use base64::Engine;
+    use base64::engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD};
 
     #[test]
     fn decodes_unpadded_base64url() {

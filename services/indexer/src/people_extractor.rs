@@ -111,7 +111,7 @@ pub fn extract_people(
             ..
         } => (Some(metadata), permissions.as_ref(), attributes.as_ref()),
         ConnectorEvent::DocumentDeleted { .. } | ConnectorEvent::GroupMembershipSync { .. } => {
-            return vec![]
+            return vec![];
         }
     };
 

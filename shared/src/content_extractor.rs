@@ -1,9 +1,9 @@
-use anyhow::{anyhow, Context, Result};
-use calamine::{open_workbook_auto_from_rs, Reader};
+use anyhow::{Context, Result, anyhow};
+use calamine::{Reader, open_workbook_auto_from_rs};
 use docx_rs::read_docx;
 use mail_parser::MessageParser;
-use quick_xml::events::Event;
 use quick_xml::Reader as XmlReader;
+use quick_xml::events::Event;
 use std::io::Cursor;
 use tracing::{debug, warn};
 use zip::ZipArchive;

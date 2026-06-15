@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Mutex;
 
+use omni_atlassian_connector::AtlassianApi;
+use omni_atlassian_connector::AtlassianCredentials;
 use omni_atlassian_connector::client::{OrgGroupInfo, PageReadRestrictions};
 use omni_atlassian_connector::models::{
     ConfluenceCqlPage, ConfluencePage, ConfluenceSpace, ConfluenceSpacePermission, JiraField,
@@ -12,8 +14,6 @@ use omni_atlassian_connector::models::{
     JiraProjectIssueSecuritySchemeResponse, JiraProjectRolesResponse, JiraRoleActorsResponse,
     JiraSearchResponse, JiraSecurityLevelMember,
 };
-use omni_atlassian_connector::AtlassianApi;
-use omni_atlassian_connector::AtlassianCredentials;
 
 #[derive(Debug, Clone)]
 pub struct MethodCall {

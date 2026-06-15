@@ -5,9 +5,9 @@
 
 #[cfg(test)]
 mod tests {
+    use shared::ServiceCredentialsRepo;
     use shared::models::{AuthType, ServiceCredential, ServiceProvider};
     use shared::test_environment::TestEnvironment;
-    use shared::ServiceCredentialsRepo;
     use sqlx::PgPool;
     use time::OffsetDateTime;
 
@@ -17,11 +17,15 @@ mod tests {
     const ORG_SOURCE_ID: &str = "01JGF7V3E0Y2R1X8P5Q7W9T4O1";
 
     fn ensure_encryption_env() {
-        std::env::set_var(
-            "ENCRYPTION_KEY",
-            "test_master_key_that_is_long_enough_32_chars",
-        );
-        std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe {
+            std::env::set_var(
+                "ENCRYPTION_KEY",
+                "test_master_key_that_is_long_enough_32_chars",
+            )
+        };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars") };
     }
 
     async fn seed_org_source(pool: &PgPool) {

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use dotenvy::dotenv;
 use omni_connector_sdk::telemetry::{self, TelemetryConfig};
-use omni_connector_sdk::{serve_with_config, ServerConfig};
+use omni_connector_sdk::{ServerConfig, serve_with_config};
 use omni_nextcloud_connector::connector::NextcloudConnector;
 use tracing::info;
 

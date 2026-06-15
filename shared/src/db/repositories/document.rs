@@ -1,7 +1,7 @@
 use crate::{
+    SourceType,
     db::error::DatabaseError,
     models::{AttributeFilter, DateFilter, Document},
-    SourceType,
 };
 use serde_json::Value as JsonValue;
 use sqlx::{FromRow, PgPool};

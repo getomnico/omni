@@ -10,8 +10,8 @@ pub use axum::Router;
 pub use redis::Client as RedisClient;
 pub use serde::{Deserialize, Serialize};
 pub use serde_json::Value;
-pub use shared::db::pool::DatabasePool;
 pub use shared::AIClient;
+pub use shared::db::pool::DatabasePool;
 use std::sync::Arc;
 
 use axum::{
@@ -23,11 +23,11 @@ use axum::{
 use error::Result as IndexerResult;
 use serde_json::json;
 use shared::{
+    IndexerConfig,
     db::repositories::{DocumentRepository, OrphanStats},
     models::Document,
     storage::gc::{ContentBlobGC, GCConfig, GCResult},
     telemetry::{self, TelemetryConfig},
-    IndexerConfig,
 };
 use sqlx::types::time::OffsetDateTime;
 use std::net::SocketAddr;

@@ -13,6 +13,6 @@ pub use auth::{AtlassianCredentials, AuthManager};
 pub use client::{AtlassianApi, AtlassianClient};
 pub use config::AtlassianConnectorConfig;
 pub use confluence::ConfluenceProcessor;
-pub use connector::{handle_search_spaces, AtlassianConnector};
+pub use connector::{AtlassianConnector, handle_search_spaces};
 pub use jira::JiraProcessor;
 pub use sync::SyncManager;

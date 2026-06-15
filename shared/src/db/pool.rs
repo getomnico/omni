@@ -1,6 +1,6 @@
 use crate::config::DatabaseConfig;
 use crate::db::error::DatabaseError;
-use sqlx::{postgres::PgPoolOptions, PgPool};
+use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::time::Duration;
 
 #[derive(Clone)]

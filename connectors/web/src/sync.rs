@@ -5,7 +5,7 @@ use spider::client::StatusCode;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, info};
 
 use crate::config::WebSourceConfig;

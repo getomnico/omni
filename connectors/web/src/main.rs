@@ -1,8 +1,8 @@
 use anyhow::Result;
 use dotenvy::dotenv;
+use omni_connector_sdk::SdkClient;
 use omni_connector_sdk::serve;
 use omni_connector_sdk::telemetry::{self, TelemetryConfig};
-use omni_connector_sdk::SdkClient;
 use omni_web_connector::connector::WebConnector;
 use tracing::info;
 

@@ -1,3 +1,4 @@
+use crate::AppState;
 use crate::connector_client::ConnectorClient;
 use crate::models::{
     ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
@@ -6,15 +7,14 @@ use crate::models::{
 };
 use crate::sync_circuit_breaker::has_failure_streak;
 use crate::sync_manager::SyncError;
-use crate::AppState;
 use axum::{
-    extract::{Path, Query, State},
-    http::{header, HeaderValue, StatusCode},
-    response::{
-        sse::{Event, KeepAlive, Sse},
-        IntoResponse,
-    },
     Json,
+    extract::{Path, Query, State},
+    http::{HeaderValue, StatusCode, header},
+    response::{
+        IntoResponse,
+        sse::{Event, KeepAlive, Sse},
+    },
 };
 use futures::stream::Stream;
 use redis::AsyncCommands;
@@ -1512,10 +1512,7 @@ async fn extract_content(
         Ok(text) if is_pdf && text.trim().is_empty() => {
             warn!(
                 "PDF text extraction produced no text; sync_run_id={}, source_id={:?}, filename={:?}, mime_type={}",
-                sync_run_id,
-                source_id,
-                filename,
-                mime_type,
+                sync_run_id, source_id, filename, mime_type,
             );
             Ok("[Text extraction failed for this PDF. The document was skipped for extracted-text indexing because no text could be extracted.]".to_string())
         }
@@ -1523,11 +1520,7 @@ async fn extract_content(
         Err(e) if is_pdf => {
             warn!(
                 "PDF text extraction failed; sync_run_id={}, source_id={:?}, filename={:?}, mime_type={}, reason={}",
-                sync_run_id,
-                source_id,
-                filename,
-                mime_type,
-                e,
+                sync_run_id, source_id, filename, mime_type, e,
             );
             Ok(format!(
                 "[Text extraction failed for this PDF. The document was skipped for extracted-text indexing. Reason: {}]",
@@ -1624,36 +1617,41 @@ async fn do_extract_text(
     };
 
     let extracted_text = if docling_candidate && docling_enabled {
-        let docling_result = if let Some(client) = DoclingClient::from_env() {
-            let file_name = filename.as_deref().unwrap_or("document");
-            debug!(
-                "Using docling-based document content extraction for file '{}' (preset={})",
-                file_name, preset
-            );
-            match client.convert(&data, file_name, &preset).await {
-                Ok(markdown) => {
-                    debug!("Docling extraction succeeded: {} chars", markdown.len());
-                    Some(markdown)
-                }
-                Err(DoclingError::ServiceOverloaded { retry_after_secs }) => {
-                    warn!(
-                        "Docling overloaded, propagating 429 (retry after {}s)",
-                        retry_after_secs
-                    );
-                    return Err(ApiError::TooManyRequests {
-                        message: "Document conversion service is overloaded. Try again later."
-                            .to_string(),
-                        retry_after_secs,
-                    });
-                }
-                Err(e) => {
-                    warn!("Docling extraction failed, falling back to built-in: {}", e);
-                    None
+        let docling_result = match DoclingClient::from_env() {
+            Some(client) => {
+                let file_name = filename.as_deref().unwrap_or("document");
+                debug!(
+                    "Using docling-based document content extraction for file '{}' (preset={})",
+                    file_name, preset
+                );
+                match client.convert(&data, file_name, &preset).await {
+                    Ok(markdown) => {
+                        debug!("Docling extraction succeeded: {} chars", markdown.len());
+                        Some(markdown)
+                    }
+                    Err(DoclingError::ServiceOverloaded { retry_after_secs }) => {
+                        warn!(
+                            "Docling overloaded, propagating 429 (retry after {}s)",
+                            retry_after_secs
+                        );
+                        return Err(ApiError::TooManyRequests {
+                            message: "Document conversion service is overloaded. Try again later."
+                                .to_string(),
+                            retry_after_secs,
+                        });
+                    }
+                    Err(e) => {
+                        warn!("Docling extraction failed, falling back to built-in: {}", e);
+                        None
+                    }
                 }
             }
-        } else {
-            warn!("Docling enabled but DOCLING_URL not set, falling back to built-in extraction");
-            None
+            _ => {
+                warn!(
+                    "Docling enabled but DOCLING_URL not set, falling back to built-in extraction"
+                );
+                None
+            }
         };
 
         if let Some(markdown) = docling_result {
@@ -1673,7 +1671,10 @@ async fn do_extract_text(
             .await?
         }
     } else {
-        debug!("Using built-in document content extraction for file {:?} (docling_enabled={}, docling_candidate={})", filename, docling_enabled, docling_candidate);
+        debug!(
+            "Using built-in document content extraction for file {:?} (docling_enabled={}, docling_candidate={})",
+            filename, docling_enabled, docling_candidate
+        );
         extract_content(
             data,
             mime_type.clone(),

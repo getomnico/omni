@@ -16,10 +16,10 @@ use axum::{
 };
 use futures_util::Stream;
 use redis::AsyncCommands;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shared::{
-    models::UserConfiguration, ConfigurationRepository, PersonRepository, Repository,
-    UserRepository,
+    ConfigurationRepository, PersonRepository, Repository, UserRepository,
+    models::UserConfiguration,
 };
 use sqlx::types::time::OffsetDateTime;
 use std::pin::Pin;

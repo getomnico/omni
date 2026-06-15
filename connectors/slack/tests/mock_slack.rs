@@ -1,8 +1,8 @@
 use axum::{
+    Router,
     extract::{Query, State},
     response::Json,
     routing::{get, post},
-    Router,
 };
 use omni_slack_connector::models::{
     AuthTestResponse, ChatGetPermalinkResponse, ConversationInfoResponse,

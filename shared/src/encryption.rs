@@ -1,5 +1,5 @@
-use anyhow::{anyhow, Result};
-use base64::{engine::general_purpose, Engine as _};
+use anyhow::{Result, anyhow};
+use base64::{Engine as _, engine::general_purpose};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -63,7 +63,7 @@ impl EncryptionService {
 
     /// Encrypt data using AES-256-GCM
     pub fn encrypt(&self, data: &str) -> Result<EncryptedData> {
-        use ring::aead::{self, BoundKey, SealingKey, UnboundKey, AES_256_GCM};
+        use ring::aead::{self, AES_256_GCM, BoundKey, SealingKey, UnboundKey};
 
         // Generate random nonce (96 bits for GCM)
         let mut nonce_bytes = [0u8; 12];
@@ -102,7 +102,7 @@ impl EncryptionService {
 
     /// Decrypt data using AES-256-GCM
     pub fn decrypt(&self, encrypted_data: &EncryptedData) -> Result<String> {
-        use ring::aead::{self, BoundKey, OpeningKey, UnboundKey, AES_256_GCM};
+        use ring::aead::{self, AES_256_GCM, BoundKey, OpeningKey, UnboundKey};
 
         // Decode base64 data
         let encrypted_bytes = general_purpose::STANDARD
@@ -199,11 +199,15 @@ mod tests {
     fn test_encrypt_decrypt_string() {
         // Set up test environment variables
         let _lock = TEST_ENV_LOCK.lock().unwrap();
-        std::env::set_var(
-            "ENCRYPTION_KEY",
-            "test_master_key_that_is_long_enough_32_chars",
-        );
-        std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe {
+            std::env::set_var(
+                "ENCRYPTION_KEY",
+                "test_master_key_that_is_long_enough_32_chars",
+            )
+        };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars") };
 
         let service = EncryptionService::new().unwrap();
         let original_data = "Hello, World! This is sensitive data.";
@@ -225,11 +229,15 @@ mod tests {
     fn test_encrypt_decrypt_json() {
         // Set up test environment variables
         let _lock = TEST_ENV_LOCK.lock().unwrap();
-        std::env::set_var(
-            "ENCRYPTION_KEY",
-            "test_master_key_that_is_long_enough_32_chars",
-        );
-        std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe {
+            std::env::set_var(
+                "ENCRYPTION_KEY",
+                "test_master_key_that_is_long_enough_32_chars",
+            )
+        };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars") };
 
         let service = EncryptionService::new().unwrap();
 
@@ -257,11 +265,15 @@ mod tests {
     fn test_different_salts_produce_different_ciphertexts() {
         // Set up test environment variables for this test
         let _lock = TEST_ENV_LOCK.lock().unwrap();
-        std::env::set_var(
-            "ENCRYPTION_KEY",
-            "test_master_key_that_is_long_enough_32_chars",
-        );
-        std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe {
+            std::env::set_var(
+                "ENCRYPTION_KEY",
+                "test_master_key_that_is_long_enough_32_chars",
+            )
+        };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars") };
 
         let service = EncryptionService::new().unwrap();
         let data = "Same data for both encryptions";
@@ -283,29 +295,41 @@ mod tests {
         let _lock = TEST_ENV_LOCK.lock().unwrap();
 
         // Test missing ENCRYPTION_KEY
-        std::env::remove_var("ENCRYPTION_KEY");
-        std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ENCRYPTION_KEY") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars") };
         assert!(EncryptionService::new().is_err());
 
         // Test missing ENCRYPTION_SALT
-        std::env::set_var(
-            "ENCRYPTION_KEY",
-            "test_master_key_that_is_long_enough_32_chars",
-        );
-        std::env::remove_var("ENCRYPTION_SALT");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe {
+            std::env::set_var(
+                "ENCRYPTION_KEY",
+                "test_master_key_that_is_long_enough_32_chars",
+            )
+        };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("ENCRYPTION_SALT") };
         assert!(EncryptionService::new().is_err());
 
         // Test short ENCRYPTION_KEY
-        std::env::set_var("ENCRYPTION_KEY", "short");
-        std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("ENCRYPTION_KEY", "short") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars") };
         assert!(EncryptionService::new().is_err());
 
         // Test short ENCRYPTION_SALT
-        std::env::set_var(
-            "ENCRYPTION_KEY",
-            "test_master_key_that_is_long_enough_32_chars",
-        );
-        std::env::set_var("ENCRYPTION_SALT", "short");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe {
+            std::env::set_var(
+                "ENCRYPTION_KEY",
+                "test_master_key_that_is_long_enough_32_chars",
+            )
+        };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("ENCRYPTION_SALT", "short") };
         assert!(EncryptionService::new().is_err());
     }
 }

@@ -1,12 +1,12 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, NaiveDate};
 use omni_connector_sdk::SyncContext;
 use omni_connector_sdk::{
     ConnectorEvent, SdkClient, ServiceCredential, ServiceProvider, Source, SourceType, SyncType,
 };
 use std::collections::BTreeSet;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use tracing::{debug, error, info, warn};
 
 use crate::auth::AuthManager;

@@ -1,11 +1,11 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use dashmap::DashMap;
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 use omni_connector_sdk::SyncContext;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use time::{self, OffsetDateTime};
 use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
@@ -248,14 +248,14 @@ async fn emit_metadata_only_drive_event(
 }
 
 use crate::admin::AdminClient;
-use crate::auth::{google_max_retries, GoogleAuth, OAuthAuth};
+use crate::auth::{GoogleAuth, OAuthAuth, google_max_retries};
 use crate::cache::LruFolderCache;
 use crate::connector::build_attachment_doc_id;
 use crate::drive::{DriveClient, FileContent};
 use crate::gmail::{BatchThreadResult, ExtractedAttachment, GmailClient, MessageFormat};
 use crate::models::{
-    mime_type_to_content_type, AttachmentPointer, GmailThread, GoogleConnectorState,
-    GoogleSyncCheckpoint, UserFile, WebhookChannel, WebhookChannelResponse, WebhookNotification,
+    AttachmentPointer, GmailThread, GoogleConnectorState, GoogleSyncCheckpoint, UserFile,
+    WebhookChannel, WebhookChannelResponse, WebhookNotification, mime_type_to_content_type,
 };
 use omni_connector_sdk::RateLimiter;
 use omni_connector_sdk::SdkClient;
@@ -1526,7 +1526,10 @@ impl SyncManager {
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to get access token for user {}: {}. This user may not have Gmail access.", cur_user_email, e);
+                    warn!(
+                        "Failed to get access token for user {}: {}. This user may not have Gmail access.",
+                        cur_user_email, e
+                    );
                 }
             }
         }
@@ -1819,8 +1822,8 @@ impl SyncManager {
         webhook_url: String,
     ) -> Result<WebhookChannelResponse> {
         // Capture old channel info before registering the new one
-        let old_channel =
-            if let Ok(Some(raw_state)) = self.sdk_client.get_connector_state(source_id).await {
+        let old_channel = match self.sdk_client.get_connector_state(source_id).await {
+            Ok(Some(raw_state)) => {
                 let state: GoogleConnectorState =
                     serde_json::from_value(raw_state).unwrap_or_else(|e| {
                         warn!(
@@ -1833,9 +1836,9 @@ impl SyncManager {
                     (Some(ch), Some(res)) => Some((ch.clone(), res.clone())),
                     _ => None,
                 }
-            } else {
-                None
-            };
+            }
+            _ => None,
+        };
 
         let service_creds = self.get_service_credentials(source_id).await?;
         let service_auth =

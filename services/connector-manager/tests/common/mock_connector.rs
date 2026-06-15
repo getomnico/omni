@@ -1,17 +1,17 @@
 use axum::{
+    Router,
     extract::{Path, State},
     http::StatusCode,
     response::Json,
     routing::{get, post},
-    Router,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordedSyncRequest {
@@ -106,10 +106,9 @@ impl MockConnector {
     /// pooled keep-alive connections — otherwise reqwest's idle conn on the
     /// caller side would happily roundtrip to still-alive handler tasks.
     pub async fn stop(&self) {
-        let sent = if let Some(tx) = self.shutdown_tx.lock().unwrap().take() {
-            tx.send(()).is_ok()
-        } else {
-            false
+        let sent = match self.shutdown_tx.lock().unwrap().take() {
+            Some(tx) => tx.send(()).is_ok(),
+            _ => false,
         };
         let handle = {
             let mut h = self.server_handle.lock().unwrap();

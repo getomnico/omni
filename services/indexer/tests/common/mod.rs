@@ -1,14 +1,14 @@
 use anyhow::Result;
-use omni_indexer::{create_app, AppState};
+use omni_indexer::{AppState, create_app};
+use shared::ObjectStorage;
 use shared::db::repositories::DocumentRepository;
 use shared::models::{ConnectorEvent, Document, DocumentMetadata, DocumentPermissions};
 use shared::queue::EventQueue;
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
-use shared::ObjectStorage;
 use sqlx::PgPool;
 use std::sync::Arc;
-use tokio::time::{sleep, timeout, Duration};
+use tokio::time::{Duration, sleep, timeout};
 
 pub const TEST_SOURCE_ID: &str = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
 
@@ -28,11 +28,15 @@ impl TestFixture {
 }
 
 pub async fn setup_test_fixture() -> Result<TestFixture> {
-    std::env::set_var(
-        "ENCRYPTION_KEY",
-        "test_master_key_that_is_long_enough_32_chars",
-    );
-    std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars");
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe {
+        std::env::set_var(
+            "ENCRYPTION_KEY",
+            "test_master_key_that_is_long_enough_32_chars",
+        )
+    };
+    // TODO: Audit that the environment access only happens in single-threaded code.
+    unsafe { std::env::set_var("ENCRYPTION_SALT", "test_salt_16_chars") };
 
     let test_env = TestEnvironment::new().await?;
 

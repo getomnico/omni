@@ -5,7 +5,7 @@ use omni_atlassian_connector::connector::AtlassianConnector;
 use omni_atlassian_connector::routes;
 use omni_atlassian_connector::sync::SyncManager;
 use omni_connector_sdk::telemetry::{self, TelemetryConfig};
-use omni_connector_sdk::{serve_with_extra_routes, SdkClient, ServerConfig};
+use omni_connector_sdk::{SdkClient, ServerConfig, serve_with_extra_routes};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;

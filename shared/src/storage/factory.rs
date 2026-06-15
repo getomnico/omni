@@ -1,4 +1,4 @@
-use super::{postgres::PostgresStorage, s3::S3Storage, ObjectStorage, StorageError};
+use super::{ObjectStorage, StorageError, postgres::PostgresStorage, s3::S3Storage};
 use sqlx::PgPool;
 use std::sync::Arc;
 use tracing::info;
@@ -111,7 +111,8 @@ mod tests {
     #[tokio::test]
     async fn test_factory_postgres() {
         // Set environment to use Postgres
-        std::env::set_var("STORAGE_BACKEND", "postgres");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("STORAGE_BACKEND", "postgres") };
 
         let env = TestEnvironment::new().await.unwrap();
         let storage = StorageFactory::from_env(env.db_pool.pool().clone())
@@ -131,8 +132,10 @@ mod tests {
     #[tokio::test]
     async fn test_factory_s3_without_config() {
         // Set environment to use S3 without required config
-        std::env::set_var("STORAGE_BACKEND", "s3");
-        std::env::remove_var("S3_BUCKET");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("STORAGE_BACKEND", "s3") };
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("S3_BUCKET") };
 
         let env = TestEnvironment::new().await.unwrap();
         let result = StorageFactory::from_env(env.db_pool.pool().clone()).await;
@@ -141,7 +144,8 @@ mod tests {
         assert!(matches!(result, Err(StorageError::Config(_))));
 
         // Cleanup
-        std::env::set_var("STORAGE_BACKEND", "postgres");
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("STORAGE_BACKEND", "postgres") };
     }
 
     #[tokio::test]

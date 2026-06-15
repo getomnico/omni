@@ -219,11 +219,7 @@ impl MetricsCalculator {
             idcg += relevance / discount;
         }
 
-        if idcg == 0.0 {
-            0.0
-        } else {
-            dcg / idcg
-        }
+        if idcg == 0.0 { 0.0 } else { dcg / idcg }
     }
 
     fn calculate_mrr(

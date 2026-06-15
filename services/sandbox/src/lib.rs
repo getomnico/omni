@@ -5,11 +5,11 @@ pub mod models;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use axum::routing::{get, post};
-use axum::Router;
 use tower_http::trace::TraceLayer;
 
 #[derive(Debug, Clone)]

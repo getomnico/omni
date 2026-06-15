@@ -3,8 +3,8 @@
 //! The Docling service converts documents to Markdown using AI-based extraction.
 //! It provides superior PDF extraction, OCR support, and structure-aware output.
 
-use anyhow::{anyhow, Context};
-use reqwest::{multipart, Client};
+use anyhow::{Context, anyhow};
+use reqwest::{Client, multipart};
 use serde::Deserialize;
 use std::time::Duration;
 use tracing::{debug, error};

@@ -35,10 +35,10 @@ pub use encryption::{EncryptedData, EncryptionService};
 pub use models::*;
 pub use queue::{EventQueue, QueueStats, QueueSummary};
 pub use rate_limiter::{RateLimiter, RetryableError};
-pub use service_auth::{create_service_auth, ServiceAuth};
+pub use service_auth::{ServiceAuth, create_service_auth};
 pub use storage::{
-    factory::{StorageBackend, StorageFactory},
     ContentMetadata as StorageContentMetadata, ObjectStorage, StorageError,
+    factory::{StorageBackend, StorageFactory},
 };
 pub use traits::Repository;
 
