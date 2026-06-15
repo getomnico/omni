@@ -217,7 +217,7 @@
         <div class="space-y-4">
             <div class="space-y-2">
                 <Label>Services to connect</Label>
-                <div class="grid gap-4 sm:grid-cols-3">
+                <div class="grid gap-4 sm:grid-cols-2">
                     <label
                         class="hover:bg-muted/50 flex flex-1 cursor-pointer items-center gap-3 rounded-lg border p-3">
                         <Checkbox bind:checked={connectDrive} />
