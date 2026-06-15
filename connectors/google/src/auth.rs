@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use omni_connector_sdk::RateLimiter;
@@ -11,6 +11,26 @@ use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GoogleServiceAccountCredentials {
+    pub service_account_key: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GoogleOAuthCredentials {
+    pub access_token: Option<String>,
+    pub refresh_token: String,
+    pub expires_at: Option<i64>,
+    pub user_email: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum GoogleCredentialPayload {
+    ServiceAccount(GoogleServiceAccountCredentials),
+    OAuth(GoogleOAuthCredentials),
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GoogleServiceAccountKey {
@@ -448,11 +468,9 @@ pub fn create_service_auth(
     creds: &ServiceCredential,
     source_type: SourceType,
 ) -> Result<ServiceAccountAuth> {
-    let service_account_json = creds
-        .credentials
-        .get("service_account_key")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow!("Missing service_account_key in credentials"))?;
+    let service_account_credentials: GoogleServiceAccountCredentials =
+        serde_json::from_value(creds.credentials.clone())
+            .context("Invalid Google service-account credentials")?;
 
     let scopes = creds
         .config
@@ -465,7 +483,7 @@ pub fn create_service_auth(
         })
         .unwrap_or_else(|| get_scopes_for_source_type(source_type));
 
-    ServiceAccountAuth::new(service_account_json, scopes)
+    ServiceAccountAuth::new(&service_account_credentials.service_account_key, scopes)
 }
 
 /// Read the workspace `domain` from a `ServiceCredential` config blob.

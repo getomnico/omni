@@ -108,7 +108,7 @@ pub struct GoogleDriveFile {
     pub size: Option<String>,
     pub parents: Option<Vec<String>>,
     pub shared: Option<bool>,
-    pub permissions: Option<Vec<Permission>>,
+    pub permissions: Option<Vec<GoogleDrivePermission>>,
     pub owners: Option<Vec<Owner>>,
 }
 
@@ -122,13 +122,18 @@ pub struct Owner {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Permission {
+pub struct GoogleDrivePermission {
     pub id: String,
     #[serde(rename = "type")]
     pub permission_type: String,
     #[serde(rename = "emailAddress")]
     pub email_address: Option<String>,
+    pub domain: Option<String>,
     pub role: String,
+    #[serde(rename = "allowFileDiscovery")]
+    pub allow_file_discovery: Option<bool>,
+    #[serde(rename = "permissionDetails")]
+    pub permission_details: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Clone)]
@@ -212,7 +217,9 @@ impl GoogleDriveFile {
             for perm in file_permissions {
                 match perm.permission_type.as_str() {
                     "anyone" => {
-                        is_public = true;
+                        if perm.allow_file_discovery.unwrap_or(true) {
+                            is_public = true;
+                        }
                     }
                     "group" => {
                         if let Some(email) = &perm.email_address {
@@ -225,8 +232,12 @@ impl GoogleDriveFile {
                         }
                     }
                     "domain" => {
-                        if let Some(domain) = &perm.email_address {
-                            groups.push(domain.clone());
+                        if perm.allow_file_discovery.unwrap_or(true) {
+                            if let Some(domain) =
+                                perm.domain.as_ref().or(perm.email_address.as_ref())
+                            {
+                                groups.push(domain.clone());
+                            }
                         }
                     }
                     _ => {}
@@ -946,11 +957,14 @@ mod tests {
             size: Some("12345".to_string()),
             parents: Some(vec!["folder456".to_string()]),
             shared: Some(true),
-            permissions: Some(vec![Permission {
+            permissions: Some(vec![GoogleDrivePermission {
                 id: "perm1".to_string(),
                 permission_type: "user".to_string(),
                 email_address: Some("user@example.com".to_string()),
+                domain: None,
                 role: "reader".to_string(),
+                allow_file_discovery: None,
+                permission_details: None,
             }]),
             owners: None,
         };
@@ -1175,29 +1189,41 @@ mod tests {
             parents: None,
             shared: Some(true),
             permissions: Some(vec![
-                Permission {
+                GoogleDrivePermission {
                     id: "perm1".to_string(),
                     permission_type: "user".to_string(),
                     email_address: Some("alice@example.com".to_string()),
+                    domain: None,
                     role: "writer".to_string(),
+                    allow_file_discovery: None,
+                    permission_details: None,
                 },
-                Permission {
+                GoogleDrivePermission {
                     id: "perm2".to_string(),
                     permission_type: "group".to_string(),
                     email_address: Some("team@example.com".to_string()),
+                    domain: None,
                     role: "reader".to_string(),
+                    allow_file_discovery: None,
+                    permission_details: None,
                 },
-                Permission {
+                GoogleDrivePermission {
                     id: "perm3".to_string(),
                     permission_type: "anyone".to_string(),
                     email_address: None,
+                    domain: None,
                     role: "reader".to_string(),
+                    allow_file_discovery: None,
+                    permission_details: None,
                 },
-                Permission {
+                GoogleDrivePermission {
                     id: "perm4".to_string(),
                     permission_type: "domain".to_string(),
                     email_address: Some("example.com".to_string()),
+                    domain: None,
                     role: "reader".to_string(),
+                    allow_file_discovery: None,
+                    permission_details: None,
                 },
             ]),
             owners: None,
@@ -1250,6 +1276,76 @@ mod tests {
             }
             _ => panic!("Expected DocumentCreated event"),
         }
+    }
+
+    #[test]
+    fn test_drive_file_link_only_permissions_do_not_overgrant() {
+        let file = GoogleDriveFile {
+            id: "file_link_only".to_string(),
+            name: "link-only.txt".to_string(),
+            mime_type: "text/plain".to_string(),
+            web_view_link: None,
+            created_time: None,
+            modified_time: None,
+            size: None,
+            parents: None,
+            shared: Some(true),
+            permissions: Some(vec![
+                GoogleDrivePermission {
+                    id: "perm_anyone_link".to_string(),
+                    permission_type: "anyone".to_string(),
+                    email_address: None,
+                    domain: None,
+                    role: "reader".to_string(),
+                    allow_file_discovery: Some(false),
+                    permission_details: None,
+                },
+                GoogleDrivePermission {
+                    id: "perm_domain_link".to_string(),
+                    permission_type: "domain".to_string(),
+                    email_address: None,
+                    domain: Some("example.com".to_string()),
+                    role: "reader".to_string(),
+                    allow_file_discovery: Some(false),
+                    permission_details: Some(vec![json!({"inherited": true})]),
+                },
+            ]),
+            owners: None,
+        };
+
+        let permissions = file.to_document_permissions(None);
+        assert!(!permissions.public);
+        assert!(permissions.groups.is_empty());
+        assert!(permissions.users.is_empty());
+    }
+
+    #[test]
+    fn test_drive_file_domain_permission_uses_domain_field() {
+        let file = GoogleDriveFile {
+            id: "file_domain".to_string(),
+            name: "domain.txt".to_string(),
+            mime_type: "text/plain".to_string(),
+            web_view_link: None,
+            created_time: None,
+            modified_time: None,
+            size: None,
+            parents: None,
+            shared: Some(true),
+            permissions: Some(vec![GoogleDrivePermission {
+                id: "perm_domain".to_string(),
+                permission_type: "domain".to_string(),
+                email_address: None,
+                domain: Some("example.com".to_string()),
+                role: "reader".to_string(),
+                allow_file_discovery: Some(true),
+                permission_details: None,
+            }]),
+            owners: None,
+        };
+
+        let permissions = file.to_document_permissions(None);
+        assert_eq!(permissions.groups, vec!["example.com".to_string()]);
+        assert!(!permissions.public);
     }
 
     #[test]
@@ -1340,11 +1436,14 @@ mod tests {
             size: None,
             parents: None,
             shared: None,
-            permissions: Some(vec![Permission {
+            permissions: Some(vec![GoogleDrivePermission {
                 id: "perm1".to_string(),
                 permission_type: "user".to_string(),
                 email_address: Some("owner@example.com".to_string()),
+                domain: None,
                 role: "owner".to_string(),
+                allow_file_discovery: None,
+                permission_details: None,
             }]),
             owners: Some(vec![Owner {
                 id: None,

@@ -1,11 +1,11 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use dashmap::DashMap;
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 use omni_connector_sdk::SyncContext;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use time::{self, OffsetDateTime};
 use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
@@ -266,7 +266,7 @@ async fn emit_metadata_only_drive_event(
 }
 
 use crate::admin::AdminClient;
-use crate::auth::{google_max_retries, GoogleAuth, OAuthAuth};
+use crate::auth::{GoogleAuth, GoogleOAuthCredentials, OAuthAuth, google_max_retries};
 use crate::cache::LruFolderCache;
 use crate::chat::{
     ChatClient, GoogleChatAttachmentSource, GoogleChatMessage, GoogleChatSpace,
@@ -276,9 +276,9 @@ use crate::connector::build_attachment_doc_id;
 use crate::drive::{DriveClient, FileContent};
 use crate::gmail::{BatchThreadResult, ExtractedAttachment, GmailClient, MessageFormat};
 use crate::models::{
-    mime_type_to_content_type, AttachmentPointer, GmailThread, GoogleChatSegmentCheckpoint,
-    GoogleChatSpaceCheckpoint, GoogleConnectorState, GoogleSyncCheckpoint, UserFile,
-    WebhookChannel, WebhookChannelResponse, WebhookNotification,
+    AttachmentPointer, GmailThread, GoogleChatSegmentCheckpoint, GoogleChatSpaceCheckpoint,
+    GoogleConnectorState, GoogleSyncCheckpoint, UserFile, WebhookChannel, WebhookChannelResponse,
+    WebhookNotification, mime_type_to_content_type,
 };
 use omni_connector_sdk::RateLimiter;
 use omni_connector_sdk::SdkClient;
@@ -444,11 +444,12 @@ impl GoogleChatSegment {
         extra.insert("message_count".to_string(), json!(self.messages.len()));
         extra.insert(
             "message_names".to_string(),
-            json!(self
-                .messages
-                .iter()
-                .map(|m| m.name.clone())
-                .collect::<Vec<_>>()),
+            json!(
+                self.messages
+                    .iter()
+                    .map(|m| m.name.clone())
+                    .collect::<Vec<_>>()
+            ),
         );
         extra.insert("thread_names".to_string(), json!(self.thread_names()));
         extra.insert(
@@ -498,10 +499,11 @@ impl GoogleChatSegment {
         let mut attrs = HashMap::new();
         attrs.insert(
             "space".to_string(),
-            json!(self
-                .space_display_name
-                .as_deref()
-                .unwrap_or(&self.space_name)),
+            json!(
+                self.space_display_name
+                    .as_deref()
+                    .unwrap_or(&self.space_name)
+            ),
         );
         attrs.insert("space_id".to_string(), json!(self.space_name));
         attrs.insert("threads".to_string(), json!(self.thread_names()));
@@ -3196,33 +3198,16 @@ impl SyncManager {
     ) -> Result<GoogleAuth> {
         match creds.auth_type {
             AuthType::OAuth => {
-                let access_token = creds
-                    .credentials
-                    .get("access_token")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-
-                let refresh_token = creds
-                    .credentials
-                    .get("refresh_token")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| anyhow::anyhow!("Missing refresh_token in OAuth credentials"))?
-                    .to_string();
-
-                let expires_at = creds
-                    .credentials
-                    .get("expires_at")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0);
-
-                let user_email = creds
-                    .credentials
-                    .get("user_email")
-                    .and_then(|v| v.as_str())
-                    .or(creds.principal_email.as_deref())
-                    .ok_or_else(|| anyhow::anyhow!("Missing user_email in OAuth credentials"))?
-                    .to_string();
+                let oauth_credentials: GoogleOAuthCredentials =
+                    serde_json::from_value(creds.credentials.clone())
+                        .context("Invalid Google OAuth credentials")?;
+                let access_token = oauth_credentials.access_token.unwrap_or_default();
+                let refresh_token = oauth_credentials.refresh_token;
+                let expires_at = oauth_credentials.expires_at.unwrap_or(0);
+                let user_email = oauth_credentials
+                    .user_email
+                    .or_else(|| creds.principal_email.clone())
+                    .ok_or_else(|| anyhow::anyhow!("Missing user_email in OAuth credentials"))?;
 
                 // Fetch connector config for OAuth client_id/secret
                 let connector_config = self
@@ -3431,11 +3416,16 @@ impl SyncManager {
         };
 
         let service_creds = self.get_service_credentials(source_id).await?;
-        let service_auth =
-            crate::auth::create_service_auth(&service_creds, SourceType::GoogleDrive)?;
-        let user_email = self.get_user_email_from_source(source_id).await
-            .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source_id, e))?;
-        let access_token = service_auth.get_access_token(&user_email).await?;
+        let auth = self
+            .create_auth(&service_creds, SourceType::GoogleDrive)
+            .await?;
+        let user_email = if let Some(oauth_email) = auth.oauth_user_email() {
+            oauth_email.to_string()
+        } else {
+            self.get_user_email_from_source(source_id).await
+                .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source_id, e))?
+        };
+        let access_token = auth.get_access_token(&user_email).await?;
 
         let start_page_token = self
             .drive_client
@@ -3498,11 +3488,16 @@ impl SyncManager {
         resource_id: &str,
     ) -> Result<()> {
         let service_creds = self.get_service_credentials(source_id).await?;
-        let service_auth =
-            crate::auth::create_service_auth(&service_creds, SourceType::GoogleDrive)?;
-        let user_email = self.get_user_email_from_source(source_id).await
-            .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source_id, e))?;
-        let access_token = service_auth.get_access_token(&user_email).await?;
+        let auth = self
+            .create_auth(&service_creds, SourceType::GoogleDrive)
+            .await?;
+        let user_email = if let Some(oauth_email) = auth.oauth_user_email() {
+            oauth_email.to_string()
+        } else {
+            self.get_user_email_from_source(source_id).await
+                .map_err(|e| anyhow::anyhow!("Failed to get user email for source {}: {}. Make sure the source has a valid creator.", source_id, e))?
+        };
+        let access_token = auth.get_access_token(&user_email).await?;
 
         self.drive_client
             .stop_webhook_channel(&access_token, channel_id, resource_id)

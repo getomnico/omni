@@ -1,19 +1,23 @@
 use std::sync::Arc;
 
 use crate::admin::AdminClient;
-use crate::auth::{create_service_auth, get_domain_from_credentials};
+use crate::auth::{
+    GoogleCredentialPayload, GoogleOAuthCredentials, create_service_auth,
+    get_domain_from_credentials,
+};
 use crate::drive::DriveClient;
 use crate::gmail::{MessageFormat, MessagePart};
 use crate::models::{GoogleDirectoryUser, GoogleSyncCheckpoint, SearchUsersResponse};
 use crate::sync::SyncManager;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
     ActionDefinition, ActionResponse, Connector, OAuthManifestConfig, OAuthScopeSet,
-    SearchOperator, ServiceCredential, Source, SourceType, SyncContext, SyncType,
+    SearchOperator, ServiceCredential, ServiceProvider, Source, SourceType, SyncContext,
+    SyncRequestValidationError, SyncType,
 };
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use std::collections::HashMap;
 use tracing::debug;
 
@@ -197,7 +201,7 @@ impl GoogleConnector {
             (bytes, mime_type.clone())
         };
 
-        let mut resp = Response::builder()
+        let resp = Response::builder()
             .status(200)
             .header("Content-Type", content_type)
             .header("Content-Length", bytes.len())
@@ -382,7 +386,7 @@ impl GoogleConnector {
 #[async_trait]
 impl Connector for GoogleConnector {
     type Config = JsonValue;
-    type Credentials = JsonValue;
+    type Credentials = GoogleCredentialPayload;
     type State = GoogleSyncCheckpoint;
 
     fn name(&self) -> &'static str {
@@ -426,7 +430,7 @@ impl Connector for GoogleConnector {
                     "properties": {
                         "file_id": {
                             "type": "string",
-                            "description": "Drive file ID, or a Gmail attachment composite ID (thread_id:att:message_id:attachment_id)"
+                            "description": "Drive file ID, or a Gmail attachment composite ID in the form urlencoded_rfc822_msgid:att:urlencoded_filename:size"
                         }
                     },
                     "required": ["file_id"]
@@ -521,6 +525,64 @@ impl Connector for GoogleConnector {
             scope_separator: " ".to_string(),
             enrich_endpoint: None,
         })
+    }
+
+    async fn validate_sync_request(
+        &self,
+        source: &Source,
+        credentials: Option<&ServiceCredential>,
+        _sync_type: SyncType,
+    ) -> std::result::Result<(), SyncRequestValidationError> {
+        let Some(creds) = credentials else {
+            return Err(SyncRequestValidationError::BadRequest(
+                "Google sync requires credentials".to_string(),
+            ));
+        };
+        if creds.provider != ServiceProvider::Google {
+            return Err(SyncRequestValidationError::BadRequest(format!(
+                "Expected Google credentials, found {:?}",
+                creds.provider
+            )));
+        }
+
+        match creds.auth_type {
+            omni_connector_sdk::AuthType::OAuth => {
+                let oauth_credentials: GoogleOAuthCredentials =
+                    serde_json::from_value(creds.credentials.clone()).map_err(|e| {
+                        SyncRequestValidationError::BadRequest(format!(
+                            "Invalid Google OAuth credentials: {}",
+                            e
+                        ))
+                    })?;
+                if oauth_credentials.refresh_token.is_empty()
+                    || oauth_credentials
+                        .user_email
+                        .as_deref()
+                        .or(creds.principal_email.as_deref())
+                        .is_none_or(|email| email.is_empty())
+                {
+                    return Err(SyncRequestValidationError::BadRequest(
+                        "OAuth Google credentials must include refresh_token and user_email/principal_email".to_string(),
+                    ));
+                }
+            }
+            _ => {
+                create_service_auth(creds, source.source_type).map_err(|e| {
+                    SyncRequestValidationError::BadRequest(format!(
+                        "Invalid Google service-account credentials: {}",
+                        e
+                    ))
+                })?;
+                get_domain_from_credentials(creds).map_err(|e| {
+                    SyncRequestValidationError::BadRequest(format!(
+                        "Invalid Google service-account config: {}",
+                        e
+                    ))
+                })?;
+            }
+        }
+
+        Ok(())
     }
 
     async fn sync(

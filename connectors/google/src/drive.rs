@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use reqwest::Client;
 use serde::Deserialize;
 use std::env;
@@ -9,7 +9,7 @@ use tracing::{debug, warn};
 use std::collections::HashMap;
 
 use crate::auth::{
-    ApiResult, GoogleAuth, classify_google_api_error, execute_with_auth_retry, google_max_retries,
+    classify_google_api_error, execute_with_auth_retry, google_max_retries, ApiResult, GoogleAuth,
 };
 use crate::models::{
     DriveChangesResponse, GoogleDriveFile, GooglePresentation, WebhookChannel,
@@ -34,6 +34,21 @@ const SHEETS_API_BASE: &str = "https://sheets.googleapis.com/v4";
 const SLIDES_API_BASE: &str = "https://slides.googleapis.com/v1";
 const DEFAULT_GOOGLE_SHEETS_MAX_INDEXED_ROWS: usize = 1000;
 const DEFAULT_GOOGLE_DRIVE_MAX_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024;
+
+fn build_files_query(activity_after: Option<&str>) -> String {
+    let mut query_parts = vec!["trashed=false".to_string()];
+    if let Some(date) = activity_after {
+        // Drive preserves the source file's modifiedTime on upload, so a newly uploaded
+        // file can have modifiedTime older than createdTime. Use either timestamp for
+        // the full-sync cutoff to include both newly uploaded old files and old Drive
+        // files that were edited recently.
+        query_parts.push(format!(
+            "(modifiedTime > '{}' or createdTime > '{}')",
+            date, date
+        ));
+    }
+    query_parts.join(" and ")
+}
 
 fn drive_api_base() -> String {
     env::var("GOOGLE_DRIVE_API_BASE").unwrap_or_else(|_| DRIVE_API_BASE.to_string())
@@ -166,27 +181,22 @@ impl DriveClient {
         auth: &GoogleAuth,
         user_email: &str,
         page_token: Option<&str>,
-        created_after: Option<&str>,
+        modified_after: Option<&str>,
     ) -> Result<FilesListResponse> {
         let page_token = page_token.map(|s| s.to_string());
-        let created_after = created_after.map(|s| s.to_string());
+        let modified_after = modified_after.map(|s| s.to_string());
 
         execute_with_auth_retry(auth, user_email, self.rate_limiter.clone(), |token| {
             let page_token = page_token.clone();
-            let created_after = created_after.clone();
+            let modified_after = modified_after.clone();
             async move {
             let url = format!("{}/files", drive_api_base().as_str());
 
-            // Build the query filter
-            let mut query_parts = vec!["trashed=false".to_string()];
-            if let Some(ref date) = created_after {
-                query_parts.push(format!("createdTime > '{}'", date));
-            }
-            let query = query_parts.join(" and ");
+            let query = build_files_query(modified_after.as_deref());
 
             let mut params = vec![
                 ("pageSize", "100"),
-                ("fields", "nextPageToken,files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,permissions(id,type,emailAddress,role),owners(emailAddress))"),
+                ("fields", "nextPageToken,files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,permissions(id,type,emailAddress,domain,role,allowFileDiscovery,permissionDetails),owners(emailAddress))"),
                 ("q", query.as_str()),
                 ("orderBy", "modifiedTime desc"),
                 ("includeItemsFromAllDrives", "true"),
@@ -1329,6 +1339,15 @@ fn extract_text_from_presentation(presentation: &GooglePresentation) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn files_query_uses_modified_or_created_time_cutoff() {
+        let query = build_files_query(Some("2025-01-01T00:00:00Z"));
+        assert_eq!(
+            query,
+            "trashed=false and (modifiedTime > '2025-01-01T00:00:00Z' or createdTime > '2025-01-01T00:00:00Z')"
+        );
+    }
 
     #[test]
     fn spreadsheet_cell_textual_heuristic_filters_non_textual_values() {
