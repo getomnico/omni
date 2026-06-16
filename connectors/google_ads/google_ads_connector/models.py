@@ -186,9 +186,14 @@ REPORT_FIELD_ALLOWLIST = {
 
 REPORT_RESOURCE_ALLOWLIST = {
     "customer",
+    "customer_client",
     "campaign",
+    "campaign_budget",
     "ad_group",
     "ad_group_ad",
+    "ad_group_ad_asset_view",
     "keyword_view",
     "search_term_view",
+    "expanded_landing_page_view",
+    "change_event",
 }

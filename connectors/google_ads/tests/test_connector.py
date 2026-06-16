@@ -2,7 +2,10 @@ import pytest
 from omni_connector import SyncMode
 
 from google_ads_connector.connector import (
+    MAX_XLSX_ROWS,
     GoogleAdsConnector,
+    _action_query_params,
+    build_report_query,
     rows_to_csv,
     validate_gaql_for_action,
 )
@@ -143,6 +146,29 @@ def test_manifest_fields_and_oauth_config():
 def test_gaql_validation_and_csv_export():
     assert validate_gaql_for_action("SELECT campaign.id FROM campaign") is None
     assert validate_gaql_for_action("DELETE FROM campaign")
-    csv_text = rows_to_csv([{"campaign": {"id": "1"}, "metrics": {"clicks": 2}}])
+    csv_text = rows_to_csv(
+        [{"campaign": {"id": "1"}, "metrics": {"clicks": 2}}],
+        metadata={"report_type": "custom_gaql", "row_count": 1},
+    )
+    assert "# report_type: custom_gaql" in csv_text
     assert "campaign.id" in csv_text
-    assert "metrics.clicks" not in csv_text
+    assert "metrics.clicks" in csv_text
+
+
+def test_action_query_params_clamps_export_limits():
+    _, _, limit = _action_query_params(
+        {"customer_id": "123", "query": "SELECT campaign.id FROM campaign", "limit": 999999},
+        max_limit=MAX_XLSX_ROWS,
+    )
+
+    assert limit == MAX_XLSX_ROWS
+
+
+def test_curated_report_query_uses_date_range_and_metrics():
+    query = build_report_query(
+        "campaign_performance", {"date_range": "LAST_7_DAYS"}
+    )
+
+    assert "FROM campaign" in query
+    assert "segments.date DURING LAST_7_DAYS" in query
+    assert "metrics.cost_micros" in query

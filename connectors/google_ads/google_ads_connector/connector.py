@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from fastapi.responses import JSONResponse, Response
@@ -24,7 +24,7 @@ from .client import (
     InMemoryGoogleAdsClient,
 )
 from .config import GOOGLE_ADS_SCOPE, GoogleAdsCredentials, GoogleAdsSourceConfig
-from .mappers import map_row_to_document, render_content, strip_metrics
+from .mappers import map_row_to_document, render_content
 from .models import (
     CHANGE_STATUS_QUERY_TEMPLATE,
     REPORT_RESOURCE_ALLOWLIST,
@@ -34,6 +34,61 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 CHECKPOINT_EVERY = 100
+DEFAULT_REPORT_LIMIT = 5000
+DEFAULT_EXPORT_LIMIT = 10000
+MAX_JSON_ROWS = 10000
+MAX_CSV_ROWS = 25000
+MAX_XLSX_ROWS = 10000
+
+METRIC_FIELDS = {
+    "metrics.impressions",
+    "metrics.clicks",
+    "metrics.cost_micros",
+    "metrics.ctr",
+    "metrics.average_cpc",
+    "metrics.conversions",
+    "metrics.conversions_value",
+    "metrics.all_conversions",
+    "metrics.cost_per_conversion",
+    "metrics.search_impression_share",
+    "metrics.search_top_impression_share",
+    "metrics.search_absolute_top_impression_share",
+}
+
+SEGMENT_FIELDS = {
+    "segments.date",
+    "segments.week",
+    "segments.month",
+    "segments.device",
+    "segments.ad_network_type",
+    "segments.day_of_week",
+    "segments.hour",
+    "segments.conversion_action",
+    "segments.conversion_action_name",
+}
+
+SEGMENTED_REPORT_RESOURCES = {
+    "customer",
+    "campaign",
+    "ad_group",
+    "ad_group_ad",
+    "keyword_view",
+}
+
+REPORT_BUILDERS = {
+    "campaign_performance": "campaign",
+    "ad_group_performance": "ad_group",
+    "keyword_performance": "keyword_view",
+    "search_term": "search_term_view",
+    "ad_creative": "ad_group_ad",
+    "asset_performance": "ad_group_ad_asset_view",
+    "landing_page": "expanded_landing_page_view",
+    "budget_pacing": "campaign_budget",
+    "conversion_performance": "campaign",
+    "segmented_performance": "segmented",
+    "change_history": "change_event",
+    "policy_diagnostics": "ad_group_ad",
+}
 
 
 class GoogleAdsConnector(Connector):
@@ -109,6 +164,63 @@ class GoogleAdsConnector(Connector):
 
     @property
     def actions(self) -> list[ActionDefinition]:
+        report_actions = [
+            _report_action_definition(
+                "get_campaign_performance_report",
+                "Fetch live campaign performance metrics by date/campaign.",
+            ),
+            _report_action_definition(
+                "get_ad_group_performance_report",
+                "Fetch live ad group performance metrics by date/campaign/ad group.",
+            ),
+            _report_action_definition(
+                "get_keyword_performance_report",
+                "Fetch live keyword performance metrics by date/campaign/ad group/keyword.",
+            ),
+            _report_action_definition(
+                "get_search_term_report",
+                "Fetch live search term performance for mining queries and waste.",
+            ),
+            _report_action_definition(
+                "get_ad_creative_report",
+                "Fetch live ad creative performance and ad text/status fields.",
+            ),
+            _report_action_definition(
+                "get_asset_performance_report",
+                "Fetch live asset performance labels and metrics where available.",
+            ),
+            _report_action_definition(
+                "get_landing_page_report",
+                "Fetch live expanded landing page performance.",
+            ),
+            _report_action_definition(
+                "get_budget_pacing_report",
+                "Fetch live budget, spend, and pacing data by campaign budget.",
+            ),
+            _report_action_definition(
+                "get_conversion_performance_report",
+                "Fetch live conversion performance by campaign and conversion action.",
+            ),
+            _report_action_definition(
+                "get_segmented_performance_report",
+                "Fetch live performance for a supported resource with selected segments.",
+                extra_properties={
+                    "resource": {
+                        "type": "string",
+                        "enum": sorted(SEGMENTED_REPORT_RESOURCES),
+                        "default": "campaign",
+                    },
+                    "dimensions": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": sorted(SEGMENT_FIELDS)},
+                    },
+                    "metrics": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": sorted(METRIC_FIELDS)},
+                    },
+                },
+            ),
+        ]
         return [
             ActionDefinition(
                 name="run_gaql_query",
@@ -132,37 +244,38 @@ class GoogleAdsConnector(Connector):
                 description="Run a live Google Ads GAQL query and return a CSV export.",
                 mode="read",
                 source_types=["google_ads"],
-                input_schema={
-                    "type": "object",
-                    "properties": {
-                        "customer_id": {"type": "string"},
-                        "query": {"type": "string"},
-                        "limit": {
-                            "type": "integer",
-                            "default": 10000,
-                            "maximum": 50000,
-                        },
-                    },
-                    "required": ["customer_id", "query"],
-                },
+                input_schema=_gaql_export_schema(),
             ),
             ActionDefinition(
                 name="export_gaql_report_xlsx",
                 description="Run a live Google Ads GAQL query and return an XLSX export.",
                 mode="read",
                 source_types=["google_ads"],
+                input_schema=_gaql_export_schema(),
+            ),
+            ActionDefinition(
+                name="export_report",
+                description=(
+                    "Run a curated Google Ads report and export JSON, CSV, or XLSX with metadata."
+                ),
+                mode="read",
+                source_types=["google_ads"],
                 input_schema={
                     "type": "object",
                     "properties": {
                         "customer_id": {"type": "string"},
-                        "query": {"type": "string"},
-                        "limit": {
-                            "type": "integer",
-                            "default": 10000,
-                            "maximum": 50000,
+                        "report_type": {
+                            "type": "string",
+                            "enum": sorted(REPORT_BUILDERS),
                         },
+                        "format": {
+                            "type": "string",
+                            "enum": ["json", "csv", "xlsx"],
+                            "default": "csv",
+                        },
+                        **_report_common_schema_properties(),
                     },
-                    "required": ["customer_id", "query"],
+                    "required": ["customer_id", "report_type"],
                 },
             ),
             ActionDefinition(
@@ -192,6 +305,39 @@ class GoogleAdsConnector(Connector):
                     "required": ["customer_id"],
                 },
             ),
+            ActionDefinition(
+                name="get_change_history",
+                description="Fetch recent Google Ads change history for root-cause analysis.",
+                mode="read",
+                source_types=["google_ads"],
+                input_schema=_report_action_schema(),
+            ),
+            ActionDefinition(
+                name="get_policy_diagnostics",
+                description="Fetch live ad policy/approval diagnostics.",
+                mode="read",
+                source_types=["google_ads"],
+                input_schema=_report_action_schema(),
+            ),
+            ActionDefinition(
+                name="get_account_hierarchy",
+                description="List accessible Google Ads accounts and customer-client hierarchy.",
+                mode="read",
+                source_types=["google_ads"],
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "customer_id": {
+                            "type": "string",
+                            "description": (
+                                "Optional manager/customer ID to query customer_client hierarchy."
+                            ),
+                        },
+                        "limit": {"type": "integer", "default": 1000, "maximum": 10000},
+                    },
+                },
+            ),
+            *report_actions,
         ]
 
     async def sync(
@@ -436,10 +582,15 @@ class GoogleAdsConnector(Connector):
                 dict[str, Any],
                 raw_source_config if isinstance(raw_source_config, dict) else {},
             )
-            cfg = GoogleAdsSourceConfig.parse(
-                {"customer_ids": [params.get("customer_id")], **source_config},
-                merged_creds,
-            )
+            customer_id = _optional_customer_id(params)
+            action_config = {**source_config}
+            if customer_id:
+                action_config["customer_ids"] = [customer_id]
+            elif action == "get_account_hierarchy" and not _has_configured_customer_ids(
+                action_config, merged_creds
+            ):
+                action_config["customer_ids"] = ["0"]
+            cfg = GoogleAdsSourceConfig.parse(action_config, merged_creds)
             client = self._make_client(creds, cfg, source_config)
         except Exception as exc:
             return ActionResponse.failure(str(exc)).to_response(status_code=400)
@@ -451,10 +602,21 @@ class GoogleAdsConnector(Connector):
                 return await self._action_export_csv(client, params)
             if action == "export_gaql_report_xlsx":
                 return await self._action_export_xlsx(client, params)
+            if action == "export_report":
+                return await self._action_export_report(client, params)
             if action == "get_account_summary":
                 return await self._action_account_summary(client, params)
             if action == "get_recommendations":
                 return await self._action_recommendations(client, params)
+            if action == "get_change_history":
+                return await self._action_curated_report(client, params, "change_history")
+            if action == "get_policy_diagnostics":
+                return await self._action_curated_report(client, params, "policy_diagnostics")
+            if action == "get_account_hierarchy":
+                return await self._action_account_hierarchy(client, params)
+            report_type = _report_type_for_action(action)
+            if report_type:
+                return await self._action_curated_report(client, params, report_type)
         except Exception as exc:
             logger.exception("Google Ads action failed")
             return ActionResponse.failure(str(exc)).to_response(status_code=500)
@@ -475,12 +637,15 @@ class GoogleAdsConnector(Connector):
     async def _action_export_csv(
         self, client: GoogleAdsClient, params: dict[str, Any]
     ) -> Response:
-        customer_id, query, limit = _action_query_params(params, default_limit=10000)
+        customer_id, query, limit = _action_query_params(
+            params, default_limit=DEFAULT_EXPORT_LIMIT, max_limit=MAX_CSV_ROWS
+        )
         validation_error = validate_gaql_for_action(query)
         if validation_error:
             return ActionResponse.failure(validation_error).to_response(status_code=400)
         rows = await client.run_gaql(customer_id, query, limit=limit)
-        csv_text = rows_to_csv(rows)
+        metadata = _report_metadata("custom_gaql", customer_id, params, query, len(rows), limit)
+        csv_text = rows_to_csv(rows, metadata=metadata)
         return Response(
             content=csv_text,
             media_type="text/csv; charset=utf-8",
@@ -492,12 +657,15 @@ class GoogleAdsConnector(Connector):
     async def _action_export_xlsx(
         self, client: GoogleAdsClient, params: dict[str, Any]
     ) -> Response:
-        customer_id, query, limit = _action_query_params(params, default_limit=10000)
+        customer_id, query, limit = _action_query_params(
+            params, default_limit=DEFAULT_EXPORT_LIMIT, max_limit=MAX_XLSX_ROWS
+        )
         validation_error = validate_gaql_for_action(query)
         if validation_error:
             return ActionResponse.failure(validation_error).to_response(status_code=400)
         rows = await client.run_gaql(customer_id, query, limit=limit)
-        content = rows_to_xlsx(rows)
+        metadata = _report_metadata("custom_gaql", customer_id, params, query, len(rows), limit)
+        content = rows_to_xlsx(rows, metadata=metadata)
         return Response(
             content=content,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -542,22 +710,133 @@ class GoogleAdsConnector(Connector):
             {"customer_id": customer_id, "recommendations": rows}
         ).to_response()
 
+    async def _action_curated_report(
+        self, client: GoogleAdsClient, params: dict[str, Any], report_type: str
+    ) -> Response:
+        customer_id = _require_customer_id(params)
+        limit = _row_limit(params, DEFAULT_REPORT_LIMIT, MAX_JSON_ROWS)
+        query = build_report_query(report_type, params)
+        rows = await client.run_gaql(customer_id, query, limit=limit)
+        metadata = _report_metadata(report_type, customer_id, params, query, len(rows), limit)
+        return ActionResponse.success({"metadata": metadata, "rows": rows}).to_response()
+
+    async def _action_export_report(
+        self, client: GoogleAdsClient, params: dict[str, Any]
+    ) -> Response:
+        customer_id = _require_customer_id(params)
+        report_type = str(params.get("report_type") or "").strip()
+        if report_type not in REPORT_BUILDERS:
+            return ActionResponse.failure(f"Unsupported report_type: {report_type}").to_response(
+                status_code=400
+            )
+        output_format = str(params.get("format") or "csv").lower().strip()
+        max_rows = MAX_XLSX_ROWS if output_format == "xlsx" else MAX_CSV_ROWS
+        if output_format == "json":
+            max_rows = MAX_JSON_ROWS
+        limit = _row_limit(params, DEFAULT_EXPORT_LIMIT, max_rows)
+        query = build_report_query(report_type, params)
+        rows = await client.run_gaql(customer_id, query, limit=limit)
+        metadata = _report_metadata(report_type, customer_id, params, query, len(rows), limit)
+        if output_format == "json":
+            return ActionResponse.success({"metadata": metadata, "rows": rows}).to_response()
+        if output_format == "xlsx":
+            content = rows_to_xlsx(rows, metadata=metadata)
+            return Response(
+                content=content,
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={
+                    "content-disposition": f'attachment; filename="google-ads-{report_type}.xlsx"'
+                },
+            )
+        if output_format != "csv":
+            return ActionResponse.failure(
+                f"Unsupported export format: {output_format}"
+            ).to_response(status_code=400)
+        return Response(
+            content=rows_to_csv(rows, metadata=metadata),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "content-disposition": f'attachment; filename="google-ads-{report_type}.csv"'
+            },
+        )
+
+    async def _action_account_hierarchy(
+        self, client: GoogleAdsClient, params: dict[str, Any]
+    ) -> Response:
+        limit = _row_limit(params, 1000, MAX_JSON_ROWS)
+        accessible_customers = await client.list_accessible_customers()
+        customer_id = _optional_customer_id(params)
+        hierarchy_rows: list[dict[str, Any]] = []
+        if customer_id:
+            query = """
+                SELECT
+                  customer_client.client_customer,
+                  customer_client.descriptive_name,
+                  customer_client.id,
+                  customer_client.level,
+                  customer_client.manager,
+                  customer_client.status,
+                  customer_client.currency_code,
+                  customer_client.time_zone
+                FROM customer_client
+                LIMIT 10000
+            """
+            hierarchy_rows = await client.run_gaql(customer_id, query, limit=limit)
+        return ActionResponse.success(
+            {
+                "accessible_customers": accessible_customers,
+                "customer_id": customer_id,
+                "hierarchy": hierarchy_rows,
+                "row_count": len(hierarchy_rows),
+                "limit": limit,
+            }
+        ).to_response()
+
+
+
+def _optional_customer_id(params: dict[str, Any]) -> str | None:
+    raw = params.get("customer_id")
+    if raw is None:
+        return None
+    normalized = str(raw).replace("-", "").strip()
+    return normalized or None
+
+
+def _has_configured_customer_ids(
+    source_config: dict[str, Any], credentials: dict[str, Any]
+) -> bool:
+    return any(
+        source_config.get(key) or credentials.get(key)
+        for key in (
+            "customer_ids",
+            "selected_customer_ids",
+            "customer_id",
+            "selected_customer_id",
+        )
+    )
+
 
 def _require_customer_id(params: dict[str, Any]) -> str:
-    customer_id = str(params.get("customer_id") or "").replace("-", "").strip()
+    customer_id = _optional_customer_id(params)
     if not customer_id:
         raise ValueError("Missing customer_id")
     return customer_id
 
 
+def _row_limit(params: dict[str, Any], default_limit: int, max_limit: int) -> int:
+    raw = params.get("limit")
+    limit = default_limit if raw in (None, "") else int(raw)
+    return min(max(limit, 1), max_limit)
+
+
 def _action_query_params(
-    params: dict[str, Any], default_limit: int = 1000
+    params: dict[str, Any], default_limit: int = 1000, max_limit: int = MAX_JSON_ROWS
 ) -> tuple[str, str, int]:
     customer_id = _require_customer_id(params)
     query = str(params.get("query") or "").strip()
     if not query:
         raise ValueError("Missing query")
-    limit = min(max(int(params.get("limit") or default_limit), 1), 50000)
+    limit = _row_limit(params, default_limit, max_limit)
     return customer_id, query, limit
 
 
@@ -571,15 +850,424 @@ def validate_gaql_for_action(query: str) -> str | None:
     resource = lowered.split(" from ", 1)[1].split()[0]
     if resource not in REPORT_RESOURCE_ALLOWLIST and resource not in SYNC_QUERIES:
         return f"Unsupported GAQL resource: {resource}"
-    # Field allowlist is intentionally advisory for custom GAQL: reject obvious unsafe resources,
-    # but allow Google Ads to validate evolving field compatibility.
     return None
 
 
-def rows_to_csv(rows: list[dict[str, Any]]) -> str:
-    flattened = [_flatten(strip_metrics(row)) for row in rows]
-    fieldnames = sorted({key for row in flattened for key in row})
+def _report_common_schema_properties() -> dict[str, Any]:
+    return {
+        "date_range": {"type": "string", "default": "LAST_30_DAYS"},
+        "start_date": {"type": "string", "description": "YYYY-MM-DD inclusive"},
+        "end_date": {"type": "string", "description": "YYYY-MM-DD inclusive"},
+        "limit": {"type": "integer", "default": DEFAULT_REPORT_LIMIT, "maximum": MAX_JSON_ROWS},
+    }
+
+
+def _report_action_schema(
+    *, extra_properties: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "customer_id": {"type": "string"},
+            **_report_common_schema_properties(),
+            **(extra_properties or {}),
+        },
+        "required": ["customer_id"],
+    }
+
+
+def _gaql_export_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "customer_id": {"type": "string"},
+            "query": {"type": "string"},
+            "limit": {
+                "type": "integer",
+                "default": DEFAULT_EXPORT_LIMIT,
+                "maximum": MAX_CSV_ROWS,
+                "description": (
+                    f"Maximum rows to export. Server caps CSV at {MAX_CSV_ROWS} rows "
+                    f"and XLSX at {MAX_XLSX_ROWS} rows."
+                ),
+            },
+        },
+        "required": ["customer_id", "query"],
+    }
+
+
+def _report_action_definition(
+    name: str,
+    description: str,
+    *,
+    extra_properties: dict[str, Any] | None = None,
+) -> ActionDefinition:
+    return ActionDefinition(
+        name=name,
+        description=description,
+        mode="read",
+        source_types=["google_ads"],
+        input_schema=_report_action_schema(extra_properties=extra_properties),
+    )
+
+
+def _report_type_for_action(action: str) -> str | None:
+    prefix = "get_"
+    suffix = "_report"
+    if not action.startswith(prefix) or not action.endswith(suffix):
+        return None
+    report_type = action[len(prefix) : -len(suffix)]
+    if report_type == "ad_creative":
+        return "ad_creative"
+    if report_type in REPORT_BUILDERS:
+        return report_type
+    return None
+
+
+def _date_where_clause(params: dict[str, Any]) -> str:
+    start_date = str(params.get("start_date") or "").strip()
+    end_date = str(params.get("end_date") or "").strip()
+    if start_date and end_date:
+        _validate_date_literal(start_date)
+        _validate_date_literal(end_date)
+        return f"segments.date BETWEEN '{start_date}' AND '{end_date}'"
+    date_range = str(params.get("date_range") or "LAST_30_DAYS").strip().upper()
+    if not date_range.replace("_", "").isalnum():
+        raise ValueError("date_range must be a Google Ads DURING literal like LAST_30_DAYS")
+    return f"segments.date DURING {date_range}"
+
+
+def _validate_date_literal(value: str) -> None:
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError(f"Invalid date literal: {value}. Expected YYYY-MM-DD") from exc
+
+
+def _change_event_where_clause(params: dict[str, Any]) -> str:
+    start_date = str(params.get("start_date") or "").strip()
+    end_date = str(params.get("end_date") or "").strip()
+    if start_date and end_date:
+        _validate_date_literal(start_date)
+        _validate_date_literal(end_date)
+        return (
+            f"change_event.change_date_time >= '{start_date} 00:00:00' "
+            f"AND change_event.change_date_time <= '{end_date} 23:59:59'"
+        )
+    since = (datetime.now(UTC) - timedelta(days=14)).strftime("%Y-%m-%d 00:00:00")
+    return f"change_event.change_date_time >= '{since}'"
+
+
+def build_report_query(report_type: str, params: dict[str, Any]) -> str:
+    where = _date_where_clause(params)
+    if report_type == "campaign_performance":
+        return f"""
+            SELECT
+              segments.date,
+              campaign.id,
+              campaign.name,
+              campaign.status,
+              campaign.advertising_channel_type,
+              metrics.impressions,
+              metrics.clicks,
+              metrics.cost_micros,
+              metrics.ctr,
+              metrics.average_cpc,
+              metrics.conversions,
+              metrics.conversions_value
+            FROM campaign
+            WHERE {where}
+            ORDER BY segments.date DESC, metrics.cost_micros DESC
+        """
+    if report_type == "ad_group_performance":
+        return f"""
+            SELECT
+              segments.date,
+              campaign.id,
+              campaign.name,
+              ad_group.id,
+              ad_group.name,
+              ad_group.status,
+              metrics.impressions,
+              metrics.clicks,
+              metrics.cost_micros,
+              metrics.ctr,
+              metrics.average_cpc,
+              metrics.conversions,
+              metrics.conversions_value
+            FROM ad_group
+            WHERE {where}
+            ORDER BY segments.date DESC, metrics.cost_micros DESC
+        """
+    if report_type == "keyword_performance":
+        return f"""
+            SELECT
+              segments.date,
+              campaign.id,
+              campaign.name,
+              ad_group.id,
+              ad_group.name,
+              ad_group_criterion.criterion_id,
+              ad_group_criterion.keyword.text,
+              ad_group_criterion.keyword.match_type,
+              ad_group_criterion.status,
+              metrics.impressions,
+              metrics.clicks,
+              metrics.cost_micros,
+              metrics.ctr,
+              metrics.average_cpc,
+              metrics.conversions,
+              metrics.conversions_value
+            FROM keyword_view
+            WHERE {where}
+            ORDER BY metrics.cost_micros DESC
+        """
+    if report_type == "search_term":
+        return f"""
+            SELECT
+              segments.date,
+              campaign.id,
+              campaign.name,
+              ad_group.id,
+              ad_group.name,
+              search_term_view.search_term,
+              search_term_view.status,
+              metrics.impressions,
+              metrics.clicks,
+              metrics.cost_micros,
+              metrics.ctr,
+              metrics.average_cpc,
+              metrics.conversions,
+              metrics.conversions_value
+            FROM search_term_view
+            WHERE {where}
+            ORDER BY metrics.cost_micros DESC
+        """
+    if report_type == "ad_creative":
+        return f"""
+            SELECT
+              campaign.id,
+              campaign.name,
+              ad_group.id,
+              ad_group.name,
+              ad_group_ad.ad.id,
+              ad_group_ad.ad.name,
+              ad_group_ad.status,
+              ad_group_ad.ad.type,
+              ad_group_ad.ad.final_urls,
+              ad_group_ad.ad.responsive_search_ad.headlines,
+              ad_group_ad.ad.responsive_search_ad.descriptions,
+              metrics.impressions,
+              metrics.clicks,
+              metrics.cost_micros,
+              metrics.ctr,
+              metrics.conversions,
+              metrics.conversions_value
+            FROM ad_group_ad
+            WHERE {where}
+            ORDER BY metrics.impressions DESC
+        """
+    if report_type == "asset_performance":
+        return f"""
+            SELECT
+              campaign.id,
+              campaign.name,
+              ad_group.id,
+              ad_group.name,
+              ad_group_ad_asset_view.field_type,
+              ad_group_ad_asset_view.performance_label,
+              asset.id,
+              asset.name,
+              asset.type,
+              asset.text_asset.text,
+              metrics.impressions,
+              metrics.clicks,
+              metrics.cost_micros,
+              metrics.conversions,
+              metrics.conversions_value
+            FROM ad_group_ad_asset_view
+            WHERE {where}
+            ORDER BY metrics.impressions DESC
+        """
+    if report_type == "landing_page":
+        return f"""
+            SELECT
+              segments.date,
+              expanded_landing_page_view.expanded_final_url,
+              metrics.impressions,
+              metrics.clicks,
+              metrics.cost_micros,
+              metrics.ctr,
+              metrics.average_cpc,
+              metrics.conversions,
+              metrics.conversions_value
+            FROM expanded_landing_page_view
+            WHERE {where}
+            ORDER BY metrics.cost_micros DESC
+        """
+    if report_type == "budget_pacing":
+        return f"""
+            SELECT
+              campaign_budget.id,
+              campaign_budget.name,
+              campaign_budget.amount_micros,
+              campaign_budget.status,
+              campaign.id,
+              campaign.name,
+              campaign.status,
+              campaign.serving_status,
+              metrics.cost_micros,
+              metrics.impressions,
+              metrics.clicks,
+              metrics.conversions,
+              metrics.conversions_value
+            FROM campaign
+            WHERE {where}
+            ORDER BY metrics.cost_micros DESC
+        """
+    if report_type == "conversion_performance":
+        return f"""
+            SELECT
+              segments.date,
+              segments.conversion_action,
+              segments.conversion_action_name,
+              campaign.id,
+              campaign.name,
+              ad_group.id,
+              ad_group.name,
+              metrics.conversions,
+              metrics.conversions_value,
+              metrics.cost_micros,
+              metrics.cost_per_conversion
+            FROM ad_group
+            WHERE {where}
+            ORDER BY metrics.conversions_value DESC
+        """
+    if report_type == "change_history":
+        change_where = _change_event_where_clause(params)
+        return f"""
+            SELECT
+              change_event.change_date_time,
+              change_event.change_resource_type,
+              change_event.changed_fields,
+              change_event.client_type,
+              change_event.resource_change_operation,
+              change_event.resource_name,
+              change_event.user_email
+            FROM change_event
+            WHERE {change_where}
+            ORDER BY change_event.change_date_time DESC
+        """
+    if report_type == "policy_diagnostics":
+        return """
+            SELECT
+              campaign.id,
+              campaign.name,
+              ad_group.id,
+              ad_group.name,
+              ad_group_ad.ad.id,
+              ad_group_ad.status,
+              ad_group_ad.policy_summary.approval_status,
+              ad_group_ad.policy_summary.review_status,
+              ad_group_ad.policy_summary.policy_topic_entries
+            FROM ad_group_ad
+            ORDER BY campaign.name, ad_group.name
+        """
+    if report_type == "segmented_performance":
+        return _build_segmented_query(params, where)
+    raise ValueError(f"Unsupported report_type: {report_type}")
+
+
+def _build_segmented_query(params: dict[str, Any], where: str) -> str:
+    resource = str(params.get("resource") or "campaign").strip()
+    if resource not in SEGMENTED_REPORT_RESOURCES:
+        raise ValueError(f"Unsupported segmented report resource: {resource}")
+    dimensions = _string_list_param(params.get("dimensions")) or ["segments.date"]
+    metrics = _string_list_param(params.get("metrics")) or [
+        "metrics.impressions",
+        "metrics.clicks",
+        "metrics.cost_micros",
+        "metrics.conversions",
+        "metrics.conversions_value",
+    ]
+    unsupported_dimensions = [d for d in dimensions if d not in SEGMENT_FIELDS]
+    unsupported_metrics = [m for m in metrics if m not in METRIC_FIELDS]
+    if unsupported_dimensions:
+        raise ValueError(f"Unsupported dimensions: {', '.join(unsupported_dimensions)}")
+    if unsupported_metrics:
+        raise ValueError(f"Unsupported metrics: {', '.join(unsupported_metrics)}")
+    base_fields = {
+        "customer": ["customer.id", "customer.descriptive_name"],
+        "campaign": ["campaign.id", "campaign.name", "campaign.status"],
+        "ad_group": ["campaign.id", "campaign.name", "ad_group.id", "ad_group.name"],
+        "ad_group_ad": [
+            "campaign.id",
+            "campaign.name",
+            "ad_group.id",
+            "ad_group.name",
+            "ad_group_ad.ad.id",
+            "ad_group_ad.status",
+        ],
+        "keyword_view": [
+            "campaign.id",
+            "campaign.name",
+            "ad_group.id",
+            "ad_group.name",
+            "ad_group_criterion.criterion_id",
+            "ad_group_criterion.keyword.text",
+        ],
+    }[resource]
+    fields = [*dimensions, *base_fields, *metrics]
+    return f"""
+        SELECT
+          {', '.join(fields)}
+        FROM {resource}
+        WHERE {where}
+        ORDER BY metrics.cost_micros DESC
+    """
+
+
+def _string_list_param(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [v.strip() for v in value.split(",") if v.strip()]
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return []
+
+
+def _report_metadata(
+    report_type: str,
+    customer_id: str,
+    params: dict[str, Any],
+    query: str,
+    row_count: int,
+    limit: int,
+) -> dict[str, Any]:
+    return {
+        "report_type": report_type,
+        "customer_id": customer_id,
+        "date_range": params.get("date_range"),
+        "start_date": params.get("start_date"),
+        "end_date": params.get("end_date"),
+        "generated_at": datetime.now(UTC).isoformat(),
+        "row_count": row_count,
+        "limit": limit,
+        "limit_reached": row_count >= limit,
+        "gaql": " ".join(query.split()),
+    }
+
+
+def rows_to_csv(rows: list[dict[str, Any]], metadata: dict[str, Any] | None = None) -> str:
+    flattened = [_flatten(row) for row in rows]
+    fieldnames = sorted({key for row in flattened for key in row}) or ["result"]
     output = io.StringIO()
+    if metadata:
+        output.write("# Google Ads report metadata\n")
+        for key, value in metadata.items():
+            output.write(f"# {key}: {value}\n")
+        output.write("\n")
     writer = csv.DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
     for row in flattened:
@@ -587,10 +1275,10 @@ def rows_to_csv(rows: list[dict[str, Any]]) -> str:
     return output.getvalue()
 
 
-def rows_to_xlsx(rows: list[dict[str, Any]]) -> bytes:
+def rows_to_xlsx(rows: list[dict[str, Any]], metadata: dict[str, Any] | None = None) -> bytes:
     from openpyxl import Workbook  # type: ignore[import-untyped]
 
-    flattened = [_flatten(strip_metrics(row)) for row in rows]
+    flattened = [_flatten(row) for row in rows]
     fieldnames = sorted({key for row in flattened for key in row}) or ["result"]
     wb = Workbook()
     ws = wb.active
@@ -598,6 +1286,11 @@ def rows_to_xlsx(rows: list[dict[str, Any]]) -> bytes:
     ws.append(fieldnames)
     for row in flattened:
         ws.append([row.get(name) for name in fieldnames])
+    if metadata:
+        meta = wb.create_sheet("Metadata")
+        meta.append(["key", "value"])
+        for key, value in metadata.items():
+            meta.append([key, str(value)])
     output = io.BytesIO()
     wb.save(output)
     return output.getvalue()

@@ -12,17 +12,46 @@ from tools.registry import ToolContext, ToolResult
 logger = logging.getLogger(__name__)
 
 _TOOL_NAMES = {"load_skill"}
+_SKILL_FILENAME = "SKILL.md"
 
 
 class SkillHandler:
-    """Serves skill files from a directory so the LLM can load instructions on demand."""
+    """Serves skill files from a directory so the LLM can load instructions on demand.
+
+    Skills are discovered from the preferred directory layout:
+
+        skills/<skill_name>/SKILL.md
+
+    For backwards compatibility, legacy flat files are also discovered:
+
+        skills/<skill_name>.md
+
+    If both exist for the same skill name, the directory layout wins.
+    """
 
     def __init__(self, skills_dir: Path) -> None:
         self._skills_dir = skills_dir
         self._available: dict[str, Path] = {}
-        if skills_dir.exists():
-            for f in skills_dir.glob("*.md"):
-                self._available[f.stem] = f
+        self._discover_skills()
+
+    def _discover_skills(self) -> None:
+        """Populate available skills from legacy files and directory skills."""
+        if not self._skills_dir.exists():
+            return
+
+        # Legacy flat-file layout: skills/excel.md
+        for skill_file in sorted(self._skills_dir.glob("*.md")):
+            if skill_file.is_file():
+                self._available[skill_file.stem] = skill_file
+
+        # Preferred directory layout: skills/excel/SKILL.md
+        # Directory skills intentionally override legacy flat files with the same name.
+        for skill_dir in sorted(self._skills_dir.iterdir()):
+            if not skill_dir.is_dir():
+                continue
+            skill_file = skill_dir / _SKILL_FILENAME
+            if skill_file.is_file():
+                self._available[skill_dir.name] = skill_file
 
     def get_tools(self) -> list[ToolParam]:
         skill_names = ", ".join(sorted(self._available.keys()))
@@ -78,5 +107,5 @@ class SkillHandler:
                 ],
                 is_error=True,
             )
-        content = path.read_text()
+        content = path.read_text(encoding="utf-8")
         return ToolResult(content=[{"type": "text", "text": content}])
