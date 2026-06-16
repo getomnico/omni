@@ -26,6 +26,18 @@ SYNC_QUERIES: dict[str, str] = {
           campaign_budget.explicitly_shared
         FROM campaign_budget
     """,
+    "bidding_strategy": """
+        SELECT
+          bidding_strategy.id,
+          bidding_strategy.name,
+          bidding_strategy.resource_name,
+          bidding_strategy.status,
+          bidding_strategy.type,
+          bidding_strategy.currency_code,
+          bidding_strategy.campaign_count,
+          bidding_strategy.non_removed_campaign_count
+        FROM bidding_strategy
+    """,
     "campaign": """
         SELECT
           campaign.id,
@@ -100,6 +112,17 @@ SYNC_QUERIES: dict[str, str] = {
           ad_group_criterion.keyword.match_type,
           ad_group_criterion.final_urls
         FROM keyword_view
+    """,
+    "shared_set": """
+        SELECT
+          shared_set.id,
+          shared_set.name,
+          shared_set.resource_name,
+          shared_set.status,
+          shared_set.type,
+          shared_set.member_count,
+          shared_set.reference_count
+        FROM shared_set
     """,
     "user_list": """
         SELECT

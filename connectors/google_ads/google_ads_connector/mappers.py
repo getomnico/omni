@@ -25,10 +25,12 @@ CONTENT_TYPES = {
     "customer": "google_ads_customer",
     "campaign": "google_ads_campaign",
     "campaign_budget": "google_ads_campaign_budget",
+    "bidding_strategy": "google_ads_bidding_strategy",
     "ad_group": "google_ads_ad_group",
     "ad_group_ad": "google_ads_ad",
     "asset": "google_ads_asset",
     "keyword_view": "google_ads_criterion",
+    "shared_set": "google_ads_shared_set",
     "user_list": "google_ads_audience",
     "conversion_action": "google_ads_conversion_goal",
     "recommendation": "google_ads_recommendation",
@@ -192,6 +194,26 @@ def attributes_for(
         "channel_type": value_at(row, "campaign.advertising_channel_type"),
         "campaign_id": str(campaign_id) if campaign_id is not None else None,
         "ad_group_id": str(ad_group_id) if ad_group_id is not None else None,
+        "asset_id": _first_present(
+            value_at(row, "asset.id"),
+            _id_from_resource(value_at(row, "campaign_asset.asset")),
+            _id_from_resource(value_at(row, "ad_group_asset.asset")),
+        ),
+        "criterion_id": _first_present(
+            value_at(row, "ad_group_criterion.criterion_id"),
+            value_at(row, "campaign_criterion.criterion_id"),
+            value_at(row, "shared_criterion.criterion_id"),
+        ),
+        "criterion_type": _first_present(
+            value_at(row, "ad_group_criterion.type"),
+            value_at(row, "campaign_criterion.type"),
+            value_at(row, "shared_criterion.type"),
+        ),
+        "shared_set_id": _first_present(
+            value_at(row, "shared_set.id"),
+            _id_from_resource(value_at(row, "shared_criterion.shared_set")),
+        ),
+        "bidding_strategy_type": value_at(row, "bidding_strategy.type"),
         "labels": labels,
     }
     return {k: v for k, v in attrs.items() if v not in (None, "", [])}
@@ -201,6 +223,13 @@ def _id_from_resource(value: Any) -> str | None:
     if not value:
         return None
     return str(value).split("/")[-1]
+
+
+def _first_present(*values: Any) -> str | None:
+    for value in values:
+        if value not in (None, "", [], {}):
+            return str(value)
+    return None
 
 
 def map_row_to_document(

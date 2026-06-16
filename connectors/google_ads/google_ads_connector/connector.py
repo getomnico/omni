@@ -132,6 +132,13 @@ class GoogleAdsConnector(Connector):
             SearchOperator(
                 operator="ad_group", attribute_key="ad_group_id", value_type="text"
             ),
+            SearchOperator(operator="asset", attribute_key="asset_id", value_type="text"),
+            SearchOperator(
+                operator="criterion", attribute_key="criterion_id", value_type="text"
+            ),
+            SearchOperator(
+                operator="shared_set", attribute_key="shared_set_id", value_type="text"
+            ),
             SearchOperator(
                 operator="status", attribute_key="status", value_type="text"
             ),
@@ -538,12 +545,14 @@ class GoogleAdsConnector(Connector):
         resource_map = {
             "campaign": "campaign",
             "campaign_budget": "campaign_budget",
+            "bidding_strategy": "bidding_strategy",
             "ad_group": "ad_group",
             "ad_group_ad": "ad_group_ad",
             "asset": "asset",
             "ad_group_criterion": "keyword_view",
             "user_list": "user_list",
             "conversion_action": "conversion_action",
+            "shared_set": "shared_set",
         }
         changed: set[str] = set()
         try:

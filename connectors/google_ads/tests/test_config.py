@@ -16,6 +16,18 @@ def test_source_config_parses_customer_ids_and_entities():
     assert cfg.entity_types == ["campaign", "ad_group"]
 
 
+def test_default_entity_types_include_standalone_structural_resources():
+    cfg = GoogleAdsSourceConfig.parse({"customer_ids": ["123"]}, {})
+
+    assert "bidding_strategy" in cfg.entity_types
+    assert "shared_set" in cfg.entity_types
+    assert "label" not in cfg.entity_types
+    assert "customer_client" not in cfg.entity_types
+    assert "campaign_asset" not in cfg.entity_types
+    assert "ad_group_criterion" not in cfg.entity_types
+    assert "customer_conversion_goal" not in cfg.entity_types
+
+
 def test_credentials_parse_service_credential_envelope():
     creds = GoogleAdsCredentials.parse(
         {

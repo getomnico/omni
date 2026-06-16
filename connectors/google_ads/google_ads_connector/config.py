@@ -8,23 +8,26 @@ from typing import Any, cast
 DEFAULT_ENTITY_TYPES = [
     "customer",
     "campaign_budget",
+    "bidding_strategy",
     "campaign",
     "ad_group",
     "ad_group_ad",
     "asset",
     "keyword_view",
+    "shared_set",
     "user_list",
     "conversion_action",
-    "recommendation",
 ]
 
 ENTITY_TYPES_WITH_CHANGE_STATUS = {
     "campaign",
     "campaign_budget",
+    "bidding_strategy",
     "ad_group",
     "ad_group_ad",
     "asset",
     "keyword_view",
+    "shared_set",
     "user_list",
     "conversion_action",
 }

@@ -36,3 +36,23 @@ def test_mapper_excludes_numeric_metrics():
     assert doc.external_id == "google_ads:1:campaign:123"
     assert doc.attributes["campaign_id"] == "123"
     assert doc.permissions.public is True
+
+
+def test_standalone_structural_resource_mapping_attributes():
+    row = {
+        "shared_set": {
+            "id": "456",
+            "name": "Brand negatives",
+            "resource_name": "customers/1/sharedSets/456",
+            "type": "NEGATIVE_KEYWORDS",
+            "status": "ENABLED",
+        }
+    }
+
+    doc = map_row_to_document(
+        entity_type="shared_set", customer_id="1", row=row, content_id="cid"
+    )
+
+    assert doc.metadata.content_type == "google_ads_shared_set"
+    assert doc.attributes["shared_set_id"] == "456"
+    assert doc.attributes["status"] == "ENABLED"
