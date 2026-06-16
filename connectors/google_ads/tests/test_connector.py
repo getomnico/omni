@@ -28,6 +28,7 @@ class FakeContext:
         self.docs = []
         self.errors = []
         self.checkpoints = []
+        self.connector_states = []
         self.completed = None
         self.failed = None
         self.documents_scanned = 0
@@ -48,6 +49,9 @@ class FakeContext:
 
     async def save_checkpoint(self, checkpoint):
         self.checkpoints.append(checkpoint)
+
+    async def save_connector_state(self, state):
+        self.connector_states.append(state)
 
     async def complete(self, new_state=None):
         self.completed = new_state or {}
@@ -90,7 +94,10 @@ async def test_full_sync_with_mock_data():
     assert ctx.docs[0].external_id == "google_ads:1:campaign:123"
     assert "metrics" not in ctx.docs[0].metadata.extra["google_ads"]["raw"]
     assert ctx.checkpoints
-    assert ctx.completed["last_successful_full_sync_at"]
+    assert ctx.completed["schema_version"] == 1
+    assert ctx.completed["mode"] == "full"
+    assert ctx.completed["progress"] is None
+    assert ctx.connector_states[-1]["last_successful_full_sync_at"]
 
 
 @pytest.mark.asyncio
@@ -128,7 +135,10 @@ async def test_incremental_sync_uses_change_status_and_refetches():
 
     assert ctx.failed is None
     assert len(ctx.docs) == 1
-    assert ctx.completed["last_successful_incremental_sync_at"]
+    assert ctx.completed["schema_version"] == 1
+    assert ctx.completed["mode"] == "incremental"
+    assert ctx.completed["progress"] is None
+    assert ctx.connector_states[-1]["last_successful_incremental_sync_at"]
 
 
 def test_manifest_fields_and_oauth_config():

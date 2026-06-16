@@ -42,6 +42,7 @@ class SyncContext:
         source_id: str,
         source_type: str | None = None,
         state: dict[str, Any] | None = None,
+        connector_state: dict[str, Any] | None = None,
         user_filter_mode: UserFilterMode = UserFilterMode.ALL,
         user_whitelist: list[str] | None = None,
         user_blacklist: list[str] | None = None,
@@ -55,6 +56,7 @@ class SyncContext:
         self._source_id = source_id
         self._source_type = source_type
         self._state = state or {}
+        self._connector_state = connector_state or {}
         self._cancelled = asyncio.Event()
         # Counters report seed (from the dispatch payload) plus everything
         # incremented during this run, so resume picks up where the previous
@@ -88,6 +90,10 @@ class SyncContext:
     @property
     def state(self) -> dict[str, Any]:
         return self._state
+
+    @property
+    def connector_state(self) -> dict[str, Any]:
+        return self._connector_state
 
     @property
     def content_storage(self) -> ContentStorage:
@@ -242,6 +248,11 @@ class SyncContext:
     async def save_state(self, state: dict[str, Any]) -> None:
         """Deprecated alias for save_checkpoint."""
         await self.save_checkpoint(state)
+
+    async def save_connector_state(self, state: dict[str, Any]) -> None:
+        """Persist source-level connector state outside the sync checkpoint."""
+        self._connector_state = state
+        await self._client.update_connector_state(self._source_id, state)
 
     async def complete(self, new_state: dict[str, Any] | None = None) -> None:
         """Mark sync as successfully completed. Saves final checkpoint first."""

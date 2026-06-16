@@ -133,6 +133,7 @@ def create_app(connector: "Connector") -> FastAPI:
             source_config = sync_data.config
             credentials = sync_data.credentials
             state = request.checkpoint if request.checkpoint is not None else sync_data.checkpoint
+            connector_state = sync_data.connector_state
             source_type = sync_data.source_type
         except SdkClientError as e:
             error_msg = str(e)
@@ -177,6 +178,7 @@ def create_app(connector: "Connector") -> FastAPI:
             source_id=source_id,
             source_type=source_type,
             state=state,
+            connector_state=connector_state,
             user_filter_mode=sync_data.user_filter_mode,
             user_whitelist=sync_data.user_whitelist,
             user_blacklist=sync_data.user_blacklist,
