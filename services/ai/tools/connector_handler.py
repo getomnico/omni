@@ -15,11 +15,12 @@ from db.documents import DocumentsRepository
 from db.models import Source
 from tools.omni_tool_result import OAuthRequiredPayload, encode_oauth_required
 from tools.registry import ToolContext, ToolResult
-from tools.sandbox import write_binary_to_sandbox
+from tools.sandbox import write_binary_to_sandbox, write_text_to_sandbox
 
 logger = logging.getLogger(__name__)
 
 ACTIONS_CACHE_TTL = 60  # seconds
+INLINE_TEXT_RESULT_MAX_BYTES = 40 * 1024
 
 SourceMode = Literal["read", "write"]
 # Maps source_id -> list of modes allowed for that source.
@@ -342,7 +343,10 @@ class ConnectorToolHandler:
                             content=[
                                 {
                                     "type": "text",
-                                    "text": "This action requires authorization, but the OAuth start URL was not provided by connector-manager.",
+                                    "text": (
+                                        "This action requires authorization, but the OAuth "
+                                        "start URL was not provided by connector-manager."
+                                    ),
                                 }
                             ],
                             is_error=True,
@@ -363,14 +367,24 @@ class ConnectorToolHandler:
 
                 content_type = response.headers.get("content-type", "")
 
-                # Binary file response
                 if "application/json" not in content_type:
+                    content_disposition = response.headers.get("content-disposition", "")
+                    if _is_textual_content_type(content_type) and not content_disposition:
+                        return await _text_result_or_sandbox(
+                            text=response.text,
+                            sandbox_url=self._sandbox_url,
+                            chat_id=context.chat_id,
+                            file_name=_action_result_file_name(
+                                action.action_name, extension="txt"
+                            ),
+                            description="Action returned text",
+                        )
                     if not self._sandbox_url:
                         return ToolResult(
                             content=[
                                 {
                                     "type": "text",
-                                    "text": "Received binary file but no sandbox is available to save it.",
+                                    "text": "Received file but no sandbox is available to save it.",
                                 }
                             ],
                             is_error=True,
@@ -412,17 +426,78 @@ class ConnectorToolHandler:
                 is_error=True,
             )
 
-        # Return the result as text content
         result_data = result.get("result", {})
+        if not result_data:
+            return ToolResult(
+                content=[{"type": "text", "text": "Action completed successfully."}]
+            )
+
+        return await _text_result_or_sandbox(
+            text=json.dumps(result_data, indent=2),
+            sandbox_url=self._sandbox_url,
+            chat_id=context.chat_id,
+            file_name=_action_result_file_name(action.action_name, extension="json"),
+            description="Action returned JSON",
+        )
+
+
+def _is_textual_content_type(content_type: str) -> bool:
+    normalized = content_type.lower()
+    return normalized.startswith("text/") or any(
+        marker in normalized
+        for marker in (
+            "application/xml",
+            "application/yaml",
+            "application/x-yaml",
+            "application/javascript",
+        )
+    )
+
+
+def _action_result_file_name(action_name: str, *, extension: str) -> str:
+    safe_name = "".join(
+        char if char.isalnum() or char in ("-", "_") else "_" for char in action_name
+    ).strip("_")
+    if not safe_name:
+        safe_name = "connector_action_result"
+    return f"{safe_name}_result.{extension}"
+
+
+async def _text_result_or_sandbox(
+    *,
+    text: str,
+    sandbox_url: str | None,
+    chat_id: str,
+    file_name: str,
+    description: str,
+) -> ToolResult:
+    result_size = len(text.encode("utf-8"))
+    if result_size <= INLINE_TEXT_RESULT_MAX_BYTES:
+        return ToolResult(content=[{"type": "text", "text": text}])
+
+    if not sandbox_url:
         return ToolResult(
             content=[
                 {
                     "type": "text",
                     "text": (
-                        json.dumps(result_data, indent=2)
-                        if result_data
-                        else "Action completed successfully."
+                        f"{description} ({result_size / 1024:.0f} KB), which is too "
+                        "large to include inline, and no sandbox is available to save "
+                        "it. Narrow the request or ask for an export."
                     ),
                 }
             ],
+            is_error=True,
         )
+
+    return await write_text_to_sandbox(
+        sandbox_url,
+        text,
+        file_name,
+        chat_id,
+        message=(
+            f"{description} ({result_size / 1024:.0f} KB), so I saved it to "
+            f"workspace: {file_name}. Use read_file, jq, or Python in the sandbox "
+            "to inspect/analyze it."
+        ),
+    )

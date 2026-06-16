@@ -644,7 +644,10 @@ class GoogleAdsConnector(Connector):
         if validation_error:
             return ActionResponse.failure(validation_error).to_response(status_code=400)
         rows = await client.run_gaql(customer_id, query, limit=limit)
-        metadata = _report_metadata("custom_gaql", customer_id, params, query, len(rows), limit)
+        customer_context = await self._customer_report_context(client, customer_id)
+        metadata = _report_metadata(
+            "custom_gaql", customer_id, params, query, len(rows), limit, customer_context
+        )
         csv_text = rows_to_csv(rows, metadata=metadata)
         return Response(
             content=csv_text,
@@ -664,7 +667,10 @@ class GoogleAdsConnector(Connector):
         if validation_error:
             return ActionResponse.failure(validation_error).to_response(status_code=400)
         rows = await client.run_gaql(customer_id, query, limit=limit)
-        metadata = _report_metadata("custom_gaql", customer_id, params, query, len(rows), limit)
+        customer_context = await self._customer_report_context(client, customer_id)
+        metadata = _report_metadata(
+            "custom_gaql", customer_id, params, query, len(rows), limit, customer_context
+        )
         content = rows_to_xlsx(rows, metadata=metadata)
         return Response(
             content=content,
@@ -717,7 +723,10 @@ class GoogleAdsConnector(Connector):
         limit = _row_limit(params, DEFAULT_REPORT_LIMIT, MAX_JSON_ROWS)
         query = build_report_query(report_type, params)
         rows = await client.run_gaql(customer_id, query, limit=limit)
-        metadata = _report_metadata(report_type, customer_id, params, query, len(rows), limit)
+        customer_context = await self._customer_report_context(client, customer_id)
+        metadata = _report_metadata(
+            report_type, customer_id, params, query, len(rows), limit, customer_context
+        )
         return ActionResponse.success({"metadata": metadata, "rows": rows}).to_response()
 
     async def _action_export_report(
@@ -736,7 +745,10 @@ class GoogleAdsConnector(Connector):
         limit = _row_limit(params, DEFAULT_EXPORT_LIMIT, max_rows)
         query = build_report_query(report_type, params)
         rows = await client.run_gaql(customer_id, query, limit=limit)
-        metadata = _report_metadata(report_type, customer_id, params, query, len(rows), limit)
+        customer_context = await self._customer_report_context(client, customer_id)
+        metadata = _report_metadata(
+            report_type, customer_id, params, query, len(rows), limit, customer_context
+        )
         if output_format == "json":
             return ActionResponse.success({"metadata": metadata, "rows": rows}).to_response()
         if output_format == "xlsx":
@@ -759,6 +771,27 @@ class GoogleAdsConnector(Connector):
                 "content-disposition": f'attachment; filename="google-ads-{report_type}.csv"'
             },
         )
+
+    async def _customer_report_context(
+        self, client: GoogleAdsClient, customer_id: str
+    ) -> dict[str, Any]:
+        query = """
+            SELECT
+              customer.id,
+              customer.descriptive_name,
+              customer.currency_code,
+              customer.time_zone
+            FROM customer
+        """
+        try:
+            rows = await client.run_gaql(customer_id, query, limit=1)
+        except GoogleAdsConnectorError as exc:
+            logger.warning("Failed to fetch Google Ads customer report context: %s", exc)
+            return {}
+        if not rows:
+            return {}
+        customer = rows[0].get("customer", rows[0])
+        return cast(dict[str, Any], customer if isinstance(customer, dict) else {})
 
     async def _action_account_hierarchy(
         self, client: GoogleAdsClient, params: dict[str, Any]
@@ -1244,10 +1277,15 @@ def _report_metadata(
     query: str,
     row_count: int,
     limit: int,
+    customer_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    customer_context = customer_context or {}
     return {
         "report_type": report_type,
         "customer_id": customer_id,
+        "customer_descriptive_name": customer_context.get("descriptive_name"),
+        "customer_currency_code": customer_context.get("currency_code"),
+        "customer_time_zone": customer_context.get("time_zone"),
         "date_range": params.get("date_range"),
         "start_date": params.get("start_date"),
         "end_date": params.get("end_date"),
@@ -1255,34 +1293,47 @@ def _report_metadata(
         "row_count": row_count,
         "limit": limit,
         "limit_reached": row_count >= limit,
+        "cost_units": "metrics.cost_micros / 1,000,000",
+        "attribution_note": (
+            "Google Ads conversion metrics depend on account conversion settings "
+            "and attribution windows and may change retroactively."
+        ),
+        "filter_note": "Reconcile with Google Ads UI using the same date range and filters.",
         "gaql": " ".join(query.split()),
     }
 
 
 def rows_to_csv(rows: list[dict[str, Any]], metadata: dict[str, Any] | None = None) -> str:
-    flattened = [_flatten(row) for row in rows]
+    flattened = _flatten_report_rows(rows)
     fieldnames = sorted({key for row in flattened for key in row}) or ["result"]
+    schema = _infer_schema(flattened, fieldnames)
     output = io.StringIO()
     if metadata:
         output.write("# Google Ads report metadata\n")
         for key, value in metadata.items():
             output.write(f"# {key}: {value}\n")
+        output.write("# columns: " + ", ".join(fieldnames) + "\n")
         output.write("\n")
     writer = csv.DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
     for row in flattened:
         writer.writerow(row)
+    if metadata:
+        output.write("\n# Schema\n")
+        for column in fieldnames:
+            output.write(f"# {column}: {schema[column]}\n")
     return output.getvalue()
 
 
 def rows_to_xlsx(rows: list[dict[str, Any]], metadata: dict[str, Any] | None = None) -> bytes:
     from openpyxl import Workbook  # type: ignore[import-untyped]
 
-    flattened = [_flatten(row) for row in rows]
+    flattened = _flatten_report_rows(rows)
     fieldnames = sorted({key for row in flattened for key in row}) or ["result"]
+    schema = _infer_schema(flattened, fieldnames)
     wb = Workbook()
     ws = wb.active
-    ws.title = "Google Ads Report"
+    ws.title = "Rows"
     ws.append(fieldnames)
     for row in flattened:
         ws.append([row.get(name) for name in fieldnames])
@@ -1291,9 +1342,65 @@ def rows_to_xlsx(rows: list[dict[str, Any]], metadata: dict[str, Any] | None = N
         meta.append(["key", "value"])
         for key, value in metadata.items():
             meta.append([key, str(value)])
+    schema_ws = wb.create_sheet("Schema")
+    schema_ws.append(["column", "inferred_type"])
+    for column in fieldnames:
+        schema_ws.append([column, schema[column]])
     output = io.BytesIO()
     wb.save(output)
     return output.getvalue()
+
+
+def _flatten_report_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_with_derived_metrics(_flatten(row)) for row in rows]
+
+
+def _with_derived_metrics(row: dict[str, Any]) -> dict[str, Any]:
+    out = dict(row)
+    cost_micros = _as_float(row.get("metrics.cost_micros"))
+    impressions = _as_float(row.get("metrics.impressions"))
+    clicks = _as_float(row.get("metrics.clicks"))
+    conversions = _as_float(row.get("metrics.conversions"))
+    conversion_value = _as_float(row.get("metrics.conversions_value"))
+
+    if cost_micros is not None:
+        out["derived.cost"] = cost_micros / 1_000_000
+    cost = _as_float(out.get("derived.cost"))
+    if clicks and impressions:
+        out["derived.ctr"] = clicks / impressions
+    if conversions and clicks:
+        out["derived.conversion_rate"] = conversions / clicks
+    if conversions and cost is not None:
+        out["derived.cost_per_conversion"] = cost / conversions
+    if conversion_value is not None and cost:
+        out["derived.roas"] = conversion_value / cost
+    return out
+
+
+def _as_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _infer_schema(rows: list[dict[str, Any]], fieldnames: list[str]) -> dict[str, str]:
+    return {field: _infer_column_type([row.get(field) for row in rows]) for field in fieldnames}
+
+
+def _infer_column_type(values: list[Any]) -> str:
+    present = [value for value in values if value not in (None, "")]
+    if not present:
+        return "empty"
+    if all(isinstance(value, bool) for value in present):
+        return "boolean"
+    if all(isinstance(value, int) and not isinstance(value, bool) for value in present):
+        return "integer"
+    if all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in present):
+        return "number"
+    return "text"
 
 
 def _flatten(value: Any, prefix: str = "") -> dict[str, Any]:

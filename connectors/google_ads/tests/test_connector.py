@@ -147,12 +147,25 @@ def test_gaql_validation_and_csv_export():
     assert validate_gaql_for_action("SELECT campaign.id FROM campaign") is None
     assert validate_gaql_for_action("DELETE FROM campaign")
     csv_text = rows_to_csv(
-        [{"campaign": {"id": "1"}, "metrics": {"clicks": 2}}],
+        [
+            {
+                "campaign": {"id": "1"},
+                "metrics": {
+                    "clicks": 2,
+                    "cost_micros": 3_000_000,
+                    "conversions": 1,
+                    "conversions_value": 9,
+                },
+            }
+        ],
         metadata={"report_type": "custom_gaql", "row_count": 1},
     )
     assert "# report_type: custom_gaql" in csv_text
+    assert "# Schema" in csv_text
     assert "campaign.id" in csv_text
     assert "metrics.clicks" in csv_text
+    assert "derived.cost" in csv_text
+    assert "derived.roas" in csv_text
 
 
 def test_action_query_params_clamps_export_limits():
