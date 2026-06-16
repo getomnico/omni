@@ -103,7 +103,10 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: ${{ inputs.build-args }}
+          build-args: |
+            OMNI_VERSION=${{ github.ref_name }}
+            OMNI_COMMIT=${{ github.sha }}
+            ${{ inputs.build-args }}
           cache-from: type=gha,scope=${{ env.IMAGE_NAME }}${{ inputs.tag-suffix }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ env.IMAGE_NAME }}${{ inputs.tag-suffix }}-${{ matrix.arch }}
 
@@ -180,6 +183,9 @@ jobs:
           platforms: linux/amd64
           file: ${{ inputs.dockerfile }}
           push: false
-          build-args: ${{ inputs.build-args }}
+          build-args: |
+            OMNI_VERSION=${{ github.ref_name }}
+            OMNI_COMMIT=${{ github.sha }}
+            ${{ inputs.build-args }}
           cache-from: type=gha,scope=${{ env.IMAGE_NAME }}${{ inputs.tag-suffix }}-amd64
           cache-to: type=gha,mode=max,scope=${{ env.IMAGE_NAME }}${{ inputs.tag-suffix }}-amd64

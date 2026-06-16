@@ -22,6 +22,11 @@ WORKDIR /app
 
 # Port argument with default value
 ARG WEB_PORT=3000
+ARG OMNI_VERSION=dev
+ARG OMNI_COMMIT=unknown
+
+ENV PUBLIC_OMNI_VERSION=$OMNI_VERSION
+ENV PUBLIC_OMNI_COMMIT=$OMNI_COMMIT
 
 # Copy package files for production dependencies
 COPY package*.json ./
