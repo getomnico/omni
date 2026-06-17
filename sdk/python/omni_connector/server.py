@@ -132,11 +132,7 @@ def create_app(connector: "Connector") -> FastAPI:
             sync_data = await server.sdk_client.fetch_source_sync_data(source_id)
             source_config = sync_data.config
             credentials = sync_data.credentials
-            checkpoint = (
-                request.checkpoint
-                if request.checkpoint is not None
-                else sync_data.checkpoint
-            )
+            checkpoint = request.checkpoint
             connector_state = sync_data.connector_state
             source_type = sync_data.source_type
         except SdkClientError as e:
