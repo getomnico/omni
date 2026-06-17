@@ -684,6 +684,9 @@ pub async fn list_actions(
                 if !action.source_types.is_empty() && !action.source_types.contains(source_type) {
                     continue;
                 }
+                if action.hidden {
+                    continue;
+                }
                 all_actions.push(json!({
                     "source_type": source_type,
                     "name": action.name,
@@ -2245,6 +2248,7 @@ mod tests {
                 mode: ActionMode::Read,
                 source_types: Vec::new(),
                 admin_only: false,
+                hidden: false,
             }],
             search_operators: Vec::new(),
             read_only: false,

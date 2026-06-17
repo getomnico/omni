@@ -116,6 +116,7 @@ impl Connector for NextcloudConnector {
                 mode: omni_connector_sdk::ActionMode::Read,
                 source_types: Vec::new(),
                 admin_only: false,
+                hidden: false,
             },
             ActionDefinition {
                 name: "fetch_file".into(),
@@ -131,17 +132,12 @@ impl Connector for NextcloudConnector {
                     "required": ["file_id"]
                 }),
                 mode: omni_connector_sdk::ActionMode::Read,
-                // Hide this action from EVERY chat/MCP tool surface, admins included.
-                // The AI chat tool builder (connector_handler) and the
-                // connector-manager `list_actions` endpoint only surface an action
-                // when the source's type is listed in `source_types`. Pointing it at
-                // a type this connector never serves (a sentinel — any non-Nextcloud
-                // variant works) drops it from every tool list for all users, before
-                // `admin_only` is ever consulted, so admins cannot see it either.
-                // The action still lives in the manifest with Read mode, so
-                // connector-manager keeps dispatching it BY NAME for setup and the
-                // internal read_document binary fetch, and the read-only guard passes.
-                source_types: vec![SourceType::Linear],
+                source_types: Vec::new(),
+                // Internal action with no chat-facing use: hidden from every
+                // chat/MCP tool surface, admins included, but still in the
+                // manifest (Read mode) and dispatchable by name for the
+                // internal read_document binary fetch.
+                hidden: true,
                 // Route /action dispatch to the org credential so the internal
                 // read_document binary fetch keeps working for org-level agents and
                 // non-admin users (Nextcloud has only an org basic-auth credential;

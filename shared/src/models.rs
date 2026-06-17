@@ -381,8 +381,16 @@ pub struct ActionDefinition {
     pub source_types: Vec<SourceType>,
     /// Hide this action from non-admin users in LLM tool exposure (e.g.
     /// admin-directory ops that require a service-account credential).
+    /// Also consulted at dispatch time to resolve credentials (see
+    /// `resolve_credentials` in connector-manager), independent of `hidden`.
     #[serde(default)]
     pub admin_only: bool,
+    /// Exclude this action from every chat/agent tool surface, admins
+    /// included (e.g. setup/internal actions with no chat-facing use).
+    /// Unlike `admin_only`, this is not bypassed for admin users. The
+    /// action remains in the manifest and dispatchable by name.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

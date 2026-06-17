@@ -49,6 +49,7 @@ class ConnectorAction:
     input_schema: dict
     mode: SourceMode
     admin_only: bool = False
+    hidden: bool = False
 
 
 class ConnectorToolHandler:
@@ -204,6 +205,7 @@ class ConnectorToolHandler:
                             ),
                             mode=action_def.get("mode", "write"),
                             admin_only=action_def.get("admin_only", False),
+                            hidden=action_def.get("hidden", False),
                         )
                     )
 
@@ -219,6 +221,11 @@ class ConnectorToolHandler:
 
         seen_tools: set[str] = set()
         for action in actions:
+            # Hidden actions (e.g. internal setup actions) never appear in
+            # chat/agent tool lists, admins included.
+            if action.hidden:
+                continue
+
             # Hide admin-only actions (e.g. admin-directory ops) from non-admins.
             if action.admin_only and not self._is_admin:
                 continue

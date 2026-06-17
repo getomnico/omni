@@ -142,6 +142,9 @@ class ActionDefinition(BaseModel):
     # Revisit if/when we generate Python types from the Rust models.
     source_types: list[str] = Field(default_factory=list)
     admin_only: bool = False
+    # Hidden from every chat/agent tool surface, admins included (unlike
+    # admin_only, not bypassed for admin users). Still dispatchable by name.
+    hidden: bool = False
 
 
 class SearchOperator(BaseModel):

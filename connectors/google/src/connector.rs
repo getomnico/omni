@@ -429,6 +429,7 @@ impl Connector for GoogleConnector {
                 }),
                 source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
                 admin_only: false,
+                hidden: false,
             },
             ActionDefinition {
                 name: "search_users".to_string(),
@@ -445,6 +446,7 @@ impl Connector for GoogleConnector {
                 }),
                 source_types: vec![SourceType::GoogleDrive],
                 admin_only: true,
+                hidden: false,
             },
         ]
     }

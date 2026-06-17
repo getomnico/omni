@@ -474,6 +474,7 @@ async fn fetch_actions(client: &RmcpClient) -> Result<Vec<ActionDefinition>> {
             },
             source_types: Vec::new(),
             admin_only: false,
+            hidden: false,
         });
     }
     Ok(actions)

@@ -92,16 +92,12 @@ impl Connector for ImapConnector {
                     },
                     "required": ["host"]
                 }),
-                // Hide this action from EVERY chat/MCP tool surface, admins included.
-                // The AI chat tool builder (connector_handler) and the
-                // connector-manager `list_actions` endpoint only surface an action
-                // when the source's type is listed in `source_types`. A sentinel type
-                // this connector never serves (any non-IMAP variant) drops it from
-                // every tool list for all users, before `admin_only` is consulted.
-                // It stays in the manifest (Read mode) and is still dispatchable by
-                // name; these are setup/util actions with no chat-facing use.
-                source_types: vec![SourceType::Linear],
+                // Setup/util action with no chat-facing use: hidden from every
+                // chat/MCP tool surface, admins included, but still in the
+                // manifest (Read mode) and dispatchable by name.
+                source_types: Vec::new(),
                 admin_only: false,
+                hidden: true,
             },
             ActionDefinition {
                 name: "list_folders".to_string(),
@@ -116,16 +112,12 @@ impl Connector for ImapConnector {
                     },
                     "required": ["host"]
                 }),
-                // Hide this action from EVERY chat/MCP tool surface, admins included.
-                // The AI chat tool builder (connector_handler) and the
-                // connector-manager `list_actions` endpoint only surface an action
-                // when the source's type is listed in `source_types`. A sentinel type
-                // this connector never serves (any non-IMAP variant) drops it from
-                // every tool list for all users, before `admin_only` is consulted.
-                // It stays in the manifest (Read mode) and is still dispatchable by
-                // name; these are setup/util actions with no chat-facing use.
-                source_types: vec![SourceType::Linear],
+                // Setup/util action with no chat-facing use: hidden from every
+                // chat/MCP tool surface, admins included, but still in the
+                // manifest (Read mode) and dispatchable by name.
+                source_types: Vec::new(),
                 admin_only: false,
+                hidden: true,
             },
         ]
     }
