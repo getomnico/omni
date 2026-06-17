@@ -108,7 +108,10 @@ def _sse_event(event_type: str, data: object) -> str:
 SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
 
 _STREAM_HEARTBEAT_MS = 15000  # idle ping interval (keeps proxies from timing out)
-_RUN_LOCK_TTL = 300  # seconds; refreshed on every produced event
+_RUN_LOCK_TTL = 300  # seconds; refreshed on every produced event and by the heartbeat below
+_LOCK_REFRESH_INTERVAL = 60  # seconds; independent of event production, so a long
+# silent gap in the agent loop (e.g. a slow tool call with no intermediate SSE
+# events) can't let the lock expire while the producer is still running.
 _STREAM_TTL = 300  # seconds a finished stream stays replayable
 _STREAM_MAXLEN = 5000  # cap buffered events per run
 _CANCEL_TTL = 300
@@ -172,11 +175,22 @@ async def _persist_and_transform(gen, chat_id, messages_repo, parent_id):
         yield event_str
 
 
+async def _refresh_lock_periodically(redis_client, lock_key):
+    """Keep the run lock alive independently of event production, so a long
+    silent gap in the agent loop doesn't let it expire mid-run."""
+    while True:
+        await asyncio.sleep(_LOCK_REFRESH_INTERVAL)
+        await redis_client.expire(lock_key, _RUN_LOCK_TTL)
+
+
 async def _run_producer(redis_client, chat_id, gen, messages_repo, parent_id):
     """Background task: drive the agent loop to completion independently of any
     client connection, buffering every SSE event in a Redis Stream."""
     stream_key = _stream_key(chat_id)
     lock_key = _run_lock_key(chat_id)
+    refresh_task = asyncio.create_task(
+        _refresh_lock_periodically(redis_client, lock_key)
+    )
     try:
         async for event_str in _persist_and_transform(
             gen, chat_id, messages_repo, parent_id
@@ -198,6 +212,11 @@ async def _run_producer(redis_client, chat_id, gen, messages_repo, parent_id):
         except Exception:
             pass
     finally:
+        refresh_task.cancel()
+        try:
+            await refresh_task
+        except asyncio.CancelledError:
+            pass
         for coro in (
             redis_client.expire(stream_key, _STREAM_TTL),
             redis_client.delete(lock_key),
