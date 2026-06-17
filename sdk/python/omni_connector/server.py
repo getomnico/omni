@@ -132,7 +132,11 @@ def create_app(connector: "Connector") -> FastAPI:
             sync_data = await server.sdk_client.fetch_source_sync_data(source_id)
             source_config = sync_data.config
             credentials = sync_data.credentials
-            state = request.checkpoint if request.checkpoint is not None else sync_data.checkpoint
+            checkpoint = (
+                request.checkpoint
+                if request.checkpoint is not None
+                else sync_data.checkpoint
+            )
             connector_state = sync_data.connector_state
             source_type = sync_data.source_type
         except SdkClientError as e:
@@ -177,7 +181,7 @@ def create_app(connector: "Connector") -> FastAPI:
             sync_run_id=sync_run_id,
             source_id=source_id,
             source_type=source_type,
-            state=state,
+            checkpoint=checkpoint,
             connector_state=connector_state,
             user_filter_mode=sync_data.user_filter_mode,
             user_whitelist=sync_data.user_whitelist,
@@ -191,7 +195,7 @@ def create_app(connector: "Connector") -> FastAPI:
 
         async def run_sync() -> None:
             try:
-                await connector.sync(source_config, credentials, state, ctx)
+                await connector.sync(source_config, credentials, checkpoint, ctx)
             except Exception as e:
                 logger.error("Sync %s failed: %s", sync_run_id, e)
                 if not ctx.is_cancelled():

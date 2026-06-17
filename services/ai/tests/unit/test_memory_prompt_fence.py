@@ -10,6 +10,11 @@ class _FakeAgent:
     name = "TestAgent"
 
 
+class _FakeSource:
+    def __init__(self, source_type: str):
+        self.source_type = source_type
+
+
 @pytest.mark.unit
 class TestMemoryFencing:
     def test_agent_prompt_renders_memories_as_trusted_bullets(self):
@@ -66,3 +71,11 @@ class TestMemoryFencing:
             memories=None,
         )
         assert "<untrusted-memory>" not in prompt
+
+    def test_source_skill_hint_is_dynamic(self):
+        no_sources_prompt = build_chat_system_prompt(sources=[])
+        assert 'load the "google_ads" skill' not in no_sources_prompt
+
+        google_ads_prompt = build_chat_system_prompt(sources=[_FakeSource("google_ads")])
+        assert "Connected apps: Google Ads" in google_ads_prompt
+        assert 'load the "google_ads" skill' in google_ads_prompt

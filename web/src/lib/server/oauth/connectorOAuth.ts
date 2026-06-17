@@ -27,7 +27,7 @@ export type OAuthFlow =
     | { type: 'connect_source'; sourceTypes: string[]; returnTo?: string }
     /// Admin attaches org-wide read/sync creds to a specific org source.
     | { type: 'org_source'; sourceId: string; returnTo?: string }
-    /// User attaches per-user write creds to a specific org source.
+    /// User attaches per-user action creds to a specific org source.
     | { type: 'user_write'; sourceId: string; returnTo?: string }
 
 export interface ManifestOAuthState {

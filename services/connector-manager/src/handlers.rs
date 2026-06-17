@@ -1,4 +1,3 @@
-use crate::AppState;
 use crate::connector_client::ConnectorClient;
 use crate::models::{
     ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
@@ -7,23 +6,24 @@ use crate::models::{
 };
 use crate::sync_circuit_breaker::has_failure_streak;
 use crate::sync_manager::SyncError;
+use crate::AppState;
 use axum::{
-    Json,
     extract::{Path, Query, State},
-    http::{HeaderValue, StatusCode, header},
+    http::{header, HeaderValue, StatusCode},
     response::{
-        IntoResponse,
         sse::{Event, KeepAlive, Sse},
+        IntoResponse,
     },
+    Json,
 };
 use futures::stream::Stream;
 use redis::AsyncCommands;
-use serde_json::json;
+use serde_json::{json, Value};
 use shared::clients::docling::{DoclingClient, DoclingError};
 use shared::db::repositories::{ConfigurationRepository, SyncRunRepository};
 use shared::models::{
-    ActionMode, ConnectorManifest, GlobalConfiguration, SearchOperator, ServiceProvider, Source,
-    SourceType, SyncRun, SyncType,
+    ActionMode, ConnectorManifest, GlobalConfiguration, SearchOperator, ServiceCredential,
+    ServiceProvider, Source, SourceType, SyncRun, SyncType,
 };
 use shared::queue::EventQueue;
 use shared::utils;
@@ -519,6 +519,48 @@ enum CredentialResolution {
     NoCredentials,
 }
 
+fn merge_json_objects(base: &Value, overlay: &Value) -> Value {
+    match (base.as_object(), overlay.as_object()) {
+        (Some(base_obj), Some(overlay_obj)) => {
+            let mut merged = base_obj.clone();
+            for (key, value) in overlay_obj {
+                merged.insert(key.clone(), value.clone());
+            }
+            Value::Object(merged)
+        }
+        _ => overlay.clone(),
+    }
+}
+
+fn org_setup_credentials(org_credentials: &Value) -> Value {
+    match org_credentials.as_object() {
+        Some(obj) => {
+            let mut setup = obj.clone();
+            for key in [
+                "access_token",
+                "refresh_token",
+                "token",
+                "token_type",
+                "id_token",
+            ] {
+                setup.remove(key);
+            }
+            Value::Object(setup)
+        }
+        None => Value::Object(serde_json::Map::new()),
+    }
+}
+
+fn merge_org_and_user_credentials(
+    org_cred: ServiceCredential,
+    mut user_cred: ServiceCredential,
+) -> ServiceCredential {
+    let org_setup = org_setup_credentials(&org_cred.credentials);
+    user_cred.credentials = merge_json_objects(&org_setup, &user_cred.credentials);
+    user_cred.config = merge_json_objects(&org_cred.config, &user_cred.config);
+    user_cred
+}
+
 /// Resolve which credential to use for a tool/action invocation.
 ///
 /// * `admin_only` action → org row regardless of user_id. These actions
@@ -526,9 +568,10 @@ enum CredentialResolution {
 ///   the admin set up org-wide; per-user OAuth scopes don't cover them.
 /// * `Some(user_id)` (chat tool, user-scoped agent) → per-user row required.
 ///   No fallback to org credentials — if the user hasn't connected, return
-///   `NeedsUserAuth` so the UI can prompt. Personal sources satisfy this
-///   because their cred row is keyed on the owner's user_id (see migration
-///   087).
+///   `NeedsUserAuth` so the UI can prompt. When both rows exist, org-level
+///   setup credentials/config are merged under the user's OAuth token. Personal
+///   sources satisfy this because their cred row is keyed on the owner's
+///   user_id (see migration 087).
 /// * `None` (sync, org-level agent) → org row.
 async fn resolve_credentials(
     creds_repo: &ServiceCredentialsRepo,
@@ -560,16 +603,23 @@ async fn resolve_credentials(
 
     match user_id {
         Some(uid) => {
-            if let Some(c) = creds_repo
+            if let Some(mut user_cred) = creds_repo
                 .find_user_credential(source_id, uid)
                 .await
                 .map_err(internal)?
             {
+                if let Some(org_cred) = creds_repo
+                    .find_org_credential(source_id)
+                    .await
+                    .map_err(internal)?
+                {
+                    user_cred = merge_org_and_user_credentials(org_cred, user_cred);
+                }
                 info!(
                     "resolve_credentials(source={}, user={}): per-user cred {}",
-                    source_id, uid, c.id
+                    source_id, uid, user_cred.id
                 );
-                return Ok(CredentialResolution::Resolved(c));
+                return Ok(CredentialResolution::Resolved(user_cred));
             }
             // No per-user row — surface a NeedsUserAuth response so the UI
             // can prompt. Provider hint comes from the org row when present;

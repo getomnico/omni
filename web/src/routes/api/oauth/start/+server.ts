@@ -9,10 +9,17 @@ import {
     getOAuthManifestForSourceType,
 } from '$lib/server/oauth/connectorOAuth'
 
-/// Unified OAuth start route. Two flows, disambiguated by query params:
+function oauthClientNotConfiguredMessage(provider: string): string {
+    return (
+        `OAuth client for ${provider} is not configured. Ask an admin to set it up under ` +
+        'Admin → Settings → Integrations → OAuth Apps.'
+    )
+}
+
+/// Unified OAuth start route. Flows are disambiguated by query params:
 ///   ?source_types=google_drive,gmail          → connect_source flow
-///   ?org_source_id=01J...                     → admin org-source credential flow
-///   ?source_id=01J...                         → user_write flow
+///   ?source_id=01J...&flow=org_source         → admin org-source credential flow
+///   ?source_id=01J...&flow=user_write         → per-user action credential flow
 /// Optional `return_to` is preserved through the callback for UI return links.
 export const GET: RequestHandler = async ({ url, locals }) => {
     if (!locals.user) {
@@ -20,18 +27,23 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     }
 
     const sourceId = url.searchParams.get('source_id')
-    const orgSourceId = url.searchParams.get('org_source_id')
+    const flow = url.searchParams.get('flow') ?? 'user_write'
     const sourceTypesParam = url.searchParams.get('source_types')
     const returnTo = url.searchParams.get('return_to') ?? undefined
 
-    if (orgSourceId) {
-        if (locals.user.role !== 'admin') {
-            throw error(403, 'Admin access required')
+    if (sourceId) {
+        if (flow !== 'org_source' && flow !== 'user_write') {
+            throw error(400, 'flow must be either org_source or user_write')
         }
-        const source = await getSourceById(orgSourceId)
+
+        const source = await getSourceById(sourceId)
         if (!source || source.isDeleted) throw error(404, 'Source not found')
         if (source.scope !== 'org') {
-            throw error(400, 'Org OAuth attaches to org-wide sources only.')
+            throw error(
+                400,
+                'OAuth for an existing source attaches to org-wide sources only. ' +
+                    'Personal sources already use the owner credential.',
+            )
         }
 
         const config = await getOAuthManifestForSourceType(source.sourceType)
@@ -39,43 +51,20 @@ export const GET: RequestHandler = async ({ url, locals }) => {
             throw error(501, `OAuth is not implemented for source_type=${source.sourceType} yet.`)
         }
         if (!(await isProviderConfigured(config.provider))) {
-            throw error(
-                412,
-                `OAuth client for ${config.provider} is not configured. Add it under Admin → Settings → Integrations → OAuth Apps.`,
-            )
+            throw error(412, oauthClientNotConfiguredMessage(config.provider))
         }
 
-        const { url: authUrl } = await generateAuthUrlForOrgSource({
-            sourceId: orgSourceId,
-            sourceType: source.sourceType,
-            userId: locals.user.id,
-            returnTo,
-        })
-        throw redirect(302, authUrl)
-    }
-
-    if (sourceId) {
-        const source = await getSourceById(sourceId)
-        if (!source || source.isDeleted) throw error(404, 'Source not found')
-        if (source.scope !== 'org') {
-            throw error(
-                400,
-                'Per-user OAuth attaches to org-wide sources only. Personal sources already use the owner credential.',
-            )
-        }
-
-        const config = await getOAuthManifestForSourceType(source.sourceType)
-        if (!config) {
-            throw error(
-                501,
-                `Per-user OAuth is not implemented for source_type=${source.sourceType} yet.`,
-            )
-        }
-        if (!(await isProviderConfigured(config.provider))) {
-            throw error(
-                412,
-                `OAuth client for ${config.provider} is not configured. Ask an admin to set it up under Admin → Settings → Integrations → OAuth Apps.`,
-            )
+        if (flow === 'org_source') {
+            if (locals.user.role !== 'admin') {
+                throw error(403, 'Admin access required')
+            }
+            const { url: authUrl } = await generateAuthUrlForOrgSource({
+                sourceId,
+                sourceType: source.sourceType,
+                userId: locals.user.id,
+                returnTo,
+            })
+            throw redirect(302, authUrl)
         }
 
         const { url: authUrl } = await generateAuthUrlForUserWrite({
@@ -96,10 +85,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
             throw error(501, `OAuth not implemented for source_type=${sourceTypes[0]}`)
         }
         if (!(await isProviderConfigured(config.provider))) {
-            throw error(
-                412,
-                `OAuth client for ${config.provider} is not configured. Ask an admin to set it up under Admin → Settings → Integrations → OAuth Apps.`,
-            )
+            throw error(412, oauthClientNotConfiguredMessage(config.provider))
         }
 
         const { url: authUrl } = await generateAuthUrl({
@@ -109,5 +95,5 @@ export const GET: RequestHandler = async ({ url, locals }) => {
         throw redirect(302, authUrl)
     }
 
-    throw error(400, 'Either source_id, org_source_id, or source_types must be provided')
+    throw error(400, 'Either source_id or source_types must be provided')
 }

@@ -83,7 +83,8 @@
             if (!credentialsResponse.ok) throw new Error('Failed to create Google Ads credentials')
 
             toast.success('Google Ads source created. Continue with Google to authorize access.')
-            window.location.href = `/api/oauth/start?org_source_id=${source.id}&return_to=${encodeURIComponent('/admin/settings/integrations?success=connected')}`
+            const returnTo = encodeURIComponent('/admin/settings/integrations?success=connected')
+            window.location.href = `/api/oauth/start?source_id=${source.id}&flow=org_source&return_to=${returnTo}`
         } catch (error: any) {
             console.error('Error setting up Google Ads:', error)
             toast.error(error.message || 'Failed to set up Google Ads')

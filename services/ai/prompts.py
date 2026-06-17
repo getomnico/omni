@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from db.models import UserConfiguration
 from datetime_utils import format_datetime
 
@@ -26,7 +28,11 @@ SOURCE_DISPLAY_NAMES = {
     "paperless": "Paperless",
     "google_calendar": "Google Calendar",
     "microsoft_teams": "Microsoft Teams",
+    "google_ads": "Google Ads",
 }
+
+_SKILLS_DIR = Path(__file__).resolve().parent / "skills"
+_SKILL_FILENAME = "SKILL.md"
 
 SYSTEM_PROMPT_TEMPLATE = """You are Omni AI, a workplace agent that helps employees find information and complete tasks across their connected apps.
 
@@ -76,7 +82,7 @@ Connected apps: {connected_apps}
 # Skills
 - Use `load_skill` to load detailed instructions when working with specific file types or complex tasks.
 - When working with Excel/spreadsheet files, load the "excel" skill first for guidance on data boundaries, merged cells, type inference, and the `excel` CLI tool.
-- When working on Google Ads analysis, reporting, exports, or campaign diagnostics, load the "google_ads" skill first for guidance on indexed structure vs live metrics workflows.
+{source_skill_lines}
 
 # Response style
 - Be direct. Lead with the answer, not the process.
@@ -180,6 +186,30 @@ def _format_trusted_memory_block(memories: list[str], heading: str) -> str:
     and run summaries — not from user-controlled connector data.
     """
     return f"\n\n## {heading}\n{_build_memory_bullets(memories)}"
+
+
+def _available_skill_names() -> set[str]:
+    if not _SKILLS_DIR.exists():
+        return set()
+
+    names = {path.stem for path in _SKILLS_DIR.glob("*.md") if path.is_file()}
+    for skill_dir in _SKILLS_DIR.iterdir():
+        if skill_dir.is_dir() and (skill_dir / _SKILL_FILENAME).is_file():
+            names.add(skill_dir.name)
+    return names
+
+
+def _source_skill_lines(source_types: set[str]) -> str:
+    available = _available_skill_names()
+    lines = []
+    for source_type in sorted(source_types):
+        if source_type not in available:
+            continue
+        source_display = SOURCE_DISPLAY_NAMES.get(source_type, source_type)
+        lines.append(
+            f'- When working with {source_display}, load the "{source_type}" skill first.'
+        )
+    return "\n".join(lines)
 
 
 def _format_user_line(
@@ -313,6 +343,7 @@ def build_chat_system_prompt(
         user_line=user_line,
         connected_apps=connected_apps,
         actions_section=actions_section,
+        source_skill_lines=_source_skill_lines(seen),
     )
 
     if memories:

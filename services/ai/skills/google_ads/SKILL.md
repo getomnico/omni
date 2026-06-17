@@ -4,12 +4,12 @@ Use this skill when the user asks about Google Ads campaigns, ad groups, ads, ke
 
 ## Core Principle
 
-Google Ads in Omni has two kinds of data:
+Omni supports Google Ads analysis through two paths:
 
-1. **Indexed structure/configuration** — searchable Omni documents for durable, non-metric account structure.
-2. **Live reports/actions** — fresh Google Ads API data for metrics, time series, exports, and analysis.
+1. **Indexed structure/configuration** — searchable Omni documents for durable, non-metric account structure that has been synced.
+2. **Live reports/actions** — connector tools that fetch fresh Google Ads API data for metrics, time series, exports, and analysis when the source is connected and authorized.
 
-Do **not** treat indexed Google Ads documents as a source of performance metrics. Metrics such as impressions, clicks, cost, CTR, CPC, conversions, conversion value, CPA, ROAS, and impression share must come from live Google Ads actions/reports.
+Do **not** treat indexed Google Ads documents as a source of performance metrics. Metrics such as impressions, clicks, cost, CTR, CPC, conversions, conversion value, CPA, ROAS, and impression share must be fetched live from Google Ads actions/reports.
 
 ## Read-Only Scope
 
@@ -44,8 +44,7 @@ Search indexed docs when the question is about setup, names, statuses, relations
 - keyword criteria
 - conversion actions
 - user lists/audiences where indexed
-- recommendations where indexed
-- labels and resource IDs where available
+- resource IDs and indexed metadata where available
 
 Useful search filters/operators may include:
 
@@ -92,6 +91,8 @@ When using raw GAQL:
 - Use row limits and explain if the output may be sampled/truncated by a limit.
 - Do not include mutation operations or multiple statements.
 
+The examples below are common starting shapes, not universal templates. Google Ads can reject incompatible field/resource combinations, and some accounts do not have data for every resource. Prefer curated report actions when possible; if raw GAQL fails, simplify the fields or choose a resource/view that matches the account setup.
+
 Common date clauses:
 
 ```sql
@@ -102,7 +103,7 @@ WHERE segments.date DURING LAST_30_DAYS
 WHERE segments.date BETWEEN '2026-01-01' AND '2026-01-31'
 ```
 
-Campaign performance shape:
+Common campaign performance shape:
 
 ```sql
 SELECT
@@ -120,7 +121,7 @@ WHERE segments.date DURING LAST_30_DAYS
 ORDER BY metrics.cost_micros DESC
 ```
 
-Search term mining shape:
+Common search term mining shape:
 
 ```sql
 SELECT

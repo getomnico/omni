@@ -70,13 +70,9 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token ?? null,
         token_type: tokens.token_type ?? 'Bearer',
-        ...(config.provider === 'google_ads'
-            ? {
-                  client_id: clientCreds.clientId,
-                  client_secret: clientCreds.clientSecret,
-                  token_uri: config.token_endpoint,
-              }
-            : {}),
+        client_id: clientCreds.clientId,
+        client_secret: clientCreds.clientSecret,
+        token_uri: clientCreds.tokenEndpoint ?? config.token_endpoint,
     }
 
     if (flow.type === 'org_source') {
