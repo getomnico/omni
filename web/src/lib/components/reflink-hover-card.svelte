@@ -73,12 +73,13 @@
         </div>
     </HoverCard.Content>
     <!-- Keep the trigger last and close Root inline so Svelte does not emit whitespace between the citation and following punctuation. -->
+    {@const isNavigable = href.startsWith('http://') || href.startsWith('https://')}
     <HoverCard.Trigger
-        {href}
+        href={isNavigable ? href : undefined}
         {title}
-        target="_blank"
-        rel="noreferrer noopener"
-        class="text-muted-foreground hover:text-foreground/80 inline-block max-w-36 items-center 
-        gap-1 truncate overflow-hidden border p-0.5 text-xs no-underline 
+        target={isNavigable ? '_blank' : undefined}
+        rel={isNavigable ? 'noreferrer noopener' : undefined}
+        class="text-muted-foreground hover:text-foreground/80 inline-block max-w-36 items-center
+        gap-1 truncate overflow-hidden border p-0.5 text-xs no-underline
         transition-colors">[{text}]</HoverCard.Trigger
     ></HoverCard.Root>
