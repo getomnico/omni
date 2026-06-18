@@ -179,12 +179,17 @@ impl SuggestedQuestionsGenerator {
                 .find_groups_for_user(user_email)
                 .await
                 .unwrap_or_default();
+            // Exclude documents already consumed in earlier attempts at the query
+            // level, so every fetched document is new and attempts don't spin on
+            // re-drawn rows (the seen_doc_ids guard below stays as a safety net).
+            let already_seen: Vec<String> = seen_doc_ids.iter().cloned().collect();
             match doc_repo
                 .fetch_random_documents(
                     user_email,
                     &user_groups,
                     needed,
                     SUGGESTION_EXCLUDED_SOURCE_TYPES,
+                    &already_seen,
                 )
                 .await
             {
