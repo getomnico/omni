@@ -317,7 +317,7 @@ class TeamsSyncer:
         self,
         client: GraphClient,
         ctx: SyncContext,
-        state: dict[str, Any],
+        checkpoint: dict[str, Any],
         source_config: dict[str, Any] | None = None,
         user_cache: dict[str, str] | None = None,
         group_cache: dict[str, str] | None = None,
@@ -325,9 +325,9 @@ class TeamsSyncer:
         source_config = source_config or {}
         user_cache = user_cache or {}
         group_cache = group_cache or {}
-        delta_tokens: dict[str, str] = state.get("delta_tokens", {})
-        last_sync_ts: dict[str, str] = state.get("last_sync_ts", {})
-        chat_last_sync_ts: dict[str, str] = state.get("chat_last_sync_ts", {})
+        delta_tokens: dict[str, str] = checkpoint.get("delta_tokens", {})
+        last_sync_ts: dict[str, str] = checkpoint.get("last_sync_ts", {})
+        chat_last_sync_ts: dict[str, str] = checkpoint.get("chat_last_sync_ts", {})
         new_tokens: dict[str, str] = dict(delta_tokens)
         new_sync_ts: dict[str, str] = dict(last_sync_ts)
         new_chat_sync_ts: dict[str, str] = dict(chat_last_sync_ts)

@@ -52,9 +52,9 @@ async def test_full_sync_indexes_documents(
     assert f"paperless:{source_id}:1" in doc_ids
     assert f"paperless:{source_id}:2" in doc_ids
 
-    state = await seed.get_connector_state(source_id)
-    assert state is not None, "connector_state should be saved after sync"
-    assert "last_sync_at" in state
+    checkpoint = await seed.get_checkpoint(source_id)
+    assert checkpoint is not None, "checkpoint should be saved after sync"
+    assert "last_sync_at" in checkpoint
 
     assert (
         row["documents_scanned"] >= 2

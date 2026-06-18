@@ -35,7 +35,7 @@ def _make_ctx(
     ctx._errors = errors
     ctx._failed: list[str] = []
     ctx._completed: list[dict | None] = []
-    ctx._saved_states: list[dict] = []
+    ctx._saved_checkpoints: list[dict] = []
 
     async def _emit(doc: Any) -> None:
         emitted.append(doc)
@@ -50,11 +50,11 @@ def _make_ctx(
     async def _fail(msg: str) -> None:
         ctx._failed.append(msg)
 
-    async def _complete(new_state: dict | None = None) -> None:
-        ctx._completed.append(new_state)
+    async def _complete(checkpoint: dict | None = None) -> None:
+        ctx._completed.append(checkpoint)
 
-    async def _save_state(state: dict) -> None:
-        ctx._saved_states.append(state)
+    async def _save_checkpoint(checkpoint: dict) -> None:
+        ctx._saved_checkpoints.append(checkpoint)
 
     # Content storage returns a predictable content_id
     ctx.content_storage = MagicMock()
@@ -65,7 +65,7 @@ def _make_ctx(
     ctx.emit_error = AsyncMock(side_effect=_emit_error)
     ctx.fail = AsyncMock(side_effect=_fail)
     ctx.complete = AsyncMock(side_effect=_complete)
-    ctx.save_state = AsyncMock(side_effect=_save_state)
+    ctx.save_checkpoint = AsyncMock(side_effect=_save_checkpoint)
 
     return ctx
 
@@ -200,8 +200,8 @@ class TestFullSync:
         assert len(ctx._emitted) == 2
         assert ctx._completed, "sync should complete successfully"
 
-    async def test_first_sync_without_state_fetches_all(self) -> None:
-        """First sync (no prior state) should fetch all documents (modified_after=None)."""
+    async def test_first_sync_without_checkpoint_fetches_all(self) -> None:
+        """First sync (no prior checkpoint) should fetch all documents (modified_after=None)."""
         connector = PaperlessConnector()
         ctx = _make_ctx()
 
@@ -221,7 +221,7 @@ class TestFullSync:
         ):
             await connector.sync(VALID_CONFIG, VALID_CREDENTIALS, None, ctx)
 
-        # Without state, modified_after should be None
+        # Without checkpoint, modified_after should be None
         mock_list.assert_called_once_with(modified_after=None)
 
     async def test_documents_scanned_count_incremented(self) -> None:
@@ -248,7 +248,7 @@ class TestFullSync:
 
         assert ctx.documents_scanned == 3
 
-    async def test_state_saved_after_completion(self) -> None:
+    async def test_checkpoint_saved_after_completion(self) -> None:
         connector = PaperlessConnector()
         ctx = _make_ctx()
 
@@ -270,9 +270,9 @@ class TestFullSync:
             await connector.sync(VALID_CONFIG, VALID_CREDENTIALS, None, ctx)
 
         assert ctx._completed
-        final_state = ctx._completed[0]
-        assert final_state is not None
-        assert "last_sync_at" in final_state
+        final_checkpoint = ctx._completed[0]
+        assert final_checkpoint is not None
+        assert "last_sync_at" in final_checkpoint
 
     async def test_document_processing_error_continues_sync(self) -> None:
         """A single bad document should not abort the entire sync."""
@@ -356,10 +356,10 @@ class TestFullSync:
 
 
 class TestIncrementalSync:
-    async def test_state_driven_incremental_passes_modified_after(self) -> None:
-        """When state has last_sync_at, list_documents is called with modified_after."""
+    async def test_checkpoint_driven_incremental_passes_modified_after(self) -> None:
+        """When checkpoint has last_sync_at, list_documents is called with modified_after."""
         connector = PaperlessConnector()
-        state = {"last_sync_at": "2024-06-01T00:00:00+00:00"}
+        checkpoint = {"last_sync_at": "2024-06-01T00:00:00+00:00"}
         ctx = _make_ctx()
 
         with (
@@ -376,7 +376,7 @@ class TestIncrementalSync:
                 new_callable=AsyncMock,
             ),
         ):
-            await connector.sync(VALID_CONFIG, VALID_CREDENTIALS, state, ctx)
+            await connector.sync(VALID_CONFIG, VALID_CREDENTIALS, checkpoint, ctx)
 
         call_kwargs = mock_list.call_args
         modified_after = call_kwargs.kwargs.get("modified_after")
@@ -384,8 +384,8 @@ class TestIncrementalSync:
         assert modified_after.year == 2024
         assert modified_after.month == 6
 
-    async def test_no_state_fetches_all(self) -> None:
-        """Without prior state, all documents are fetched (modified_after=None)."""
+    async def test_no_checkpoint_fetches_all(self) -> None:
+        """Without prior checkpoint, all documents are fetched (modified_after=None)."""
         connector = PaperlessConnector()
         ctx = _make_ctx()
 
@@ -407,8 +407,8 @@ class TestIncrementalSync:
 
         mock_list.assert_called_once_with(modified_after=None)
 
-    async def test_empty_state_fetches_all(self) -> None:
-        """Empty state dict should also fetch all."""
+    async def test_empty_checkpoint_fetches_all(self) -> None:
+        """Empty checkpoint dict should also fetch all."""
         connector = PaperlessConnector()
         ctx = _make_ctx()
 
@@ -431,9 +431,9 @@ class TestIncrementalSync:
         mock_list.assert_called_once_with(modified_after=None)
 
     async def test_malformed_last_sync_at_fetches_all(self) -> None:
-        """Malformed timestamp in state should fall back to full sync."""
+        """Malformed timestamp in checkpoint should fall back to full sync."""
         connector = PaperlessConnector()
-        state = {"last_sync_at": "not-a-timestamp"}
+        checkpoint = {"last_sync_at": "not-a-timestamp"}
         ctx = _make_ctx()
 
         with (
@@ -450,14 +450,14 @@ class TestIncrementalSync:
                 new_callable=AsyncMock,
             ),
         ):
-            await connector.sync(VALID_CONFIG, VALID_CREDENTIALS, state, ctx)
+            await connector.sync(VALID_CONFIG, VALID_CREDENTIALS, checkpoint, ctx)
 
         mock_list.assert_called_once_with(modified_after=None)
 
-    async def test_incremental_updates_state_after_completion(self) -> None:
+    async def test_incremental_updates_checkpoint_after_completion(self) -> None:
         """Incremental sync should save a new last_sync_at timestamp."""
         connector = PaperlessConnector()
-        state = {"last_sync_at": "2024-01-01T00:00:00+00:00"}
+        checkpoint = {"last_sync_at": "2024-01-01T00:00:00+00:00"}
         ctx = _make_ctx()
 
         with (
@@ -475,14 +475,14 @@ class TestIncrementalSync:
                 return_value=_parsed_doc(1),
             ),
         ):
-            await connector.sync(VALID_CONFIG, VALID_CREDENTIALS, state, ctx)
+            await connector.sync(VALID_CONFIG, VALID_CREDENTIALS, checkpoint, ctx)
 
         assert ctx._completed
-        new_state = ctx._completed[0]
-        assert new_state is not None
-        assert "last_sync_at" in new_state
+        checkpoint = ctx._completed[0]
+        assert checkpoint is not None
+        assert "last_sync_at" in checkpoint
         # New timestamp should be different from the old one
-        assert new_state["last_sync_at"] != "2024-01-01T00:00:00+00:00"
+        assert checkpoint["last_sync_at"] != "2024-01-01T00:00:00+00:00"
 
 
 class TestAuthFailures:
@@ -590,8 +590,8 @@ class TestCancellation:
 
 
 class TestCheckpointing:
-    async def test_checkpoint_interval_triggers_state_save(self) -> None:
-        """State should be saved every CHECKPOINT_INTERVAL documents."""
+    async def test_checkpoint_interval_triggers_checkpoint_save(self) -> None:
+        """Checkpoint should be saved every CHECKPOINT_INTERVAL documents."""
         from paperless_connector.config import CHECKPOINT_INTERVAL
 
         connector = PaperlessConnector()
@@ -617,5 +617,5 @@ class TestCheckpointing:
             await connector.sync(VALID_CONFIG, VALID_CREDENTIALS, None, ctx)
 
         # At least one checkpoint should have been saved
-        assert len(ctx._saved_states) >= 1
-        assert "last_sync_at" in ctx._saved_states[0]
+        assert len(ctx._saved_checkpoints) >= 1
+        assert "last_sync_at" in ctx._saved_checkpoints[0]

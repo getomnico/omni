@@ -409,7 +409,7 @@ class GoogleAdsConnector(Connector):
         self,
         source_config: dict[str, Any],
         credentials: dict[str, Any],
-        state: dict[str, Any] | None,
+        checkpoint: dict[str, Any] | None,
         ctx: SyncContext,
     ) -> None:
         try:
@@ -421,15 +421,17 @@ class GoogleAdsConnector(Connector):
             )
             creds = GoogleAdsCredentials.parse(merged_creds)
             config = GoogleAdsSourceConfig.parse(source_config, merged_creds)
-            checkpoint = _parse_checkpoint(state)
+            parsed_checkpoint = _parse_checkpoint(checkpoint)
         except ValueError as exc:
             await ctx.fail(str(exc))
             return
 
         if not config.sync_enabled:
             await ctx.complete(
-                new_state=_checkpoint(
-                    last_successful_sync_at=_last_successful_sync_time(checkpoint),
+                checkpoint=_checkpoint(
+                    last_successful_sync_at=_last_successful_sync_time(
+                        parsed_checkpoint
+                    ),
                     last_completed_unit=None,
                 )
             )
@@ -439,9 +441,9 @@ class GoogleAdsConnector(Connector):
 
         try:
             if ctx.sync_mode == SyncMode.INCREMENTAL:
-                await self._incremental_sync(client, config, checkpoint, ctx)
+                await self._incremental_sync(client, config, parsed_checkpoint, ctx)
             else:
-                await self._full_sync(client, config, checkpoint, ctx)
+                await self._full_sync(client, config, parsed_checkpoint, ctx)
         except GoogleAdsConnectorError as exc:
             logger.exception("Google Ads sync failed")
             await ctx.fail(str(exc))
@@ -501,7 +503,7 @@ class GoogleAdsConnector(Connector):
             )
 
         await ctx.complete(
-            new_state=_checkpoint(
+            checkpoint=_checkpoint(
                 last_successful_sync_at=run_started_at,
                 last_completed_unit=None,
             )
@@ -595,7 +597,7 @@ class GoogleAdsConnector(Connector):
             )
 
         await ctx.complete(
-            new_state=_checkpoint(
+            checkpoint=_checkpoint(
                 last_successful_sync_at=run_started_at,
                 last_completed_unit=None,
             )

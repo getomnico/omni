@@ -253,7 +253,7 @@ class MicrosoftConnector(Connector):
         self,
         source_config: dict[str, Any],
         credentials: dict[str, Any],
-        state: dict[str, Any] | None,
+        checkpoint: dict[str, Any] | None,
         ctx: SyncContext,
     ) -> None:
         try:
@@ -303,20 +303,20 @@ class MicrosoftConnector(Connector):
         }
 
         syncer = self._create_syncer(syncer_key, source_config)
-        state = state or {}
+        checkpoint = checkpoint or {}
 
         logger.info("Starting Microsoft sync (syncer=%s)", syncer_key)
 
         try:
-            result_state = await syncer.sync(
+            result_checkpoint = await syncer.sync(
                 client,
                 ctx,
-                state,
+                checkpoint,
                 source_config=source_config,
                 user_cache=user_cache,
                 group_cache=group_cache,
             )
-            await ctx.complete(new_state=result_state)
+            await ctx.complete(checkpoint=result_checkpoint)
             logger.info(
                 "Sync completed: %d scanned, %d emitted",
                 ctx.documents_scanned,

@@ -33,7 +33,7 @@ async def test_full_sync_creates_all_documents(
     assert n_events >= 4, f"Expected >=4 document_created events, got {n_events}"
 
 
-async def test_full_sync_saves_connector_state(
+async def test_full_sync_saves_checkpoint(
     harness, seed, source_id, mock_github_api, cm_client: httpx.AsyncClient
 ):
     mock_github_api.add_repo("octocat", "Hello-World")
@@ -46,10 +46,10 @@ async def test_full_sync_saves_connector_state(
     sync_run_id = resp.json()["sync_run_id"]
     await wait_for_sync(harness.db_pool, sync_run_id, timeout=30)
 
-    state = await seed.get_connector_state(source_id)
-    assert state is not None, "connector_state should be saved after sync"
-    assert "repos" in state
-    assert "octocat/Hello-World" in state["repos"]
+    checkpoint = await seed.get_checkpoint(source_id)
+    assert checkpoint is not None, "checkpoint should be saved after sync"
+    assert "repos" in checkpoint
+    assert "octocat/Hello-World" in checkpoint["repos"]
 
 
 async def test_full_sync_scanned_count(

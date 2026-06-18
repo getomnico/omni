@@ -53,7 +53,7 @@ class PaperlessConnector(Connector):
         self,
         source_config: dict[str, Any],
         credentials: dict[str, Any],
-        state: dict[str, Any] | None,
+        checkpoint: dict[str, Any] | None,
         ctx: SyncContext,
     ) -> None:
         base_url = source_config.get("base_url", "").strip().rstrip("/")
@@ -78,13 +78,11 @@ class PaperlessConnector(Connector):
                 await ctx.fail(f"Connection to paperless-ngx failed: {e}")
                 return
 
-            # Incremental sync: if we have state with a last_sync_at timestamp,
-            # only fetch documents modified after that time. This is state-driven
-            # (like the ClickUp connector) rather than relying on ctx.sync_mode,
-            # because SyncContext does not expose sync_mode.
+            # Incremental sync: if we have a checkpoint with a last_sync_at timestamp,
+            # only fetch documents modified after that time.
             modified_after: datetime | None = None
-            if state:
-                last_sync_ts = state.get("last_sync_at")
+            if checkpoint:
+                last_sync_ts = checkpoint.get("last_sync_at")
                 if last_sync_ts:
                     try:
                         modified_after = datetime.fromisoformat(last_sync_ts)
@@ -128,7 +126,7 @@ class PaperlessConnector(Connector):
                     docs_since_checkpoint = 0
 
             await ctx.complete(
-                new_state={"last_sync_at": sync_started_at.isoformat()}
+                checkpoint={"last_sync_at": sync_started_at.isoformat()}
             )
             logger.info(
                 "Sync completed: %d scanned, %d emitted",

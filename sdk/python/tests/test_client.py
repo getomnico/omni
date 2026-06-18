@@ -98,36 +98,46 @@ async def test_store_content_sends_correct_payload(sdk_client, mock_connector_ma
 
 
 @pytest.mark.asyncio
-async def test_complete_sends_correct_payload(sdk_client, mock_connector_manager):
-    """Verify sync completion request includes all fields."""
+async def test_complete_saves_checkpoint_before_completion(
+    sdk_client, mock_connector_manager
+):
+    """Verify sync completion can save a final checkpoint first."""
     await sdk_client.complete(
         sync_run_id="sync-123",
         documents_scanned=150,
         documents_updated=42,
-        new_state={"cursor": "abc123", "page": 5},
+        checkpoint={"cursor": "abc123", "page": 5},
     )
 
-    call = mock_connector_manager.calls[0]
-    assert "/sdk/sync/sync-123/complete" in str(call.request.url)
+    checkpoint_call = mock_connector_manager.calls[0]
+    assert "/sdk/sync/sync-123/checkpoint" in str(checkpoint_call.request.url)
+    assert json.loads(checkpoint_call.request.content) == {
+        "cursor": "abc123",
+        "page": 5,
+    }
 
-    payload = json.loads(call.request.content)
+    complete_call = mock_connector_manager.calls[1]
+    assert "/sdk/sync/sync-123/complete" in str(complete_call.request.url)
+
+    payload = json.loads(complete_call.request.content)
     assert payload["documents_scanned"] == 150
     assert payload["documents_updated"] == 42
-    assert payload["new_state"] == {"cursor": "abc123", "page": 5}
 
 
 @pytest.mark.asyncio
-async def test_complete_without_state(sdk_client, mock_connector_manager):
-    """Verify completion works without new_state."""
+async def test_complete_without_checkpoint(sdk_client, mock_connector_manager):
+    """Verify completion works without a checkpoint."""
     await sdk_client.complete(
         sync_run_id="sync-123",
         documents_scanned=10,
         documents_updated=5,
-        new_state=None,
+        checkpoint=None,
     )
 
-    payload = json.loads(mock_connector_manager.calls[0].request.content)
-    assert "new_state" not in payload
+    assert len(mock_connector_manager.calls) == 1
+    assert "/sdk/sync/sync-123/complete" in str(
+        mock_connector_manager.calls[0].request.url
+    )
 
 
 @pytest.mark.asyncio

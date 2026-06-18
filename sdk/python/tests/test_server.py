@@ -67,11 +67,11 @@ class MockConnector(Connector):
         self,
         source_config: dict[str, Any],
         credentials: dict[str, Any],
-        state: dict[str, Any] | None,
+        checkpoint: dict[str, Any] | None,
         ctx: SyncContext,
     ) -> None:
         self.sync_called = True
-        self.sync_args = (source_config, credentials, state)
+        self.sync_args = (source_config, credentials, checkpoint)
         # Simulate emitting a document
         await ctx.emit(
             Document(
@@ -80,7 +80,7 @@ class MockConnector(Connector):
                 content_id="content-123",
             )
         )
-        await ctx.complete(new_state={"synced": True})
+        await ctx.complete(checkpoint={"synced": True})
 
     async def execute_action(
         self,
@@ -182,7 +182,7 @@ class TestCancelEndpoint:
             def source_types(self) -> list[str]:
                 return ["stuck"]
 
-            async def sync(self, source_config, credentials, state, ctx):
+            async def sync(self, source_config, credentials, checkpoint, ctx):
                 self.sync_calls += 1
                 if self.sync_calls == 1:
                     sync_started.set()
@@ -288,7 +288,7 @@ class TestSyncStatusEndpoint:
             def source_types(self) -> list[str]:
                 return ["blocking"]
 
-            async def sync(self, source_config, credentials, state, ctx):
+            async def sync(self, source_config, credentials, checkpoint, ctx):
                 sync_started.set()
                 while not sync_can_finish.is_set():
                     await asyncio.sleep(0.01)
@@ -423,7 +423,7 @@ class TestSyncEndpoint:
             def source_types(self) -> list[str]:
                 return ["blocking"]
 
-            async def sync(self, source_config, credentials, state, ctx):
+            async def sync(self, source_config, credentials, checkpoint, ctx):
                 sync_started.set()
                 while not sync_can_finish.is_set():
                     await asyncio.sleep(0.01)

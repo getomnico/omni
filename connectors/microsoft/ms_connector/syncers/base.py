@@ -56,14 +56,14 @@ class BaseSyncer(abc.ABC):
         self,
         client: GraphClient,
         ctx: SyncContext,
-        state: dict[str, Any],
+        checkpoint: dict[str, Any],
         source_config: dict[str, Any] | None = None,
         user_cache: dict[str, str] | None = None,
         group_cache: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Run sync across all users. Returns updated state dict."""
+        """Run sync across all users. Returns updated checkpoint dict."""
         source_config = source_config or {}
-        delta_tokens: dict[str, str] = state.get("delta_tokens", {})
+        delta_tokens: dict[str, str] = checkpoint.get("delta_tokens", {})
         # Seed with existing tokens so users not processed this run retain theirs.
         new_tokens: dict[str, str] = dict(delta_tokens)
 

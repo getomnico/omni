@@ -34,7 +34,7 @@ class SdkClient:
         return self._client
 
     async def fetch_source_sync_data(self, source_id: str) -> SdkSourceSyncData:
-        """Fetch source sync data (config, credentials, state, filters) from connector-manager."""
+        """Fetch source sync data from connector-manager."""
         client = await self._get_client()
         response = await client.get(
             f"{self.base_url}/sdk/source/{source_id}/sync-config"
@@ -263,7 +263,7 @@ class SdkClient:
             )
 
     async def update_connector_state(
-        self, source_id: str, state: dict[str, Any]
+        self, source_id: str, connector_state: dict[str, Any]
     ) -> None:
         """Persist non-checkpoint connector metadata to the manager."""
         logger.debug("SDK: Updating connector state for source=%s", source_id)
@@ -271,7 +271,7 @@ class SdkClient:
         client = await self._get_client()
         response = await client.put(
             f"{self.base_url}/sdk/source/{source_id}/connector-state",
-            json=state,
+            json=connector_state,
         )
 
         if not response.is_success:
@@ -313,7 +313,7 @@ class SdkClient:
         sync_run_id: str,
         documents_scanned: int,
         documents_updated: int,
-        new_state: dict[str, Any] | None = None,
+        checkpoint: dict[str, Any] | None = None,
     ) -> None:
         """Mark sync as completed."""
         logger.info("SDK: Completing sync_run=%s", sync_run_id)
@@ -322,8 +322,8 @@ class SdkClient:
             "documents_scanned": documents_scanned,
             "documents_updated": documents_updated,
         }
-        if new_state is not None:
-            await self.update_checkpoint(sync_run_id, new_state)
+        if checkpoint is not None:
+            await self.update_checkpoint(sync_run_id, checkpoint)
 
         client = await self._get_client()
         response = await client.post(

@@ -50,11 +50,11 @@ class FakeContext:
     async def save_checkpoint(self, checkpoint):
         self.checkpoints.append(checkpoint)
 
-    async def save_connector_state(self, state):
-        self.connector_states.append(state)
+    async def save_connector_state(self, connector_state):
+        self.connector_states.append(connector_state)
 
-    async def complete(self, new_state=None):
-        self.completed = new_state or {}
+    async def complete(self, checkpoint=None):
+        self.completed = checkpoint or {}
 
     async def fail(self, error):
         self.failed = error

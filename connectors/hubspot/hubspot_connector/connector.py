@@ -40,7 +40,7 @@ class HubSpotConnector(Connector):
         self,
         source_config: dict[str, Any],
         credentials: dict[str, Any],
-        state: dict[str, Any] | None,
+        checkpoint: dict[str, Any] | None,
         ctx: SyncContext,
     ) -> None:
         """
@@ -49,7 +49,7 @@ class HubSpotConnector(Connector):
         Args:
             source_config: Source configuration (may contain portal_id)
             credentials: Must contain 'access_token'
-            state: Previous sync state (unused for full sync)
+            checkpoint: Previous checkpoint (unused for full sync)
             ctx: Sync context with emit(), complete(), etc.
         """
         access_token = credentials.get("access_token")
@@ -83,7 +83,7 @@ class HubSpotConnector(Connector):
 
                 await self._sync_object_type(client, object_type, portal_id, ctx)
 
-            await ctx.complete(new_state={})
+            await ctx.complete(checkpoint={})
             logger.info(
                 "Sync completed: %d scanned, %d emitted",
                 ctx.documents_scanned,

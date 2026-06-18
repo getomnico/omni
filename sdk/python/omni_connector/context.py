@@ -41,7 +41,7 @@ class SyncContext:
         sync_run_id: str,
         source_id: str,
         source_type: str | None = None,
-        state: dict[str, Any] | None = None,
+        checkpoint: dict[str, Any] | None = None,
         connector_state: dict[str, Any] | None = None,
         user_filter_mode: UserFilterMode = UserFilterMode.ALL,
         user_whitelist: list[str] | None = None,
@@ -50,15 +50,13 @@ class SyncContext:
         documents_scanned: int = 0,
         documents_updated: int = 0,
         is_resume: bool = False,
-        checkpoint: dict[str, Any] | None = None,
     ):
         self._client = sdk_client
         self._sync_run_id = sync_run_id
         self._source_id = source_id
         self._source_type = source_type
         # checkpoint is the run/source cursor used for resumability.
-        # `state` remains as a deprecated constructor alias for older SDK callers.
-        self._checkpoint = checkpoint if checkpoint is not None else (state or {})
+        self._checkpoint = checkpoint or {}
         # connector_state is durable source-level metadata, not a resume cursor.
         self._connector_state = connector_state or {}
         self._cancelled = asyncio.Event()
@@ -93,11 +91,6 @@ class SyncContext:
 
     @property
     def checkpoint(self) -> dict[str, Any]:
-        return self._checkpoint
-
-    @property
-    def state(self) -> dict[str, Any]:
-        """Deprecated alias for checkpoint."""
         return self._checkpoint
 
     @property
@@ -242,7 +235,7 @@ class SyncContext:
         await self._client.increment_scanned(self._sync_run_id)
 
     async def save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
-        """Checkpoint state for resumability. Call periodically for long syncs.
+        """Checkpoint progress for resumability. Call periodically for long syncs.
 
         Persists `checkpoint` to the manager so an interrupted sync can resume
         from this point. Flushes buffered events first — without this, a crash
@@ -254,21 +247,17 @@ class SyncContext:
         await self._client.update_checkpoint(self._sync_run_id, checkpoint)
         await self._client.heartbeat(self._sync_run_id)
 
-    async def save_state(self, state: dict[str, Any]) -> None:
-        """Deprecated alias for save_checkpoint."""
-        await self.save_checkpoint(state)
-
-    async def save_connector_state(self, state: dict[str, Any]) -> None:
+    async def save_connector_state(self, connector_state: dict[str, Any]) -> None:
         """Persist source-level connector state outside the sync checkpoint."""
-        self._connector_state = state
-        await self._client.update_connector_state(self._source_id, state)
+        self._connector_state = connector_state
+        await self._client.update_connector_state(self._source_id, connector_state)
 
-    async def complete(self, new_state: dict[str, Any] | None = None) -> None:
+    async def complete(self, checkpoint: dict[str, Any] | None = None) -> None:
         """Mark sync as successfully completed. Saves final checkpoint first."""
         await self.flush()
-        if new_state is not None:
-            self._checkpoint = new_state
-            await self._client.update_checkpoint(self._sync_run_id, new_state)
+        if checkpoint is not None:
+            self._checkpoint = checkpoint
+            await self._client.update_checkpoint(self._sync_run_id, checkpoint)
         await self._client.complete(
             self._sync_run_id,
             self._documents_scanned,

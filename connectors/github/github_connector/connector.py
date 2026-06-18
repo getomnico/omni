@@ -106,7 +106,7 @@ class GitHubConnector(Connector):
         self,
         source_config: dict[str, Any],
         credentials: dict[str, Any],
-        state: dict[str, Any] | None,
+        checkpoint: dict[str, Any] | None,
         ctx: SyncContext,
     ) -> None:
         try:
@@ -129,9 +129,9 @@ class GitHubConnector(Connector):
 
         logger.info("Starting GitHub sync as user '%s'", username)
 
-        state = state or {}
-        repo_states: dict[str, Any] = state.get("repos", {})
-        new_repo_states: dict[str, Any] = {}
+        checkpoint = checkpoint or {}
+        repo_checkpoints: dict[str, Any] = checkpoint.get("repos", {})
+        new_repo_checkpoints: dict[str, Any] = {}
         docs_since_checkpoint = 0
 
         try:
@@ -146,10 +146,10 @@ class GitHubConnector(Connector):
 
                 full_name = repo.full_name
                 is_private = repo.private
-                prev = repo_states.get(full_name, {})
+                prev = repo_checkpoints.get(full_name, {})
                 owner, name = full_name.split("/", 1)
 
-                new_state_entry: dict[str, str] = {}
+                new_checkpoint_entry: dict[str, str] = {}
 
                 # Sync repo document
                 docs_since_checkpoint = await self._sync_repo(
@@ -159,7 +159,7 @@ class GitHubConnector(Connector):
                     name,
                     ctx,
                     docs_since_checkpoint,
-                    new_repo_states,
+                    new_repo_checkpoints,
                 )
 
                 # Sync issues
@@ -198,7 +198,7 @@ class GitHubConnector(Connector):
                     await ctx.emit_error(f"github:issue:{full_name}:*", str(e))
 
                 if latest_issue_ts:
-                    new_state_entry["issues_updated_at"] = latest_issue_ts
+                    new_checkpoint_entry["issues_updated_at"] = latest_issue_ts
 
                 # Sync pull requests
                 since_prs = prev.get("prs_updated_at")
@@ -246,7 +246,7 @@ class GitHubConnector(Connector):
                     await ctx.emit_error(f"github:pr:{full_name}:*", str(e))
 
                 if latest_pr_ts:
-                    new_state_entry["prs_updated_at"] = latest_pr_ts
+                    new_checkpoint_entry["prs_updated_at"] = latest_pr_ts
 
                 # Sync discussions
                 if config.include_discussions:
@@ -285,16 +285,16 @@ class GitHubConnector(Connector):
                         await ctx.emit_error(f"github:discussion:{full_name}:*", str(e))
 
                     if latest_disc_ts:
-                        new_state_entry["discussions_updated_at"] = latest_disc_ts
+                        new_checkpoint_entry["discussions_updated_at"] = latest_disc_ts
 
-                if new_state_entry:
-                    new_repo_states[full_name] = new_state_entry
+                if new_checkpoint_entry:
+                    new_repo_checkpoints[full_name] = new_checkpoint_entry
 
                 if docs_since_checkpoint >= CHECKPOINT_INTERVAL:
-                    await ctx.save_checkpoint({"repos": new_repo_states})
+                    await ctx.save_checkpoint({"repos": new_repo_checkpoints})
                     docs_since_checkpoint = 0
 
-            await ctx.complete(new_state={"repos": new_repo_states})
+            await ctx.complete(checkpoint={"repos": new_repo_checkpoints})
             logger.info(
                 "Sync completed: %d scanned, %d emitted",
                 ctx.documents_scanned,
@@ -317,7 +317,7 @@ class GitHubConnector(Connector):
         name: str,
         ctx: SyncContext,
         docs_since_checkpoint: int,
-        new_repo_states: dict[str, Any],
+        new_repo_checkpoints: dict[str, Any],
     ) -> int:
         """Sync a single repository document. Returns updated docs_since_checkpoint."""
         await ctx.increment_scanned()

@@ -71,7 +71,7 @@ class ClickUpConnector(Connector):
         self,
         source_config: dict[str, Any],
         credentials: dict[str, Any],
-        state: dict[str, Any] | None,
+        checkpoint: dict[str, Any] | None,
         ctx: SyncContext,
     ) -> None:
         token = credentials.get("token")
@@ -97,8 +97,8 @@ class ClickUpConnector(Connector):
 
         logger.info("Starting ClickUp sync across %d workspace(s)", len(workspaces))
 
-        state = state or {}
-        workspace_states: dict[str, Any] = state.get("workspaces", {})
+        checkpoint = checkpoint or {}
+        workspace_states: dict[str, Any] = checkpoint.get("workspaces", {})
         new_workspace_states: dict[str, Any] = {}
         docs_since_checkpoint = 0
 
@@ -121,7 +121,7 @@ class ClickUpConnector(Connector):
                 # Sync group memberships before documents
                 await self._sync_group_memberships(workspace, spaces, ctx)
 
-                # Use previous timestamp for incremental sync (state-driven)
+                # Use previous timestamp for incremental sync (checkpoint-driven)
                 date_updated_gt: int | None = prev_state.get("last_updated_ts") or None
 
                 # Sync tasks
@@ -200,7 +200,7 @@ class ClickUpConnector(Connector):
                     await ctx.save_checkpoint({"workspaces": new_workspace_states})
                     docs_since_checkpoint = 0
 
-            await ctx.complete(new_state={"workspaces": new_workspace_states})
+            await ctx.complete(checkpoint={"workspaces": new_workspace_states})
             logger.info(
                 "Sync completed: %d scanned, %d emitted",
                 ctx.documents_scanned,

@@ -144,9 +144,9 @@ async def test_full_sync_indexes_pages_and_data_sources(
         ), f"document {event['payload']['document_id']} missing workspace group"
         assert perms["public"] is False
 
-    state = await seed.get_connector_state(source_id)
-    assert state is not None, "connector_state should be saved after sync"
-    assert "last_sync_at" in state
+    checkpoint = await seed.get_checkpoint(source_id)
+    assert checkpoint is not None, "checkpoint should be saved after sync"
+    assert "last_sync_at" in checkpoint
 
     assert (
         row["documents_scanned"] >= 3
@@ -156,9 +156,9 @@ async def test_full_sync_indexes_pages_and_data_sources(
 async def test_full_sync_honors_requested_mode_when_state_exists(
     harness, seed, source_id, mock_notion_api, cm_client: httpx.AsyncClient
 ):
-    """A requested full sync must not be demoted to incremental by connector state."""
+    """A requested full sync must not be demoted to incremental by checkpoint."""
     cutoff = "2024-06-01T00:00:00.000Z"
-    await seed.set_connector_state(source_id, {"last_sync_at": cutoff})
+    await seed.set_checkpoint(source_id, {"last_sync_at": cutoff})
 
     mock_notion_api.add_page(
         OLD_FULL_SYNC_PAGE_ID,

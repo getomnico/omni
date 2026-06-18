@@ -108,7 +108,7 @@ class NotionConnector(Connector):
         self,
         source_config: dict[str, Any],
         credentials: dict[str, Any],
-        state: dict[str, Any] | None,
+        checkpoint: dict[str, Any] | None,
         ctx: SyncContext,
     ) -> None:
         token = _extract_token(credentials)
@@ -146,11 +146,11 @@ class NotionConnector(Connector):
             client, permission_group, workspace_name, ctx
         )
 
-        state = state or {}
+        checkpoint = checkpoint or {}
 
         try:
-            if ctx.sync_mode == SyncMode.INCREMENTAL and state.get("last_sync_at"):
-                await self._incremental_sync(client, state, permission_group, ctx)
+            if ctx.sync_mode == SyncMode.INCREMENTAL and checkpoint.get("last_sync_at"):
+                await self._incremental_sync(client, checkpoint, permission_group, ctx)
             else:
                 await self._full_sync(client, permission_group, ctx)
         except AuthenticationError as e:
@@ -254,7 +254,7 @@ class NotionConnector(Connector):
                     data_source_entry_ids.update(entries)
 
                     if docs_emitted >= CHECKPOINT_INTERVAL:
-                        await ctx.save_checkpoint(ctx.state)
+                        await ctx.save_checkpoint(ctx.checkpoint)
                         docs_emitted = 0
                 except NotionError as e:
                     logger.error("Error syncing data source %s: %s", ds_id, e)
@@ -299,14 +299,14 @@ class NotionConnector(Connector):
                     await ctx.emit_error(eid, str(e))
 
                 if docs_emitted >= CHECKPOINT_INTERVAL:
-                    await ctx.save_checkpoint(ctx.state)
+                    await ctx.save_checkpoint(ctx.checkpoint)
                     docs_emitted = 0
 
             if not response.get("has_more"):
                 break
             cursor = response.get("next_cursor")
 
-        await ctx.complete(new_state={"last_sync_at": sync_started_at})
+        await ctx.complete(checkpoint={"last_sync_at": sync_started_at})
         logger.info(
             "Full sync completed: %d scanned, %d emitted",
             ctx.documents_scanned,
@@ -316,12 +316,12 @@ class NotionConnector(Connector):
     async def _incremental_sync(
         self,
         client: NotionClient,
-        state: dict[str, Any],
+        checkpoint: dict[str, Any],
         permission_group: str,
         ctx: SyncContext,
     ) -> None:
         """Incremental sync: re-index pages/data sources modified since last sync."""
-        last_sync_at = state["last_sync_at"]
+        last_sync_at = checkpoint["last_sync_at"]
         sync_started_at = datetime.now(UTC).isoformat()
         docs_emitted = 0
 
@@ -409,7 +409,7 @@ class NotionConnector(Connector):
                 break
             cursor = response.get("next_cursor")
 
-        await ctx.complete(new_state={"last_sync_at": sync_started_at})
+        await ctx.complete(checkpoint={"last_sync_at": sync_started_at})
         logger.info(
             "Incremental sync completed: %d scanned, %d emitted",
             ctx.documents_scanned,
@@ -528,7 +528,7 @@ class NotionConnector(Connector):
                     await ctx.emit_error(eid, str(e))
 
                 if docs_emitted >= CHECKPOINT_INTERVAL:
-                    await ctx.save_checkpoint(ctx.state)
+                    await ctx.save_checkpoint(ctx.checkpoint)
                     docs_emitted = 0
 
             if not response.get("has_more"):

@@ -134,14 +134,6 @@ class SeedHelper:
             source_id,
         )
 
-    async def get_connector_state(self, source_id: str) -> Any:
-        """Deprecated alias for tests that historically asserted checkpoint state."""
-        return await self.get_checkpoint(source_id)
-
-    async def set_connector_state(self, source_id: str, state: dict[str, Any]) -> None:
-        """Deprecated alias for tests that historically seeded checkpoint state."""
-        await self.set_checkpoint(source_id, state)
-
     async def get_sync_run(self, sync_run_id: str) -> asyncpg.Record | None:
         return await self._pool.fetchrow(
             "SELECT * FROM sync_runs WHERE id = $1::char(26)",

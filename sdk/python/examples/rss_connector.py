@@ -83,7 +83,7 @@ class RSSConnector(Connector):
         self,
         source_config: dict[str, Any],
         credentials: dict[str, Any],
-        state: dict[str, Any] | None,
+        checkpoint: dict[str, Any] | None,
         ctx: SyncContext,
     ) -> None:
         """Sync articles from an RSS feed."""
@@ -93,8 +93,8 @@ class RSSConnector(Connector):
             return
 
         last_sync_time = None
-        if state:
-            last_sync_str = state.get("last_sync_time")
+        if checkpoint:
+            last_sync_str = checkpoint.get("last_sync_time")
             if last_sync_str:
                 last_sync_time = datetime.fromisoformat(last_sync_str)
 
@@ -167,7 +167,7 @@ class RSSConnector(Connector):
                 await ctx.save_checkpoint({"last_sync_time": current_time.isoformat()})
                 docs_since_checkpoint = 0
 
-        await ctx.complete(new_state={"last_sync_time": current_time.isoformat()})
+        await ctx.complete(checkpoint={"last_sync_time": current_time.isoformat()})
         logger.info(
             "Sync completed: %d scanned, %d emitted",
             ctx.documents_scanned,

@@ -205,7 +205,7 @@ class Connector(ABC):
         self,
         source_config: dict[str, Any],
         credentials: dict[str, Any],
-        state: dict[str, Any] | None,
+        checkpoint: dict[str, Any] | None,
         ctx: SyncContext,
     ) -> None:
         """
@@ -214,7 +214,7 @@ class Connector(ABC):
         Args:
             source_config: Source configuration from database
             credentials: Authentication credentials
-            state: Previous sync state for incremental syncs
+            checkpoint: Previous successful checkpoint for incremental/resumed syncs
             ctx: Sync context with emit(), complete(), etc.
         """
         pass

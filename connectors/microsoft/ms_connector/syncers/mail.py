@@ -32,14 +32,14 @@ class MailSyncer(BaseSyncer):
         self,
         client: GraphClient,
         ctx: SyncContext,
-        state: dict[str, Any],
+        checkpoint: dict[str, Any],
         source_config: dict[str, Any] | None = None,
         user_cache: dict[str, str] | None = None,
         group_cache: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Run mail sync across all users and mail folders."""
         source_config = source_config or {}
-        delta_tokens: dict[str, str] = state.get("delta_tokens", {})
+        delta_tokens: dict[str, str] = checkpoint.get("delta_tokens", {})
         new_tokens: dict[str, str] = dict(delta_tokens)
 
         users = await client.list_users()

@@ -1,4 +1,4 @@
-"""Focused tests for Microsoft syncer state and delta edge cases."""
+"""Focused tests for Microsoft syncer checkpoint and delta edge cases."""
 
 import copy
 from typing import Any
@@ -20,7 +20,7 @@ class FakeContentStorage:
 class FakeContext:
     def __init__(self) -> None:
         self.deleted: list[str] = []
-        self.saved_states: list[dict[str, Any]] = []
+        self.saved_checkpoints: list[dict[str, Any]] = []
         self.scanned = 0
         self.content_storage = FakeContentStorage()
 
@@ -30,8 +30,8 @@ class FakeContext:
     def should_index_user(self, email: str) -> bool:
         return True
 
-    async def save_state(self, state: dict[str, Any]) -> None:
-        self.saved_states.append(copy.deepcopy(state))
+    async def save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        self.saved_checkpoints.append(copy.deepcopy(checkpoint))
 
     async def emit_deleted(self, external_id: str) -> None:
         self.deleted.append(external_id)
@@ -76,7 +76,9 @@ async def test_onedrive_checkpoints_each_completed_delta_page() -> None:
         token_key="u1",
     )
 
-    saved_tokens = [state["delta_tokens"]["u1"] for state in ctx.saved_states]
+    saved_tokens = [
+        checkpoint["delta_tokens"]["u1"] for checkpoint in ctx.saved_checkpoints
+    ]
     assert saved_tokens == ["next-token", "delta-token"]
     assert token == "delta-token"
 
@@ -138,13 +140,13 @@ async def test_mail_preserves_existing_tokens_when_folder_has_no_new_token() -> 
         async def get_delta(self, *args: Any, **kwargs: Any):
             return ([], None)
 
-    state = {"delta_tokens": {"u1:inbox": "old-inbox", "u1:archive": "old-archive"}}
-    result = await MailSyncer().sync(Client(), ctx, state)
+    checkpoint = {"delta_tokens": {"u1:inbox": "old-inbox", "u1:archive": "old-archive"}}
+    result = await MailSyncer().sync(Client(), ctx, checkpoint)
 
-    assert result["delta_tokens"] == state["delta_tokens"]
+    assert result["delta_tokens"] == checkpoint["delta_tokens"]
 
 
-async def test_teams_preserves_existing_channel_and_chat_state() -> None:
+async def test_teams_preserves_existing_channel_and_chat_checkpoint() -> None:
     ctx = FakeContext()
 
     class Client:
@@ -154,14 +156,14 @@ async def test_teams_preserves_existing_channel_and_chat_state() -> None:
         async def list_users(self) -> list[dict[str, Any]]:
             return []
 
-    state = {
+    checkpoint = {
         "delta_tokens": {"team:channel": "delta-token"},
         "last_sync_ts": {"team:channel": "2026-01-01T00:00:00+00:00"},
         "chat_last_sync_ts": {"chat-1": "2026-01-01T00:00:00+00:00"},
     }
-    result = await TeamsSyncer().sync(Client(), ctx, state)
+    result = await TeamsSyncer().sync(Client(), ctx, checkpoint)
 
-    assert result == state
+    assert result == checkpoint
 
 
 async def test_base_syncer_fails_when_all_users_fail() -> None:

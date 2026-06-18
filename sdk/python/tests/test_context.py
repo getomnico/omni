@@ -123,7 +123,7 @@ async def test_complete_sends_correct_counts(sdk_client, mock_connector_manager)
     await ctx.emit(doc)
     await ctx.emit(doc)
 
-    await ctx.complete(new_state={"cursor": "final"})
+    await ctx.complete(checkpoint={"cursor": "final"})
 
     # Find the complete call (last one)
     complete_calls = [
@@ -134,7 +134,13 @@ async def test_complete_sends_correct_counts(sdk_client, mock_connector_manager)
     payload = json.loads(complete_calls[0].request.content)
     assert payload["documents_scanned"] == 5
     assert payload["documents_updated"] == 3  # 3 emits
-    assert payload["new_state"] == {"cursor": "final"}
+
+    checkpoint_calls = [
+        c
+        for c in mock_connector_manager.calls
+        if "checkpoint" in str(c.request.url)
+    ]
+    assert json.loads(checkpoint_calls[0].request.content) == {"cursor": "final"}
 
 
 @pytest.mark.asyncio
@@ -156,26 +162,31 @@ async def test_fail_sends_error_message(sdk_client, mock_connector_manager):
 
 
 @pytest.mark.asyncio
-async def test_save_state_persists_and_heartbeats(sdk_client, mock_connector_manager):
-    """Verify save_state() persists state to manager and triggers a heartbeat."""
+async def test_save_checkpoint_persists_and_heartbeats(
+    sdk_client, mock_connector_manager
+):
+    """Verify save_checkpoint() persists checkpoint and triggers a heartbeat."""
     ctx = SyncContext(
         sdk_client=sdk_client,
         sync_run_id="sync-123",
         source_id="source-456",
-        state={"page": 1},
+        checkpoint={"page": 1},
     )
 
-    await ctx.save_state({"page": 2, "cursor": "abc"})
+    await ctx.save_checkpoint({"page": 2, "cursor": "abc"})
 
-    state_calls = [
+    checkpoint_calls = [
         c
         for c in mock_connector_manager.calls
         if "checkpoint" in str(c.request.url)
     ]
-    assert len(state_calls) == 1
-    assert "sync-123" in str(state_calls[0].request.url)
-    assert state_calls[0].request.method == "PUT"
-    assert json.loads(state_calls[0].request.content) == {"page": 2, "cursor": "abc"}
+    assert len(checkpoint_calls) == 1
+    assert "sync-123" in str(checkpoint_calls[0].request.url)
+    assert checkpoint_calls[0].request.method == "PUT"
+    assert json.loads(checkpoint_calls[0].request.content) == {
+        "page": 2,
+        "cursor": "abc",
+    }
 
     heartbeat_calls = [
         c for c in mock_connector_manager.calls if "heartbeat" in str(c.request.url)
@@ -183,8 +194,8 @@ async def test_save_state_persists_and_heartbeats(sdk_client, mock_connector_man
     assert len(heartbeat_calls) == 1
     assert "sync-123" in str(heartbeat_calls[0].request.url)
 
-    # State should be updated locally
-    assert ctx.state == {"page": 2, "cursor": "abc"}
+    # Checkpoint should be updated locally
+    assert ctx.checkpoint == {"page": 2, "cursor": "abc"}
 
 
 @pytest.mark.asyncio
@@ -267,12 +278,12 @@ def test_context_exposes_properties():
         sdk_client=MockClient(),  # type: ignore
         sync_run_id="sync-run-id",
         source_id="source-id",
-        state={"existing": "state"},
+        checkpoint={"existing": "checkpoint"},
     )
 
     assert ctx.sync_run_id == "sync-run-id"
     assert ctx.source_id == "source-id"
-    assert ctx.state == {"existing": "state"}
+    assert ctx.checkpoint == {"existing": "checkpoint"}
     assert ctx.documents_emitted == 0
     assert ctx.documents_scanned == 0
     assert ctx.content_storage is not None

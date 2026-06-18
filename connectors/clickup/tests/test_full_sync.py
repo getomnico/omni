@@ -92,7 +92,7 @@ async def test_full_sync_includes_comments_in_content(
     assert n_events >= 1
 
 
-async def test_full_sync_saves_connector_state(
+async def test_full_sync_saves_checkpoint(
     harness, seed, source_id, mock_clickup_api, cm_client: httpx.AsyncClient
 ):
     mock_clickup_api.add_workspace("team_1", "Test Workspace")
@@ -109,10 +109,10 @@ async def test_full_sync_saves_connector_state(
     sync_run_id = resp.json()["sync_run_id"]
     await wait_for_sync(harness.db_pool, sync_run_id, timeout=30)
 
-    state = await seed.get_connector_state(source_id)
-    assert state is not None, "connector_state should be saved after sync"
-    assert "workspaces" in state
-    assert "team_1" in state["workspaces"]
+    checkpoint = await seed.get_checkpoint(source_id)
+    assert checkpoint is not None, "checkpoint should be saved after sync"
+    assert "workspaces" in checkpoint
+    assert "team_1" in checkpoint["workspaces"]
 
 
 async def test_full_sync_scanned_count(

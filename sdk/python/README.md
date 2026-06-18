@@ -38,10 +38,10 @@ class MyConnector(Connector):
         self,
         source_config: dict,
         credentials: dict,
-        state: dict | None,
+        checkpoint: dict | None,
         ctx: SyncContext,
     ) -> None:
-        cursor = state.get("cursor") if state else None
+        cursor = checkpoint.get("cursor") if checkpoint else None
 
         async for item in fetch_items(credentials, cursor):
             if ctx.is_cancelled():
@@ -63,7 +63,7 @@ class MyConnector(Connector):
             await ctx.increment_scanned()
             cursor = item["cursor"]
 
-        await ctx.complete(new_state={"cursor": cursor})
+        await ctx.complete(checkpoint={"cursor": cursor})
 
 if __name__ == "__main__":
     MyConnector().serve(port=8000)
@@ -82,8 +82,11 @@ The `SyncContext` object is passed to your `sync()` method and provides:
 - `ctx.emit_updated(doc)` - Emit a document update
 - `ctx.emit_deleted(external_id)` - Mark a document as deleted
 - `ctx.increment_scanned()` - Increment the scanned counter
-- `ctx.save_state(state)` - Checkpoint state for resumability
-- `ctx.complete(new_state)` - Mark sync as completed
+- `ctx.checkpoint` - Current sync checkpoint for resumability
+- `ctx.connector_state` - Durable source-level metadata outside the checkpoint
+- `ctx.save_checkpoint(checkpoint)` - Persist a resumability checkpoint
+- `ctx.save_connector_state(connector_state)` - Persist non-checkpoint source metadata
+- `ctx.complete(checkpoint)` - Mark sync as completed, optionally saving a final checkpoint
 - `ctx.fail(error)` - Mark sync as failed
 - `ctx.is_cancelled()` - Check if sync was cancelled
 - `ctx.content_storage.save(content)` - Store content and get content_id

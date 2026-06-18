@@ -142,7 +142,7 @@ class SharePointSyncer:
         self,
         client: GraphClient,
         ctx: SyncContext,
-        state: dict[str, Any],
+        checkpoint: dict[str, Any],
         source_config: dict[str, Any] | None = None,
         user_cache: dict[str, str] | None = None,
         group_cache: dict[str, str] | None = None,
@@ -152,7 +152,7 @@ class SharePointSyncer:
         self._drive_permissions: dict[DriveId, list[GraphPermission]] = {}
         self._site_members: dict[SiteId, list[Email]] = {}
 
-        delta_tokens: dict[str, str] = dict(state.get(DRIVE_DELTA_TOKENS_KEY, {}))
+        delta_tokens: dict[str, str] = dict(checkpoint.get(DRIVE_DELTA_TOKENS_KEY, {}))
         skip_classifications: Counter[str] = Counter()
 
         sites = await self._list_sites(client)

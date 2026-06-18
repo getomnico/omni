@@ -45,10 +45,10 @@ async def test_incremental_sync_only_emits_modified_items(
         last_edited_time="2024-08-01T12:00:00.000Z",
     )
 
-    # Seed connector_state to simulate a prior successful sync. The cutoff
+    # Seed checkpoint to simulate a prior successful sync. The cutoff
     # falls between the stale page and the two recent ones.
     cutoff = "2024-06-01T00:00:00.000Z"
-    await seed.set_connector_state(source_id, {"last_sync_at": cutoff})
+    await seed.set_checkpoint(source_id, {"last_sync_at": cutoff})
 
     resp = await cm_client.post(
         "/sync",
@@ -78,8 +78,8 @@ async def test_incremental_sync_only_emits_modified_items(
     assert f"notion:page:{NEWER_PAGE_ID}" in doc_ids
     assert f"notion:page:{OLD_PAGE_ID}" not in doc_ids
 
-    state = await seed.get_connector_state(source_id)
-    assert state is not None
+    checkpoint = await seed.get_checkpoint(source_id)
+    assert checkpoint is not None
     assert (
-        state["last_sync_at"] > cutoff
+        checkpoint["last_sync_at"] > cutoff
     ), "last_sync_at should advance to the new run's timestamp"

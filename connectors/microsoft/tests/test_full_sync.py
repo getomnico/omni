@@ -81,8 +81,8 @@ async def test_onedrive_sync(
         did.startswith("onedrive:") for did in doc_ids
     ), f"No onedrive doc in {doc_ids}"
 
-    state = await seed.get_connector_state(onedrive_source_id)
-    assert state is not None, "connector_state should be saved after sync"
+    checkpoint = await seed.get_checkpoint(onedrive_source_id)
+    assert checkpoint is not None, "checkpoint should be saved after sync"
 
 
 async def test_onedrive_paged_delta_sync(
@@ -134,8 +134,8 @@ async def test_onedrive_paged_delta_sync(
     }
     assert f"onedrive:{DRIVE_ID}:paged-file" in doc_ids
 
-    state = await seed.get_connector_state(source_id)
-    token = state.get("delta_tokens", {}).get(USER_ID, "")
+    checkpoint = await seed.get_checkpoint(source_id)
+    token = checkpoint.get("delta_tokens", {}).get(USER_ID, "")
     assert "deltatoken=latest" in token
 
 
@@ -198,8 +198,8 @@ async def test_outlook_sync(
     }
     assert any(did.startswith("mail:") for did in doc_ids), f"No mail doc in {doc_ids}"
 
-    state = await seed.get_connector_state(outlook_source_id)
-    assert state is not None, "connector_state should be saved after sync"
+    checkpoint = await seed.get_checkpoint(outlook_source_id)
+    assert checkpoint is not None, "checkpoint should be saved after sync"
 
 
 async def test_outlook_deleted_delta_emits_document_deleted(
@@ -314,8 +314,8 @@ async def test_outlook_calendar_sync(
         did.startswith("calendar:") for did in doc_ids
     ), f"No calendar doc in {doc_ids}"
 
-    state = await seed.get_connector_state(outlook_calendar_source_id)
-    assert state is not None, "connector_state should be saved after sync"
+    checkpoint = await seed.get_checkpoint(outlook_calendar_source_id)
+    assert checkpoint is not None, "checkpoint should be saved after sync"
 
 
 async def test_sharepoint_sync(
@@ -375,8 +375,8 @@ async def test_sharepoint_sync(
         did.startswith("sharepoint:") for did in doc_ids
     ), f"No sharepoint doc in {doc_ids}"
 
-    state = await seed.get_connector_state(sharepoint_source_id)
-    assert state is not None, "connector_state should be saved after sync"
+    checkpoint = await seed.get_checkpoint(sharepoint_source_id)
+    assert checkpoint is not None, "checkpoint should be saved after sync"
 
 
 async def test_sharepoint_multi_drive_and_folder_sync(
@@ -465,8 +465,8 @@ async def test_sharepoint_multi_drive_and_folder_sync(
     assert f"sharepoint:{site_id}:{drive_a}:file-a" in doc_ids, doc_ids
     assert f"sharepoint:{site_id}:{drive_b}:file-b" in doc_ids, doc_ids
 
-    state = await seed.get_connector_state(sharepoint_source_id)
-    tokens = state.get("delta_tokens", {})
+    checkpoint = await seed.get_checkpoint(sharepoint_source_id)
+    tokens = checkpoint.get("delta_tokens", {})
     assert drive_a in tokens and drive_b in tokens, tokens
 
 
@@ -512,8 +512,8 @@ async def test_sharepoint_delta_resync_on_410(
     row = await wait_for_sync(harness.db_pool, sync_run_id, timeout=60)
     assert row["status"] == "completed"
 
-    state = await seed.get_connector_state(sharepoint_source_id)
-    assert drive_id in state.get("delta_tokens", {})
+    checkpoint = await seed.get_checkpoint(sharepoint_source_id)
+    assert drive_id in checkpoint.get("delta_tokens", {})
 
     # Second sync — first delta call returns 410, retry should succeed.
     mock_graph_api.queue_drive_delta_error(
@@ -730,9 +730,9 @@ async def test_teams_basic_sync(
         did.startswith("teams:") for did in doc_ids
     ), f"No teams doc in {doc_ids}"
 
-    state = await seed.get_connector_state(ms_teams_source_id)
-    assert state is not None, "connector_state should be saved after sync"
-    assert "delta_tokens" in state
+    checkpoint = await seed.get_checkpoint(ms_teams_source_id)
+    assert checkpoint is not None, "checkpoint should be saved after sync"
+    assert "delta_tokens" in checkpoint
 
 
 async def test_teams_thread_sync(

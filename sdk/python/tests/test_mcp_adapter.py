@@ -233,7 +233,7 @@ class TestConnectorMcpIntegration:
                 self,
                 source_config: dict[str, Any],
                 credentials: dict[str, Any],
-                state: dict[str, Any] | None,
+                checkpoint: dict[str, Any] | None,
                 ctx: Any,
             ) -> None:
                 pass
