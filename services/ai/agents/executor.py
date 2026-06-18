@@ -228,6 +228,7 @@ async def _build_agent_registry(
         skills_dir=skills_dir, searcher_client=app_state.searcher_tool.client
     )
     if skill_handler._available:
+        await skill_handler.publish_skill_capabilities()
         registry.register(skill_handler)
         always_on_handlers.append(skill_handler)
 

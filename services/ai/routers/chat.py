@@ -401,6 +401,7 @@ async def _build_registry(
         skills_dir=skills_dir, searcher_client=request.app.state.searcher_tool.client
     )
     if skill_handler._available:
+        await skill_handler.publish_skill_capabilities()
         registry.register(skill_handler)
         always_on_handlers.append(skill_handler)
 
@@ -495,6 +496,7 @@ async def _build_agent_chat_registry(
         skills_dir=skills_dir, searcher_client=request.app.state.searcher_tool.client
     )
     if skill_handler._available:
+        await skill_handler.publish_skill_capabilities()
         registry.register(skill_handler)
         always_on_handlers.append(skill_handler)
 

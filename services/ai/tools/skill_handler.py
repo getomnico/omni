@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 import logging
 import re
 from pathlib import Path
@@ -39,6 +42,9 @@ class SkillHandler:
 
     If both exist for the same skill name, the directory layout wins.
     """
+
+    _publish_lock = asyncio.Lock()
+    _published_capability_keys: set[tuple[int, str]] = set()
 
     def __init__(
         self, skills_dir: Path, searcher_client: SearcherClient | None = None
@@ -205,7 +211,6 @@ class SkillHandler:
         if self._searcher_client is None:
             raise RuntimeError("skill_search requires a searcher client")
 
-        await self._publish_skill_capabilities()
         response = await self._searcher_client.search_capabilities(
             CapabilitySearchRequest(
                 capability_type="skill",
@@ -224,10 +229,36 @@ class SkillHandler:
             matches.append((skill_id, title, self._snippet(body)))
         return matches
 
-    async def _publish_skill_capabilities(self) -> None:
+    async def publish_skill_capabilities(self) -> None:
         if self._searcher_client is None or not self._available:
             return
 
+        capabilities = self._skill_capabilities()
+        publish_key = (
+            id(self._searcher_client),
+            self._capability_fingerprint(capabilities),
+        )
+        if publish_key in self._published_capability_keys:
+            return
+
+        async with self._publish_lock:
+            if publish_key in self._published_capability_keys:
+                return
+            try:
+                for start in range(0, len(capabilities), _CAPABILITY_UPSERT_BATCH_SIZE):
+                    await self._searcher_client.upsert_capabilities(
+                        CapabilitiesUpsertRequest(
+                            capabilities=capabilities[
+                                start : start + _CAPABILITY_UPSERT_BATCH_SIZE
+                            ]
+                        )
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to publish skill capabilities: {e}")
+                return
+            self._published_capability_keys.add(publish_key)
+
+    def _skill_capabilities(self) -> list[CapabilityUpsert]:
         capabilities: list[CapabilityUpsert] = []
         for skill_id, path in self._available.items():
             content = path.read_text()
@@ -248,14 +279,13 @@ class SkillHandler:
                     },
                 )
             )
-        for start in range(0, len(capabilities), _CAPABILITY_UPSERT_BATCH_SIZE):
-            await self._searcher_client.upsert_capabilities(
-                CapabilitiesUpsertRequest(
-                    capabilities=capabilities[
-                        start : start + _CAPABILITY_UPSERT_BATCH_SIZE
-                    ]
-                )
-            )
+        return capabilities
+
+    def _capability_fingerprint(self, capabilities: list[CapabilityUpsert]) -> str:
+        payload = [capability.model_dump() for capability in capabilities]
+        payload.sort(key=lambda capability: capability["id"])
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _title(skill_id: str, content: str) -> str:

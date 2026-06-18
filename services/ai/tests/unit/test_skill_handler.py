@@ -80,7 +80,7 @@ async def test_skill_handler_discovers_directory_skills_and_legacy_files(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_skill_search_uses_searcher_and_publishes_skills(tmp_path):
+async def test_publish_skill_capabilities_uses_searcher(tmp_path):
     (tmp_path / "excel.md").write_text("# Excel Skill\n\nInspect spreadsheets.")
     skill_dir = tmp_path / "slack"
     skill_dir.mkdir()
@@ -88,20 +88,31 @@ async def test_skill_search_uses_searcher_and_publishes_skills(tmp_path):
     searcher = _FakeSearcherClient()
     handler = SkillHandler(tmp_path, searcher_client=searcher)
 
-    result = await handler.execute("skill_search", {"query": "spreadsheet"}, _ctx())
+    await handler.publish_skill_capabilities()
 
-    assert not result.is_error
-    assert "excel" in result.content[0]["text"]
     assert searcher.upserts
     assert {c.id for c in searcher.upserts[0].capabilities} == {
         "skill:excel",
         "skill:slack",
     }
+
+
+@pytest.mark.asyncio
+async def test_skill_search_uses_searcher_without_republishing(tmp_path):
+    (tmp_path / "excel.md").write_text("# Excel Skill\n\nInspect spreadsheets.")
+    searcher = _FakeSearcherClient()
+    handler = SkillHandler(tmp_path, searcher_client=searcher)
+
+    await handler.publish_skill_capabilities()
+    result = await handler.execute("skill_search", {"query": "spreadsheet"}, _ctx())
+    await handler.execute("skill_search", {"query": "spreadsheet"}, _ctx())
+
+    assert not result.is_error
+    assert "excel" in result.content[0]["text"]
+    assert len(searcher.upserts) == 1
+    assert len(searcher.searches) == 2
     assert searcher.searches[0].capability_type == "skill"
-    assert set(searcher.searches[0].allowed_ids) == {
-        "skill:excel",
-        "skill:slack",
-    }
+    assert searcher.searches[0].allowed_ids == ["skill:excel"]
 
 
 @pytest.mark.asyncio
