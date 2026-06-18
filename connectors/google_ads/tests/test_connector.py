@@ -60,6 +60,11 @@ class FakeContext:
         self.failed = error
 
 
+class CancelAfterFirstScannedContext(FakeContext):
+    def is_cancelled(self):
+        return self.documents_scanned >= 1
+
+
 @pytest.mark.asyncio
 async def test_full_sync_with_mock_data():
     connector = GoogleAdsConnector()
@@ -95,9 +100,55 @@ async def test_full_sync_with_mock_data():
     assert "metrics" not in ctx.docs[0].metadata.extra["google_ads"]["raw"]
     assert ctx.checkpoints
     assert ctx.completed["schema_version"] == 1
-    assert ctx.completed["mode"] == "full"
-    assert ctx.completed["progress"] is None
-    assert ctx.connector_states[-1]["last_successful_full_sync_at"]
+    assert ctx.completed["last_successful_sync_at"]
+    assert ctx.completed["last_completed_unit"] is None
+    assert ctx.connector_states == []
+
+
+@pytest.mark.asyncio
+async def test_full_sync_cancellation_does_not_checkpoint_partial_entity():
+    connector = GoogleAdsConnector()
+    ctx = CancelAfterFirstScannedContext()
+    source_config = {
+        "customer_ids": ["1"],
+        "entity_types": ["campaign"],
+        "mock_data": {
+            "customers": {
+                "1": {
+                    "campaign": [
+                        {
+                            "campaign": {
+                                "id": "123",
+                                "name": "Brand",
+                                "resource_name": "customers/1/campaigns/123",
+                                "status": "ENABLED",
+                            }
+                        },
+                        {
+                            "campaign": {
+                                "id": "456",
+                                "name": "Generic",
+                                "resource_name": "customers/1/campaigns/456",
+                                "status": "ENABLED",
+                            }
+                        },
+                    ]
+                }
+            }
+        },
+    }
+
+    await connector.sync(
+        source_config,
+        {"developer_token": "dev", "access_token": "access"},
+        None,
+        ctx,
+    )
+
+    assert ctx.failed == "Cancelled by user"
+    assert len(ctx.docs) == 1
+    assert ctx.checkpoints == []
+    assert ctx.completed is None
 
 
 @pytest.mark.asyncio
@@ -129,16 +180,20 @@ async def test_incremental_sync_uses_change_status_and_refetches():
     await connector.sync(
         source_config,
         {"developer_token": "dev", "access_token": "access"},
-        {"last_successful_sync_at": "2025-01-01T00:00:00Z"},
+        {
+            "schema_version": 1,
+            "last_successful_sync_at": "2025-01-01T00:00:00Z",
+            "last_completed_unit": None,
+        },
         ctx,
     )
 
     assert ctx.failed is None
     assert len(ctx.docs) == 1
     assert ctx.completed["schema_version"] == 1
-    assert ctx.completed["mode"] == "incremental"
-    assert ctx.completed["progress"] is None
-    assert ctx.connector_states[-1]["last_successful_incremental_sync_at"]
+    assert ctx.completed["last_successful_sync_at"]
+    assert ctx.completed["last_completed_unit"] is None
+    assert ctx.connector_states == []
 
 
 def test_manifest_fields_and_oauth_config():

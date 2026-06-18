@@ -6,7 +6,7 @@ import csv
 import io
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 from fastapi.responses import JSONResponse, Response
 from omni_connector import Connector, SearchOperator, SyncContext, SyncMode
@@ -33,14 +33,12 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
-CHECKPOINT_EVERY = 100
 DEFAULT_REPORT_LIMIT = 5000
 DEFAULT_EXPORT_LIMIT = 10000
 MAX_JSON_ROWS = 10000
 MAX_CSV_ROWS = 25000
 MAX_XLSX_ROWS = 10000
 CHECKPOINT_SCHEMA_VERSION = 1
-CONNECTOR_STATE_SCHEMA_VERSION = 1
 
 METRIC_FIELDS = {
     "metrics.impressions",
@@ -93,82 +91,62 @@ REPORT_BUILDERS = {
 }
 
 
+class GoogleAdsCheckpoint(TypedDict):
+    schema_version: int
+    last_successful_sync_at: str | None
+    last_completed_unit: str | None
+
+
+# Reserved for future non-sync source-level metadata.
+class GoogleAdsConnectorState(TypedDict):
+    pass
+
+
 def _checkpoint(
     *,
-    mode: str,
-    watermark: dict[str, Any] | None = None,
-    progress: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+    last_successful_sync_at: str | None,
+    last_completed_unit: str | None,
+) -> GoogleAdsCheckpoint:
     return {
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
-        "mode": mode,
-        "watermark": watermark or {},
-        "progress": progress,
-    }
-
-
-def _checkpoint_progress(checkpoint: dict[str, Any], mode: str) -> dict[str, Any]:
-    if checkpoint.get("schema_version") == CHECKPOINT_SCHEMA_VERSION:
-        if checkpoint.get("mode") == mode and isinstance(checkpoint.get("progress"), dict):
-            return cast(dict[str, Any], checkpoint["progress"])
-        return {}
-
-    legacy_progress = checkpoint.get("checkpoint")
-    if isinstance(legacy_progress, dict) and legacy_progress.get("mode") == mode:
-        if "completed" in legacy_progress:
-            return {"completed_units": legacy_progress.get("completed", [])}
-        if "completed_customers" in legacy_progress:
-            return {"completed_customers": legacy_progress.get("completed_customers", [])}
-    return {}
-
-
-def _last_successful_sync_time(
-    checkpoint: dict[str, Any], connector_state: dict[str, Any]
-) -> str | None:
-    watermark = checkpoint.get("watermark")
-    if isinstance(watermark, dict):
-        value = watermark.get("last_successful_change_time")
-        if isinstance(value, str):
-            return value
-
-    for key in ("last_successful_incremental_sync_at", "last_successful_sync_at"):
-        value = connector_state.get(key) or checkpoint.get(key)
-        if isinstance(value, str):
-            return value
-    return None
-
-
-async def _save_google_ads_connector_state(
-    ctx: SyncContext,
-    connector_state: dict[str, Any],
-    config: GoogleAdsSourceConfig,
-    connector_version: str,
-    *,
-    last_successful_full_sync_at: str | None,
-    last_successful_incremental_sync_at: str | None,
-    last_successful_sync_at: str,
-) -> None:
-    new_state = {
-        **connector_state,
-        "schema_version": CONNECTOR_STATE_SCHEMA_VERSION,
-        "connector_version": connector_version,
-        "customer_ids": config.customer_ids,
-        "entity_types": config.entity_types,
         "last_successful_sync_at": last_successful_sync_at,
+        "last_completed_unit": last_completed_unit,
     }
-    if last_successful_full_sync_at:
-        new_state["last_successful_full_sync_at"] = last_successful_full_sync_at
-    if last_successful_incremental_sync_at:
-        new_state["last_successful_incremental_sync_at"] = (
-            last_successful_incremental_sync_at
-        )
 
-    save_connector_state = getattr(ctx, "save_connector_state", None)
-    if save_connector_state is not None:
-        try:
-            await save_connector_state(new_state)
-        except Exception:
-            logger.warning("Failed to save Google Ads connector state", exc_info=True)
+
+def _parse_checkpoint(raw: dict[str, Any] | None) -> GoogleAdsCheckpoint:
+    if not raw:
+        return _checkpoint(last_successful_sync_at=None, last_completed_unit=None)
+
+    if raw.get("schema_version") != CHECKPOINT_SCHEMA_VERSION:
+        raise ValueError("Invalid Google Ads checkpoint schema_version")
+
+    last_successful_sync_at = raw.get("last_successful_sync_at")
+    if last_successful_sync_at is not None and not isinstance(
+        last_successful_sync_at, str
+    ):
+        raise ValueError("Invalid Google Ads checkpoint last_successful_sync_at")
+
+    last_completed_unit = raw.get("last_completed_unit")
+    if last_completed_unit is not None and not isinstance(last_completed_unit, str):
+        raise ValueError("Invalid Google Ads checkpoint last_completed_unit")
+
+    return _checkpoint(
+        last_successful_sync_at=last_successful_sync_at,
+        last_completed_unit=last_completed_unit,
+    )
+
+
+def _last_successful_sync_time(checkpoint: GoogleAdsCheckpoint) -> str | None:
+    return checkpoint["last_successful_sync_at"]
+
+
+def _last_completed_unit(checkpoint: GoogleAdsCheckpoint) -> str | None:
+    return checkpoint["last_completed_unit"]
+
+
+def _unit_key(customer_id: str, entity_type: str) -> str:
+    return f"{customer_id}:{entity_type}"
 
 
 class GoogleAdsConnector(Connector):
@@ -443,25 +421,27 @@ class GoogleAdsConnector(Connector):
             )
             creds = GoogleAdsCredentials.parse(merged_creds)
             config = GoogleAdsSourceConfig.parse(source_config, merged_creds)
+            checkpoint = _parse_checkpoint(state)
         except ValueError as exc:
             await ctx.fail(str(exc))
             return
 
         if not config.sync_enabled:
-            await ctx.complete(new_state=state or {})
+            await ctx.complete(
+                new_state=_checkpoint(
+                    last_successful_sync_at=_last_successful_sync_time(checkpoint),
+                    last_completed_unit=None,
+                )
+            )
             return
 
         client = self._make_client(creds, config, source_config)
-        checkpoint = state or {}
-        connector_state = getattr(ctx, "connector_state", {}) or {}
 
         try:
             if ctx.sync_mode == SyncMode.INCREMENTAL:
-                await self._incremental_sync(
-                    client, config, checkpoint, connector_state, ctx
-                )
+                await self._incremental_sync(client, config, checkpoint, ctx)
             else:
-                await self._full_sync(client, config, checkpoint, connector_state, ctx)
+                await self._full_sync(client, config, checkpoint, ctx)
         except GoogleAdsConnectorError as exc:
             logger.exception("Google Ads sync failed")
             await ctx.fail(str(exc))
@@ -483,48 +463,48 @@ class GoogleAdsConnector(Connector):
         self,
         client: GoogleAdsClient,
         config: GoogleAdsSourceConfig,
-        checkpoint: dict[str, Any],
-        connector_state: dict[str, Any],
+        checkpoint: GoogleAdsCheckpoint,
         ctx: SyncContext,
     ) -> None:
-        progress = _checkpoint_progress(checkpoint, "full") if ctx.is_resume else {}
-        completed = set(progress.get("completed_units", []))
-        scanned_since_checkpoint = 0
+        run_started_at = datetime.now(UTC).isoformat()
+        previous_success = _last_successful_sync_time(checkpoint)
+        units = [
+            (customer_id, entity_type)
+            for customer_id in sorted(config.customer_ids)
+            for entity_type in config.entity_types
+        ]
+        last_completed_unit = _last_completed_unit(checkpoint) if ctx.is_resume else None
+        skip_completed = last_completed_unit in {
+            _unit_key(customer_id, entity_type) for customer_id, entity_type in units
+        }
 
-        for customer_id in sorted(config.customer_ids):
-            for entity_type in config.entity_types:
-                key = f"{customer_id}:{entity_type}"
-                if key in completed:
-                    continue
-                if ctx.is_cancelled():
-                    await ctx.fail("Cancelled by user")
-                    return
-                await self._sync_entity_type(client, customer_id, entity_type, ctx)
-                completed.add(key)
-                scanned_since_checkpoint += 1
-                if scanned_since_checkpoint >= 1:
-                    await ctx.save_checkpoint(
-                        _checkpoint(
-                            mode="full",
-                            progress={
-                                "completed_units": sorted(completed),
-                                "current_customer_id": customer_id,
-                                "current_entity_type": entity_type,
-                            },
-                        )
-                    )
-                    scanned_since_checkpoint = 0
+        for customer_id, entity_type in units:
+            key = _unit_key(customer_id, entity_type)
+            if skip_completed:
+                if key == last_completed_unit:
+                    skip_completed = False
+                continue
+            if ctx.is_cancelled():
+                await ctx.fail("Cancelled by user")
+                return
+            completed_entity = await self._sync_entity_type(
+                client, customer_id, entity_type, ctx
+            )
+            if not completed_entity:
+                await ctx.fail("Cancelled by user")
+                return
+            await ctx.save_checkpoint(
+                _checkpoint(
+                    last_successful_sync_at=previous_success,
+                    last_completed_unit=key,
+                )
+            )
 
-        now = datetime.now(UTC).isoformat()
-        await ctx.complete(new_state=_checkpoint(mode="full", progress=None))
-        await _save_google_ads_connector_state(
-            ctx,
-            connector_state,
-            config,
-            self.version,
-            last_successful_full_sync_at=now,
-            last_successful_incremental_sync_at=None,
-            last_successful_sync_at=now,
+        await ctx.complete(
+            new_state=_checkpoint(
+                last_successful_sync_at=run_started_at,
+                last_completed_unit=None,
+            )
         )
 
     async def _sync_entity_type(
@@ -533,15 +513,15 @@ class GoogleAdsConnector(Connector):
         customer_id: str,
         entity_type: str,
         ctx: SyncContext,
-    ) -> None:
+    ) -> bool:
         query = SYNC_QUERIES.get(entity_type)
         if not query:
-            return
+            return True
         logger.info("Syncing Google Ads %s for customer %s", entity_type, customer_id)
         try:
             async for row in client.search_stream(customer_id, query):
                 if ctx.is_cancelled():
-                    return
+                    return False
                 await ctx.increment_scanned()
                 try:
                     content = render_content(entity_type, customer_id, row)
@@ -560,64 +540,65 @@ class GoogleAdsConnector(Connector):
                     )
         except GoogleAdsApiError as exc:
             await ctx.emit_error(f"google_ads:{customer_id}:{entity_type}:*", str(exc))
+        return True
 
     async def _incremental_sync(
         self,
         client: GoogleAdsClient,
         config: GoogleAdsSourceConfig,
-        checkpoint: dict[str, Any],
-        connector_state: dict[str, Any],
+        checkpoint: GoogleAdsCheckpoint,
         ctx: SyncContext,
     ) -> None:
-        since = _last_successful_sync_time(checkpoint, connector_state)
+        since = _last_successful_sync_time(checkpoint)
         if not since:
-            await self._full_sync(client, config, checkpoint, connector_state, ctx)
+            await self._full_sync(client, config, checkpoint, ctx)
             return
 
-        now = datetime.now(UTC).isoformat()
-        progress = (
-            _checkpoint_progress(checkpoint, "incremental") if ctx.is_resume else {}
-        )
-        completed_units = set(progress.get("completed_units", []))
-        completed_customers = set(progress.get("completed_customers", []))
+        run_started_at = datetime.now(UTC).isoformat()
+        units = [
+            (customer_id, entity_type)
+            for customer_id in sorted(config.customer_ids)
+            for entity_type in config.entity_types
+        ]
+        last_completed_unit = _last_completed_unit(checkpoint) if ctx.is_resume else None
+        skip_completed = last_completed_unit in {
+            _unit_key(customer_id, entity_type) for customer_id, entity_type in units
+        }
+        changed_by_customer: dict[str, set[str]] = {}
 
-        for customer_id in sorted(config.customer_ids):
-            if customer_id in completed_customers:
+        for customer_id, entity_type in units:
+            key = _unit_key(customer_id, entity_type)
+            if skip_completed:
+                if key == last_completed_unit:
+                    skip_completed = False
                 continue
             if ctx.is_cancelled():
                 await ctx.fail("Cancelled by user")
                 return
-            changed = await self._changed_resource_types(client, customer_id, since, ctx)
-            entity_types = [e for e in config.entity_types if e in changed]
-            for entity_type in entity_types:
-                key = f"{customer_id}:{entity_type}"
-                if key in completed_units:
-                    continue
-                await self._sync_entity_type(client, customer_id, entity_type, ctx)
-                completed_units.add(key)
-                await ctx.save_checkpoint(
-                    _checkpoint(
-                        mode="incremental",
-                        watermark={"since": since, "upper_bound": now},
-                        progress={"completed_units": sorted(completed_units)},
-                    )
+            if customer_id not in changed_by_customer:
+                changed_by_customer[customer_id] = await self._changed_resource_types(
+                    client, customer_id, since, ctx
                 )
+            if entity_type not in changed_by_customer[customer_id]:
+                continue
+            completed_entity = await self._sync_entity_type(
+                client, customer_id, entity_type, ctx
+            )
+            if not completed_entity:
+                await ctx.fail("Cancelled by user")
+                return
+            await ctx.save_checkpoint(
+                _checkpoint(
+                    last_successful_sync_at=since,
+                    last_completed_unit=key,
+                )
+            )
 
         await ctx.complete(
             new_state=_checkpoint(
-                mode="incremental",
-                watermark={"last_successful_change_time": now},
-                progress=None,
+                last_successful_sync_at=run_started_at,
+                last_completed_unit=None,
             )
-        )
-        await _save_google_ads_connector_state(
-            ctx,
-            connector_state,
-            config,
-            self.version,
-            last_successful_full_sync_at=None,
-            last_successful_incremental_sync_at=now,
-            last_successful_sync_at=now,
         )
 
     async def _changed_resource_types(
