@@ -92,8 +92,12 @@ impl Connector for ImapConnector {
                     },
                     "required": ["host"]
                 }),
+                // Setup/util action with no chat-facing use: hidden from every
+                // chat/MCP tool surface, admins included, but still in the
+                // manifest (Read mode) and dispatchable by name.
                 source_types: Vec::new(),
                 admin_only: false,
+                hidden: true,
             },
             ActionDefinition {
                 name: "list_folders".to_string(),
@@ -108,8 +112,12 @@ impl Connector for ImapConnector {
                     },
                     "required": ["host"]
                 }),
+                // Setup/util action with no chat-facing use: hidden from every
+                // chat/MCP tool surface, admins included, but still in the
+                // manifest (Read mode) and dispatchable by name.
                 source_types: Vec::new(),
                 admin_only: false,
+                hidden: true,
             },
         ]
     }

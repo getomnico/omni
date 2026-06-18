@@ -122,6 +122,7 @@ impl Connector for NextcloudConnector {
                 mode: omni_connector_sdk::ActionMode::Read,
                 source_types: Vec::new(),
                 admin_only: false,
+                hidden: false,
             },
             ActionDefinition {
                 name: "fetch_file".into(),
@@ -138,7 +139,16 @@ impl Connector for NextcloudConnector {
                 }),
                 mode: omni_connector_sdk::ActionMode::Read,
                 source_types: Vec::new(),
-                admin_only: false,
+                // Internal action with no chat-facing use: hidden from every
+                // chat/MCP tool surface, admins included, but still in the
+                // manifest (Read mode) and dispatchable by name for the
+                // internal read_document binary fetch.
+                hidden: true,
+                // Route /action dispatch to the org credential so the internal
+                // read_document binary fetch keeps working for org-level agents and
+                // non-admin users (Nextcloud has only an org basic-auth credential;
+                // there is no per-user OAuth flow to satisfy).
+                admin_only: true,
             },
         ]
     }

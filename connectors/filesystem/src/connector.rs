@@ -66,6 +66,7 @@ impl Connector for FileSystemConnector {
             }),
             source_types: Vec::new(),
             admin_only: false,
+            hidden: false,
         }]
     }
 
