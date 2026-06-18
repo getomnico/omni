@@ -6,23 +6,37 @@ use futures_util::StreamExt;
 use redis::AsyncCommands;
 use redis::Client as RedisClient;
 use shared::utils::safe_str_slice;
-use shared::{AIClient, DatabasePool, DocumentRepository, GroupRepository, ObjectStorage};
+use shared::{
+    AIClient, DatabasePool, DocumentRepository, GroupRepository, ObjectStorage, SourceType,
+};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
-const REDIS_CACHE_KEY: &str = "suggested_questions:v1";
-const CACHE_TTL_SECONDS: u64 = 86400; // 7 days
+// Bump the version suffix whenever the generation prompt or validation changes
+// so previously cached (and now undesirable) suggestions are invalidated.
+const REDIS_CACHE_KEY: &str = "suggested_questions:v2";
+const CACHE_TTL_SECONDS: u64 = 86400; // 24 hours
 const MAX_RETRIES: usize = 5;
-const QUESTION_PROMPT_TEMPLATE: &str = r#"You are helping generate example search queries for a workplace search tool that indexes company documents, emails, and files.
+/// Source types whose documents are predominantly code or technical material and
+/// therefore make poor "Try asking" suggestions (e.g. a GitHub repo yields queries
+/// like "Git repository object storage documentation"). They are excluded from the
+/// random document selection; per-document SKIP handling in the generator still
+/// filters technical content out of the remaining sources.
+const SUGGESTION_EXCLUDED_SOURCE_TYPES: &[SourceType] = &[SourceType::Github];
+const QUESTION_PROMPT_TEMPLATE: &str = r#"You are helping generate example search queries for a workplace search tool that indexes a company's documents, emails, and files. The result is shown as a clickable "Try asking" suggestion on the home screen, so it must read like something a real employee would naturally ask.
 
-Given the following document excerpt, generate ONE example search query that an employee might realistically type into a workplace search engine to find information related to this document's topic.
+You are given an excerpt from ONE indexed document. Based on the topic it covers, write ONE natural question that a colleague might ask to find this kind of information.
 
 Rules:
-- Write the query from the perspective of someone who does NOT have the document open — they are searching for information
-- Focus on the topic or knowledge area, not on specific metadata like URLs, file paths, modification dates, or technical properties
-- The query should be practical and useful (e.g. "How do we handle customer refunds?", "Onboarding steps for new engineers", "Q3 budget planning process")
-- Avoid questions that are only answerable by looking at a specific file's properties or raw structure
-- Write only the query itself, no quotes, no prefixes like "Question:" or "Query:"
+- Write a full, natural question, phrased the way a person actually speaks, and end it with a question mark. Examples: "How do we handle customer refunds?", "What are the onboarding steps for new engineers?", "Who is responsible for Q3 budget planning?"
+- Do NOT output keyword phrases, document titles, or noun phrases such as "Git repository object storage documentation". It must be a real question.
+- Ask from the perspective of someone who has NOT seen this document and is looking for the knowledge it contains.
+- Ignore document metadata and structure (URLs, file paths, IDs, timestamps, formatting, raw code, configuration values).
+
+If this document is not a good basis for a useful business question — for example it is source code, configuration, logs, build or CI output, auto-generated content, technical/system documentation, boilerplate, or has no clear business topic an employee would search for — then respond with exactly the single word SKIP and nothing else.
+
+Output only the question itself (or SKIP), with no quotes and no prefix like "Question:" or "Query:".
 
 Document excerpt:
 {content}"#;
@@ -138,6 +152,11 @@ impl SuggestedQuestionsGenerator {
         user_email: &str,
     ) -> Result<usize> {
         let mut questions = Vec::new();
+        // Random fetches across retry attempts can re-draw the same document, and
+        // distinct documents can yield identical questions. Track both so the
+        // suggestions we return stay unique.
+        let mut seen_doc_ids: HashSet<String> = HashSet::new();
+        let mut seen_questions: HashSet<String> = HashSet::new();
         let mut attempts = 0;
 
         let num_questions = 9;
@@ -161,7 +180,12 @@ impl SuggestedQuestionsGenerator {
                 .await
                 .unwrap_or_default();
             match doc_repo
-                .fetch_random_documents(user_email, &user_groups, needed)
+                .fetch_random_documents(
+                    user_email,
+                    &user_groups,
+                    needed,
+                    SUGGESTION_EXCLUDED_SOURCE_TYPES,
+                )
                 .await
             {
                 Ok(docs) => {
@@ -196,6 +220,12 @@ impl SuggestedQuestionsGenerator {
                         .collect::<Result<Vec<_>>>()?;
 
                     for (doc, content) in docs.into_iter().zip(contents) {
+                        // Skip documents already handled in an earlier attempt so we
+                        // neither spend an AI call nor surface a duplicate suggestion.
+                        if !seen_doc_ids.insert(doc.id.clone()) {
+                            continue;
+                        }
+
                         debug!(
                             "Processing document {} [id={}] (content length: {} chars)",
                             doc.title,
@@ -207,6 +237,15 @@ impl SuggestedQuestionsGenerator {
                             .await
                         {
                             Ok(question) => {
+                                // Two different documents can produce the same generic
+                                // question; keep the displayed suggestions distinct.
+                                if !seen_questions.insert(question.to_lowercase()) {
+                                    debug!(
+                                        "Skipping duplicate suggestion text from document {}",
+                                        doc.id
+                                    );
+                                    continue;
+                                }
                                 questions.push(SuggestedQuestion {
                                     question: question.clone(),
                                     document_id: doc.id.clone(),
@@ -360,7 +399,7 @@ impl SuggestedQuestionsGenerator {
             question.len()
         );
 
-        let question = question.trim().to_string();
+        let question = question.trim().trim_matches('"').trim().to_string();
 
         if question.is_empty() {
             warn!(
@@ -368,6 +407,31 @@ impl SuggestedQuestionsGenerator {
                 document_id
             );
             return Err(anyhow!("AI service returned empty question"));
+        }
+
+        // The model is instructed to return the literal word SKIP for documents
+        // that are not a good basis for a workplace question (code, config, logs,
+        // auto-generated/technical docs, etc.). Treat that as "no question" so the
+        // caller fetches and tries a different random document.
+        let normalized =
+            question.trim_end_matches(|c: char| c == '.' || c == '!' || c.is_whitespace());
+        if normalized.eq_ignore_ascii_case("skip") {
+            info!(
+                "Document {} deemed unsuitable for a suggested question (model returned SKIP)",
+                document_id
+            );
+            return Err(anyhow!("Document unsuitable for question generation (SKIP)"));
+        }
+
+        // Guard against keyword/noun-phrase output slipping through despite the
+        // prompt (e.g. "Git repository object storage documentation"): a real
+        // suggestion is a question and must contain a question mark.
+        if !question.contains('?') {
+            warn!(
+                "Discarding non-question suggestion for document {}: \"{}\"",
+                document_id, question
+            );
+            return Err(anyhow!("Generated suggestion was not a question"));
         }
 
         info!(
