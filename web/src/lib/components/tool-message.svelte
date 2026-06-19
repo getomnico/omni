@@ -4,7 +4,6 @@
         Search,
         FileText,
         TextSearch,
-        ExternalLink,
         Play,
         FileCode,
         Terminal,
@@ -13,6 +12,7 @@
         Download,
         Users,
         BookOpen,
+        Mail,
     } from '@lucide/svelte'
     import type { ToolMessageContent, ToolName } from '$lib/types/message'
     import { ToolApprovalStatus } from '$lib/types/message'
@@ -64,9 +64,29 @@
             loading: 'searching people',
             loaded: 'searched people',
         },
+        tool_search: {
+            loading: 'searching tools',
+            loaded: 'searched tools',
+        },
+        load_tool: {
+            loading: 'loading tool',
+            loaded: 'loaded tool',
+        },
+        load_tool_set: {
+            loading: 'loading tool set',
+            loaded: 'loaded tool set',
+        },
+        skill_search: {
+            loading: 'searching skills',
+            loaded: 'searched skills',
+        },
         load_skill: {
             loading: 'loading skill',
             loaded: 'loaded skill',
+        },
+        send_email: {
+            loading: 'sending email',
+            loaded: 'sent email',
         },
     }
 
@@ -79,7 +99,11 @@
         run_python: 'code',
         present_artifact: 'title',
         search_people: 'query',
+        tool_search: 'query',
+        load_tool: 'tool_name',
+        skill_search: 'query',
         load_skill: 'skill',
+        send_email: 'subject',
     }
 
     const ToolApprovalColors: Record<
@@ -119,34 +143,41 @@
     let statusIndicator = $derived(
         message.oauthRequired
             ? 'needs auth'
-            : message.toolResult || message.actionResult
-              ? ToolIndicators[toolName]?.loaded || 'completed'
-              : ToolIndicators[toolName]?.loading || 'running',
+            : message.actionResult?.isError
+              ? 'failed'
+              : message.toolResult || message.actionResult
+                ? ToolIndicators[toolName]?.loaded || 'completed'
+                : ToolIndicators[toolName]?.loading || 'running',
     )
 
     let toolInputKey = $derived(ToolInputKey[toolName] || (isConnectorAction ? '' : 'query'))
 
     let sources = $derived<string[]>(message.toolUse.input?.sources || [])
 
+    const summarizeValue = (value: unknown, maxLength = 80): string => {
+        if (value === null || value === undefined) return ''
+        const encoded = typeof value === 'string' ? value : JSON.stringify(value)
+        const text = encoded ?? String(value)
+        return text.length > maxLength ? text.substring(0, maxLength) + '...' : text
+    }
+
     // Get a short summary of the tool input for display
     let inputSummary = $derived(() => {
+        if (toolName === 'load_tool_set') {
+            return (
+                summarizeValue(message.toolUse.input?.source_type) ||
+                summarizeValue(message.toolUse.input?.source_id)
+            )
+        }
         if (toolInputKey && message.toolUse.input?.[toolInputKey]) {
-            const val = message.toolUse.input[toolInputKey]
-            if (typeof val === 'string' && val.length > 80) {
-                return val.substring(0, 80) + '...'
-            }
-            return val
+            return summarizeValue(message.toolUse.input[toolInputKey])
         }
-        // For connector actions, show a brief summary of params
-        if (isConnectorAction) {
-            const params = Object.entries(message.toolUse.input || {})
-            if (params.length === 0) return ''
-            return params
-                .slice(0, 2)
-                .map(([k, v]) => `${k}: ${String(v).substring(0, 40)}`)
-                .join(', ')
-        }
-        return ''
+        const params = Object.entries(message.toolUse.input || {})
+        if (params.length === 0) return ''
+        return params
+            .slice(0, 2)
+            .map(([k, v]) => `${k}: ${summarizeValue(v, 40)}`)
+            .join(', ')
     })
 
     let selectedItem = $state<string>()
@@ -164,6 +195,9 @@
             toolName,
         ),
     )
+
+    let isMetaTool = $derived(['tool_search', 'load_tool', 'load_tool_set'].includes(toolName))
+    let isSkillTool = $derived(['skill_search', 'load_skill'].includes(toolName))
 
     // Parse artifact data for present_artifact tool
     let artifactData = $derived.by(() => {
@@ -190,7 +224,7 @@
             <div class="flex min-w-0 flex-1 items-center gap-2">
                 <Users class="h-5 w-5 shrink-0 text-blue-600" />
                 <div class="min-w-0 truncate text-sm font-normal">
-                    {statusIndicator}: {message.toolUse.input[toolInputKey]}
+                    {statusIndicator}: {inputSummary()}
                 </div>
             </div>
         </div>
@@ -204,7 +238,7 @@
             <div class="flex min-w-0 flex-1 items-center gap-2">
                 <TextSearch class="h-5 w-5 shrink-0" />
                 <div class="min-w-0 truncate text-sm font-normal">
-                    {statusIndicator}: {message.toolUse.input[toolInputKey]}
+                    {statusIndicator}: {inputSummary()}
                 </div>
             </div>
         </div>
@@ -260,7 +294,7 @@
             </div>
         </div>
     {/if}
-{:else if toolName === 'load_skill'}
+{:else if isSkillTool}
     <div
         class={cn(
             'border-border flex w-full min-w-0 cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
@@ -269,7 +303,7 @@
             <div class="flex min-w-0 flex-1 items-center gap-2">
                 <BookOpen class="h-5 w-5 shrink-0 text-indigo-600" />
                 <div class="min-w-0 truncate text-sm font-normal">
-                    {statusIndicator}: {message.toolUse.input[toolInputKey]}
+                    {statusIndicator}: {inputSummary()}
                 </div>
             </div>
         </div>
@@ -284,7 +318,10 @@
         <div class="flex w-full items-center justify-between">
             <div class="flex min-w-0 flex-1 items-center gap-2">
                 {#if connectorIconPath}
-                    <img src={connectorIconPath} alt={connectorSourceType} class="!m-0 h-5 w-5 shrink-0" />
+                    <img
+                        src={connectorIconPath}
+                        alt={connectorSourceType}
+                        class="!m-0 h-5 w-5 shrink-0" />
                 {:else}
                     <Play class="h-5 w-5 shrink-0 text-purple-600" />
                 {/if}
@@ -315,7 +352,38 @@
                 onComplete={onOAuthComplete} />
         </div>
     {/if}
-{:else}
+{:else if isMetaTool || toolName === 'send_email'}
+    <div
+        class={cn(
+            'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
+            message.approval && ToolApprovalColors[message.approval.status]?.borderColor,
+            message.approval && ToolApprovalColors[message.approval.status]?.bgColor,
+        )}>
+        <div class="flex w-full items-center justify-between">
+            <div class="flex min-w-0 items-center gap-2">
+                {#if toolName === 'send_email'}
+                    <Mail class="h-5 w-5 text-rose-600" />
+                {:else if toolName === 'tool_search'}
+                    <Search class="h-5 w-5 text-purple-600" />
+                {:else}
+                    <Play class="h-5 w-5 text-purple-600" />
+                {/if}
+                <div class="max-w-screen-md truncate text-sm font-normal">
+                    {statusIndicator}{#if inputSummary()}: {inputSummary()}{/if}
+                </div>
+            </div>
+            {#if message.approval}
+                <div
+                    class={cn(
+                        'text-xs font-medium',
+                        ToolApprovalColors[message.approval.status]?.color,
+                    )}>
+                    {message.approval.status}
+                </div>
+            {/if}
+        </div>
+    </div>
+{:else if toolName === 'search_documents'}
     <Accordion.Root type="single" bind:value={selectedItem}>
         <Accordion.Item value={message.toolUse.id}>
             <Accordion.Trigger
@@ -401,4 +469,32 @@
             {/if}
         </Accordion.Item>
     </Accordion.Root>
+{:else}
+    <div
+        class={cn(
+            'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
+            message.approval && ToolApprovalColors[message.approval.status]?.borderColor,
+            message.approval && ToolApprovalColors[message.approval.status]?.bgColor,
+        )}>
+        <div class="flex w-full items-center justify-between">
+            <div class="flex min-w-0 items-center gap-2">
+                <Play class="h-5 w-5 text-purple-600" />
+                <div class="max-w-screen-md truncate text-sm font-normal">
+                    {statusIndicator}: {connectorDisplayName}
+                    {#if inputSummary()}
+                        <span class="text-muted-foreground"> ({inputSummary()})</span>
+                    {/if}
+                </div>
+            </div>
+            {#if message.approval}
+                <div
+                    class={cn(
+                        'text-xs font-medium',
+                        ToolApprovalColors[message.approval.status]?.color,
+                    )}>
+                    {message.approval.status}
+                </div>
+            {/if}
+        </div>
+    </div>
 {/if}

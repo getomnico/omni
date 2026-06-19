@@ -69,11 +69,12 @@
 
                         const resultContent = Array.isArray(block.content) ? block.content : []
 
-                        // Extract search results
+                        // Extract search results. Only search_documents renders this
+                        // shape as an accordion; other tools surface text via actionResult.
                         const searchResults = resultContent.filter(
                             (b: any) => b.type === 'search_result',
                         )
-                        if (searchResults.length > 0) {
+                        if (toolMsg.toolUse.name === 'search_documents') {
                             toolMsg.toolResult = {
                                 toolUseId,
                                 content: searchResults.map((r: any) => ({

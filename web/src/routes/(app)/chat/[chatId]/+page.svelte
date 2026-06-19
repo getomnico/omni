@@ -196,11 +196,18 @@
     const toolVerbMap: Record<string, string[]> = {
         search_documents: ['Searching', 'Looking it up', 'Digging through results'],
         read_document: ['Reading document', 'Reviewing document'],
+        search_people: ['Searching people', 'Checking directory'],
+        tool_search: ['Searching tools', 'Finding tools'],
+        load_tool: ['Loading tool', 'Preparing tool'],
+        load_tool_set: ['Loading tool set', 'Preparing tools'],
+        skill_search: ['Searching skills', 'Finding guidance'],
+        load_skill: ['Loading skill', 'Reading guidance'],
         write_file: ['Writing file', 'Preparing file'],
         read_file: ['Reading file', 'Opening file'],
         run_bash: ['Running command', 'Executing'],
         run_python: ['Running code', 'Executing script'],
         present_artifact: ['Preparing result', 'Finalizing'],
+        send_email: ['Sending email', 'Preparing email'],
     }
 
     let thinkingText = $state(defaultVerbs[0])
@@ -750,12 +757,10 @@
         }
 
         // `toolResult` here is the search-shape variant ({title, source, source_type}
-        // pulled from `search_result` content blocks). Only our built-in search
-        // tools should render that shape; everything else surfaces output via
-        // actionResult / oauthRequired and would otherwise show a misleading
-        // "completed: 0 results" pill in the catch-all accordion branch of
-        // tool-message.svelte.
-        const SEARCH_TOOLS = new Set(['search_documents', 'search_people'])
+        // pulled from `search_result` content blocks). Only search_documents
+        // renders that shape; everything else surfaces output via actionResult /
+        // oauthRequired and should stay as a compact status row.
+        const SEARCH_TOOLS = new Set(['search_documents'])
         const updateToolBlock = (
             toolUseId: string,
             updateBlock: (block: ToolMessageContent) => ToolMessageContent,
