@@ -107,6 +107,17 @@ def actions() -> list[ConnectorAction]:
     ]
 
 
+def test_load_tool_set_schema_avoids_unsupported_combinators(actions):
+    handler = _make_handler(actions)
+    meta = MetaToolHandler(handler, set(), lambda _: None)
+
+    load_tool_set = next(tool for tool in meta.get_tools() if tool["name"] == "load_tool_set")
+
+    assert "oneOf" not in load_tool_set["input_schema"]
+    assert "anyOf" not in load_tool_set["input_schema"]
+    assert "allOf" not in load_tool_set["input_schema"]
+
+
 @pytest.mark.asyncio
 async def test_tool_search_returns_matches_without_loading(actions):
     handler = _make_handler(actions)

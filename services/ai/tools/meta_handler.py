@@ -121,10 +121,6 @@ class MetaToolHandler:
                             "description": "Source type to load (loads all sources of this type).",
                         },
                     },
-                    "oneOf": [
-                        {"required": ["source_id"]},
-                        {"required": ["source_type"]},
-                    ],
                 },
             ),
         ]
