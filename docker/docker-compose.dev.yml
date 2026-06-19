@@ -41,6 +41,7 @@ services:
     environment:
       <<: *dev-database-url
       NODE_ENV: development
+      BODY_SIZE_LIMIT: ${BODY_SIZE_LIMIT:-50M}
     command: npm run dev -- --host 0.0.0.0 --port ${WEB_PORT}
 
   # Update database URLs for all services in dev

@@ -53,6 +53,12 @@ type TitleGenerationResult =
     | { status: 'skipped' }
     | { status: 'failed'; message: string }
 
+type TitleGenerationResponse = {
+    status?: string
+    title?: unknown
+    reason?: unknown
+}
+
 const replayFixtureCookieName = 'omni-chat-stream-replay-fixture'
 
 function replayStreamFixturePath(cookies: {
@@ -144,16 +150,23 @@ async function triggerTitleGeneration(chatId: string, logger: any): Promise<Titl
         })
 
         if (response.ok) {
-            const result = await response.json()
+            const result = (await response.json()) as TitleGenerationResponse
             logger.info('Title generation completed', {
                 chatId,
                 title: result.title,
                 status: result.status,
+                reason: result.reason,
             })
-            return { status: 'generated', title: result.title }
+            if (result.status === 'skipped') {
+                return { status: 'skipped' }
+            }
+            if (typeof result.title === 'string') {
+                return { status: 'generated', title: result.title }
+            }
+            return { status: 'failed', message: 'Title generation returned an invalid response' }
         } else {
             const message = await aiErrorMessage(response)
-            logger.warn('Title generation failed', undefined, {
+            logger.warn('Title generation failed', {
                 chatId,
                 status: response.status,
                 message,
@@ -252,11 +265,10 @@ export const GET: RequestHandler = async ({ params, locals, cookies }) => {
                                         encoder.encode(sseEvent('title', { title: result.title })),
                                     )
                                 } else if (result.status === 'failed') {
-                                    controller.enqueue(
-                                        encoder.encode(
-                                            sseEvent('title_error', { message: result.message }),
-                                        ),
-                                    )
+                                    logger.warn('Title generation failed', {
+                                        chatId,
+                                        message: result.message,
+                                    })
                                 }
                             })
                             .catch((err) =>
