@@ -13,6 +13,8 @@
         Users,
         BookOpen,
         Mail,
+        PackageSearch,
+        ToolCase,
     } from '@lucide/svelte'
     import type { ToolMessageContent, ToolName } from '$lib/types/message'
     import { ToolApprovalStatus } from '$lib/types/message'
@@ -164,10 +166,7 @@
     // Get a short summary of the tool input for display
     let inputSummary = $derived(() => {
         if (toolName === 'load_tool_set') {
-            return (
-                summarizeValue(message.toolUse.input?.source_type) ||
-                summarizeValue(message.toolUse.input?.source_id)
-            )
+            return summarizeValue(message.toolUse.input?.source_type)
         }
         if (toolInputKey && message.toolUse.input?.[toolInputKey]) {
             return summarizeValue(message.toolUse.input[toolInputKey])
@@ -364,9 +363,9 @@
                 {#if toolName === 'send_email'}
                     <Mail class="h-5 w-5 text-rose-600" />
                 {:else if toolName === 'tool_search'}
-                    <Search class="h-5 w-5 text-purple-600" />
+                    <PackageSearch class="h-5 w-5 text-purple-600" />
                 {:else}
-                    <Play class="h-5 w-5 text-purple-600" />
+                    <ToolCase class="h-5 w-5 text-purple-600" />
                 {/if}
                 <div class="max-w-screen-md truncate text-sm font-normal">
                     {statusIndicator}{#if inputSummary()}: {inputSummary()}{/if}
