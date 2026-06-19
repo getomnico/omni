@@ -23,6 +23,7 @@ os.environ.setdefault("CONNECTOR_MANAGER_URL", "http://localhost:9090")
 os.environ.setdefault("AWS_REGION", "us-east-1")
 
 import asyncio
+import subprocess
 from pathlib import Path
 from typing import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
@@ -63,6 +64,31 @@ def event_loop():
 
 
 @pytest.fixture(scope="session")
+def migrator_image():
+    """Build the migrator image used by integration tests."""
+    repo_root = Path(__file__).resolve().parents[3]
+    image_tag = "omni-migrator:test"
+    result = subprocess.run(
+        [
+            "docker",
+            "build",
+            "-f",
+            "services/migrations/Dockerfile",
+            "-t",
+            image_tag,
+            ".",
+        ],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"Failed to build migrator image: {result.stderr[-500:]}")
+    return image_tag
+
+
+@pytest.fixture(scope="session")
 def postgres_container():
     """Start ParadeDB PostgreSQL container for integration tests."""
     import time
@@ -89,44 +115,39 @@ def _get_postgres_url(container) -> str:
 
 
 @pytest.fixture(scope="session")
-def initialized_db(postgres_container):
-    """Run migrations to set up schema in test database."""
-    import asyncio
-    import time
-
-    async def _run_migrations():
-        url = _get_postgres_url(postgres_container)
-        # Retry connection with backoff - ParadeDB may need extra startup time
-        conn = None
-        for attempt in range(5):
-            try:
-                conn = await asyncpg.connect(url, ssl=False)
-                break
-            except Exception:
-                if attempt < 4:
-                    time.sleep(2)
-                else:
-                    raise
+def initialized_db(postgres_container, migrator_image):
+    """Run migrations through the same migrator image used in deployments."""
+    pg_port = postgres_container.get_exposed_port(5432)
+    last_logs = (b"", b"")
+    for attempt in range(5):
+        migrator = (
+            DockerContainer(migrator_image)
+            .with_env("DATABASE_HOST", "host.docker.internal")
+            .with_env("DATABASE_PORT", str(pg_port))
+            .with_env("DATABASE_USERNAME", "test")
+            .with_env("DATABASE_PASSWORD", "test")
+            .with_env("DATABASE_NAME", "test")
+            .with_env("DATABASE_SSL", "false")
+        )
+        migrator._kwargs = {"extra_hosts": {"host.docker.internal": "host-gateway"}}
+        migrator.start()
         try:
-            # Run all migrations in order - execute each file as a whole
-            # because splitting on ';' breaks dollar-quoted PL/pgSQL blocks
-            migrations_dir = Path(__file__).parent.parent.parent / "migrations"
-            for sql_file in sorted(migrations_dir.glob("*.sql")):
-                sql = sql_file.read_text().strip()
-                if sql:
-                    try:
-                        await conn.execute(sql)
-                    except Exception as e:
-                        # Skip errors for existing objects (idempotent migrations)
-                        err_msg = str(e).lower()
-                        if not any(
-                            x in err_msg for x in ["already exists", "duplicate"]
-                        ):
-                            raise
+            result = migrator._container.wait(timeout=120)
+            status_code = result.get("StatusCode", 1)
+            if status_code == 0:
+                break
+            last_logs = migrator.get_logs()
         finally:
-            await conn.close()
+            migrator.stop()
+        if attempt < 4:
+            import time
 
-    asyncio.get_event_loop().run_until_complete(_run_migrations())
+            time.sleep(2)
+    else:
+        stdout, stderr = last_logs
+        pytest.fail(
+            "Migrator failed after retries.\n" f"stdout:\n{stdout}\nstderr:\n{stderr}"
+        )
     yield postgres_container
 
 

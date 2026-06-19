@@ -1,5 +1,6 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::process::Command;
 
 use anyhow::Result;
 use redis::Client as RedisClient;
@@ -27,6 +28,71 @@ pub struct TestEnvironment {
     _postgres_container: ContainerAsync<GenericImage>,
     _redis_container: ContainerAsync<Redis>,
     _localstack_container: ContainerAsync<LocalStack>,
+}
+
+fn run_migrator_container(postgres_port: u16) -> Result<()> {
+    let mut current_dir = std::env::current_dir()?;
+    loop {
+        if current_dir.join("services/migrations/Dockerfile").exists() {
+            break;
+        }
+        if !current_dir.pop() {
+            return Err(anyhow::anyhow!(
+                "Could not find services/migrations/Dockerfile"
+            ));
+        }
+    }
+
+    let build = Command::new("docker")
+        .args([
+            "build",
+            "-f",
+            "services/migrations/Dockerfile",
+            "-t",
+            "omni-migrator:test",
+            ".",
+        ])
+        .current_dir(&current_dir)
+        .output()?;
+    if !build.status.success() {
+        return Err(anyhow::anyhow!(
+            "failed to build migrator image:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&build.stdout),
+            String::from_utf8_lossy(&build.stderr)
+        ));
+    }
+
+    let port = postgres_port.to_string();
+    let run = Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--add-host",
+            "host.docker.internal:host-gateway",
+            "-e",
+            "DATABASE_HOST=host.docker.internal",
+            "-e",
+            &format!("DATABASE_PORT={port}"),
+            "-e",
+            "DATABASE_USERNAME=omni",
+            "-e",
+            "DATABASE_PASSWORD=omni_password",
+            "-e",
+            "DATABASE_NAME=omni_test",
+            "-e",
+            "DATABASE_SSL=false",
+            "omni-migrator:test",
+        ])
+        .output()?;
+    if !run.status.success() {
+        return Err(anyhow::anyhow!(
+            "migrator container failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        ));
+    }
+
+    Ok(())
 }
 
 impl TestEnvironment {
@@ -61,28 +127,15 @@ impl TestEnvironment {
             .await?;
         let s3_endpoint = format!("http://localhost:{}", localstack_port);
 
+        // Run migrations through the same migrator image used in deployments.
+        run_migrator_container(postgres_port)?;
+
         // Create database connection
         let database_url = format!(
             "postgresql://omni:omni_password@localhost:{}/omni_test",
             postgres_port
         );
         let db_pool = DatabasePool::new(&database_url).await?;
-
-        // Run migrations
-        let mut current_dir = std::env::current_dir()?;
-        loop {
-            let migration_dir = current_dir.join("services/migrations");
-            if migration_dir.exists() {
-                let migrator = sqlx::migrate::Migrator::new(migration_dir).await?;
-                migrator.run(db_pool.pool()).await?;
-                break;
-            }
-            if !current_dir.pop() {
-                return Err(anyhow::anyhow!(
-                    "Could not find migrations directory services/migrations"
-                ));
-            }
-        }
 
         // Seed test data
         Self::seed_database(db_pool.pool()).await?;

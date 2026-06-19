@@ -16,6 +16,7 @@ def _make_action(
     action_name: str,
     description: str = "",
     source_name: str | None = None,
+    mode: str = "write",
 ) -> ConnectorAction:
     return ConnectorAction(
         source_id=source_id,
@@ -24,12 +25,22 @@ def _make_action(
         action_name=action_name,
         description=description,
         input_schema={"type": "object", "properties": {}},
-        mode="write",
+        mode=mode,
     )
 
 
-def _make_handler(actions: list[ConnectorAction]) -> ConnectorToolHandler:
-    handler = ConnectorToolHandler(connector_manager_url="http://unused", user_id="u1")
+def _make_handler(
+    actions: list[ConnectorAction],
+    *,
+    source_filter: dict[str, list[str]] | None = None,
+    action_whitelist: list[str] | None = None,
+) -> ConnectorToolHandler:
+    handler = ConnectorToolHandler(
+        connector_manager_url="http://unused",
+        user_id="u1",
+        source_filter=source_filter,
+        action_whitelist=action_whitelist,
+    )
     handler._build_tools(actions)
     handler._initialized = True
     return handler
@@ -312,6 +323,33 @@ def test_filtered_tools_returns_only_loaded_tool_names(actions):
         )
     }
     assert multi_names == {"gmail__send_email", "google_drive__create_doc"}
+
+
+def test_source_filter_limits_actions_by_source_and_mode():
+    actions = [
+        _make_action("src-gmail", "gmail", "send_email", mode="write"),
+        _make_action("src-gmail", "gmail", "list_threads", mode="read"),
+        _make_action("src-drive", "google_drive", "fetch_file", mode="read"),
+    ]
+
+    handler = _make_handler(actions, source_filter={"src-gmail": ["read"]})
+
+    assert set(handler.actions) == {"gmail__list_threads"}
+    assert handler.requires_approval("gmail__list_threads") is False
+    assert {tool["name"] for tool in handler.get_tools()} == {"gmail__list_threads"}
+
+
+def test_action_whitelist_limits_actions_by_namespaced_tool_name():
+    actions = [
+        _make_action("src-gmail", "gmail", "send_email", mode="write"),
+        _make_action("src-gmail", "gmail", "list_threads", mode="read"),
+    ]
+
+    handler = _make_handler(actions, action_whitelist=["gmail__list_threads"])
+
+    assert set(handler.actions) == {"gmail__list_threads"}
+    assert handler.requires_approval("gmail__list_threads") is False
+    assert {tool["name"] for tool in handler.get_tools()} == {"gmail__list_threads"}
 
 
 def test_list_toolsets_groups_by_source(actions):
