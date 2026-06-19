@@ -1320,9 +1320,8 @@
             invalidate('app:recent_chats') // This will force a re-fetch of recent chats and update the title in the sidebar
         })
 
-        eventSource.addEventListener('title_error', (event) => {
-            error = streamErrorMessage(event as MessageEvent<string>)
-            requestAnimationFrame(() => recalcBottomPadding())
+        eventSource.addEventListener('title_error', () => {
+            // Title generation is best-effort; answer streaming should not surface its failures.
         })
 
         eventSource.addEventListener('message', (event) => {

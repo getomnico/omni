@@ -225,6 +225,29 @@ def _message_content_blocks(message: MessageParam) -> list[ContentBlockParam]:
     return list(cast(Iterable[ContentBlockParam], content))
 
 
+def _extract_text_for_title(content: str | list[ContentBlockParam] | None) -> str | None:
+    if isinstance(content, str):
+        text = content.strip()
+        return text if text else None
+
+    if not isinstance(content, list):
+        return None
+
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") != "text":
+            continue
+        text = block.get("text")
+        if isinstance(text, str) and text.strip():
+            parts.append(text.strip())
+
+    if not parts:
+        return None
+    return "\n".join(parts)
+
+
 def _loaded_source_ids(
     loaded_tool_names: set[str], connector_handler: ConnectorToolHandler | None
 ) -> set[str]:
@@ -1479,20 +1502,21 @@ async def generate_chat_title(
                 status_code=400, detail="Not enough messages to generate title"
             )
 
-        # Use only the user's first message to generate the title
+        # Use only the user's first text-bearing message to generate the title.
         conversation_text = ""
         for msg in chat_messages:
             role = msg.message.get("role", "unknown")
-            if role == "user":
-                content = msg.message.get("content", "")
-                if isinstance(content, str):
-                    conversation_text += f"User: {content}\n"
-                    break
+            if role != "user":
+                continue
+            content = msg.message.get("content")
+            text = _extract_text_for_title(content)
+            if text is not None:
+                conversation_text = f"User: {text}\n"
+                break
 
         if not conversation_text.strip():
-            raise HTTPException(
-                status_code=400, detail="Could not extract conversation content"
-            )
+            logger.info("Skipping title generation; no user text found", extra={"chat_id": chat_id})
+            return {"status": "skipped", "reason": "no_user_text"}
 
         logger.info(f"Extracted conversation text ({len(conversation_text)} chars)")
         logger.debug(f"Conversation text: {conversation_text[:200]}...")
