@@ -16,6 +16,7 @@
     import type { PageProps } from './$types'
     import googleLogo from '$lib/images/icons/google.svg'
     import googleAdsLogo from '$lib/images/icons/google-ads.svg'
+    import darwinboxLogo from '$lib/images/icons/darwinbox.jpg'
     import slackLogo from '$lib/images/icons/slack.svg'
     import atlassianLogo from '$lib/images/icons/atlassian.svg'
     import hubspotLogo from '$lib/images/icons/hubspot.svg'
@@ -58,6 +59,7 @@
     import GithubConnectorSetup from '$lib/components/github-connector-setup.svelte'
     import PaperlessConnectorSetup from '$lib/components/paperless-connector-setup.svelte'
     import NextcloudConnectorSetup from '$lib/components/nextcloud-connector-setup.svelte'
+    import DarwinboxConnectorSetup from '$lib/components/darwinbox-connector-setup.svelte'
     import OAuthClientConfigDialog from '$lib/components/oauth-integrations/oauth-client-config-dialog.svelte'
     import { Badge } from '$lib/components/ui/badge'
     import { SourceType } from '$lib/types'
@@ -193,6 +195,7 @@
     const integrationIcons: Record<string, string> = {
         google: googleLogo,
         google_ads: googleAdsLogo,
+        darwinbox: darwinboxLogo,
         slack: slackLogo,
         atlassian: atlassianLogo,
         hubspot: hubspotLogo,
@@ -219,6 +222,7 @@
         microsoft: microsoftLogo,
         nextcloud: nextcloudLogo,
         notion: notionLogo,
+        darwinbox: darwinboxLogo,
         slack: slackLogo,
     }
 
@@ -727,6 +731,11 @@
 
 <NextcloudConnectorSetup
     open={activeSetup === 'nextcloud'}
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
+
+<DarwinboxConnectorSetup
+    open={activeSetup === 'darwinbox'}
     onSuccess={handleSetupSuccess}
     onCancel={closeSetup} />
 

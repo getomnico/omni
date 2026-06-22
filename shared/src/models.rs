@@ -1,3 +1,4 @@
+use axum::response::IntoResponse;
 use pgvector::Vector;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -190,6 +191,7 @@ pub enum SourceType {
     PaperlessNgx,
     Nextcloud,
     GoogleAds,
+    Darwinbox,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -214,6 +216,7 @@ pub enum ServiceProvider {
     #[sqlx(rename = "google_ads")]
     #[serde(rename = "google_ads")]
     GoogleAds,
+    Darwinbox,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -642,18 +645,6 @@ pub struct ConnectorConfigRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ConfluenceSourceConfig {
-    #[serde(default)]
-    pub space_filters: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct JiraSourceConfig {
-    #[serde(default)]
-    pub project_filters: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DocumentMetadata {
     pub title: Option<String>,
     pub author: Option<String>,
@@ -1078,6 +1069,198 @@ pub struct SyncResponse {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+}
+
+impl SyncResponse {
+    pub fn started() -> Self {
+        Self {
+            status: "started".to_string(),
+            message: None,
+        }
+    }
+
+    pub fn error(message: impl Into<String>) -> Self {
+        Self {
+            status: "error".to_string(),
+            message: Some(message.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CancelRequest {
+    pub sync_run_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CancelResponse {
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncStatusResponse {
+    pub running: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionResponse {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<JsonValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl ActionResponse {
+    pub fn success(result: JsonValue) -> Self {
+        Self {
+            status: "success".to_string(),
+            result: Some(result),
+            error: None,
+        }
+    }
+
+    pub fn failure(message: impl Into<String>) -> Self {
+        Self {
+            status: "error".to_string(),
+            result: None,
+            error: Some(message.into()),
+        }
+    }
+
+    pub fn not_supported(action: &str) -> Self {
+        Self::failure(format!("Action not supported: {}", action))
+    }
+
+    /// Serialize this ActionResponse into an axum HTTP Response with the
+    /// default status code (200 for success, 400 for error).
+    pub fn into_response(self) -> axum::response::Response {
+        let status = match self.status.as_str() {
+            "success" => axum::http::StatusCode::OK,
+            _ => axum::http::StatusCode::BAD_REQUEST,
+        };
+        self.into_response_with_status(status)
+    }
+
+    /// Serialize this ActionResponse into an axum HTTP Response with a
+    /// specific status code.
+    pub fn into_response_with_status(
+        self,
+        status: axum::http::StatusCode,
+    ) -> axum::response::Response {
+        let body = serde_json::to_string(&self).unwrap_or_default();
+        (status, [("content-type", "application/json")], body).into_response()
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct McpCredentials {
+    /// The provider-specific credentials blob (e.g. `{token: "..."}`).
+    #[serde(default)]
+    pub credentials: JsonValue,
+    /// The provider-specific service config blob.
+    #[serde(default)]
+    pub config: JsonValue,
+    /// Optional acting-user email (for delegated/principal-aware connectors).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal_email: Option<String>,
+}
+
+impl McpCredentials {
+    /// Convert a typed `ServiceCredential` into the wrapper shape that
+    /// connector MCP resource/prompt endpoints receive.
+    pub fn from_service_credential(creds: &ServiceCredential) -> Self {
+        Self {
+            credentials: creds.credentials.clone(),
+            config: creds.config.clone(),
+            principal_email: creds.principal_email.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceRequest {
+    pub uri: String,
+    #[serde(default)]
+    pub credentials: McpCredentials,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptRequest {
+    pub name: String,
+    #[serde(default)]
+    pub arguments: Option<JsonValue>,
+    #[serde(default)]
+    pub credentials: McpCredentials,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "actor_type", rename_all = "snake_case")]
+pub enum ActionActor {
+    User {
+        user_id: String,
+        email: String,
+        role: UserRole,
+    },
+    System,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionContext {
+    pub actor: ActionActor,
+}
+
+impl ActionContext {
+    pub fn user(user_id: String, email: String, role: UserRole) -> Self {
+        Self {
+            actor: ActionActor::User {
+                user_id,
+                email,
+                role,
+            },
+        }
+    }
+
+    pub fn system() -> Self {
+        Self {
+            actor: ActionActor::System,
+        }
+    }
+
+    pub fn user_id(&self) -> Option<&str> {
+        match &self.actor {
+            ActionActor::User { user_id, .. } => Some(user_id.as_str()),
+            ActionActor::System => None,
+        }
+    }
+
+    pub fn user_email(&self) -> Option<&str> {
+        match &self.actor {
+            ActionActor::User { email, .. } => Some(email.as_str()),
+            ActionActor::System => None,
+        }
+    }
+
+    pub fn is_omni_admin(&self) -> bool {
+        matches!(
+            &self.actor,
+            ActionActor::User {
+                role: UserRole::Admin,
+                ..
+            }
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionRequest {
+    pub action: String,
+    #[serde(default)]
+    pub params: JsonValue,
+    #[serde(default)]
+    pub credentials: Option<ServiceCredential>,
+    #[serde(default)]
+    pub action_context: Option<ActionContext>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]

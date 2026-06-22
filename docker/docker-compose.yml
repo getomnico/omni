@@ -559,6 +559,29 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
+  darwinbox-connector:
+    image: ghcr.io/getomnico/omni/omni-darwinbox-connector:${OMNI_VERSION:-latest}
+    <<: *resources-connector
+    cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
+    mem_limit: ${OMNI_CONNECTOR_MEMORY:-384m}
+    container_name: omni-darwinbox-connector
+    profiles:
+      - darwinbox
+    expose:
+      - "${DARWINBOX_CONNECTOR_PORT}"
+    environment:
+      <<: *otel-config
+      PORT: ${DARWINBOX_CONNECTOR_PORT}
+      CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      CONNECTOR_HOST_NAME: darwinbox-connector
+    networks:
+      - omni-network
+    depends_on:
+      connector-manager:
+        condition: service_started
+    restart: unless-stopped
+    logging: *default-logging
+
   fireflies-connector:
     image: ghcr.io/getomnico/omni/omni-fireflies-connector:${OMNI_VERSION:-latest}
     <<: *resources-connector

@@ -4426,6 +4426,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "omni-darwinbox-connector"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "axum-test",
+ "chrono",
+ "chrono-tz",
+ "dotenvy",
+ "omni-connector-sdk",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "wiremock",
+]
+
+[[package]]
 name = "omni-filesystem-connector"
 version = "0.1.0"
 dependencies = [

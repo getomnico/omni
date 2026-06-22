@@ -3,6 +3,7 @@ import { SourceType } from '$lib/types'
 // Import icons as modules for proper Vite handling
 import googleIcon from '$lib/images/icons/google.svg'
 import googleAdsIcon from '$lib/images/icons/google-ads.svg'
+import darwinboxIcon from '$lib/images/icons/darwinbox.jpg'
 import googleDriveIcon from '$lib/images/icons/google-drive.svg'
 import googleDocsIcon from '$lib/images/icons/google-docs.svg'
 import googleSheetsIcon from '$lib/images/icons/google-sheets.svg'
@@ -72,6 +73,7 @@ const SOURCE_TYPE_ICONS: Record<string, string> = {
     [SourceType.NEXTCLOUD]: nextcloudIcon,
     [SourceType.IMAP]: imapIcon,
     [SourceType.GOOGLE_ADS]: googleAdsIcon,
+    [SourceType.DARWINBOX]: darwinboxIcon,
 }
 
 // Get icon based on source type and content type
@@ -223,6 +225,7 @@ export function getSourceDisplayName(sourceType: SourceType) {
         [SourceType.NEXTCLOUD]: 'Nextcloud',
         [SourceType.PAPERLESS_NGX]: 'Paperless-ngx',
         [SourceType.GOOGLE_ADS]: 'Google Ads',
+        [SourceType.DARWINBOX]: 'Darwinbox',
     }
 
     return sourceDisplayNames[sourceType]

@@ -1,8 +1,9 @@
 use crate::connector_client::ConnectorClient;
 use crate::models::{
-    ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
-    ExecuteResourceRequest, PromptRequest, ResourceRequest, ScheduleInfo, SourceHealth,
-    SourceSyncOverview, SyncProgress, TriggerSyncRequest, TriggerSyncResponse, TriggerType,
+    ActionContext, ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
+    ExecuteResourceRequest, McpCredentials, PromptRequest, ResourceRequest, ScheduleInfo,
+    SourceHealth, SourceSyncOverview, SyncProgress, TriggerSyncRequest, TriggerSyncResponse,
+    TriggerType,
 };
 use crate::sync_circuit_breaker::has_failure_streak;
 use crate::sync_manager::SyncError;
@@ -27,7 +28,9 @@ use shared::models::{
 };
 use shared::queue::EventQueue;
 use shared::utils;
-use shared::{DocumentRepository, Repository, ServiceCredentialsRepo, SourceRepository};
+use shared::{
+    DocumentRepository, Repository, ServiceCredentialsRepo, SourceRepository, UserRepository,
+};
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::time::Duration;
@@ -302,7 +305,10 @@ async fn build_source_sync_overviews(
             let sync_runs: Vec<SyncRun> = sync_runs
                 .into_iter()
                 .take(10)
-                .map(|run| SyncRun { checkpoint: None, ..run })
+                .map(|run| SyncRun {
+                    checkpoint: None,
+                    ..run
+                })
                 .collect();
 
             SourceSyncOverview {
@@ -470,6 +476,18 @@ pub async fn execute_action(
         }
     }
 
+    let action_context = if let Some(user_id) = request.user_id.clone() {
+        let user_repo = UserRepository::new(state.db_pool.pool());
+        let user = user_repo
+            .find_by_id(user_id.clone())
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .ok_or_else(|| ApiError::NotFound(format!("User not found: {user_id}")))?;
+        Some(ActionContext::user(user_id, user.email, user.role))
+    } else {
+        Some(ActionContext::system())
+    };
+
     info!(
         "Dispatching action '{}' to connector {} with credential {} (provider={:?}, auth_type={:?}, principal={:?})",
         request.action,
@@ -485,6 +503,7 @@ pub async fn execute_action(
         action: request.action,
         params,
         credentials: Some(creds),
+        action_context,
     };
 
     // Proxy the connector's full HTTP response (status, headers, body) verbatim.
@@ -851,11 +870,7 @@ pub async fn read_resource(
     let client = ConnectorClient::new();
     let resource_request = ResourceRequest {
         uri: request.uri,
-        credentials: json!({
-            "credentials": creds.credentials,
-            "config": creds.config,
-            "principal_email": creds.principal_email,
-        }),
+        credentials: McpCredentials::from_service_credential(&creds),
     };
 
     let result = client
@@ -908,11 +923,7 @@ pub async fn get_prompt(
     let prompt_request = PromptRequest {
         name: request.name,
         arguments: request.arguments,
-        credentials: json!({
-            "credentials": creds.credentials,
-            "config": creds.config,
-            "principal_email": creds.principal_email,
-        }),
+        credentials: McpCredentials::from_service_credential(&creds),
     };
 
     let result = client

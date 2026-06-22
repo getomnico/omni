@@ -170,6 +170,14 @@ services:
       context: ..
       dockerfile: connectors/google_ads/Dockerfile
 
+  darwinbox-connector:
+    image: omni-darwinbox-connector:dev
+    build:
+      context: ..
+      dockerfile: connectors/darwinbox/Dockerfile
+    environment:
+      RUST_LOG: debug
+
   fireflies-connector:
     image: omni-fireflies-connector:dev
     build:

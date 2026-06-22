@@ -33,6 +33,7 @@ jobs:
       microsoft-connector: ${{ steps.filter.outputs.microsoft-connector }}
       filesystem-connector: ${{ steps.filter.outputs.filesystem-connector }}
       fireflies-connector: ${{ steps.filter.outputs.fireflies-connector }}
+      darwinbox-connector: ${{ steps.filter.outputs.darwinbox-connector }}
       hubspot-connector: ${{ steps.filter.outputs.hubspot-connector }}
       google-ads-connector: ${{ steps.filter.outputs.google-ads-connector }}
       imap-connector: ${{ steps.filter.outputs.imap-connector }}
@@ -109,6 +110,7 @@ jobs:
             google-connector:
               - 'connectors/google/**'
               - 'sdk/rust/**'
+              - 'shared/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/ci.yml'
@@ -116,6 +118,7 @@ jobs:
             slack-connector:
               - 'connectors/slack/**'
               - 'sdk/rust/**'
+              - 'shared/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/ci.yml'
@@ -123,6 +126,7 @@ jobs:
             atlassian-connector:
               - 'connectors/atlassian/**'
               - 'sdk/rust/**'
+              - 'shared/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/ci.yml'
@@ -130,6 +134,7 @@ jobs:
             filesystem-connector:
               - 'connectors/filesystem/**'
               - 'sdk/rust/**'
+              - 'shared/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/ci.yml'
@@ -137,6 +142,15 @@ jobs:
             fireflies-connector:
               - 'connectors/fireflies/**'
               - 'sdk/rust/**'
+              - 'shared/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-connector.yml'
+            darwinbox-connector:
+              - 'connectors/darwinbox/**'
+              - 'sdk/rust/**'
+              - 'shared/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/ci.yml'
@@ -144,6 +158,7 @@ jobs:
             imap-connector:
               - 'connectors/imap/**'
               - 'sdk/rust/**'
+              - 'shared/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/ci.yml'
@@ -151,6 +166,7 @@ jobs:
             web-connector:
               - 'connectors/web/**'
               - 'sdk/rust/**'
+              - 'shared/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/ci.yml'
@@ -193,6 +209,7 @@ jobs:
             nextcloud-connector:
               - 'connectors/nextcloud/**'
               - 'sdk/rust/**'
+              - 'shared/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/ci.yml'
@@ -398,6 +415,15 @@ jobs:
       connector-type: rust
     secrets: inherit
 
+  build-darwinbox-connector:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.is-tag != 'true' && needs.detect-changes.outputs.darwinbox-connector == 'true'
+    uses: ./.github/workflows/build-connector.yml
+    with:
+      connector-name: darwinbox
+      connector-type: rust
+    secrets: inherit
+
   build-imap-connector:
     needs: detect-changes
     if: needs.detect-changes.outputs.is-tag != 'true' && needs.detect-changes.outputs.imap-connector == 'true'
@@ -575,6 +601,8 @@ jobs:
           - connector-name: filesystem
             connector-type: rust
           - connector-name: fireflies
+            connector-type: rust
+          - connector-name: darwinbox
             connector-type: rust
           - connector-name: imap
             connector-type: rust
