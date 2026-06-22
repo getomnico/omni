@@ -1,249 +1,401 @@
 ---
 name: build-connector
-description: Build a new connector for Omni workplace search. Use when creating a new data source integration, scaffolding connector structure, or need help with the connector SDK.
+description: Build a new connector for Omni workplace agents. Use when creating a new data source integration, scaffolding connector structure, exposing agent actions/tools/resources, or needing help with the connector SDK.
 argument-hint: <service name, e.g. "Asana", "Dropbox", "Zendesk">
 user-invocable: true
 ---
 
-You are helping build a connector for Omni, an open-source workplace search platform. Connectors are lightweight bridges between Omni and third-party APIs. Each connector runs as its own container.
+You are helping build a connector for Omni, an open-source AI agent platform for the workplace. Connectors are lightweight bridges between Omni and third-party systems: they sync workplace data into Omni's index and expose safe actions, MCP tools, resources, and prompts that workplace agents can use.
 
 # Core Principles
 
 - **One container per connector.** Independently packaged and deployed.
-- **Connectors NEVER interact directly with Omni services.** Everything goes through the connector-manager via the SDK.
-- **SDKs are local dependencies** (not on PyPI/npm). All development happens in this monorepo.
-- **Language choice is up to the developer.** Python, TypeScript, and Rust are all first-class.
+- **Connectors never interact directly with Omni services.** Everything goes through connector-manager via the SDK.
+- **SDKs are local dependencies** in this monorepo, not published package registries.
+- **Python, TypeScript, and Rust are first-class.** Pick the language that best fits the provider SDK/ecosystem.
+- **Agents depend on connector contracts.** Model read/write actions, permissions, OAuth scopes, resources, prompts, and document IDs carefully.
 
-**Sync flow:** connector receives `/sync` request -> fetches data from source API -> stores content via SDK -> emits document events -> calls `complete()`.
+**Scheduled sync flow:** connector-manager creates a sync run -> sends `POST /sync` to the connector -> connector fetches source config/credentials through the SDK -> connector fetches provider data -> stores/extracts content via SDK -> emits events -> checkpoints as it advances -> completes or fails through SDK.
+
+**Realtime sync flow:** connector-manager starts/monitors a long-running `realtime` sync when the manifest declares support -> connector keeps a webhook/socket/watcher alive, heartbeats while idle, and emits repair/update events or creates short follow-up sync runs as needed.
 
 # Checklist
 
-Every new connector requires changes across these areas:
+Every new built-in connector usually requires changes across these areas:
 
-1. **Connector implementation** — sync logic, API client, manifest
-2. **Database migration** — add source type to `sources_source_type_check` constraint, add provider to `service_credentials_provider_check` if new
-3. **Rust `SourceType` enum** — add variant to `shared/src/models.rs` `SourceType` enum (even for Python/TS connectors — the connector-manager is Rust)
-4. **Frontend** — `SourceType` enum, icon, setup dialog, integrations page
-5. **Docker Compose** — service definition, port in `.env.example`, `ENABLED_CONNECTORS` comment
-6. **Terraform** — AWS ECS task/service, GCP Cloud Run service
-7. **GitHub Actions** — path filter, build job, and release matrix entry
-8. **Integration tests** — mock API server, test harness, sync assertions
+1. **Connector implementation** — sync logic, provider client, config/credential types, manifest, actions/tools/resources.
+2. **Database migration** — add source type to `sources_source_type_check`; add service provider to `service_credentials_provider_check` if new.
+3. **Rust `SourceType` enum** — add variant in `shared/src/models.rs` even for Python/TS connectors, because connector-manager is Rust.
+4. **Frontend** — `SourceType`, `ServiceProvider` if new, icon, setup dialog, integrations page, sync interval defaults.
+5. **Docker Compose** — service definition, dev override, port in `.env.example`, `ENABLED_CONNECTORS` comment.
+6. **Terraform** — AWS ECS task/service and GCP Cloud Run service.
+7. **GitHub Actions** — path filter, build job, release matrix entry.
+8. **Integration tests** — mock provider API, connector-manager/testcontainer harness, sync/action assertions.
 
 # Choosing a Language
 
 | | Python | TypeScript | Rust |
 |---|---|---|---|
-| **SDK** | `sdk/python/` | `sdk/typescript/` | `shared/` crate |
-| **Abstraction** | `Connector` base class, auto server/registration | `Connector<T,C,S>` base class, auto server/registration | Manual Axum server + `SdkClient` |
-| **Test harness** | `omni_connector.testing` | Not yet available | Cargo test |
-| **Reference connectors** | `connectors/notion/`, `connectors/hubspot/`, `connectors/linear/` | — | `connectors/google/`, `connectors/slack/`, `connectors/atlassian/` |
-| **Simple example** | `sdk/python/examples/rss_connector.py` | `sdk/typescript/src/` | — |
+| **SDK** | `sdk/python/` | `sdk/typescript/` | `sdk/rust/` crate `omni-connector-sdk` |
+| **Abstraction** | `Connector` base class, FastAPI server/registration generated | `Connector<TConfig, TCredentials, TState>` base class, Express server/registration generated | `Connector` trait, Axum server/registration generated by SDK |
+| **Typical sync state** | `dict[str, Any]` unless you define/parse concrete models | generic `TState` type | associated `type State: DeserializeOwned + Serialize` |
+| **Test harness** | `omni_connector.testing` | SDK unit tests; no full connector harness yet | Cargo integration tests with connector-manager/testcontainers |
+| **Reference connectors** | `connectors/notion/`, `connectors/github/`, `connectors/clickup/`, `connectors/microsoft/` | `connectors/linear/` | `connectors/google/`, `connectors/slack/`, `connectors/atlassian/`, `connectors/filesystem/`, `connectors/nextcloud/` |
+| **Simple example** | `sdk/python/examples/rss_connector.py` | `sdk/typescript/examples/rss-connector.ts` | `connectors/filesystem/` for a compact Rust SDK connector |
 
-When implementing, read the reference connectors for your chosen language. They are the canonical examples of project structure, Dockerfile, package config, and patterns.
+When implementing, read reference connectors in the chosen language. They are the canonical examples of project structure, Dockerfile/package config, SDK usage, and sync/action patterns.
 
 # Connector Protocol
 
-Every connector must expose these HTTP endpoints (Python/TS SDKs generate them automatically):
+The SDK server exposes these HTTP endpoints. Python/TypeScript/Rust SDKs generate them automatically unless you intentionally add extra routes in Rust with `serve_with_extra_routes`.
 
-- `GET /health` — health check
-- `GET /manifest` — return `ConnectorManifest` JSON
-- `POST /sync` — trigger a sync (`{sync_run_id, source_id, sync_mode}`)
-- `POST /cancel` — cancel a running sync (`{sync_run_id}`)
-- `POST /action` — execute a custom action (`{action, params, credentials}`)
+- `GET /health` — health check.
+- `GET /manifest` — connector capabilities and agent-facing contract.
+- `GET /sync/{sync_run_id}` — whether this connector process still has the sync in memory; connector-manager uses this to detect lost syncs and auto-resume.
+- `POST /sync` — trigger or resume a sync. Payload includes `sync_run_id`, `source_id`, `sync_mode`, optional `checkpoint`, and `is_resume`.
+- `POST /cancel` — cancel a running sync.
+- `POST /action` — execute a connector action/tool. Connector-manager proxies the connector response status, headers, and body.
+- `POST /resource` — read an MCP resource exposed by the connector.
+- `POST /prompt` — get an MCP prompt exposed by the connector.
 
-The connector auto-registers its manifest with connector-manager every 30 seconds (90s TTL).
+The connector auto-registers its manifest with connector-manager every 30 seconds. Registered manifests have a short TTL; connector-manager treats unregistered connectors as unavailable.
 
-# Manifest & Search Operators
+# Manifest
 
-The manifest describes the connector to the system. Key fields: `name`, `display_name`, `version`, `source_types` (must match frontend `SourceType` enum), `sync_modes` (`["full"]` or `["full", "incremental"]`), `search_operators`, `actions`.
+The manifest describes both sync capability and agent capability. Key fields:
 
-**Search operators** let users filter results with keywords like `from:alice@example.com`:
+- `name`, `display_name`, `version`, `description`
+- `connector_id`, `connector_url`
+- `source_types` — must match `shared/src/models.rs` `SourceType` and frontend `SourceType`.
+- `sync_modes` — any subset of `full`, `incremental`, `realtime` that is truly implemented.
+- `search_operators`
+- `actions`
+- `read_only` — Rust SDK supports connector-level read-only; connector-manager blocks write actions for read-only connectors/sources.
+- `extra_schema`, `attributes_schema`
+- `mcp_enabled`, `resources`, `prompts`
+- `oauth` — declarative OAuth2 config when the connector supports user-delegated OAuth.
 
-- `operator` — the keyword users type (e.g., `"from"`, `"channel"`)
-- `attribute_key` — document attribute to filter on (e.g., `"sender"`)
-- `value_type` — `"person"`, `"text"`, or `"datetime"`
+## Search Operators
 
-For operators to work, set matching keys in the document's `attributes` dict when emitting.
+Search operators let users filter results with keywords like `from:alice@example.com`.
+
+- `operator` — keyword users type, e.g. `from`, `channel`, `status`.
+- `attribute_key` — document attribute to filter on, e.g. `sender`, `channel_name`.
+- `value_type` — usually `person`, `text`, or `datetime`.
+
+For operators to work, emit matching keys in each document's `attributes`. Attributes are for filtering/faceting/tool routing; they are not embedded as document body text.
 
 # Content Storage
 
-Four methods for storing/extracting content, all go through the connector-manager:
+Store content through connector-manager. Do not write directly to storage tables.
 
-1. **`save(content, content_type)`** — text/HTML, returns `content_id`
-2. **`extract_and_store_content(data, mime_type, filename)`** — binary files (PDF, DOCX, etc.); connector-manager extracts text via Docling (when enabled) or built-in extractor, stores result, returns `content_id`
-3. **`extract_text(data, mime_type, filename)`** — same extraction as above but returns the extracted text without storing; use when the caller needs to post-process or combine text before storing (e.g., appending attachment text to an email thread body)
-4. **`save_binary(content, content_type)`** — raw binary as base64, returns `content_id`
+1. **`save(content, content_type)`** — text/HTML/Markdown, returns `content_id`.
+2. **`extract_and_store_content(data, mime_type, filename)`** — binary files; connector-manager extracts text via Docling when enabled or built-in extractors, stores the extracted text, returns `content_id`.
+3. **`extract_text(data, mime_type, filename)`** — same extraction but returns text without storing; use when you need to combine/post-process text before saving.
+4. **`save_binary(content, content_type)`** — raw binary as base64, returns `content_id` (Python/TS helper; Rust can store text/extracted content directly).
 
-# Emitting Documents
+Prefer `extract_and_store_content` for user-facing files and attachments. If extraction fails for a document but metadata is still useful, emit a metadata-only/fallback text document rather than silently dropping it.
 
-**Document** fields: `external_id` (stable ID from source), `title`, `content_id`, `metadata`, `permissions`, `attributes`.
+# Emitting Documents and Events
 
-- `metadata` — author, created_at, updated_at, url, mime_type, size, path, content_type, extra
-- `permissions` — `public` (bool), `users` (email list), `groups` (group identifier list)
-- `attributes` — key/value map for search operators and faceting. **NOT included in embeddings.**
+Document fields:
 
-**Event types:** `document_created`, `document_updated`, `document_deleted`, `group_membership_sync`.
+- `external_id` — stable provider ID. This is what actions usually need after connector-manager resolves an Omni document ID.
+- `title`
+- `content_id`
+- `metadata` — `title`, `author`, `created_at`, `updated_at`, `url`, `mime_type`, `size`, `path`, `content_type`, `extra`.
+- `permissions` — `public`, `users`, `groups`.
+- `attributes` — filter/facet/tool-routing metadata, not embedded body text.
 
-# State Management
+Event types:
 
-- Read previous state at sync start (passed as parameter)
-- **Checkpoint periodically** during long syncs (`save_state()` / `save_checkpoint()` — also sends heartbeat to prevent timeout)
-- Save final state with `complete(new_state)` / final checkpoint promotion
-- **Poll `is_cancelled()` in loops** — stop gracefully if cancelled
-- Call `increment_scanned()` for progress tracking
-- Check `should_index_user(email)` to respect whitelist/blacklist
+- `document_created`
+- `document_updated`
+- `document_deleted`
+- `group_membership_sync`
 
-Common pattern: store a cursor or timestamp (e.g., `{"last_sync_at": "2024-..."}`) for incremental syncs.
+Use idempotent `external_id`/`document_id` values. Resume and retries can re-emit already completed units; indexer upserts/deletes should make that safe.
 
-## Sync Modes, Resume, and Checkpointing
+# Sync Modes, Checkpointing, and Resume
 
-For every connector, explicitly decide and document whether each mode is supported:
+Always branch on the **dispatched sync mode**, not on whether state/checkpoint exists. A manual full sync can arrive with an existing checkpoint and must still perform full-crawl/full-reconciliation behavior. Connector-manager may upgrade the first scheduled incremental request for a source to `full` when there is no prior completed sync; honor the mode you receive.
 
-- **Full sync** — crawl all in-scope containers/items. For long crawls, checkpoint after each completed durable unit (user, folder, channel/space, page token, etc.) so resume can skip completed work without skipping unfinished work.
-- **Incremental sync** — prefer provider-native change cursors/events. If only timestamp filtering exists, use an overlap window and idempotent upserts/deletes to tolerate clock skew and late updates. Store enough state to resume in the middle of a page and to recover when a provider cursor expires.
-- **Realtime sync** — only claim realtime support when provider webhooks/events can be renewed, verified, replayed/caught up after outages, and reconciled with periodic incremental/full repair. Store webhook/subscription IDs, expirations, and last processed event times in source-level connector state.
+## Full Sync
 
-Checkpoint design:
+- Crawl all in-scope containers/items.
+- Decide whether full sync should reset provider cursors, reconcile deletes, and rebuild permission groups.
+- For long crawls, checkpoint after each durable unit: user/mailbox, workspace, folder, channel, project, page-token range, etc.
+- Do not skip a unit on resume unless the checkpoint proves it completed after all its events were flushed.
 
-- Separate **source-level durable state** (provider cursors, webhook subscriptions, final watermarks) from **per-run resume state** (currently processed container/page/user, partial page token, completed unit set).
-- Save checkpoints after every completed unit and before/after long page loops where safe.
-- Never advance a cursor/watermark before all items covered by it have been emitted and flushed.
-- On cancel, persist completed work and mark the run cancelled rather than failed.
-- On resume, only skip units proven complete by checkpoint state; unfinished units must be reprocessed idempotently.
+## Incremental Sync
 
-## Permissions and Inheritance
+- Prefer provider-native change cursors/history APIs.
+- If only timestamps exist, use an overlap window and idempotent upserts/deletes to tolerate clock skew, late updates, and provider ordering quirks.
+- Never advance a cursor/watermark before all items covered by it have been stored, emitted, and flushed.
+- Handle cursor expiry by falling back to an appropriate full or scoped repair sync.
+
+## Realtime Sync
+
+Only declare `realtime` when the provider supports a reliable event path: webhooks, socket mode, file watchers, subscriptions, or equivalent.
+
+Realtime connectors must:
+
+- Keep the long-running watcher healthy and call `heartbeat()` while idle.
+- Stop promptly when `ctx.is_cancelled()` flips.
+- Reconcile event gaps with periodic incremental/full repair.
+- Renew/verify provider subscriptions when applicable.
+- Store subscription IDs, expirations, and last processed event times in source-level connector metadata when the SDK exposes that safely.
+- Use `document_updated`/`document_deleted` for repair events when possible.
+
+Current Rust SDK behavior to know:
+
+- `SyncType::Realtime` occupies a separate per-source slot from `Full`/`Incremental`, so a realtime watcher does not block scheduled scans.
+- Rust SDK auto-completes non-realtime syncs when `Connector::sync()` returns `Ok(())`; it does **not** auto-complete realtime syncs.
+- For optional realtime support, implement `validate_sync_request()` and return `SyncRequestValidationError::Unavailable(...)` when prerequisites are missing. Connector-manager treats a realtime 404/unavailable as “not available”, not as a broken connector.
+
+## Checkpoint and Resume Contract
+
+Connector-manager maintains two different pieces of state:
+
+- **Run checkpoint** (`sync_runs.checkpoint`) — saved by `save_checkpoint`; used to resume the same running sync after connector restart/loss.
+- **Source checkpoint** (`sources.checkpoint`) — latest successful checkpoint; promoted from the run checkpoint only when the sync completes successfully.
+
+Resume behavior:
+
+- Fresh sync gets `checkpoint = source.checkpoint` and `is_resume = false`.
+- Auto-resume gets `checkpoint = sync_run.checkpoint` if present, otherwise `source.checkpoint`, and `is_resume = true`.
+- On `is_resume=true`, continue the same logical run: do not reset full-sync progress, do not advance provider cursors optimistically, and reprocess any in-progress unit idempotently.
+- Failed/cancelled run checkpoints are not promoted to the source.
+- Completion atomically marks the run completed and publishes the run checkpoint to the source.
+
+Checkpointing rules:
+
+- `save_checkpoint(...)` flushes buffered events before persisting the checkpoint in all SDKs. Use it after completed durable units.
+- Never checkpoint past buffered/unflushed events.
+- On resume, only skip units proven complete. Reprocess unfinished units idempotently.
+- Poll cancellation in loops.
+- Keep heartbeats fresh during long provider calls/page loops; checkpoint or explicit heartbeat is enough.
+- Update progress counters as work completes. Use `increment_scanned` / `incrementScanned` / `increment_scanned(count)` for scanned items. In Rust and TypeScript, call `increment_updated` / `incrementUpdated` when you need the manager-side updated count to survive crashes.
+
+## Language-Specific State APIs
+
+| Concern | Python | TypeScript | Rust |
+|---|---|---|---|
+| Dispatched mode | `ctx.sync_mode` (`SyncMode`) | `ctx.syncMode` (`SyncMode`) | `ctx.sync_mode()` (`SyncType`) |
+| Resume flag | `ctx.is_resume` | `ctx.isResume` | `ctx.is_resume()` |
+| Current checkpoint | `checkpoint` arg and `ctx.checkpoint` | `state` arg and `ctx.state` | `state: Option<Self::State>` arg |
+| Save checkpoint | `await ctx.save_checkpoint({...})` | `await ctx.saveCheckpoint({...})` / `saveState` alias | `ctx.save_checkpoint(json).await?` |
+| Complete | `await ctx.complete(checkpoint={...})` | `await ctx.complete({...})` | normally return `Ok(())` after saving checkpoint; `ctx.complete().await?` is also available |
+| Cancel check | `ctx.is_cancelled()` | `ctx.isCancelled()` | `ctx.is_cancelled()` |
+| Mark cancelled | no public cancel helper; current connectors generally stop/fail | no public cancel helper | `ctx.cancel().await?` |
+| Source-level connector metadata | `ctx.connector_state`, `ctx.save_connector_state(...)` | `SdkClient.updateConnectorState(...)`; `SyncContext` does not expose a helper today | `SdkClient::get_connector_state` / `save_connector_state`; do **not** use deprecated `SyncContext::save_connector_state` for source metadata because it aliases checkpoint |
+
+# Actions and Agent Tools
+
+Actions are how connectors expose provider capabilities to Omni agents and setup/UI flows. Define them deliberately.
+
+`ActionDefinition` fields:
+
+- `name` — stable action name.
+- `description` — agent-facing description; explain when to use it and important IDs/side effects.
+- `input_schema` — JSON Schema object for parameters. Keep it strict and concrete.
+- `mode` — `read` or `write`. Default is write in shared/Rust, so set read explicitly for non-mutating actions.
+- `source_types` — restrict action to specific source types. Empty means all source types for that connector.
+- `admin_only` — connector-manager resolves org/admin credentials, not per-user OAuth credentials.
+- `hidden` — hidden from all chat/agent tool listings but still present in the manifest and dispatchable by name for setup/internal flows. Python/Rust support this; TypeScript currently may need SDK updates before setting it.
+
+Connector-manager behavior:
+
+- `/actions` excludes hidden actions and write actions blocked by connector/source `read_only`.
+- `execute_action` blocks write actions for read-only connectors or sources.
+- User-scoped agent calls require per-user credentials unless the action is `admin_only`; when missing, connector-manager returns `412 needs_user_auth` with an OAuth start URL.
+- Source config is merged into action params, with caller params taking precedence.
+- `document_id` / `file_id` params may be resolved from Omni document ID to provider `external_id` before dispatch.
+- Connector-manager proxies the connector's response status, headers, and body. Actions may return JSON or binary/file responses.
+
+Action implementation rules:
+
+- Declaring manual `actions` only advertises them; override `execute_action` / `executeAction` / `execute_action(...)` to implement dispatch. The base classes only handle MCP tools and otherwise return not supported.
+- Validate required params and credential shape immediately.
+- Return `ActionResponse.success(...)`, `failure(...)`, or `not_supported(...)` for JSON actions.
+- For file/download actions, return a real HTTP response with content type and filename headers.
+- Prefer source-native IDs in action params, but document in the schema when Omni document IDs are accepted/resolved.
+- Keep write actions narrow and safe; mark `mode="write"` and require user OAuth where appropriate.
+
+# MCP, Resources, Prompts, and OAuth
+
+SDKs can bridge an external MCP server into the connector protocol.
+
+To enable MCP:
+
+- Override `mcp_server` / `mcp_server()` with stdio or Streamable HTTP config.
+- Implement `prepare_mcp_env(...)` for stdio auth or `prepare_mcp_headers(...)` for HTTP auth.
+- SDK bootstrap discovers MCP tools/resources/prompts after credentials are available.
+- MCP tools are merged into manifest `actions`; MCP resources/prompts populate manifest `resources`/`prompts` and are served through `/resource` and `/prompt`.
+- MCP read-only hints are converted into action `mode=read`; otherwise tools default to write.
+
+OAuth manifest support:
+
+- Python/Rust expose `oauth_config()` returning `OAuthManifestConfig`.
+- Declare provider auth/token/userinfo endpoints, identity scopes, per-source-type read/write scopes, extra auth params, scope separator, and optional enrich endpoint.
+- Use read scopes for sync and read actions; use narrower write scopes for write tools.
+- For user-context actions, connector-manager resolves per-user credentials and prompts for OAuth when missing.
+
+# Permissions and Inheritance
 
 - Model the provider's authorization semantics before choosing document granularity.
-- Identify whether permissions are item-level, container-inherited, user-mailbox-owned, or group-derived.
+- Identify whether permissions are item-level, container-inherited, mailbox-owned, workspace-wide, or group-derived.
 - Emit `permissions.users` and `permissions.groups` using stable identifiers already understood by Omni's permission filter.
-- If permissions inherit from a parent container, store the parent/container ID in document metadata/attributes and update affected child documents when membership changes.
-- If the provider supports group principals, reuse existing group membership sync where possible; otherwise add group sync events or resolve groups safely.
+- If permissions inherit from a parent container, store parent/container IDs in metadata/attributes and update affected child documents when membership changes.
+- If the provider supports group principals, emit `group_membership_sync` events where possible.
 - Be conservative with private/DM/personal content. Prefer allowlists and opt-in handling until ACL semantics are proven.
+- Use `ctx.should_index_user(...)` / `ctx.shouldIndexUser(...)` where available before emitting per-user records under source whitelist/blacklist settings.
 
-## Document Modeling, Threads, and Attachments
+# Document Modeling, Threads, and Attachments
 
-- Use stable provider IDs for `external_id`; avoid per-crawl/user-local IDs unless the source truly has user-local objects.
-- Decide document granularity deliberately: single message/item, thread, daily channel batch, file attachment, etc. The choice affects dedupe, incremental sync, permissions, snippets, and retrieval.
-- Preserve parent references in metadata/attributes (`container_id`, `thread_id`, `parent_message_id`, `attachment_id`) so agents can navigate from search hits to the original context.
-- For threaded systems, decide whether to index each message separately, group by thread, or re-emit the full thread on changes. Implement incremental sync accordingly.
-- For attachments, distinguish linked provider files from uploaded blobs. Prefer extracting/storing attachment content as its own document when it is independently useful, and include a back-reference to the parent message/thread/document.
-- For unsupported/oversized/private attachments, emit metadata-only documents or attachment pointers rather than silently dropping them.
+- Use stable provider IDs for `external_id`; avoid per-crawl or user-local IDs unless the source truly has user-local objects.
+- Decide document granularity deliberately: item, message, thread, day/channel batch, file attachment, etc. This affects dedupe, incremental sync, permissions, snippets, and retrieval.
+- Preserve parent references in metadata/attributes: `container_id`, `thread_id`, `parent_message_id`, `attachment_id`, etc.
+- For threaded systems, decide whether to index each message separately, group by thread, or re-emit the full thread on changes. Implement incremental/realtime repair accordingly.
+- For attachments, distinguish linked provider files from uploaded blobs. Prefer extracting/storing attachment content as its own document when independently useful, with a back-reference to the parent item.
+- For unsupported/oversized/private attachments, emit metadata-only documents or pointers rather than silently dropping them.
 
 # Frontend Changes
 
-These files need updating (read existing connectors in the frontend for patterns):
+Read existing connector patterns before editing. Typical files:
 
-1. **`web/src/lib/types.ts`** — add to `SourceType` enum, `ServiceProvider` enum (if new provider), define config interface, add to `DEFAULT_SYNC_INTERVAL_SECONDS`
-2. **`web/src/lib/utils/icons.ts`** — add SVG icon to `web/src/lib/images/icons/`, register in `SOURCE_TYPE_ICONS`, add display name
-3. **`web/src/lib/components/`** — create setup dialog component (Dialog -> POST `/api/sources` -> POST `/api/service-credentials`)
-4. **`web/src/routes/(admin)/admin/settings/integrations/+page.svelte`** — import and render setup component, add icon
-5. **`web/src/routes/(admin)/admin/settings/integrations/+page.server.ts`** — add to `CONNECTOR_DISPLAY_ORDER`
+1. **`web/src/lib/types.ts`** — `SourceType`, `ServiceProvider` if new, source config interface, `DEFAULT_SYNC_INTERVAL_SECONDS`.
+2. **`web/src/lib/utils/icons.ts`** — register SVG icon and display name.
+3. **`web/src/lib/images/icons/`** — icon asset.
+4. **`web/src/lib/components/*-setup.svelte`** — setup dialog component.
+5. **`web/src/routes/(admin)/admin/settings/integrations/+page.svelte`** — import/render setup component.
+6. **`web/src/routes/(admin)/admin/settings/integrations/+page.server.ts`** — `CONNECTOR_DISPLAY_ORDER`.
 
-# Docker Compose & ENABLED_CONNECTORS
+# Docker Compose and ENABLED_CONNECTORS
 
-Add connector service to `docker/docker-compose.yml` and dev overrides to `docker/docker-compose.dev.yml`. Follow the pattern of existing connectors.
+Add connector service to `docker/docker-compose.yml` and dev overrides to `docker/docker-compose.dev.yml`. Follow existing connectors.
 
-Add a port variable to `.env.example` (next available after existing ports) and update the `ENABLED_CONNECTORS` comment.
+Add a port variable to `.env.example` and update the `ENABLED_CONNECTORS` comment.
 
-**How ENABLED_CONNECTORS works:** The `.env` maps it directly to Docker Compose profiles:
+`ENABLED_CONNECTORS` maps directly to Docker Compose profiles:
 
-```
+```env
 ENABLED_CONNECTORS=google,slack,my-connector
 COMPOSE_PROFILES=${ENABLED_CONNECTORS}
 ```
 
-Only containers whose `profiles:` value appears in this list will start. Core services run regardless. By default only `web` is enabled.
+Only containers whose `profiles:` value appears in this list start. Core services run regardless.
 
 # Terraform
 
-Follow the pattern of existing connectors in:
+Follow existing connector patterns:
 
-- **AWS** (`infra/aws/terraform/modules/compute/`): add `aws_ecs_task_definition` and `aws_ecs_service` in `task_definitions.tf` and `services.tf`, gated by `count = contains(var.enabled_connectors, "name") ? 1 : 0`
-- **GCP** (`infra/gcp/terraform/modules/compute/services.tf`): add to `all_simple_connectors` local map for simple connectors, or add count-based Cloud Run resource for complex ones
+- **AWS** (`infra/aws/terraform/modules/compute/`): add task definition and ECS service in `task_definitions.tf` and `services.tf`, gated by `count = contains(var.enabled_connectors, "name") ? 1 : 0`.
+- **GCP** (`infra/gcp/terraform/modules/compute/services.tf`): add to `all_simple_connectors` for simple connectors, or add a count-based Cloud Run resource for complex ones.
 
 # Integration Testing
 
-The Python test harness at `sdk/python/omni_connector/testing/` provides real ParadeDB, Redis, and connector-manager via testcontainers. See `connectors/notion/tests/` for the canonical test pattern:
+Prefer integration tests with real connector-manager/Postgres/Redis infrastructure.
 
-1. Mock the third-party API (Starlette app in daemon thread)
-2. Start connector server in daemon thread
-3. Session-scoped `OmniTestHarness` starts infra + connector-manager
-4. Function-scoped fixtures seed source/credentials pointing to mock
-5. Trigger sync via `POST /sync` to connector-manager
-6. Assert with `wait_for_sync()`, `count_events()`, `get_events()`
+Python harness at `sdk/python/omni_connector/testing/` provides ParadeDB/Postgres, Redis, and connector-manager via testcontainers. See `connectors/notion/tests/`, `connectors/github/tests/`, and `connectors/clickup/tests/`.
 
-Run tests: `cd connectors/my-connector && uv run pytest` (Python) or `cargo test` (Rust).
+Typical Python pattern:
+
+1. Mock third-party API with a Starlette app in a daemon thread.
+2. Start connector server in a daemon thread.
+3. Session-scoped `OmniTestHarness` starts infra + connector-manager.
+4. Function-scoped fixtures seed source/credentials pointing to mock API.
+5. Trigger sync via connector-manager `POST /sync`.
+6. Assert with `wait_for_sync()`, `count_events()`, `get_events()`, source checkpoint helpers, and action calls.
+
+Rust connectors use Cargo integration tests with connector-manager/testcontainers; see `connectors/slack/tests/`, `connectors/web/tests/`, and `connectors/atlassian/tests/`.
+
+Test these behaviors when relevant:
+
+- full sync from empty state
+- manual full sync when a checkpoint already exists
+- incremental sync from checkpoint
+- checkpoint promotion only on success
+- resume with `is_resume=true` and run checkpoint
+- cancellation
+- action schema/listing/dispatch, including hidden/admin/read-only behavior
+- permissions/group membership
+- realtime watcher heartbeat/cancel/unavailable path
+
+Run examples:
+
+```bash
+cd connectors/my-python-connector && uv run pytest
+cargo test -p omni-my-connector
+```
 
 # Key Files Reference
 
-When implementing, read these files for your chosen language:
-
-## Connector Implementation
+## Connector SDKs
 
 | What | Python | TypeScript | Rust |
 |---|---|---|---|
-| Base class / SDK client | `sdk/python/omni_connector/connector.py` | `sdk/typescript/src/connector.ts` | `shared/src/sdk_client.rs` |
-| Sync context (emit, state, storage) | `sdk/python/omni_connector/context.py` | `sdk/typescript/src/context.ts` | `shared/src/sdk_client.rs` (methods directly on `SdkClient`) |
-| Content storage | `sdk/python/omni_connector/storage.py` | `sdk/typescript/src/storage.ts` | `SdkClient::store_content`, `extract_and_store_content`, `extract_text` |
-| Data models | `sdk/python/omni_connector/models.py` | `sdk/typescript/src/models.ts` | `shared/src/models.rs` |
-| Server / registration | `sdk/python/omni_connector/server.py` | `sdk/typescript/src/server.ts` | Manual — see `connectors/google/src/main.rs` + `shared::start_registration_loop` |
-| Package config | `connectors/notion/pyproject.toml` | `sdk/typescript/package.json` | `connectors/google/Cargo.toml` (workspace deps) |
-| Dockerfile | `connectors/notion/Dockerfile` | — | `connectors/google/Dockerfile` (cargo-chef pattern) |
-| Entry point | `connectors/notion/main.py` | — | `connectors/google/src/main.rs` |
+| Base class / trait | `sdk/python/omni_connector/connector.py` | `sdk/typescript/src/connector.ts` | `sdk/rust/src/connector.rs` |
+| Sync context | `sdk/python/omni_connector/context.py` | `sdk/typescript/src/context.ts` | `sdk/rust/src/context.rs` |
+| SDK client | `sdk/python/omni_connector/client.py` | `sdk/typescript/src/client.ts` | `sdk/rust/src/client.rs` |
+| Content storage | `sdk/python/omni_connector/storage.py` | `sdk/typescript/src/storage.ts` | methods on Rust `SyncContext`/`SdkClient` |
+| Data models | `sdk/python/omni_connector/models.py` | `sdk/typescript/src/models.ts` | `sdk/rust/src/models.rs` + `shared/src/models.rs` |
+| Server / registration | `sdk/python/omni_connector/server.py` | `sdk/typescript/src/server.ts` | `sdk/rust/src/server.rs` |
+| MCP adapter | `sdk/python/omni_connector/mcp_adapter.py` | `sdk/typescript/src/mcp-adapter.ts` | `sdk/rust/src/mcp_adapter.rs` |
+| Simple example | `sdk/python/examples/rss_connector.py` | `sdk/typescript/examples/rss-connector.ts` | `connectors/filesystem/` |
 
-## Backend (shared across all languages)
+## Backend Shared Files
 
 | What | File |
 |---|---|
-| Rust `SourceType` enum (must add variant) | `shared/src/models.rs` |
-| Migration pattern for new source type | `services/migrations/075_add_paperless_ngx_source_type.sql` (latest example) |
-| Migration directory | `services/migrations/` (files are numbered sequentially) |
+| Source types, manifests, action definitions, sync types/events | `shared/src/models.rs` |
+| Connector-manager sync orchestration/resume | `services/connector-manager/src/sync_manager.rs` |
+| Connector-manager action/resource/prompt dispatch | `services/connector-manager/src/handlers.rs` |
+| Connector HTTP client | `services/connector-manager/src/connector_client.rs` |
+| Scheduler and realtime startup | `services/connector-manager/src/scheduler.rs` |
+| Migration pattern for source type | `services/migrations/075_add_paperless_ngx_source_type.sql` or latest source-type migration |
+| Migration directory | `services/migrations/` |
 
 ## Frontend
 
 | What | File |
 |---|---|
-| Source type & provider enums | `web/src/lib/types.ts` (`SourceType`, `ServiceProvider`, `DEFAULT_SYNC_INTERVAL_SECONDS`) |
+| Source type & provider enums | `web/src/lib/types.ts` |
 | Icons & display names | `web/src/lib/utils/icons.ts` |
 | Icon assets | `web/src/lib/images/icons/` |
-| Setup dialog examples | `web/src/lib/components/*-setup.svelte` (e.g., `notion-setup.svelte`, `github-setup.svelte`) |
+| Setup dialog examples | `web/src/lib/components/*-setup.svelte` |
 | Integrations page | `web/src/routes/(admin)/admin/settings/integrations/+page.svelte` |
-| Display order | `web/src/routes/(admin)/admin/settings/integrations/+page.server.ts` (`CONNECTOR_DISPLAY_ORDER`) |
+| Display order | `web/src/routes/(admin)/admin/settings/integrations/+page.server.ts` |
 
-## Infrastructure
+## Infrastructure and CI
 
 | What | File |
 |---|---|
-| Docker Compose services | `docker/docker-compose.yml` (connector definitions with `profiles:`) |
+| Docker Compose services | `docker/docker-compose.yml` |
 | Docker Compose dev overrides | `docker/docker-compose.dev.yml` |
 | Port assignments & ENABLED_CONNECTORS | `.env.example` |
 | AWS task definitions | `infra/aws/terraform/modules/compute/task_definitions.tf` |
 | AWS ECS services | `infra/aws/terraform/modules/compute/services.tf` |
-| GCP Cloud Run (simple connectors) | `infra/gcp/terraform/modules/compute/services.tf` (`all_simple_connectors` local) |
-
-## CI/CD
-
-| What | File |
-|---|---|
-| Path filter | `.github/workflows/ci.yml` (`detect-changes` → `filters`) |
-| Build job | `.github/workflows/ci.yml` (connector build job calling `build-connector.yml`) |
-| Release matrix | `.github/workflows/ci.yml` (`release-connectors` matrix) |
+| GCP Cloud Run | `infra/gcp/terraform/modules/compute/services.tf` |
+| Path filters/build/release matrix | `.github/workflows/ci.yml` |
 
 ## Testing
 
 | What | File |
 |---|---|
-| Test harness | `sdk/python/omni_connector/testing/harness.py` (`OmniTestHarness`) |
-| DB seeding | `sdk/python/omni_connector/testing/seed.py` (`SeedHelper`) |
-| Assertion helpers | `sdk/python/omni_connector/testing/assertions.py` (`wait_for_sync`, `count_events`, `get_events`) |
-| Canonical test example | `connectors/notion/tests/conftest.py` + `connectors/notion/tests/test_full_sync.py` |
+| Python test harness | `sdk/python/omni_connector/testing/harness.py` |
+| Python DB seeding | `sdk/python/omni_connector/testing/seed.py` |
+| Python assertions | `sdk/python/omni_connector/testing/assertions.py` |
+| Python examples | `connectors/notion/tests/`, `connectors/github/tests/`, `connectors/clickup/tests/` |
+| Rust examples | `connectors/slack/tests/`, `connectors/web/tests/`, `connectors/atlassian/tests/` |
 
 # Coding Guidelines
 
-- Use concrete types, not `dict[str, Any]` / `Record<string, unknown>` / `serde_json::Value`
-- No empty string `""` for missing state — use `None` / `null` / `Option`
-- Fail immediately on missing required data
-- Imports at top of file
-- Only add comments explaining *why*, not *what*
-- Prefer integration tests with real infrastructure over mocks
-- Python: use `uv` (not pip)
+- Use concrete types, not `dict[str, Any]` / `Record<string, unknown>` / `serde_json::Value`, when the shape is known. Opaque maps are acceptable only at SDK boundaries or for genuinely provider-dynamic payloads.
+- No empty string `""` for missing state; use `None` / `null` / `Option`.
+- Fail immediately on missing required config/credentials.
+- Imports at the top of the file.
+- Only add comments explaining why, not what.
+- Prefer integration tests with real infrastructure over isolated mocks.
+- Python: use `uv`, not `pip`, for connector development in this repo.
+- Svelte buttons must use Tailwind `cursor-pointer`.
