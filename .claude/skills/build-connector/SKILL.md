@@ -271,6 +271,15 @@ Read existing connector patterns before editing. Typical files:
 5. **`web/src/routes/(admin)/admin/settings/integrations/+page.svelte`** — import/render setup component.
 6. **`web/src/routes/(admin)/admin/settings/integrations/+page.server.ts`** — `CONNECTOR_DISPLAY_ORDER`.
 
+## Icon Sourcing
+
+- Fetch a local SVG icon for the app/service; do not hotlink remote assets.
+- Prefer Wikimedia Commons when available because it usually has stable SVG files and explicit license metadata. Use the original SVG file URL, not a rendered PNG thumbnail.
+- If Wikimedia does not have a suitable official mark, use the provider's official brand/media kit or another reputable source with compatible licensing. Record the source URL in your summary/PR notes.
+- Verify the asset license before committing. Do not add icons with unclear, incompatible, or non-redistributable terms.
+- Save the SVG under `web/src/lib/images/icons/` using the existing naming style, then register it in `web/src/lib/utils/icons.ts`.
+- Keep the SVG compact and safe: no scripts, external references, embedded rasters, tracking metadata, or remote font/image links.
+
 # Docker Compose and ENABLED_CONNECTORS
 
 Add connector service to `docker/docker-compose.yml` and dev overrides to `docker/docker-compose.dev.yml`. Follow existing connectors.
