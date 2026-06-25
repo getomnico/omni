@@ -41,6 +41,7 @@ from tools import (
     DocumentToolHandler,
     PeopleSearchHandler,
     SearchToolHandler,
+    WebToolHandler,
     ToolContext,
     ToolHandler,
     ToolRegistry,
@@ -202,6 +203,14 @@ async def _build_agent_registry(
     )
     registry.register(search_handler)
     always_on_handlers.append(search_handler)
+
+    if app_state.web_search_provider is not None:
+        web_handler = WebToolHandler(
+            search_provider=app_state.web_search_provider,
+            fetch_provider=app_state.web_fetch_provider,
+        )
+        registry.register(web_handler)
+        always_on_handlers.append(web_handler)
 
     people_handler = PeopleSearchHandler(searcher_tool=app_state.searcher_tool)
     registry.register(people_handler)

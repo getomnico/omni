@@ -11,6 +11,7 @@ from providers import LLMProvider
 from tools import SearcherTool
 from storage import ContentStorage
 from memory.provider import MemoryProvider
+from web_providers import WebFetchProvider, WebSearchProvider
 
 
 @dataclass
@@ -29,6 +30,10 @@ class AppState:
     default_model_id: str | None = None
     secondary_model_id: str | None = None
     searcher_tool: SearcherTool | None = None
+    web_search_provider: WebSearchProvider | None = None
+    web_search_provider_type: str | None = None
+    web_fetch_provider: WebFetchProvider | None = None
+    web_fetch_provider_type: str | None = None
     content_storage: ContentStorage | None = None
     redis_client: aioredis.Redis | None = None
     listener_task: asyncio.Task | None = None

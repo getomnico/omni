@@ -97,6 +97,7 @@ include = [
     "logger*",
     "agents*",
     "email_service*",
+    "web_providers*",
 ]
 
 [dependency-groups]

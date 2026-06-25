@@ -38,6 +38,14 @@
             loading: 'searching',
             loaded: 'searched',
         },
+        web_search: {
+            loading: 'searching web',
+            loaded: 'searched web',
+        },
+        fetch_web_page: {
+            loading: 'fetching web page',
+            loaded: 'fetched web page',
+        },
         read_document: {
             loading: 'fetching',
             loaded: 'fetched',
@@ -94,6 +102,8 @@
 
     const ToolInputKey: Record<string, string> = {
         search_documents: 'query',
+        web_search: 'query',
+        fetch_web_page: 'url',
         read_document: 'name',
         write_file: 'path',
         read_file: 'path',
@@ -382,7 +392,7 @@
             {/if}
         </div>
     </div>
-{:else if toolName === 'search_documents'}
+{:else if toolName === 'search_documents' || toolName === 'web_search'}
     <Accordion.Root type="single" bind:value={selectedItem}>
         <Accordion.Item value={message.toolUse.id}>
             <Accordion.Trigger

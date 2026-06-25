@@ -15,6 +15,8 @@ from .model_providers import (
 from .models import ModelRecord, Source
 from .usage import UsageRepository, UsageSummary
 from .configuration import ConfigurationRepository
+from .web_search_providers import WebSearchProvidersRepository, WebSearchProviderRecord
+from .web_fetch_providers import WebFetchProvidersRepository, WebFetchProviderRecord
 
 __all__ = [
     "get_db_pool",
@@ -43,4 +45,8 @@ __all__ = [
     "UsageRepository",
     "UsageSummary",
     "ConfigurationRepository",
+    "WebSearchProvidersRepository",
+    "WebSearchProviderRecord",
+    "WebFetchProvidersRepository",
+    "WebFetchProviderRecord",
 ]

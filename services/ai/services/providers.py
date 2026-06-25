@@ -13,13 +13,20 @@ from db_config import (
     get_embedding_config,
     invalidate_embedding_config_cache,
 )
-from db import ModelsRepository, ModelRecord, EmbeddingProvidersRepository
+from db import (
+    EmbeddingProvidersRepository,
+    ModelRecord,
+    ModelsRepository,
+    WebFetchProvidersRepository,
+    WebSearchProvidersRepository,
+)
 from db.listener import start_db_listener
 from providers import create_llm_provider, LLMProvider
 from embeddings import create_embedding_provider
 from tools import SearcherTool
 from storage import create_content_storage
 from embeddings.batch_processor import start_batch_processing
+from web_providers import create_web_fetch_provider, create_web_search_provider
 
 from state import AppState
 
@@ -232,6 +239,67 @@ async def reload_embedding_provider(app_state: AppState) -> None:
         await start_batch_processor(app_state)
 
 
+def _config_value(config: dict, key: str) -> str | None:
+    value = config.get(key)
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+async def _init_web_search_provider(app_state: AppState) -> None:
+    repo = WebSearchProvidersRepository()
+    record = await repo.get_current()
+    if record is None:
+        app_state.web_search_provider = None
+        app_state.web_search_provider_type = None
+        logger.info("No current web search provider configured")
+        return
+
+    app_state.web_search_provider = create_web_search_provider(
+        record.provider_type,
+        api_key=_config_value(record.config, "apiKey") or _config_value(record.config, "api_key"),
+        base_url=_config_value(record.config, "baseUrl") or _config_value(record.config, "base_url"),
+    )
+    app_state.web_search_provider_type = record.provider_type
+    logger.info(
+        "Initialized web search provider '%s' (type=%s, id=%s)",
+        record.name,
+        record.provider_type,
+        record.id,
+    )
+
+
+async def _init_web_fetch_provider(app_state: AppState) -> None:
+    repo = WebFetchProvidersRepository()
+    record = await repo.get_current()
+    if record is None:
+        app_state.web_fetch_provider = None
+        app_state.web_fetch_provider_type = None
+        logger.info("No current web fetch provider configured")
+        return
+
+    app_state.web_fetch_provider = create_web_fetch_provider(
+        record.provider_type,
+        api_key=_config_value(record.config, "apiKey") or _config_value(record.config, "api_key"),
+        base_url=_config_value(record.config, "baseUrl") or _config_value(record.config, "base_url"),
+    )
+    app_state.web_fetch_provider_type = record.provider_type
+    logger.info(
+        "Initialized web fetch provider '%s' (type=%s, id=%s)",
+        record.name,
+        record.provider_type,
+        record.id,
+    )
+
+
+async def reload_web_search_provider(app_state: AppState) -> None:
+    await _init_web_search_provider(app_state)
+
+
+async def reload_web_fetch_provider(app_state: AppState) -> None:
+    await _init_web_fetch_provider(app_state)
+
+
 def _handle_model_provider_notification(app_state: AppState, payload: dict) -> None:
     """Handle model_provider_changed notification — update default/secondary pointers."""
     model_id = payload.get("id", "").strip()
@@ -259,6 +327,22 @@ def _handle_embedding_provider_notification(app_state: AppState, payload: dict) 
         f"Embedding provider change detected via NOTIFY (id={payload.get('id')}), reloading"
     )
     asyncio.create_task(reload_embedding_provider(app_state))
+
+
+def _handle_web_search_provider_notification(app_state: AppState, payload: dict) -> None:
+    logger.info(
+        "Web search provider change detected via NOTIFY (id=%s), reloading",
+        payload.get("id"),
+    )
+    asyncio.create_task(reload_web_search_provider(app_state))
+
+
+def _handle_web_fetch_provider_notification(app_state: AppState, payload: dict) -> None:
+    logger.info(
+        "Web fetch provider change detected via NOTIFY (id=%s), reloading",
+        payload.get("id"),
+    )
+    asyncio.create_task(reload_web_fetch_provider(app_state))
 
 
 async def _refresh_model_flags(app_state: AppState) -> None:
@@ -290,6 +374,8 @@ async def initialize_providers(app_state: AppState) -> None:
     async def _on_reconnect():
         await _refresh_model_flags(app_state)
         await reload_embedding_provider(app_state)
+        await reload_web_search_provider(app_state)
+        await reload_web_fetch_provider(app_state)
 
     app_state.listener_task = await start_db_listener(
         channels={
@@ -297,6 +383,12 @@ async def initialize_providers(app_state: AppState) -> None:
                 app_state, payload
             ),
             "embedding_provider_changed": lambda payload: _handle_embedding_provider_notification(
+                app_state, payload
+            ),
+            "web_search_provider_changed": lambda payload: _handle_web_search_provider_notification(
+                app_state, payload
+            ),
+            "web_fetch_provider_changed": lambda payload: _handle_web_fetch_provider_notification(
                 app_state, payload
             ),
         },
@@ -311,6 +403,9 @@ async def initialize_providers(app_state: AppState) -> None:
     # Initialize searcher client
     app_state.searcher_tool = SearcherTool()
     logger.info("Initialized searcher client")
+
+    await _init_web_search_provider(app_state)
+    await _init_web_fetch_provider(app_state)
 
     # Initialize content storage
     app_state.content_storage = create_content_storage()

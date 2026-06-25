@@ -63,6 +63,7 @@ from tools import (
     DocumentToolHandler,
     PeopleSearchHandler,
     SearchToolHandler,
+    WebToolHandler,
     ToolContext,
     ToolHandler,
     ToolRegistry,
@@ -576,6 +577,15 @@ async def _build_registry(
     registry.register(search_handler)
     always_on_handlers.append(search_handler)
 
+    web_search_provider = getattr(request.app.state, "web_search_provider", None)
+    if web_search_provider is not None:
+        web_handler = WebToolHandler(
+            search_provider=web_search_provider,
+            fetch_provider=getattr(request.app.state, "web_fetch_provider", None),
+        )
+        registry.register(web_handler)
+        always_on_handlers.append(web_handler)
+
     # Register people search tool
     people_handler = PeopleSearchHandler(searcher_tool=request.app.state.searcher_tool)
     registry.register(people_handler)
@@ -674,6 +684,15 @@ async def _build_agent_chat_registry(
     )
     registry.register(search_handler)
     always_on_handlers.append(search_handler)
+
+    web_search_provider = getattr(request.app.state, "web_search_provider", None)
+    if web_search_provider is not None:
+        web_handler = WebToolHandler(
+            search_provider=web_search_provider,
+            fetch_provider=getattr(request.app.state, "web_fetch_provider", None),
+        )
+        registry.register(web_handler)
+        always_on_handlers.append(web_handler)
 
     people_handler = PeopleSearchHandler(searcher_tool=request.app.state.searcher_tool)
     registry.register(people_handler)

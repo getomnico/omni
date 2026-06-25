@@ -15,6 +15,7 @@
         Mail,
         FileText,
         Brain,
+        Globe,
     } from '@lucide/svelte'
     import Button from '$lib/components/ui/button/button.svelte'
     import SidebarUserMenu from '$lib/components/sidebar-user-menu.svelte'
@@ -127,6 +128,20 @@
                                     <a href="/admin/settings/email" {...props}>
                                         <Mail class="h-4 w-4" />
                                         <span>Email</span>
+                                    </a>
+                                {/snippet}
+                            </Sidebar.MenuButton>
+                        </Sidebar.MenuItem>
+                        <Sidebar.MenuItem>
+                            <Sidebar.MenuButton
+                                class={cn(
+                                    page.url.pathname === '/admin/settings/web-search' &&
+                                        'bg-sidebar-accent text-sidebar-accent-foreground',
+                                )}>
+                                {#snippet child({ props })}
+                                    <a href="/admin/settings/web-search" {...props}>
+                                        <Globe class="h-4 w-4" />
+                                        <span>Web Providers</span>
                                     </a>
                                 {/snippet}
                             </Sidebar.MenuButton>
