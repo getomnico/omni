@@ -54,6 +54,40 @@ function rankDiscoveredModels(providerType: ModelProviderType, models: Available
     return [...preferred, ...remaining].slice(0, 3)
 }
 
+async function testProviderConnection(
+    providerType: ModelProviderType,
+    config: ModelProviderConfig,
+): Promise<{
+    error: string
+    provider?: string | null
+    statusCode?: number | null
+    model?: string | null
+} | null> {
+    const built = buildTestRequest(providerType, config, null)
+    if ('error' in built) return { error: built.error }
+
+    try {
+        const resp = await fetch(`${env.AI_SERVICE_URL}/admin/provider/${providerType}/test`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(built),
+        })
+        if (!resp.ok) return { error: 'Could not test provider connection' }
+
+        const body = (await resp.json()) as TestModelResponse
+        if (body.ok) return null
+        return {
+            error: body.error || 'Connection failed',
+            provider: body.provider,
+            statusCode: body.status_code,
+            model: body.model,
+        }
+    } catch (err) {
+        logger.error('Model test connection failed', err)
+        return { error: 'Could not reach AI service' }
+    }
+}
+
 async function listAvailableProviderModels(
     providerType: ModelProviderType,
     config: ModelProviderConfig,
@@ -124,6 +158,9 @@ export const actions: Actions = {
         if (validation) return fail(400, { error: validation })
 
         try {
+            const connectionError = await testProviderConnection(providerType, config)
+            if (connectionError) return fail(400, connectionError)
+
             const provider = await createProvider({ name, providerType, config })
             const discoveredModels = await listAvailableProviderModels(providerType, config)
             if (discoveredModels.length > 0) {
@@ -164,6 +201,9 @@ export const actions: Actions = {
         if (validation) return fail(400, { error: validation })
 
         try {
+            const connectionError = await testProviderConnection(providerType, config)
+            if (connectionError) return fail(400, connectionError)
+
             await updateProvider(id, { name, config })
             await reloadAIProviders()
             return { success: true, message: 'Provider updated' }
