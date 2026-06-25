@@ -99,3 +99,19 @@ AGENT_SCHEDULER_POLL_INTERVAL = int(
     get_optional_env("AGENT_SCHEDULER_POLL_INTERVAL", "30")
 )  # seconds
 AGENT_MAX_CONCURRENT_RUNS = int(get_optional_env("AGENT_MAX_CONCURRENT_RUNS", "3"))
+AGENT_RUN_LEASE_SECONDS = int(get_optional_env("AGENT_RUN_LEASE_SECONDS", "300"))
+AGENT_RUN_HEARTBEAT_INTERVAL_SECONDS = int(
+    get_optional_env("AGENT_RUN_HEARTBEAT_INTERVAL_SECONDS", "30")
+)
+AGENT_RUN_CLAIM_POLL_INTERVAL_SECONDS = int(
+    get_optional_env("AGENT_RUN_CLAIM_POLL_INTERVAL_SECONDS", "5")
+)
+AGENT_RUN_STALE_RECOVERY_INTERVAL_SECONDS = int(
+    get_optional_env("AGENT_RUN_STALE_RECOVERY_INTERVAL_SECONDS", "30")
+)
+AGENT_RUN_MAX_ATTEMPTS = int(get_optional_env("AGENT_RUN_MAX_ATTEMPTS", "3"))
+AGENT_RUN_BACKOFF_SECONDS = tuple(
+    int(part.strip())
+    for part in get_optional_env("AGENT_RUN_BACKOFF_SECONDS", "30,120,300").split(",")
+    if part.strip()
+)

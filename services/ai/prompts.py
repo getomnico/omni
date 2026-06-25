@@ -469,9 +469,10 @@ def format_run_history(
         if run.error_message:
             header += f"\n- Error: {run.error_message}"
 
-        if i < max_detailed and run.execution_log:
+        execution_log = getattr(run, "execution_log", None)
+        if i < max_detailed and execution_log:
             header += "\n- Execution details:\n"
-            header += _format_execution_log(run.execution_log)
+            header += _format_execution_log(execution_log)
 
         sections.append(header)
         total_chars += len(header)

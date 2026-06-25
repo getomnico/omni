@@ -1,56 +1,77 @@
-"""Background scheduler that polls for due agents and executes them."""
+"""Background materializer for scheduled agent runs."""
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from config import AGENT_SCHEDULER_POLL_INTERVAL, AGENT_MAX_CONCURRENT_RUNS
+from config import AGENT_MAX_CONCURRENT_RUNS, AGENT_SCHEDULER_POLL_INTERVAL
 from state import AppState
-from .executor import execute_agent
-from .repository import AgentRepository
+
+from .models import AgentRunAlreadyActive, AgentRunTriggerType
+from .repository import AgentRepository, AgentRunRepository
 
 logger = logging.getLogger(__name__)
 
 
-async def run_agent_scheduler(app_state: AppState):
-    """Long-running scheduler loop. Launched as asyncio.create_task from main.py startup."""
+async def materialize_due_agent_runs(
+    agent_repo: AgentRepository,
+    run_repo: AgentRunRepository,
+    now: datetime,
+) -> int:
+    """Insert pending scheduled runs for due agents and return created count."""
+    due_agents = await agent_repo.find_due_agents(now)
+
+    if due_agents:
+        logger.info("Found %d due agent(s)", len(due_agents))
+
+    created_count = 0
+    for agent in due_agents:
+        result = await run_repo.create_run(
+            agent.id, trigger_type=AgentRunTriggerType.SCHEDULED
+        )
+        if isinstance(result, AgentRunAlreadyActive):
+            logger.debug(
+                "Skipped scheduled run for agent %s because run %s is %s",
+                agent.id,
+                result.run.id,
+                result.run.status.value,
+            )
+        else:
+            created_count += 1
+            logger.info(
+                "Materialized scheduled run %s for agent %s",
+                result.id,
+                agent.id,
+            )
+    return created_count
+
+
+async def run_agent_schedule_materializer(app_state: AppState) -> None:
+    """Poll due agents and insert pending scheduled runs only.
+
+    Execution is handled by the durable queue worker; the scheduler never starts
+    agent execution directly.
+    """
     logger.info(
-        f"Agent scheduler started (poll_interval={AGENT_SCHEDULER_POLL_INTERVAL}s, "
-        f"max_concurrent={AGENT_MAX_CONCURRENT_RUNS})"
+        "Agent schedule materializer started (poll_interval=%ss, max_concurrent=%s)",
+        AGENT_SCHEDULER_POLL_INTERVAL,
+        AGENT_MAX_CONCURRENT_RUNS,
     )
 
-    semaphore = asyncio.Semaphore(AGENT_MAX_CONCURRENT_RUNS)
     agent_repo = AgentRepository()
+    run_repo = AgentRunRepository()
 
     while True:
         try:
-            now = datetime.now(timezone.utc)
-            due_agents = await agent_repo.find_due_agents(now)
-
-            if due_agents:
-                logger.info(f"Found {len(due_agents)} due agent(s)")
-
-            for agent in due_agents:
-                # Spawn bounded task
-                asyncio.create_task(_run_with_semaphore(semaphore, agent, app_state))
+            now = datetime.now(UTC)
+            await materialize_due_agent_runs(agent_repo, run_repo, now)
 
         except Exception as e:
-            logger.error(f"Agent scheduler tick failed: {e}", exc_info=True)
+            logger.error("Agent schedule materializer tick failed: %s", e, exc_info=True)
 
         await asyncio.sleep(AGENT_SCHEDULER_POLL_INTERVAL)
 
 
-async def _run_with_semaphore(semaphore: asyncio.Semaphore, agent, app_state: AppState):
-    """Execute an agent run with concurrency limiting."""
-    async with semaphore:
-        try:
-            logger.info(f"Starting scheduled run for agent {agent.id} ({agent.name})")
-
-            # Create a status queue for this run
-            status_queue = asyncio.Queue()
-            await execute_agent(agent, app_state, status_queue=status_queue)
-
-        except Exception as e:
-            logger.error(
-                f"Scheduled run for agent {agent.id} failed: {e}", exc_info=True
-            )
+async def run_agent_scheduler(app_state: AppState) -> None:
+    """Backward-compatible entrypoint for the schedule materializer."""
+    await run_agent_schedule_materializer(app_state)

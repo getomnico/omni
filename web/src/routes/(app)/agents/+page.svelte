@@ -20,6 +20,13 @@
 
     async function triggerAgent(agentId: string) {
         await fetch(`/api/agents/${agentId}/trigger`, { method: 'POST' })
+        invalidateAll()
+    }
+
+    function activeLabel(agentId: string): string | null {
+        const run = data.activeRuns?.[agentId]
+        if (!run) return null
+        return run.status === 'pending' ? 'Queued' : 'Running'
     }
 </script>
 
@@ -54,6 +61,7 @@
     {:else}
         <div class="space-y-3">
             {#each data.agents as agent (agent.id)}
+                {@const label = activeLabel(agent.id)}
                 <div
                     class="hover:bg-muted/50 flex items-center justify-between rounded-lg border p-4 transition-colors">
                     <a href="/agents/{agent.id}" class="min-w-0 flex-1 cursor-pointer">
@@ -83,10 +91,15 @@
                     <div class="ml-4 flex items-center gap-2">
                         <Button
                             variant="ghost"
-                            size="icon"
+                            size={label ? 'sm' : 'icon'}
                             class="cursor-pointer"
+                            disabled={!!label}
                             onclick={() => triggerAgent(agent.id)}>
-                            <Play class="h-4 w-4" />
+                            {#if label}
+                                {label}
+                            {:else}
+                                <Play class="h-4 w-4" />
+                            {/if}
                         </Button>
                         <Switch.Root
                             checked={agent.isEnabled}

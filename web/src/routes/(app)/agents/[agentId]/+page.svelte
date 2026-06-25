@@ -76,6 +76,10 @@
         invalidateAll()
     }
 
+    let activeRunLabel = $derived(
+        data.activeRun ? (data.activeRun.status === 'pending' ? 'Queued' : 'Running') : null,
+    )
+
     async function confirmDelete() {
         await fetch(`/api/agents/${data.agent.id}`, { method: 'DELETE' })
         goto('/agents')
@@ -139,8 +143,13 @@
                 <MessageSquare class="mr-1 h-3 w-3" />
                 {startingChat ? 'Starting...' : 'Chat with Agent'}
             </Button>
-            <Button variant="outline" size="sm" class="cursor-pointer" onclick={triggerRun}>
-                <Play class="mr-1 h-3 w-3" /> Run Now
+            <Button
+                variant="outline"
+                size="sm"
+                class="cursor-pointer"
+                onclick={triggerRun}
+                disabled={!!activeRunLabel}>
+                <Play class="mr-1 h-3 w-3" /> {activeRunLabel ?? 'Run Now'}
             </Button>
             <Switch.Root
                 checked={data.agent.isEnabled}

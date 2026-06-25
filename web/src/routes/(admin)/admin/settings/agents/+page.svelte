@@ -162,6 +162,13 @@
 
     async function triggerAgent(agentId: string) {
         await fetch(`/api/agents/${agentId}/trigger`, { method: 'POST' })
+        invalidateAll()
+    }
+
+    function activeLabel(agentId: string): string | null {
+        const run = data.activeRuns?.[agentId]
+        if (!run) return null
+        return run.status === 'pending' ? 'Queued' : 'Running'
     }
 
     async function startChat(agentId: string) {
@@ -343,6 +350,7 @@
     {:else}
         <div class="space-y-3">
             {#each data.agents as agent (agent.id)}
+                {@const label = activeLabel(agent.id)}
                 <div
                     class="hover:bg-muted/50 flex items-center justify-between rounded-lg border p-4 transition-colors">
                     <button
@@ -372,11 +380,16 @@
                         </Button>
                         <Button
                             variant="ghost"
-                            size="icon"
+                            size={label ? 'sm' : 'icon'}
                             class="cursor-pointer"
-                            title="Run now"
+                            title={label ?? 'Run now'}
+                            disabled={!!label}
                             onclick={() => triggerAgent(agent.id)}>
-                            <Play class="h-4 w-4" />
+                            {#if label}
+                                {label}
+                            {:else}
+                                <Play class="h-4 w-4" />
+                            {/if}
                         </Button>
                     </div>
                 </div>

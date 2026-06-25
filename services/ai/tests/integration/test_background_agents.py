@@ -223,7 +223,8 @@ async def test_background_agent_end_to_end(db_pool, _patch_db_pool, _patch_env):
     assert run.started_at is not None
     assert run.completed_at is not None
     assert run.error_message is None
-    assert len(run.execution_log) >= 3
+    run_logs = await run_repo.list_run_logs(run.id)
+    assert len(run_logs) >= 3
     assert run.summary is not None
     assert SUMMARY_TEXT in run.summary
 
@@ -277,7 +278,8 @@ async def test_personal_agent_search_scoped_to_user(
     run = await execute_agent(agent, app_state)
     assert run.status == "completed"
 
-    log_text = json.dumps(run.execution_log)
+    run_logs = await AgentRunRepository(pool=db_pool).list_run_logs(run.id)
+    log_text = json.dumps([log.message for log in run_logs])
     assert (
         "Quarterly Report for User A" in log_text
     ), "Personal agent should see user A's document"
@@ -327,7 +329,8 @@ async def test_org_agent_search_sees_all_documents(
     run = await execute_agent(agent, app_state)
     assert run.status == "completed"
 
-    log_text = json.dumps(run.execution_log)
+    run_logs = await AgentRunRepository(pool=db_pool).list_run_logs(run.id)
+    log_text = json.dumps([log.message for log in run_logs])
     assert "Admin Visible Report" in log_text, "Org agent should see admin's document"
     assert (
         "Other User Private Doc" in log_text

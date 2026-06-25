@@ -4,30 +4,48 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import timedelta
 from pathlib import Path
 from typing import cast
 
 import httpx
 from anthropic.types import (
+    BashCodeExecutionToolResultBlockParam,
+    CodeExecutionToolResultBlockParam,
+    ContainerUploadBlockParam,
+    ContentBlock,
+    DocumentBlockParam,
+    ImageBlockParam,
     MessageParam,
+    RedactedThinkingBlockParam,
+    SearchResultBlockParam,
+    ServerToolUseBlockParam,
     TextBlockParam,
+    TextEditorCodeExecutionToolResultBlockParam,
+    ThinkingBlockParam,
     ToolParam,
     ToolResultBlockParam,
+    ToolSearchToolResultBlockParam,
     ToolUseBlockParam,
+    WebFetchToolResultBlockParam,
+    WebSearchToolResultBlockParam,
 )
 
 from config import (
+    AGENT_MAX_CONCURRENT_RUNS,
     AGENT_MAX_ITERATIONS,
+    AGENT_RUN_BACKOFF_SECONDS,
+    AGENT_RUN_LEASE_SECONDS,
+    AGENT_RUN_MAX_ATTEMPTS,
     CONNECTOR_MANAGER_URL,
     DEFAULT_MAX_TOKENS,
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
     SANDBOX_URL,
 )
-from db.documents import DocumentsRepository
-from db.models import UserConfiguration, Source
 from db.configuration import ConfigurationRepository
+from db.documents import DocumentsRepository
+from db.models import Source, UserConfiguration
 from db.usage import UsageRepository
 from db.users import UsersRepository
 from memory import MemoryMode, agent_key, resolve_memory_mode
@@ -37,7 +55,6 @@ from services.compaction import ConversationCompactor
 from services.usage import UsageContext, UsagePurpose, UsageTracker, track_usage
 from state import AppState
 from tools import (
-    ConnectorToolHandler,
     DocumentToolHandler,
     PeopleSearchHandler,
     SearchToolHandler,
@@ -58,12 +75,38 @@ from tools.search_handler import fetch_operator_values
 from tools.skill_handler import SkillHandler
 from tools.turn_builder import build_turn_tools
 
-from .models import Agent, AgentRun
+from .models import (
+    Agent,
+    AgentExecutionResult,
+    AgentRun,
+    AgentRunAlreadyActive,
+    AgentRunLogMessage,
+    AgentRunRetryPolicy,
+    AgentRunTriggerType,
+)
 from .repository import AgentRunRepository
 
 logger = logging.getLogger(__name__)
 
-MAX_RETRIES = 3
+AgentContentBlock = (
+    TextBlockParam
+    | ImageBlockParam
+    | DocumentBlockParam
+    | SearchResultBlockParam
+    | ThinkingBlockParam
+    | RedactedThinkingBlockParam
+    | ToolUseBlockParam
+    | ToolResultBlockParam
+    | ServerToolUseBlockParam
+    | WebSearchToolResultBlockParam
+    | WebFetchToolResultBlockParam
+    | CodeExecutionToolResultBlockParam
+    | BashCodeExecutionToolResultBlockParam
+    | TextEditorCodeExecutionToolResultBlockParam
+    | ToolSearchToolResultBlockParam
+    | ContainerUploadBlockParam
+    | ContentBlock
+)
 
 
 def _resolve_llm_provider(state: AppState, agent: Agent) -> LLMProvider:
@@ -255,20 +298,139 @@ async def _noop_on_load(_: set[str]) -> None:
     return None
 
 
+def _content_blocks(message: MessageParam) -> list[AgentContentBlock]:
+    content = message.get("content")
+    return list(content) if isinstance(content, list) else []
+
+
+def _tool_use_id(block: AgentContentBlock) -> str | None:
+    if block.get("type") == "tool_use":
+        tool_id = block.get("id")
+        return str(tool_id) if tool_id is not None else None
+    return None
+
+
+def _tool_result_id(block: AgentContentBlock) -> str | None:
+    if block.get("type") == "tool_result":
+        tool_id = block.get("tool_use_id")
+        return str(tool_id) if tool_id is not None else None
+    return None
+
+
+def _find_unanswered_tool_calls(messages: list[AgentRunLogMessage]) -> list[ToolUseBlockParam]:
+    pending: dict[str, ToolUseBlockParam] = {}
+    for message in messages:
+        for block in _content_blocks(message):
+            tool_use_id = _tool_use_id(block)
+            if tool_use_id is not None:
+                pending[tool_use_id] = cast(ToolUseBlockParam, block)
+                continue
+            tool_result_id = _tool_result_id(block)
+            if tool_result_id is not None:
+                pending.pop(tool_result_id, None)
+    return list(pending.values())
+
+
+def _synthetic_interrupted_results(
+    tool_calls: list[ToolUseBlockParam],
+) -> MessageParam | None:
+    if not tool_calls:
+        return None
+    results: list[ToolResultBlockParam] = []
+    for tool_call in tool_calls:
+        results.append(
+            ToolResultBlockParam(
+                type="tool_result",
+                tool_use_id=tool_call["id"],
+                content=[
+                    {
+                        "type": "text",
+                        "text": (
+                            "A previous attempt was interrupted after this tool call was "
+                            "requested, before a tool result was durably recorded. Inspect "
+                            "the prior context and retry or reconcile as appropriate."
+                        ),
+                    }
+                ],
+                is_error=True,
+            )
+        )
+    return MessageParam(role="user", content=results)
+
+
+def _is_tool_result_only_user_message(message: AgentRunLogMessage) -> bool:
+    if message.get("role") != "user":
+        return False
+    blocks = _content_blocks(message)
+    return bool(blocks) and all(_tool_result_id(block) is not None for block in blocks)
+
+
+def _conversation_from_log_messages(
+    messages: list[AgentRunLogMessage],
+) -> list[MessageParam]:
+    """Build provider conversation, coalescing adjacent persisted tool-result rows."""
+    conversation: list[MessageParam] = []
+    pending_tool_results: list[ToolResultBlockParam] = []
+
+    def flush_tool_results() -> None:
+        nonlocal pending_tool_results
+        if pending_tool_results:
+            conversation.append(MessageParam(role="user", content=pending_tool_results))
+            pending_tool_results = []
+
+    for message in messages:
+        if _is_tool_result_only_user_message(message):
+            pending_tool_results.extend(cast(list[ToolResultBlockParam], _content_blocks(message)))
+        else:
+            flush_tool_results()
+            conversation.append(cast(MessageParam, message))
+    flush_tool_results()
+    return conversation
+
+
+async def _load_or_initialize_conversation(
+    run: AgentRun,
+    run_repo: AgentRunRepository,
+    claim_token: str,
+) -> list[AgentRunLogMessage]:
+    logs = await run_repo.list_run_logs(run.id)
+    messages = [log.message for log in logs]
+    if not messages:
+        initial = MessageParam(role="user", content="Execute your scheduled task now.")
+        await run_repo.append_run_log_messages(run.id, claim_token, [initial])
+        messages.append(initial)
+        return messages
+
+    interrupted = _synthetic_interrupted_results(_find_unanswered_tool_calls(messages))
+    if interrupted is not None:
+        await run_repo.append_run_log_messages(run.id, claim_token, [interrupted])
+        messages.append(interrupted)
+    return messages
+
+
+async def _append_log_message(
+    run: AgentRun,
+    run_repo: AgentRunRepository,
+    claim_token: str,
+    messages: list[AgentRunLogMessage],
+    message: MessageParam,
+) -> None:
+    rows = await run_repo.append_run_log_messages(run.id, claim_token, [message])
+    if not rows:
+        raise RuntimeError("Lost agent run claim while appending conversation log")
+    messages.append(message)
+
+
 async def _run_agent_loop(
     agent: Agent,
     app_state: AppState,
     run: AgentRun,
     run_repo: AgentRunRepository,
-    status_queue: asyncio.Queue | None,
-) -> AgentRun:
-    """Core agent loop. Separated from execute_agent to allow retries."""
+    claim_token: str,
+) -> AgentExecutionResult:
+    """Core agent loop. Queue lifecycle finalization is handled by the worker."""
 
-    async def emit_status(message: str):
-        if status_queue:
-            await status_queue.put({"type": "status", "message": message})
-
-    await emit_status("Initializing...")
+    logger.info("Agent %s run %s: initializing", agent.id, run.id)
 
     llm_provider = _resolve_llm_provider(app_state, agent)
     sources = await _fetch_sources()
@@ -332,11 +494,9 @@ async def _run_agent_loop(
         user_configuration=agent_user_configuration,
     )
 
-    # Initialize conversation with a single trigger message
-    conversation_messages: list[MessageParam] = [
-        MessageParam(role="user", content="Execute your scheduled task now.")
-    ]
-    execution_log: list[MessageParam] = list(conversation_messages)
+    # Load durable conversation/action WAL, or initialize it before the first LLM call.
+    log_messages = await _load_or_initialize_conversation(run, run_repo, claim_token)
+    conversation_messages = _conversation_from_log_messages(log_messages)
 
     context = ToolContext(
         chat_id=run.id,
@@ -438,14 +598,11 @@ async def _run_agent_loop(
                     if event.index < len(content_blocks):
                         text_block = cast(TextBlockParam, content_blocks[event.index])
                         text_block["text"] += event.delta.text
-                elif event.delta.type == "input_json_delta":
-                    if event.index < len(content_blocks):
-                        tool_block = cast(
-                            ToolUseBlockParam, content_blocks[event.index]
-                        )
-                        tool_block["input"] = (
-                            cast(str, tool_block["input"]) + event.delta.partial_json
-                        )
+                elif event.delta.type == "input_json_delta" and event.index < len(content_blocks):
+                    tool_block = cast(ToolUseBlockParam, content_blocks[event.index])
+                    tool_block["input"] = (
+                        cast(str, tool_block["input"]) + event.delta.partial_json
+                    )
             elif event.type == "message_stop":
                 break
 
@@ -478,14 +635,18 @@ async def _run_agent_loop(
                 )
 
         assistant_message = MessageParam(role="assistant", content=content_blocks)
-        conversation_messages.append(assistant_message)
-        execution_log.append(assistant_message)
+        await _append_log_message(
+            run, run_repo, claim_token, log_messages, assistant_message
+        )
+        conversation_messages = _conversation_from_log_messages(log_messages)
 
         # If there were parse errors, feed them back to the LLM and continue the loop
         if parse_errors:
             error_message = MessageParam(role="user", content=parse_errors)
-            conversation_messages.append(error_message)
-            execution_log.append(error_message)
+            await _append_log_message(
+                run, run_repo, claim_token, log_messages, error_message
+            )
+            conversation_messages = _conversation_from_log_messages(log_messages)
             continue
 
         # No tool calls — done
@@ -493,28 +654,27 @@ async def _run_agent_loop(
             logger.info(f"Agent {agent.id} run {run.id}: no tool calls, completing")
             break
 
-        # Execute tool calls — no approval needed
-        tool_results: list[ToolResultBlockParam] = []
+        # Execute tool calls — no approval needed. Persist each result immediately.
         for tool_call in tool_calls:
             tool_name = tool_call["name"]
-            await emit_status(f"Executing: {tool_name}")
+            logger.info("Agent %s run %s: executing tool %s", agent.id, run.id, tool_name)
 
             result = await registry.execute(tool_name, tool_call["input"], context)
-            tool_results.append(
-                ToolResultBlockParam(
-                    type="tool_result",
-                    tool_use_id=tool_call["id"],
-                    content=result.content,
-                    is_error=result.is_error,
-                )
+            tool_result = ToolResultBlockParam(
+                type="tool_result",
+                tool_use_id=tool_call["id"],
+                content=result.content,
+                is_error=result.is_error,
+            )
+            tool_result_message = MessageParam(role="user", content=[tool_result])
+            await _append_log_message(
+                run, run_repo, claim_token, log_messages, tool_result_message
             )
 
-        tool_result_message = MessageParam(role="user", content=tool_results)
-        conversation_messages.append(tool_result_message)
-        execution_log.append(tool_result_message)
+        conversation_messages = _conversation_from_log_messages(log_messages)
 
     # Generate summary using one final LLM turn
-    await emit_status("Generating summary...")
+    logger.info("Agent %s run %s: generating summary", agent.id, run.id)
     summary_prompt_message = MessageParam(
         role="user",
         content=(
@@ -522,7 +682,10 @@ async def _run_agent_loop(
             "Be factual and concise."
         ),
     )
-    conversation_messages.append(summary_prompt_message)
+    await _append_log_message(
+        run, run_repo, claim_token, log_messages, summary_prompt_message
+    )
+    conversation_messages = _conversation_from_log_messages(log_messages)
 
     summary_blocks: list = []
     summary_tracker = UsageTracker(
@@ -580,70 +743,61 @@ async def _run_agent_loop(
         except Exception as e:
             logger.warning(f"Memory write setup failed for agent {agent.id}: {e}")
 
-    completed_at = datetime.now(UTC)
-    run = await run_repo.update_run(
-        run.id,
-        status="completed",
-        completed_at=completed_at,
-        execution_log=execution_log,
-        summary=summary,
-    )
-
-    if status_queue:
-        await status_queue.put({"type": "completed", "summary": summary})
-
     logger.info(f"Agent {agent.id} run {run.id} completed successfully")
-    return run
+    return AgentExecutionResult(summary=summary)
+
+
+async def execute_claimed_agent(
+    agent: Agent,
+    app_state: AppState,
+    run: AgentRun,
+    claim_token: str,
+    run_repo: AgentRunRepository,
+) -> AgentExecutionResult:
+    """Execute an already-claimed agent run and return its summary result."""
+    return await _run_agent_loop(agent, app_state, run, run_repo, claim_token)
 
 
 async def execute_agent(
     agent: Agent,
     app_state: AppState,
-    status_queue: asyncio.Queue | None = None,
-    run: AgentRun | None = None,
 ) -> AgentRun:
-    """Execute a background agent run with retry support.
-
-    Args:
-        run: Optional pre-created AgentRun. If None, a new one is created.
-    Retries up to MAX_RETRIES times on failure before giving up.
-    """
+    """Synchronous helper for tests/manual callers: enqueue, claim, execute, finalize."""
     run_repo = AgentRunRepository()
-    if run is None:
-        run = await run_repo.create_run(agent.id)
-
-    now = datetime.now(UTC)
-    run = await run_repo.update_run(run.id, status="running", started_at=now)
-
-    last_error: Exception | None = None
-
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            if attempt > 1:
-                logger.info(
-                    f"Agent {agent.id} run {run.id}: retry attempt {attempt}/{MAX_RETRIES}"
-                )
-            return await _run_agent_loop(agent, app_state, run, run_repo, status_queue)
-        except Exception as e:
-            last_error = e
-            logger.error(
-                f"Agent {agent.id} run {run.id} attempt {attempt} failed: {e}",
-                exc_info=True,
-            )
-            if attempt < MAX_RETRIES:
-                await asyncio.sleep(2**attempt)
-
-    # All retries exhausted
-    completed_at = datetime.now(UTC)
-    run = await run_repo.update_run(
-        run.id,
-        status="failed",
-        completed_at=completed_at,
-        execution_log=[],
-        error_message=f"Failed after {MAX_RETRIES} attempts: {last_error}",
+    retry_policy = AgentRunRetryPolicy(
+        max_attempts=AGENT_RUN_MAX_ATTEMPTS,
+        backoff_delays=tuple(timedelta(seconds=s) for s in AGENT_RUN_BACKOFF_SECONDS),
     )
+    created = await run_repo.create_run(
+        agent.id,
+        trigger_type=AgentRunTriggerType.MANUAL,
+        max_attempts=AGENT_RUN_MAX_ATTEMPTS,
+    )
+    run = created.run if isinstance(created, AgentRunAlreadyActive) else created
 
-    if status_queue:
-        await status_queue.put({"type": "failed", "error": str(last_error)})
+    claim = await run_repo.claim_next_run(
+        max_concurrent_runs=AGENT_MAX_CONCURRENT_RUNS,
+        lease_duration=timedelta(seconds=AGENT_RUN_LEASE_SECONDS),
+        retry_policy=retry_policy,
+    )
+    if claim is None or claim.run.id != run.id:
+        raise RuntimeError(f"Unable to claim agent run {run.id}")
 
-    return run
+    try:
+        result = await execute_claimed_agent(
+            agent, app_state, claim.run, claim.claim_token, run_repo
+        )
+        completed = await run_repo.complete_run(
+            claim.run.id, claim.claim_token, result.summary
+        )
+        if completed is None:
+            raise RuntimeError(f"Lost claim before completing run {claim.run.id}")
+        return completed
+    except Exception as e:
+        logger.error("Agent %s run %s failed: %s", agent.id, claim.run.id, e, exc_info=True)
+        failed = await run_repo.fail_run(
+            claim.run.id, claim.claim_token, str(e), retry_policy
+        )
+        if failed is None:
+            raise
+        return failed

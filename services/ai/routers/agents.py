@@ -8,11 +8,10 @@ import json
 import logging
 
 from fastapi import APIRouter, HTTPException, Path, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
-from agents.models import Agent
+from agents.models import Agent, AgentRunAlreadyActive, AgentRunTriggerType
 from agents.repository import AgentRepository, AgentRunRepository
-from agents.executor import execute_agent
 from db import UsersRepository
 from state import AppState
 
@@ -49,25 +48,25 @@ async def trigger_agent(
     if not user_id:
         raise HTTPException(status_code=401, detail="User ID required")
 
-    agent = await _get_agent_with_auth(request, agent_id, user_id)
+    await _get_agent_with_auth(request, agent_id, user_id)
 
-    app_state: AppState = request.app.state
-
-    # Create the run upfront so we can return its ID immediately
     run_repo = AgentRunRepository()
-    run = await run_repo.create_run(agent_id)
+    result = await run_repo.create_run(agent_id, trigger_type=AgentRunTriggerType.MANUAL)
 
-    status_queue: asyncio.Queue = asyncio.Queue()
+    if isinstance(result, AgentRunAlreadyActive):
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "agent_already_active",
+                "run_id": result.run.id,
+                "run_status": result.run.status.value,
+            },
+        )
 
-    async def _run():
-        try:
-            await execute_agent(agent, app_state, status_queue=status_queue, run=run)
-        except Exception as e:
-            logger.error(f"Triggered run for agent {agent_id} failed: {e}")
-
-    asyncio.create_task(_run())
-
-    return {"status": "started", "run_id": run.id}
+    return JSONResponse(
+        status_code=202,
+        content={"status": "queued", "run_id": result.id},
+    )
 
 
 @router.get("/{agent_id}/runs/{run_id}/stream")

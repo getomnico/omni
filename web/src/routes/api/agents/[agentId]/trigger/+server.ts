@@ -22,10 +22,11 @@ export const POST: RequestHandler = async ({ params, locals }) => {
         },
     )
 
+    const body = await response.json().catch(() => ({ error: 'Failed to trigger agent' }))
+
     if (!response.ok) {
-        return json({ error: 'Failed to trigger agent' }, { status: response.status })
+        return json(body, { status: response.status })
     }
 
-    const result = await response.json()
-    return json(result)
+    return json(body, { status: response.status })
 }

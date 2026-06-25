@@ -1,6 +1,6 @@
 import { db } from './index.js'
-import { agents, agentRuns } from './schema.js'
-import { eq, and, desc } from 'drizzle-orm'
+import { agents, agentRuns, agentRunLogs } from './schema.js'
+import { eq, and, desc, gt, inArray, or } from 'drizzle-orm'
 import { ulid } from 'ulid'
 import { error } from '@sveltejs/kit'
 import type { Agent } from './schema.js'
@@ -185,7 +185,62 @@ export async function listAgentRuns(agentId: string, limit = 50) {
         .limit(limit)
 }
 
+export async function getActiveAgentRun(agentId: string) {
+    const [run] = await db
+        .select()
+        .from(agentRuns)
+        .where(
+            and(
+                eq(agentRuns.agentId, agentId),
+                or(
+                    eq(agentRuns.status, 'pending'),
+                    and(eq(agentRuns.status, 'running'), gt(agentRuns.leaseExpiresAt, new Date())),
+                ),
+            ),
+        )
+        .orderBy(agentRuns.createdAt)
+        .limit(1)
+    return run || null
+}
+
+export async function listActiveRunsForAgents(agentIds: string[]) {
+    if (agentIds.length === 0) return new Map<string, typeof agentRuns.$inferSelect>()
+
+    const runs = await db
+        .select()
+        .from(agentRuns)
+        .where(
+            and(
+                inArray(agentRuns.agentId, agentIds),
+                or(
+                    eq(agentRuns.status, 'pending'),
+                    and(eq(agentRuns.status, 'running'), gt(agentRuns.leaseExpiresAt, new Date())),
+                ),
+            ),
+        )
+        .orderBy(agentRuns.createdAt)
+
+    const byAgent = new Map<string, typeof agentRuns.$inferSelect>()
+    for (const run of runs) {
+        if (!byAgent.has(run.agentId)) byAgent.set(run.agentId, run)
+    }
+    return byAgent
+}
+
+export async function listAgentRunLogs(runId: string) {
+    return db
+        .select()
+        .from(agentRunLogs)
+        .where(eq(agentRunLogs.runId, runId))
+        .orderBy(agentRunLogs.messageSeqNum)
+}
+
 export async function getAgentRun(runId: string) {
     const [run] = await db.select().from(agentRuns).where(eq(agentRuns.id, runId)).limit(1)
-    return run || null
+    if (!run) return null
+    const logs = await listAgentRunLogs(runId)
+    return {
+        ...run,
+        executionLog: logs.map((log) => log.message),
+    }
 }

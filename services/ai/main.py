@@ -67,9 +67,11 @@ async def startup_event():
         await start_batch_processor(app.state)
 
         if os.getenv("AGENTS_ENABLED", "false").lower() == "true":
-            from agents.scheduler import run_agent_scheduler
+            from agents.queue_worker import run_agent_queue_worker
+            from agents.scheduler import run_agent_schedule_materializer
 
-            asyncio.create_task(run_agent_scheduler(app.state))
+            asyncio.create_task(run_agent_schedule_materializer(app.state))
+            asyncio.create_task(run_agent_queue_worker(app.state))
 
         if MEMORY_ENABLED:
             try:

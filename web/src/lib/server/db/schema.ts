@@ -290,11 +290,26 @@ export const agentRuns = pgTable('agent_runs', {
         .notNull()
         .references(() => agents.id, { onDelete: 'cascade' }),
     status: text('status').notNull().default('pending'),
+    triggerType: text('trigger_type').notNull().default('manual'),
     startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }),
     completedAt: timestamp('completed_at', { withTimezone: true, mode: 'date' }),
-    executionLog: jsonb('execution_log').notNull().default([]),
+    claimToken: text('claim_token'),
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true, mode: 'date' }),
+    heartbeatAt: timestamp('heartbeat_at', { withTimezone: true, mode: 'date' }),
+    attemptCount: integer('attempt_count').notNull().default(0),
+    maxAttempts: integer('max_attempts').notNull().default(3),
     summary: text('summary'),
     errorMessage: text('error_message'),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+})
+
+export const agentRunLogs = pgTable('agent_run_logs', {
+    id: text('id').primaryKey(),
+    runId: text('run_id')
+        .notNull()
+        .references(() => agentRuns.id, { onDelete: 'cascade' }),
+    messageSeqNum: integer('message_seq_num').notNull(),
+    message: jsonb('message').$type<MessageParam>().notNull(),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
 
@@ -336,4 +351,5 @@ export type ToolApproval = typeof toolApprovals.$inferSelect
 export type EmailProvider = typeof emailProviders.$inferSelect
 export type Agent = typeof agents.$inferSelect
 export type AgentRun = typeof agentRuns.$inferSelect
+export type AgentRunLog = typeof agentRunLogs.$inferSelect
 export type ApiKey = typeof apiKeys.$inferSelect
