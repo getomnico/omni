@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 import httpx
 from anthropic.types import ToolParam
@@ -102,6 +103,14 @@ SANDBOX_TOOLS: list[ToolParam] = [
 ]
 
 _TOOL_NAMES = {"write_file", "read_file", "run_bash", "run_python", "present_artifact"}
+_UNSAFE_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _sanitize_tool_text(text: str) -> str:
+    return _UNSAFE_CONTROL_CHARS_RE.sub(
+        lambda match: f"\\x{ord(match.group(0)):02x}",
+        text,
+    )
 
 
 class SandboxToolHandler:
@@ -248,15 +257,20 @@ class SandboxToolHandler:
         # Format the result
         if tool_name in ("write_file", "read_file"):
             return ToolResult(
-                content=[{"type": "text", "text": result.get("content", "")}],
+                content=[
+                    {
+                        "type": "text",
+                        "text": _sanitize_tool_text(result.get("content", "")),
+                    }
+                ],
             )
         else:
             # Execution result with stdout/stderr
             output_parts = []
             if result.get("stdout"):
-                output_parts.append(f"stdout:\n{result['stdout']}")
+                output_parts.append(f"stdout:\n{_sanitize_tool_text(result['stdout'])}")
             if result.get("stderr"):
-                output_parts.append(f"stderr:\n{result['stderr']}")
+                output_parts.append(f"stderr:\n{_sanitize_tool_text(result['stderr'])}")
             if not output_parts:
                 output_parts.append("(no output)")
 

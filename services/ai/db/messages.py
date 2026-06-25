@@ -9,6 +9,16 @@ from .models import ChatMessage
 from .connection import get_db_pool
 
 
+def _sanitize_jsonb_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return value.replace("\x00", "\\x00")
+    if isinstance(value, list):
+        return [_sanitize_jsonb_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _sanitize_jsonb_value(item) for key, item in value.items()}
+    return value
+
+
 def _extract_content_text(message: Dict[str, Any]) -> Optional[str]:
     """Plain-text projection of a message for search/title. Mirrors omni-web's
     extractContentText so rows written here match those written by the web."""
@@ -46,7 +56,7 @@ class MessagesRepository:
         async with pool.acquire() as conn:
             await conn.execute(
                 "UPDATE chat_messages SET message = $1 WHERE id = $2",
-                json.dumps(message),
+                json.dumps(_sanitize_jsonb_value(message)),
                 message_id,
             )
 
@@ -65,6 +75,7 @@ class MessagesRepository:
             WHERE chat_id = $1
         """
 
+        message = _sanitize_jsonb_value(message)
         content_text = _extract_content_text(message)
 
         async with pool.acquire() as conn:
