@@ -74,11 +74,10 @@ class TestMemoryFencing:
 
     def test_source_skill_hint_is_dynamic(self):
         no_sources_prompt = build_chat_system_prompt(sources=[])
-        assert 'load the "google_ads" skill' not in no_sources_prompt
+        assert 'load the "excel" skill' not in no_sources_prompt
 
-        google_ads_prompt = build_chat_system_prompt(sources=[_FakeSource("google_ads")])
-        assert "Connected apps: Google Ads" in google_ads_prompt
-        assert 'load the "google_ads" skill' in google_ads_prompt
+        excel_prompt = build_chat_system_prompt(sources=[_FakeSource("excel")])
+        assert 'load the "excel" skill' in excel_prompt
 
     def test_chat_prompt_mentions_skill_search(self):
         prompt = build_chat_system_prompt(

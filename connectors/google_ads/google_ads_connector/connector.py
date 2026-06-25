@@ -6,10 +6,17 @@ import csv
 import io
 import logging
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, TypedDict, cast
 
 from fastapi.responses import JSONResponse, Response
-from omni_connector import Connector, SearchOperator, SyncContext, SyncMode
+from omni_connector import (
+    Connector,
+    ConnectorSkillDefinition,
+    SearchOperator,
+    SyncContext,
+    SyncMode,
+)
 from omni_connector.models import (
     ActionDefinition,
     ActionResponse,
@@ -39,6 +46,9 @@ MAX_JSON_ROWS = 10000
 MAX_CSV_ROWS = 25000
 MAX_XLSX_ROWS = 10000
 CHECKPOINT_SCHEMA_VERSION = 1
+GOOGLE_ADS_SKILL = (
+    Path(__file__).resolve().parents[1] / "skills" / "google_ads.md"
+).read_text(encoding="utf-8")
 
 METRIC_FIELDS = {
     "metrics.impressions",
@@ -179,6 +189,18 @@ class GoogleAdsConnector(Connector):
         return ["full", "incremental"]
 
     @property
+    def skills(self) -> list[ConnectorSkillDefinition]:
+        return [
+            ConnectorSkillDefinition(
+                id="google_ads",
+                title="Google Ads Skill",
+                description="Guidance for Google Ads reporting, optimization, and exports.",
+                source_types=["google_ads"],
+                content=GOOGLE_ADS_SKILL,
+            )
+        ]
+
+    @property
     def search_operators(self) -> list[SearchOperator]:
         return [
             SearchOperator(
@@ -190,7 +212,9 @@ class GoogleAdsConnector(Connector):
             SearchOperator(
                 operator="ad_group", attribute_key="ad_group_id", value_type="text"
             ),
-            SearchOperator(operator="asset", attribute_key="asset_id", value_type="text"),
+            SearchOperator(
+                operator="asset", attribute_key="asset_id", value_type="text"
+            ),
             SearchOperator(
                 operator="criterion", attribute_key="criterion_id", value_type="text"
             ),
@@ -475,7 +499,9 @@ class GoogleAdsConnector(Connector):
             for customer_id in sorted(config.customer_ids)
             for entity_type in config.entity_types
         ]
-        last_completed_unit = _last_completed_unit(checkpoint) if ctx.is_resume else None
+        last_completed_unit = (
+            _last_completed_unit(checkpoint) if ctx.is_resume else None
+        )
         skip_completed = last_completed_unit in {
             _unit_key(customer_id, entity_type) for customer_id, entity_type in units
         }
@@ -562,7 +588,9 @@ class GoogleAdsConnector(Connector):
             for customer_id in sorted(config.customer_ids)
             for entity_type in config.entity_types
         ]
-        last_completed_unit = _last_completed_unit(checkpoint) if ctx.is_resume else None
+        last_completed_unit = (
+            _last_completed_unit(checkpoint) if ctx.is_resume else None
+        )
         skip_completed = last_completed_unit in {
             _unit_key(customer_id, entity_type) for customer_id, entity_type in units
         }
@@ -687,9 +715,13 @@ class GoogleAdsConnector(Connector):
             if action == "get_recommendations":
                 return await self._action_recommendations(client, params)
             if action == "get_change_history":
-                return await self._action_curated_report(client, params, "change_history")
+                return await self._action_curated_report(
+                    client, params, "change_history"
+                )
             if action == "get_policy_diagnostics":
-                return await self._action_curated_report(client, params, "policy_diagnostics")
+                return await self._action_curated_report(
+                    client, params, "policy_diagnostics"
+                )
             if action == "get_account_hierarchy":
                 return await self._action_account_hierarchy(client, params)
             report_type = _report_type_for_action(action)
@@ -724,7 +756,13 @@ class GoogleAdsConnector(Connector):
         rows = await client.run_gaql(customer_id, query, limit=limit)
         customer_context = await self._customer_report_context(client, customer_id)
         metadata = _report_metadata(
-            "custom_gaql", customer_id, params, query, len(rows), limit, customer_context
+            "custom_gaql",
+            customer_id,
+            params,
+            query,
+            len(rows),
+            limit,
+            customer_context,
         )
         csv_text = rows_to_csv(rows, metadata=metadata)
         return Response(
@@ -747,7 +785,13 @@ class GoogleAdsConnector(Connector):
         rows = await client.run_gaql(customer_id, query, limit=limit)
         customer_context = await self._customer_report_context(client, customer_id)
         metadata = _report_metadata(
-            "custom_gaql", customer_id, params, query, len(rows), limit, customer_context
+            "custom_gaql",
+            customer_id,
+            params,
+            query,
+            len(rows),
+            limit,
+            customer_context,
         )
         content = rows_to_xlsx(rows, metadata=metadata)
         return Response(
@@ -805,7 +849,9 @@ class GoogleAdsConnector(Connector):
         metadata = _report_metadata(
             report_type, customer_id, params, query, len(rows), limit, customer_context
         )
-        return ActionResponse.success({"metadata": metadata, "rows": rows}).to_response()
+        return ActionResponse.success(
+            {"metadata": metadata, "rows": rows}
+        ).to_response()
 
     async def _action_export_report(
         self, client: GoogleAdsClient, params: dict[str, Any]
@@ -813,9 +859,9 @@ class GoogleAdsConnector(Connector):
         customer_id = _require_customer_id(params)
         report_type = str(params.get("report_type") or "").strip()
         if report_type not in REPORT_BUILDERS:
-            return ActionResponse.failure(f"Unsupported report_type: {report_type}").to_response(
-                status_code=400
-            )
+            return ActionResponse.failure(
+                f"Unsupported report_type: {report_type}"
+            ).to_response(status_code=400)
         output_format = str(params.get("format") or "csv").lower().strip()
         max_rows = MAX_XLSX_ROWS if output_format == "xlsx" else MAX_CSV_ROWS
         if output_format == "json":
@@ -828,7 +874,9 @@ class GoogleAdsConnector(Connector):
             report_type, customer_id, params, query, len(rows), limit, customer_context
         )
         if output_format == "json":
-            return ActionResponse.success({"metadata": metadata, "rows": rows}).to_response()
+            return ActionResponse.success(
+                {"metadata": metadata, "rows": rows}
+            ).to_response()
         if output_format == "xlsx":
             content = rows_to_xlsx(rows, metadata=metadata)
             return Response(
@@ -864,7 +912,9 @@ class GoogleAdsConnector(Connector):
         try:
             rows = await client.run_gaql(customer_id, query, limit=1)
         except GoogleAdsConnectorError as exc:
-            logger.warning("Failed to fetch Google Ads customer report context: %s", exc)
+            logger.warning(
+                "Failed to fetch Google Ads customer report context: %s", exc
+            )
             return {}
         if not rows:
             return {}
@@ -902,7 +952,6 @@ class GoogleAdsConnector(Connector):
                 "limit": limit,
             }
         ).to_response()
-
 
 
 def _optional_customer_id(params: dict[str, Any]) -> str | None:
@@ -969,12 +1018,17 @@ def _report_common_schema_properties() -> dict[str, Any]:
         "date_range": {"type": "string", "default": "LAST_30_DAYS"},
         "start_date": {"type": "string", "description": "YYYY-MM-DD inclusive"},
         "end_date": {"type": "string", "description": "YYYY-MM-DD inclusive"},
-        "limit": {"type": "integer", "default": DEFAULT_REPORT_LIMIT, "maximum": MAX_JSON_ROWS},
+        "limit": {
+            "type": "integer",
+            "default": DEFAULT_REPORT_LIMIT,
+            "maximum": MAX_JSON_ROWS,
+        },
     }
 
 
 def _report_action_schema(
-    *, extra_properties: dict[str, Any] | None = None,
+    *,
+    extra_properties: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "type": "object",
@@ -1044,7 +1098,9 @@ def _date_where_clause(params: dict[str, Any]) -> str:
         return f"segments.date BETWEEN '{start_date}' AND '{end_date}'"
     date_range = str(params.get("date_range") or "LAST_30_DAYS").strip().upper()
     if not date_range.replace("_", "").isalnum():
-        raise ValueError("date_range must be a Google Ads DURING literal like LAST_30_DAYS")
+        raise ValueError(
+            "date_range must be a Google Ads DURING literal like LAST_30_DAYS"
+        )
     return f"segments.date DURING {date_range}"
 
 
@@ -1381,7 +1437,9 @@ def _report_metadata(
     }
 
 
-def rows_to_csv(rows: list[dict[str, Any]], metadata: dict[str, Any] | None = None) -> str:
+def rows_to_csv(
+    rows: list[dict[str, Any]], metadata: dict[str, Any] | None = None
+) -> str:
     flattened = _flatten_report_rows(rows)
     fieldnames = sorted({key for row in flattened for key in row}) or ["result"]
     schema = _infer_schema(flattened, fieldnames)
@@ -1403,7 +1461,9 @@ def rows_to_csv(rows: list[dict[str, Any]], metadata: dict[str, Any] | None = No
     return output.getvalue()
 
 
-def rows_to_xlsx(rows: list[dict[str, Any]], metadata: dict[str, Any] | None = None) -> bytes:
+def rows_to_xlsx(
+    rows: list[dict[str, Any]], metadata: dict[str, Any] | None = None
+) -> bytes:
     from openpyxl import Workbook  # type: ignore[import-untyped]
 
     flattened = _flatten_report_rows(rows)
@@ -1465,7 +1525,10 @@ def _as_float(value: Any) -> float | None:
 
 
 def _infer_schema(rows: list[dict[str, Any]], fieldnames: list[str]) -> dict[str, str]:
-    return {field: _infer_column_type([row.get(field) for row in rows]) for field in fieldnames}
+    return {
+        field: _infer_column_type([row.get(field) for row in rows])
+        for field in fieldnames
+    }
 
 
 def _infer_column_type(values: list[Any]) -> str:
@@ -1476,7 +1539,10 @@ def _infer_column_type(values: list[Any]) -> str:
         return "boolean"
     if all(isinstance(value, int) and not isinstance(value, bool) for value in present):
         return "integer"
-    if all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in present):
+    if all(
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+        for value in present
+    ):
         return "number"
     return "text"
 

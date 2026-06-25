@@ -261,6 +261,8 @@ class TestConnectorMcpIntegration:
         manifest = await stdio_connector.get_manifest(connector_url="http://test:8000")
         assert len(manifest.prompts) == 1
         assert manifest.prompts[0].name == "summarize"
+        assert len(manifest.skills) == 1
+        assert manifest.skills[0].id == "mcp:summarize"
 
     async def test_execute_action_delegates_to_mcp(self, stdio_connector: Connector):
         result = await stdio_connector.execute_action("greet", {"name": "Omni"}, {})

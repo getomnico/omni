@@ -11,6 +11,7 @@ from .models import (
     ActionDefinition,
     ActionResponse,
     ConnectorManifest,
+    ConnectorSkillDefinition,
     OAuthManifestConfig,
     SearchOperator,
 )
@@ -69,6 +70,11 @@ class Connector(ABC):
     @property
     def search_operators(self) -> list[SearchOperator]:
         """Search operators this connector supports. Override to declare operators."""
+        return []
+
+    @property
+    def skills(self) -> list[ConnectorSkillDefinition]:
+        """Connector-owned skills. Override for connector-specific instructions."""
         return []
 
     def oauth_config(self) -> OAuthManifestConfig | None:
@@ -169,11 +175,22 @@ class Connector(ABC):
                 merged.append(action)
         return merged
 
+    def _mcp_prompt_skill(
+        self, prompt_name: str, description: str | None
+    ) -> ConnectorSkillDefinition:
+        return ConnectorSkillDefinition(
+            id=f"mcp:{prompt_name}",
+            title=prompt_name,
+            description=description,
+            mcp_prompt=prompt_name,
+        )
+
     async def get_manifest(self, connector_url: str) -> ConnectorManifest:
         """Return connector manifest."""
         adapter = self.mcp_adapter
         resources = []
         prompts = []
+        skills = list(self.skills)
         if adapter is not None:
             try:
                 resources = await adapter.get_resource_definitions()
@@ -181,6 +198,11 @@ class Connector(ABC):
                 logger.warning("Failed to list MCP resources", exc_info=True)
             try:
                 prompts = await adapter.get_prompt_definitions()
+                manual_skill_ids = {skill.id for skill in skills}
+                for prompt in prompts:
+                    skill = self._mcp_prompt_skill(prompt.name, prompt.description)
+                    if skill.id not in manual_skill_ids:
+                        skills.append(skill)
             except Exception:
                 logger.warning("Failed to list MCP prompts", exc_info=True)
         return ConnectorManifest(
@@ -197,6 +219,7 @@ class Connector(ABC):
             mcp_enabled=adapter is not None,
             resources=resources,
             prompts=prompts,
+            skills=skills,
             oauth=self.oauth_config(),
         )
 

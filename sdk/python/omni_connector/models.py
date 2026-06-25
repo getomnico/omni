@@ -172,6 +172,15 @@ class McpPromptDefinition(BaseModel):
     arguments: list[McpPromptArgument] = Field(default_factory=list)
 
 
+class ConnectorSkillDefinition(BaseModel):
+    id: str
+    title: str
+    description: str | None = None
+    source_types: list[str] = Field(default_factory=list)
+    content: str | None = None
+    mcp_prompt: str | None = None
+
+
 class OAuthScopeSet(BaseModel):
     read: list[str] = Field(default_factory=list)
     write: list[str] = Field(default_factory=list)
@@ -210,7 +219,20 @@ class ConnectorManifest(BaseModel):
     mcp_enabled: bool = False
     resources: list[McpResourceDefinition] = Field(default_factory=list)
     prompts: list[McpPromptDefinition] = Field(default_factory=list)
+    skills: list[ConnectorSkillDefinition] = Field(default_factory=list)
     oauth: OAuthManifestConfig | None = None
+
+
+class SkillRequest(BaseModel):
+    skill_id: str
+    arguments: dict[str, Any] | None = None
+    credentials: dict[str, Any] = Field(default_factory=dict)
+
+
+class SkillResponse(BaseModel):
+    skill_id: str
+    title: str
+    content: str
 
 
 class SyncRequest(BaseModel):

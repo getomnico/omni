@@ -17,6 +17,8 @@ from .models import (
     CancelResponse,
     PromptRequest,
     ResourceRequest,
+    SkillRequest,
+    SkillResponse,
     SyncMode,
     SyncRequest,
     SyncResponse,
@@ -282,5 +284,89 @@ def create_app(connector: "Connector") -> FastAPI:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 content={"error": str(e)},
             )
+
+    @app.post("/skill")
+    async def get_skill(request: SkillRequest) -> JSONResponse:
+        logger.info("Skill requested: %s", request.skill_id)
+        for skill in connector.skills:
+            if skill.id != request.skill_id:
+                continue
+            if skill.content is not None:
+                return JSONResponse(
+                    status_code=status.HTTP_200_OK,
+                    content=SkillResponse(
+                        skill_id=skill.id,
+                        title=skill.title,
+                        content=skill.content,
+                    ).model_dump(),
+                )
+            if skill.mcp_prompt:
+                return await _mcp_skill_response(
+                    skill.id, skill.title, skill.mcp_prompt, request
+                )
+
+        prompt_name = (
+            request.skill_id.removeprefix("mcp:")
+            if request.skill_id.startswith("mcp:")
+            else None
+        )
+        if prompt_name:
+            return await _mcp_skill_response(
+                request.skill_id, "MCP Prompt", prompt_name, request
+            )
+
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"error": f"Unknown skill: {request.skill_id}"},
+        )
+
+    async def _mcp_skill_response(
+        skill_id: str,
+        title: str,
+        prompt_name: str,
+        request: SkillRequest,
+    ) -> JSONResponse:
+        adapter = connector.mcp_adapter
+        if adapter is None:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"error": "MCP not enabled for this connector"},
+            )
+        try:
+            auth = connector._prepare_mcp_auth(request.credentials)
+            result = await adapter.get_prompt(prompt_name, request.arguments, **auth)
+            content = _mcp_prompt_to_text(result)
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content=SkillResponse(
+                    skill_id=skill_id,
+                    title=title,
+                    content=content,
+                ).model_dump(),
+            )
+        except Exception as e:
+            logger.error("Skill get failed for %s: %s", skill_id, e)
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={"error": str(e)},
+            )
+
+    def _mcp_prompt_to_text(value: dict[str, Any]) -> str:
+        parts: list[str] = []
+        description = value.get("description")
+        if isinstance(description, str) and description:
+            parts.append(description)
+        messages = value.get("messages")
+        if isinstance(messages, list):
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                content = message.get("content")
+                if not isinstance(content, dict):
+                    continue
+                text = content.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n\n".join(parts)
 
     return app

@@ -204,6 +204,8 @@ def test_manifest_fields_and_oauth_config():
     assert connector.display_name == "Google Ads"
     assert connector.source_types == ["google_ads"]
     assert connector.sync_modes == ["full", "incremental"]
+    assert connector.skills[0].id == "google_ads"
+    assert "Google Ads Skill" in connector.skills[0].content
     assert oauth.provider == "google_ads"
     assert "https://www.googleapis.com/auth/adwords" in oauth.scopes["google_ads"].read
 
@@ -235,7 +237,11 @@ def test_gaql_validation_and_csv_export():
 
 def test_action_query_params_clamps_export_limits():
     _, _, limit = _action_query_params(
-        {"customer_id": "123", "query": "SELECT campaign.id FROM campaign", "limit": 999999},
+        {
+            "customer_id": "123",
+            "query": "SELECT campaign.id FROM campaign",
+            "limit": 999999,
+        },
         max_limit=MAX_XLSX_ROWS,
     )
 
@@ -243,9 +249,7 @@ def test_action_query_params_clamps_export_limits():
 
 
 def test_curated_report_query_uses_date_range_and_metrics():
-    query = build_report_query(
-        "campaign_performance", {"date_range": "LAST_7_DAYS"}
-    )
+    query = build_report_query("campaign_performance", {"date_range": "LAST_7_DAYS"})
 
     assert "FROM campaign" in query
     assert "segments.date DURING LAST_7_DAYS" in query
