@@ -57,7 +57,7 @@ async def test_test_provider_surfaces_provider_error(admin_client):
     assert "Model use case details" in body["error"]
     assert body["provider"] == "bedrock"
     assert body["status_code"] == 404
-    assert body["model"] == "anthropic.claude-sonnet-4-20250514-v1:0"
+    assert body["model"] is None
 
 
 @pytest.mark.integration

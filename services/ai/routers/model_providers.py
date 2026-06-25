@@ -318,7 +318,7 @@ async def test_model_provider(
             error=e.message,
             provider=e.provider_type,
             status_code=e.status_code,
-            model=e.model,
+            model=None,
         )
     except TimeoutError:
         return TestModelResponse(
@@ -334,5 +334,5 @@ async def test_model_provider(
             error=str(e),
             provider=provider.provider_type,
             status_code=_error_status_code(e),
-            model=provider.model_name,
+            model=None,
         )
