@@ -12,14 +12,21 @@ import {
     deleteModel,
     setDefaultModel,
     setSecondaryModel,
+    createModelSeeds,
     createPredefinedModels,
     MODEL_PROVIDER_TYPES,
+    PREDEFINED_MODELS,
     type ModelProviderConfig,
     type ModelProviderType,
 } from '$lib/server/db/model-providers'
 import { env } from '$env/dynamic/private'
 import { logger } from '$lib/server/logger'
-import type { TestModelRequest, TestModelResponse } from '$lib/types/model-provider'
+import type {
+    AvailableModel,
+    ListProviderModelsResponse,
+    TestModelRequest,
+    TestModelResponse,
+} from '$lib/types/model-provider'
 
 async function reloadAIProviders() {
     try {
@@ -32,6 +39,42 @@ async function reloadAIProviders() {
 function stripSecrets(config: Record<string, unknown>): Record<string, unknown> {
     const { apiKey, ...rest } = config
     return rest
+}
+
+function rankDiscoveredModels(providerType: ModelProviderType, models: AvailableModel[]) {
+    const predefined = PREDEFINED_MODELS[providerType] ?? []
+    const discoveredById = new Map(models.map((m) => [m.model_id, m]))
+    const preferred = predefined
+        .filter((m) => discoveredById.has(m.modelId))
+        .map((m) => ({ modelId: m.modelId, displayName: m.displayName }))
+    const preferredIds = new Set(preferred.map((m) => m.modelId))
+    const remaining = models
+        .filter((m) => !preferredIds.has(m.model_id))
+        .map((m) => ({ modelId: m.model_id, displayName: m.display_name }))
+    return [...preferred, ...remaining].slice(0, 3)
+}
+
+async function listAvailableProviderModels(
+    providerType: ModelProviderType,
+    config: ModelProviderConfig,
+) {
+    const built = buildTestRequest(providerType, config, null)
+    if ('error' in built) return []
+
+    try {
+        const resp = await fetch(`${env.AI_SERVICE_URL}/admin/provider/${providerType}/models`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(built),
+        })
+        if (!resp.ok) return []
+
+        const body = (await resp.json()) as ListProviderModelsResponse
+        return rankDiscoveredModels(providerType, body.models ?? [])
+    } catch (err) {
+        logger.warn('Failed to list provider models', { providerType, err })
+        return []
+    }
 }
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -82,7 +125,12 @@ export const actions: Actions = {
 
         try {
             const provider = await createProvider({ name, providerType, config })
-            await createPredefinedModels(provider.id, providerType)
+            const discoveredModels = await listAvailableProviderModels(providerType, config)
+            if (discoveredModels.length > 0) {
+                await createModelSeeds(provider.id, discoveredModels)
+            } else {
+                await createPredefinedModels(provider.id, providerType)
+            }
             await reloadAIProviders()
             return { success: true, message: 'Provider connected' }
         } catch (err) {

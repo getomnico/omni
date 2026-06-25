@@ -7,7 +7,11 @@ from pydantic import BaseModel
 
 from db import ModelsRepository
 from providers import LLMProvider, ProviderError, ProviderType, create_llm_provider
+from providers.anthropic import AnthropicProvider
 from providers.azure_foundry import AzureFoundryProvider
+from providers.bedrock import BedrockProvider
+from providers.gemini import GeminiProvider
+from providers.openai import OpenAIProvider
 from providers.openai_compatible import OpenAICompatibleProvider
 from providers.vertex_ai import VertexAIProvider
 from services.providers import load_models
@@ -60,6 +64,18 @@ class TestModelResponse(BaseModel):
     latency_ms: int | None = None
 
 
+class AvailableModel(BaseModel):
+    model_id: str
+    display_name: str
+
+
+class ListProviderModelsResponse(BaseModel):
+    models: list[AvailableModel]
+
+
+DISCOVERED_MODELS_LIMIT = 3
+
+
 def _build_provider(provider_type: ProviderType, req: TestModelRequest) -> LLMProvider:
     kwargs = req.model_dump(exclude_none=True)
     return create_llm_provider(provider_type, **kwargs)
@@ -81,58 +97,189 @@ def _error_status_code(e: BaseException) -> int | None:
     return None
 
 
-async def _test_openai_compatible_connection_without_model(
-    provider: OpenAICompatibleProvider,
-) -> str | None:
-    models_page = await provider.client.models.list()
-    models = getattr(models_page, "data", None) or []
-    if not models:
+def _display_name(model_id: str, candidate: object = None) -> str:
+    return candidate if isinstance(candidate, str) and candidate else model_id
+
+
+def _google_model_id(name: object) -> str | None:
+    if not isinstance(name, str) or not name:
         return None
-    first_model = models[0]
-    model_id = getattr(first_model, "id", None)
-    return model_id if isinstance(model_id, str) else None
+    if "/models/" in name:
+        return name.rsplit("/models/", 1)[1]
+    if name.startswith("models/"):
+        return name.removeprefix("models/")
+    return name
 
 
-async def _test_bedrock_connection_without_model(req: TestModelRequest) -> str | None:
+def _is_openai_chat_model(model_id: str) -> bool:
+    normalized = model_id.lower()
+    if any(
+        part in normalized
+        for part in (
+            "audio",
+            "dall-e",
+            "embedding",
+            "image",
+            "moderation",
+            "realtime",
+            "search",
+            "tts",
+            "transcribe",
+            "whisper",
+        )
+    ):
+        return False
+    return normalized.startswith(("gpt-", "chatgpt-", "o1", "o3", "o4", "o5"))
+
+
+async def _list_openai_sdk_models(
+    client: object,
+    *,
+    limit: int = DISCOVERED_MODELS_LIMIT,
+    chat_only: bool = False,
+) -> list[AvailableModel]:
+    models_page = await client.models.list()
+    models = getattr(models_page, "data", None) or []
+    result: list[AvailableModel] = []
+    for model in models:
+        model_id = getattr(model, "id", None)
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        if chat_only and not _is_openai_chat_model(model_id):
+            continue
+        result.append(AvailableModel(model_id=model_id, display_name=model_id))
+        if len(result) >= limit:
+            break
+    return result
+
+
+async def _list_anthropic_models(
+    provider: AnthropicProvider,
+    limit: int = DISCOVERED_MODELS_LIMIT,
+) -> list[AvailableModel]:
+    models_page = await provider.client.models.list(limit=limit)
+    models = getattr(models_page, "data", None) or []
+    result: list[AvailableModel] = []
+    for model in models:
+        model_id = getattr(model, "id", None)
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        result.append(
+            AvailableModel(
+                model_id=model_id,
+                display_name=_display_name(model_id, getattr(model, "display_name", None)),
+            )
+        )
+        if len(result) >= limit:
+            break
+    return result
+
+
+async def _list_gemini_models(
+    provider: GeminiProvider | VertexAIProvider,
+    limit: int = DISCOVERED_MODELS_LIMIT,
+) -> list[AvailableModel]:
+    client = provider.client if isinstance(provider, GeminiProvider) else provider._delegate.client
+    async_models = client.aio.models.list()
+    result: list[AvailableModel] = []
+    async for model in async_models:
+        supported_actions = getattr(model, "supported_actions", None) or []
+        if supported_actions and "generateContent" not in supported_actions:
+            continue
+        model_id = _google_model_id(getattr(model, "name", None))
+        if not model_id:
+            continue
+        result.append(
+            AvailableModel(
+                model_id=model_id,
+                display_name=_display_name(model_id, getattr(model, "display_name", None)),
+            )
+        )
+        if len(result) >= limit:
+            break
+    return result
+
+
+async def _list_bedrock_models(
+    req: TestModelRequest,
+    limit: int = DISCOVERED_MODELS_LIMIT,
+) -> list[AvailableModel]:
     import boto3
 
     client = boto3.client("bedrock", region_name=req.region_name)
     response = await asyncio.to_thread(client.list_foundation_models)
     summaries = response.get("modelSummaries", [])
-    if not summaries:
-        return None
-    model_id = summaries[0].get("modelId")
-    return model_id if isinstance(model_id, str) else None
+    result: list[AvailableModel] = []
+    for summary in summaries:
+        model_id = summary.get("modelId")
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        if not any(family in model_id.lower() for family in BedrockProvider.MODEL_FAMILIES):
+            continue
+        result.append(
+            AvailableModel(
+                model_id=model_id,
+                display_name=_display_name(model_id, summary.get("modelName")),
+            )
+        )
+        if len(result) >= limit:
+            break
+    return result
 
 
-async def _test_azure_foundry_connection_without_model(
-    provider: AzureFoundryProvider,
+async def _list_provider_models(
+    provider_type: ProviderType,
+    provider: LLMProvider,
+    req: TestModelRequest,
+    limit: int = DISCOVERED_MODELS_LIMIT,
+) -> list[AvailableModel]:
+    if provider_type == ProviderType.ANTHROPIC and isinstance(provider, AnthropicProvider):
+        return await _list_anthropic_models(provider, limit)
+    if provider_type == ProviderType.OPENAI and isinstance(provider, OpenAIProvider):
+        return await _list_openai_sdk_models(provider.client, limit=limit, chat_only=True)
+    if provider_type == ProviderType.GEMINI and isinstance(provider, GeminiProvider):
+        return await _list_gemini_models(provider, limit)
+    if provider_type == ProviderType.OPENAI_COMPATIBLE and isinstance(
+        provider, OpenAICompatibleProvider
+    ):
+        return await _list_openai_sdk_models(provider.client, limit=limit)
+    if provider_type == ProviderType.BEDROCK:
+        return await _list_bedrock_models(req, limit)
+    if provider_type == ProviderType.AZURE_FOUNDRY and isinstance(
+        provider, AzureFoundryProvider
+    ):
+        return await _list_openai_sdk_models(provider._delegate.client, limit=limit)
+    if provider_type == ProviderType.VERTEX_AI and isinstance(provider, VertexAIProvider):
+        return await _list_gemini_models(provider, limit)
+    return []
+
+
+async def _first_provider_model(
+    provider_type: ProviderType,
+    provider: LLMProvider,
+    req: TestModelRequest,
 ) -> str | None:
-    delegate = provider._delegate
-    client = delegate.client
-    models_page = await client.models.list()
-    models = getattr(models_page, "data", None) or []
-    if not models:
-        return None
-    first_model = models[0]
-    model_id = getattr(first_model, "id", None)
-    return model_id if isinstance(model_id, str) else None
+    models = await _list_provider_models(provider_type, provider, req, limit=1)
+    return models[0].model_id if models else None
 
 
-async def _test_vertex_ai_connection_without_model(
-    provider: VertexAIProvider,
-) -> str | None:
-    delegate = provider._delegate
-    client = delegate.client
-    async_models = client.aio.models.list()
-    async for model in async_models:
-        model_name = getattr(model, "name", None)
-        if isinstance(model_name, str):
-            return model_name
-        model_id = getattr(model, "id", None)
-        if isinstance(model_id, str):
-            return model_id
-    return None
+@router.post(
+    "/admin/provider/{provider_type}/models", response_model=ListProviderModelsResponse
+)
+async def list_provider_models(
+    provider_type: ProviderType,
+    req: TestModelRequest,
+) -> ListProviderModelsResponse:
+    try:
+        provider = _build_provider(provider_type, req)
+        models = await asyncio.wait_for(
+            _list_provider_models(provider_type, provider, req),
+            timeout=15,
+        )
+        return ListProviderModelsResponse(models=models)
+    except Exception as e:
+        logger.warning(f"List models: failed for {provider_type}: {e}")
+        return ListProviderModelsResponse(models=[])
 
 
 @router.post("/admin/provider/{provider_type}/test", response_model=TestModelResponse)
@@ -156,28 +303,16 @@ async def test_model_provider(
     try:
         no_model = req.model is None and req.model_id is None
         provider_level_model: str | None = None
-        if no_model:
-            if provider_type == ProviderType.OPENAI_COMPATIBLE:
-                provider_level_model = await asyncio.wait_for(
-                    _test_openai_compatible_connection_without_model(provider),
-                    timeout=15,
-                )
-            elif provider_type == ProviderType.BEDROCK:
-                provider_level_model = await asyncio.wait_for(
-                    _test_bedrock_connection_without_model(req),
-                    timeout=15,
-                )
-            elif provider_type == ProviderType.AZURE_FOUNDRY:
-                provider_level_model = await asyncio.wait_for(
-                    _test_azure_foundry_connection_without_model(provider),
-                    timeout=15,
-                )
-            elif provider_type == ProviderType.VERTEX_AI:
-                provider_level_model = await asyncio.wait_for(
-                    _test_vertex_ai_connection_without_model(provider),
-                    timeout=15,
-                )
-
+        if no_model and provider_type in {
+            ProviderType.OPENAI_COMPATIBLE,
+            ProviderType.BEDROCK,
+            ProviderType.AZURE_FOUNDRY,
+            ProviderType.VERTEX_AI,
+        }:
+            provider_level_model = await asyncio.wait_for(
+                _first_provider_model(provider_type, provider, req),
+                timeout=15,
+            )
             if provider_level_model is not None or provider_type in {
                 ProviderType.OPENAI_COMPATIBLE,
                 ProviderType.BEDROCK,

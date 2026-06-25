@@ -42,6 +42,11 @@ export interface CreateModelInput {
     isSecondary?: boolean
 }
 
+export interface ModelSeed {
+    modelId: string
+    displayName: string
+}
+
 export const PREDEFINED_MODELS: Record<
     ModelProviderType,
     { modelId: string; displayName: string }[]
@@ -160,6 +165,7 @@ export async function listAllActiveModels(): Promise<
             modelId: models.modelId,
             displayName: models.displayName,
             isDefault: models.isDefault,
+            isSecondary: models.isSecondary,
             isDeleted: models.isDeleted,
             createdAt: models.createdAt,
             updatedAt: models.updatedAt,
@@ -249,12 +255,11 @@ export async function setSecondaryModel(id: string): Promise<boolean> {
     return !!updated
 }
 
-export async function createPredefinedModels(
+export async function createModelSeeds(
     providerId: string,
-    providerType: ModelProviderType,
+    modelSeeds: ModelSeed[],
 ): Promise<Model[]> {
-    const predefined = PREDEFINED_MODELS[providerType]
-    if (!predefined || predefined.length === 0) return []
+    if (modelSeeds.length === 0) return []
 
     const hasExistingDefault = await db
         .select({ id: models.id })
@@ -263,16 +268,23 @@ export async function createPredefinedModels(
         .limit(1)
 
     const createdModels: Model[] = []
-    for (let i = 0; i < predefined.length; i++) {
+    for (let i = 0; i < modelSeeds.length; i++) {
         const isDefault = i === 0 && hasExistingDefault.length === 0
         const model = await createModel({
             modelProviderId: providerId,
-            modelId: predefined[i].modelId,
-            displayName: predefined[i].displayName,
+            modelId: modelSeeds[i].modelId,
+            displayName: modelSeeds[i].displayName,
             isDefault,
         })
         createdModels.push(model)
     }
 
     return createdModels
+}
+
+export async function createPredefinedModels(
+    providerId: string,
+    providerType: ModelProviderType,
+): Promise<Model[]> {
+    return await createModelSeeds(providerId, PREDEFINED_MODELS[providerType] ?? [])
 }

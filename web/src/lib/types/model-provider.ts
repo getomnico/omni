@@ -30,6 +30,15 @@ export interface TestModelResponse {
     latency_ms: number | null
 }
 
+export interface AvailableModel {
+    model_id: string
+    display_name: string
+}
+
+export interface ListProviderModelsResponse {
+    models: AvailableModel[]
+}
+
 // SSE `event: stream_error` payload from /chat/{id}/stream.
 export interface StreamErrorEvent {
     message: string

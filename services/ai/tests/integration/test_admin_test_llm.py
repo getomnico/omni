@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from providers import ProviderError, ProviderType
+from routers.model_providers import AvailableModel
 from routers.model_providers import router as model_providers_router
 
 
@@ -89,12 +90,9 @@ async def test_test_provider_uses_provider_type_from_path(admin_client):
 
 @pytest.mark.integration
 async def test_openai_compatible_without_model_tests_models_endpoint(admin_client):
-    list_models = AsyncMock(return_value="deepseek-v4-flash")
+    first_model = AsyncMock(return_value="deepseek-v4-flash")
 
-    with patch(
-        "routers.model_providers._test_openai_compatible_connection_without_model",
-        list_models,
-    ):
+    with patch("routers.model_providers._first_provider_model", first_model):
         resp = await admin_client.post(
             "/admin/provider/openai_compatible/test",
             json={
@@ -107,7 +105,7 @@ async def test_openai_compatible_without_model_tests_models_endpoint(admin_clien
     body = resp.json()
     assert body["ok"] is True
     assert body["model"] == "deepseek-v4-flash"
-    list_models.assert_awaited_once()
+    first_model.assert_awaited_once()
 
 
 @pytest.mark.integration
@@ -115,14 +113,11 @@ async def test_bedrock_without_model_tests_provider_level_connection(admin_clien
     fake_provider = AsyncMock()
     fake_provider.model_name = "default-bedrock-model"
     fake_provider.provider_type = ProviderType.BEDROCK
-    test_connection = AsyncMock(return_value="anthropic.claude-sonnet-4-5")
+    first_model = AsyncMock(return_value="anthropic.claude-sonnet-4-5")
 
     with (
         patch("routers.model_providers.create_llm_provider", return_value=fake_provider),
-        patch(
-            "routers.model_providers._test_bedrock_connection_without_model",
-            test_connection,
-        ),
+        patch("routers.model_providers._first_provider_model", first_model),
     ):
         resp = await admin_client.post(
             "/admin/provider/bedrock/test",
@@ -133,7 +128,7 @@ async def test_bedrock_without_model_tests_provider_level_connection(admin_clien
     body = resp.json()
     assert body["ok"] is True
     assert body["model"] == "anthropic.claude-sonnet-4-5"
-    test_connection.assert_awaited_once()
+    first_model.assert_awaited_once()
 
 
 @pytest.mark.integration
@@ -141,14 +136,11 @@ async def test_azure_foundry_without_model_tests_provider_level_connection(admin
     fake_provider = AsyncMock()
     fake_provider.model_name = "gpt-4o"
     fake_provider.provider_type = ProviderType.AZURE_FOUNDRY
-    test_connection = AsyncMock(return_value="gpt-4o")
+    first_model = AsyncMock(return_value="gpt-4o")
 
     with (
         patch("routers.model_providers.create_llm_provider", return_value=fake_provider),
-        patch(
-            "routers.model_providers._test_azure_foundry_connection_without_model",
-            test_connection,
-        ),
+        patch("routers.model_providers._first_provider_model", first_model),
     ):
         resp = await admin_client.post(
             "/admin/provider/azure_foundry/test",
@@ -159,7 +151,7 @@ async def test_azure_foundry_without_model_tests_provider_level_connection(admin
     body = resp.json()
     assert body["ok"] is True
     assert body["model"] == "gpt-4o"
-    test_connection.assert_awaited_once()
+    first_model.assert_awaited_once()
 
 
 @pytest.mark.integration
@@ -167,14 +159,11 @@ async def test_vertex_ai_without_model_tests_provider_level_connection(admin_cli
     fake_provider = AsyncMock()
     fake_provider.model_name = "gemini-2.5-flash"
     fake_provider.provider_type = ProviderType.VERTEX_AI
-    test_connection = AsyncMock(return_value="publishers/google/models/gemini-2.5-flash")
+    first_model = AsyncMock(return_value="publishers/google/models/gemini-2.5-flash")
 
     with (
         patch("routers.model_providers.create_llm_provider", return_value=fake_provider),
-        patch(
-            "routers.model_providers._test_vertex_ai_connection_without_model",
-            test_connection,
-        ),
+        patch("routers.model_providers._first_provider_model", first_model),
     ):
         resp = await admin_client.post(
             "/admin/provider/vertex_ai/test",
@@ -185,4 +174,34 @@ async def test_vertex_ai_without_model_tests_provider_level_connection(admin_cli
     body = resp.json()
     assert body["ok"] is True
     assert body["model"] == "publishers/google/models/gemini-2.5-flash"
-    test_connection.assert_awaited_once()
+    first_model.assert_awaited_once()
+
+
+@pytest.mark.integration
+async def test_list_provider_models_returns_normalized_models(admin_client):
+    fake_provider = AsyncMock()
+    fake_provider.provider_type = ProviderType.OPENAI_COMPATIBLE
+    discovered_models = AsyncMock(
+        return_value=[
+            AvailableModel(model_id="deepseek-v4-flash", display_name="DeepSeek v4 Flash"),
+            AvailableModel(model_id="deepseek-v4-pro", display_name="DeepSeek v4 Pro"),
+        ]
+    )
+
+    with (
+        patch("routers.model_providers.create_llm_provider", return_value=fake_provider),
+        patch("routers.model_providers._list_provider_models", discovered_models),
+    ):
+        resp = await admin_client.post(
+            "/admin/provider/openai_compatible/models",
+            json={"base_url": "https://api.deepseek.com", "api_key": "x"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "models": [
+            {"model_id": "deepseek-v4-flash", "display_name": "DeepSeek v4 Flash"},
+            {"model_id": "deepseek-v4-pro", "display_name": "DeepSeek v4 Pro"},
+        ]
+    }
+    discovered_models.assert_awaited_once()
