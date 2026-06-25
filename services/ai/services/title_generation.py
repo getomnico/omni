@@ -63,7 +63,7 @@ async def generate_title_for_conversation(
         try:
             generated_title, usage = await llm_provider.generate_response(
                 prompt=prompt,
-                max_tokens=20,
+                max_tokens=512,
                 temperature=0.7,
                 top_p=0.9,
             )
