@@ -70,6 +70,17 @@ fn default_resolve_refs() -> bool {
     true
 }
 
+fn file_name_with_extension(file_name: &str, extension: &str) -> String {
+    if file_name
+        .to_ascii_lowercase()
+        .ends_with(&extension.to_ascii_lowercase())
+    {
+        file_name.to_string()
+    } else {
+        format!("{file_name}{extension}")
+    }
+}
+
 /// Build the composite external_id we use for a Gmail attachment document.
 ///
 /// Format: `{url_encoded_rfc822_msgid}:att:{url_encoded_filename}:{size}`.
@@ -507,31 +518,36 @@ impl GoogleConnector {
             _ => None,
         };
 
-        let (bytes, content_type) = if let Some((export_mime, _ext)) = export_mapping {
-            debug!(
-                "Using export_file to fetch file contents for file_id: {}",
-                file_id
-            );
-            let bytes = drive_client
-                .export_file(&google_auth, principal_email, file_id, export_mime)
-                .await?;
-            (bytes, export_mime.to_string())
-        } else {
-            debug!(
-                "Using download_file_binary to fetch file contents for file_id: {}",
-                file_id
-            );
-            let bytes = drive_client
-                .download_file_binary(&google_auth, principal_email, file_id)
-                .await?;
-            (bytes, mime_type.clone())
-        };
+        let (bytes, content_type, response_file_name) =
+            if let Some((export_mime, ext)) = export_mapping {
+                debug!(
+                    "Using export_file to fetch file contents for file_id: {}",
+                    file_id
+                );
+                let bytes = drive_client
+                    .export_file(&google_auth, principal_email, file_id, export_mime)
+                    .await?;
+                (
+                    bytes,
+                    export_mime.to_string(),
+                    file_name_with_extension(file_name, ext),
+                )
+            } else {
+                debug!(
+                    "Using download_file_binary to fetch file contents for file_id: {}",
+                    file_id
+                );
+                let bytes = drive_client
+                    .download_file_binary(&google_auth, principal_email, file_id)
+                    .await?;
+                (bytes, mime_type.clone(), file_name.clone())
+            };
 
         let resp = Response::builder()
             .status(200)
             .header("Content-Type", content_type)
             .header("Content-Length", bytes.len())
-            .header("X-File-Name", file_name);
+            .header("X-File-Name", response_file_name);
         let body = axum::body::Body::from(bytes);
         resp.body(body)
             .map_err(|e| anyhow::anyhow!("Failed to build response: {}", e))
@@ -1047,10 +1063,11 @@ mod tests {
     use crate::sync::SyncManager;
 
     use super::{
-        build_attachment_doc_id, build_gws_call_args, build_gws_schema_args, gws_action_response,
-        gws_required_action_scopes, missing_gws_call_scopes, parse_attachment_doc_id,
-        GoogleConnector, GwsCallRequest, GwsSchemaRequest, GMAIL_MODIFY_SCOPE, GMAIL_READ_SCOPE,
-        GMAIL_SEND_SCOPE, GOOGLE_DRIVE_READ_SCOPE, GOOGLE_DRIVE_WRITE_SCOPE,
+        build_attachment_doc_id, build_gws_call_args, build_gws_schema_args,
+        file_name_with_extension, gws_action_response, gws_required_action_scopes,
+        missing_gws_call_scopes, parse_attachment_doc_id, GoogleConnector, GwsCallRequest,
+        GwsSchemaRequest, GMAIL_MODIFY_SCOPE, GMAIL_READ_SCOPE, GMAIL_SEND_SCOPE,
+        GOOGLE_DRIVE_READ_SCOPE, GOOGLE_DRIVE_WRITE_SCOPE,
     };
 
     fn test_connector() -> GoogleConnector {
@@ -1124,6 +1141,22 @@ mod tests {
         assert!(scopes
             .iter()
             .any(|s| s == "https://www.googleapis.com/auth/gmail.readonly"));
+    }
+
+    #[test]
+    fn file_name_with_extension_appends_missing_extension() {
+        assert_eq!(
+            file_name_with_extension("Dummy Document", ".docx"),
+            "Dummy Document.docx"
+        );
+    }
+
+    #[test]
+    fn file_name_with_extension_does_not_duplicate_extension() {
+        assert_eq!(
+            file_name_with_extension("Dummy Document.DOCX", ".docx"),
+            "Dummy Document.DOCX"
+        );
     }
 
     #[test]
