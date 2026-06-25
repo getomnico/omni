@@ -339,6 +339,8 @@ async def _run_agent_loop(
         user_email=agent_user_email if not is_org_agent else None,
         memories=memories if memories else None,
         user_configuration=agent_user_configuration,
+        include_web_search=app_state.web_search_provider is not None,
+        include_fetch_web_page=app_state.web_fetch_provider is not None,
     )
 
     # Initialize conversation with a single trigger message

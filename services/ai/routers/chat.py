@@ -974,6 +974,8 @@ async def stream_chat(
             user_email=user_email,
             memories=memories if memories else None,
             user_configuration=user_configuration,
+            include_web_search=getattr(request.app.state, "web_search_provider", None) is not None,
+            include_fetch_web_page=getattr(request.app.state, "web_fetch_provider", None) is not None,
         )
 
         # Build messages, injecting ephemeral start message if needed
@@ -1079,6 +1081,8 @@ async def stream_chat(
             user_email=user_email,
             memories=memories if memories else None,
             user_configuration=user_configuration,
+            include_web_search=getattr(request.app.state, "web_search_provider", None) is not None,
+            include_fetch_web_page=getattr(request.app.state, "web_fetch_provider", None) is not None,
         )
 
     # Expand any omni_upload content blocks (inline small text, stage larger/binary in sandbox).
