@@ -757,10 +757,10 @@
                             </div>
                             <Button
                                 type="button"
-                                variant="link"
+                                variant="secondary"
                                 size="sm"
                                 disabled={isTesting || isSubmitting}
-                                class="h-auto cursor-pointer px-0 py-0 text-xs"
+                                class="cursor-pointer text-xs"
                                 onclick={() => testConnectionFormRef?.requestSubmit()}>
                                 {#if isTesting}
                                     <Loader2 class="mr-1.5 h-3 w-3 animate-spin" />

@@ -287,8 +287,8 @@ async def test_model_provider(
     provider_type: ProviderType,
     req: TestModelRequest,
 ) -> TestModelResponse:
-    """Send a tiny prompt to a not-necessarily-saved provider config and surface
-    the real error if it fails. Used by the admin Test Connection button."""
+    """List provider models to validate a not-necessarily-saved provider config.
+    Used by the admin Test Connection button."""
     try:
         provider = _build_provider(provider_type, req)
     except Exception as e:
@@ -301,41 +301,15 @@ async def test_model_provider(
 
     start = time.monotonic()
     try:
-        no_model = req.model is None and req.model_id is None
-        provider_level_model: str | None = None
-        if no_model and provider_type in {
-            ProviderType.OPENAI_COMPATIBLE,
-            ProviderType.BEDROCK,
-            ProviderType.AZURE_FOUNDRY,
-            ProviderType.VERTEX_AI,
-        }:
-            provider_level_model = await asyncio.wait_for(
-                _first_provider_model(provider_type, provider, req),
-                timeout=15,
-            )
-            if provider_level_model is not None or provider_type in {
-                ProviderType.OPENAI_COMPATIBLE,
-                ProviderType.BEDROCK,
-                ProviderType.AZURE_FOUNDRY,
-                ProviderType.VERTEX_AI,
-            }:
-                latency = int((time.monotonic() - start) * 1000)
-                return TestModelResponse(
-                    ok=True,
-                    provider=provider.provider_type,
-                    model=provider_level_model,
-                    latency_ms=latency,
-                )
-
-        await asyncio.wait_for(
-            provider.generate_response("Hi", max_tokens=5),
+        models = await asyncio.wait_for(
+            _list_provider_models(provider_type, provider, req, limit=1),
             timeout=15,
         )
         latency = int((time.monotonic() - start) * 1000)
         return TestModelResponse(
             ok=True,
             provider=provider.provider_type,
-            model=provider.model_name,
+            model=models[0].model_id if models else None,
             latency_ms=latency,
         )
     except ProviderError as e:
