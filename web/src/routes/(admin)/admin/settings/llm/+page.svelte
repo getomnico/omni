@@ -1,5 +1,6 @@
 <script lang="ts">
     import { enhance } from '$app/forms'
+    import type { SubmitFunction } from '@sveltejs/kit'
     import { Button } from '$lib/components/ui/button'
     import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
@@ -78,6 +79,7 @@
         | { ok: false; message: string; detail: string | null }
     let isTesting = $state(false)
     let testResult = $state<TestResult | null>(null)
+    let testConnectionFormRef = $state<HTMLFormElement | null>(null)
 
     let modelDialogOpen = $state(false)
     let modelFormState = $state<ModelFormState>({ ...emptyModelForm })
@@ -240,6 +242,48 @@
             providerId,
         }
         modelDialogOpen = true
+    }
+
+    function resetTestResult() {
+        testResult = null
+    }
+
+    const enhanceTestConnection: SubmitFunction = () => {
+        isTesting = true
+        testResult = null
+        return async ({ result }) => {
+            isTesting = false
+            if (result.type === 'success') {
+                testResult = {
+                    ok: true,
+                    message: (result.data?.message as string) || 'Connection successful',
+                }
+            } else if (result.type === 'failure') {
+                const resultData = result.data as
+                    | {
+                          error?: string
+                          provider?: string | null
+                          statusCode?: number | null
+                          model?: string | null
+                      }
+                    | undefined
+                const detailParts: string[] = []
+                if (resultData?.provider) detailParts.push(resultData.provider)
+                if (resultData?.model) detailParts.push(resultData.model)
+                if (resultData?.statusCode) detailParts.push(`HTTP ${resultData.statusCode}`)
+                testResult = {
+                    ok: false,
+                    message: resultData?.error || 'Connection failed',
+                    detail: detailParts.length ? detailParts.join(' · ') : null,
+                }
+            } else {
+                testResult = {
+                    ok: false,
+                    message: 'Connection failed',
+                    detail: null,
+                }
+            }
+        }
     }
 </script>
 
@@ -597,6 +641,7 @@
                                 name="apiKey"
                                 type="password"
                                 bind:value={formState.apiKey}
+                                oninput={resetTestResult}
                                 placeholder={editingHasApiKey && editMode
                                     ? 'Leave empty to keep current key'
                                     : formState.providerType === 'anthropic'
@@ -619,6 +664,7 @@
                                 id="apiUrl"
                                 name="apiUrl"
                                 bind:value={formState.apiUrl}
+                                oninput={resetTestResult}
                                 placeholder={formState.providerType === 'azure_foundry'
                                     ? 'https://<project>.services.ai.azure.com'
                                     : 'https://openrouter.ai/api/v1'}
@@ -658,6 +704,7 @@
                                 id="regionName"
                                 name="regionName"
                                 bind:value={formState.regionName}
+                                oninput={resetTestResult}
                                 placeholder={formState.providerType === 'vertex_ai'
                                     ? 'us-central1'
                                     : 'us-east-1 (auto-detected if empty)'}
@@ -672,6 +719,7 @@
                                 id="projectId"
                                 name="projectId"
                                 bind:value={formState.projectId}
+                                oninput={resetTestResult}
                                 placeholder="my-gcp-project"
                                 required />
                         </div>
@@ -698,39 +746,80 @@
                             </Alert.Description>
                         </Alert.Root>
                     {/if}
+
+                    <div class="border-border bg-muted/20 space-y-3 rounded-lg border p-3">
+                        <div class="flex items-start justify-between gap-3">
+                            <div class="space-y-1">
+                                <p class="text-sm font-medium">Connection check</p>
+                                <p class="text-muted-foreground text-xs">
+                                    Verify these credentials before saving the provider.
+                                </p>
+                            </div>
+                            <Button
+                                type="button"
+                                variant="link"
+                                size="sm"
+                                disabled={isTesting || isSubmitting}
+                                class="h-auto cursor-pointer px-0 py-0 text-xs"
+                                onclick={() => testConnectionFormRef?.requestSubmit()}>
+                                {#if isTesting}
+                                    <Loader2 class="mr-1.5 h-3 w-3 animate-spin" />
+                                    Testing...
+                                {:else}
+                                    Test connection
+                                {/if}
+                            </Button>
+                        </div>
+
+                        {#if testResult}
+                            {#if testResult.ok}
+                                <Alert.Root
+                                    class="border-green-500/50 bg-green-50 text-green-900 dark:border-green-500/40 dark:bg-green-950/40 dark:text-green-100">
+                                    <CircleCheck class="h-4 w-4" />
+                                    <Alert.Title>{testResult.message}</Alert.Title>
+                                </Alert.Root>
+                            {:else}
+                                {@const errorMessage = testResult.message}
+                                <Alert.Root variant="destructive">
+                                    <CircleAlert class="h-4 w-4" />
+                                    <Tooltip.Provider delayDuration={300}>
+                                        <Tooltip.Root>
+                                            <Tooltip.Trigger>
+                                                {#snippet child({ props })}
+                                                    <Alert.Title {...props} class="cursor-help">
+                                                        {errorMessage}
+                                                    </Alert.Title>
+                                                {/snippet}
+                                            </Tooltip.Trigger>
+                                            <Tooltip.Content class="max-w-sm text-left break-words">
+                                                {errorMessage}
+                                            </Tooltip.Content>
+                                        </Tooltip.Root>
+                                    </Tooltip.Provider>
+                                    {#if testResult.detail}
+                                        <Alert.Description>{testResult.detail}</Alert.Description>
+                                    {/if}
+                                </Alert.Root>
+                            {/if}
+                        {/if}
+                    </div>
                 </form>
 
-                {#if testResult}
-                    {#if testResult.ok}
-                        <Alert.Root
-                            class="border-green-500/50 bg-green-50 text-green-900 dark:border-green-500/40 dark:bg-green-950/40 dark:text-green-100">
-                            <CircleCheck class="h-4 w-4" />
-                            <Alert.Title>{testResult.message}</Alert.Title>
-                        </Alert.Root>
-                    {:else}
-                        {@const errorMessage = testResult.message}
-                        <Alert.Root variant="destructive">
-                            <CircleAlert class="h-4 w-4" />
-                            <Tooltip.Provider delayDuration={300}>
-                                <Tooltip.Root>
-                                    <Tooltip.Trigger>
-                                        {#snippet child({ props })}
-                                            <Alert.Title {...props} class="cursor-help">
-                                                {errorMessage}
-                                            </Alert.Title>
-                                        {/snippet}
-                                    </Tooltip.Trigger>
-                                    <Tooltip.Content class="max-w-sm text-left break-words">
-                                        {errorMessage}
-                                    </Tooltip.Content>
-                                </Tooltip.Root>
-                            </Tooltip.Provider>
-                            {#if testResult.detail}
-                                <Alert.Description>{testResult.detail}</Alert.Description>
-                            {/if}
-                        </Alert.Root>
+                <form
+                    class="hidden"
+                    method="POST"
+                    action="?/testConnection"
+                    use:enhance={enhanceTestConnection}
+                    bind:this={testConnectionFormRef}>
+                    {#if editMode}
+                        <input type="hidden" name="id" value={formState.id} />
                     {/if}
-                {/if}
+                    <input type="hidden" name="providerType" value={formState.providerType} />
+                    <input type="hidden" name="apiKey" value={formState.apiKey} />
+                    <input type="hidden" name="apiUrl" value={formState.apiUrl} />
+                    <input type="hidden" name="regionName" value={formState.regionName} />
+                    <input type="hidden" name="projectId" value={formState.projectId} />
+                </form>
 
                 <Dialog.Footer>
                     <Button
@@ -740,71 +829,6 @@
                         onclick={() => (dialogOpen = false)}>
                         Cancel
                     </Button>
-
-                    <form
-                        method="POST"
-                        action="?/testConnection"
-                        use:enhance={() => {
-                            isTesting = true
-                            testResult = null
-                            return async ({ result }) => {
-                                isTesting = false
-                                if (result.type === 'success') {
-                                    testResult = {
-                                        ok: true,
-                                        message:
-                                            (result.data?.message as string) ||
-                                            'Connection successful',
-                                    }
-                                } else if (result.type === 'failure') {
-                                    const data = result.data as
-                                        | {
-                                              error?: string
-                                              provider?: string | null
-                                              statusCode?: number | null
-                                              model?: string | null
-                                          }
-                                        | undefined
-                                    const detailParts: string[] = []
-                                    if (data?.provider) detailParts.push(data.provider)
-                                    if (data?.model) detailParts.push(data.model)
-                                    if (data?.statusCode)
-                                        detailParts.push(`HTTP ${data.statusCode}`)
-                                    testResult = {
-                                        ok: false,
-                                        message: data?.error || 'Connection failed',
-                                        detail: detailParts.length ? detailParts.join(' · ') : null,
-                                    }
-                                } else {
-                                    testResult = {
-                                        ok: false,
-                                        message: 'Connection failed',
-                                        detail: null,
-                                    }
-                                }
-                            }
-                        }}>
-                        {#if editMode}
-                            <input type="hidden" name="id" value={formState.id} />
-                        {/if}
-                        <input type="hidden" name="providerType" value={formState.providerType} />
-                        <input type="hidden" name="apiKey" value={formState.apiKey} />
-                        <input type="hidden" name="apiUrl" value={formState.apiUrl} />
-                        <input type="hidden" name="regionName" value={formState.regionName} />
-                        <input type="hidden" name="projectId" value={formState.projectId} />
-                        <Button
-                            type="submit"
-                            variant="secondary"
-                            disabled={isTesting || isSubmitting}
-                            class="cursor-pointer">
-                            {#if isTesting}
-                                <Loader2 class="mr-2 h-4 w-4 animate-spin" />
-                                Testing...
-                            {:else}
-                                Test connection
-                            {/if}
-                        </Button>
-                    </form>
 
                     <Button
                         type="submit"
