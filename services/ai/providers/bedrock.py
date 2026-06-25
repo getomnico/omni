@@ -6,10 +6,10 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import boto3
-from anthropic import AnthropicBedrock
+from anthropic import APIStatusError, AnthropicBedrock
 from anthropic.types import (
     MessageParam,
     Message,
@@ -38,8 +38,9 @@ from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic.types.raw_message_delta_event import Delta
 from botocore.exceptions import ClientError
 
-from . import LLMProvider, LLMProviderStreamError, TokenUsage
+from . import LLMProvider, TokenUsage
 from .anthropic_message_adapter import build_messages_for_anthropic_api
+from .types import ProviderError, ProviderType
 
 logger = logging.getLogger(__name__)
 
@@ -87,10 +88,12 @@ def sanitize_document_name(name: str) -> str:
 class BedrockProvider(LLMProvider):
     """Provider for AWS Bedrock Claude models."""
 
+    provider_type: ClassVar[ProviderType] = ProviderType.BEDROCK
     MODEL_FAMILIES = ["anthropic", "amazon"]
 
     def __init__(self, model_id: str, region_name: str | None = None):
         self.model_id = model_id
+        self.model_name = model_id
         self.model_family = self._determine_model_family(model_id)
         self.region_name = region_name
 
@@ -102,6 +105,24 @@ class BedrockProvider(LLMProvider):
             )
         else:
             self.client = boto3.client("bedrock-runtime", region_name=region_name)
+
+    def _to_provider_error(self, e: Exception) -> ProviderError:
+        if isinstance(e, ClientError):
+            error = e.response.get("Error", {})
+            code = error.get("Code", "Unknown")
+            message = error.get("Message", str(e))
+            status = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            body = f"{code}: {message}"
+        else:
+            body = str(e)
+            status = e.status_code if isinstance(e, APIStatusError) else None
+        return ProviderError(
+            body,
+            provider_type=self.provider_type,
+            model=self.model_name,
+            status_code=status,
+            cause=e,
+        )
 
     def _determine_model_family(self, model_id: str) -> str:
         """Determine the model family from the model ID."""
@@ -594,12 +615,12 @@ class BedrockProvider(LLMProvider):
                 f"[BEDROCK] AWS Bedrock client error ({error_code}): {str(e)}",
                 exc_info=True,
             )
-            raise LLMProviderStreamError(str(e)) from e
+            raise self._to_provider_error(e) from e
         except Exception as e:
             logger.error(
                 f"[BEDROCK] Failed to stream from AWS Bedrock: {str(e)}", exc_info=True
             )
-            raise LLMProviderStreamError(str(e)) from e
+            raise self._to_provider_error(e) from e
 
     async def generate_response(
         self,
@@ -677,10 +698,10 @@ class BedrockProvider(LLMProvider):
 
         except ClientError as e:
             logger.error(f"AWS Bedrock client error: {str(e)}")
-            raise Exception(f"AWS Bedrock service error: {e.response['Error']['Code']}")
+            raise self._to_provider_error(e) from e
         except Exception as e:
             logger.error(f"Failed to generate response from AWS Bedrock: {str(e)}")
-            raise Exception(f"Failed to generate response: {str(e)}")
+            raise self._to_provider_error(e) from e
 
     async def health_check(self) -> bool:
         """Check if AWS Bedrock service is accessible."""

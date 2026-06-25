@@ -5,13 +5,18 @@ Anthropic Claude Provider.
 import json
 import logging
 from collections.abc import AsyncIterator, Iterable
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
-from anthropic import AsyncAnthropic, AsyncStream, MessageStreamEvent
+from anthropic import APIStatusError, AsyncAnthropic, AsyncStream, MessageStreamEvent
 from anthropic.types import MessageParam, ToolParam
 
-from . import LLMProvider, LLMProviderStreamError, TokenUsage
+from . import LLMProvider, TokenUsage
 from .anthropic_message_adapter import build_messages_for_anthropic_api
+from .types import ProviderError, ProviderType
+
+
+def _anthropic_status_code(e: BaseException) -> int | None:
+    return e.status_code if isinstance(e, APIStatusError) else None
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +24,13 @@ logger = logging.getLogger(__name__)
 class AnthropicProvider(LLMProvider):
     """Provider for Anthropic Claude API."""
 
+    provider_type: ClassVar[ProviderType] = ProviderType.ANTHROPIC
+
     def __init__(self, api_key: str, model: str):
         self.api_key = api_key
         self.client = AsyncAnthropic(api_key=api_key)
         self.model = model
+        self.model_name = model
 
     def add_cache_control(
         self,
@@ -148,7 +156,13 @@ class AnthropicProvider(LLMProvider):
 
         except Exception as e:
             logger.error(f"Failed to stream from Anthropic: {str(e)}", exc_info=True)
-            raise LLMProviderStreamError(str(e)) from e
+            raise ProviderError(
+                str(e),
+                provider_type=self.provider_type,
+                model=self.model_name,
+                status_code=_anthropic_status_code(e),
+                cause=e,
+            ) from e
 
     async def generate_response(
         self,
@@ -188,7 +202,13 @@ class AnthropicProvider(LLMProvider):
 
         except Exception as e:
             logger.error(f"Failed to generate response from Anthropic: {str(e)}")
-            raise Exception(f"Failed to generate response: {str(e)}")
+            raise ProviderError(
+                str(e),
+                provider_type=self.provider_type,
+                model=self.model_name,
+                status_code=_anthropic_status_code(e),
+                cause=e,
+            ) from e
 
     async def health_check(self) -> bool:
         """Check if Anthropic API is accessible."""

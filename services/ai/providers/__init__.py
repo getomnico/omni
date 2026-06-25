@@ -5,9 +5,11 @@ LLM Provider abstraction layer for supporting multiple AI providers.
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 from anthropic import MessageStreamEvent
+
+from .types import ProviderError, ProviderType
 
 
 @dataclass
@@ -43,10 +45,11 @@ class LLMProvider(ABC):
     the stream/generate calls and let one provider serve many models.
     """
 
+    provider_type: ClassVar[ProviderType]
+
     # ID of this model's record in the models table
     model_record_id: str | None = None
     model_name: str | None = None
-    provider_type: str | None = None
     # Wire-level config exposed for downstream integrations (e.g. mem0
     # which needs to talk to the same endpoint with the same credentials).
     # Subclasses set these in __init__; left None when not applicable.
@@ -94,6 +97,7 @@ class LLMProvider(ABC):
         pass
 
 
+
 # Import all providers after base class definition
 from .anthropic import AnthropicProvider
 from .openai_compatible import OpenAICompatibleProvider
@@ -104,62 +108,68 @@ from .azure_foundry import AzureFoundryProvider
 from .vertex_ai import VertexAIProvider
 
 
-# Factory function to create LLM providers
-def create_llm_provider(provider_type: str, **kwargs) -> LLMProvider:
+def create_llm_provider(provider_type: ProviderType | str, **kwargs) -> LLMProvider:
     """Factory function to create LLM provider based on type."""
-    if provider_type.lower() == "openai_compatible":
+    pt = ProviderType(provider_type)
+
+    if pt is ProviderType.OPENAI_COMPATIBLE:
         base_url = kwargs.get("base_url")
         if not base_url:
             raise ValueError("base_url is required for OpenAI-compatible provider")
-        api_key = kwargs.get("api_key")
-        model = kwargs.get("model", "default")
-        return OpenAICompatibleProvider(base_url, api_key=api_key, model=model)
+        return OpenAICompatibleProvider(
+            base_url,
+            api_key=kwargs.get("api_key"),
+            model=kwargs.get("model", "default"),
+        )
 
-    elif provider_type.lower() == "anthropic":
+    if pt is ProviderType.ANTHROPIC:
         api_key = kwargs.get("api_key")
         if not api_key:
             raise ValueError("api_key is required for Anthropic provider")
-        model = kwargs.get("model", "claude-3-5-sonnet-20241022")
-        return AnthropicProvider(api_key, model)
+        return AnthropicProvider(
+            api_key, kwargs.get("model", "claude-3-5-sonnet-20241022")
+        )
 
-    elif provider_type.lower() == "bedrock":
-        model_id = kwargs.get("model_id", "us.anthropic.claude-sonnet-4-20250514-v1:0")
-        region_name = kwargs.get("region_name")
-        return BedrockProvider(model_id, region_name=region_name)
+    if pt is ProviderType.BEDROCK:
+        model_id = (
+            kwargs.get("model_id")
+            or kwargs.get("model")
+            or "us.anthropic.claude-sonnet-4-20250514-v1:0"
+        )
+        return BedrockProvider(model_id, region_name=kwargs.get("region_name"))
 
-    elif provider_type.lower() == "openai":
+    if pt is ProviderType.OPENAI:
         api_key = kwargs.get("api_key")
         if not api_key:
             raise ValueError("api_key is required for OpenAI provider")
-        model = kwargs.get("model", "gpt-4o")
-        return OpenAIProvider(api_key, model)
+        return OpenAIProvider(api_key, kwargs.get("model", "gpt-4o"))
 
-    elif provider_type.lower() == "gemini":
+    if pt is ProviderType.GEMINI:
         api_key = kwargs.get("api_key")
         if not api_key:
             raise ValueError("api_key is required for Gemini provider")
-        model = kwargs.get("model", "gemini-2.5-flash")
-        return GeminiProvider(api_key, model)
+        return GeminiProvider(api_key, kwargs.get("model", "gemini-2.5-flash"))
 
-    elif provider_type.lower() == "azure_foundry":
+    if pt is ProviderType.AZURE_FOUNDRY:
         endpoint_url = kwargs.get("endpoint_url")
         if not endpoint_url:
             raise ValueError("endpoint_url is required for Azure AI Foundry provider")
-        model = kwargs.get("model", "gpt-4o")
-        return AzureFoundryProvider(endpoint_url, model)
+        return AzureFoundryProvider(endpoint_url, kwargs.get("model", "gpt-4o"))
 
-    elif provider_type.lower() == "vertex_ai":
+    if pt is ProviderType.VERTEX_AI:
         region = kwargs.get("region")
         project_id = kwargs.get("project_id")
         if not region or not project_id:
             raise ValueError(
                 "region and project_id are required for Vertex AI provider"
             )
-        model = kwargs.get("model", "gemini-2.5-flash")
-        return VertexAIProvider(region=region, project_id=project_id, model=model)
+        return VertexAIProvider(
+            region=region,
+            project_id=project_id,
+            model=kwargs.get("model", "gemini-2.5-flash"),
+        )
 
-    else:
-        raise ValueError(f"Unknown provider type: {provider_type}")
+    raise ValueError(f"Unhandled provider type: {pt!r}")
 
 
 __all__ = [
@@ -167,6 +177,8 @@ __all__ = [
     "LLMProviderError",
     "LLMProviderStreamError",
     "LLMProvider",
+    "ProviderType",
+    "ProviderError",
     "AnthropicProvider",
     "OpenAICompatibleProvider",
     "BedrockProvider",

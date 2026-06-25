@@ -7,9 +7,9 @@ Uses the OpenAI Responses API (client.responses.create).
 import json
 import logging
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, ClassVar
 
-from openai import AsyncOpenAI
+from openai import APIStatusError, AsyncOpenAI
 from anthropic.types import (
     Message,
     MessageDeltaUsage,
@@ -28,7 +28,13 @@ from anthropic.types import (
 from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic.types.raw_message_delta_event import Delta
 
-from . import LLMProvider, LLMProviderStreamError, TokenUsage
+from . import LLMProvider, TokenUsage
+from .types import ProviderError, ProviderType
+
+
+def _openai_status_code(e: BaseException) -> int | None:
+    return e.status_code if isinstance(e, APIStatusError) else None
+
 
 logger = logging.getLogger(__name__)
 
@@ -82,10 +88,13 @@ def _convert_tools_to_openai(tools: list[dict[str, Any]]) -> list[dict[str, Any]
 class OpenAIProvider(LLMProvider):
     """Provider for OpenAI API (GPT-4, etc.) using the Responses API."""
 
+    provider_type: ClassVar[ProviderType] = ProviderType.OPENAI
+
     def __init__(self, api_key: str, model: str):
         self.api_key = api_key
         self.client = AsyncOpenAI(api_key=api_key)
         self.model = model
+        self.model_name = model
 
     async def stream_response(
         self,
@@ -278,18 +287,22 @@ class OpenAIProvider(LLMProvider):
                 elif event_type == "response.failed":
                     error = getattr(event.response, "error", None)
                     msg = getattr(error, "message", None) or "Response failed"
-                    raise LLMProviderStreamError(msg)
+                    raise RuntimeError(msg)
 
                 elif event_type == "error":
-                    raise LLMProviderStreamError(
-                        getattr(event, "message", "Unknown stream error")
-                    )
+                    raise RuntimeError(getattr(event, "message", "Unknown stream error"))
 
             yield RawMessageStopEvent(type="message_stop")
 
         except Exception as e:
             logger.error(f"Failed to stream from OpenAI: {str(e)}", exc_info=True)
-            raise LLMProviderStreamError(str(e)) from e
+            raise ProviderError(
+                str(e),
+                provider_type=self.provider_type,
+                model=self.model_name,
+                status_code=_openai_status_code(e),
+                cause=e,
+            ) from e
 
     def _convert_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert Anthropic-style messages to OpenAI Responses API input items."""
@@ -436,7 +449,13 @@ class OpenAIProvider(LLMProvider):
 
         except Exception as e:
             logger.error(f"Failed to generate response: {str(e)}")
-            raise Exception(f"Failed to generate response: {str(e)}") from e
+            raise ProviderError(
+                str(e),
+                provider_type=self.provider_type,
+                model=self.model_name,
+                status_code=_openai_status_code(e),
+                cause=e,
+            ) from e
 
     async def health_check(self) -> bool:
         """Check if OpenAI API is accessible."""

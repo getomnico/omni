@@ -53,6 +53,7 @@ from memory import (
 )
 from prompts import build_agent_chat_system_prompt, build_chat_system_prompt
 from providers import LLMProvider, LLMProviderStreamError
+from providers import ProviderError
 from services.compaction import ConversationCompactor
 from services.title_generation import generate_title_for_conversation
 from services.usage import UsageContext, UsagePurpose, UsageTracker, track_usage
@@ -83,6 +84,9 @@ logger = logging.getLogger(__name__)
 
 
 def _chat_error_message(exc: Exception) -> str:
+    if isinstance(exc, ProviderError) and exc.message:
+        return f"Failed to generate response: {exc.message}"
+
     if isinstance(exc, LLMProviderStreamError) and exc.message:
         return f"Failed to generate response: {exc.message}"
 
@@ -91,6 +95,15 @@ def _chat_error_message(exc: Exception) -> str:
         return f"Failed to generate response: {message}"
 
     return "Failed to generate response. Please try again."
+
+
+def _chat_error_payload(exc: Exception) -> dict[str, object]:
+    payload: dict[str, object] = {"message": _chat_error_message(exc)}
+    if isinstance(exc, ProviderError):
+        payload["provider"] = exc.provider_type
+        payload["model"] = exc.model
+        payload["statusCode"] = exc.status_code
+    return payload
 
 
 def _sse_event(event_type: str, data: object) -> str:
@@ -1669,7 +1682,7 @@ async def stream_chat(
             logger.error(
                 f"Failed to generate AI response with tools: {e}", exc_info=True
             )
-            yield _sse_event("stream_error", {"message": _chat_error_message(e)})
+            yield _sse_event("stream_error", _chat_error_payload(e))
 
     # First new message persisted by omni-web is the parent of the run's output.
     parent_id = chat_messages[-1].id if chat_messages else None

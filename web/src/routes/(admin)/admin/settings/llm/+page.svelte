@@ -9,7 +9,8 @@
     import * as Alert from '$lib/components/ui/alert'
     import * as AlertDialog from '$lib/components/ui/alert-dialog'
     import * as Dialog from '$lib/components/ui/dialog'
-    import { Loader2, Info, Pencil, Trash2, Server } from '@lucide/svelte'
+    import * as Tooltip from '$lib/components/ui/tooltip'
+    import { Loader2, Info, Pencil, Trash2, Server, CircleAlert, CircleCheck } from '@lucide/svelte'
     import { cn } from '$lib/utils'
     import { toast } from 'svelte-sonner'
     import type { PageData } from './$types'
@@ -72,6 +73,11 @@
     let isSubmitting = $state(false)
     let editingHasApiKey = $state(false)
 
+    type TestResult =
+        | { ok: true; message: string }
+        | { ok: false; message: string; detail: string | null }
+    let testResult = $state<TestResult | null>(null)
+
     let modelDialogOpen = $state(false)
     let modelFormState = $state<ModelFormState>({ ...emptyModelForm })
     let isModelSubmitting = $state(false)
@@ -89,6 +95,20 @@
         confirmDescription = description
         confirmFormRef = formEl
         confirmDialogOpen = true
+    }
+
+    type ActionMessageData = { message?: string; error?: string }
+
+    function actionMessage(
+        resultData: unknown,
+        field: keyof ActionMessageData,
+        fallback: string,
+    ): string {
+        if (resultData && typeof resultData === 'object') {
+            const value = (resultData as ActionMessageData)[field]
+            if (typeof value === 'string') return value
+        }
+        return fallback
     }
 
     const showApiKey = (p: ProviderType) =>
@@ -176,6 +196,7 @@
     function openSetupDialog(type: ProviderType) {
         editMode = false
         editingHasApiKey = false
+        testResult = null
         formState = {
             ...emptyProviderForm,
             providerType: type,
@@ -187,6 +208,7 @@
     function openEditDialog(provider: (typeof data.providers)[0]) {
         editMode = true
         editingHasApiKey = provider.hasApiKey
+        testResult = null
         formState = {
             id: provider.id,
             name: provider.name,
@@ -217,6 +239,30 @@
             providerId,
         }
         modelDialogOpen = true
+    }
+
+    function resetTestResult() {
+        testResult = null
+    }
+
+    function setConnectionError(resultData: unknown, fallback: string) {
+        const data = resultData as
+            | {
+                  error?: string
+                  provider?: string | null
+                  statusCode?: number | null
+                  model?: string | null
+              }
+            | undefined
+        const detailParts: string[] = []
+        if (data?.provider) detailParts.push(data.provider)
+        if (data?.model) detailParts.push(data.model)
+        if (data?.statusCode) detailParts.push(`HTTP ${data.statusCode}`)
+        testResult = {
+            ok: false,
+            message: data?.error || fallback,
+            detail: detailParts.length ? detailParts.join(' · ') : null,
+        }
     }
 </script>
 
@@ -520,20 +566,28 @@
                 </Dialog.Header>
 
                 <form
+                    id="llm-provider-form"
                     method="POST"
                     action={editMode ? '?/edit' : '?/add'}
                     use:enhance={() => {
                         isSubmitting = true
+                        testResult = null
                         return async ({ result, update }) => {
-                            await update()
                             isSubmitting = false
-                            dialogOpen = false
                             if (result.type === 'success') {
+                                await update()
+                                dialogOpen = false
                                 toast.success(
-                                    result.data?.message || 'Operation completed successfully',
+                                    actionMessage(
+                                        result.data,
+                                        'message',
+                                        'Operation completed successfully',
+                                    ),
                                 )
                             } else if (result.type === 'failure') {
-                                toast.error(result.data?.error || 'Something went wrong')
+                                setConnectionError(result.data, 'Connection failed')
+                            } else {
+                                setConnectionError(null, 'Connection failed')
                             }
                         }
                     }}
@@ -567,6 +621,7 @@
                                 name="apiKey"
                                 type="password"
                                 bind:value={formState.apiKey}
+                                oninput={resetTestResult}
                                 placeholder={editingHasApiKey && editMode
                                     ? 'Leave empty to keep current key'
                                     : formState.providerType === 'anthropic'
@@ -589,6 +644,7 @@
                                 id="apiUrl"
                                 name="apiUrl"
                                 bind:value={formState.apiUrl}
+                                oninput={resetTestResult}
                                 placeholder={formState.providerType === 'azure_foundry'
                                     ? 'https://<project>.services.ai.azure.com'
                                     : 'https://openrouter.ai/api/v1'}
@@ -628,6 +684,7 @@
                                 id="regionName"
                                 name="regionName"
                                 bind:value={formState.regionName}
+                                oninput={resetTestResult}
                                 placeholder={formState.providerType === 'vertex_ai'
                                     ? 'us-central1'
                                     : 'us-east-1 (auto-detected if empty)'}
@@ -642,6 +699,7 @@
                                 id="projectId"
                                 name="projectId"
                                 bind:value={formState.projectId}
+                                oninput={resetTestResult}
                                 placeholder="my-gcp-project"
                                 required />
                         </div>
@@ -669,24 +727,61 @@
                         </Alert.Root>
                     {/if}
 
-                    <Dialog.Footer>
-                        <Button
-                            variant="outline"
-                            type="button"
-                            class="cursor-pointer"
-                            onclick={() => (dialogOpen = false)}>
-                            Cancel
-                        </Button>
-                        <Button type="submit" disabled={isSubmitting} class="cursor-pointer">
-                            {#if isSubmitting}
-                                <Loader2 class="mr-2 h-4 w-4 animate-spin" />
-                                Saving...
-                            {:else}
-                                {editMode ? 'Update' : 'Connect'}
-                            {/if}
-                        </Button>
-                    </Dialog.Footer>
+                    {#if testResult}
+                        {#if testResult.ok}
+                            <Alert.Root
+                                class="border-green-500/50 bg-green-50 text-green-900 dark:border-green-500/40 dark:bg-green-950/40 dark:text-green-100">
+                                <CircleCheck class="h-4 w-4" />
+                                <Alert.Title>{testResult.message}</Alert.Title>
+                            </Alert.Root>
+                        {:else}
+                            {@const errorMessage = testResult.message}
+                            <Alert.Root variant="destructive">
+                                <CircleAlert class="h-4 w-4" />
+                                <Tooltip.Provider delayDuration={300}>
+                                    <Tooltip.Root>
+                                        <Tooltip.Trigger>
+                                            {#snippet child({ props })}
+                                                <Alert.Title {...props} class="cursor-help">
+                                                    {errorMessage}
+                                                </Alert.Title>
+                                            {/snippet}
+                                        </Tooltip.Trigger>
+                                        <Tooltip.Content class="max-w-sm text-left break-words">
+                                            {errorMessage}
+                                        </Tooltip.Content>
+                                    </Tooltip.Root>
+                                </Tooltip.Provider>
+                                {#if testResult.detail}
+                                    <Alert.Description>{testResult.detail}</Alert.Description>
+                                {/if}
+                            </Alert.Root>
+                        {/if}
+                    {/if}
                 </form>
+
+                <Dialog.Footer>
+                    <Button
+                        variant="outline"
+                        type="button"
+                        class="cursor-pointer"
+                        onclick={() => (dialogOpen = false)}>
+                        Cancel
+                    </Button>
+
+                    <Button
+                        type="submit"
+                        form="llm-provider-form"
+                        disabled={isSubmitting}
+                        class="cursor-pointer">
+                        {#if isSubmitting}
+                            <Loader2 class="mr-2 h-4 w-4 animate-spin" />
+                            {editMode ? 'Updating...' : 'Connecting...'}
+                        {:else}
+                            {editMode ? 'Update' : 'Connect'}
+                        {/if}
+                    </Button>
+                </Dialog.Footer>
             </Dialog.Content>
         </Dialog.Root>
 
@@ -728,9 +823,17 @@
                             isModelSubmitting = false
                             modelDialogOpen = false
                             if (result.type === 'success') {
-                                toast.success(result.data?.message || 'Model added successfully')
+                                toast.success(
+                                    actionMessage(
+                                        result.data,
+                                        'message',
+                                        'Model added successfully',
+                                    ),
+                                )
                             } else if (result.type === 'failure') {
-                                toast.error(result.data?.error || 'Something went wrong')
+                                toast.error(
+                                    actionMessage(result.data, 'error', 'Something went wrong'),
+                                )
                             }
                         }
                     }}

@@ -12,12 +12,21 @@ import {
     deleteModel,
     setDefaultModel,
     setSecondaryModel,
+    createModelSeeds,
     createPredefinedModels,
     MODEL_PROVIDER_TYPES,
+    PREDEFINED_MODELS,
     type ModelProviderConfig,
     type ModelProviderType,
 } from '$lib/server/db/model-providers'
 import { env } from '$env/dynamic/private'
+import { logger } from '$lib/server/logger'
+import type {
+    AvailableModel,
+    ListProviderModelsResponse,
+    TestModelRequest,
+    TestModelResponse,
+} from '$lib/types/model-provider'
 
 async function reloadAIProviders() {
     try {
@@ -30,6 +39,76 @@ async function reloadAIProviders() {
 function stripSecrets(config: Record<string, unknown>): Record<string, unknown> {
     const { apiKey, ...rest } = config
     return rest
+}
+
+function rankDiscoveredModels(providerType: ModelProviderType, models: AvailableModel[]) {
+    const predefined = PREDEFINED_MODELS[providerType] ?? []
+    const discoveredById = new Map(models.map((m) => [m.model_id, m]))
+    const preferred = predefined
+        .filter((m) => discoveredById.has(m.modelId))
+        .map((m) => ({ modelId: m.modelId, displayName: m.displayName }))
+    const preferredIds = new Set(preferred.map((m) => m.modelId))
+    const remaining = models
+        .filter((m) => !preferredIds.has(m.model_id))
+        .map((m) => ({ modelId: m.model_id, displayName: m.display_name }))
+    return [...preferred, ...remaining].slice(0, 3)
+}
+
+async function testProviderConnection(
+    providerType: ModelProviderType,
+    config: ModelProviderConfig,
+): Promise<{
+    error: string
+    provider?: string | null
+    statusCode?: number | null
+    model?: string | null
+} | null> {
+    const built = buildTestRequest(providerType, config, null)
+    if ('error' in built) return { error: built.error }
+
+    try {
+        const resp = await fetch(`${env.AI_SERVICE_URL}/admin/provider/${providerType}/test`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(built),
+        })
+        if (!resp.ok) return { error: 'Could not test provider connection' }
+
+        const body = (await resp.json()) as TestModelResponse
+        if (body.ok) return null
+        return {
+            error: body.error || 'Connection failed',
+            provider: body.provider,
+            statusCode: body.status_code,
+            model: body.model,
+        }
+    } catch (err) {
+        logger.error('Model test connection failed', err)
+        return { error: 'Could not reach AI service' }
+    }
+}
+
+async function listAvailableProviderModels(
+    providerType: ModelProviderType,
+    config: ModelProviderConfig,
+) {
+    const built = buildTestRequest(providerType, config, null)
+    if ('error' in built) return []
+
+    try {
+        const resp = await fetch(`${env.AI_SERVICE_URL}/admin/provider/${providerType}/models`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(built),
+        })
+        if (!resp.ok) return []
+
+        const body = (await resp.json()) as ListProviderModelsResponse
+        return rankDiscoveredModels(providerType, body.models ?? [])
+    } catch (err) {
+        logger.warn('Failed to list provider models', { providerType, err })
+        return []
+    }
 }
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -79,8 +158,16 @@ export const actions: Actions = {
         if (validation) return fail(400, { error: validation })
 
         try {
+            const connectionError = await testProviderConnection(providerType, config)
+            if (connectionError) return fail(400, connectionError)
+
             const provider = await createProvider({ name, providerType, config })
-            await createPredefinedModels(provider.id, providerType)
+            const discoveredModels = await listAvailableProviderModels(providerType, config)
+            if (discoveredModels.length > 0) {
+                await createModelSeeds(provider.id, discoveredModels)
+            } else {
+                await createPredefinedModels(provider.id, providerType)
+            }
             await reloadAIProviders()
             return { success: true, message: 'Provider connected' }
         } catch (err) {
@@ -114,6 +201,9 @@ export const actions: Actions = {
         if (validation) return fail(400, { error: validation })
 
         try {
+            const connectionError = await testProviderConnection(providerType, config)
+            if (connectionError) return fail(400, connectionError)
+
             await updateProvider(id, { name, config })
             await reloadAIProviders()
             return { success: true, message: 'Provider updated' }
@@ -218,6 +308,110 @@ export const actions: Actions = {
             return fail(500, { error: 'Failed to set secondary model' })
         }
     },
+
+    testConnection: async ({ request, locals }) => {
+        requireAdmin(locals)
+
+        const formData = await request.formData()
+        const id = (formData.get('id') as string) || null
+        const providerType = formData.get('providerType') as ModelProviderType
+
+        if (!providerType || !MODEL_PROVIDER_TYPES.includes(providerType))
+            return fail(400, { error: 'Invalid provider type' })
+
+        const config = parseConfig(formData, providerType)
+        let modelId = (formData.get('modelId') as string) || null
+
+        if (id) {
+            const existing = await getProvider(id)
+            if (!existing) return fail(404, { error: 'Provider not found' })
+            if (!config.apiKey) {
+                config.apiKey = (existing.config as ModelProviderConfig).apiKey ?? null
+            }
+            if (!modelId) {
+                const providerModels = await listModelsByProvider(id)
+                modelId =
+                    providerModels.find((m) => m.isDefault)?.modelId ??
+                    providerModels[0]?.modelId ??
+                    null
+            }
+        }
+
+        const built = buildTestRequest(providerType, config, modelId)
+        if ('error' in built) return fail(400, { error: built.error })
+
+        try {
+            const resp = await fetch(`${env.AI_SERVICE_URL}/admin/provider/${providerType}/test`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(built),
+            })
+            const body = (await resp.json()) as TestModelResponse
+            if (body.ok) {
+                const detail = [body.model, body.latency_ms ? `${body.latency_ms}ms` : null]
+                    .filter((p): p is string => !!p)
+                    .join(' · ')
+                return {
+                    success: true,
+                    message: detail ? `Connected (${detail})` : 'Connected',
+                }
+            }
+            return fail(400, {
+                error: body.error || 'Connection failed',
+                provider: body.provider,
+                statusCode: body.status_code,
+                model: body.model,
+            })
+        } catch (err) {
+            logger.error('Model test connection failed', err)
+            return fail(500, { error: 'Could not reach AI service' })
+        }
+    },
+}
+
+function buildTestRequest(
+    providerType: ModelProviderType,
+    config: ModelProviderConfig,
+    modelId: string | null,
+): TestModelRequest | { error: string } {
+    switch (providerType) {
+        case 'anthropic':
+            if (!config.apiKey) return { error: 'API key is required for Anthropic' }
+            return { api_key: config.apiKey, model: modelId }
+        case 'openai':
+            if (!config.apiKey) return { error: 'API key is required for OpenAI' }
+            return { api_key: config.apiKey, model: modelId }
+        case 'gemini':
+            if (!config.apiKey) return { error: 'API key is required for Gemini' }
+            return { api_key: config.apiKey, model: modelId }
+        case 'bedrock':
+            return {
+                region_name: config.regionName ?? null,
+                model_id: modelId,
+            }
+        case 'vertex_ai':
+            if (!config.regionName) return { error: 'GCP Region is required for Vertex AI' }
+            if (!config.projectId) return { error: 'GCP Project ID is required for Vertex AI' }
+            return {
+                region: config.regionName,
+                project_id: config.projectId,
+                model: modelId,
+            }
+        case 'azure_foundry':
+            if (!config.apiUrl) return { error: 'Endpoint URL is required for Azure AI Foundry' }
+            return {
+                endpoint_url: config.apiUrl,
+                model: modelId,
+            }
+        case 'openai_compatible':
+            if (!config.apiUrl)
+                return { error: 'Base URL is required for OpenAI-compatible provider' }
+            return {
+                base_url: config.apiUrl,
+                api_key: config.apiKey ?? null,
+                model: modelId,
+            }
+    }
 }
 
 function parseConfig(formData: FormData, providerType: string): ModelProviderConfig {

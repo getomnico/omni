@@ -103,9 +103,9 @@ async def load_models(app_state: AppState) -> None:
     for record in records:
         try:
             provider = _create_provider_from_model_record(record)
+            # provider_type is a class attribute on each leaf provider; model_name
+            # is set in the factory. Only model_record_id needs the loader.
             provider.model_record_id = record.id
-            provider.model_name = record.model_id
-            provider.provider_type = record.provider_type
             models[record.id] = provider
             logger.info(
                 f"Initialized model '{record.display_name}' (type={record.provider_type}, model={record.model_id}, id={record.id})"
