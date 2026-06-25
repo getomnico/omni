@@ -9,6 +9,7 @@
     import * as Alert from '$lib/components/ui/alert'
     import * as AlertDialog from '$lib/components/ui/alert-dialog'
     import * as Dialog from '$lib/components/ui/dialog'
+    import * as Tooltip from '$lib/components/ui/tooltip'
     import { Loader2, Info, Pencil, Trash2, Server, CircleAlert, CircleCheck } from '@lucide/svelte'
     import { cn } from '$lib/utils'
     import { toast } from 'svelte-sonner'
@@ -707,9 +708,23 @@
                             <Alert.Title>{testResult.message}</Alert.Title>
                         </Alert.Root>
                     {:else}
+                        {@const errorMessage = testResult.message}
                         <Alert.Root variant="destructive">
                             <CircleAlert class="h-4 w-4" />
-                            <Alert.Title>{testResult.message}</Alert.Title>
+                            <Tooltip.Provider delayDuration={300}>
+                                <Tooltip.Root>
+                                    <Tooltip.Trigger>
+                                        {#snippet child({ props })}
+                                            <Alert.Title {...props} class="cursor-help">
+                                                {errorMessage}
+                                            </Alert.Title>
+                                        {/snippet}
+                                    </Tooltip.Trigger>
+                                    <Tooltip.Content class="max-w-sm text-left break-words">
+                                        {errorMessage}
+                                    </Tooltip.Content>
+                                </Tooltip.Root>
+                            </Tooltip.Provider>
                             {#if testResult.detail}
                                 <Alert.Description>{testResult.detail}</Alert.Description>
                             {/if}
