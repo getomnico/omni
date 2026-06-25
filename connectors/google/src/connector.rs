@@ -3,14 +3,14 @@ use std::time::Duration;
 
 use crate::admin::AdminClient;
 use crate::auth::{
-    GoogleCredentialPayload, GoogleOAuthCredentials, create_service_auth,
-    get_domain_from_credentials,
+    create_service_auth, get_domain_from_credentials, GoogleCredentialPayload,
+    GoogleOAuthCredentials,
 };
 use crate::drive::DriveClient;
 use crate::gmail::{MessageFormat, MessagePart};
 use crate::models::{GoogleDirectoryUser, GoogleSyncCheckpoint, SearchUsersResponse};
 use crate::sync::SyncManager;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
@@ -19,7 +19,7 @@ use omni_connector_sdk::{
     SyncRequestValidationError, SyncType,
 };
 use serde::Deserialize;
-use serde_json::{Value as JsonValue, json};
+use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
 use tokio::process::Command;
 use tokio::time::timeout;
@@ -28,11 +28,16 @@ use tracing::debug;
 const GWS_COMMAND: &str = "gws";
 const GWS_TIMEOUT: Duration = Duration::from_secs(60);
 const GOOGLE_WORKSPACE_CLI_TOKEN: &str = "GOOGLE_WORKSPACE_CLI_TOKEN";
+const GOOGLE_DRIVE_READ_SCOPE: &str = "https://www.googleapis.com/auth/drive.readonly";
+const GOOGLE_DRIVE_WRITE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
+const GMAIL_READ_SCOPE: &str = "https://www.googleapis.com/auth/gmail.readonly";
+const GMAIL_SEND_SCOPE: &str = "https://www.googleapis.com/auth/gmail.send";
+const GMAIL_MODIFY_SCOPE: &str = "https://www.googleapis.com/auth/gmail.modify";
 const GOOGLE_WORKSPACE_SCOPES: &[&str] = &[
     "https://www.googleapis.com/auth/admin.directory.user.readonly",
     "https://www.googleapis.com/auth/admin.directory.group.readonly",
-    "https://www.googleapis.com/auth/drive.readonly",
-    "https://www.googleapis.com/auth/gmail.readonly",
+    GOOGLE_DRIVE_READ_SCOPE,
+    GMAIL_READ_SCOPE,
 ];
 
 #[derive(Debug, Deserialize)]
@@ -265,6 +270,76 @@ fn gws_action_response(
     ActionResponse::success(result)
 }
 
+fn gws_required_action_scopes(service: &str) -> Result<(&'static str, &'static [&'static str])> {
+    match service {
+        "drive" => Ok((
+            "google_drive",
+            &[GOOGLE_DRIVE_READ_SCOPE, GOOGLE_DRIVE_WRITE_SCOPE],
+        )),
+        "gmail" => Ok((
+            "gmail",
+            &[GMAIL_READ_SCOPE, GMAIL_SEND_SCOPE, GMAIL_MODIFY_SCOPE],
+        )),
+        _ => Err(anyhow!(
+            "Unsupported Google Workspace service for OAuth action bridge: {}",
+            service
+        )),
+    }
+}
+
+fn granted_scopes(credentials: &ServiceCredential) -> Vec<&str> {
+    credentials
+        .config
+        .get("granted_scopes")
+        .and_then(|v| v.as_array())
+        .map(|scopes| scopes.iter().filter_map(|s| s.as_str()).collect())
+        .unwrap_or_default()
+}
+
+fn missing_gws_call_scopes(
+    request: &GwsCallRequest,
+    credentials: &ServiceCredential,
+) -> Result<Vec<String>> {
+    if credentials.auth_type != AuthType::OAuth || credentials.user_id.is_none() {
+        return Ok(Vec::new());
+    }
+
+    let (_, required_scopes) = gws_required_action_scopes(&request.service)?;
+    let granted_scopes = granted_scopes(credentials);
+    Ok(required_scopes
+        .iter()
+        .filter(|scope| !granted_scopes.contains(scope))
+        .map(|scope| (*scope).to_string())
+        .collect())
+}
+
+fn missing_scope_response(
+    credentials: &ServiceCredential,
+    source_type: &str,
+    missing_scopes: Vec<String>,
+) -> Result<Response> {
+    use axum::http::StatusCode;
+
+    let body = json!({
+        "error": "needs_user_auth",
+        "reason": "missing_scopes",
+        "source_id": credentials.source_id,
+        "source_type": source_type,
+        "provider": credentials.provider,
+        "oauth_start_url": format!(
+            "/api/oauth/start?source_id={}",
+            urlencoding::encode(&credentials.source_id),
+        ),
+        "missing_scopes": missing_scopes,
+    });
+
+    Response::builder()
+        .status(StatusCode::PRECONDITION_FAILED)
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body.to_string()))
+        .map_err(|e| anyhow!("Failed to build missing-scope response: {}", e))
+}
+
 impl GoogleConnector {
     pub fn new(sync_manager: Arc<SyncManager>, admin_client: Arc<AdminClient>) -> Self {
         Self {
@@ -368,6 +443,11 @@ impl GoogleConnector {
         let request: GwsCallRequest =
             serde_json::from_value(params).context("Invalid google_workspace_call params")?;
         let args = build_gws_call_args(&request)?;
+        let (source_type, _) = gws_required_action_scopes(&request.service)?;
+        let missing_scopes = missing_gws_call_scopes(&request, creds)?;
+        if !missing_scopes.is_empty() {
+            return missing_scope_response(creds, source_type, missing_scopes);
+        }
         self.execute_gws_args(args, creds).await
     }
 
@@ -736,7 +816,7 @@ impl Connector for GoogleConnector {
                     "properties": {
                         "service": {
                             "type": "string",
-                            "description": "Google Workspace service, e.g. drive, gmail, calendar"
+                            "description": "Google Workspace service, currently drive or gmail"
                         },
                         "resource": {
                             "type": "string",
@@ -967,8 +1047,10 @@ mod tests {
     use crate::sync::SyncManager;
 
     use super::{
-        GoogleConnector, GwsCallRequest, GwsSchemaRequest, build_attachment_doc_id,
-        build_gws_call_args, build_gws_schema_args, gws_action_response, parse_attachment_doc_id,
+        build_attachment_doc_id, build_gws_call_args, build_gws_schema_args, gws_action_response,
+        gws_required_action_scopes, missing_gws_call_scopes, parse_attachment_doc_id,
+        GoogleConnector, GwsCallRequest, GwsSchemaRequest, GMAIL_MODIFY_SCOPE, GMAIL_READ_SCOPE,
+        GMAIL_SEND_SCOPE, GOOGLE_DRIVE_READ_SCOPE, GOOGLE_DRIVE_WRITE_SCOPE,
     };
 
     fn test_connector() -> GoogleConnector {
@@ -1036,16 +1118,12 @@ mod tests {
 
         assert_eq!(creds.auth_type, AuthType::Jwt);
         let scopes = creds.config["scopes"].as_array().expect("scopes");
-        assert!(
-            scopes
-                .iter()
-                .any(|s| s == "https://www.googleapis.com/auth/drive.readonly")
-        );
-        assert!(
-            scopes
-                .iter()
-                .any(|s| s == "https://www.googleapis.com/auth/gmail.readonly")
-        );
+        assert!(scopes
+            .iter()
+            .any(|s| s == "https://www.googleapis.com/auth/drive.readonly"));
+        assert!(scopes
+            .iter()
+            .any(|s| s == "https://www.googleapis.com/auth/gmail.readonly"));
     }
 
     #[test]
@@ -1108,6 +1186,81 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("params must be a JSON object"));
+    }
+
+    #[test]
+    fn gws_required_action_scopes_rejects_unsupported_services() {
+        let err = gws_required_action_scopes("calendar").unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("Unsupported Google Workspace service"));
+    }
+
+    #[test]
+    fn missing_gws_call_scopes_detects_read_only_drive_oauth() {
+        let request = GwsCallRequest {
+            service: "drive".to_string(),
+            resource: "files".to_string(),
+            sub_resource: None,
+            method: "create".to_string(),
+            params: None,
+            body: Some(json!({"name": "Budget"})),
+            api_version: None,
+            page_all: false,
+            page_limit: None,
+        };
+        let credential = test_service_credential(
+            AuthType::OAuth,
+            json!({"granted_scopes": [GOOGLE_DRIVE_READ_SCOPE]}),
+        );
+
+        let missing = missing_gws_call_scopes(&request, &credential).unwrap();
+
+        assert_eq!(missing, [GOOGLE_DRIVE_WRITE_SCOPE]);
+    }
+
+    #[test]
+    fn missing_gws_call_scopes_accepts_full_gmail_oauth() {
+        let request = GwsCallRequest {
+            service: "gmail".to_string(),
+            resource: "users.messages".to_string(),
+            sub_resource: None,
+            method: "send".to_string(),
+            params: None,
+            body: Some(json!({"raw": "abc"})),
+            api_version: None,
+            page_all: false,
+            page_limit: None,
+        };
+        let credential = test_service_credential(
+            AuthType::OAuth,
+            json!({"granted_scopes": [GMAIL_READ_SCOPE, GMAIL_SEND_SCOPE, GMAIL_MODIFY_SCOPE]}),
+        );
+
+        let missing = missing_gws_call_scopes(&request, &credential).unwrap();
+
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn missing_gws_call_scopes_skips_service_account_credentials() {
+        let request = GwsCallRequest {
+            service: "drive".to_string(),
+            resource: "files".to_string(),
+            sub_resource: None,
+            method: "create".to_string(),
+            params: None,
+            body: Some(json!({"name": "Budget"})),
+            api_version: None,
+            page_all: false,
+            page_limit: None,
+        };
+        let credential = test_service_credential(AuthType::Jwt, json!({}));
+
+        let missing = missing_gws_call_scopes(&request, &credential).unwrap();
+
+        assert!(missing.is_empty());
     }
 
     #[test]
