@@ -2,16 +2,16 @@ pub mod mock_atlassian;
 
 use anyhow::Result;
 use mock_atlassian::MockAtlassianApi;
-use omni_connector_manager::{AppState, config::ConnectorManagerConfig, create_app};
+use omni_connector_manager::{config::ConnectorManagerConfig, create_app, AppState};
 use omni_connector_sdk::SdkClient;
 use redis::AsyncCommands;
-use shared::ObjectStorage;
 use shared::db::repositories::service_credentials::ServiceCredentialsRepo;
 use shared::models::{
     AuthType, ConnectorManifest, ServiceCredential, ServiceProvider, SourceType, SyncType,
 };
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
+use shared::ObjectStorage;
 use sqlx::PgPool;
 use std::sync::Arc;
 use time::OffsetDateTime;
@@ -91,6 +91,7 @@ pub async fn setup_test_fixture(source_type: SourceType) -> Result<TestFixture> 
         mcp_enabled: false,
         resources: vec![],
         prompts: vec![],
+        skills: vec![],
         oauth: None,
     };
     let manifest_json = serde_json::to_string(&manifest)?;

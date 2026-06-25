@@ -184,6 +184,7 @@ async def connector_state(
         "attributes_schema": None,
         "mcp_enabled": False,
         "prompts": [],
+        "skills": [],
         "resources": [],
         "oauth": None,
     }

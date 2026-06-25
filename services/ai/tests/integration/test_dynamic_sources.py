@@ -571,6 +571,7 @@ async def test_connector_actions_from_connector_manager_are_loadable(
         "attributes_schema": None,
         "mcp_enabled": False,
         "prompts": [],
+        "skills": [],
         "resources": [],
         "oauth": None,
     }
@@ -713,6 +714,7 @@ async def test_agent_registry_applies_user_agent_source_filter(
         "attributes_schema": None,
         "mcp_enabled": False,
         "prompts": [],
+        "skills": [],
         "resources": [],
         "oauth": None,
     }
@@ -819,6 +821,7 @@ async def test_agent_registry_applies_org_agent_action_whitelist(
         "attributes_schema": None,
         "mcp_enabled": False,
         "prompts": [],
+        "skills": [],
         "resources": [],
         "oauth": None,
     }

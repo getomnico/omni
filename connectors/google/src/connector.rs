@@ -14,9 +14,9 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
-    ActionDefinition, ActionResponse, AuthType, Connector, OAuthManifestConfig, OAuthScopeSet,
-    SearchOperator, ServiceCredential, ServiceProvider, Source, SourceType, SyncContext,
-    SyncRequestValidationError, SyncType,
+    ActionDefinition, ActionResponse, AuthType, Connector, ConnectorSkillDefinition,
+    OAuthManifestConfig, OAuthScopeSet, SearchOperator, ServiceCredential, ServiceProvider, Source,
+    SourceType, SyncContext, SyncRequestValidationError, SyncType,
 };
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
@@ -30,6 +30,9 @@ const GWS_TIMEOUT: Duration = Duration::from_secs(60);
 const GOOGLE_WORKSPACE_CLI_TOKEN: &str = "GOOGLE_WORKSPACE_CLI_TOKEN";
 const GOOGLE_DRIVE_READ_SCOPE: &str = "https://www.googleapis.com/auth/drive.readonly";
 const GOOGLE_DRIVE_WRITE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
+const GOOGLE_DOCS_SCOPE: &str = "https://www.googleapis.com/auth/documents";
+const GOOGLE_SHEETS_SCOPE: &str = "https://www.googleapis.com/auth/spreadsheets";
+const GOOGLE_SLIDES_SCOPE: &str = "https://www.googleapis.com/auth/presentations";
 const GMAIL_READ_SCOPE: &str = "https://www.googleapis.com/auth/gmail.readonly";
 const GMAIL_SEND_SCOPE: &str = "https://www.googleapis.com/auth/gmail.send";
 const GMAIL_MODIFY_SCOPE: &str = "https://www.googleapis.com/auth/gmail.modify";
@@ -37,7 +40,13 @@ const GOOGLE_WORKSPACE_SCOPES: &[&str] = &[
     "https://www.googleapis.com/auth/admin.directory.user.readonly",
     "https://www.googleapis.com/auth/admin.directory.group.readonly",
     GOOGLE_DRIVE_READ_SCOPE,
+    GOOGLE_DRIVE_WRITE_SCOPE,
+    GOOGLE_DOCS_SCOPE,
+    GOOGLE_SHEETS_SCOPE,
+    GOOGLE_SLIDES_SCOPE,
     GMAIL_READ_SCOPE,
+    GMAIL_SEND_SCOPE,
+    GMAIL_MODIFY_SCOPE,
 ];
 
 #[derive(Debug, Deserialize)]
@@ -287,6 +296,9 @@ fn gws_required_action_scopes(service: &str) -> Result<(&'static str, &'static [
             "google_drive",
             &[GOOGLE_DRIVE_READ_SCOPE, GOOGLE_DRIVE_WRITE_SCOPE],
         )),
+        "docs" => Ok(("google_drive", &[GOOGLE_DOCS_SCOPE])),
+        "sheets" => Ok(("google_drive", &[GOOGLE_SHEETS_SCOPE])),
+        "slides" => Ok(("google_drive", &[GOOGLE_SLIDES_SCOPE])),
         "gmail" => Ok((
             "gmail",
             &[GMAIL_READ_SCOPE, GMAIL_SEND_SCOPE, GMAIL_MODIFY_SCOPE],
@@ -832,7 +844,7 @@ impl Connector for GoogleConnector {
                     "properties": {
                         "service": {
                             "type": "string",
-                            "description": "Google Workspace service, currently drive or gmail"
+                            "description": "Google Workspace service, currently drive, docs, sheets, slides, or gmail"
                         },
                         "resource": {
                             "type": "string",
@@ -877,6 +889,30 @@ impl Connector for GoogleConnector {
         ]
     }
 
+    fn skills(&self) -> Vec<ConnectorSkillDefinition> {
+        vec![
+            ConnectorSkillDefinition {
+                id: "google-drive".to_string(),
+                title: "Google Drive Skill".to_string(),
+                description: Some(
+                    "Guidance for using Google Drive, Docs, Sheets, and Slides connector tools."
+                        .to_string(),
+                ),
+                source_types: vec![SourceType::GoogleDrive],
+                content: Some(include_str!("../skills/google-drive.md").to_string()),
+                mcp_prompt: None,
+            },
+            ConnectorSkillDefinition {
+                id: "gmail".to_string(),
+                title: "Gmail Skill".to_string(),
+                description: Some("Guidance for using Gmail connector tools.".to_string()),
+                source_types: vec![SourceType::Gmail],
+                content: Some(include_str!("../skills/gmail.md").to_string()),
+                mcp_prompt: None,
+            },
+        ]
+    }
+
     fn search_operators(&self) -> Vec<SearchOperator> {
         vec![
             SearchOperator {
@@ -914,8 +950,15 @@ impl Connector for GoogleConnector {
             OAuthScopeSet {
                 read: vec!["https://www.googleapis.com/auth/drive.readonly".to_string()],
                 // drive.file scopes the grant to files the app creates/opens,
-                // which is the safe default for Workspace write tools.
-                write: vec!["https://www.googleapis.com/auth/drive.file".to_string()],
+                // which is the safe default for Drive write tools. Docs,
+                // Sheets, and Slides need their API-specific scopes for
+                // content edits through google_workspace_call.
+                write: vec![
+                    GOOGLE_DRIVE_WRITE_SCOPE.to_string(),
+                    GOOGLE_DOCS_SCOPE.to_string(),
+                    GOOGLE_SHEETS_SCOPE.to_string(),
+                    GOOGLE_SLIDES_SCOPE.to_string(),
+                ],
             },
         );
         scopes.insert(
@@ -1067,7 +1110,8 @@ mod tests {
         file_name_with_extension, gws_action_response, gws_required_action_scopes,
         missing_gws_call_scopes, parse_attachment_doc_id, GoogleConnector, GwsCallRequest,
         GwsSchemaRequest, GMAIL_MODIFY_SCOPE, GMAIL_READ_SCOPE, GMAIL_SEND_SCOPE,
-        GOOGLE_DRIVE_READ_SCOPE, GOOGLE_DRIVE_WRITE_SCOPE,
+        GOOGLE_DOCS_SCOPE, GOOGLE_DRIVE_READ_SCOPE, GOOGLE_DRIVE_WRITE_SCOPE, GOOGLE_SHEETS_SCOPE,
+        GOOGLE_SLIDES_SCOPE,
     };
 
     fn test_connector() -> GoogleConnector {
@@ -1117,6 +1161,14 @@ mod tests {
     }
 
     #[test]
+    fn manifest_includes_google_workspace_skills() {
+        let connector = test_connector();
+        let skills = connector.skills();
+        assert!(skills.iter().any(|s| s.id == "google-drive"));
+        assert!(skills.iter().any(|s| s.id == "gmail"));
+    }
+
+    #[test]
     fn gws_service_credential_preserves_oauth_auth_type() {
         let connector = test_connector();
         let credential = test_service_credential(AuthType::OAuth, json!({}));
@@ -1141,6 +1193,9 @@ mod tests {
         assert!(scopes
             .iter()
             .any(|s| s == "https://www.googleapis.com/auth/gmail.readonly"));
+        assert!(scopes.iter().any(|s| s == GOOGLE_DOCS_SCOPE));
+        assert!(scopes.iter().any(|s| s == GOOGLE_SHEETS_SCOPE));
+        assert!(scopes.iter().any(|s| s == GOOGLE_SLIDES_SCOPE));
     }
 
     #[test]
@@ -1222,6 +1277,22 @@ mod tests {
     }
 
     #[test]
+    fn gws_required_action_scopes_supports_workspace_editor_services() {
+        assert_eq!(
+            gws_required_action_scopes("docs").unwrap(),
+            ("google_drive", &[GOOGLE_DOCS_SCOPE][..])
+        );
+        assert_eq!(
+            gws_required_action_scopes("sheets").unwrap(),
+            ("google_drive", &[GOOGLE_SHEETS_SCOPE][..])
+        );
+        assert_eq!(
+            gws_required_action_scopes("slides").unwrap(),
+            ("google_drive", &[GOOGLE_SLIDES_SCOPE][..])
+        );
+    }
+
+    #[test]
     fn gws_required_action_scopes_rejects_unsupported_services() {
         let err = gws_required_action_scopes("calendar").unwrap_err();
 
@@ -1251,6 +1322,29 @@ mod tests {
         let missing = missing_gws_call_scopes(&request, &credential).unwrap();
 
         assert_eq!(missing, [GOOGLE_DRIVE_WRITE_SCOPE]);
+    }
+
+    #[test]
+    fn missing_gws_call_scopes_detects_missing_docs_oauth_scope() {
+        let request = GwsCallRequest {
+            service: "docs".to_string(),
+            resource: "documents".to_string(),
+            sub_resource: None,
+            method: "batchUpdate".to_string(),
+            params: Some(json!({"documentId": "doc"})),
+            body: Some(json!({"requests": []})),
+            api_version: None,
+            page_all: false,
+            page_limit: None,
+        };
+        let credential = test_service_credential(
+            AuthType::OAuth,
+            json!({"granted_scopes": [GOOGLE_DRIVE_READ_SCOPE, GOOGLE_DRIVE_WRITE_SCOPE]}),
+        );
+
+        let missing = missing_gws_call_scopes(&request, &credential).unwrap();
+
+        assert_eq!(missing, [GOOGLE_DOCS_SCOPE]);
     }
 
     #[test]

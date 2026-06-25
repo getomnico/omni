@@ -9,11 +9,14 @@ Use the Google connector's `google_workspace_schema` and
 `google_workspace_call` actions for Drive API access. Do not run local `gws` commands from the sandbox for Drive access; Omni owns authentication and routes
 requests through connector tools with source permissions.
 
-For unfamiliar Drive methods, call `google_workspace_schema` first with schema
-names like `drive.files.list`, `drive.files.get`, or `drive.permissions.create`.
-Then call `google_workspace_call` with `service: "drive"`, the resource path
-such as `files` or `permissions`, the method, and any query parameters in
-`params`.
+For unfamiliar Drive or editor methods, call `google_workspace_schema` first
+with schema names like `drive.files.list`, `drive.files.get`,
+`drive.permissions.create`, `docs.documents.batchUpdate`,
+`sheets.spreadsheets.values.update`, or `slides.presentations.batchUpdate`.
+Then call `google_workspace_call` with the matching `service` (`drive`, `docs`,
+`sheets`, or `slides`), the resource path such as `files`, `permissions`,
+`documents`, `spreadsheets.values`, or `presentations`, the method, and any
+query parameters in `params`.
 
 ## Search First
 When the user gives a file name, folder name, shared drive name, or vague
@@ -52,5 +55,21 @@ Before creating, copying, moving, renaming, or uploading files, verify the
 destination folder or shared drive. Use dry-run or preview behavior when an
 available tool supports it.
 
-For updates, send only fields that should change. Many Drive operations use
-patch semantics, and omitted fields should remain untouched.
+For file metadata updates, use Drive methods and send only fields that should
+change. Many Drive operations use patch semantics, and omitted fields should
+remain untouched.
+
+For Google Docs content edits, use the Docs API via `google_workspace_call`,
+e.g. `service: "docs"`, `resource: "documents"`, `method: "batchUpdate"`,
+`params: {"documentId": "..."}`, and a JSON body with `requests`.
+
+For Google Sheets content edits, use the Sheets API via `google_workspace_call`,
+e.g. `service: "sheets"`, `resource: "spreadsheets.values"`, `method:
+"update"`, `params` containing `spreadsheetId`, `range`, and
+`valueInputOption`, plus a JSON body with `values`. Use
+`sheets.spreadsheets.batchUpdate` for structural changes.
+
+For Google Slides content edits, use the Slides API via `google_workspace_call`,
+e.g. `service: "slides"`, `resource: "presentations"`, `method:
+"batchUpdate"`, `params: {"presentationId": "..."}`, and a JSON body with
+`requests`.

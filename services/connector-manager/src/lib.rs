@@ -9,16 +9,16 @@ pub mod sync_manager;
 
 use anyhow::Result as AnyhowResult;
 use axum::{
-    Router,
     extract::DefaultBodyLimit,
     middleware,
     routing::{get, post, put},
+    Router,
 };
 use config::ConnectorManagerConfig;
 use redis::Client as RedisClient;
 use shared::{
-    DatabasePool, ObjectStorage,
     telemetry::{self, TelemetryConfig},
+    DatabasePool, ObjectStorage,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -56,6 +56,8 @@ pub fn create_app(state: AppState) -> Router {
         .route("/resources", get(handlers::list_resources))
         .route("/prompt", post(handlers::get_prompt))
         .route("/prompts", get(handlers::list_prompts))
+        .route("/skill", post(handlers::get_skill))
+        .route("/skills", get(handlers::list_skills))
         // SDK endpoints - called by connectors
         .route("/sdk/register", post(handlers::sdk_register))
         .route("/sdk/events", post(handlers::sdk_emit_event))

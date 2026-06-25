@@ -122,7 +122,9 @@ def _sse_event(event_type: str, data: object) -> str:
 SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
 
 _STREAM_HEARTBEAT_MS = 15000  # idle ping interval (keeps proxies from timing out)
-_RUN_LOCK_TTL = 300  # seconds; refreshed on every produced event and by the heartbeat below
+_RUN_LOCK_TTL = (
+    300  # seconds; refreshed on every produced event and by the heartbeat below
+)
 _LOCK_REFRESH_INTERVAL = 60  # seconds; independent of event production, so a long
 # silent gap in the agent loop (e.g. a slow tool call with no intermediate SSE
 # events) can't let the lock expire while the producer is still running.
@@ -426,7 +428,9 @@ def _message_content_blocks(message: MessageParam) -> list[ContentBlockParam]:
     return list(cast(Iterable[ContentBlockParam], content))
 
 
-def _extract_text_for_title(content: str | list[ContentBlockParam] | None) -> str | None:
+def _extract_text_for_title(
+    content: str | list[ContentBlockParam] | None,
+) -> str | None:
     if isinstance(content, str):
         text = content.strip()
         return text if text else None
@@ -631,9 +635,12 @@ async def _build_registry(
     # Register skill loader (load_skill tool)
     skills_dir = pathlib.Path(__file__).resolve().parent.parent / "skills"
     skill_handler = SkillHandler(
-        skills_dir=skills_dir, searcher_client=request.app.state.searcher_tool.client
+        skills_dir=skills_dir,
+        searcher_client=request.app.state.searcher_tool.client,
+        connector_manager_url=CONNECTOR_MANAGER_URL or None,
     )
-    if skill_handler._available:
+    await skill_handler.refresh_connector_skills()
+    if skill_handler.has_skills():
         await skill_handler.publish_skill_capabilities()
         registry.register(skill_handler)
         always_on_handlers.append(skill_handler)
@@ -735,9 +742,12 @@ async def _build_agent_chat_registry(
 
     skills_dir = pathlib.Path(__file__).resolve().parent.parent / "skills"
     skill_handler = SkillHandler(
-        skills_dir=skills_dir, searcher_client=request.app.state.searcher_tool.client
+        skills_dir=skills_dir,
+        searcher_client=request.app.state.searcher_tool.client,
+        connector_manager_url=CONNECTOR_MANAGER_URL or None,
     )
-    if skill_handler._available:
+    await skill_handler.refresh_connector_skills()
+    if skill_handler.has_skills():
         await skill_handler.publish_skill_capabilities()
         registry.register(skill_handler)
         always_on_handlers.append(skill_handler)
@@ -875,6 +885,7 @@ async def stream_chat(
                 media_type="text/event-stream",
                 headers=SSE_HEADERS,
             )
+
         # Stream expired (TTL elapsed). Starting a new generation would produce a
         # duplicate response — tell the client to reload from the database instead.
         async def _not_resumable_response():
@@ -958,11 +969,15 @@ async def stream_chat(
         memories = []
         if memory_provider is not None:
             config_repo = ConfigurationRepository()
-            org_default = (await config_repo.get_global_configuration()).memory_mode_default
+            org_default = (
+                await config_repo.get_global_configuration()
+            ).memory_mode_default
             if is_org_agent:
                 effective_mode = org_default
             elif user_configuration is not None:
-                effective_mode = resolve_memory_mode(user_configuration.memory_mode, org_default)
+                effective_mode = resolve_memory_mode(
+                    user_configuration.memory_mode, org_default
+                )
             memory_namespace = agent_key(agent.id)
             if effective_mode >= MemoryMode.CHAT and chat_messages:
                 last_user_text = ""
@@ -993,8 +1008,12 @@ async def stream_chat(
             user_email=user_email,
             memories=memories if memories else None,
             user_configuration=user_configuration,
-            include_web_search=getattr(request.app.state, "web_search_provider", None) is not None,
-            include_fetch_web_page=getattr(request.app.state, "web_fetch_provider", None) is not None,
+            include_web_search=getattr(request.app.state, "web_search_provider", None)
+            is not None,
+            include_fetch_web_page=getattr(
+                request.app.state, "web_fetch_provider", None
+            )
+            is not None,
         )
 
         # Build messages, injecting ephemeral start message if needed
@@ -1063,8 +1082,12 @@ async def stream_chat(
         if memory_provider is not None and chat.user_id:
             memory_write_key = user_key(chat.user_id)
             config_repo = ConfigurationRepository()
-            org_default = (await config_repo.get_global_configuration()).memory_mode_default
-            user_memory_mode = user_configuration.memory_mode if user_configuration else None
+            org_default = (
+                await config_repo.get_global_configuration()
+            ).memory_mode_default
+            user_memory_mode = (
+                user_configuration.memory_mode if user_configuration else None
+            )
             effective_mode = resolve_memory_mode(user_memory_mode, org_default)
             if effective_mode >= MemoryMode.CHAT:
                 last_user_text = ""
@@ -1100,8 +1123,12 @@ async def stream_chat(
             user_email=user_email,
             memories=memories if memories else None,
             user_configuration=user_configuration,
-            include_web_search=getattr(request.app.state, "web_search_provider", None) is not None,
-            include_fetch_web_page=getattr(request.app.state, "web_fetch_provider", None) is not None,
+            include_web_search=getattr(request.app.state, "web_search_provider", None)
+            is not None,
+            include_fetch_web_page=getattr(
+                request.app.state, "web_fetch_provider", None
+            )
+            is not None,
         )
 
     # Expand any omni_upload content blocks (inline small text, stage larger/binary in sandbox).
@@ -1829,7 +1856,10 @@ async def generate_chat_title(
                 break
 
         if not conversation_text.strip():
-            logger.info("Skipping title generation; no user text found", extra={"chat_id": chat_id})
+            logger.info(
+                "Skipping title generation; no user text found",
+                extra={"chat_id": chat_id},
+            )
             return {"status": "skipped", "reason": "no_user_text"}
 
         logger.info(f"Extracted conversation text ({len(conversation_text)} chars)")

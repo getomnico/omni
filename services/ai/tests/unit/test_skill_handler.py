@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import respx
+from httpx import Response
 
 from tools.registry import ToolContext
 from tools.searcher_client import CapabilitySearchResponse, CapabilitySearchResult
@@ -130,16 +132,42 @@ async def test_skill_search_empty_searcher_results_do_not_fall_back(tmp_path):
     assert "No skills matched" in result.content[0]["text"]
 
 
-def test_google_workspace_skills_are_discoverable() -> None:
+def test_google_workspace_skills_are_not_local_ai_skills() -> None:
     handler = SkillHandler(SKILLS_DIR)
 
-    assert "google-drive" in handler._available
-    assert "gmail" in handler._available
+    assert "google-drive" not in handler._available
+    assert "gmail" not in handler._available
 
 
 @pytest.mark.asyncio
-async def test_google_drive_skill_loads() -> None:
-    handler = SkillHandler(SKILLS_DIR)
+@respx.mock
+async def test_connector_skill_loads() -> None:
+    respx.get("http://cm.test/skills").mock(
+        return_value=Response(
+            200,
+            json={
+                "skills": [
+                    {
+                        "id": "google-drive",
+                        "title": "Google Drive Skill",
+                        "description": "Drive guidance",
+                        "source_type": "google_drive",
+                    }
+                ]
+            },
+        )
+    )
+    respx.post("http://cm.test/skill").mock(
+        return_value=Response(
+            200,
+            json={
+                "skill_id": "google-drive",
+                "title": "Google Drive Skill",
+                "content": "# Google Drive Skill\n\nUse connector tools.",
+            },
+        )
+    )
+    handler = SkillHandler(SKILLS_DIR, connector_manager_url="http://cm.test")
 
     result = await handler.execute(
         "load_skill",
@@ -153,32 +181,19 @@ async def test_google_drive_skill_loads() -> None:
     assert "connector tools" in text
 
 
-@pytest.mark.asyncio
-async def test_gmail_skill_loads() -> None:
-    handler = SkillHandler(SKILLS_DIR)
-
-    result = await handler.execute(
-        "load_skill",
-        {"skill": "gmail"},
-        ToolContext(chat_id="chat-1", user_id="user-1"),
-    )
-
-    assert result.is_error is False
-    text = result.content[0]["text"]
-    assert "Gmail Skill" in text
-    assert "connector tools" in text
-
-
-def test_google_workspace_skills_do_not_instruct_local_gws_auth_or_install() -> None:
+def test_google_workspace_connector_skills_do_not_instruct_local_gws_auth_or_install() -> (
+    None
+):
     forbidden = [
         "gws auth login",
         "gws auth setup",
         "cargo install",
         "npm install",
     ]
+    connector_skills_dir = SKILLS_DIR.parents[2] / "connectors" / "google" / "skills"
 
     for name in ["google-drive.md", "gmail.md"]:
-        text = (SKILLS_DIR / name).read_text()
+        text = (connector_skills_dir / name).read_text()
         for phrase in forbidden:
             assert phrase not in text
         assert "Do not run local `gws` commands" in text

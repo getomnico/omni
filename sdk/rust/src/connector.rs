@@ -13,8 +13,8 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use shared::models::{
-    ActionDefinition, ConnectorManifest, SearchOperator, ServiceCredential, Source, SourceType,
-    SyncType,
+    ActionDefinition, ConnectorManifest, ConnectorSkillDefinition, SearchOperator,
+    ServiceCredential, Source, SourceType, SyncType,
 };
 
 #[derive(Debug, Clone)]
@@ -58,6 +58,10 @@ pub trait Connector: Send + Sync + 'static {
     }
 
     fn search_operators(&self) -> Vec<SearchOperator> {
+        vec![]
+    }
+
+    fn skills(&self) -> Vec<ConnectorSkillDefinition> {
         vec![]
     }
 
@@ -169,6 +173,7 @@ pub trait Connector: Send + Sync + 'static {
             mcp_enabled: self.mcp_server().is_some(),
             resources: vec![],
             prompts: vec![],
+            skills: self.skills(),
             oauth: self
                 .oauth_config()
                 .and_then(|c| serde_json::to_value(c).ok()),
