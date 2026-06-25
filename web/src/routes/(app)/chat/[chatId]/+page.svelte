@@ -339,6 +339,77 @@
     let copiedUrl = $state(false)
     let messageFeedback = $state<Record<string, 'upvote' | 'downvote'>>({})
     let pendingApproval = $state<ApprovalRequiredEvent | null>(null)
+
+    type ApprovalInputDisplayField = {
+        label: string
+        value: string
+    }
+
+    function humanizeApprovalToken(value: string): string {
+        return value
+            .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+            .replace(/[_-]+/g, ' ')
+            .replace(/\b\w/g, (match) => match.toUpperCase())
+            .replace(/\bId\b/g, 'ID')
+            .trim()
+    }
+
+    function approvalActionLabel(toolName: string): string {
+        const actionName = toolName.split('__').slice(1).join('__') || toolName
+        return humanizeApprovalToken(actionName).toLowerCase()
+    }
+
+    function isApprovalRecord(value: unknown): value is Record<string, unknown> {
+        return typeof value === 'object' && value !== null && !Array.isArray(value)
+    }
+
+    function formatApprovalDisplayValue(value: unknown): string {
+        if (value === null || value === undefined) return 'Not provided'
+        if (typeof value === 'boolean') return value ? 'Yes' : 'No'
+        if (typeof value === 'number') return String(value)
+        if (typeof value === 'string') return value || 'Not provided'
+        if (Array.isArray(value)) {
+            if (value.length === 0) return 'None'
+            if (value.every((item) => ['string', 'number', 'boolean'].includes(typeof item))) {
+                return value.map(formatApprovalDisplayValue).join(', ')
+            }
+            return `${value.length} ${value.length === 1 ? 'item' : 'items'}`
+        }
+        if (isApprovalRecord(value)) {
+            const entries = Object.entries(value).filter(
+                ([, entryValue]) => entryValue !== undefined,
+            )
+            if (entries.length === 0) return 'None'
+            return entries
+                .slice(0, 4)
+                .map(
+                    ([key, entryValue]) =>
+                        `${humanizeApprovalToken(key)}: ${formatApprovalDisplayValue(entryValue)}`,
+                )
+                .join(' · ')
+        }
+        return String(value)
+    }
+
+    function approvalInputDisplayFields(
+        input: Record<string, unknown>,
+    ): ApprovalInputDisplayField[] {
+        return Object.entries(input)
+            .filter(([, value]) => value !== undefined)
+            .map(([key, value]) => ({
+                label: humanizeApprovalToken(key),
+                value: formatApprovalDisplayValue(value),
+            }))
+    }
+
+    function formatApprovalTechnicalDetails(input: Record<string, unknown>): string {
+        try {
+            return JSON.stringify(input, null, 2)
+        } catch {
+            return String(input)
+        }
+    }
+
     // Live OAuth metadata indexed by tool_call_id. The SSE oauth_required
     // event is the only place we learn `provider_configured` and a friendly
     // source display name; the persisted envelope on its own can render the
@@ -1640,6 +1711,9 @@
             }
 
             const handleConnectionError = () => {
+                // Guard against treating an intentional stop() as a connection error.
+                // handleStop() sets isStreaming = false before the EventSource fires its
+                // error event, so we can use that as a signal to skip cleanup here.
                 if (streamCompleted || !isStreaming) return
 
                 // Transient drop (e.g. backgrounded tab): the server keeps the run
@@ -2268,20 +2342,50 @@
                                         </div>
                                     </Card.Header>
 
-                                    <!-- Parameters -->
+                                    <!-- Action summary -->
                                     <Card.Content class="px-5 py-4">
-                                        <div
-                                            class="grid grid-cols-[80px_1fr] items-start gap-x-4 gap-y-2.5 text-[13px]">
-                                            {#each Object.entries(pendingApproval.tool_input) as [key, value]}
-                                                <div class="text-muted-foreground">{key}</div>
-                                                <div
-                                                    class={typeof value === 'string' &&
-                                                    value.length > 60
-                                                        ? 'leading-relaxed'
-                                                        : 'font-mono'}>
-                                                    {value}
+                                        {@const approvalFields = approvalInputDisplayFields(
+                                            pendingApproval.tool_input,
+                                        )}
+                                        <div class="space-y-4">
+                                            <div class="space-y-1">
+                                                <div class="text-sm font-medium">
+                                                    Omni wants to {approvalActionLabel(
+                                                        pendingApproval.tool_name,
+                                                    )}.
                                                 </div>
-                                            {/each}
+                                                <p class="text-muted-foreground text-xs">
+                                                    Review the important details below before
+                                                    approving this action.
+                                                </p>
+                                            </div>
+
+                                            {#if approvalFields.length > 0}
+                                                <div class="space-y-2 text-[13px]">
+                                                    {#each approvalFields as field}
+                                                        <div
+                                                            class="grid grid-cols-[120px_1fr] items-start gap-x-4 gap-y-2">
+                                                            <div class="text-muted-foreground">
+                                                                {field.label}
+                                                            </div>
+                                                            <div
+                                                                class="break-words whitespace-pre-wrap">
+                                                                {field.value}
+                                                            </div>
+                                                        </div>
+                                                    {/each}
+                                                </div>
+                                            {/if}
+
+                                            <details class="text-muted-foreground text-xs">
+                                                <summary class="cursor-pointer select-none">
+                                                    Show technical details
+                                                </summary>
+                                                <pre
+                                                    class="bg-muted/60 mt-2 max-h-48 overflow-auto rounded-md p-3 text-[11px] whitespace-pre-wrap">{formatApprovalTechnicalDetails(
+                                                        pendingApproval.tool_input,
+                                                    )}</pre>
+                                            </details>
                                         </div>
                                     </Card.Content>
 
