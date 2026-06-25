@@ -2,15 +2,15 @@ use std::collections::HashMap;
 use std::result::Result as StdResult;
 
 use crate::context::SyncContext;
-use crate::mcp_adapter::{McpCredentials, McpServer};
-use crate::models::ActionResponse;
+use crate::mcp_adapter::McpServer;
 use crate::models::OAuthManifestConfig;
+use crate::models::{ActionResponse, McpCredentials};
 use anyhow::Result;
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use axum::response::Response;
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use serde_json::Value as JsonValue;
 use shared::models::{
     ActionDefinition, ConnectorManifest, SearchOperator, ServiceCredential, Source, SourceType,

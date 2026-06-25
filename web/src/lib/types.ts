@@ -22,6 +22,7 @@ export enum SourceType {
     PAPERLESS_NGX = 'paperless_ngx',
     NEXTCLOUD = 'nextcloud',
     GOOGLE_ADS = 'google_ads',
+    DARWINBOX = 'darwinbox',
 }
 
 export enum ServiceProvider {
@@ -39,6 +40,7 @@ export enum ServiceProvider {
     PAPERLESS_NGX = 'paperless_ngx',
     NEXTCLOUD = 'nextcloud',
     GOOGLE_ADS = 'google_ads',
+    DARWINBOX = 'darwinbox',
 }
 
 export enum AuthType {
@@ -145,6 +147,31 @@ export interface GoogleAdsSourceConfig {
     sync_enabled?: boolean
 }
 
+export interface DarwinboxSourceConfig {
+    base_url: string
+    default_timezone?: string
+    sync_modules?: {
+        employee_directory?: boolean
+        deleted_employees?: boolean
+        org_masters?: boolean
+        positions?: boolean
+        holidays?: boolean
+        ats_jobs?: boolean
+    }
+    action_modules?: {
+        employee_self_service?: boolean
+        manager_workflows?: boolean
+        hr_operations?: boolean
+        ats?: boolean
+        reports?: boolean
+    }
+    authorization?: {
+        use_darwinbox_permissions?: boolean
+        hr_admin_emails?: string[]
+        recruiter_emails?: string[]
+    }
+}
+
 export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.GOOGLE_DRIVE]: 1800,
     [SourceType.GMAIL]: 1800,
@@ -169,6 +196,7 @@ export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.PAPERLESS_NGX]: 3600,
     [SourceType.NEXTCLOUD]: 3600,
     [SourceType.GOOGLE_ADS]: 3600,
+    [SourceType.DARWINBOX]: 3600,
 }
 
 export const EMBEDDING_PROVIDER_TYPES = ['local', 'jina', 'openai', 'cohere', 'bedrock'] as const

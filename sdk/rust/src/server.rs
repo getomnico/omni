@@ -1,29 +1,29 @@
-use crate::client::{SdkClient, SdkError, build_connector_url};
+use crate::client::{build_connector_url, SdkClient, SdkError};
 use crate::connector::{Connector, SyncRequestValidationError};
 use crate::context::SyncContext;
-use crate::mcp_adapter::{McpAdapter, McpCredentials, McpServer};
+use crate::mcp_adapter::{McpAdapter, McpServer};
 use crate::models::{
-    ActionRequest, ActionResponse, CancelRequest, CancelResponse, PromptRequest, ResourceRequest,
-    SyncRequest, SyncResponse, SyncStatusResponse,
+    ActionRequest, ActionResponse, CancelRequest, CancelResponse, McpCredentials, PromptRequest,
+    ResourceRequest, SyncRequest, SyncResponse, SyncStatusResponse,
 };
 use anyhow::{Context, Result};
 use axum::{
-    Router,
     extract::{DefaultBodyLimit, Path, State},
     http::StatusCode,
     middleware,
     response::{IntoResponse, Json, Response},
     routing::{get, post},
+    Router,
 };
-use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
+use dashmap::DashMap;
 use serde::de::DeserializeOwned;
 use shared::models::{SyncSlotClass, SyncType};
 use shared::telemetry;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
-use tokio::time::{Duration, interval};
+use tokio::time::{interval, Duration};
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tracing::{error, info, warn};
@@ -519,12 +519,24 @@ where
 
 async fn execute_action<C>(
     State(state): State<Arc<ServerState<C>>>,
-    Json(request): Json<ActionRequest>,
+    Json(mut request): Json<ActionRequest>,
 ) -> Result<Response, (StatusCode, Json<ActionResponse>)>
 where
     C: Connector,
 {
     info!("Action requested: {}", request.action);
+
+    if let Some(action_context) = &request.action_context {
+        if request.params.is_null() {
+            request.params = serde_json::Value::Object(serde_json::Map::new());
+        }
+        if let Some(obj) = request.params.as_object_mut() {
+            obj.insert(
+                "_omni_action_context".to_string(),
+                serde_json::to_value(action_context).unwrap_or(serde_json::Value::Null),
+            );
+        }
+    }
 
     // MCP-first dispatch: if the action matches a tool exposed by the
     // connector's MCP server, delegate to the adapter. Falls through to the

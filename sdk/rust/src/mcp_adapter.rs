@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use rmcp::ServiceExt;
 use rmcp::model::{
     CallToolRequestParams, GetPromptRequestParams, PaginatedRequestParams, PromptMessageContent,
     RawContent, ReadResourceRequestParams, ResourceContents,
@@ -11,51 +10,16 @@ use rmcp::model::{
 use rmcp::service::RunningService;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
-use serde::{Deserialize, Serialize};
+use rmcp::ServiceExt;
 use serde_json::Value as JsonValue;
 use shared::models::{
     ActionDefinition, ActionMode, McpPromptArgument, McpPromptDefinition, McpResourceDefinition,
-    ServiceCredential,
 };
 use tokio::process::Command;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::models::ActionResponse;
-
-/// Wire-format credentials forwarded by the connector-manager to `/resource`,
-/// `/prompt`, and (via the SDK's bootstrap path) to the connector's
-/// `prepare_mcp_*` methods. Mirrors the JSON shape produced by
-/// `services/connector-manager/src/handlers.rs:read_resource`/`get_prompt`:
-/// `{credentials, config, principal_email}`.
-///
-/// Connectors typically deserialize `credentials` further into their own
-/// typed credentials struct.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct McpCredentials {
-    /// The provider-specific credentials blob (e.g. `{token: "..."}`).
-    #[serde(default)]
-    pub credentials: JsonValue,
-    /// The provider-specific service config blob.
-    #[serde(default)]
-    pub config: JsonValue,
-    /// Optional acting-user email (for delegated/principal-aware connectors).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub principal_email: Option<String>,
-}
-
-impl McpCredentials {
-    /// Convert a typed `ServiceCredential` into the wrapper shape that
-    /// `prepare_mcp_*` expects, matching what the connector-manager would
-    /// send to `/resource` and `/prompt`.
-    pub fn from_service_credential(creds: &ServiceCredential) -> Self {
-        Self {
-            credentials: creds.credentials.clone(),
-            config: creds.config.clone(),
-            principal_email: creds.principal_email.clone(),
-        }
-    }
-}
 
 /// Configuration for an MCP server reached via stdio (subprocess).
 #[derive(Debug, Clone)]

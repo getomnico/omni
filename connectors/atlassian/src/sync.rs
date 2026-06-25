@@ -1,6 +1,6 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
-use omni_connector_sdk::{ConfluenceSourceConfig, JiraSourceConfig, ServiceProvider};
+use omni_connector_sdk::ServiceProvider;
 use omni_connector_sdk::{
     ConnectorEvent, SdkClient, ServiceCredential, Source, SourceType, SyncContext, SyncType,
 };
@@ -12,7 +12,10 @@ use crate::auth::{AtlassianCredentials, AuthManager};
 use crate::client::{AtlassianApi, OrgGroupInfo};
 use crate::confluence::ConfluenceProcessor;
 use crate::jira::JiraProcessor;
-use crate::models::{AtlassianConnectorState, AtlassianSyncCheckpoint, AtlassianWebhookEvent};
+use crate::models::{
+    AtlassianConnectorState, AtlassianSyncCheckpoint, AtlassianWebhookEvent,
+    ConfluenceSourceConfig, JiraSourceConfig,
+};
 use crate::user_resolver::UserResolver;
 
 pub struct SyncManager {

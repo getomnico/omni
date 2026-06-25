@@ -52,6 +52,7 @@ locals {
     github     = { port = 4005, image = "omni-github-connector", extra_env = {} }
     hubspot    = { port = 4006, image = "omni-hubspot-connector", extra_env = {} }
     google_ads = { port = 4016, image = "omni-google_ads-connector", extra_env = {} }
+    darwinbox  = { port = 4017, image = "omni-darwinbox-connector", extra_env = {} }
     microsoft  = { port = 4007, image = "omni-microsoft-connector", extra_env = {} }
     notion     = { port = 4008, image = "omni-notion-connector", extra_env = {} }
     fireflies  = { port = 4009, image = "omni-fireflies-connector", extra_env = {} }

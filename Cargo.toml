@@ -13,6 +13,7 @@ members = [
     "connectors/web",
     "connectors/imap",
     "connectors/nextcloud",
+    "connectors/darwinbox",
     "shared",
     "benchmarks",
 ]

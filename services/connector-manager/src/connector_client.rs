@@ -1,6 +1,6 @@
 use crate::models::{
-    ActionRequest, ActionResponse, ConnectorManifest, PromptRequest, ResourceRequest, SyncRequest,
-    SyncResponse, SyncStatusResponse,
+    ActionRequest, ActionResponse, CancelRequest, ConnectorManifest, PromptRequest,
+    ResourceRequest, SyncRequest, SyncResponse, SyncStatusResponse,
 };
 use reqwest::Client;
 use shared::models::SyncType;
@@ -190,7 +190,9 @@ impl ConnectorClient {
         let response = self
             .client
             .post(&url)
-            .json(&serde_json::json!({ "sync_run_id": sync_run_id }))
+            .json(&CancelRequest {
+                sync_run_id: sync_run_id.to_string(),
+            })
             .send()
             .await
             .map_err(|e| ClientError::RequestFailed(e.to_string()))?;

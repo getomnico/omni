@@ -1,27 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use shared::models::{ServiceCredential, Source, SourceType, SyncRun, SyncType};
+use shared::models::{Source, SourceType, SyncRun, SyncType};
 
 pub use shared::models::{
-    ActionDefinition, ConnectorManifest, McpPromptDefinition, McpResourceDefinition,
-    SearchOperator, SyncRequest, SyncResponse,
+    ActionContext, ActionDefinition, ActionRequest, ActionResponse, CancelRequest,
+    ConnectorManifest, McpCredentials, McpPromptDefinition, McpResourceDefinition, PromptRequest,
+    ResourceRequest, SearchOperator, SyncRequest, SyncResponse, SyncStatusResponse,
 };
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionRequest {
-    pub action: String,
-    pub params: JsonValue,
-    pub credentials: Option<ServiceCredential>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionResponse {
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<JsonValue>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -39,11 +24,6 @@ impl std::fmt::Display for TriggerType {
             TriggerType::Webhook => write!(f, "webhook"),
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncStatusResponse {
-    pub running: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -259,22 +239,6 @@ pub struct SdkWebhookResponse {
 // ============================================================================
 // MCP Resource & Prompt forwarding
 // ============================================================================
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResourceRequest {
-    pub uri: String,
-    #[serde(default)]
-    pub credentials: JsonValue,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PromptRequest {
-    pub name: String,
-    #[serde(default)]
-    pub arguments: Option<JsonValue>,
-    #[serde(default)]
-    pub credentials: JsonValue,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecuteResourceRequest {

@@ -10,6 +10,18 @@ use time::OffsetDateTime;
 // Atlassian Models
 // ============================================================================
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ConfluenceSourceConfig {
+    #[serde(default)]
+    pub space_filters: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct JiraSourceConfig {
+    #[serde(default)]
+    pub project_filters: Option<Vec<String>>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfluencePageStatus {

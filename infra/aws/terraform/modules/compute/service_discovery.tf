@@ -254,6 +254,25 @@ resource "aws_service_discovery_service" "notion_connector" {
   }
 }
 
+resource "aws_service_discovery_service" "darwinbox_connector" {
+  count = contains(var.enabled_connectors, "darwinbox") ? 1 : 0
+
+  name = "darwinbox-connector"
+
+  dns_config {
+    namespace_id = var.service_discovery_namespace_id
+
+    dns_records {
+      ttl  = 300
+      type = "A"
+    }
+  }
+
+  health_check_custom_config {
+    failure_threshold = 1
+  }
+}
+
 resource "aws_service_discovery_service" "fireflies_connector" {
   count = contains(var.enabled_connectors, "fireflies") ? 1 : 0
 
