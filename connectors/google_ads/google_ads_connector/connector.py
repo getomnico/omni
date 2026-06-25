@@ -6,7 +6,7 @@ import csv
 import io
 import logging
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from importlib.resources import files
 from typing import Any, TypedDict, cast
 
 from fastapi.responses import JSONResponse, Response
@@ -47,7 +47,7 @@ MAX_CSV_ROWS = 25000
 MAX_XLSX_ROWS = 10000
 CHECKPOINT_SCHEMA_VERSION = 1
 GOOGLE_ADS_SKILL = (
-    Path(__file__).resolve().parents[1] / "skills" / "google_ads.md"
+    files("google_ads_connector") / "skills" / "google_ads.md"
 ).read_text(encoding="utf-8")
 
 METRIC_FIELDS = {
