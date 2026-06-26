@@ -583,8 +583,8 @@ test('chat renders a captured stream from a seeded chat fixture', async ({ page 
         !capturedSeedChatPath ||
             !capturedExpectedText ||
             !capturedSubmitText ||
-            !process.env.OMNI_CHAT_STREAM_REPLAY_PATH,
-        'Set OMNI_CAPTURE_SEED_CHAT_PATH, OMNI_CAPTURE_SUBMIT_TEXT, OMNI_CAPTURE_EXPECT_TEXT, and OMNI_CHAT_STREAM_REPLAY_PATH to run this capture replay test.',
+            !process.env.OMNI_TEST_CHAT_STREAM_REPLAY_PATH,
+        'Set OMNI_CAPTURE_SEED_CHAT_PATH, OMNI_CAPTURE_SUBMIT_TEXT, OMNI_CAPTURE_EXPECT_TEXT, and OMNI_TEST_CHAT_STREAM_REPLAY_PATH to run this capture replay test.',
     )
 
     let seeded: SeededChat | null = null

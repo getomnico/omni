@@ -25,7 +25,8 @@ export const POST: RequestHandler = async ({ params, locals }) => {
         return json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    const replayPath = env.OMNI_CHAT_STREAM_REPLAY_PATH?.trim()
+    // Test-only replay mode bypasses omni-ai, so there is no AI run to cancel.
+    const replayPath = env.OMNI_TEST_CHAT_STREAM_REPLAY_PATH?.trim()
     if (replayPath) {
         return json({ status: 'ok' })
     }

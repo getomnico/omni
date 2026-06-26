@@ -60,7 +60,7 @@ function replayStreamFixturePath(cookies: {
     get(name: string): string | undefined
 }): string | null {
     const fixtureName = cookies.get(replayFixtureCookieName)?.trim()
-    const fixtureDir = env.OMNI_CHAT_STREAM_REPLAY_FIXTURE_DIR?.trim()
+    const fixtureDir = env.OMNI_TEST_CHAT_STREAM_REPLAY_FIXTURE_DIR?.trim()
     if (fixtureName && fixtureDir) {
         const baseDir = resolve(process.cwd(), fixtureDir)
         const fixturePath = resolve(baseDir, fixtureName)
@@ -71,7 +71,7 @@ function replayStreamFixturePath(cookies: {
         return fixturePath
     }
 
-    const fixturePath = env.OMNI_CHAT_STREAM_REPLAY_PATH?.trim()
+    const fixturePath = env.OMNI_TEST_CHAT_STREAM_REPLAY_PATH?.trim()
     return fixturePath ? resolve(process.cwd(), fixturePath) : null
 }
 
@@ -86,6 +86,9 @@ function eventData(event: string): string | null {
     return null
 }
 
+// Test-only SSE replay shim. Production streams come from omni-ai below; this
+// path is active only when OMNI_TEST_CHAT_STREAM_REPLAY_* is configured by the
+// Playwright web server or explicitly in a test environment.
 function replayStreamResponse(sampleStream: string, chatId: string): Response {
     const encoder = new TextEncoder()
     const runId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -110,6 +113,9 @@ function replayStreamResponse(sampleStream: string, chatId: string): Response {
                     if (event.startsWith('event: message_id')) {
                         eventToSend = `event: message_id\ndata: sample-${runId}-${messageIdCounter++}`
                     } else if (event.startsWith('event: save_message')) {
+                        // Test replay bypasses omni-ai, so emulate omni-ai's
+                        // production save_message transform: persist the row in
+                        // Postgres and send the browser the persisted message_id.
                         const data = eventData(event)
                         if (!data) continue
                         const savedMessage = await chatMessageRepository.create(
