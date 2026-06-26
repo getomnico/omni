@@ -690,23 +690,6 @@
         }
     }
 
-    async function handleRetry(origMessageId: string) {
-        if (isStreaming || stopInProgress) return
-
-        const origMsg = chatMessages.find((message) => message.id === origMessageId)
-        if (!origMsg || origMsg.message.role !== 'user') return
-
-        selectBranch(origMsg.parentId, origMsg.id)
-        clearDownstreamSelections(origMsg.id)
-        activeStreamingMessageId = origMsg.id
-        markChatMessagesChanged()
-        refreshProcessedMessages()
-
-        userHasScrolled = false
-        scrollUserMessageToTop()
-        streamResponse(data.chat.id, { parentMessageId: origMsg.id })
-    }
-
     async function handleEdit(origMessageId: string, newContent: string) {
         editingMessageId = null
         const response = await fetch(`/api/chat/${data.chat.id}/messages/${origMessageId}/edit`, {
@@ -1180,10 +1163,10 @@
         }
     })
 
-    function streamResponse(chatId: string, options?: { parentMessageId?: string }) {
+    function streamResponse(chatId: string) {
         isStreaming = true
         activeStreamChatId = chatId
-        activeStreamingMessageId = options?.parentMessageId ?? null
+        activeStreamingMessageId = null
         error = null
         errorDetail = null
         startThinkingText()
@@ -1423,15 +1406,11 @@
                 eventSource.close()
                 eventSource = null
             }
-            const streamParams = new URLSearchParams()
-            if (options?.parentMessageId)
-                streamParams.set('parent_message_id', options.parentMessageId)
-            if (resumeFromId) streamParams.set('last_event_id', resumeFromId)
-            const query = streamParams.toString()
             const base = `/api/chat/${chatId}/stream`
-            eventSource = new EventSource(query ? `${base}?${query}` : base, {
-                withCredentials: true,
-            })
+            eventSource = new EventSource(
+                resumeFromId ? `${base}?last_event_id=${encodeURIComponent(resumeFromId)}` : base,
+                { withCredentials: true },
+            )
 
             eventSource.addEventListener('message_id', (event) => {
                 streamLastEventId = event.lastEventId || streamLastEventId
@@ -1991,9 +1970,7 @@
                         size="icon"
                         variant="ghost"
                         class="h-7 w-7 cursor-pointer opacity-0 transition-opacity group-hover:opacity-100"
-                        aria-label="Retry message"
-                        data-testid={`retry-message-${message.origMessageId}`}
-                        onclick={() => handleRetry(message.origMessageId)}>
+                        onclick={() => handleEdit(message.origMessageId, firstText?.text ?? '')}>
                         <RotateCcw class="h-3.5 w-3.5" />
                     </Button>
                     <Button

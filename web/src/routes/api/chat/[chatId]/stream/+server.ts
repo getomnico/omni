@@ -236,13 +236,9 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
         // the AI service so it can resume the buffered run from that point.
         const lastEventId =
             request.headers.get('last-event-id') ?? url.searchParams.get('last_event_id')
-        const parentMessageId = url.searchParams.get('parent_message_id')
         let streamUrl = chat.agentId
             ? `${env.AI_SERVICE_URL}/chat/${chatId}/stream?auto_start=true`
             : `${env.AI_SERVICE_URL}/chat/${chatId}/stream`
-        if (parentMessageId) {
-            streamUrl += `${streamUrl.includes('?') ? '&' : '?'}parent_message_id=${encodeURIComponent(parentMessageId)}`
-        }
         if (lastEventId) {
             streamUrl += `${streamUrl.includes('?') ? '&' : '?'}last_event_id=${encodeURIComponent(lastEventId)}`
         }
