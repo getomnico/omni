@@ -124,6 +124,24 @@ async function seedBranchChat(messages: BranchMessage[]): Promise<SeededChat> {
     return { userId, chatId, sessionToken, sessionKey, messages: Object.fromEntries(idByKey) }
 }
 
+async function countMessagesContaining(
+    chatId: string,
+    role: 'user' | 'assistant',
+    text: string,
+): Promise<number> {
+    const sql = postgres(dbConfig)
+    const [row] = await sql<{ count: number }[]>`
+        SELECT COUNT(*)::int AS count
+        FROM chat_messages
+        WHERE chat_id = ${chatId}
+          AND message->>'role' = ${role}
+          AND message::text LIKE ${`%${text}%`}
+    `
+    await sql.end()
+
+    return row.count
+}
+
 async function cleanupChat(seeded: SeededChat | null): Promise<void> {
     if (!seeded) return
 
@@ -283,6 +301,46 @@ test('branching chat clears downstream branch selection when changing parent bra
         await expect(page.getByText('assistant A latest answer')).toBeVisible()
         await expect(page.getByText('user A older follow-up')).toHaveCount(0)
         await expect(page.getByText('assistant A older answer')).toHaveCount(0)
+    } finally {
+        await cleanupChat(seeded)
+    }
+})
+
+test('retrying a user message regenerates without duplicating the user message', async ({
+    page,
+}) => {
+    let seeded: SeededChat | null = null
+    try {
+        seeded = await openSeededChat(page, [
+            { key: 'root', parentKey: null, role: 'user', content: 'retry prompt' },
+            { key: 'oldAssistant', parentKey: 'root', role: 'assistant', content: 'old answer' },
+        ])
+        await page.route(`**/api/chat/${seeded.chatId}/stream**`, async (route) => {
+            await route.fulfill({
+                status: 200,
+                headers: {
+                    'content-type': 'text/event-stream',
+                    'cache-control': 'no-cache',
+                    connection: 'keep-alive',
+                },
+                body: textStream(ulid(), 'retried answer'),
+            })
+        })
+
+        await expect(page.getByText('retry prompt')).toBeVisible()
+        await expect(page.getByText('old answer')).toBeVisible()
+
+        await page.getByText('retry prompt').hover()
+        await page.getByTestId(`retry-message-${seeded.messages.root}`).click({ force: true })
+
+        await expect(page.getByText('retried answer')).toBeVisible()
+        await expect(page.getByText('retry prompt')).toHaveCount(1)
+        await expect(page.getByText('old answer')).toHaveCount(0)
+        await expect
+            .poll(() => countMessagesContaining(seeded!.chatId, 'user', 'retry prompt'), {
+                message: 'retry should not create a duplicate user message row',
+            })
+            .toBe(1)
     } finally {
         await cleanupChat(seeded)
     }

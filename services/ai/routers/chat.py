@@ -847,6 +847,10 @@ async def stream_chat(
     auto_start: bool = Query(
         False, description="Auto-inject initial message for agent chats"
     ),
+    parent_message_id: str | None = Query(
+        None,
+        description="Generate from the branch ending at this user message",
+    ),
 ):
     """Stream AI response for a chat thread using Server-Sent Events"""
     if not request.app.state.searcher_tool:
@@ -886,7 +890,18 @@ async def stream_chat(
         )
 
     messages_repo = MessagesRepository()
-    chat_messages = await messages_repo.get_active_path(chat_id)
+    if parent_message_id is not None:
+        chat_messages = await messages_repo.get_path_to_message(
+            chat_id, parent_message_id
+        )
+        if not chat_messages:
+            raise HTTPException(status_code=404, detail="Parent message not found")
+        if chat_messages[-1].message.get("role") != "user":
+            raise HTTPException(
+                status_code=400, detail="Parent message must be a user message"
+            )
+    else:
+        chat_messages = await messages_repo.get_active_path(chat_id)
 
     # Memory state — populated in both agent and regular chat branches
     memory_provider = None

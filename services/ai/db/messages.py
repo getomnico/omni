@@ -142,3 +142,30 @@ class MessagesRepository:
             rows = await conn.fetch(query, chat_id)
 
         return [ChatMessage.from_row(dict(row)) for row in rows]
+
+    async def get_path_to_message(
+        self, chat_id: str, message_id: str
+    ) -> List[ChatMessage]:
+        """Get the branch path from root through a specific message."""
+        pool = await self._get_pool()
+
+        query = """
+            WITH RECURSIVE walk_up AS (
+                SELECT cm.id, cm.chat_id, cm.message_seq_num, cm.message, cm.parent_id, cm.created_at
+                FROM chat_messages cm
+                WHERE cm.chat_id = $1 AND cm.id = $2
+
+                UNION ALL
+
+                SELECT cm.id, cm.chat_id, cm.message_seq_num, cm.message, cm.parent_id, cm.created_at
+                FROM chat_messages cm
+                JOIN walk_up wu ON cm.id = wu.parent_id
+                WHERE cm.chat_id = $1
+            )
+            SELECT * FROM walk_up ORDER BY message_seq_num
+        """
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(query, chat_id, message_id)
+
+        return [ChatMessage.from_row(dict(row)) for row in rows]
