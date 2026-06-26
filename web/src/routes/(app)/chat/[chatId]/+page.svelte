@@ -1970,6 +1970,8 @@
                         size="icon"
                         variant="ghost"
                         class="h-7 w-7 cursor-pointer opacity-0 transition-opacity group-hover:opacity-100"
+                        aria-label="Retry message"
+                        data-testid={`retry-message-${message.origMessageId}`}
                         onclick={() => handleEdit(message.origMessageId, firstText?.text ?? '')}>
                         <RotateCcw class="h-3.5 w-3.5" />
                     </Button>

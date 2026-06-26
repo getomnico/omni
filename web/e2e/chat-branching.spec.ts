@@ -288,6 +288,41 @@ test('branching chat clears downstream branch selection when changing parent bra
     }
 })
 
+test('retrying a user message creates a new sibling branch without showing duplicate user bubbles', async ({
+    page,
+}) => {
+    let seeded: SeededChat | null = null
+    try {
+        seeded = await openSeededChat(page, [
+            { key: 'root', parentKey: null, role: 'user', content: 'retry prompt' },
+            { key: 'oldAssistant', parentKey: 'root', role: 'assistant', content: 'old answer' },
+        ])
+        await page.route(`**/api/chat/${seeded.chatId}/stream`, async (route) => {
+            await route.fulfill({
+                status: 200,
+                headers: {
+                    'content-type': 'text/event-stream',
+                    'cache-control': 'no-cache',
+                    connection: 'keep-alive',
+                },
+                body: textStream(ulid(), 'retried answer'),
+            })
+        })
+
+        await expect(page.getByText('retry prompt')).toBeVisible()
+        await expect(page.getByText('old answer')).toBeVisible()
+
+        await page.getByText('retry prompt').hover()
+        await page.getByTestId(`retry-message-${seeded.messages.root}`).click({ force: true })
+
+        await expect(page.getByText('retried answer')).toBeVisible()
+        await expect(page.getByText('retry prompt')).toHaveCount(1)
+        await expect(page.getByText('old answer')).toHaveCount(0)
+    } finally {
+        await cleanupChat(seeded)
+    }
+})
+
 test('branching chat streams follow-up on the selected non-latest branch', async ({ page }) => {
     let seeded: SeededChat | null = null
     try {
