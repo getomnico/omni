@@ -2,10 +2,10 @@ use std::path::Path;
 use std::process::Stdio;
 
 use tokio::process::Command;
-use tokio::time::{Duration, timeout};
+use tokio::time::{timeout, Duration};
 
-use crate::SandboxConfig;
 use crate::models::ExecutionResult;
+use crate::SandboxConfig;
 
 const MAX_OUTPUT_SIZE: usize = 100_000; // 100KB
 

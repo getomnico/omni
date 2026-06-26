@@ -5,11 +5,11 @@ pub mod models;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use axum::routing::{get, post};
+use axum::Router;
 use tower_http::trace::TraceLayer;
 
 #[derive(Debug, Clone)]
@@ -76,11 +76,16 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         .route("/health", get(handlers::health))
         .route("/execute/bash", post(handlers::execute_bash))
         .route("/execute/python", post(handlers::execute_python))
-        .route("/files/write", post(handlers::write_file))
-        // Override axum's 2 MB default body limit — attachments fetched from
-        // connector sources (Gmail, Drive, etc.) can be tens of MB, and the
-        // payload here is base64-encoded JSON so it's ~33% larger than the
-        // raw bytes. Matches the precedent in services/connector-manager.
+        // Override axum's 2 MB default body limit. Connector text results such as
+        // Google Workspace discovery schemas can exceed that while still being
+        // reasonable to save for selective inspection with read_file.
+        .route(
+            "/files/write",
+            post(handlers::write_file).layer(DefaultBodyLimit::max(50 * 1024 * 1024)),
+        )
+        // Attachments fetched from connector sources (Gmail, Drive, etc.) can be
+        // tens of MB, and this payload is base64-encoded JSON so it's ~33% larger
+        // than the raw bytes. Matches the precedent in services/connector-manager.
         .route(
             "/files/write_binary",
             post(handlers::write_file_binary).layer(DefaultBodyLimit::max(400 * 1024 * 1024)),
